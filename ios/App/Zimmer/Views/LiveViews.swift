@@ -58,7 +58,12 @@ struct LiveHomeView: View {
                 NavigationStack { LiveSettingsView(api: model.api) }
             }
             .navigationDestination(for: LiveDestination.self) { destination in
+                // Its own state for each conversation. New conversation replaces the path's only
+                // entry, and SwiftUI would otherwise keep the one view and its turns: a read of the
+                // old thread that starts after the new thread's first read asks for every turn,
+                // and the fresh conversation shows the old one's turns from then on.
                 LiveConversationView(id: destination.id, api: model.api, startsVoice: destination.voice) { replacement in path = [replacement] }
+                    .id(destination.id)
             }
             .task {
                 await load()
@@ -359,7 +364,8 @@ struct LiveConversationView: View {
     private func poll() async {
         await readAll()
         while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(2))
+            // A cancelled sleep throws: stop there rather than read once more for a screen that is gone.
+            guard (try? await Task.sleep(for: .seconds(2))) != nil else { break }
             await readNew()
         }
     }

@@ -140,9 +140,11 @@ final class OperationsUITests: XCTestCase {
             XCTAssertTrue(reach(app, identifier), "\(identifier) is on the page")
             if let text { XCTAssertTrue(app.staticTexts[text].firstMatch.exists, "\(identifier) names \(text)") }
         }
-        // A recent failure opens its session.
+        // A recent failure opens its session. Recent Failures is above Recent Errors, where
+        // the walk ended: searching down from the foot of the page spent twenty steps, two
+        // minutes and more, before turning back, and took the test past its five minutes.
         let failure = app.buttons["health.recentFailures.1027"]
-        XCTAssertTrue(reach(app, "health.recentFailures.1027", whole: true))
+        XCTAssertTrue(reach(app, "health.recentFailures.1027", whole: true, searching: .up))
         failure.tap()
         XCTAssertTrue(app.navigationBars["#1027"].waitForExistence(timeout: timeout))
 
@@ -241,15 +243,19 @@ final class OperationsUITests: XCTestCase {
     }
 
     /// Bring the element named `identifier` onto the screen — below the navigation bar, above
-    /// the tab bar, and whole when it is about to be tapped — by dragging under half a screen
+    /// the tab bar, and whole when it is about to be tapped — by dragging less than a screen
     /// at a time and holding, so there is no fling: on a loaded simulator a fling carries a
     /// short section past the screen in one go, and a lazy List never lays it out. Twenty steps
     /// in `searching`'s direction, then twenty back — a caller at the foot of the page looking
     /// for its head says `.up`, or the walk spends its steps parked at the bottom — giving up
     /// after forty; done the moment the element is on screen (a `where` clause on the loop
     /// would skip the drag and keep checking, thirty times three seconds for every section a
-    /// walk reaches). The first match, since a container's identifier can reach more than one
-    /// element.
+    /// walk reaches). Once the element has been laid out off the screen it has said which way it
+    /// is, and the walk goes that way from then on, whatever its phase: a drag can coast further than its length, and
+    /// on a loaded simulator one carried the Costs page's experiments header from under the tab
+    /// bar to above the navigation bar, after which the walk spent its other downward steps,
+    /// two minutes, walking away from it. The first match, since a container's identifier can
+    /// reach more than one element.
     private enum Direction { case up, down }
 
     private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false, searching: Direction = .down) -> Bool {
@@ -259,31 +265,43 @@ final class OperationsUITests: XCTestCase {
         let top = bar.exists ? bar.frame.maxY : 0
         let tabBar = app.tabBars.firstMatch
         let bottom = tabBar.exists ? tabBar.frame.minY : app.frame.maxY
-        func onScreen() -> Bool {
-            guard element.waitForExistence(timeout: 1), !element.frame.isEmpty else { return false }
-            let frame = element.frame
-            return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
+        func laidOut() -> CGRect? {
+            guard element.waitForExistence(timeout: 1), !element.frame.isEmpty else { return nil }
+            return element.frame
         }
+        func onScreen(_ frame: CGRect) -> Bool {
+            frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
+        }
+        // Which way the element was when last laid out: a coast can carry it far enough that
+        // the List drops it, and the walk still goes back for it rather than on away.
+        var heading: Bool?
         for step in 0..<40 {
-            if onScreen() { return true }
-            let down = (step < 20) == (searching == .down)
-            // The start alternates between two heights, a quarter screen apart: a control
-            // that takes a drag for itself — the spend-by-day chart, whose selection follows
-            // the finger — would otherwise take every step, and the page would never move.
-            // The far end is a fifth of the way down, under the navigation bar and the Staging
-            // banner (a press on the bar moves nothing, and an upward walk starts there), so a
-            // drag is most of a screen: a step is seconds whatever its length, and the Costs
-            // page is a dozen screens.
+            let frame = laidOut()
+            if let frame, onScreen(frame) { return true }
+            // Above the screen, back up to it; below, or not wholly above the tab bar, on down.
+            if let frame { heading = frame.minY >= top }
+            let down = heading ?? ((step < 20) == (searching == .down))
+            // Where a drag starts alternates between two heights, a quarter screen apart, and
+            // where it ends does not: a control that takes a drag for itself — the spend-by-day
+            // chart, whose selection follows the finger — would otherwise take every step, and
+            // the page would never move. That holds whichever way the walk goes: an upward walk
+            // that always started a fifth of the way down, with the chart parked there, selected
+            // a bar forty times over and never scrolled. The chart is shorter than the quarter
+            // screen between the two starts, so it can take at most every other step.
+            // The top of a drag is at least a fifth of the way down, under the navigation bar
+            // and the Staging banner (a press on the bar moves nothing), so a drag is most of a
+            // screen and never under two fifths of one: a step is seconds whatever its length,
+            // and the Costs page is a dozen screens.
             // No section can pass the screen unseen — that would take more than a screen of
             // travel — and the hold at the end keeps it from flinging. And left of centre,
             // clear of the Quick Router button at the bottom right.
-            let near = step.isMultiple(of: 2) ? 0.88 : 0.63
-            let far = 0.2
-            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? near : far))
-            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? far : near))
+            let low = 0.88, high = 0.2
+            let start = down ? (step.isMultiple(of: 2) ? low : 0.63) : (step.isMultiple(of: 2) ? high : 0.45)
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: start))
+            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? high : low))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
         }
-        return onScreen()
+        return laidOut().map(onScreen) ?? false
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
