@@ -250,8 +250,8 @@ final class OperationsUITests: XCTestCase {
     /// for its head says `.up`, or the walk spends its steps parked at the bottom — giving up
     /// after forty; done the moment the element is on screen (a `where` clause on the loop
     /// would skip the drag and keep checking, thirty times three seconds for every section a
-    /// walk reaches). Once the element is laid out off the screen it says which way it is, and
-    /// the walk goes that way whatever its phase: a drag can coast further than its length, and
+    /// walk reaches). Once the element has been laid out off the screen it has said which way it
+    /// is, and the walk goes that way from then on, whatever its phase: a drag can coast further than its length, and
     /// on a loaded simulator one carried the Costs page's experiments header from under the tab
     /// bar to above the navigation bar, after which the walk spent its other downward steps,
     /// two minutes, walking away from it. The first match, since a container's identifier can
@@ -272,11 +272,15 @@ final class OperationsUITests: XCTestCase {
         func onScreen(_ frame: CGRect) -> Bool {
             frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }
+        // Which way the element was when last laid out: a coast can carry it far enough that
+        // the List drops it, and the walk still goes back for it rather than on away.
+        var heading: Bool?
         for step in 0..<40 {
             let frame = laidOut()
             if let frame, onScreen(frame) { return true }
             // Above the screen, back up to it; below, or not wholly above the tab bar, on down.
-            let down = frame.map { $0.minY >= top } ?? ((step < 20) == (searching == .down))
+            if let frame { heading = frame.minY >= top }
+            let down = heading ?? ((step < 20) == (searching == .down))
             // Where a drag starts alternates between two heights, a quarter screen apart, and
             // where it ends does not: a control that takes a drag for itself — the spend-by-day
             // chart, whose selection follows the finger — would otherwise take every step, and
