@@ -615,6 +615,17 @@ sends the APNs token and the environment it belongs to: `sandbox` for a developm
 phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
 even if it never signs out.
 
+A phone that ends up with no registration has stopped somewhere the server cannot see, so the app
+says where. Settings → Notifications shows how the last attempt went under *This phone*: registered,
+notifications off, APNs refused a token (the build lacks `aps-environment`, say), or the token could
+not be registered with Zimmer. *Register this phone again* retries. The app also reports each failure to
+`POST /api/v1/apns_devices/failure`, which logs it at WARN as
+`[apns] registration failed on the phone at <declined|apns|register>`, and every request that
+endpoint or the registration itself refuses to a caller that presented a credential (a 401 on the
+app's token, a bad token) is a WARN under `[apns]` too; an anonymous request stays INFO.
+Request lines are INFO and are not shipped to the log store, so without these a missing phone
+leaves no trace. A decline is reported once, not on every launch.
+
 The server sends the same notifications the web push does (*needs input*, a question waiting for an
 answer, *finished*, *failed*, and a custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says
 what kind of thing happened**: "Zimmer — A session needs you.", "A session failed." and so on. A web

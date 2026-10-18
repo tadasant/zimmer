@@ -33,4 +33,22 @@ final class PushTests: XCTestCase {
         XCTAssertEqual(body?["device_name"], "iPhone")
         XCTAssertEqual(transport.sent[1].url.path, "/api/v1/apns_devices/\(token)")
     }
+
+    func testAFailedRegistrationIsReportedToTheFailureEndpoint() async throws {
+        let transport = ScriptedTransport([
+            { _ in HTTPResponse(statusCode: 204, headers: ["x-request-id": "r"]) },
+        ])
+        let api = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
+
+        try await api.reportPushFailure(stage: .apns, error: "no valid aps-environment entitlement", environment: .production,
+                                        deviceName: "iPhone", appVersion: "0.1.0 (62.1)")
+
+        XCTAssertEqual(transport.sent.map(\.method), ["POST"])
+        XCTAssertEqual(transport.sent[0].url.path, "/api/v1/apns_devices/failure")
+        let body = try JSONSerialization.jsonObject(with: transport.sent[0].body ?? Data()) as? [String: String]
+        XCTAssertEqual(body?["stage"], "apns")
+        XCTAssertEqual(body?["error"], "no valid aps-environment entitlement")
+        XCTAssertEqual(body?["environment"], "production")
+        XCTAssertEqual(body?["app_version"], "0.1.0 (62.1)")
+    }
 }
