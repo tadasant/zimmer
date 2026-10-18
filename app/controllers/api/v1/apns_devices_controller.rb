@@ -21,6 +21,12 @@
 # is logged at WARN under `[apns]` so it reaches the shipped logs; request lines
 # are INFO and are not shipped.
 class Api::V1::ApnsDevicesController < Api::BaseController
+  # Where the phone's registration stops short of a row: `declined` (the
+  # notification permission, or asking for it failed), `apns` (iOS's
+  # didFailToRegisterForRemoteNotifications), `register` (the POST to `create`
+  # failed).
+  FAILURE_STAGES = %w[declined apns register].freeze
+
   accepts_native_app_tokens
 
   def create
@@ -47,10 +53,9 @@ class Api::V1::ApnsDevicesController < Api::BaseController
 
     Rails.logger.warn(
       "[apns] registration failed on the phone at #{stage} (#{caller_label}): " \
-      "#{params[:error].to_s.squish.truncate(300).presence || 'no detail'}; " \
-      "environment=#{params[:environment].to_s.truncate(20).presence || '?'} " \
-      "app_version=#{params[:app_version].to_s.truncate(40).presence || '?'} " \
-      "device=#{params[:device_name].to_s.truncate(40).presence || '?'}"
+      "#{log_value(params[:error], 300) || 'no detail'}; " \
+      "environment=#{log_value(params[:environment], 20) || '?'} " \
+      "app_version=#{log_value(params[:app_version], 40) || '?'}"
     )
     head :no_content
   rescue ActionController::ParameterMissing => e
@@ -62,14 +67,14 @@ class Api::V1::ApnsDevicesController < Api::BaseController
     head :no_content
   end
 
-  # Where the phone's registration stops short of a row: `declined` (the
-  # notification permission), `apns` (iOS's didFailToRegisterForRemoteNotifications),
-  # `register` (the POST to `create` failed).
-  FAILURE_STAGES = %w[declined apns register].freeze
-
   private
 
+  # WARN only for a caller that presented the app's token or authenticated: an
+  # anonymous request is the base controller's INFO, so a scanner cannot fill
+  # the shipped log queue.
   def render_api_error(error, message, status:, **extra)
+    return super unless native_app_bearer_token.present? || native_app_grant || @authenticated_api_key
+
     Rails.logger.warn(
       "[apns] #{request.request_method} #{request.path} refused " \
       "(#{Rack::Utils.status_code(status)} #{error}) for #{caller_label}: #{Array(message).join(', ')}"
@@ -78,7 +83,15 @@ class Api::V1::ApnsDevicesController < Api::BaseController
   end
 
   def caller_label
-    native_app_grant ? "grant #{native_app_grant.id}" : "no app grant"
+    return "grant #{native_app_grant.id}" if native_app_grant
+    return api_key_label(@authenticated_api_key) if @authenticated_api_key
+
+    "no app grant"
+  end
+
+  # Squished so a newline in a client-sent value cannot forge a second log line.
+  def log_value(value, limit)
+    value.to_s.squish.truncate(limit).presence
   end
 
   def device_json(device)

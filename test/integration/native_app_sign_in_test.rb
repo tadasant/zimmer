@@ -444,6 +444,15 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_empty ApnsDevice.all
   end
 
+  test "an anonymous request to the push endpoints stays at INFO, so a scanner cannot fill the shipped logs" do
+    entries = capture_log_entries do
+      post "/api/v1/apns_devices/failure", params: { stage: "apns" }
+      assert_response :unauthorized
+    end
+
+    assert_empty entries.select { |severity, message| severity == "WARN" && message.start_with?("[apns]") }
+  end
+
   test "the app reports what stopped its registration on the phone, and it is a WARN under [apns]" do
     tokens = sign_in
 
@@ -457,7 +466,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     warn = entries.find { |severity, message| severity == "WARN" && message.start_with?("[apns]") }&.last
     assert_match(/\A\[apns\] registration failed on the phone at apns \(grant \d+\): no valid "aps-environment" entitlement/, warn)
-    assert_match(/environment=production app_version=0\.1\.0 \(62\.1\) device=iPhone\z/, warn)
+    assert_match(/environment=production app_version=0\.1\.0 \(62\.1\)\z/, warn)
 
     post "/api/v1/apns_devices/failure", params: { stage: "whatever" }, headers: bearer(tokens["access_token"])
     assert_response :unprocessable_entity

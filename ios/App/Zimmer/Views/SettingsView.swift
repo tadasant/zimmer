@@ -105,7 +105,7 @@ struct SettingsView: View {
                                 }
                             } else if notificationStatus == "On" {
                                 Button("Register this phone again") {
-                                    Task { await PushCoordinator.shared.enable() }
+                                    Task { await push.enable() }
                                 }
                                 .accessibilityIdentifier("settings.notifications.reregister")
                             }
