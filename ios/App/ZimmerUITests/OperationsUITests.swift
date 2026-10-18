@@ -250,8 +250,12 @@ final class OperationsUITests: XCTestCase {
     /// for its head says `.up`, or the walk spends its steps parked at the bottom — giving up
     /// after forty; done the moment the element is on screen (a `where` clause on the loop
     /// would skip the drag and keep checking, thirty times three seconds for every section a
-    /// walk reaches). The first match, since a container's identifier can reach more than one
-    /// element.
+    /// walk reaches). Once the element is laid out off the screen it says which way it is, and
+    /// the walk goes that way whatever its phase: a drag can coast further than its length, and
+    /// on a loaded simulator one carried the Costs page's experiments header from under the tab
+    /// bar to above the navigation bar, after which the walk spent its other downward steps,
+    /// two minutes, walking away from it. The first match, since a container's identifier can
+    /// reach more than one element.
     private enum Direction { case up, down }
 
     private func reach(_ app: XCUIApplication, _ identifier: String, whole: Bool = false, searching: Direction = .down) -> Bool {
@@ -261,14 +265,18 @@ final class OperationsUITests: XCTestCase {
         let top = bar.exists ? bar.frame.maxY : 0
         let tabBar = app.tabBars.firstMatch
         let bottom = tabBar.exists ? tabBar.frame.minY : app.frame.maxY
-        func onScreen() -> Bool {
-            guard element.waitForExistence(timeout: 1), !element.frame.isEmpty else { return false }
-            let frame = element.frame
-            return frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
+        func laidOut() -> CGRect? {
+            guard element.waitForExistence(timeout: 1), !element.frame.isEmpty else { return nil }
+            return element.frame
+        }
+        func onScreen(_ frame: CGRect) -> Bool {
+            frame.minY >= top && (whole ? frame.maxY <= bottom : frame.minY < bottom)
         }
         for step in 0..<40 {
-            if onScreen() { return true }
-            let down = (step < 20) == (searching == .down)
+            let frame = laidOut()
+            if let frame, onScreen(frame) { return true }
+            // Above the screen, back up to it; below, or not wholly above the tab bar, on down.
+            let down = frame.map { $0.minY >= top } ?? ((step < 20) == (searching == .down))
             // Where a drag starts alternates between two heights, a quarter screen apart, and
             // where it ends does not: a control that takes a drag for itself — the spend-by-day
             // chart, whose selection follows the finger — would otherwise take every step, and
@@ -289,7 +297,7 @@ final class OperationsUITests: XCTestCase {
             let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: down ? high : low))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
         }
-        return onScreen()
+        return laidOut().map(onScreen) ?? false
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
