@@ -415,6 +415,56 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "the app's registration lands as the JSON body the app sends" do
+    tokens = sign_in
+    token = "0a" * 32
+
+    post "/api/v1/apns_devices",
+      params: { app_version: "0.1.0 (62.1)", device_name: "iPhone", environment: "production", token: token }.to_json,
+      headers: bearer(tokens["access_token"]).merge("Content-Type" => "application/json", "Accept" => "application/json")
+
+    assert_response :created
+    assert_equal "production", ApnsDevice.find_by!(token: token).environment
+  end
+
+  test "a registration refused for any reason, auth included, is a WARN under [apns]" do
+    tokens = sign_in
+
+    entries = capture_log_entries do
+      post "/api/v1/apns_devices", params: { token: "nope", environment: "production" }, headers: bearer(tokens["access_token"])
+      assert_response :unprocessable_entity
+      post "/api/v1/apns_devices", params: { token: "ab" * 32, environment: "production" }, headers: bearer("#{OauthServer::ACCESS_TOKEN_PREFIX}bogus")
+      assert_response :unauthorized
+    end
+
+    warns = entries.select { |severity, message| severity == "WARN" && message.start_with?("[apns]") }.map(&:last)
+    assert_equal 2, warns.size, entries.inspect
+    assert_match(/refused \(422 Unprocessable Entity\) for grant \d+: Token must be the device token/, warns[0])
+    assert_match(/refused \(401 Unauthorized\) for no app grant/, warns[1])
+    assert_empty ApnsDevice.all
+  end
+
+  test "the app reports what stopped its registration on the phone, and it is a WARN under [apns]" do
+    tokens = sign_in
+
+    entries = capture_log_entries do
+      post "/api/v1/apns_devices/failure",
+        params: { stage: "apns", error: "no valid \"aps-environment\" entitlement string found for application",
+                  environment: "production", app_version: "0.1.0 (62.1)", device_name: "iPhone" }.to_json,
+        headers: bearer(tokens["access_token"]).merge("Content-Type" => "application/json")
+      assert_response :no_content
+    end
+
+    warn = entries.find { |severity, message| severity == "WARN" && message.start_with?("[apns]") }&.last
+    assert_match(/\A\[apns\] registration failed on the phone at apns \(grant \d+\): no valid "aps-environment" entitlement/, warn)
+    assert_match(/environment=production app_version=0\.1\.0 \(62\.1\) device=iPhone\z/, warn)
+
+    post "/api/v1/apns_devices/failure", params: { stage: "whatever" }, headers: bearer(tokens["access_token"])
+    assert_response :unprocessable_entity
+    post "/api/v1/apns_devices/failure", params: {}, headers: bearer(tokens["access_token"])
+    assert_response :unprocessable_entity
+  end
+
   private
 
   def build_zimmer_session(**attrs)

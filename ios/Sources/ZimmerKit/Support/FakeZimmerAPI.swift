@@ -41,6 +41,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var mergesAuthorized: Set<URL> = []
     private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
+    public private(set) var pushFailures: [PushFailureStage] = []
     private let live: Bool
     /// A session trashed somewhere else — the web, a router, its own agent — as soon as the
     /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
@@ -270,6 +271,11 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     public func unregisterDevice(token: String) async throws {
         registeredDevices[token] = nil
+    }
+
+    public func reportPushFailure(stage: PushFailureStage, error: String?, environment: APNsEnvironment,
+                                  deviceName: String?, appVersion: String?) async throws {
+        pushFailures.append(stage)
     }
 
     private func find(_ id: Int) throws -> SessionSummary {
