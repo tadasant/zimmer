@@ -190,7 +190,7 @@ final class SettingsUITests: XCTestCase {
     private func tapSwitch(_ toggle: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         let before = toggle.value as? String
         for attempt in 1...3 {
-            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+            if attempt > 1 { toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap() } // TEMP: drop the first tap
             let flipped = expectation(for: NSPredicate(format: "value != %@", before ?? ""), evaluatedWith: toggle)
             if XCTWaiter().wait(for: [flipped], timeout: attempt == 3 ? timeout : 5) == .completed { return }
         }
