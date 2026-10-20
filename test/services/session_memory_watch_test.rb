@@ -106,7 +106,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
 
     kill = @buffer.entries.find { |e| e[:content].include?("137") }
 
-    assert_match(/ALL sessions on this worker share/, kill[:content])
+    assert_match(/memory it shares with the other sessions on this worker/, kill[:content])
     assert_no_match(/its own memory limit/, kill[:content],
       "the session used 300 MB of 4 GB — blaming its own bound is advice for a problem " \
       "it does not have")
@@ -124,7 +124,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
 
     SessionMemoryWatch.new(@session).check(@buffer)
 
-    assert_match(/ALL sessions on this worker share/, @buffer.contents)
+    assert_match(/memory it shares with the other sessions on this worker/, @buffer.contents)
   end
 
   # And the mirror: the pool reading low right after the kill (the victim's memory is
@@ -153,7 +153,7 @@ class SessionMemoryWatchTest < ActiveSupport::TestCase
     tick_again(watch)
     tick_again(watch)
 
-    assert_equal 1, @buffer.entries.count { |e| e[:content].include?("All agent sessions on this worker share") },
+    assert_equal 1, @buffer.entries.count { |e| e[:content].include?("memory with the other sessions on this worker") },
       "once per job, not once per tick"
   end
 
