@@ -71,7 +71,8 @@ class SessionMemoryBoostTest < ActiveSupport::TestCase
 
     assert_equal({}, SessionMemoryBoost.reconcile!, "5 GiB pool minus the 1 GiB floor is no more than 4 GiB")
     assert_equal "max", shared_max
-    assert_match(/Not applied yet/, SessionMemoryBoost.describe(@session.reload))
+    assert_match(/Not applied: this worker's shared pool \(5 GB\) cannot pay for any boost/,
+      SessionMemoryBoost.describe(@session.reload))
   end
 
   test "on a busy box the cap approaches its target and the page says how much is reserved" do
@@ -119,6 +120,31 @@ class SessionMemoryBoostTest < ActiveSupport::TestCase
     granted = SessionMemoryBoost.reconcile!
 
     assert_equal [ [ @session.id, @other.id ].min ], granted.keys, "the later one gets what is left, which is nothing"
+  end
+
+  test "a boost that has ended is reported as such before its processes rejoin the shared tier" do
+    boost!(@session, 5120)
+    SessionMemoryBoost.reconcile!
+    assert_equal (1 * GIB).to_s, shared_max
+
+    boost!(@session, 5120, expires_at: 1.minute.ago)
+    SessionMemoryBoost.reconcile!
+
+    assert_equal "max", shared_max, "the cap sized for the boost is gone"
+  end
+
+  # A dev boot or a test run on the production worker sees the real tree, and its database
+  # knows none of production's boosts. Only a deployed environment, or a caller pointed at a
+  # tree of its own, may converge.
+  test "refuses to converge the default tree outside a deployed environment" do
+    ENV["ZIMMER_SESSION_CGROUP_ROOT"] = SessionMemoryCgroup::DEFAULT_ROOT
+    refute_predicate SessionMemoryBoost, :enforcing?
+    assert_equal({}, SessionMemoryBoost.reconcile!)
+
+    ENV.delete("ZIMMER_SESSION_CGROUP_ROOT")
+    refute_predicate SessionMemoryBoost, :enforcing?
+
+    Rails.env.stub(:staging?, true) { assert_predicate SessionMemoryBoost, :enforcing? }
   end
 
   test "is a no-op where per-session cgroups are unavailable" do

@@ -107,34 +107,61 @@ class SessionMemoryBoost
     #
     # @return [Hash{Integer => Integer}] session id => bytes granted, for the caller's log
     def reconcile!(now: Time.current)
-      # A dev boot inside a session (bin/agent-dev) runs on the production worker, where
-      # the real cgroup tree is writable by the same uid — and its database knows none of
-      # production's boosts. Reconciling from there would hand every production boost
-      # back to the shared tier and lift the cap, once a minute. Only the deployment whose
-      # database owns the cgroups may converge them.
-      return {} if Rails.env.development?
+      return {} unless enforcing?
       return {} unless SessionMemoryCgroup.available?
       return {} unless SessionMemoryCgroup.ensure_tier!(SessionMemoryCgroup.shared_path) &&
                        SessionMemoryCgroup.ensure_tier!(SessionMemoryCgroup.boosted_path)
 
       pool_limit = SessionMemoryCgroup.pool_stats.limit_bytes
-      grants = grants_for(Session.holding_memory_boost(now).order(:id).to_a, pool_limit)
+      boosts = Session.holding_memory_boost(now).order(:id).to_a
+      grants = grants_for(boosts, pool_limit)
 
       carved = grants.select { |session, bytes| SessionMemoryCgroup.new(session.id).carve_out!(bytes) }
 
-      (SessionMemoryCgroup.boosted_session_ids - carved.keys.map(&:id)).each do |id|
-        SessionMemoryCgroup.new(id).return_to_shared!
-        clear_applied(id)
-      end
-
+      # The cap is settled BEFORE an ended boost's processes go back into `shared`, so they
+      # never land under a cap that was sized for a boost that no longer exists.
       target = pool_limit && carved.any? ? pool_limit - carved.values.sum : nil
       shared_cap = SessionMemoryCgroup.cap_shared!(target)
 
-      carved.each { |session, bytes| record_applied(session, bytes, shared_cap, target, now) }
+      (SessionMemoryCgroup.boosted_session_ids - carved.keys.map(&:id)).each do |id|
+        SessionMemoryCgroup.new(id).return_to_shared!
+        clear_applied(Session.find_by(id: id))
+      end
+
+      # A cap that could not be written is not recorded as one: the page would otherwise
+      # read "all of it is reserved" off a nil.
+      carved.each { |session, bytes| record_applied(session, bytes, shared_cap, target, now) } unless target && shared_cap.nil?
+      (boosts - grants.keys).each { |session| record_unpayable(session, pool_limit, now) }
       carved.to_h { |session, bytes| [ session.id, bytes ] }
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.warn("[SessionMemoryBoost] Reconcile failed: #{e.message}")
       {}
+    end
+
+    # Whether this process may converge the cgroup tree it can see.
+    #
+    # A dev boot inside a session (bin/agent-dev), and a test run, both happen on the
+    # production worker, where the real tree is writable by the same uid — and their
+    # databases know none of production's boosts. Reconciling from there would hand every
+    # production boost back to the shared tier and lift the cap, once a minute. So only the
+    # deployed environments converge the default tree; anything else must have been pointed
+    # at a tree of its own (ZIMMER_SESSION_CGROUP_ROOT), which is what the tests do.
+    def enforcing?
+      return true if Rails.env.production? || Rails.env.staging?
+
+      root = ENV["ZIMMER_SESSION_CGROUP_ROOT"].presence
+      root.present? && root != SessionMemoryCgroup::DEFAULT_ROOT
+    end
+
+    # The largest boost this deployment's pool can pay for, in MB, read from the same
+    # deploy-time setting bin/docker-entrypoint writes the pool's cap from. nil when that is
+    # not configured here (development, test) or the pool is uncapped, in which case the
+    # worker's live reading decides.
+    def grantable_mb
+      configured = Integer(ENV["ZIMMER_SESSIONS_MEMORY_MAX_MB"].presence || "", exception: false)
+      return nil if configured.nil? || configured <= 0
+
+      configured - (SHARED_FLOOR_BYTES / MIB)
     end
 
     # What one boost is actually worth on a pool of `pool_limit` bytes: what it asked for,
@@ -160,6 +187,12 @@ class SessionMemoryBoost
       until_clause = "until #{session.memory_boost_expires_at.utc.iso8601} or until the session is archived"
       applied = session.metadata&.dig(APPLIED_BYTES_KEY)
       return "#{requested} requested, #{until_clause}. Not applied yet — the worker applies it within a minute." if applied.blank?
+      if applied.to_i.zero?
+        return "#{requested} requested, #{until_clause}. Not applied: this worker's shared pool " \
+          "(#{human_bytes(session.metadata[SHARED_TARGET_BYTES_KEY])}) cannot pay for any boost above the ordinary " \
+          "#{human_bytes(SessionMemoryCgroup.limit_bytes)} and still leave the other sessions " \
+          "#{human_bytes(SHARED_FLOOR_BYTES)}."
+      end
 
       cap = session.metadata[SHARED_CAP_BYTES_KEY]
       target = session.metadata[SHARED_TARGET_BYTES_KEY]
@@ -200,8 +233,16 @@ class SessionMemoryBoost
       session.merge_metadata!(values.merge(APPLIED_AT_KEY => now.iso8601))
     end
 
-    def clear_applied(session_id)
-      session = Session.find_by(id: session_id)
+    # A boost the pool cannot pay for at all, recorded so the page says so instead of
+    # "not applied yet" until it expires. The pool's size rides in the target key.
+    def record_unpayable(session, pool_limit, now)
+      record_applied(session, 0, nil, pool_limit, now)
+    end
+
+    # What the session was told about a boost it no longer holds. Public for
+    # Sessions::UpdateMemoryBoost and the archive hook, which start or end a boost and must
+    # not leave the previous one's "applied" reading behind for the page to show.
+    public def clear_applied(session)
       return if session.nil? || APPLIED_KEYS.none? { |key| session.metadata&.key?(key) }
 
       session.remove_metadata!(*APPLIED_KEYS)

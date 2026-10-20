@@ -14,7 +14,9 @@ module Sessions
   #   SessionMemoryBoost::MAX_MB, as an Integer or a string of digits.
   # - `hours` is an integer in 1..SessionMemoryBoost::MAX_HOURS; omitted means
   #   SessionMemoryBoost::DEFAULT_HOURS. The boost expires that long from now.
-  # - An archived session cannot be boosted.
+  # - An archived session cannot be boosted, and neither can any session on a deployment
+  #   whose pool (ZIMMER_SESSIONS_MEMORY_MAX_MB) leaves no room for one — staging's 1 GiB
+  #   pool, today.
   # - One boost at a time: a second session is refused while another holds one, and the
   #   refusal names it. Re-granting the session that already holds it replaces its size
   #   and expiry.
@@ -59,8 +61,17 @@ module Sessions
           "clear that one first."
       end
 
+      grantable = SessionMemoryBoost.grantable_mb
+      if grantable && grantable < SessionMemoryBoost.min_mb
+        raise Refused, "This deployment's shared session pool (#{grantable + (SessionMemoryBoost::SHARED_FLOOR_BYTES / SessionMemoryBoost::MIB)} MB) " \
+          "cannot pay for a boost above the ordinary #{SessionMemoryBoost.min_mb - 1} MB and still leave the other sessions " \
+          "#{SessionMemoryBoost::SHARED_FLOOR_BYTES / SessionMemoryBoost::MIB} MB. A bigger boost needs a bigger pool " \
+          "(ZIMMER_SESSIONS_MEMORY_MAX_MB), which is a deploy."
+      end
+
       expires_at = now + duration.hours
       session.transaction do
+        SessionMemoryBoost.clear_applied(session)
         session.update!(memory_boost_mb: mb, memory_boost_expires_at: expires_at)
         session.logs.create!(
           content: "Memory boost granted#{ACTOR_LABELS.fetch(actor, '')}: #{mb} MB per-session limit until " \
@@ -78,6 +89,7 @@ module Sessions
       return session if session.memory_boost_mb.nil? && session.memory_boost_expires_at.nil?
 
       session.transaction do
+        SessionMemoryBoost.clear_applied(session)
         session.update!(memory_boost_mb: nil, memory_boost_expires_at: nil)
         session.logs.create!(
           content: "Memory boost cleared#{ACTOR_LABELS.fetch(actor, '')}; the session returns to the ordinary limit within a minute",

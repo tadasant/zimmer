@@ -943,20 +943,28 @@ sit inside the pool. The other sessions pay for the boost by sharing less while 
   a boost at 5 GiB. Ask for more and you get 5 GiB, and the page says so. A boost bigger than that
   needs a bigger pool, which is a deploy-config change (`ZIMMER_SESSIONS_MEMORY_MAX_MB`, sized
   against the container cap), not a toggle.
-- **It ends on its own.** Six hours by default, 24 at most, and immediately when the session is
-  archived. Clearing it ends it sooner.
+- **It ends on its own.** Six hours by default, 24 at most, and when the session is archived. Clearing
+  it ends it sooner. The database changes at once; the worker follows within a minute.
+- **A deployment whose pool cannot pay for one refuses it.** Staging's 1 GiB pool leaves nothing
+  after the 1 GiB floor, so every grant is refused there with the reason.
 - **It kills nobody when it starts.** The cap on `shared` is never written below what those
   sessions already hold, because lowering a `memory.max` under the current charge makes the
   kernel OOM-kill on the spot. It ratchets down towards its target as they free memory, and the
-  session page says how much of the boost is reserved so far.
+  session page says how much of the boost is reserved so far. The same ratchet never *loosens* a
+  bound that is already at or above its target, so a session sitting just under its boost does
+  not see the boost creep upward.
 
 Grant one from the session page (**Memory boost**: MB and hours, then **Boost**) or with
 `action_session`'s `set_memory_boost` (`memory_mb`, optional `hours`). End it early with
 **End boost** or `clear_memory_boost`. The web container has no cgroups, so the request is two
 columns on the session and the worker applies it: `SessionMemoryBoostJob` runs every minute, and
-a boosted session's own spawn reconciles first. A boost granted in the middle of a turn reaches
+a boosted (or just-unboosted) session's own spawn reconciles first. Only the deployed
+environments converge the real tree: a `bin/agent-dev` boot or a test run on the worker can see it
+too, but its database knows none of production's boosts, so `reconcile!` refuses unless pointed at
+a tree of its own. A boost granted in the middle of a turn reaches
 the running processes within a minute, because they are moved into the new cgroup. Their
-existing memory stays charged to `shared` until it is freed, which is in the boost's favour.
+existing memory stays charged to `shared` until it is freed: the new cgroup starts empty, but
+those pages hold up the ratchet on `shared`'s cap until they go.
 Both the session page and `get_session` print the same sentence about what was granted and how
 much of it is reserved.
 

@@ -6844,6 +6844,32 @@ time a production session hits its bound.
 
 ---
 
+## A memory boost is bounded by the pool, and staging's pool pays for none
+
+A [one-off memory boost](/sessions/spawning/#a-one-off-memory-boost) is carved out of the sessions
+pool, so the largest one a deployment can grant is its pool minus the 1 GiB every other session
+keeps. Production's 6 GiB pool allows 5 GiB. **Staging's 1 GiB pool allows nothing**, and the grant
+is refused at the door on staging, so the feature cannot be exercised there end to end; its
+runtime proof was a scaled-down replica of the production layout on a real cgroup v2 filesystem.
+A boost bigger than pool minus 1 GiB needs a bigger pool, which is `ZIMMER_SESSIONS_MEMORY_MAX_MB`
+in the deploy config.
+
+Three smaller edges:
+
+- **The worker applies it within a minute.** A grant, a clear, an expiry and an archive change the
+  database at once and the cgroups on the next `SessionMemoryBoostJob` tick (or at the boosted
+  session's next spawn), so for up to a minute the page and the kernel disagree. The page says
+  "Not applied yet" for that minute rather than claiming a reservation it does not have.
+- **Memory the boosted session held before the boost stays charged to `shared`** until it is freed,
+  and holds up the ratchet on `shared`'s cap while it does. A boost granted mid-build reserves its
+  full size once the build's earlier processes have exited.
+- **Moving a cgroup is not atomic with a spawn.** A spawn that resolves its cgroup path while the
+  minute's reconcile is moving that same session between tiers can find the directory gone, and
+  then runs outside any session cgroup — the `sh` wrapper warns on stderr and `SessionMemoryWatch`
+  reports the session as unbounded. A boosted or recently boosted session reconciles in its own
+  spawn first, which settles the path before entering it and leaves only a concurrent reconcile on
+  another thread as the window.
+
 ## `kamal app exec --reuse` runs as root on a nested-Docker worker
 
 `--reuse` is a bare `docker exec` into the running container, so it does not run the image

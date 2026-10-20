@@ -517,6 +517,21 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
       File.read(File.join(cgroup.path, "memory.max")).to_i
   end
 
+  # The bound has to stay a bound. A build sitting just under its boost is the normal case,
+  # and a ratchet that re-applied the slack every minute would push the limit past the boost
+  # a step at a time — until the POOL fired instead, and picked a victim anywhere in it.
+  test "carve_out! does not creep past the boost while the session sits just under it" do
+    gib = 1024 * 1024 * 1024
+    cgroup = SessionMemoryCgroup.for(15)
+    cgroup.carve_out!(5 * gib)
+
+    3.times do |i|
+      File.write(File.join(cgroup.path, "memory.current"), (5 * gib - 100 + i).to_s)
+      cgroup.carve_out!(5 * gib)
+      assert_equal (5 * gib).to_s, File.read(File.join(cgroup.path, "memory.max")), "tick #{i}"
+    end
+  end
+
   test "return_to_shared! puts the session back under the ordinary bound in the shared tier" do
     ENV["ZIMMER_SESSION_MEMORY_MAX_MB"] = "4096"
     cgroup = SessionMemoryCgroup.for(10)
