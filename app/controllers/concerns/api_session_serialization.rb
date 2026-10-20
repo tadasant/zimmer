@@ -93,6 +93,8 @@ module ApiSessionSerialization
       heartbeat_enabled: session.heartbeat_enabled,
       heartbeat_interval_seconds: session.heartbeat_interval_seconds,
       auto_compact_window: session.auto_compact_window,
+      memory_boost_mb: session.memory_boost_mb,
+      memory_boost_expires_at: session.memory_boost_expires_at&.iso8601,
       session_id: session.session_id,
       job_id: session.job_id,
       running_job_id: session.running_job_id,

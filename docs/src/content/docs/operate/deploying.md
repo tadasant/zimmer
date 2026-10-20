@@ -395,7 +395,7 @@ which is the break-glass; changing it is a deploy, never a shell.
 
 **Read "underneath" literally, because the natural misreading of it is that session memory has
 moved out of the container's budget.** It has not. cgroup v2 is hierarchical: the per-session
-cgroups live at `zimmer.sessions/sessions/session-<id>`, *inside* the container's cgroup, so every
+cgroups live at `zimmer.sessions/sessions/shared/session-<id>`, *inside* the container's cgroup, so every
 byte a session charges is charged to the container cap as well. The per-session bound catches
 **one runaway** session; it creates no headroom and cannot stop N in-budget sessions from summing
 over the cap — six sessions at 4 GiB is 24 GiB against 10g, which is why it is a runaway bound and
@@ -417,6 +417,13 @@ GoodJob worker that runs all of them. The width of the `agents` lane
 (`GOOD_JOB_AGENTS_THREADS`, 8) remains what limits how often that happens, and
 `config/connection_budget.rb` carries the measurements behind that number — the CPU ones that
 size it, and the memory ones it still has to fit.
+
+**A one-off boost does not move any of these numbers.** One session can be given a larger
+per-session limit for a few hours, but the extra memory comes out of the pool: everyone else is
+capped together at what is left, and the pool, the container cap and the worker's margin stay
+where they are. A boost bigger than the pool minus 1 GiB is a bigger pool, which means changing
+`ZIMMER_SESSIONS_MEMORY_MAX_MB` here. See
+[A one-off memory boost](/sessions/spawning/#a-one-off-memory-boost).
 
 The mechanism, the sizing arguments, and what a session sees when either fires are in
 [Each session gets its own memory bound](/sessions/spawning/#each-session-gets-its-own-memory-bound);

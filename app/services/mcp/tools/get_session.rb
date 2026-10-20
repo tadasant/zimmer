@@ -618,6 +618,10 @@ module Mcp
         end
         lines << "- **Scheduling class:** #{session.priority_class} (#{session.scheduling_class_source})"
         lines << "- **Precedence:** #{session.precedence}#{' — spot sessions start highest first' if session.spot?}"
+        # The same sentence the session page renders (SessionMemoryBoost.describe).
+        if (boost = SessionMemoryBoost.describe(session))
+          lines << "- **Memory boost:** #{boost}"
+        end
         lines.concat(waiting_reason_lines(session))
         # A turn the starvation lane admitted past the gate, while the session
         # still carries the record of it. Said here rather than only in the

@@ -6833,7 +6833,7 @@ Measured on staging: two contained kills left the worker container's `memory.cur
 *hierarchical* `memory.events` counted both and the kernel emitted a line for each.
 
 The distinction is in the line itself, which is why the cgroups are named after the session:
-`oom_memcg=/zimmer.sessions/sessions/session-12398` is contained,
+`oom_memcg=/zimmer.sessions/sessions/shared/session-12398` is contained,
 `oom_memcg=/system.slice/docker-….scope` is not. `oom_memcg=/zimmer.sessions/sessions` — the
 shared pool — is a third case: contained in the sense that the Rails worker survives it, and
 worth a human's attention in the sense that the box is over-subscribed.

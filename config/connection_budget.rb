@@ -194,7 +194,7 @@ module ConnectionBudget
       # The 10 GiB `memory.max` on the worker role (config/deploy.production.yml)
       # is the ceiling, and the sessions run UNDERNEATH it: cgroup v2 is
       # hierarchical, so the per-session cgroups SessionMemoryCgroup creates at
-      # /sys/fs/cgroup/zimmer.sessions/sessions/session-<id> are DESCENDANTS of
+      # /sys/fs/cgroup/zimmer.sessions/sessions/shared/session-<id> are DESCENDANTS of
       # the container's cgroup and every byte they charge is charged to the
       # 10 GiB too. ZIMMER_SESSION_MEMORY_MAX_MB bounds ONE runaway session, and
       # ZIMMER_SESSIONS_MEMORY_MAX_MB bounds the pool they all sit in -- but

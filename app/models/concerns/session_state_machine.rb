@@ -500,6 +500,7 @@ module SessionStateMachine
           self.archive_forced = nil
           cleanup_running_job
           dismiss_notifications
+          end_memory_boost
           fire_ao_event_triggers("session_archived")
           cleanup_watched_session_ao_event_triggers
           # The other side of the same bookkeeping: the wakes this session was
@@ -2654,6 +2655,20 @@ module SessionStateMachine
     # Log-only, for the same reason as mark_notifications_stale: the rows are
     # cascade-destroyed with the session and the badge count is recomputed on
     # every load, so an undismissed notification self-corrects.
+    report_swallowed_side_effect(__method__, e, alert: false)
+  end
+
+  # A memory boost ends with the session (SessionMemoryBoost). `memory_boost_active?`
+  # already reads false for an archived session; clearing the columns is what keeps an
+  # unarchive from bringing back a boost nobody asked for again. The cgroup side follows
+  # on the worker's next reconcile.
+  def end_memory_boost
+    return if memory_boost_mb.nil? && memory_boost_expires_at.nil?
+
+    update_columns(memory_boost_mb: nil, memory_boost_expires_at: nil)
+  rescue => e
+    # Log-only: the boost already reads as inactive on an archived session, and it
+    # expires on its own.
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 

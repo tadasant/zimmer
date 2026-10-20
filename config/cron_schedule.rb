@@ -476,6 +476,12 @@ module CronSchedule
       description: "Destroy dead one-time wake-up triggers (archived target session, consumed-without-firing wake, or lapsed schedule)",
       environments: %i[production staging development]
     },
+    session_memory_boost: {
+      cron: "* * * * *", # Every minute
+      class: "SessionMemoryBoostJob",
+      description: "Apply, ratchet and undo one-off session memory boosts in the worker's cgroups (SessionMemoryBoost)",
+      environments: %i[production staging]
+    },
     zombie_reaper: {
       cron: "*/5 * * * *", # Every 5 minutes
       class: "ZombieReaperJob",
