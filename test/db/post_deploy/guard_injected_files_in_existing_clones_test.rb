@@ -68,14 +68,19 @@ class GuardInjectedFilesInExistingClonesTest < ActiveSupport::TestCase
     assert_equal first, File.read(exclude)
   end
 
-  test "counts a recorded clone that is gone and carries on" do
+  test "counts a recorded clone that is gone, or is not a repository, and carries on" do
+    # Fixture sessions can record a clone_path that is not on disk; they are
+    # counted the same way, so measure against them rather than from zero.
+    already = Session.where("metadata ->> 'clone_path' IS NOT NULL").count
     gone = clone_session(git: false)
     FileUtils.rm_rf(gone.working_directory)
+    clone_session(git: false)
     kept = clone_session
 
     run = run_task
 
-    assert_operator run.stats["not_a_clone"], :>=, 1
+    assert_equal already + 2, run.stats["not_a_clone"]
+    assert_equal 1, run.stats["guarded"]
     assert_equal "", run_git(kept.working_directory, "status", "--porcelain")
   end
 

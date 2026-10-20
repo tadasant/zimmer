@@ -54,7 +54,10 @@ class GuardInjectedFilesInExistingClones < PostDeployTask
       return
     end
 
-    if InjectedFilesGitGuard.apply!(session: session, working_directory: directory).any?
+    added = InjectedFilesGitGuard.apply!(session: session, working_directory: directory)
+    if added.nil?
+      @not_a_clone += 1
+    elsif added.any?
       @guarded += 1
     else
       @unchanged += 1

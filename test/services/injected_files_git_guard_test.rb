@@ -100,15 +100,75 @@ class InjectedFilesGitGuardTest < ActiveSupport::TestCase
   test "excludes AGENTS.md only for a runtime that delivers its prompt through it" do
     assert_includes InjectedFilesGitGuard.injected_paths("codex"), "AGENTS.md"
     assert_not_includes InjectedFilesGitGuard.injected_paths("claude_code"), "AGENTS.md"
-    assert_includes InjectedFilesGitGuard.injected_paths("claude_code"), "codex_stderr.log"
+  end
+
+  test "excludes what every runtime's process writes into the working directory, whatever this session runs" do
+    paths = InjectedFilesGitGuard.injected_paths("claude_code")
+
+    %w[claude_stderr.log codex_stderr.log pi_stderr.log codex_events.jsonl codex_last_message.txt].each do |name|
+      assert_includes paths, name
+    end
+  end
+
+  test "a Codex clone commits none of its run's files" do
+    codex = Session.new(agent_runtime: "codex")
+    %w[codex_events.jsonl codex_last_message.txt codex_stderr.log AGENTS.md .codex/config.toml .agents/skills/x/SKILL.md].each do |relative|
+      path = File.join(@repo, relative)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "x")
+    end
+
+    InjectedFilesGitGuard.apply!(session: codex, working_directory: @repo)
+
+    assert_equal "", git(@repo, "status", "--porcelain", "--untracked-files=all")
+  end
+
+  test "hides a tracked secret-bearing file under an agent-root subdirectory" do
+    subdir = File.join(@repo, "agents", "foo")
+    FileUtils.mkdir_p(subdir)
+    File.write(File.join(subdir, ".mcp.json"), "{}\n")
+    git(@repo, "add", "agents/foo/.mcp.json")
+    git(@repo, "commit", "-q", "-m", "ship an mcp config in a subdirectory")
+    File.write(File.join(subdir, ".mcp.json"), %({"headers":{"X-API-Key":"redacted"}}\n))
+
+    InjectedFilesGitGuard.apply!(session: @session, working_directory: subdir)
+
+    assert_equal "", git(@repo, "status", "--porcelain")
+  end
+
+  test "an exclude holding bytes that are not UTF-8 is appended to, not choked on" do
+    File.binwrite(exclude_path(@repo), "/caf\xE9.txt\n".b)
+
+    added = InjectedFilesGitGuard.apply!(session: @session, working_directory: @repo)
+
+    assert_includes added, "/.mcp.json"
+    assert File.binread(exclude_path(@repo)).start_with?("/caf\xE9.txt\n".b)
+  end
+
+  test "raises rather than standing down when git cannot read the repository" do
+    File.write(File.join(@repo, ".git", "config"), "[core\n\tbroken = \"")
+
+    assert_raises(InjectedFilesGitGuard::Error) do
+      InjectedFilesGitGuard.apply!(session: @session, working_directory: @repo)
+    end
+  end
+
+  test "does not run a fsmonitor the clone's config names" do
+    marker = File.join(@root, "fsmonitor-ran")
+    git(@repo, "config", "core.fsmonitor", "touch #{marker}; false")
+    write_injected_files!(@repo)
+
+    InjectedFilesGitGuard.apply!(session: @session, working_directory: @repo)
+
+    assert_not File.exist?(marker), "the guard ran the clone's configured fsmonitor"
   end
 
   test "steps aside for a directory that is not a git repository" do
     plain = File.join(@root, "plain")
     FileUtils.mkdir_p(plain)
 
-    assert_empty InjectedFilesGitGuard.apply!(session: @session, working_directory: plain)
-    assert_empty InjectedFilesGitGuard.apply!(session: @session, working_directory: File.join(@root, "missing"))
+    assert_nil InjectedFilesGitGuard.apply!(session: @session, working_directory: plain)
+    assert_nil InjectedFilesGitGuard.apply!(session: @session, working_directory: File.join(@root, "missing"))
   end
 
   test "raises when the exclude cannot be written" do

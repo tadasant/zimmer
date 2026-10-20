@@ -374,9 +374,16 @@ What it does not do:
 - **A tracked `AGENTS.md` still takes Zimmer's section.** On Codex, Zimmer appends the orchestrator
   prompt to a repository's own `AGENTS.md`, and `git commit -a` commits that. The prompt is not a
   credential, but it is not the repository's either.
+- **A whole injected directory is excluded, including what the agent adds to it.** `.claude/`,
+  `.codex/`, `.pi/` and `.agents/skills/` are excluded entire rather than file by file, since Claude
+  Code and the adapters write more there than Zimmer can list. A session asked to add a
+  `.claude/commands/` file or a skill to a repository that ships them has to `git add -f` it. On
+  Codex the same goes for a new `AGENTS.md`.
 - **A skip-worktree file holds still.** A tracked `.mcp.json` the guard marked keeps Zimmer's
   version through a `git pull` that changes it upstream, and git refuses a checkout that would
-  overwrite it. `git update-index --no-skip-worktree <path>` releases it.
+  overwrite it. `git update-index --no-skip-worktree <path>` releases it. That includes a tracked
+  `.claude/settings.json`. AIR writes its hook entries into that file, so a session's own edits to
+  it stop showing in `git status` too.
 
 ### A clone's `.env` is scoped to its artifacts, which is not the same as scoped to what it can reach
 

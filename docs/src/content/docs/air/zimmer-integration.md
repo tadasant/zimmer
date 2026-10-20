@@ -339,18 +339,21 @@ never committed:
 - It appends every injected path to the repository's `info/exclude`, anchored at the working
   directory. That covers an agent-root subdirectory, and a worktree shares its main repository's
   file. The paths are `.mcp.json`, `.env`, `.claude/`, `.codex/`, `.agents/skills/`, `.pi/`,
-  `.npm-cache/`, `.bundle/`, each runtime's stderr log, `pi_system_prompt.md`, and `AGENTS.md` for a
-  runtime that reads its prompt from it. git honours `info/exclude` exactly like `.gitignore`, so
+  `.npm-cache/`, `.bundle/`, `vendor/bundle/`, every file a runtime's process writes there (each
+  stderr log, Codex's `codex_events.jsonl` and `codex_last_message.txt`), `pi_system_prompt.md`, and
+  `AGENTS.md` for a runtime that reads its prompt from it. git honours `info/exclude` exactly like `.gitignore`, so
   none of them reach `git add -A`, `git add .` or `git commit -a`.
 - It marks a secret-bearing injected file the repository already **tracks** (`.mcp.json`, `.env`,
   `.codex/config.toml`, `.claude/settings.json`) `--skip-worktree`. An exclude does nothing for a
   tracked file, so without this Zimmer's rewrite would ride along with `git commit -a`.
 
 It only adds lines that are missing, so a re-prepare changes nothing. A directory outside any git
-repository is left alone. A guard that cannot be written fails the prepare, because running an
-agent in a clone where `git commit -a` would publish credentials is exactly what the guard is
-there to stop. The one-time post-deploy task `GuardInjectedFilesInExistingClones` applied it to
-every clone already on disk when it shipped.
+repository is left alone. Any other git failure, or an exclude that cannot be written, fails the
+prepare. Running an agent in a clone where `git commit -a` would publish credentials is exactly what
+the guard is there to stop. Its git calls turn off `core.fsmonitor` and hooks, because the clone's
+`.git/config` belongs to the agent. The one-time post-deploy task
+`GuardInjectedFilesInExistingClones` guards the clones that were prepared before the guard
+existed.
 
 The guard does not stop an explicit `git add -f`, and the secrets are still written into these files
 as literal text. See [Limitations](/limitations/#injected-files-are-excluded-from-commits-not-free-of-secrets).
