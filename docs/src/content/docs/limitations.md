@@ -358,6 +358,26 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
+### Injected files are excluded from commits, not free of secrets
+
+`InjectedFilesGitGuard` keeps the files a prepare writes (`.mcp.json`, `.env`, `.claude/`,
+`.codex/` and the rest) out of `git add -A` and `git commit -a` in every clone. See
+[Injected files stay out of the clone's commits](/air/zimmer-integration/#injected-files-stay-out-of-the-clones-commits).
+What it does not do:
+
+- **`git add -f` still stages them.** The guard is an exclude, not a lock. An agent that forces a
+  file in publishes what is in it.
+- **The credentials are still in the files as literal text.** The post-processors resolve every
+  `${VAR}` into the value it names, and the strad bearer token and the session's `X-API-Key` among
+  them. Having the runtime resolve headers from its environment at launch would leave nothing
+  worth leaking. That change touches all three runtimes' config formats and has not been made.
+- **A tracked `AGENTS.md` still takes Zimmer's section.** On Codex, Zimmer appends the orchestrator
+  prompt to a repository's own `AGENTS.md`, and `git commit -a` commits that. The prompt is not a
+  credential, but it is not the repository's either.
+- **A skip-worktree file holds still.** A tracked `.mcp.json` the guard marked keeps Zimmer's
+  version through a `git pull` that changes it upstream, and git refuses a checkout that would
+  overwrite it. `git update-index --no-skip-worktree <path>` releases it.
+
 ### A clone's `.env` is scoped to its artifacts, which is not the same as scoped to what it can reach
 
 A session clone's `.env` no longer carries the deployment's whole credential bundle. It carries the
