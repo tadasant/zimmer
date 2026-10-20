@@ -69,7 +69,7 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
     cgroup = SessionMemoryCgroup.for(12_398)
 
     assert cgroup.prepare!
-    assert_equal File.join(@parent, "session-12398"), cgroup.path
+    assert_equal File.join(@parent, "shared", "session-12398"), cgroup.path
     assert_equal (2048 * 1024 * 1024).to_s, File.read(File.join(cgroup.path, "memory.max"))
   end
 
@@ -360,7 +360,7 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
   test "session cgroups live in the pool below the delegated root, not beside the app" do
     assert_equal File.join(@root, "sessions"), SessionMemoryCgroup.parent_path
     assert_equal @root, SessionMemoryCgroup.root_path
-    assert_equal File.join(@root, "sessions", "session-77"), SessionMemoryCgroup.for(77).path
+    assert_equal File.join(@root, "sessions", "shared", "session-77"), SessionMemoryCgroup.for(77).path
   end
 
   test "the aggregate bound is read from the pool the entrypoint wrote it on" do
@@ -464,6 +464,135 @@ class SessionMemoryCgroupTest < ActiveSupport::TestCase
     assert_equal 7_516_192_768, stats.limit_bytes
     assert_equal 3, stats.oom_kills
     assert_predicate stats, :oom_killed?
+  end
+
+  # --- the two tiers, and a boost's carve-out -----------------------------
+  #
+  # SessionMemoryBoost decides the numbers; these pin what the cgroup layer does with them.
+  # A boost is paid for out of the pool, so the session moves into `boosted` and everyone
+  # else in `shared` is capped together — the pool itself is never written.
+
+  test "prepare! enables the memory controller on the shared tier it creates" do
+    assert SessionMemoryCgroup.for(5).prepare!
+
+    assert_equal "+memory", File.read(File.join(@parent, "shared", "cgroup.subtree_control"))
+  end
+
+  test "prepare! falls back to the pool itself when the shared tier cannot be made" do
+    FileUtils.touch(File.join(@parent, "shared")) # a file where the tier should be
+    cgroup = SessionMemoryCgroup.for(6)
+
+    assert cgroup.prepare!
+    assert_equal File.join(@parent, "session-6"), cgroup.path,
+      "outside every session cgroup the session would run beside the Rails worker under no aggregate cap"
+  end
+
+  test "carve_out! moves the session into the boosted tier with the boost as its limit" do
+    member = SessionMemoryCgroup.for(7)
+    member.prepare!
+    File.write(member.procs_path, "")
+
+    assert member.carve_out!(5 * 1024 * 1024 * 1024)
+    assert_predicate member, :carved_out?
+    assert_equal File.join(@parent, "boosted", "session-7"), member.path
+    assert_equal (5 * 1024 * 1024 * 1024).to_s, File.read(File.join(member.path, "memory.max"))
+  end
+
+  test "prepare! leaves a carved-out cgroup's limit to the boost" do
+    cgroup = SessionMemoryCgroup.for(8)
+    cgroup.carve_out!(5 * 1024 * 1024 * 1024)
+
+    assert cgroup.prepare!
+    assert_equal (5 * 1024 * 1024 * 1024).to_s, File.read(File.join(cgroup.path, "memory.max"))
+  end
+
+  test "carve_out! never writes a limit below what the cgroup already holds" do
+    cgroup = SessionMemoryCgroup.for(9)
+    cgroup.carve_out!(6 * 1024 * 1024 * 1024)
+    File.write(File.join(cgroup.path, "memory.current"), (5 * 1024 * 1024 * 1024).to_s)
+
+    cgroup.carve_out!(4 * 1024 * 1024 * 1024 + 1)
+
+    assert_equal 5 * 1024 * 1024 * 1024 + SessionMemoryCgroup::SHARED_CAP_SLACK_BYTES,
+      File.read(File.join(cgroup.path, "memory.max")).to_i
+  end
+
+  test "return_to_shared! puts the session back under the ordinary bound in the shared tier" do
+    ENV["ZIMMER_SESSION_MEMORY_MAX_MB"] = "4096"
+    cgroup = SessionMemoryCgroup.for(10)
+    cgroup.carve_out!(5 * 1024 * 1024 * 1024)
+    File.write(cgroup.procs_path, "")
+    FileUtils.rm(Dir.glob(File.join(cgroup.boosted_path, "*")))
+
+    assert cgroup.return_to_shared!
+    refute_predicate cgroup, :carved_out?
+    assert_equal File.join(@parent, "shared", "session-10"), cgroup.path
+    assert_equal (4096 * 1024 * 1024).to_s, File.read(File.join(cgroup.path, "memory.max"))
+  end
+
+  test "boosted_session_ids lists the carved-out sessions" do
+    SessionMemoryCgroup.for(11).carve_out!(5 * 1024 * 1024 * 1024)
+    SessionMemoryCgroup.for(12).prepare!
+
+    assert_equal [ 11 ], SessionMemoryCgroup.boosted_session_ids
+  end
+
+  test "cap_shared! with no target lifts the cap on the shared tier" do
+    SessionMemoryCgroup.ensure_tier!(SessionMemoryCgroup.shared_path)
+
+    assert_nil SessionMemoryCgroup.cap_shared!(nil)
+    assert_equal "max", File.read(File.join(@parent, "shared", "memory.max"))
+  end
+
+  # Lowering a memory.max under the current charge makes the kernel OOM-kill on the spot,
+  # so a boost granted on a busy box must approach its target, not impose it.
+  test "cap_shared! ratchets towards its target and never below what the tier holds" do
+    gib = 1024 * 1024 * 1024
+    slack = SessionMemoryCgroup::SHARED_CAP_SLACK_BYTES
+    shared = SessionMemoryCgroup.shared_path
+    SessionMemoryCgroup.ensure_tier!(shared)
+    File.write(File.join(shared, "memory.max"), "max")
+    current = File.join(shared, "memory.current")
+
+    File.write(current, (2 * gib).to_s)
+    assert_equal 2 * gib + slack, SessionMemoryCgroup.cap_shared!(1 * gib), "held above what the others hold"
+
+    File.write(current, (2 * gib + 100).to_s)
+    assert_equal 2 * gib + slack, SessionMemoryCgroup.cap_shared!(1 * gib), "growing never loosens it"
+
+    File.write(current, (gib / 2).to_s)
+    assert_equal 1 * gib, SessionMemoryCgroup.cap_shared!(1 * gib), "reaches the target once they have freed memory"
+    assert_equal (1 * gib).to_s, File.read(File.join(shared, "memory.max"))
+
+    assert_equal 2 * gib, SessionMemoryCgroup.cap_shared!(2 * gib), "a smaller boost gives the room back at once"
+  end
+
+  test "enclosing_stats is the shared tier's while its cap is the tighter one, the pool's otherwise" do
+    gib = 1024 * 1024 * 1024
+    File.write(File.join(@parent, "memory.max"), (6 * gib).to_s)
+    cgroup = SessionMemoryCgroup.for(13)
+    cgroup.prepare!
+
+    File.write(File.join(@parent, "shared", "memory.max"), "max")
+    assert_equal 6 * gib, cgroup.enclosing_stats.limit_bytes
+
+    File.write(File.join(@parent, "shared", "memory.max"), (1 * gib).to_s)
+    assert_equal 1 * gib, cgroup.enclosing_stats.limit_bytes
+
+    boosted = SessionMemoryCgroup.for(14)
+    boosted.carve_out!(5 * gib)
+    assert_equal 6 * gib, boosted.enclosing_stats.limit_bytes, "a boosted session shares only the pool"
+  end
+
+  test "the sweep looks in both tiers and in the pool" do
+    shared_one = File.join(@parent, "shared", "session-30")
+    boosted_one = File.join(@parent, "boosted", "session-31")
+    legacy_one = File.join(@parent, "session-32")
+    [ shared_one, boosted_one, legacy_one ].each { |dir| FileUtils.mkdir_p(dir) }
+
+    assert_equal 3, SessionMemoryCgroup.sweep!
+    [ shared_one, boosted_one, legacy_one ].each { |dir| refute File.directory?(dir), "#{dir} should be swept" }
+    assert File.directory?(File.join(@parent, "shared")), "the tiers themselves are never swept"
   end
 
   private

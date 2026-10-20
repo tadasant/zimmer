@@ -879,7 +879,7 @@ deploy time, never on the box.
 | --- | --- |
 | A **tool subprocess** — the agent survives | `SessionMemoryWatch` (driven from the monitor loop, every 10s) notices `memory.events`' `oom_kill` counter move and writes a session log saying the limit was reached and that the agent's bare `Killed` / exit 137 is this, not a bug in its command. |
 | The **agent process** itself | `ProcessLifecycleManager#handle_signal_death` reads the same counter. A count that moved *since the last observation* is this death, so the session log names the bound instead of hedging "likely OOM", and the resume carries `AutomatedPrompts.memory_limit_recovery` — which tells the agent what the limit was and to stream large output rather than hold it, instead of nudging it to re-run the command that just died. |
-| Anything, seen from outside | The cgroup is named `session-<id>`, so the kernel's own `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/session-12398`. That is the attribution #815 could not establish: on a shared-cgroup worker there was no path from "a process was OOM-killed" to "this session did it". |
+| Anything, seen from outside | The cgroup is named `session-<id>`, so the kernel's own `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/shared/session-12398`. That is the attribution #815 could not establish: on a shared-cgroup worker there was no path from "a process was OOM-killed" to "this session did it". |
 | The **shared pool** ran out, not this session | `memory.events`' `oom` counter moves on the cgroup whose *own* limit was exceeded, and cgroup v2 propagates events upward only — so a session whose `oom_kill` moved while its `oom` did not was killed by an ancestor's limit, which here is the pool. Both readers use that rather than comparing usage fractions (`memory.peak` is a lifetime mark on a cgroup reused across every turn; `memory.current` is read after the victim's memory was freed). A session killed at 300 MB of its 4 GB is not told to allocate less, and its resume prompt says to re-run rather than not to. `SessionMemoryWatch` also warns once, before any kill, when the pool passes 90%. |
 
 There is deliberately **no `memory.high`** watermark. It would reclaim and throttle before
@@ -899,6 +899,78 @@ back). Without that, a session that OOMs, idles, and OOMs again loses the second
 
 Where this is **not** in force, and what it is not, is in
 [Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).
+
+### A one-off memory boost
+
+The defaults stay conservative, and some work does not fit them. Session 25433 rebuilt a Rust
+desktop app and was OOM-killed twice. The question was whether *one* session could have more,
+once, without changing anything for the rest.
+
+**Raising that session's own limit would not have saved it.** Both kills came from the pool:
+its own `oom` counter stayed at 0 while `oom_kill` reached 2, so it was nowhere near its 4 GiB.
+The other sessions on the box held the rest of the 6 GiB. A larger `memory.max` is only useful
+if the memory behind it exists.
+
+So a boost is **carved out of the pool, not added on top of it.** The pool has two tiers under
+it:
+
+```mermaid
+flowchart TD
+  pool["sessions — memory.max 6g (root-owned, unchanged)"]
+  shared["shared — max; pool − boost while a boost is held"]
+  boosted["boosted"]
+  a["session-12398 — 4g"]
+  b["session-12401 — 4g"]
+  c["session-25433 — the boost"]
+  pool --> shared
+  pool --> boosted
+  shared --> a
+  shared --> b
+  boosted --> c
+```
+
+With no boost, `shared` has no cap of its own and the pool is the bound, exactly as before.
+With one, the boosted session's cgroup moves into `boosted` with the boost as its `memory.max`,
+and everyone in `shared` is capped together at what is left. The kernel enforces that, so the
+reservation holds against sessions that were already running as well as ones that start
+later. The pool, the container cap and the worker's 4 GiB margin do not move, because both tiers
+sit inside the pool. The other sessions pay for the boost by sharing less while it lasts.
+
+- **One at a time.** A second boost is refused, and the refusal names the session that holds the
+  current one.
+- **At most the pool minus 1 GiB.** The other sessions always keep 1 GiB between them, which is
+  enough for idle orchestrators and sessions waiting on CI. On production's 6 GiB pool that caps
+  a boost at 5 GiB. Ask for more and you get 5 GiB, and the page says so. A boost bigger than that
+  needs a bigger pool, which is a deploy-config change (`ZIMMER_SESSIONS_MEMORY_MAX_MB`, sized
+  against the container cap), not a toggle.
+- **It ends on its own.** Six hours by default, 24 at most, and immediately when the session is
+  archived. Clearing it ends it sooner.
+- **It kills nobody when it starts.** The cap on `shared` is never written below what those
+  sessions already hold, because lowering a `memory.max` under the current charge makes the
+  kernel OOM-kill on the spot. It ratchets down towards its target as they free memory, and the
+  session page says how much of the boost is reserved so far.
+
+Grant one from the session page (**Memory boost**: MB and hours, then **Boost**) or with
+`action_session`'s `set_memory_boost` (`memory_mb`, optional `hours`). End it early with
+**End boost** or `clear_memory_boost`. The web container has no cgroups, so the request is two
+columns on the session and the worker applies it: `SessionMemoryBoostJob` runs every minute, and
+a boosted session's own spawn reconciles first. A boost granted in the middle of a turn reaches
+the running processes within a minute, because they are moved into the new cgroup. Their
+existing memory stays charged to `shared` until it is freed, which is in the boost's favour.
+Both the session page and `get_session` print the same sentence about what was granted and how
+much of it is reserved.
+
+Kill attribution is unchanged: `oom` against `oom_kill` still separates the session's own bound
+from a shared one. While a boost is held, the "shared" bound for every other session is the
+`shared` tier's cap rather than the whole pool, and the messages quote that figure.
+
+Three alternatives were weighed and rejected. **Holding other sessions' turns** while a boost
+runs only holds sessions that have not started yet, so it cannot stop the running ones from
+growing into the boost, which is what killed 25433. **Making the boosted session the last OOM
+victim** (`oom_score_adj` on everyone else) keeps the boost by killing other sessions' work,
+with nothing on their pages to say why. **`memory.min`** protects memory from reclaim, and
+anonymous memory on a swapless worker is not reclaimable anyway, so it has no say in which
+process the OOM killer picks.
 
 ## The spawn environment
 

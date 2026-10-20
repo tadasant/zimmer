@@ -67,6 +67,8 @@ class SessionDashboard < Administrate::BaseDashboard
     push_notifications_enabled: Field::Boolean,
     favorited: Field::Boolean,
     auto_compact_window: Field::Number,
+    memory_boost_mb: Field::Number,
+    memory_boost_expires_at: Field::DateTime,
     last_broadcast_to_index_at: Field::DateTime,
     last_timeline_entry_at: Field::DateTime,
     # Summaries of the chunk set in `session_transcript_chunks`, which is where the

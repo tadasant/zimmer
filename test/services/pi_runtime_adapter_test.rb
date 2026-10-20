@@ -26,7 +26,7 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
       spawned = @process_manager.spawned_processes.first
 
       assert_equal "/bin/sh", spawned[:command].first
-      assert_includes spawned[:command], File.join(parent, "session-5250", "cgroup.procs")
+      assert_includes spawned[:command], File.join(parent, "shared", "session-5250", "cgroup.procs")
       assert_equal [ "pi", "--session-dir", WORKING_DIR ], spawned[:command].last(3)
     end
   end

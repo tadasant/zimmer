@@ -55,7 +55,7 @@
 # #815 could not establish which session issued the offending command: "on a
 # shared-cgroup worker there is no path from 'a process was OOM-killed' to 'this
 # session did it'". The cgroup is named `session-<id>`, so the kernel's own
-# `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/session-12398` and names it
+# `oom-kill:` line carries `oom_memcg=/zimmer.sessions/sessions/shared/session-12398` and names it
 # for us — no extra plumbing, and it works for the kill nobody anticipated.
 # `memory.peak` and `memory.events` give the same attribution while the session is
 # still alive.
@@ -88,6 +88,38 @@
 # widened from inside the app. Everything else about the pool is delegated, because the
 # app has to create and remove session cgroups inside it.
 #
+# A ONE-OFF BOOST, AND WHY IT IS A CARVE-OUT
+# -------------------------------------------
+# Some sessions genuinely need more than 4 GiB — a Rust build linking a desktop app is the
+# case that prompted it — and SessionMemoryBoost lets ONE session have more, for a while,
+# without moving any default. Raising that session's own `memory.max` is the easy half and
+# on its own buys nothing: session 25433 was killed twice by the POOL (`oom` 0, `oom_kill`
+# 2), well inside its own 4 GiB, because the other sessions on the box were holding the rest
+# of the pool. Headroom a session cannot actually allocate is not headroom.
+#
+# The pool's cap is root-owned so that the app cannot widen it, and that stays true: a boost
+# is paid for out of the pool, never added on top of it. So the pool has two tiers under it:
+#
+#   sessions                memory.max 6g (root-owned, unchanged)
+#   |-- shared              memory.max max, or pool - boost while a boost is held
+#   |   |-- session-12398   memory.max 4g
+#   |   `-- session-12401   memory.max 4g
+#   `-- boosted
+#       `-- session-25433   memory.max = the boost
+#
+# Without a boost, `shared` carries no cap of its own and the pool is the bound, exactly as
+# before. With one, the kernel itself enforces the reservation: everyone else together can
+# reach only what the boost left them, so the boosted session can always allocate its share.
+# The protection the pool gives the Rails worker is untouched, because both tiers are inside
+# it. What the other sessions give up is the boost's size, which is the trade being made on
+# purpose and the reason a boost is explicit, single and expires.
+#
+# The cap on `shared` is never written below what `shared` already holds — lowering a
+# `memory.max` under the current charge makes the kernel reclaim and then OOM-kill on the
+# spot. It ratchets down towards its target as the other sessions free memory, so a boost
+# granted on a busy box reserves its full size within minutes rather than by killing anyone.
+# See SessionMemoryBoost for who decides the numbers.
+#
 # NOT A SANDBOX. An agent runs as the same uid that owns the delegated subtree, so it
 # could move itself out. This is a guardrail against a runaway command, not a boundary
 # against a hostile one — Zimmer has no such boundary anywhere and this does not
@@ -101,6 +133,16 @@ class SessionMemoryCgroup
   # `memory.max`. Session cgroups live HERE and not in the root, because the root also
   # holds `app` — see the header for why that distinction is the whole of #981.
   POOL_DIRNAME = "sessions"
+
+  # The two tiers inside the pool — see "A one-off boost" in the header. Every session
+  # cgroup lives in `shared` unless SessionMemoryBoost has carved it out into `boosted`.
+  SHARED_DIRNAME = "shared"
+  BOOSTED_DIRNAME = "boosted"
+
+  # How far above what `shared` currently holds its cap may sit while it ratchets down to
+  # the target a boost asks for. Writing the cap AT the current charge would OOM-kill the
+  # next allocation anywhere in it; this leaves the other sessions room to keep working.
+  SHARED_CAP_SLACK_BYTES = 256 * 1024 * 1024
 
   # 4 GiB per session.
   #
@@ -223,6 +265,77 @@ class SessionMemoryCgroup
       File.join(root_path, POOL_DIRNAME)
     end
 
+    # The tier every session cgroup lives in unless it holds a boost.
+    def shared_path
+      File.join(parent_path, SHARED_DIRNAME)
+    end
+
+    # The tier a boosted session's cgroup is carved out into.
+    def boosted_path
+      File.join(parent_path, BOOSTED_DIRNAME)
+    end
+
+    # Create one tier and enable the memory controller for its children, so a session
+    # cgroup inside it can carry a `memory.max`. Idempotent.
+    #
+    # uid 1000 can do this without root: it owns the pool directory (so it may create the
+    # tier) and the tier it creates (so it may write the tier's `cgroup.subtree_control`),
+    # and the pool's own `subtree_control`, which root wrote, already offers `memory`.
+    #
+    # @return [Boolean] false when the tier could not be made usable
+    def ensure_tier!(path)
+      FileUtils.mkdir_p(path)
+      control = File.join(path, "cgroup.subtree_control")
+      enabled = File.exist?(control) && File.read(control).split.include?("memory")
+      File.write(control, "+memory") unless enabled
+      true
+    rescue SystemCallError => e
+      Rails.logger.warn("[SessionMemoryCgroup] Could not prepare the #{File.basename(path)} tier: #{e.message}")
+      false
+    end
+
+    # Bound everything in `shared` together, or lift that bound.
+    #
+    # `nil` writes `max`: no boost is held and the pool alone is the bound. A number is the
+    # target, and is approached rather than imposed — see "A one-off boost" in the header:
+    # the cap is never written below the current charge plus SHARED_CAP_SLACK_BYTES, and
+    # once it is below that it is not loosened again while it still sits above the target,
+    # so it can only ever move towards the target.
+    #
+    # @param target_bytes [Integer, nil]
+    # @return [Integer, nil] the cap now in force on `shared` (nil for none), or nil when
+    #   it could not be written
+    def cap_shared!(target_bytes)
+      path = shared_path
+      if target_bytes.nil?
+        File.write(File.join(path, "memory.max"), "max")
+        return nil
+      end
+
+      existing = read_integer_at(path, "memory.max")
+      current = read_integer_at(path, "memory.current").to_i
+      desired = [ target_bytes, current + SHARED_CAP_SLACK_BYTES ].max
+      desired = existing if existing && desired > existing && existing >= target_bytes
+      File.write(File.join(path, "memory.max"), desired.to_s) unless desired == existing
+      desired
+    rescue SystemCallError => e
+      Rails.logger.warn("[SessionMemoryCgroup] Could not cap the shared tier: #{e.message}")
+      nil
+    end
+
+    # Session ids whose cgroup is carved out into `boosted` right now.
+    #
+    # @return [Array<Integer>]
+    def boosted_session_ids
+      return [] unless File.directory?(boosted_path)
+
+      Dir.children(boosted_path).filter_map do |name|
+        Integer(name.delete_prefix("session-"), exception: false) if name.start_with?("session-")
+      end
+    rescue SystemCallError
+      []
+    end
+
     # Usage, high-water mark and the aggregate bound for the pool as a whole.
     #
     # `limit_bytes` is read from the pool's `memory.max` rather than from an environment
@@ -312,23 +425,29 @@ class SessionMemoryCgroup
 
       # Both halves are the filter: a `session-` prefix and a parseable id keep the sweep
       # off anything this class did not create, which is not this class's to remove. The
-      # pool holds only session cgroups today — `app` is its sibling, not its child — but
-      # the filter is what makes that a fact about the sweep rather than about the
-      # entrypoint's current layout.
-      candidates = Dir.children(parent_path).filter_map do |name|
-        next unless name.start_with?("session-")
+      # pool holds only its two tiers and session cgroups — `app` is its sibling, not its
+      # child — but the filter is what makes that a fact about the sweep rather than about
+      # the current layout.
+      #
+      # Three places to look: the two tiers, and the pool itself, where #prepare! falls back
+      # to when the tiers cannot be made (see there). The tier directories are not
+      # `session-` names, so the filter keeps the sweep off them too.
+      candidates = [ shared_path, boosted_path, parent_path ].select { |dir| File.directory?(dir) }.flat_map do |dir|
+        Dir.children(dir).filter_map do |name|
+          next unless name.start_with?("session-")
 
-        id = Integer(name.delete_prefix("session-"), exception: false)
-        [ name, id ] if id
+          id = Integer(name.delete_prefix("session-"), exception: false)
+          [ File.join(dir, name), id ] if id
+        end
       end
       return 0 if candidates.empty?
 
       live = Session.where(id: candidates.map(&:last)).where.not(status: :archived).pluck(:id).to_set
 
-      candidates.count do |name, id|
+      candidates.count do |path, id|
         next false if live.include?(id)
 
-        remove_if_empty(File.join(parent_path, name))
+        remove_if_empty(path)
       end
     rescue SystemCallError, ActiveRecord::ActiveRecordError => e
       Rails.logger.warn("[SessionMemoryCgroup] Sweep failed: #{e.message}")
@@ -369,12 +488,28 @@ class SessionMemoryCgroup
     "session-#{session_id}"
   end
 
+  # Where this session's cgroup is: carved out into `boosted`, in `shared`, or — only when
+  # the tiers could not be made — directly in the pool. A cgroup that does not exist yet is
+  # reported at the `shared` path, which is where #prepare! will put it.
   def path
-    File.join(self.class.parent_path, name)
+    [ boosted_path, shared_member_path, legacy_path ].find { |candidate| File.directory?(candidate) } ||
+      shared_member_path
+  end
+
+  def boosted_path
+    File.join(self.class.boosted_path, name)
+  end
+
+  def shared_member_path
+    File.join(self.class.shared_path, name)
   end
 
   def procs_path
     File.join(path, "cgroup.procs")
+  end
+
+  def carved_out?
+    File.directory?(boosted_path)
   end
 
   # Create the cgroup and write its limit.
@@ -390,11 +525,27 @@ class SessionMemoryCgroup
   # session that is still going, which is why the readers key their baseline to
   # #incarnation instead of assuming the count only ever grows.
   #
+  # A cgroup carved out into `boosted` is left exactly as it is: its `memory.max` is the
+  # boost, and SessionMemoryBoost is the only thing that writes it.
+  #
+  # The fallback to the pool itself is what keeps a session under the pool's cap when the
+  # `shared` tier cannot be made. Left outside every session cgroup it would run in `app`,
+  # beside the Rails worker and under no aggregate bound at all — the #981 failure — so the
+  # old flat layout is a far better answer than none. A boost needs the tiers, so none is
+  # granted in that state (SessionMemoryBoost.reconcile!).
+  #
   # @return [Boolean] true if the cgroup is ready to be entered
   def prepare!
-    FileUtils.mkdir_p(path)
+    return true if carved_out?
 
-    File.write(File.join(path, "memory.max"), self.class.limit_bytes.to_s)
+    target = if File.directory?(legacy_path) || !self.class.ensure_tier!(self.class.shared_path)
+      legacy_path
+    else
+      shared_member_path
+    end
+    FileUtils.mkdir_p(target)
+
+    File.write(File.join(target, "memory.max"), self.class.limit_bytes.to_s)
 
     # Deliberately no `memory.high`. It throttles the allocator and reclaims before the
     # hard limit, which sounds like a gentler failure — but the memory at issue here is
@@ -407,6 +558,73 @@ class SessionMemoryCgroup
   rescue SystemCallError => e
     Rails.logger.warn("[SessionMemoryCgroup] Could not prepare #{path}: #{e.message}")
     false
+  end
+
+  # Carve this session out into `boosted` with a `memory.max` of `limit_bytes`, moving
+  # every process it already has across. Idempotent; SessionMemoryBoost calls it every
+  # minute while the boost is held.
+  #
+  # Processes move, their memory does not: cgroup v2 leaves pages charged where they were
+  # allocated, so what the session already holds stays on `shared`'s account until it is
+  # freed. That is in the boost's favour — the new cgroup starts empty — and it is why the
+  # move is safe to make in the middle of a build.
+  #
+  # Lowering a carved cgroup's `memory.max` below what it holds would OOM-kill inside it on
+  # the spot, so a smaller value is written no lower than the current charge plus the same
+  # slack `shared` gets. It reaches its target as the session frees memory.
+  #
+  # @param limit_bytes [Integer]
+  # @return [Boolean] true when the cgroup is carved out with that bound
+  def carve_out!(limit_bytes)
+    FileUtils.mkdir_p(boosted_path)
+    current = read_integer_at(boosted_path, "memory.current").to_i
+    floor = current.positive? ? current + SHARED_CAP_SLACK_BYTES : 0
+    File.write(File.join(boosted_path, "memory.max"), [ limit_bytes, floor ].max.to_s)
+    [ shared_member_path, legacy_path ].each { |from| migrate_processes(from, boosted_path) }
+    true
+  rescue SystemCallError => e
+    Rails.logger.warn("[SessionMemoryCgroup] Could not carve out #{boosted_path}: #{e.message}")
+    false
+  end
+
+  # The boost is over: move this session back into `shared` under the ordinary per-session
+  # bound, and remove the carved cgroup once nothing is left in it.
+  #
+  # The session is not left where it was with a smaller limit, because outside `shared` it
+  # would escape the cap the NEXT boost puts on everyone else.
+  #
+  # @return [Boolean] true when no process of this session is left in `boosted`
+  def return_to_shared!
+    return true unless carved_out?
+    return false unless self.class.ensure_tier!(self.class.shared_path)
+
+    FileUtils.mkdir_p(shared_member_path)
+    File.write(File.join(shared_member_path, "memory.max"), self.class.limit_bytes.to_s)
+    migrate_processes(boosted_path, shared_member_path)
+    self.class.remove_if_empty(boosted_path) || !carved_out?
+  rescue SystemCallError => e
+    Rails.logger.warn("[SessionMemoryCgroup] Could not return #{name} to the shared tier: #{e.message}")
+    false
+  end
+
+  # The nearest bound above this session that it shares with other sessions: the
+  # `shared` tier's cap while a boost is held elsewhere and that cap is the tighter one,
+  # otherwise the pool's.
+  #
+  # This is what a kill the session's own bound did not cause ran into, and so what the
+  # messages about such a kill have to quote — "the 6 GiB all sessions share" is wrong
+  # by the size of the boost while one is held.
+  #
+  # @return [Stats]
+  def enclosing_stats
+    pool = self.class.pool_stats
+    return pool unless File.dirname(path) == self.class.shared_path
+
+    shared = stats_at(self.class.shared_path)
+    return pool if shared.limit_bytes.nil?
+    return pool if pool.limit_bytes && pool.limit_bytes <= shared.limit_bytes
+
+    shared
   end
 
   # Wrap a command so that it runs inside this cgroup.
@@ -611,4 +829,27 @@ class SessionMemoryCgroup
   private
 
   def read_event(key) = read_event_at(path, key)
+
+  # The flat layout every session cgroup had before the tiers, and the fallback #prepare!
+  # takes when they cannot be made.
+  def legacy_path
+    File.join(self.class.parent_path, name)
+  end
+
+  # Move every process in one cgroup into another. Writing a pid to the target's
+  # `cgroup.procs` is the migration; uid 1000 may make it because it owns the
+  # `cgroup.procs` of the pool, the common ancestor of every location here. A pid that
+  # exited between the read and the write is simply gone.
+  def migrate_processes(from, to)
+    return unless File.directory?(from)
+
+    File.read(File.join(from, "cgroup.procs")).split.each do |pid|
+      File.write(File.join(to, "cgroup.procs"), pid)
+    rescue Errno::ESRCH
+      next
+    end
+    self.class.remove_if_empty(from)
+  rescue Errno::ENOENT
+    nil
+  end
 end

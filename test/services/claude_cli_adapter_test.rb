@@ -992,13 +992,13 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
 
       spawned = @mock_process_manager.spawned_processes.first
-      procs = File.join(parent, "session-4242", "cgroup.procs")
+      procs = File.join(parent, "shared", "session-4242", "cgroup.procs")
 
       assert_equal "/bin/sh", spawned[:command].first
       assert_includes spawned[:command], procs
       assert_equal [ "claude", "test" ], spawned[:command].last(2),
         "the real argv has to survive the wrapper intact"
-      assert File.exist?(File.join(parent, "session-4242", "memory.max")),
+      assert File.exist?(File.join(parent, "shared", "session-4242", "memory.max")),
         "the bound has to be written before anything can enter the cgroup"
     end
   end
@@ -1011,7 +1011,24 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       spawned = @mock_process_manager.spawned_processes.first
 
       assert_equal "/bin/sh", spawned[:command].first
-      assert_includes spawned[:command], File.join(parent, "session-4243", "cgroup.procs")
+      assert_includes spawned[:command], File.join(parent, "shared", "session-4243", "cgroup.procs")
+    end
+  end
+
+  # A boosted session is carved out before it is entered, so the first turn after the boost
+  # is granted runs under it rather than waiting for SessionMemoryBoostJob's minute.
+  test "spawn_process puts a boosted session in the boosted tier under its boost" do
+    with_delegated_cgroup_parent do |parent|
+      File.write(File.join(parent, "memory.max"), (6 * 1024 * 1024 * 1024).to_s)
+      session = sessions(:running)
+      session.update_columns(memory_boost_mb: 5120, memory_boost_expires_at: 1.hour.from_now)
+      @adapter.zimmer_session_id = session.id
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+      spawned = @mock_process_manager.spawned_processes.first
+      boosted = File.join(parent, "boosted", "session-#{session.id}")
+      assert_includes spawned[:command], File.join(boosted, "cgroup.procs")
+      assert_equal (5 * 1024 * 1024 * 1024).to_s, File.read(File.join(boosted, "memory.max"))
     end
   end
 
