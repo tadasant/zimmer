@@ -2285,6 +2285,37 @@ class SessionsController < ApplicationController
     render json: { error: e.record.errors.full_messages.join(", ") }, status: :unprocessable_entity
   end
 
+  # PATCH /sessions/:id/memory_boost
+  # Presentation ONLY — the rules (bounds, one boost at a time, the expiry) are
+  # Sessions::UpdateMemoryBoost, shared with the `set_memory_boost` MCP action.
+  def update_memory_boost
+    @session = find_session
+
+    with_db_retry do
+      Sessions::UpdateMemoryBoost.grant(session: @session, memory_mb: params[:memory_mb], hours: params[:hours], actor: :web)
+    end
+    return if performed?
+
+    redirect_back fallback_location: session_path(@session),
+                  notice: "Memory boost granted: #{@session.memory_boost_mb} MB until #{@session.memory_boost_expires_at.utc.iso8601}. The worker applies it within a minute."
+  rescue Sessions::UpdateMemoryBoost::Error => e
+    redirect_back fallback_location: session_path(@session), alert: e.message
+  rescue ActiveRecord::RecordInvalid => e
+    redirect_back fallback_location: session_path(@session), alert: e.record.errors.full_messages.join(", ")
+  end
+
+  # DELETE /sessions/:id/memory_boost
+  # Presentation ONLY — Sessions::UpdateMemoryBoost.clear, shared with the
+  # `clear_memory_boost` MCP action.
+  def clear_memory_boost
+    @session = find_session
+
+    with_db_retry { Sessions::UpdateMemoryBoost.clear(session: @session, actor: :web) }
+    return if performed?
+
+    redirect_back fallback_location: session_path(@session), notice: "Memory boost cleared."
+  end
+
   # PATCH /sessions/:id/update_scheduling_class
   #
   # Move ONE session between spot and priority. This is the lever for a session

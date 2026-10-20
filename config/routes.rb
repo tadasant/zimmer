@@ -760,6 +760,9 @@ Rails.application.routes.draw do
       patch :update_model
       patch :update_effort
       patch :update_auto_compact_window
+      # One-off memory boost (SessionMemoryBoost): grant or end it.
+      patch :memory_boost, action: :update_memory_boost
+      delete :memory_boost, action: :clear_memory_boost
       patch :update_scheduling_class
       patch :update_precedence
       patch :reorder_precedence
