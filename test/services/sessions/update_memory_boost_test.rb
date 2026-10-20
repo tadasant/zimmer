@@ -49,6 +49,28 @@ module Sessions
       assert_raises(UpdateMemoryBoost::InvalidParameter) { UpdateMemoryBoost.grant(session: @session, memory_mb: nil) }
     end
 
+    test "refuses every boost on a deployment whose pool cannot pay for one" do
+      previous = ENV["ZIMMER_SESSIONS_MEMORY_MAX_MB"]
+      ENV["ZIMMER_SESSIONS_MEMORY_MAX_MB"] = "5120" # 5 GiB pool - 1 GiB floor = the 4 GiB ordinary limit
+
+      error = assert_raises(UpdateMemoryBoost::Refused) { UpdateMemoryBoost.grant(session: @session, memory_mb: 6144) }
+      assert_match(/cannot pay for a boost above the ordinary 4096 MB/, error.message)
+
+      ENV["ZIMMER_SESSIONS_MEMORY_MAX_MB"] = "6144"
+      UpdateMemoryBoost.grant(session: @session, memory_mb: 6144)
+      assert_equal 6144, @session.reload.memory_boost_mb
+    ensure
+      previous.nil? ? ENV.delete("ZIMMER_SESSIONS_MEMORY_MAX_MB") : ENV["ZIMMER_SESSIONS_MEMORY_MAX_MB"] = previous
+    end
+
+    test "granting and clearing drop the previous boost's applied reading" do
+      @session.merge_metadata!(SessionMemoryBoost::APPLIED_BYTES_KEY => 5 * 1024**3)
+
+      UpdateMemoryBoost.grant(session: @session, memory_mb: 6144, now: @now)
+
+      assert_nil @session.reload.metadata[SessionMemoryBoost::APPLIED_BYTES_KEY]
+    end
+
     test "refuses an archived session" do
       archived = sessions(:archived)
 

@@ -312,15 +312,31 @@ class SessionMemoryCgroup
         return nil
       end
 
-      existing = read_integer_at(path, "memory.max")
-      current = read_integer_at(path, "memory.current").to_i
-      desired = [ target_bytes, current + SHARED_CAP_SLACK_BYTES ].max
-      desired = existing if existing && desired > existing && existing >= target_bytes
-      File.write(File.join(path, "memory.max"), desired.to_s) unless desired == existing
+      desired = ratcheted_max(path, target_bytes)
+      File.write(File.join(path, "memory.max"), desired.to_s) unless desired == read_integer_at(path, "memory.max")
       desired
     rescue SystemCallError => e
       Rails.logger.warn("[SessionMemoryCgroup] Could not cap the shared tier: #{e.message}")
       nil
+    end
+
+    # The `memory.max` to write on a cgroup that should be bounded at `target_bytes`
+    # without killing anything to get there.
+    #
+    # Never below the current charge plus SHARED_CAP_SLACK_BYTES: lowering a `memory.max`
+    # under the charge makes the kernel OOM-kill on the spot. And never LOOSENED while the
+    # value in force is already at or above the target — otherwise a cgroup sitting just
+    # under its bound would have the bound pushed up by the slack on every call, and creep
+    # past it a step a minute. So the result only ever moves towards the target.
+    #
+    # @return [Integer]
+    def ratcheted_max(path, target_bytes)
+      existing = read_integer_at(path, "memory.max")
+      current = read_integer_at(path, "memory.current").to_i
+      desired = [ target_bytes, current + SHARED_CAP_SLACK_BYTES ].max
+      return existing if existing && desired > existing && existing >= target_bytes
+
+      desired
     end
 
     # Session ids whose cgroup is carved out into `boosted` right now.
@@ -570,16 +586,14 @@ class SessionMemoryCgroup
   # move is safe to make in the middle of a build.
   #
   # Lowering a carved cgroup's `memory.max` below what it holds would OOM-kill inside it on
-  # the spot, so a smaller value is written no lower than the current charge plus the same
-  # slack `shared` gets. It reaches its target as the session frees memory.
+  # the spot, so a smaller value is approached the way `shared`'s cap is (.ratcheted_max):
+  # never below the current charge plus slack, and never loosened past the boost on the way.
   #
   # @param limit_bytes [Integer]
   # @return [Boolean] true when the cgroup is carved out with that bound
   def carve_out!(limit_bytes)
     FileUtils.mkdir_p(boosted_path)
-    current = read_integer_at(boosted_path, "memory.current").to_i
-    floor = current.positive? ? current + SHARED_CAP_SLACK_BYTES : 0
-    File.write(File.join(boosted_path, "memory.max"), [ limit_bytes, floor ].max.to_s)
+    File.write(File.join(boosted_path, "memory.max"), self.class.ratcheted_max(boosted_path, limit_bytes).to_s)
     [ shared_member_path, legacy_path ].each { |from| migrate_processes(from, boosted_path) }
     true
   rescue SystemCallError => e

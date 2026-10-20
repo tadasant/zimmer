@@ -327,8 +327,12 @@ module CliSpawnEnv
 
     # A boosted session is carved out before it is entered, so its first turn after the
     # boost is granted runs under the boost rather than waiting for the minute's
-    # reconcile. Only for a boosted session: everyone else pays nothing for this.
-    SessionMemoryBoost.reconcile! if Session.holding_memory_boost.exists?(id: @zimmer_session_id)
+    # reconcile. A session still carved out after its boost ended is put back first for
+    # the same reason — and so that the path this spawn enters is settled here rather
+    # than moved out from under it by the minute's reconcile. Everyone else pays nothing.
+    if cgroup.carved_out? || Session.holding_memory_boost.exists?(id: @zimmer_session_id)
+      SessionMemoryBoost.reconcile!
+    end
     return command unless cgroup.prepare!
 
     limit = cgroup.stats.limit_bytes

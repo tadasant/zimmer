@@ -2666,6 +2666,7 @@ module SessionStateMachine
     return if memory_boost_mb.nil? && memory_boost_expires_at.nil?
 
     update_columns(memory_boost_mb: nil, memory_boost_expires_at: nil)
+    SessionMemoryBoost.clear_applied(self)
   rescue => e
     # Log-only: the boost already reads as inactive on an archived session, and it
     # expires on its own.
