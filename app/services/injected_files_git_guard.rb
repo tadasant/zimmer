@@ -40,6 +40,8 @@ class InjectedFilesGitGuard
     ".pi/",                                    # AIR pi skills, PiAirBridge, Pi transcripts
     "#{NpxCacheLayout::CACHE_DIRNAME}/",       # .npm-cache — npx installs for MCP servers
     ".bundle/",                                # BundleInstallJob's BUNDLE_APP_CONFIG
+    "vendor/bundle/",                          # BundleInstallJob's slow-path install
+    CodexRuntimeAdapter::LAST_MESSAGE_FILENAME, # codex_last_message.txt
     PiRuntimeAdapter::SYSTEM_PROMPT_FILENAME   # pi_system_prompt.md
   ].freeze
 
@@ -58,11 +60,20 @@ class InjectedFilesGitGuard
 
   GIT_TIMEOUT_SECONDS = 15
 
+  # What `git rev-parse` says when the directory is outside any repository —
+  # the one failure that means "nothing to guard" rather than "guard broken".
+  NOT_A_REPOSITORY = /not a git repository/i
+
+  # The clone's `.git/config` is writable by the agent, so a configured
+  # fsmonitor or hook must not run inside the worker on Zimmer's behalf.
+  GIT_HARDENING = [ "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null" ].freeze
+
   class << self
     # @param session [Session] whose runtime decides the runtime-specific paths
     # @param working_directory [String] the session's working directory
-    # @return [Array<String>] the exclude lines added on this call (empty when
-    #   already present, or when the directory is not inside a git repository)
+    # @return [Array<String>, nil] the exclude lines added on this call (empty
+    #   when already present); nil when the directory is missing or not inside a
+    #   git repository, so there is nothing to guard
     # @raise [Error] when the directory is a git repository and the guard could
     #   not be written — fail the prepare rather than run unguarded
     def apply!(session:, working_directory:)
@@ -71,7 +82,7 @@ class InjectedFilesGitGuard
 
     # Every path the guard excludes for a session on `runtime`.
     def injected_paths(runtime)
-      paths = STATIC_PATHS + stderr_log_filenames
+      paths = STATIC_PATHS + spawn_artifact_filenames
       contribution = RuntimePromptContribution.for(runtime)
       # Codex reads its system prompt from AGENTS.md, which Zimmer writes when the
       # repository has none. Excluded only for those runtimes: on any other, a
@@ -83,11 +94,14 @@ class InjectedFilesGitGuard
 
     private
 
-    # Every runtime's stderr log lands in the working directory. All of them, not
-    # just this session's: a clone outlives a runtime switch.
-    def stderr_log_filenames
-      RuntimeRegistry.registered_runtimes.map do |runtime|
-        RuntimeRegistry.for(runtime).cli_adapter_class.stderr_log_filename
+    # What every runtime's spawned process writes into the working directory
+    # (stderr logs, Codex's event log). All runtimes, not just this session's: a
+    # clone outlives a runtime switch.
+    def spawn_artifact_filenames
+      RuntimeRegistry.registered_runtimes.flat_map do |runtime|
+        RuntimeRegistry.for(runtime).cli_adapter_class.spawn_artifact_paths("/").map do |path|
+          path.delete_prefix("/")
+        end
       end
     end
   end
@@ -98,10 +112,10 @@ class InjectedFilesGitGuard
   end
 
   def apply!
-    return [] unless File.directory?(@working_directory)
+    return nil unless File.directory?(@working_directory)
 
     location = git_location
-    return [] if location.nil?
+    return nil if location.nil?
 
     prefix, exclude_path = location
     added = append_excludes!(exclude_path, prefix)
@@ -116,10 +130,16 @@ class InjectedFilesGitGuard
   # The working directory's path inside its repository ("" at the top level,
   # "agents/foo/" in a subdirectory) and the absolute path of the exclude file
   # git reads for it. nil when the directory is not inside a git repository:
-  # there is nothing to commit to, so nothing to guard.
+  # there is nothing to commit to, so nothing to guard. Any other failure —
+  # a corrupt `.git`, a refused `safe.directory` — raises: a guard that cannot
+  # tell whether it applies must not quietly stand down.
   def git_location
-    stdout, _stderr, status = git("rev-parse", "--show-prefix", "--git-path", "info/exclude")
-    return nil unless SubprocessStatus.success?(status)
+    stdout, stderr, status = git("rev-parse", "--show-prefix", "--git-path", "info/exclude")
+    unless SubprocessStatus.success?(status)
+      return nil if stderr.match?(NOT_A_REPOSITORY)
+
+      raise Error, "git rev-parse failed in #{@working_directory}: #{stderr.strip}"
+    end
 
     prefix, exclude = stdout.split("\n", -1).first(2)
     return nil if exclude.blank?
@@ -130,22 +150,24 @@ class InjectedFilesGitGuard
   # Append the anchored lines the exclude does not already hold, under a lock so
   # two concurrent prepares of one clone cannot interleave their writes.
   def append_excludes!(exclude_path, prefix)
-    wanted = self.class.injected_paths(@session.agent_runtime).map { |path| "/#{escape(prefix)}#{path}" }
+    wanted = self.class.injected_paths(@session.agent_runtime).map { |path| "/#{escape(prefix)}#{path}".b }
 
     FileUtils.mkdir_p(File.dirname(exclude_path))
+    # Binary: the file is the user's too, and a line in another encoding must
+    # not make the comparison raise.
     File.open(exclude_path, File::RDWR | File::CREAT, 0o644) do |file|
       file.flock(File::LOCK_EX)
-      existing = file.read
+      existing = file.read.b
       present = existing.lines.map(&:strip)
       missing = wanted.reject { |line| present.include?(line) }
       next [] if missing.empty?
 
-      block = +""
+      block = "".b
       block << "\n" unless existing.empty? || existing.end_with?("\n")
-      block << "#{HEADER}\n" unless present.include?(HEADER)
+      block << "#{HEADER}\n" unless present.include?(HEADER.b)
       block << missing.map { |line| "#{line}\n" }.join
       file.write(block)
-      missing
+      missing.map { |line| line.dup.force_encoding(Encoding::UTF_8) }
     end
   end
 
@@ -172,6 +194,6 @@ class InjectedFilesGitGuard
   end
 
   def git(*args)
-    BoundedSubprocess.run([ "git", "-C", @working_directory, *args ], timeout: GIT_TIMEOUT_SECONDS)
+    BoundedSubprocess.run([ "git", *GIT_HARDENING, "-C", @working_directory, *args ], timeout: GIT_TIMEOUT_SECONDS)
   end
 end

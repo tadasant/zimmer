@@ -536,7 +536,7 @@ class AirPrepareService
   # `.mcp.json` is the incident this exists to prevent (zimmer#1382).
   def guard_injected_files!
     added = InjectedFilesGitGuard.apply!(session: session, working_directory: working_directory)
-    return if added.empty?
+    return if added.blank?
 
     Rails.logger.info "[AirPrepareService] Excluded #{added.size} injected path(s) from git in #{working_directory}"
   rescue InjectedFilesGitGuard::Error => e
