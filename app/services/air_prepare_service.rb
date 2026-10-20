@@ -497,6 +497,7 @@ class AirPrepareService
   # post-processor. After completion, #injected_mcp_servers contains names of
   # servers that were auto-injected (e.g. zimmer for subagent roots).
   def prepare!
+    guard_injected_files!
     write_env_file!
     run_air_prepare!
     post_processor.post_process!
@@ -512,6 +513,7 @@ class AirPrepareService
   # only thing that writes those to disk — gating it on the MCP branch would make
   # a hooks-only Pi session silently run no hooks.
   def ensure_baseline_mcp_config!
+    guard_injected_files!
     write_env_file!
     post_processor.ensure_baseline!
     artifact_bridge.write!
@@ -525,6 +527,21 @@ class AirPrepareService
   end
 
   private
+
+  # Keep every file this prepare is about to write out of the clone's commits,
+  # whatever the cloned repository's `.gitignore` says (InjectedFilesGitGuard).
+  # First, so a prepare that fails halfway still leaves the guard in place over
+  # whatever it did write. A guard that cannot be written fails the prepare:
+  # running an agent over a clone where `git commit -a` would publish
+  # `.mcp.json` is the incident this exists to prevent (zimmer#1382).
+  def guard_injected_files!
+    added = InjectedFilesGitGuard.apply!(session: session, working_directory: working_directory)
+    return if added.empty?
+
+    Rails.logger.info "[AirPrepareService] Excluded #{added.size} injected path(s) from git in #{working_directory}"
+  rescue InjectedFilesGitGuard::Error => e
+    raise AirPrepareError, e.message
+  end
 
   # Rewrite the clone's `.env` with the secrets this session's CURRENT artifact
   # selection asks for (SessionSecretScope), before AIR is allowed to fail.
