@@ -322,6 +322,42 @@ subprocess env; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholder
 AIR then fails the prepare if any `${VAR}` survived, which Zimmer catches as a graceful,
 non-paging `SecretResolutionError`.
 
+### Injected files stay out of the clone's commits
+
+What a prepare writes is runtime state, and some of it holds credentials in plain text:
+`.mcp.json` carries the strad gateway's bearer token and the session's own Zimmer API key, `.env`
+carries the session's scoped secrets, `.codex/config.toml` the same headers for Codex. The catalog
+repos list those paths in their `.gitignore`. A session's `git_root` can be any repository, and most
+do not. A session against a third-party repo ran `git commit -a` and pushed its `.mcp.json` to a
+public fork ([#1382](https://github.com/tadasant/zimmer/issues/1382)).
+
+So before anything else, every prepare (`prepare!` and `ensure_baseline_mcp_config!`) runs
+`InjectedFilesGitGuard`. It applies to every way a clone is prepared: a fresh clone, a warm-pool
+claim, a follow-up, a fork and an unarchive. The guard does two things, both local to the clone and
+never committed:
+
+- It appends every injected path to the repository's `info/exclude`, anchored at the working
+  directory. That covers an agent-root subdirectory, and a worktree shares its main repository's
+  file. The paths are `.mcp.json`, `.env`, `.claude/`, `.codex/`, `.agents/skills/`, `.pi/`,
+  `.npm-cache/`, `.bundle/`, `vendor/bundle/`, every file a runtime's process writes there (each
+  stderr log, Codex's `codex_events.jsonl` and `codex_last_message.txt`), `pi_system_prompt.md`, and
+  `AGENTS.md` for a runtime that reads its prompt from it. git honours `info/exclude` exactly like `.gitignore`, so
+  none of them reach `git add -A`, `git add .` or `git commit -a`.
+- It marks a secret-bearing injected file the repository already **tracks** (`.mcp.json`, `.env`,
+  `.codex/config.toml`, `.claude/settings.json`) `--skip-worktree`. An exclude does nothing for a
+  tracked file, so without this Zimmer's rewrite would ride along with `git commit -a`.
+
+It only adds lines that are missing, so a re-prepare changes nothing. A directory outside any git
+repository is left alone. Any other git failure, or an exclude that cannot be written, fails the
+prepare. Running an agent in a clone where `git commit -a` would publish credentials is exactly what
+the guard is there to stop. Its git calls turn off `core.fsmonitor` and hooks, because the clone's
+`.git/config` belongs to the agent. The one-time post-deploy task
+`GuardInjectedFilesInExistingClones` guards the clones that were prepared before the guard
+existed.
+
+The guard does not stop an explicit `git add -f`, and the secrets are still written into these files
+as literal text. See [Limitations](/limitations/#injected-files-are-excluded-from-commits-not-free-of-secrets).
+
 ### Resilience
 
 The whole invocation runs under `BoundedSubprocess` with a hard wall-clock timeout (it SIGKILLs the
