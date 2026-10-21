@@ -133,8 +133,8 @@ final class AppModel: ObservableObject {
     @Published var fixtureHealth = false
     /// `-ZimmerFixtureClis`, or a link to `/clis`: More opens on CLIs.
     @Published var fixtureClis = false
-    /// Bumped each time a link to one of Zimmer's own pages is opened here, so a screen showing
-    /// the link over the tabs — a full-screen transcript, a session's logs — gets out of the way.
+    /// Bumped each time a link to one of Zimmer's own pages is opened here, so the full-screen
+    /// transcript the link may have been in gets out of the way.
     @Published private(set) var linksOpened = 0
     /// Tools not installed or not signed in: the badge on the board's CLIs button on the web,
     /// here on the More row. Read when More comes to the front; a hint, never an error.
@@ -681,10 +681,19 @@ final class AppModel: ObservableObject {
     /// for — and the caller opens it as any link.
     func openInApp(_ url: URL) -> Bool {
         guard let origins = signedInOrigins, let link = ZimmerLink(url: url, origins: origins) else { return false }
+        if case let .session(id) = link, path.last == id {
+            // A link to a message of the session already open: the web page scrolls to it, and
+            // this one cannot yet, so it opens there. Without one there is nothing to do.
+            return url.fragment?.isEmpty ?? true
+        }
         log.info("opening \(url.path, privacy: .public) in the app")
         open(link)
         return true
     }
+
+    /// What `MarkdownText` opens links with, made once: a fresh closure on every render of the
+    /// tabs would replace `openURL` under every message on every board poll.
+    lazy var inAppLinks = InAppLinks(open: { [weak self] url in self?.openInApp(url) ?? false })
 
     /// The app's screen for a page of the web UI, wherever the link to it was tapped.
     func open(_ link: ZimmerLink) {
@@ -698,19 +707,19 @@ final class AppModel: ObservableObject {
             path = []
         case let .session(id):
             // Pushed over the page the link was on, so Back returns to it.
-            if path.last == id { tab = .sessions } else { path.append(id) }
+            path.append(id)
         case let .sessionSlug(slug):
             // The screen is keyed by id, and the server knows which session the slug names. A
-            // slug it does not know opens in the browser, whose page says so.
+            // slug it cannot resolve opens in the browser, whose page says why.
             Task {
                 if let id = try? await connection.api.session(slug: slug).session.id {
-                    path.append(id)
+                    if path.last != id { path.append(id) }
                 } else if let url = webURL(path: "/sessions/\(slug)") {
                     _ = await UIApplication.shared.open(url)
                 }
             }
         case .newSession:
-            showingNewSession = true
+            presentAfterCover { $0.showingNewSession = true }
         case .inbox:
             tab = .inbox
         case .triggers:
@@ -728,13 +737,23 @@ final class AppModel: ObservableObject {
             fixtureClis = true
             tab = .more
         case .settings:
-            fixtureSettings = SettingsOpening()
             tab = .more
+            presentAfterCover { $0.fixtureSettings = SettingsOpening() }
         case .apiKeys:
-            fixtureSettings = SettingsOpening(account: true)
             tab = .more
+            presentAfterCover { $0.fixtureSettings = SettingsOpening(account: true) }
         case .live:
-            showingLive = true
+            presentAfterCover { $0.showingLive = true }
+        }
+    }
+
+    /// A sheet asked for by a link tapped in the full-screen transcript, which `linksOpened` is
+    /// closing: presented once the cover is gone, since UIKit refuses a second presentation
+    /// while one is still on screen and would leave the sheet's flag set with nothing shown.
+    private func presentAfterCover(_ present: @escaping @MainActor @Sendable (AppModel) -> Void) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(450))
+            if let self { present(self) }
         }
     }
 

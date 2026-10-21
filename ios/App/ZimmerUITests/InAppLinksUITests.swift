@@ -22,18 +22,13 @@ final class InAppLinksUITests: XCTestCase {
         scrollUntilHittable(app, paragraph)
         attachScreenshot(app, named: "in-app-link-before")
 
-        let link = app.links.matching(NSPredicate(format: "label CONTAINS %@", "/sessions/1044")).firstMatch
-        if link.waitForExistence(timeout: 3) {
-            link.tap()
-        } else {
-            // A Text's links are not always their own accessibility elements; the paragraph's
-            // long-press menu opens the same link through the same handler. The Zimmer link
-            // comes first in the paragraph, so its Open Link is the first.
-            paragraph.press(forDuration: 1.5)
-            let open = app.buttons["Open Link"].firstMatch
-            XCTAssertTrue(open.waitForExistence(timeout: timeout))
-            open.tap()
-        }
+        // Through the paragraph's long-press menu, whose Open Link goes through the same handler
+        // as a tap on the link: a tap at the centre of a URL that wraps can land on the words
+        // beside it. The Zimmer link comes first in the paragraph, so its Open Link is the first.
+        paragraph.press(forDuration: 1.5)
+        let open = app.buttons["Open Link"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: timeout), "the menu opens the link")
+        open.tap()
 
         XCTAssertTrue(app.navigationBars["#1044"].waitForExistence(timeout: timeout), "the linked session opens in the app")
         XCTAssertEqual(app.state, .runningForeground, "and the app stays in front: no browser took the link")
