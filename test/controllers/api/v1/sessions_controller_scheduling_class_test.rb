@@ -238,7 +238,7 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
 
     assert_response :success
     assert session.reload.spot?
-    assert_equal replaced.id.to_s, replaced.reload.custom_metadata[Session::REPLACED_BY_SESSION_KEY].to_s
+    assert_equal session.id.to_s, replaced.reload.custom_metadata[Session::REPLACED_BY_SESSION_KEY].to_s
   end
 
   test "an unknown class refuses the whole PATCH, rename included" do
