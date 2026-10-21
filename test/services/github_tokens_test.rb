@@ -10,7 +10,7 @@ class GithubTokensTest < ActiveSupport::TestCase
   HELPER = Rails.root.join("bin/zimmer-git-credential").to_s
 
   MAP = {
-    "ZIMMER_GITHUB_TOKEN_ROUTING" => "1",
+    "ZIMMER_GITHUB_CREDENTIAL_ROUTING" => "1",
     "GH_TOKEN" => "github_pat_tadasant",
     "GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp",
     "GH_TOKEN__MY_ORG" => "github_pat_my_org",
@@ -47,6 +47,14 @@ class GithubTokensTest < ActiveSupport::TestCase
         assert_equal "", stdout
       end
     end
+  end
+
+  test "git helper: a request with no path is an unknown owner" do
+    stdout, = run_helper(MAP, path: "")
+    assert_equal "", stdout
+
+    stdout, = run_helper(MAP.except("ZIMMER_GITHUB_DEFAULT_OWNER"), path: "")
+    assert_includes stdout, "password=github_pat_tadasant"
   end
 
   test "git helper: a host other than github.com is not answered" do
@@ -94,16 +102,17 @@ class GithubTokensTest < ActiveSupport::TestCase
   end
 
   test "session_env hands a session its owner's token and strips the rest of the map" do
-    env = GithubTokens.session_env("pulsemcp", env: MAP)
+    env = GithubTokens.session_env("pulsemcp", env: MAP, gh_config_dir: "/empty")
 
     assert_equal "github_pat_pulsemcp", env["GH_TOKEN"]
+    assert_equal "/empty", env["GH_CONFIG_DIR"], "gh must not reach the stored login"
     assert_equal "pulsemcp", env["ZIMMER_GITHUB_DEFAULT_OWNER"]
     assert env.key?("GH_TOKEN__PULSEMCP") && env["GH_TOKEN__PULSEMCP"].nil?
     assert env.key?("GH_TOKEN__MY_ORG") && env["GH_TOKEN__MY_ORG"].nil?
   end
 
   test "a session's narrowed env makes its git helper route only its own owner" do
-    session = MAP.merge(GithubTokens.session_env("pulsemcp", env: MAP)).compact
+    session = MAP.merge(GithubTokens.session_env("pulsemcp", env: MAP, gh_config_dir: "/empty")).compact
 
     assert_equal "github_pat_pulsemcp", GithubTokens.token_for("pulsemcp", env: session)
     assert_nil GithubTokens.token_for("tadasant", env: session)
@@ -112,9 +121,10 @@ class GithubTokensTest < ActiveSupport::TestCase
   end
 
   test "session_env for an owner with no token leaves the session without one" do
-    env = GithubTokens.session_env("warpdotdev", env: MAP)
+    env = GithubTokens.session_env("warpdotdev", env: MAP, gh_config_dir: "/empty")
 
     assert env.key?("GH_TOKEN") && env["GH_TOKEN"].nil?
+    assert_equal "/empty", env["GH_CONFIG_DIR"]
   end
 
   test "session_env is empty before routing is on" do

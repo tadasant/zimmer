@@ -200,7 +200,20 @@ class GhTokenProvisionerTest < ActiveSupport::TestCase
     assert_nil ENV[ROUTING], "nothing was accepted, so the stored login still answers"
   end
 
-  test "with the guard off, a classic token is published as before" do
+  # The chain now answers with a refused value, so an older token ENV still holds under
+  # the same name must not stay live — gh would keep using it with routing off.
+  test "refusing a variable also drops an older value ENV held under it" do
+    ENV[REQUIRE] = "true"
+    ENV[PULSEMCP] = "github_pat_older"
+    stub_real_chain(PULSEMCP => "gho_newer_but_refused")
+
+    GhTokenProvisioner.ensure!(logger: Logger.new(StringIO.new))
+
+    assert_nil ENV[PULSEMCP]
+    assert_nil ENV[ROUTING]
+  end
+
+  test "with the guard off, a classic token is published" do
     ENV[REQUIRE] = "false"
     stub_real_chain(VAR => "ghp_staging_test_account")
 

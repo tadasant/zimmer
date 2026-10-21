@@ -5308,21 +5308,22 @@ fired and dragged the cursor forward, the same issue is behind the window and un
 nothing. Neither outcome is announced. Treat un-holding as "may or may not fire" and open a fresh
 issue when you actually want the gate.
 
-### A session whose repository owner has no GitHub token can still reach the stored `gh` login
+### The stored `gh` login stays on disk after per-owner tokens are seeded
 
-With per-owner GitHub tokens seeded (`app/services/github_tokens.rb`), a session gets its own
-owner's token and no other. A session on a repository whose owner has no `GH_TOKEN__<OWNER>`, and is
-not the default owner, gets no `GH_TOKEN` at all. Its git helper fails closed, as intended. Its `gh`
-CLI does not: with no `GH_TOKEN`, `gh` reads the stored `gh auth login` credential from
-`~/.config/gh` if one is still on the `gh_config` volume, and that OAuth token reaches every
-organization the account belongs to. The same file is readable from any session regardless. Retiring
-the stored login closes both. That belongs to the `tadasant-internal` root, which owns
-`.github/workflows/gh-auth-prod.yml`.
+With per-owner GitHub tokens seeded (`app/services/github_tokens.rb`), Zimmer's own `git` and `gh`
+stop using the stored `gh auth login` credential. The worker's calls all carry a `GH_TOKEN`, the
+git helper never delegates to `gh`, and a session's `gh` runs with a login-free `GH_CONFIG_DIR`. The
+file itself stays in `~/.config/gh` on the `gh_config` volume, though. Its OAuth token reaches every
+organization the account belongs to, and any process on the worker can read it, including an agent
+session that goes looking. The same goes for the full token map: sessions run as the worker's user,
+so `/proc/<pid>/environ` of the worker or one of its children shows every `GH_TOKEN__*`. Narrowing a
+session to its owner's token is defense in depth, not isolation. Retiring the stored login closes the
+first half. That belongs to the `tadasant-internal` root, which owns `.github/workflows/gh-auth-prod.yml`.
 
 A related edge on the worker side: a `gh` call for an owner with no token of its own inherits the
-default `GH_TOKEN` rather than running unauthenticated. That is deliberate, since unsetting it would hand
-`gh` the stored login instead. The default fine-grained token cannot reach another owner's private
-repositories, so the call still fails closed.
+default `GH_TOKEN` rather than running unauthenticated. That is deliberate, since unsetting it would
+hand `gh` the stored login instead. The default fine-grained token cannot reach another owner's
+private repositories, so the call still fails closed.
 
 ### The GitHub trigger poller needs a `gh` credential in the environment that runs it
 

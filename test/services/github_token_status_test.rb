@@ -7,7 +7,7 @@ class GithubTokenStatusTest < ActiveSupport::TestCase
   NOW = Time.zone.parse("2026-10-21 12:00:00 UTC")
 
   MAP = {
-    "ZIMMER_GITHUB_TOKEN_ROUTING" => "1",
+    "ZIMMER_GITHUB_CREDENTIAL_ROUTING" => "1",
     "GH_TOKEN" => "github_pat_tadasant",
     "GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp",
     "ZIMMER_GITHUB_DEFAULT_OWNER" => "tadasant"

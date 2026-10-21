@@ -770,15 +770,18 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     JSON.generate("total_count" => items.size, "incomplete_results" => false, "items" => items)
   end
 
-  test "a query across owners with different tokens runs once per token and merges the results" do
-    query = "is:open (repo:tadasant/zimmer OR repo:pulsemcp/air) label:\"x\""
+  test "a query across owners with different tokens runs once per token, narrowed, and merges the results" do
+    query = "is:open (repo:tadasant/zimmer OR repo:pulsemcp/air OR repo:tadasant/other) label:\"x\""
     shared = { "url" => "u/shared", "created_at" => "2026-01-02T00:00:00Z" }
     ENV["GH_TOKEN__PULSEMCP"] = "github_pat_pulsemcp"
 
-    BoundedSubprocess.expects(:run).with(search_command(query), timeout: GithubSearchService::REQUEST_TIMEOUT)
+    BoundedSubprocess.expects(:run)
+      .with(search_command("is:open (repo:tadasant/zimmer OR repo:tadasant/other) label:\"x\""),
+            timeout: GithubSearchService::REQUEST_TIMEOUT)
       .returns([ merged_search_payload({ "url" => "u/tadasant", "created_at" => "2026-01-03T00:00:00Z" }, shared), "", status(true) ])
-    BoundedSubprocess.expects(:run).with(search_command(query), timeout: GithubSearchService::REQUEST_TIMEOUT,
-                                         env: { "GH_TOKEN" => "github_pat_pulsemcp" })
+    BoundedSubprocess.expects(:run)
+      .with(search_command("is:open (repo:pulsemcp/air) label:\"x\""), timeout: GithubSearchService::REQUEST_TIMEOUT,
+            env: { "GH_TOKEN" => "github_pat_pulsemcp" })
       .returns([ merged_search_payload({ "url" => "u/pulsemcp", "created_at" => "2026-01-01T00:00:00Z" }, shared), "", status(true) ])
 
     items = GithubSearchService.search_issues(query, sort: "created", order: "asc")
@@ -788,9 +791,21 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     ENV.delete("GH_TOKEN__PULSEMCP")
   end
 
-  test "a query whose owners share a token runs once" do
+  test "a query whose owners share a token runs once, unchanged" do
     query = "is:open (repo:tadasant/zimmer OR repo:tadasant/other)"
 
-    assert_equal [ nil ], GithubSearchService.token_owners(query)
+    assert_equal({ nil => [ "tadasant" ] }, GithubSearchService.token_groups(query))
+  end
+
+  test "a failure in any one per-token run fails the whole search" do
+    ENV["GH_TOKEN__PULSEMCP"] = "github_pat_pulsemcp"
+    BoundedSubprocess.stubs(:run).returns([ merged_search_payload, "", status(true) ])
+      .then.returns([ "", "gh: Validation Failed (HTTP 422)", status(false) ])
+
+    assert_raises(GithubSearchService::SearchError) do
+      GithubSearchService.search_issues("is:open (repo:tadasant/zimmer OR repo:pulsemcp/air)")
+    end
+  ensure
+    ENV.delete("GH_TOKEN__PULSEMCP")
   end
 end

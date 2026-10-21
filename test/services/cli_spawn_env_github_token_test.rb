@@ -17,7 +17,7 @@ class CliSpawnEnvGithubTokenTest < ActiveSupport::TestCase
   end
 
   MAP = {
-    "ZIMMER_GITHUB_TOKEN_ROUTING" => "1",
+    "ZIMMER_GITHUB_CREDENTIAL_ROUTING" => "1",
     "GH_TOKEN" => "github_pat_tadasant",
     "GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp",
     "ZIMMER_GITHUB_DEFAULT_OWNER" => "tadasant"
@@ -54,7 +54,7 @@ class CliSpawnEnvGithubTokenTest < ActiveSupport::TestCase
   end
 
   test "before routing is on, the session env is untouched" do
-    ENV.delete("ZIMMER_GITHUB_TOKEN_ROUTING")
+    ENV.delete("ZIMMER_GITHUB_CREDENTIAL_ROUTING")
     GithubTokens.expects(:owner_for_working_directory).never
 
     assert_equal({ "A" => "b" }, Host.new(logger: @logger).apply!({ "A" => "b" }, "/clone"))

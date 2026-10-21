@@ -47,7 +47,7 @@
 # (`gho_…`) or a classic PAT (`ghp_…`) reaches every organization its account belongs
 # to — and the operator's account belongs to organizations nothing in Zimmer may
 # touch. So a token without the `github_pat_` prefix is refused: not published, and
-# removed from ENV if it was sitting there, with the variable name and the reason
+# whatever ENV held under that name removed, with the variable name and the reason
 # logged and the value never. The guard is ZIMMER_GITHUB_REQUIRE_FINE_GRAINED_TOKENS:
 # on by default in production, off by default everywhere else (staging authenticates
 # as a separate test account whose token is not fine-grained, and dev uses whatever
@@ -55,7 +55,7 @@
 #
 # ## Routing mode
 #
-# Once at least one token is published, ZIMMER_GITHUB_TOKEN_ROUTING=1 is set too.
+# Once at least one token is published, ZIMMER_GITHUB_CREDENTIAL_ROUTING=1 is set too.
 # That flag — not the presence of GH_TOKEN — is what tells the git helper to stop
 # consulting the stored `gh auth login` credential. Until a token is seeded, nothing
 # about how this deployment authenticates changes. See GithubTokens.
@@ -99,11 +99,14 @@ class GhTokenProvisioner
   REFRESH_INTERVAL = 5.minutes
 
   # Serializes a refresh: the clock check, the chain reads, and the ENV writes are one
-  # critical section. The poller refreshes on its own thread while sessions spawn on
-  # GoodJob's `agents` threads, and ENV[]= mutates process-global `environ` — which is
-  # not safe against another thread inside Process.spawn reading it. Holding the lock
-  # across the whole thing also means a burst of concurrent callers produces ONE chain
-  # pass, not one each.
+  # critical section, so a burst of concurrent callers produces ONE chain pass, not one
+  # each, and two refreshes never interleave their writes. It does not serialize the
+  # READERS — Process.spawn on GoodJob's `agents` threads, GithubTokens, the status
+  # line — which read ENV without it. That is safe on MRI, where each ENV access and
+  # the env a spawn builds happen under the GVL, so a reader sees a variable either
+  # before or after a write, never half of one. A reader can see the map mid-refresh
+  # (one owner rotated, another not yet), which is the same state as the moment
+  # between two refreshes.
   MUTEX = Mutex.new
 
   class << self
@@ -191,7 +194,11 @@ class GhTokenProvisioner
       if (reason = refusal_reason(token))
         logger.warn "[GhTokenProvisioner] Refusing #{variable} " \
                     "(owner #{GithubTokens.owner_for_variable(variable) || 'default'}): #{reason}"
-        ENV.delete(variable) if ENV[variable] == token
+        # Whatever ENV holds under this name goes too — the refused value itself, or an
+        # older one the chain no longer answers with. Either way the chain's answer for
+        # the variable is "refused", and leaving a token live under it would leave gh
+        # using it with routing off.
+        ENV.delete(variable)
         return false
       end
 

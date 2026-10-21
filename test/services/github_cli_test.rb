@@ -104,6 +104,7 @@ class GithubCliTest < ActiveSupport::TestCase
   test "owner_for reads the owner off every argv shape the call sites use" do
     assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "pr", "view", "1", "--repo", "pulsemcp/air", "--json", "x" ])
     assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "pr", "checks", "1", "-R", "pulsemcp/air" ])
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "pr", "view", "1", "--repo=github.com/pulsemcp/air" ])
     assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "repos/pulsemcp/air/pulls/1", "--jq", "." ])
     assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "/repos/pulsemcp/air/issues/comments/9/reactions" ])
     assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "graphql", "-F", "owner=pulsemcp", "-F", "name=air", "-f", "query=q" ])
