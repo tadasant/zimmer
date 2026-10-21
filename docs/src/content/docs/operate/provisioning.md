@@ -115,11 +115,126 @@ A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own c
 wrong and would fail.
 :::
 
+## GitHub tokens: one per repository owner
+
+Zimmer authenticates to GitHub with **fine-grained personal access tokens** (`github_pat_…`), one per
+repository owner. A fine-grained token is bound to a single resource owner — a user or an organization —
+and cannot read or write anything private outside it. The `gh auth login` OAuth token (`gho_…`) and a
+classic PAT (`ghp_…`) are the opposite: they reach every organization the account belongs to. The
+operator's account belongs to organizations nothing in Zimmer may touch, so production holds
+per-owner tokens and nothing broader.
+
+One owner per token means several tokens. They live in the [Parameter Store](/operate/secrets-parameter-store/)
+beside each other:
+
+| `${VAR}` | Store path | Authenticates |
+| --- | --- | --- |
+| `GH_TOKEN` | `/zimmer/{env}/secrets/static/GH_TOKEN` | the default owner, `ZIMMER_GITHUB_DEFAULT_OWNER` (production: `tadasant`) |
+| `GH_TOKEN__<OWNER>` | `/zimmer/{env}/secrets/static/GH_TOKEN__<OWNER>` | that owner, e.g. `GH_TOKEN__PULSEMCP` for `pulsemcp` |
+
+The variable name is the owner upper-cased, with `-` folded to `_`. Seeding a new `GH_TOKEN__<OWNER>` is
+all it takes to add an owner. `GhTokenProvisioner` discovers every name with that prefix in the chain.
+
+### The routing rule
+
+`GithubTokens` (`app/services/github_tokens.rb`) decides which token a call to `owner`'s repository uses:
+
+1. `GH_TOKEN__<OWNER>`, when it is set.
+2. Otherwise `GH_TOKEN`, but only if `owner` is `ZIMMER_GITHUB_DEFAULT_OWNER`, or if no default owner is
+   configured at all. The second case keeps a single-token deployment working: staging, a self-hoster,
+   or dev.
+3. Otherwise nothing. git gets no credential, and a private repository fails closed.
+
+| Caller | How it picks a token |
+| --- | --- |
+| `GitCloneService`, and `git` in every session | git's credential helper is `bin/zimmer-git-credential`, set with `credential.https://github.com.useHttpPath=true` so git tells it `path=<owner>/<repo>`. It applies the rule above to the tokens in its inherited environment |
+| the PR-status, comment and merge-conflict pollers, the issue probe, the ledger and backlog readers | `GithubCli.run` reads the owner off the argv (`--repo owner/name`, `gh api repos/owner/…`, a GraphQL `-F owner=…`) and runs `gh` with `GH_TOKEN` set to that owner's token |
+| `GithubSearchService` (trigger poller, health check, issue snapshot) | a query whose `repo:` qualifiers span owners with different tokens runs once per token, and the results are merged and deduplicated by URL |
+| spawned agent sessions | `CliSpawnEnv#apply_github_token`: see below |
+
+**How the helper gets the tokens.** Only through its environment. git spawns the helper itself, so the
+tokens reach it the same way they reach `gh`: `GhTokenProvisioner` writes them into the worker's
+process environment, and git and the helper inherit it. No token is ever in an argv, which any process
+can read in `ps`. None is written to a file either. A process's environment is readable only by its
+own user, through `/proc/<pid>/environ`. The token goes back to git on stdout, which is how the
+credential-helper protocol works.
+
+The helper restates the rule in bash, because git runs it with no Ruby in reach.
+`test/services/github_tokens_test.rb` drives the Ruby rule and the script through the same table of
+cases, so the two cannot drift apart without a test failing.
+
+### What a session holds
+
+A session gets **its own repository owner's token and no other**. At spawn, every runtime runs
+`apply_github_token`, which reads the owner from the clone's `origin` remote. That step sets the
+session's `GH_TOKEN` to that owner's token, unsets every `GH_TOKEN__*`, and pins
+`ZIMMER_GITHUB_DEFAULT_OWNER` to the session's owner. Inside the session, `gh` acts as the owner's
+token, and the git helper routes only that owner. A session working on a `tadasant` repository cannot
+push to a `pulsemcp` one.
+
+The map is stripped rather than passed through for the helper. The helper only needs the other
+tokens to reach other owners, and no root is cross-owner by design today. A root that needs to be can
+set the extra tokens in its clone's `.env`, which wins here as everywhere.
+
+The warm process pool counts the token map in its environment key, so a rotation recycles a
+pre-booted process rather than letting it carry the old token for up to an hour.
+
+### The fine-grained guard
+
+`GhTokenProvisioner` refuses any token that does not start with `github_pat_`. A refused token is not
+published, and it is removed from `ENV` if it was already sitting there. The provisioner logs the
+variable, the owner and the kind of token it saw, and never the value. The switch is
+`ZIMMER_GITHUB_REQUIRE_FINE_GRAINED_TOKENS`: on by default when `RAILS_ENV=production`, off everywhere
+else. Staging runs `RAILS_ENV=staging`, so its existing `tadasant-test` token keeps working.
+
+### Routing mode, and the stored login
+
+Until at least one token is published, nothing changes. The helper delegates to `gh auth
+git-credential`, and the stored `gh auth login` credential on the `gh_config` volume authenticates
+everything, as it always has. When `GhTokenProvisioner` publishes its first token, it also sets
+`ZIMMER_GITHUB_TOKEN_ROUTING=1`. From then on the helper never consults the stored login, and every
+worker-side `gh` call carries a `GH_TOKEN`, which `gh` prefers over the stored login.
+
+### Expiry
+
+Fine-grained tokens expire. The `gh` row on the CLIs page (`/clis`, and `GET /api/v1/clis`) shows each
+published token's account and expiry date, read from the `github-authentication-token-expiration`
+header on one `GET /user` per token. That read is cached for an hour. A token less than 30 days from
+expiry is flagged there and logged at WARN. An expired token does not alert on its own. Its owner's
+pollers start failing, and the CLIs page is where that shows.
+
+### Cut-over runbook (production)
+
+Deploying this changes nothing on its own: the token map is empty, so the stored `gho_` login keeps
+authenticating git and `gh` exactly as before. The cut-over is driven from the secrets console and
+needs no shell on the box:
+
+1. **Mint the tokens** in a browser signed in as the account that holds the access. Mint one
+   fine-grained PAT per owner. For `tadasant`, set the resource owner to `tadasant`. For `pulsemcp`,
+   set the resource owner to the `pulsemcp` organization. Grant repository access to the repositories
+   Zimmer works on, with **Contents: read and write**, **Pull requests: read and write**,
+   **Issues: read and write**, **Actions: read** and **Metadata: read**. Never grant **Workflows**: any
+   session can read its own token, and a workflow-scoped token would let it rewrite
+   `.github/workflows/**`.
+2. **Seed both tokens back to back** in strad's `/ui/secrets`, store `Zimmer production`:
+   `GH_TOKEN__PULSEMCP` and `GH_TOKEN`. The provisioner turns routing on as soon as it has published
+   either one, so a refresh that lands between the two writes routes one owner and fails the other
+   closed until the next refresh, five minutes at most. Seeding both within a minute or so keeps that
+   window empty in practice.
+3. **Verify** within about five minutes, with no redeploy. The `gh` row on `/clis` lists both tokens
+   with their accounts and expiry dates. A new session on a `pulsemcp` root can push its branch.
+4. **Retire the stored login.** Until it is gone, a session whose owner has no token falls back to it
+   for `gh` (see [limitations](/limitations/)). Retiring it, and `.github/workflows/gh-auth-prod.yml`
+   that installs it, is owned by the `tadasant-internal` root.
+
+To roll back, delete the tokens from the store and restart the worker (a redeploy). With no token
+published, routing turns off and the stored login answers again.
+
 ## Staging `gh` auth (the `tadasant-test` account)
 
 The staging box needs the `gh` CLI authenticated for two things: `GithubTriggerPollerJob` shells out
 to `gh api search/issues` (and gates on `gh auth status` succeeding), and git clones go through the
-`gh auth git-credential` helper that `Dockerfile.base` wires up. With no credential the poller runs on
+`bin/zimmer-git-credential` helper that `Dockerfile.base` wires up. With no credential the poller runs on
 schedule but **skips every tick** — `github_label` / `github_issue` triggers silently never fire — and
 private clones fail.
 
@@ -135,14 +250,9 @@ the store rotates with one `gcloud` command instead of a redeploy.
 
 `GhTokenProvisioner` resolves `GH_TOKEN` through the ordinary chain — Parameter Store, then encrypted
 credentials, then whatever `ENV` already held — and publishes it into the **process environment**.
-`gh` reads `GH_TOKEN` from its environment, so one variable authenticates every caller at once:
-
-| Caller | How it gets the token |
-| --- | --- |
-| `GithubTriggerPollerJob` → `GithubSearchService` | inherited env on `gh api search/issues` |
-| `GitCloneService` | git's credential helper is `gh auth git-credential`, which git spawns itself — an inherited env is the only way to reach it |
-| the comment / PR-status / merge-conflict pollers | inherited env on bare `gh` |
-| spawned agent sessions | inherited from the worker |
+`gh` reads `GH_TOKEN` from its environment. Staging sets no `ZIMMER_GITHUB_DEFAULT_OWNER`, so under
+[the routing rule](#the-routing-rule) this one token serves every owner. It reaches the poller, git
+and every session in the same way production's per-owner tokens do.
 
 It runs at two moments, the same belt-and-suspenders shape as the [operator SSH
 key](#the-ssh-identity-an-agent-session-holds): once in an initializer at boot, so auth is a property
@@ -154,8 +264,8 @@ after it). Both calls are idempotent, and neither can raise: a store outage leav
 token in place rather than blanking a working credential.
 
 Verified on the staging image (`gh` 2.96.0): with `GH_TOKEN` set, `gh auth status` reports
-`using token (GH_TOKEN)`, and `gh auth git-credential get` echoes `username=x-access-token` /
-`password=$GH_TOKEN` — the same token really does serve both the poller and git.
+`using token (GH_TOKEN)`. The git side is `bin/zimmer-git-credential`, which answers
+`username=x-access-token` / `password=$GH_TOKEN` for any owner while no default owner is set.
 
 :::note[This depends on the resolver credential]
 The store link only exists when `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` is set
@@ -203,8 +313,8 @@ that can write, [by design](/operate/secrets-parameter-store/).
 **Rotation** is one command against Secret Manager (`gcloud secrets versions add`); the running worker
 picks the new value up on its next poll tick.
 
-This is staging-only. Production's `gh` auth is a separate device-flow mechanism in the companion repo
-and is untouched by this.
+Staging's guard is off (`RAILS_ENV=staging`), which is why this classic token is accepted. Production
+uses per-owner fine-grained tokens. See [GitHub tokens: one per repository owner](#github-tokens-one-per-repository-owner).
 
 ## Slack CI failure alerts
 
@@ -320,7 +430,7 @@ add-only](/limitations/#admin-keys-are-add-only), so a live box also needs the l
 ## The git identity an agent session commits with
 
 The same `$HOME` inheritance that leaves a session without an SSH key left it without a **git
-identity**. `Dockerfile.base` writes the `gh auth git-credential` helper into `~/.gitconfig` and no
+identity**. `Dockerfile.base` writes the `bin/zimmer-git-credential` helper into `~/.gitconfig` and no
 `[user]` section, and clone preparation sets a remote and a branch and never an identity — so
 *pushing* worked and *committing* did not. Every committing session paid for that once, with a first
 `git commit` that exits 128:

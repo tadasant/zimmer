@@ -99,6 +99,48 @@ class GithubCliTest < ActiveSupport::TestCase
   # will not catch a `gh` argv built as `%w[gh api]` or through a constant, a shell-out
   # via `capture2`/`popen3`/backticks/`system`, or one added under `lib/`. Every `gh`
   # argv in the tree is a `"gh"` literal under `app/` today; widen this if that changes.
+  # --- per-owner tokens (GithubTokens) ----------------------------------------
+
+  test "owner_for reads the owner off every argv shape the call sites use" do
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "pr", "view", "1", "--repo", "pulsemcp/air", "--json", "x" ])
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "pr", "checks", "1", "-R", "pulsemcp/air" ])
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "repos/pulsemcp/air/pulls/1", "--jq", "." ])
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "/repos/pulsemcp/air/issues/comments/9/reactions" ])
+    assert_equal "pulsemcp", GithubCli.owner_for([ "gh", "api", "graphql", "-F", "owner=pulsemcp", "-F", "name=air", "-f", "query=q" ])
+    assert_nil GithubCli.owner_for([ "gh", "api", "-X", "GET", "search/issues", "--raw-field", "q=repo:pulsemcp/air" ])
+    assert_nil GithubCli.owner_for([ "gh", "auth", "status", "--json", "hosts" ])
+  end
+
+  test "a call on an owner with its own token runs with that token as GH_TOKEN" do
+    with_env("GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp") do
+      BoundedSubprocess.expects(:run)
+        .with([ "gh", "api", "repos/pulsemcp/air" ], timeout: 5, env: { "GH_TOKEN" => "github_pat_pulsemcp" })
+        .returns([ "{}", "", fake_process_status(exitstatus: 0) ])
+
+      assert GithubCli.run([ "gh", "api", "repos/pulsemcp/air" ], timeout: 5).success?
+    end
+  end
+
+  test "an explicit owner wins over the argv" do
+    with_env("GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp") do
+      BoundedSubprocess.expects(:run)
+        .with([ "gh", "api", "search/issues" ], timeout: 5, env: { "GH_TOKEN" => "github_pat_pulsemcp" })
+        .returns([ "{}", "", fake_process_status(exitstatus: 0) ])
+
+      GithubCli.run([ "gh", "api", "search/issues" ], timeout: 5, owner: "pulsemcp")
+    end
+  end
+
+  test "a call on an owner with no token of its own inherits the environment unchanged" do
+    with_env("GH_TOKEN__PULSEMCP" => "github_pat_pulsemcp") do
+      BoundedSubprocess.expects(:run)
+        .with([ "gh", "api", "repos/tadasant/zimmer" ], timeout: 5)
+        .returns([ "{}", "", fake_process_status(exitstatus: 0) ])
+
+      GithubCli.run([ "gh", "api", "repos/tadasant/zimmer" ], timeout: 5)
+    end
+  end
+
   ALLOWED_GH_SHELL_OUT = [ "app/services/github_cli.rb" ].freeze
 
   test "no code outside GithubCli builds a gh argv and shells out directly" do
@@ -117,5 +159,15 @@ class GithubCliTest < ActiveSupport::TestCase
       "these files build a `gh` command and shell out directly; route them through " \
       "GithubCli.run(command, timeout:) so the call is bounded and a timeout is an " \
       "ordinary failed call rather than a wedged singleton (#458)"
+  end
+
+  private
+
+  def with_env(values)
+    original = values.keys.to_h { |key| [ key, ENV[key] ] }
+    values.each { |key, value| ENV[key] = value }
+    yield
+  ensure
+    original.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 end

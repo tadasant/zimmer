@@ -393,4 +393,28 @@ class SecretProvidersTest < ActiveSupport::TestCase
 
     assert_equal "rotated", provider.get("NOT_YET")
   end
+
+  # --- names (discovery by prefix) -------------------------------------------
+
+  test "names lists every name any link holds, never a value" do
+    @fake.seed_secret("GH_TOKEN__PULSEMCP", "github_pat_store")
+    credentials({})
+    SecretsLoader.stubs(:keys).returns([ "FROM_CREDENTIALS" ])
+
+    names = chain_with_store(env: { "GH_TOKEN__AIR" => "x", "BLANK" => "" }).names
+
+    assert_includes names, "GH_TOKEN__PULSEMCP"
+    assert_includes names, "FROM_CREDENTIALS"
+    assert_includes names, "GH_TOKEN__AIR"
+    refute_includes names, "BLANK"
+    refute_includes names, "github_pat_store"
+  end
+
+  test "names skips a link that cannot be listed rather than raising" do
+    @fake.fail_with!(503)
+    credentials({})
+    SecretsLoader.stubs(:keys).returns([])
+
+    assert_equal [ "GH_TOKEN__AIR" ], chain_with_store(env: { "GH_TOKEN__AIR" => "x" }).names
+  end
 end

@@ -5308,6 +5308,22 @@ fired and dragged the cursor forward, the same issue is behind the window and un
 nothing. Neither outcome is announced. Treat un-holding as "may or may not fire" and open a fresh
 issue when you actually want the gate.
 
+### A session whose repository owner has no GitHub token can still reach the stored `gh` login
+
+With per-owner GitHub tokens seeded (`app/services/github_tokens.rb`), a session gets its own
+owner's token and no other. A session on a repository whose owner has no `GH_TOKEN__<OWNER>`, and is
+not the default owner, gets no `GH_TOKEN` at all. Its git helper fails closed, as intended. Its `gh`
+CLI does not: with no `GH_TOKEN`, `gh` reads the stored `gh auth login` credential from
+`~/.config/gh` if one is still on the `gh_config` volume, and that OAuth token reaches every
+organization the account belongs to. The same file is readable from any session regardless. Retiring
+the stored login closes both. That belongs to the `tadasant-internal` root, which owns
+`.github/workflows/gh-auth-prod.yml`.
+
+A related edge on the worker side: a `gh` call for an owner with no token of its own inherits the
+default `GH_TOKEN` rather than running unauthenticated. That is deliberate, since unsetting it would hand
+`gh` the stored login instead. The default fine-grained token cannot reach another owner's private
+repositories, so the call still fails closed.
+
 ### The GitHub trigger poller needs a `gh` credential in the environment that runs it
 
 `GithubTriggerPollerJob` runs on the **worker**, and shells out to `gh`. If that environment has no
