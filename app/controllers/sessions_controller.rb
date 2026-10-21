@@ -2346,7 +2346,7 @@ class SessionsController < ApplicationController
 
     result = begin
       with_db_retry do
-        Sessions::UpdateSchedulingClass.call(session: @session, scheduling_class: klass, actor: :web, **placement)
+        Sessions::UpdateSchedulingClass.call(session: @session, scheduling_class: klass, actor: :web, start: false, **placement)
       end
     rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
       return scheduling_class_failure(e.message)
@@ -2356,7 +2356,9 @@ class SessionsController < ApplicationController
     # with_db_retry has already answered when it ran out of attempts.
     return if performed?
 
-    start = result.start
+    # Outside the retry block: a retry after a start would find the class
+    # already stored and read as no promotion at all.
+    start = Sessions::UpdateSchedulingClass.start_if_promoted(result)
     respond_to do |format|
       format.json { render json: precedence_payload(@session).merge(start_notice(start)) }
       format.html do

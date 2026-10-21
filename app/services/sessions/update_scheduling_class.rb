@@ -43,9 +43,15 @@ module Sessions
   # (StartNow's `nothing_queued`) is left alone, and the result says so.
   #
   # The start runs after the write commits. A caller composing this write into
-  # a larger transaction (REST's PATCH, which may also rename the session and
-  # change its goal) passes `start: false` and calls #start_if_promoted once its
-  # own transaction has committed.
+  # a larger transaction or a retry block (REST's PATCH, the web door's
+  # with_db_retry) passes `start: false` and calls #start_if_promoted once the
+  # write is settled, so a retry never re-runs a start and a start never runs
+  # inside a transaction it does not own.
+  #
+  # Attributes the caller has already assigned on the session are saved by the
+  # same `update!`. REST's PATCH relies on that to keep a class change and its
+  # other columns in one save, because `after_commit` callbacks read only the
+  # last save's changes.
   class UpdateSchedulingClass
     class Error < StandardError; end
 
@@ -63,8 +69,7 @@ module Sessions
     NOT_GIVEN = Object.new.freeze
     private_constant :NOT_GIVEN
 
-    # Named in the log rows and in StartNow's "Started now by …" line — each the
-    # text its door wrote before the doors shared this.
+    # Named in the log rows and in StartNow's "Started now by …" line.
     ACTOR_LABELS = { web: "", mcp: " via MCP", rest: " via the REST API" }.freeze
     START_ACTORS = {
       web: "a user promoting it in the web UI",
