@@ -423,14 +423,11 @@ if [ -z "${LD_PRELOAD+x}" ]; then
     export LD_PRELOAD
 fi
 
-# Configure git to use the gh CLI for GitHub authentication.
-# The gh OAuth token from `gh auth login` is mounted as a volume at ~/.config/gh.
-# Dockerfile.base bakes in `credential.https://github.com.helper = !gh auth git-credential`,
-# so this step is currently belt-and-suspenders — `gh auth setup-git` reaffirms the
-# helper config in case it was mutated by a downstream layer or runtime config.
-if gh auth status &>/dev/null; then
-    gh auth setup-git 2>/dev/null || true
-fi
+# git's GitHub credential helper is baked into the image (Dockerfile.base:
+# bin/zimmer-git-credential). Do NOT run `gh auth setup-git` here: it rewrites
+# credential.https://github.com.helper to `gh auth git-credential`, which would
+# replace the per-owner helper with one that hands out the stored login for every
+# repository.
 
 # Ensure image storage directory exists with correct permissions.
 # Docker volumes are created with root ownership by default, but this script

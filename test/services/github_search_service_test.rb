@@ -757,4 +757,40 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert_equal %{(label:"weird name")},
                  GithubSearchService.label_group([ 'weird" name' ])
   end
+
+  # --- one run per token -------------------------------------------------------
+
+  def search_command(query)
+    [ "gh", "api", "-X", "GET", "search/issues", "--raw-field", "q=#{query}",
+      "--field", "advanced_search=true", "--field", "per_page=100", "--field", "page=1",
+      "--field", "sort=created", "--field", "order=asc" ]
+  end
+
+  def merged_search_payload(*items)
+    JSON.generate("total_count" => items.size, "incomplete_results" => false, "items" => items)
+  end
+
+  test "a query across owners with different tokens runs once per token and merges the results" do
+    query = "is:open (repo:tadasant/zimmer OR repo:pulsemcp/air) label:\"x\""
+    shared = { "url" => "u/shared", "created_at" => "2026-01-02T00:00:00Z" }
+    ENV["GH_TOKEN__PULSEMCP"] = "github_pat_pulsemcp"
+
+    BoundedSubprocess.expects(:run).with(search_command(query), timeout: GithubSearchService::REQUEST_TIMEOUT)
+      .returns([ merged_search_payload({ "url" => "u/tadasant", "created_at" => "2026-01-03T00:00:00Z" }, shared), "", status(true) ])
+    BoundedSubprocess.expects(:run).with(search_command(query), timeout: GithubSearchService::REQUEST_TIMEOUT,
+                                         env: { "GH_TOKEN" => "github_pat_pulsemcp" })
+      .returns([ merged_search_payload({ "url" => "u/pulsemcp", "created_at" => "2026-01-01T00:00:00Z" }, shared), "", status(true) ])
+
+    items = GithubSearchService.search_issues(query, sort: "created", order: "asc")
+
+    assert_equal [ "u/pulsemcp", "u/shared", "u/tadasant" ], items.map { |item| item["url"] }
+  ensure
+    ENV.delete("GH_TOKEN__PULSEMCP")
+  end
+
+  test "a query whose owners share a token runs once" do
+    query = "is:open (repo:tadasant/zimmer OR repo:tadasant/other)"
+
+    assert_equal [ nil ], GithubSearchService.token_owners(query)
+  end
 end

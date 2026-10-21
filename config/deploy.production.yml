@@ -295,6 +295,11 @@ env:
     # (/live, the Inference page's Pi tab) link this console to set it instead.
     ZIMMER_STORE_CONSOLE_URL: https://strad.tadasant.com/ui/secrets
     ZIMMER_STORE_CONSOLE_STORE_NAME: Zimmer production
+    # The repository owner the default GH_TOKEN belongs to (GithubTokens). Every other
+    # owner needs its own GH_TOKEN__<OWNER> in the store, or git fails closed for it.
+    # Inert until a token is seeded: with no token map the stored `gh auth login`
+    # credential still authenticates everything. Not a secret.
+    ZIMMER_GITHUB_DEFAULT_OWNER: tadasant
   secret:
     - SECRET_KEY_BASE
     - RAILS_MASTER_KEY

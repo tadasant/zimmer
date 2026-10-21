@@ -29,6 +29,9 @@ module SecretProviders
 
     def has?(variable) = SecretsLoader.exists?(variable)
 
+    # Every name this link holds. Names only — see Chain#names.
+    def names = SecretsLoader.keys
+
     def invalidate(_variable = nil) = nil
   end
 end

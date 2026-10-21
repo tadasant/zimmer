@@ -34,7 +34,7 @@ You need a copy of this repository under your own GitHub account — fork or mir
 Git shows up a second time, and it's the one people miss: **the agents Zimmer runs are themselves Git users.** Every session clones a repo, commits on a branch, and opens a PR, so the running instance needs its own GitHub login.
 
 - A **GitHub account for the instance** — your own is fine — with access to the repositories your [agent roots](/air/agent-roots/) point at, and rights to push branches and open pull requests there.
-- There is **no token to pre-mint for this.** Zimmer authenticates Git through `gh`: you run a one-time `gh auth login` device flow *inside the container* after the first deploy ([step 10](#stand-it-up)). `Dockerfile.base` bakes a credential helper (`credential.https://github.com.helper = !/usr/bin/gh auth git-credential`), so plain `git` inside a session authenticates through `gh` — there is no `GH_TOKEN` env var fallback.
+- There is **no token to pre-mint for this.** Zimmer authenticates Git through `gh`: you run a one-time `gh auth login` device flow *inside the container* after the first deploy ([step 10](#stand-it-up)). `Dockerfile.base` bakes a credential helper (`credential.https://github.com.helper = !/rails/bin/zimmer-git-credential`), which hands git the `gh` login until you seed a token. Plain `git` inside a session authenticates through it. To use fine-grained tokens per repository owner instead, see [GitHub tokens: one per repository owner](/operate/provisioning/#github-tokens-one-per-repository-owner).
 
 ### The host: a DigitalOcean account
 

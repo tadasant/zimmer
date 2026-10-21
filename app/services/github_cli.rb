@@ -14,7 +14,7 @@
 # that rather than lowering them: one hung call now stalls PR status, CI, merge
 # conflicts and comments together.
 #
-# So this wrapper does two things:
+# So this wrapper does three things:
 #
 #   1. Runs the command under `BoundedSubprocess`, which SIGKILLs the whole process
 #      group on deadline. The caller passes the timeout, because the right bound is
@@ -29,6 +29,14 @@
 # tick", never "the PR is gone".** A caller that mapped it onto a definite negative
 # would turn a degraded API into a wrong answer about merge state, which is worse
 # than the hang.
+#
+# The third is authentication. Zimmer can hold one GitHub token per repository
+# owner (see GithubTokens), so each call runs with GH_TOKEN set to the token for
+# the owner it acts on. The owner is read off the argv — `--repo owner/name`,
+# `gh api repos/owner/…`, or a GraphQL `-F owner=…` — which covers every call
+# site without each one having to name it; a caller with no repository in its
+# argv (`gh api search/issues`) passes `owner:` itself. A call with no owner, or
+# an owner with no token of its own, inherits the default GH_TOKEN.
 #
 # Only the timeout is converted. `Errno::ENOENT` — no `gh` binary at all — still
 # propagates, because that is a local, permanent condition callers distinguish
@@ -88,11 +96,45 @@ module GithubCli
 
   # @param command [Array<String>] argv (no shell — pass args explicitly)
   # @param timeout [Numeric] wall-clock seconds before the process group is killed
+  # @param owner [String, nil] the repository owner whose token to use; inferred
+  #   from the argv when omitted
   # @return [Result] never raises TimeoutError; a hang comes back as a failed Result
-  def run(command, timeout:)
-    stdout, stderr, status = BoundedSubprocess.run(command, timeout: timeout)
+  def run(command, timeout:, owner: nil)
+    env = GithubTokens.env_for(owner || owner_for(command))
+    stdout, stderr, status = if env.empty?
+      BoundedSubprocess.run(command, timeout: timeout)
+    else
+      BoundedSubprocess.run(command, timeout: timeout, env: env)
+    end
     Result.new(stdout: stdout, stderr: stderr, status: status)
   rescue BoundedSubprocess::TimeoutError => e
     Result.new(stdout: "", stderr: "", status: nil, timeout_message: e.message)
+  end
+
+  # The repository owner a `gh` argv acts on, or nil when it names none.
+  #
+  # @param command [Array<String>]
+  # @return [String, nil]
+  def owner_for(command)
+    args = Array(command).map(&:to_s)
+
+    args.each_with_index do |arg, index|
+      slug = if [ "--repo", "-R" ].include?(arg)
+        args[index + 1]
+      elsif arg.start_with?("--repo=")
+        arg.delete_prefix("--repo=")
+      end
+      return GithubTokens.owner_from_slug(slug) if slug
+    end
+
+    if args[1] == "api"
+      path = args.drop(2).find { |arg| arg.match?(%r{\A/?repos/}) }
+      return GithubTokens.owner_from_slug(path.sub(%r{\A/?repos/}, "")) if path
+
+      field = args.find { |arg| arg.start_with?("owner=") }
+      return GithubTokens.owner_from_slug(field.delete_prefix("owner=")) if field
+    end
+
+    nil
   end
 end

@@ -30,6 +30,9 @@ module SecretProviders
 
     def has?(variable) = !get(variable).nil?
 
+    # Every name this link holds. Names only — see Chain#names.
+    def names = @env.keys.select { |key| @env[key].present? }
+
     def invalidate(_variable = nil) = nil
   end
 end

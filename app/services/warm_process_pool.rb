@@ -472,8 +472,8 @@ module WarmProcessPool
     end
 
     # What the spawn environment would hand a process started now, beyond the
-    # session itself: the account and its token, the CLI binary, and the
-    # settings and extensions that write spawn env. A change to any of them
+    # session itself: the account and its token, the CLI binary, the GitHub token
+    # map, and the settings and extensions that write spawn env. A change to any of them
     # recycles the process.
     def environment_key(account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME))
       Digest::SHA256.hexdigest([
@@ -481,7 +481,8 @@ module WarmProcessPool
         AuthRecoveryCoordinator.credential_fingerprint(account),
         cli_fingerprint,
         AppSetting.mcp_tool_search_enabled?,
-        Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code").sort.to_json
+        Zimmer::ExtensionRegistry.spawn_env_contributions(runtime: "claude_code").sort.to_json,
+        GithubTokens.fingerprint
       ].to_json)
     end
 

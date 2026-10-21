@@ -323,7 +323,7 @@ class GithubSearchService
       # Publish GH_TOKEN from the ${VAR} chain before asking `gh` anything, so the
       # preflight answers for the token the store holds NOW. The boot initializer has
       # usually done this already; re-running it here is what carries a rotation into
-      # a long-lived worker (and, because sessions inherit this process's ENV, into
+      # a long-lived worker (and, because sessions start from this process's ENV, into
       # every agent spawned after it). Idempotent, and never raises — see the class.
       GhTokenProvisioner.ensure!
 
@@ -371,7 +371,41 @@ class GithubSearchService
     # asked for: a probe that only wants the newest item under `sort: "created", order:
     # "desc"` asks for one page of that size and stops, rather than paginating the whole
     # match set and taking its head. Nil means everything, up to MAX_PAGES.
+    #
+    # A query whose `repo:` qualifiers span owners that authenticate with different
+    # tokens (see GithubTokens) runs once per token, and the results are merged:
+    # a fine-grained token sees only its own owner's private repositories, so no
+    # single run could return the whole answer. Each run is the whole query — the
+    # other owners' repos just come back with what that token can see of them
+    # (their public items, at most), and the merge drops the duplicates by URL.
+    # Every run must succeed; a failure in any one raises exactly as a single
+    # search would, because a partial union is the short read this method refuses.
     def search_issues(query, sort: nil, order: nil, limit: nil)
+      owners = token_owners(query)
+      return search_issues_as(query, owner: owners.first, sort: sort, order: order, limit: limit) if owners.size <= 1
+
+      merged = owners.flat_map { |owner| search_issues_as(query, owner: owner, sort: sort, order: order, limit: limit) }
+                     .uniq { |item| item["url"] || item["html_url"] || item["id"] }
+      if sort == "created"
+        merged = merged.sort_by { |item| item["created_at"].to_s }
+        merged.reverse! if order == "desc"
+      end
+      limit ? merged.first(limit) : merged
+    end
+
+    # One representative owner per distinct token the query's `repo:` qualifiers
+    # authenticate with; nil stands for the default token. A query that names no
+    # repository is a single run with the default token.
+    def token_owners(query)
+      owners = query.to_s.scan(%r{(?:\A|[\s(])repo:([A-Za-z0-9-]+)/}).flatten.uniq
+      return [ nil ] if owners.empty?
+
+      owners.group_by { |owner| GithubTokens.env_for(owner)[GithubTokens::DEFAULT_VARIABLE] }
+            .map { |token, group| token.nil? ? nil : group.first }
+            .uniq
+    end
+
+    private def search_issues_as(query, owner:, sort:, order:, limit:)
       per_page = limit.nil? ? PER_PAGE : [ limit, PER_PAGE ].min
       incomplete_attempt = 0
       transient_attempt = 0
@@ -387,7 +421,7 @@ class GithubSearchService
         page = 1
 
         loop do
-          payload = request(query, page: page, sort: sort, order: order, per_page: per_page)
+          payload = request(query, page: page, sort: sort, order: order, per_page: per_page, owner: owner)
 
           # A timed-out search returns whatever it managed to index. Treating that as
           # the complete picture would shrink the seen-set, so refuse the whole read.
@@ -551,7 +585,7 @@ class GithubSearchService
       "(#{terms.join(' OR ')})"
     end
 
-    def request(query, page:, sort:, order:, per_page: PER_PAGE)
+    def request(query, page:, sort:, order:, per_page: PER_PAGE, owner: nil)
       command = [
         "gh", "api", "-X", "GET", "search/issues",
         "--raw-field", "q=#{query}",
@@ -562,7 +596,13 @@ class GithubSearchService
       command.push("--field", "sort=#{sort}") if sort.present?
       command.push("--field", "order=#{order}") if order.present?
 
-      result = GithubCli.run(command, timeout: REQUEST_TIMEOUT)
+      # `owner:` only when there is one, so a single-token search is the exact call
+      # it always was. With no `repo:` in its argv, GithubCli cannot infer it.
+      result = if owner
+        GithubCli.run(command, timeout: REQUEST_TIMEOUT, owner: owner)
+      else
+        GithubCli.run(command, timeout: REQUEST_TIMEOUT)
+      end
 
       # A hung request is a failure like any other network failure: surface it as a
       # SearchError so the poller's per-condition rescue alerts and retries next tick.

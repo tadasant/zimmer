@@ -74,6 +74,17 @@ module SecretProviders
 
     def has?(variable) = !entry_for(variable).nil?
 
+    # Every name the store holds, across the namespaces it reads. Free: the
+    # snapshot a `get` would load already carries every name. Names only — see
+    # Chain#names.
+    #
+    # @raise [ParameterStore::StoreError, ParameterStore::AuthError] like {#get},
+    #   when the store could not be consulted and no snapshot is held.
+    def names
+      snapshot = @cache.get(@namespaces)
+      @namespaces.flat_map { |ns| snapshot[ns]&.keys || [] }.uniq
+    end
+
     # Which namespace holds `variable` — the canonical one, or a pre-rename one
     # it has not been migrated out of yet.
     #
