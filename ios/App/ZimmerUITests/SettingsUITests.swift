@@ -182,9 +182,22 @@ final class SettingsUITests: XCTestCase {
         from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
     }
 
-    /// A Form toggle's switch is tapped on its right edge, where the control is.
-    private func tapSwitch(_ toggle: XCUIElement) {
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+    /// A Form toggle's switch is tapped on its right edge, where the control is, until its
+    /// value has flipped. A tap on a switch that is on screen and at rest is sometimes dropped:
+    /// the event is synthesized, the switch neither moves nor highlights, and the app is idle
+    /// again at once. So the tap is repeated, up to three times, only while the value is still
+    /// the one it started at; a flip within 5s is never tapped back.
+    private func tapSwitch(_ toggle: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
+        guard let before = toggle.value as? String else {
+            XCTFail("\(toggle.identifier) has no value to flip", file: file, line: line)
+            return
+        }
+        for attempt in 1...3 {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+            let flipped = expectation(for: NSPredicate(format: "value != %@", before), evaluatedWith: toggle)
+            if XCTWaiter().wait(for: [flipped], timeout: attempt == 3 ? timeout : 5) == .completed { return }
+        }
+        XCTFail("\(toggle.identifier) was still \(before) after three taps", file: file, line: line)
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {

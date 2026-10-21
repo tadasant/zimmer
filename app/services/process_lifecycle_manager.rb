@@ -953,7 +953,7 @@ class ProcessLifecycleManager
 
     limit = number_to_human_size(stats.limit_bytes)
     peak = number_to_human_size(stats.peak_bytes)
-    return shared_memory_kill if scope == SessionMemoryCgroup::POOL_SCOPE
+    return shared_memory_kill(cgroup) if scope == SessionMemoryCgroup::POOL_SCOPE
 
     {
       clause: "(the session reached its #{limit} memory limit; peak #{peak})",
@@ -967,8 +967,11 @@ class ProcessLifecycleManager
   # The kill came from the pool every session shares, not from this session's own bound
   # (tadasant/zimmer#981). The session's own limit and peak are beside the point here —
   # what ran out is the aggregate — so the message quotes that instead.
-  def shared_memory_kill
-    shared = number_to_human_size(SessionMemoryCgroup.pool_stats.limit_bytes)
+  #
+  # The shared bound is the pool's, or the shared tier's while a boost elsewhere has capped
+  # it tighter (SessionMemoryCgroup#enclosing_stats).
+  def shared_memory_kill(cgroup)
+    shared = number_to_human_size(cgroup.enclosing_stats.limit_bytes)
     {
       clause: "(the #{shared} shared by all sessions on this worker ran out; this session " \
         "was inside its own limit)",

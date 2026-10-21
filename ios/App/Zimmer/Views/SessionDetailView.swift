@@ -781,6 +781,8 @@ struct SessionDetailView: View {
                 }
                 .environmentObject(app)
             }
+            // A link in it opened another of the app's screens, behind it: step aside.
+            .onChange(of: app.linksOpened) { readingFullScreen = false }
     }
 
     /// What surrounds the page: the toast, the bubble, the composer, the reads and the fixture openers.

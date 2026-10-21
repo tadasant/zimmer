@@ -5,8 +5,9 @@ import ZimmerKit
 /// headings, paragraphs, lists that nest, quotes, tables, rules and fenced code, each block
 /// drawn as a block. Inside them, emphasis, code spans and links are inline markdown. A code
 /// block or a table wider than the screen scrolls sideways in its own box, so nothing in a
-/// message can widen the page. A link, written as one or bare, opens on a tap, and a long
-/// press on its paragraph offers Open Link, Copy Link and Share.
+/// message can widen the page. A link, written as one or bare, opens on a tap — on the app's
+/// own screen when it is a page of this Zimmer — and a long press on its paragraph offers Open
+/// Link, Copy Link and Share.
 struct MarkdownText: View {
     /// The text, already cut into blocks (`MarkdownBlock.blocks(of:)`).
     let blocks: [MarkdownBlock]
@@ -16,6 +17,7 @@ struct MarkdownText: View {
 
     var body: some View {
         MarkdownBlocks(blocks: blocks, style: MarkdownStyle(monospaced: monospaced, color: proseColor))
+            .opensZimmerLinksInApp()
     }
 }
 

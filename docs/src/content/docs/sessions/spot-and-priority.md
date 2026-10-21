@@ -404,7 +404,7 @@ The failure that produces is [#981](https://github.com/tadasant/zimmer/issues/98
 sessions — no runaway, largest process 943 MB — summed over the container cap and the kernel
 OOM-killed the GoodJob worker itself, taking every in-flight `AgentSessionJob` with it. Per-session
 cgroups do not help here and are not meant to: cgroup v2 is hierarchical, so
-`zimmer.sessions/sessions/session-<id>` sits *inside* the container's cgroup and charges the same
+`zimmer.sessions/sessions/shared/session-<id>` sits *inside* the container's cgroup and charges the same
 10 GiB. `ZIMMER_SESSION_MEMORY_MAX_MB` bounds one runaway;
 [`ZIMMER_SESSIONS_MEMORY_MAX_MB`](/sessions/spawning/#all-sessions-together-get-a-second-bound)
 bounds the sum, on a pool the Rails worker is not inside — so the pile-up now kills a session rather

@@ -358,6 +358,33 @@ alone matches staging records identically to production ones. Zimmer emits the l
 cannot enforce that the alert rules on the other side filter by it. Those rules live in a separate
 repository.
 
+### Injected files are excluded from commits, not free of secrets
+
+`InjectedFilesGitGuard` keeps the files a prepare writes (`.mcp.json`, `.env`, `.claude/`,
+`.codex/` and the rest) out of `git add -A` and `git commit -a` in every clone. See
+[Injected files stay out of the clone's commits](/air/zimmer-integration/#injected-files-stay-out-of-the-clones-commits).
+What it does not do:
+
+- **`git add -f` still stages them.** The guard is an exclude, not a lock. An agent that forces a
+  file in publishes what is in it.
+- **The credentials are still in the files as literal text.** The post-processors resolve every
+  `${VAR}` into the value it names, and the strad bearer token and the session's `X-API-Key` among
+  them. Having the runtime resolve headers from its environment at launch would leave nothing
+  worth leaking. That change touches all three runtimes' config formats and has not been made.
+- **A tracked `AGENTS.md` still takes Zimmer's section.** On Codex, Zimmer appends the orchestrator
+  prompt to a repository's own `AGENTS.md`, and `git commit -a` commits that. The prompt is not a
+  credential, but it is not the repository's either.
+- **A whole injected directory is excluded, including what the agent adds to it.** `.claude/`,
+  `.codex/`, `.pi/` and `.agents/skills/` are excluded entire rather than file by file, since Claude
+  Code and the adapters write more there than Zimmer can list. A session asked to add a
+  `.claude/commands/` file or a skill to a repository that ships them has to `git add -f` it. On
+  Codex the same goes for a new `AGENTS.md`.
+- **A skip-worktree file holds still.** A tracked `.mcp.json` the guard marked keeps Zimmer's
+  version through a `git pull` that changes it upstream, and git refuses a checkout that would
+  overwrite it. `git update-index --no-skip-worktree <path>` releases it. That includes a tracked
+  `.claude/settings.json`. AIR writes its hook entries into that file, so a session's own edits to
+  it stop showing in `git status` too.
+
 ### A clone's `.env` is scoped to its artifacts, which is not the same as scoped to what it can reach
 
 A session clone's `.env` no longer carries the deployment's whole credential bundle. It carries the
@@ -6833,7 +6860,7 @@ Measured on staging: two contained kills left the worker container's `memory.cur
 *hierarchical* `memory.events` counted both and the kernel emitted a line for each.
 
 The distinction is in the line itself, which is why the cgroups are named after the session:
-`oom_memcg=/zimmer.sessions/sessions/session-12398` is contained,
+`oom_memcg=/zimmer.sessions/sessions/shared/session-12398` is contained,
 `oom_memcg=/system.slice/docker-….scope` is not. `oom_memcg=/zimmer.sessions/sessions` — the
 shared pool — is a third case: contained in the sense that the Rails worker survives it, and
 worth a human's attention in the sense that the box is over-subscribed.
@@ -6843,6 +6870,32 @@ repo, so it is not fixed here — tracked in a private repo. Until it is, expect
 time a production session hits its bound.
 
 ---
+
+## A memory boost is bounded by the pool, and staging's pool pays for none
+
+A [one-off memory boost](/sessions/spawning/#a-one-off-memory-boost) is carved out of the sessions
+pool, so the largest one a deployment can grant is its pool minus the 1 GiB every other session
+keeps. Production's 6 GiB pool allows 5 GiB. **Staging's 1 GiB pool allows nothing**, and the grant
+is refused at the door on staging, so the feature cannot be exercised there end to end; its
+runtime proof was a scaled-down replica of the production layout on a real cgroup v2 filesystem.
+A boost bigger than pool minus 1 GiB needs a bigger pool, which is `ZIMMER_SESSIONS_MEMORY_MAX_MB`
+in the deploy config.
+
+Three smaller edges:
+
+- **The worker applies it within a minute.** A grant, a clear, an expiry and an archive change the
+  database at once and the cgroups on the next `SessionMemoryBoostJob` tick (or at the boosted
+  session's next spawn), so for up to a minute the page and the kernel disagree. The page says
+  "Not applied yet" for that minute rather than claiming a reservation it does not have.
+- **Memory the boosted session held before the boost stays charged to `shared`** until it is freed,
+  and holds up the ratchet on `shared`'s cap while it does. A boost granted mid-build reserves its
+  full size once the build's earlier processes have exited.
+- **Moving a cgroup is not atomic with a spawn.** A spawn that resolves its cgroup path while the
+  minute's reconcile is moving that same session between tiers can find the directory gone, and
+  then runs outside any session cgroup — the `sh` wrapper warns on stderr and `SessionMemoryWatch`
+  reports the session as unbounded. A boosted or recently boosted session reconciles in its own
+  spawn first, which settles the path before entering it and leaves only a concurrent reconcile on
+  another thread as the window.
 
 ## `kamal app exec --reuse` runs as root on a nested-Docker worker
 
@@ -8131,14 +8184,21 @@ status, agent root, class, goal — where the web bubble sends the whole page, i
 markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
 browser.
 
-## A Zimmer link in the iOS app opens the browser
+## A link to a transcript message in the iOS app does not scroll to it
 
 The web's Status panel rewrites a summary's link to one of the session's own transcript messages
 into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
-transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
-the app's *Where things stand* and its transcript, a link to a message, or to another session,
-opens the web page in the browser rather than in the app. A pull request, issue or CI run link
-opens the same either way.
+transcript. The API sends the stored text. The app opens a link to one of Zimmer's own pages on its
+own screen (`ZimmerLink`), but it ignores the `#message-N`. A link to a message in another session
+opens that session at its newest message. A link to a message in the session already open opens
+the web page in the browser, which scrolls to it.
+
+## A Zimmer page the iOS app has no screen for opens the browser
+
+A link to one of this deployment's pages opens in the app only when the app has a screen for that
+page: the board, a session (by id or slug), a new session, the inbox, triggers and one trigger,
+costs, health, CLIs, settings, API keys, and Live. Any other page, such as `/outcomes`,
+`/connectors`, a trigger's edit form, or `/settings/models`, opens the web UI in the browser.
 
 ## The transcript archive's deadline cannot stop a run that is stuck
 
