@@ -5,6 +5,9 @@ import Foundation
 public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, OperationsActionsAPI, AttachmentsAPI, InteractionAPI, AppSettingsAPI, AccountAPI, DecisionsAPI, LiveAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
+    /// A session by the slug its web page is spelled with, which the server resolves as it
+    /// resolves an id: how a link to `/sessions/<slug>` finds the session to open.
+    func session(slug: String) async throws -> SessionDetail
     /// The newest `limit` messages (the server caps it at 200), whole, and how many there are.
     func conversation(_ id: Int, limit: Int) async throws -> Conversation
     /// The `limit` messages just before position `before`: *Show earlier*, past the cap.
@@ -70,6 +73,12 @@ public struct ZimmerHTTPClient: ZimmerAPI {
 
     public func session(_ id: Int) async throws -> SessionDetail {
         let segment = ZimmerPathComponent(String(id))
+        let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
+        return response.detail
+    }
+
+    public func session(slug: String) async throws -> SessionDetail {
+        let segment = ZimmerPathComponent(slug)
         let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
         return response.detail
     }
