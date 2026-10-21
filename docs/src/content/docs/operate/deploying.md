@@ -343,10 +343,13 @@ Both roles mount the same durable named volumes, so state survives a deploy and 
   (`auth.json`, `models.json`, `settings.json`). Its transcripts live in the session's own clone
   under `zimmer_data`.
 - `gh_config` → `~/.config/gh` — the GitHub CLI's stored auth (from an interactive `gh auth login`).
-  On staging the durable credential is instead `GH_TOKEN`, minted for the non-primary `tadasant-test`
-  account and resolved from the Parameter Store into the process environment on every boot and poll
-  tick — so it survives a rebuild without anyone logging in again. See
-  [Staging `gh` auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account).
+  It is the fallback, used only while no GitHub token is seeded. Once one is, the durable credentials
+  are per-owner fine-grained tokens (`GH_TOKEN`, `GH_TOKEN__<OWNER>`), resolved from the Parameter
+  Store into the process environment on every boot and poll tick, so they survive a rebuild without
+  anyone logging in again. A deploy never turns this on by itself: until a token is in the store, git
+  and `gh` keep using the stored login. See [GitHub tokens: one per repository
+  owner](/operate/provisioning/#github-tokens-one-per-repository-owner) for the cut-over order, and
+  [Staging `gh` auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account) for staging.
 - `claude_local` → `~/.local` — where `bin/docker-entrypoint`'s background `claude update` writes.
 
 No host Docker socket is bind-mounted into either role. The `docker` commands agent sessions and

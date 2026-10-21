@@ -47,16 +47,21 @@ everything it serves. There are two exceptions today, and they are the reason th
 namespace is called `secrets` rather than `mcp` — see [The namespace
 rename](#the-namespace-rename-from-mcp-to-secrets).
 
-**`GH_TOKEN`** — the token the `gh` CLI authenticates with — is read from this same chain by
-`GhTokenProvisioner`, which publishes it into the container's **process environment** at boot and
-again on every GitHub poll tick (clocked to at most one chain read every five minutes). It has to be an environment variable rather than a resolved
-placeholder because most of its consumers are not ours to hand an env hash to: git spawns
-`gh auth git-credential` itself, and spawned agent sessions inherit whatever the worker has.
+**`GH_TOKEN`** — the token the `gh` CLI authenticates with — and its per-owner siblings
+**`GH_TOKEN__<OWNER>`** are read from this same chain by `GhTokenProvisioner`. It publishes them into the
+container's **process environment** at boot and again on every GitHub poll tick, clocked to at most
+one chain pass every five minutes. They have to be environment variables rather than resolved
+placeholders because most of their consumers are not ours to hand an env hash to: git spawns its
+credential helper itself, and spawned agent sessions start from the worker's environment. The
+per-owner names are discovered by prefix, so seeding a new `GH_TOKEN__<OWNER>` adds an owner. See
+[GitHub tokens: one per repository owner](/operate/provisioning/#github-tokens-one-per-repository-owner).
 
 Two consequences follow from that, both deliberate:
 
-- **It is readable by a session.** Anything running on the worker can recover the value with
-  `gh auth token`. So the token is minted on a dedicated non-primary account with least-privilege
+- **It is readable by a session.** A session is handed its own repository owner's token, and anything
+  running in it can recover that value with `gh auth token`. Sessions run as the worker's user, so a
+  process that goes looking can read the rest of the map from another process's environment too.
+  The per-session narrowing is defense in depth, not isolation. So the token is minted on a dedicated non-primary account with least-privilege
   scopes and never `workflow` — see [Staging `gh`
   auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account). This is the same
   reasoning that keeps the resolver credential *out* of a session's environment: an address is not a

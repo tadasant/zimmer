@@ -5308,6 +5308,23 @@ fired and dragged the cursor forward, the same issue is behind the window and un
 nothing. Neither outcome is announced. Treat un-holding as "may or may not fire" and open a fresh
 issue when you actually want the gate.
 
+### The stored `gh` login stays on disk after per-owner tokens are seeded
+
+With per-owner GitHub tokens seeded (`app/services/github_tokens.rb`), Zimmer's own `git` and `gh`
+stop using the stored `gh auth login` credential. The worker's calls all carry a `GH_TOKEN`, the
+git helper never delegates to `gh`, and a session's `gh` runs with a login-free `GH_CONFIG_DIR`. The
+file itself stays in `~/.config/gh` on the `gh_config` volume, though. Its OAuth token reaches every
+organization the account belongs to, and any process on the worker can read it, including an agent
+session that goes looking. The same goes for the full token map: sessions run as the worker's user,
+so `/proc/<pid>/environ` of the worker or one of its children shows every `GH_TOKEN__*`. Narrowing a
+session to its owner's token is defense in depth, not isolation. Retiring the stored login closes the
+first half. That belongs to the `tadasant-internal` root, which owns `.github/workflows/gh-auth-prod.yml`.
+
+A related edge on the worker side: a `gh` call for an owner with no token of its own inherits the
+default `GH_TOKEN` rather than running unauthenticated. That is deliberate, since unsetting it would
+hand `gh` the stored login instead. The default fine-grained token cannot reach another owner's
+private repositories, so the call still fails closed.
+
 ### The GitHub trigger poller needs a `gh` credential in the environment that runs it
 
 `GithubTriggerPollerJob` runs on the **worker**, and shells out to `gh`. If that environment has no

@@ -377,6 +377,45 @@ module CliSpawnEnv
     env_vars
   end
 
+  # Narrow the worker's GitHub token map to the one token this session's repository
+  # needs.
+  #
+  # The worker holds GH_TOKEN plus a GH_TOKEN__<OWNER> per further owner (see
+  # GithubTokens). A session gets its own repository owner's token as GH_TOKEN, every
+  # GH_TOKEN__* unset, and ZIMMER_GITHUB_DEFAULT_OWNER pinned to that owner — so its
+  # `gh` acts as the owner's token and its git credential helper routes only that
+  # owner. A session on a tadasant repository cannot push to a pulsemcp one with a
+  # pulsemcp token it never received.
+  #
+  # Stripped rather than passed through for the git helper's sake: the helper only
+  # needs the map to reach OTHER owners, and a session that should reach other owners
+  # is cross-owner by design, which no root is today. When one is, its tokens can be
+  # put in its clone's `.env`, which wins here as everywhere.
+  #
+  # The owner is read from the clone's `origin` remote, which every runtime and the
+  # warm process pool have in hand. Before any token is seeded (GithubTokens.routing?
+  # is false) this changes nothing: the session inherits the worker's environment.
+  #
+  # @param env_vars [Hash] Environment variables to pass to the child process
+  # @param working_dir [String] the session's clone
+  # @return [Hash] env_vars with the session's GitHub environment applied
+  def apply_github_token(env_vars, working_dir)
+    return env_vars unless GithubTokens.routing?
+
+    owner = GithubTokens.owner_for_working_directory(working_dir)
+    GithubTokens.session_env(owner).each do |key, value|
+      next if env_vars[key].present?
+
+      env_vars[key] = value
+    end
+    @logger.info "GitHub token for session: owner #{owner || 'unknown'}, " \
+                 "#{env_vars[GithubTokens::DEFAULT_VARIABLE].present? ? 'token set' : 'no token'}"
+    env_vars
+  rescue => e
+    @logger.warn "Failed to apply the session GitHub token: #{e.message}"
+    env_vars
+  end
+
   # Point SSH clients at the operator SSH key (SSH_PRIVATE_KEY_PATH).
   #
   # The key file itself is materialized by OperatorSshKeyProvisioner (from the
