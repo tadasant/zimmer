@@ -137,10 +137,9 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
     assert_equal 70 + SessionPrecedence::SLOT_GAP, session.reload.precedence
   end
 
-  # The semantics every door now shares: `Session#precedence_for_place`, floored
-  # at the rank the session holds. Before the doors shared this, the web demote
-  # button resolved against the class method and would have rewritten 1000 down
-  # to 15 here.
+  # The semantics every door shares: `Session#precedence_for_place`, floored at
+  # the rank the session holds. Resolving against the queue alone would rewrite
+  # 1000 down to 15 here.
   test "top_of_spot never lowers a rank that is already above the head of the queue" do
     spot(10)
     session = priority(precedence: 1000, status: :needs_input)
@@ -183,7 +182,7 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
       result = Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :rest)
     end
 
-    assert_equal "started", result.start.outcome
+    assert_equal :started, result.start.outcome
     assert session.logs.where("content LIKE ?", "%Started now by the REST API promoting it%").exists?
   end
 
@@ -219,6 +218,16 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
     assert result.start.nothing_queued?
   end
 
+  test "assigned attributes ride the same save" do
+    session = spot(10, status: :needs_input)
+    session.assign_attributes(goal: "Ship it")
+
+    Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :rest)
+
+    assert_equal "Ship it", session.reload.goal
+    assert session.priority?
+  end
+
   test "start: false defers the start to start_if_promoted" do
     session = spot(10)
 
@@ -230,7 +239,7 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
     assert session.reload.priority?
 
     assert_enqueued_with(job: AgentSessionJob, args: [ session.id ]) do
-      assert_equal "started", Sessions::UpdateSchedulingClass.start_if_promoted(result).outcome
+      assert_equal :started, Sessions::UpdateSchedulingClass.start_if_promoted(result).outcome
     end
   end
 end

@@ -203,7 +203,7 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_equal 1000, session.precedence
   end
 
-  test "the class write goes through Sessions::UpdateSchedulingClass, starting only after the PATCH commits" do
+  test "the class write goes through Sessions::UpdateSchedulingClass, with the start deferred to the door" do
     session = waiting_spot_session
     calls = []
     real_call = Sessions::UpdateSchedulingClass.method(:call)
@@ -222,6 +222,23 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert_equal false, calls.first[:start]
     assert_equal "started", JSON.parse(response.body)["start"]["outcome"]
     assert_equal "Ship it", session.reload.goal
+  end
+
+  # The class and the PATCH's other columns are one save, so the after_commit
+  # callbacks keyed on those columns still see them — here the replacement
+  # back-reference that `custom_metadata` drives.
+  test "a class change alongside custom_metadata keeps that column's after-commit work" do
+    replaced = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input)
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input,
+      scheduling_class: SessionGenesis::PRIORITY)
+
+    patch "/api/v1/sessions/#{session.id}",
+      params: { scheduling_class: "spot", custom_metadata: { Session::REPLACES_SESSION_KEY => replaced.id.to_s } },
+      headers: @headers, as: :json
+
+    assert_response :success
+    assert session.reload.spot?
+    assert_equal replaced.id.to_s, replaced.reload.custom_metadata[Session::REPLACED_BY_SESSION_KEY].to_s
   end
 
   test "an unknown class refuses the whole PATCH, rename included" do

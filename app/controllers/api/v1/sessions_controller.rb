@@ -302,16 +302,19 @@ class Api::V1::SessionsController < Api::BaseController
 
     # A `title` is a rename, which is Sessions::UpdateTitle's write (shared with
     # the web UI and the `update_title` MCP action). One transaction, so a
-    # rename is not left behind when the rest of the PATCH is refused. The
-    # scheduling-class write goes last: `saved_change_to_scheduling_class?`,
-    # which the Ranked view's membership broadcast keys on, reads the last save.
+    # rename is not left behind when the rest of the PATCH is refused. With a
+    # scheduling class, the other columns are assigned and ride the service's
+    # single `update!`: every `after_commit` reads only the last save's changes,
+    # so a second save would silence the callbacks keyed on the first (the
+    # replacement back-reference on `custom_metadata`, the goal and index
+    # broadcasts).
     title_given = attrs.key?(:title)
     title = attrs.delete(:title)
     scheduled = nil
     saved = Session.transaction do
       Sessions::UpdateTitle.call(session: @session, title: title) if title_given
-      @session.update(attrs) || raise(ActiveRecord::Rollback) if attrs.any?
       if scheduling
+        @session.assign_attributes(attrs)
         begin
           scheduled = Sessions::UpdateSchedulingClass.call(session: @session, actor: :rest, start: false, **scheduling)
         rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
@@ -321,6 +324,8 @@ class Api::V1::SessionsController < Api::BaseController
         rescue ActiveRecord::RecordInvalid
           raise ActiveRecord::Rollback
         end
+      elsif !attrs.empty?
+        @session.update(attrs) || raise(ActiveRecord::Rollback)
       end
       true
     end
