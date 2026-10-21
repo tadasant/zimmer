@@ -20,7 +20,8 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
   CREDENTIAL_HELPER = <<~CONFIG
     [credential "https://github.com"]
     \thelper =
-    \thelper = !/usr/bin/gh auth git-credential
+    \thelper = !/rails/bin/zimmer-git-credential
+    \tuseHttpPath = true
   CONFIG
 
   setup do
@@ -74,7 +75,7 @@ class GitIdentityProvisionerTest < ActiveSupport::TestCase
 
     helper, status = git_in(@home, "config", "--global", "credential.https://github.com.helper")
     assert_equal 0, status.exitstatus
-    assert_equal "!/usr/bin/gh auth git-credential", helper
+    assert_equal "!/rails/bin/zimmer-git-credential", helper
   end
 
   test "writes into ~/.gitconfig, the file the image already configures" do

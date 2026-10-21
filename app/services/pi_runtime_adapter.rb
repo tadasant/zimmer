@@ -305,6 +305,8 @@ class PiRuntimeAdapter
     env_vars = apply_session_scratch_dir(env_vars)
     # Cap the parallel test workers this session forks (tadasant/zimmer#981).
     env_vars = apply_test_parallelism(env_vars)
+    # Hand the session its own repository owner's GitHub token, and no other.
+    env_vars = apply_github_token(env_vars, working_dir)
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     env_vars = apply_operator_ssh_key(env_vars)
     # Tell MCP servers where to send approval requests (and who is asking).

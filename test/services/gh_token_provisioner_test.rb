@@ -6,18 +6,21 @@ require "mocha/minitest"
 class GhTokenProvisionerTest < ActiveSupport::TestCase
   VAR = GhTokenProvisioner::VARIABLE
 
+  ROUTING = GithubTokens::ROUTING_VARIABLE
+  REQUIRE = GhTokenProvisioner::REQUIRE_FINE_GRAINED_VARIABLE
+  PULSEMCP = "GH_TOKEN__PULSEMCP"
+
   setup do
-    @original_env = ENV[VAR]
-    ENV.delete(VAR)
+    @managed = [ VAR, ROUTING, REQUIRE, PULSEMCP ]
+    @original_env = @managed.to_h { |key| [ key, ENV[key] ] }
+    @managed.each { |key| ENV.delete(key) }
     GhTokenProvisioner.reset!
     SecretProviders.reset!
   end
 
   teardown do
-    if @original_env.nil?
-      ENV.delete(VAR)
-    else
-      ENV[VAR] = @original_env
+    @original_env.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
     end
     GhTokenProvisioner.reset!
     SecretProviders.reset!
@@ -119,7 +122,7 @@ class GhTokenProvisionerTest < ActiveSupport::TestCase
     GhTokenProvisioner.ensure!(logger: Logger.new(io))
 
     assert_no_match(/gho_secret_value/, io.string)
-    assert_match(/Could not resolve #{VAR}/, io.string)
+    assert_match(/Could not resolve the GitHub tokens/, io.string)
   end
 
   # ENV is the chain's last link, so a plain `GH_TOKEN=…` (dev, a self-hoster, an
@@ -133,7 +136,97 @@ class GhTokenProvisionerTest < ActiveSupport::TestCase
     assert_equal "gho_from_plain_env", ENV[VAR]
   end
 
+  # --- the token map ---------------------------------------------------------
+
+  test "publishes every GH_TOKEN__<OWNER> the chain holds, beside the default" do
+    stub_real_chain(VAR => "github_pat_default", PULSEMCP => "github_pat_pulsemcp", "UNRELATED" => "x")
+
+    assert_equal "github_pat_default", GhTokenProvisioner.ensure!
+    assert_equal "github_pat_default", ENV[VAR]
+    assert_equal "github_pat_pulsemcp", ENV[PULSEMCP]
+    assert_equal "1", ENV[ROUTING], "a published token turns routing on"
+  end
+
+  test "an owner token alone turns routing on" do
+    stub_real_chain(PULSEMCP => "github_pat_pulsemcp")
+
+    assert_nil GhTokenProvisioner.ensure!
+    assert_equal "github_pat_pulsemcp", ENV[PULSEMCP]
+    assert_equal "1", ENV[ROUTING]
+  end
+
+  # The backward-compatible deploy: production has no token yet, and its stored
+  # `gh auth login` must keep authenticating git — which the helper does only while
+  # the routing flag is down.
+  test "with no token anywhere, routing stays off" do
+    ENV[ROUTING] = "1"
+    stub_real_chain({})
+
+    assert_nil GhTokenProvisioner.ensure!
+    assert_nil ENV[ROUTING]
+  end
+
+  # --- the fine-grained guard -------------------------------------------------
+
+  test "the guard is on in production and off elsewhere by default" do
+    refute GhTokenProvisioner.require_fine_grained?(env: {})
+    Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+    assert GhTokenProvisioner.require_fine_grained?(env: {})
+    refute GhTokenProvisioner.require_fine_grained?(env: { REQUIRE => "false" })
+  end
+
+  test "the guard refuses a token that is not fine-grained, naming the owner and never the value" do
+    ENV[REQUIRE] = "true"
+    stub_real_chain(VAR => "github_pat_default", PULSEMCP => "gho_oauth_reaches_every_org")
+    io = StringIO.new
+
+    GhTokenProvisioner.ensure!(logger: Logger.new(io))
+
+    assert_equal "github_pat_default", ENV[VAR]
+    assert_nil ENV[PULSEMCP], "a refused token is not published"
+    assert_match(/Refusing #{PULSEMCP} \(owner pulsemcp\): an OAuth token \(gho_\)/, io.string)
+    assert_no_match(/gho_oauth_reaches_every_org/, io.string)
+  end
+
+  # A refused GH_TOKEN that was already in the environment — a deploy-time export —
+  # would otherwise keep authenticating every `gh` call: refusing it means removing it.
+  test "a refused token sitting in ENV is removed from it" do
+    ENV[REQUIRE] = "true"
+    ENV[VAR] = "ghp_classic"
+    SecretProviders.stubs(:chain).returns(SecretProviders.build(env: ENV))
+
+    assert_nil GhTokenProvisioner.ensure!(logger: Logger.new(StringIO.new))
+    assert_nil ENV[VAR]
+    assert_nil ENV[ROUTING], "nothing was accepted, so the stored login still answers"
+  end
+
+  # The chain now answers with a refused value, so an older token ENV still holds under
+  # the same name must not stay live — gh would keep using it with routing off.
+  test "refusing a variable also drops an older value ENV held under it" do
+    ENV[REQUIRE] = "true"
+    ENV[PULSEMCP] = "github_pat_older"
+    stub_real_chain(PULSEMCP => "gho_newer_but_refused")
+
+    GhTokenProvisioner.ensure!(logger: Logger.new(StringIO.new))
+
+    assert_nil ENV[PULSEMCP]
+    assert_nil ENV[ROUTING]
+  end
+
+  test "with the guard off, a classic token is published" do
+    ENV[REQUIRE] = "false"
+    stub_real_chain(VAR => "ghp_staging_test_account")
+
+    assert_equal "ghp_staging_test_account", GhTokenProvisioner.ensure!
+    assert_equal "1", ENV[ROUTING]
+  end
+
   private
+
+  # A real chain over an explicit hash, so discovery runs through Chain#names.
+  def stub_real_chain(values)
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ SecretProviders::Env.new(values) ]))
+  end
 
   def store_error
     ParameterStore::StoreError.new("parameter render failed", 503)

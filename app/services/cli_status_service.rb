@@ -5,11 +5,13 @@
 # Checks for: gh (GitHub CLI), claude (Claude Code), codex (OpenAI Codex), fly (Fly.io CLI)
 #
 # Authentication strategies:
-# - gh: either a GH_TOKEN in the environment — resolved from the ${VAR} chain by
-#   GhTokenProvisioner, which is how staging authenticates — or an OAuth device
-#   flow (`gh auth login`), whose token is stored in /home/rails/.config/gh
-#   (volume-mounted from the host). A credential helper baked into Dockerfile.base
-#   delegates git auth to `gh auth git-credential`, which honours both.
+# - gh: a token map in the environment — GH_TOKEN plus one GH_TOKEN__<OWNER> per
+#   further repository owner, resolved from the ${VAR} chain by GhTokenProvisioner
+#   (see GithubTokens) — or, before any token is seeded, an OAuth device flow
+#   (`gh auth login`) whose token is stored in /home/rails/.config/gh
+#   (volume-mounted from the host). git authenticates through
+#   bin/zimmer-git-credential, which routes by repository owner and delegates to
+#   `gh auth git-credential` only while no token is seeded.
 # - fly: Uses FLY_IO_API_TOKEN environment variable (no interactive login needed)
 # - claude: Uses OAuth authentication (`claude auth login`, or the Authenticate
 #   button on the accounts page). Its check is a Ruby callable rather than a
@@ -18,9 +20,12 @@
 #   credentials are stored in auth.json under CODEX_HOME (/home/rails/.codex)
 #
 # A tool may also declare `check_details`, a Ruby callable returning one line of
-# operator-facing state that "installed + authenticated" does not cover. Only Pi
-# uses it: its MCP, hooks and plugin support are separate npm packages, so a Pi
-# that is installed and authenticated can still be missing all three, and
+# operator-facing state that "installed + authenticated" does not cover. `gh` uses
+# it for the token map — each token's account and expiry (GithubTokenStatus),
+# because a fine-grained token that is about to expire is still "authenticated".
+# Pi uses it because its MCP, hooks and plugin support are separate npm
+# packages, so a Pi that is installed and authenticated can still be missing all
+# three, and
 # `PiExtensions.status_summary` is the answer to that reachable without a shell
 # on the box.
 #
@@ -53,18 +58,28 @@ class CliStatusService
       check_installed: "which gh",
       check_auth: "gh auth status",
       check_version: "gh --version",
+      check_details: -> { GithubTokenStatus.summary },
       auth_method: :oauth,
       install_instructions: <<~INSTRUCTIONS,
         # Pre-installed in Docker image
         # If missing, rebuild the Docker image
       INSTRUCTIONS
       auth_instructions: <<~INSTRUCTIONS
-        # Two ways to authenticate gh. Preferred where the ${VAR} chain is wired:
-        # put a GH_TOKEN in the Parameter Store and GhTokenProvisioner publishes
-        # it into the environment on every boot and poll tick — no login, and it
-        # survives a container rebuild. Otherwise `gh auth login` writes a gho_*
+        # Preferred: fine-grained personal access tokens, one per repository
+        # owner, in the Parameter Store (the strad secrets console writes there):
+        #
+        #   GH_TOKEN             the default owner's token
+        #   GH_TOKEN__<OWNER>    one per further owner, e.g. GH_TOKEN__PULSEMCP
+        #
+        # GhTokenProvisioner publishes them within ~5 minutes, no login and no
+        # redeploy, and they survive a container rebuild. In production only
+        # github_pat_* tokens are accepted (ZIMMER_GITHUB_REQUIRE_FINE_GRAINED_TOKENS).
+        # ZIMMER_GITHUB_DEFAULT_OWNER names the owner GH_TOKEN belongs to.
+        #
+        # Fallback, while no token is seeded: `gh auth login` writes a gho_*
         # OAuth token to ~/.config/gh, volume-mounted from the host and shared
-        # across web + worker containers.
+        # across web + worker containers. It reaches every organization the
+        # account belongs to.
         #
         # Option 1: Via Kamal (from your laptop)
         bin/kamal shell -d production
@@ -73,8 +88,6 @@ class CliStatusService
         ssh root@zimmer.example.com
         docker exec -it $(docker ps -q --filter name=zimmer-worker | head -1) bash
 
-        # Then run the device-flow login (works across orgs, exempt from
-        # classic-PAT bans, does not auto-expire):
         gh auth login
       INSTRUCTIONS
     },

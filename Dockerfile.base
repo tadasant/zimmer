@@ -265,9 +265,15 @@ RUN PLAYWRIGHT_BROWSERS_PATH= npx playwright@^1 install chromium
 # so this pin only affects the chrome-browser install step in this image.
 RUN npx puppeteer@^24 browsers install chrome
 
-# Configure git to use the gh CLI's credential helper for GitHub authentication.
-# The OAuth token comes from `gh auth login` and is mounted as a volume at
-# ~/.config/gh — the helper invokes gh to fetch it on demand.
+# Configure git's credential helper for GitHub: bin/zimmer-git-credential, which
+# hands git the token for the repository's OWNER from the token map
+# GhTokenProvisioner publishes into the environment (GH_TOKEN, GH_TOKEN__<OWNER>).
+# useHttpPath makes git tell the helper which repository it is asking about —
+# without it there is no owner to route on. The helper path is in the app image
+# (COPY . . lands it at /rails/bin); this layer only names it. Until a token has
+# been seeded, the helper delegates to `gh auth git-credential`, so the stored
+# `gh auth login` credential in ~/.config/gh keeps working. See
+# app/services/github_tokens.rb.
 #
 # This is the credential half of the git surface only. The IDENTITY half —
 # `user.name` / `user.email`, without which a session's first `git commit` exits
@@ -280,7 +286,8 @@ RUN npx puppeteer@^24 browsers install chrome
 # offline (see AGENTS.md), so CI clones nothing private and commits nothing — it
 # needs neither the helper nor an identity.
 RUN git config --global credential.https://github.com.helper '' \
-    && git config --global credential.https://github.com.helper '!/usr/bin/gh auth git-credential'
+    && git config --global --add credential.https://github.com.helper '!/rails/bin/zimmer-git-credential' \
+    && git config --global credential.https://github.com.useHttpPath true
 
 ENV FLYCTL_INSTALL="/home/rails/.fly"
 ENV PATH="/home/rails/.local/bin:${FLYCTL_INSTALL}/bin:${PATH}"

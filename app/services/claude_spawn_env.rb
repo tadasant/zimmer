@@ -102,6 +102,9 @@ module ClaudeSpawnEnv
     # cannot each size a Rails suite off the whole droplet's processor count.
     apply_test_parallelism(env_vars)
 
+    # Hand the session its own repository owner's GitHub token, and no other.
+    apply_github_token(env_vars, working_dir)
+
     # Point the ssh-* MCP servers (and the plain ssh/git CLIs) at the operator SSH key.
     apply_operator_ssh_key(env_vars)
 
