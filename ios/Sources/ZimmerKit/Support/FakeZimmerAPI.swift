@@ -84,7 +84,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// site-wide banners show.
     /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
-                longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil) {
+                longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
+                web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
         self.trashedElsewhere = trashedElsewhere
         self.degraded = degraded
@@ -97,7 +98,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.sweptAt = now.addingTimeInterval(-3 * 3600)
         self.all = sessions
         self.summaries = FakeZimmerAPI.sampleSummaries(now: now)
-        self.conversations = FakeZimmerAPI.sampleConversations(now: now)
+        self.conversations = FakeZimmerAPI.sampleConversations(now: now, web: web)
         self.derivedClasses = sessions.reduce(into: [:]) { $0[$1.id] = $1.priorityClass ?? "priority" }
         self.humanMessages = FakeZimmerAPI.sampleHumanMessages(now: now)
         if live {
@@ -278,6 +279,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
         pushFailures.append(stage)
     }
 
+    public func session(slug: String) async throws -> SessionDetail {
+        guard let session = all.first(where: { $0.slug == slug }) else {
+            throw ZimmerError.http(status: 404, message: "The requested resource was not found")
+        }
+        return try await self.session(session.id)
+    }
+
     private func find(_ id: Int) throws -> SessionSummary {
         // The rest of 1044's family is on no board the fixture draws, but opens from its
         // hierarchy and its goal check as any session does.
@@ -452,9 +460,18 @@ public actor FakeZimmerAPI: ZimmerAPI {
         ]
     }
 
-    static func sampleConversations(now: Date) -> [Int: [ConversationMessage]] {
+    /// - Parameter web: the deployment the fixture is signed in to, which the router's links to
+    ///   its own sessions are written against, as an agent writes them.
+    static func sampleConversations(now: Date, web: URL = URL(string: "https://fixture.invalid")!) -> [Int: [ConversationMessage]] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        let parity = ServerURL.join(web, "/sessions/1044").absoluteString
         return [
+            // The router's report: a link to the session it spawned, on this deployment, beside
+            // one to GitHub.
+            1040: [
+                ConversationMessage(id: 0, role: .user, content: "Zimmer iOS still doesn't have parity with PWA. Audit it and implement the findings as slices.", timestamp: ago(3_010)),
+                ConversationMessage(id: 1, role: .assistant, content: "Spawned the audit as \(parity), which holds the slices. Its first is [#1293](https://github.com/tadasant/zimmer/pull/1293).", timestamp: ago(3_005)),
+            ],
             1038: [
                 ConversationMessage(id: 0, role: .user, content: "Open a PR for the iOS scaffold and get CI green.", timestamp: ago(240)),
                 ConversationMessage(id: 1, role: .assistant, content: "Using tool: Bash\ngh pr checks 1261", timestamp: ago(12), hasToolUse: true),

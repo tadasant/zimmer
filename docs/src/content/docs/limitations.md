@@ -8184,14 +8184,21 @@ status, agent root, class, goal — where the web bubble sends the whole page, i
 markdown, up to 20,000 characters. The router sees less of a session from the phone than from the
 browser.
 
-## A Zimmer link in the iOS app opens the browser
+## A link to a transcript message in the iOS app does not scroll to it
 
 The web's Status panel rewrites a summary's link to one of the session's own transcript messages
 into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
-transcript. The API sends the stored text, and the app has no handler for Zimmer's own URLs. So in
-the app's *Where things stand* and its transcript, a link to a message, or to another session,
-opens the web page in the browser rather than in the app. A pull request, issue or CI run link
-opens the same either way.
+transcript. The API sends the stored text. The app opens a link to one of Zimmer's own pages on its
+own screen (`ZimmerLink`), but it ignores the `#message-N`. A link to a message in another session
+opens that session at its newest message. A link to a message in the session already open does
+nothing visible.
+
+## A Zimmer page the iOS app has no screen for opens the browser
+
+A link to one of this deployment's pages opens in the app only when the app has a screen for that
+page: the board, a session (by id or slug), a new session, the inbox, triggers and one trigger,
+costs, health, CLIs, settings, API keys, and Live. Any other page, such as `/outcomes`,
+`/connectors`, a trigger's edit form, or `/settings/models`, opens the web UI in the browser.
 
 ## The transcript archive's deadline cannot stop a run that is stuck
 
