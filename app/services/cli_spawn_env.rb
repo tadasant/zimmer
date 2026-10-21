@@ -323,10 +323,20 @@ module CliSpawnEnv
   # @return [Array<String>] argv to hand Process.spawn
   def apply_session_memory_cgroup(command)
     cgroup = SessionMemoryCgroup.for(@zimmer_session_id)
-    return command if cgroup.nil? || !cgroup.prepare!
+    return command if cgroup.nil?
 
-    limit = SessionMemoryCgroup.limit_bytes
-    @logger.info "Session memory bound: #{limit.zero? ? 'none (disabled)' : "#{limit} bytes"} via #{cgroup.path}"
+    # A boosted session is carved out before it is entered, so its first turn after the
+    # boost is granted runs under the boost rather than waiting for the minute's
+    # reconcile. A session still carved out after its boost ended is put back first for
+    # the same reason — and so that the path this spawn enters is settled here rather
+    # than moved out from under it by the minute's reconcile. Everyone else pays nothing.
+    if cgroup.carved_out? || Session.holding_memory_boost.exists?(id: @zimmer_session_id)
+      SessionMemoryBoost.reconcile!
+    end
+    return command unless cgroup.prepare!
+
+    limit = cgroup.stats.limit_bytes
+    @logger.info "Session memory bound: #{limit.nil? ? 'none' : "#{limit} bytes"} via #{cgroup.path}"
     cgroup.enter_command(command)
   rescue => e
     @logger.warn "Failed to apply the session memory bound: #{e.message}"

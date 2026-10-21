@@ -144,8 +144,8 @@ class SessionMemoryWatch
     when SessionMemoryCgroup::POOL_SCOPE
       "#{opening} This session never reached its own limit of " \
         "#{human_bytes(stats.limit_bytes)} — what ran out is the " \
-        "#{human_bytes(pool_stats.limit_bytes)} of memory that ALL sessions on this worker " \
-        "share. Retrying is reasonable once the box is quieter; running fewer things at " \
+        "#{human_bytes(pool_stats.limit_bytes)} of memory it shares with the other sessions " \
+        "on this worker. Retrying is reasonable once the box is quieter; running fewer things at " \
         "once inside this session (parallel test workers, concurrent builds) makes it less " \
         "likely."
     else
@@ -164,8 +164,11 @@ class SessionMemoryWatch
 
   # Read once per tick, not once per question: the kill message and the pressure warning
   # both consult it, and they must be looking at the same reading.
+  #
+  # The bound this session shares with others, which is the pool's unless a boost elsewhere
+  # has capped the shared tier tighter — see SessionMemoryCgroup#enclosing_stats.
   def pool_stats
-    @pool_stats ||= SessionMemoryCgroup.pool_stats
+    @pool_stats ||= @cgroup.enclosing_stats
   end
 
   # Once per job, not once per tick: a session that sits at 80% for an hour has one
@@ -197,8 +200,8 @@ class SessionMemoryWatch
 
     @warned_pool = true
     log_buffer.add(
-      "All agent sessions on this worker share " \
-      "#{human_bytes(pool_stats.limit_bytes)} of memory, and " \
+      "This session shares " \
+      "#{human_bytes(pool_stats.limit_bytes)} of memory with the other sessions on this worker, and " \
       "#{human_bytes(pool_stats.current_bytes)} of it is in use. A session can be " \
       "OOM-killed here while well inside its own limit. If this session is running " \
       "something parallel — a test suite, a build — consider narrowing it.",

@@ -80,6 +80,10 @@ class CodexRuntimeAdapter
   # see that class for why this is a file rather than a pipe.
   EVENT_LOG_FILENAME = "codex_events.jsonl"
 
+  # Where `--output-last-message` writes the final assistant message, in the
+  # working directory.
+  LAST_MESSAGE_FILENAME = "codex_last_message.txt"
+
   def self.stderr_log_filename
     STDERR_LOG_FILENAME
   end
@@ -303,7 +307,7 @@ class CodexRuntimeAdapter
   # Path Codex writes the final assistant message to. A runtime-independent
   # capture of the response, kept inside the clone alongside codex_stderr.log.
   def last_message_path(working_dir)
-    File.join(working_dir, "codex_last_message.txt")
+    File.join(working_dir, LAST_MESSAGE_FILENAME)
   end
 
   # Deliver an append_system_prompt to Codex by writing AGENTS.md, which Codex

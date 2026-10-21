@@ -354,6 +354,10 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot inbox -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers -ZimmerFixture -ZimmerFixtureTab triggers
   shoot more -ZimmerFixture -ZimmerFixtureTab more
+  shoot settings -ZimmerFixture -ZimmerFixtureSettings defaults
+  shoot settings-experimental -ZimmerFixture -ZimmerFixtureSettings experimental
+  shoot settings-account -ZimmerFixture -ZimmerFixtureSettings
+  shoot account -ZimmerFixture -ZimmerFixtureAccount
   shoot trigger-detail -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot trigger-run-now -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   # The trigger form, opened on a Slack trigger: the condition card with the channel picker fed
@@ -393,6 +397,9 @@ if [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot inbox-dark -ZimmerFixture -ZimmerFixtureTab inbox
   shoot triggers-dark -ZimmerFixture -ZimmerFixtureTab triggers
   shoot more-dark -ZimmerFixture -ZimmerFixtureTab more
+  shoot settings-experimental-dark -ZimmerFixture -ZimmerFixtureSettings experimental
+  shoot settings-account-dark -ZimmerFixture -ZimmerFixtureSettings
+  shoot account-dark -ZimmerFixture -ZimmerFixtureAccount
   shoot trigger-detail-dark -ZimmerFixture -ZimmerFixtureTrigger 5
   shoot trigger-run-now-dark -ZimmerFixture -ZimmerFixtureTrigger 7 -ZimmerFixtureRunNow
   shoot costs-dark -ZimmerFixture -ZimmerFixtureCosts

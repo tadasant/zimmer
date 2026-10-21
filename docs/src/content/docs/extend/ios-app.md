@@ -109,7 +109,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
   generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
   the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
-  (a [Zimmer link opens the browser](/limitations/#a-zimmer-link-in-the-ios-app-opens-the-browser)); for a failed session, why it failed (`metadata.failure_reason`,
+  (a [link to a message does not scroll to it](/limitations/#a-link-to-a-transcript-message-in-the-ios-app-does-not-scroll-to-it)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
   with checks; its tally names the goal, and a router that recorded no PR of its own says whose
@@ -143,7 +143,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it: headings, paragraphs, lists that nest, quotes, tables and rules drawn as blocks, with
   emphasis, code spans and links inside them, and bare URLs made links as the web's autolink
-  makes them. A link opens on a tap. A long press on a paragraph or list item that holds
+  makes them. A link opens on a tap. A link to one of this Zimmer's own pages, on either of the
+  origins the app signed in to, opens the app's screen for it instead of the browser: a session
+  (`/sessions/<id>`, or its slug, which the app looks up) is pushed over the page the link was on,
+  so Back returns to it, and the board, a new session, the inbox, triggers and a trigger, costs,
+  health, CLIs, settings, API keys and Live each open their tab or sheet. A page the app has no
+  screen for [opens the browser](/limitations/#a-zimmer-page-the-ios-app-has-no-screen-for-opens-the-browser),
+  as does every other site's link; *Open in browser* on a session or trigger still opens the web page. A long press on a paragraph or list item that holds
   links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
   so a long signed URL in an agent's message can be pasted elsewhere; a paragraph with links is
   copied through that menu rather than selected. A link in a heading or a table cell opens on a
@@ -436,6 +442,39 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   page then says what it covers, and *All agent roots* widens it again. The burn rate by harness
   and model is on the web page only: `GET /api/v1/costs` does not return it. *Health* is the
   overall status and each section's; its operator actions stay in the browser.
+- **Settings: the page's Sign-in card, API keys, Session Defaults, Experimental, MCP Apps and
+  Deployment Information.** *More → Settings* opens on the page's Sign-in card, read from
+  `GET /api/v1/me`: the server this phone is signed in to, *Signed in as <email>*, how this
+  connection acts (*acts on your behalf* or *relay only*), and — on a sign-in acting as you —
+  *Authenticator set up 3 weeks ago* and *8 recovery codes left*; then *Sign out* and *Sign out
+  everywhere*, which asks first and, since the server revokes this phone's connection along with
+  every browser, signs the app out. Under it, *API keys & connections* opens the **Settings → API
+  keys** page as a screen: the deployment's MCP connections (`GET /api/v1/oauth_grants`; this phone
+  is marked, each row carries the page's badges, *Approved by*, *Last used* and *Approved*, with
+  *Make relay only* / *Let it act on my behalf* and *Revoke*, each asking first as the page does),
+  the deployment's keys (`GET /api/v1/api_keys`; name, fingerprint, *Created*, the `ZIMMER_API_KEYS`
+  and *Agent sessions use this key* badges, *Revoke* and *Restore*) and *Create a key* (name and what
+  it opens), which shows the token once with *Copy* and the page's warning that it is the one time
+  it can be shown. Every write takes a sign-in acting as you; a relay-only sign-in is refused in
+  place, in the server's words, and the row stays as it was. Below the card come the page's three
+  settings sections in its order and words, read and written through
+  `GET`/`PATCH /api/v1/app_settings`. *Session
+  Defaults* shows the page's banner (*Active global default: Claude Code / sonnet*, or *No global
+  override set — using the built-in default*), a Runtime picker and a Model picker scoped to the
+  picked runtime (picking a runtime resets the model to that runtime's default, so an incompatible
+  pair cannot be chosen), and *Save session defaults*, enabled once something changed; picking the
+  built-in pair and saving clears the override rather than storing a copy of it. *Experimental*
+  lists each toggle with its title, description and the page's status line (*MCP tool search is ON
+  (recommended default).*), amber when the switch is away from its default; a switch saves as it is
+  flipped, the status line follows the server's answer, and a refusal puts the switch back and says
+  why under it. *MCP Apps* is the master switch, the eligible remote servers as a checklist (or *No
+  remote MCP servers in the catalog.*) and *Save MCP Apps settings*; a sign-in that does not act as
+  you is refused with the server's message under the Save, and the switch and ticks stay as they
+  were set. Below those: notifications, and the page's *Deployment Information* — the commit the
+  server booted from (long-press it to copy the whole SHA), branch, commit date and environment —
+  with this app's own version and build line under it. The page's other cards — Models, Zimmer
+  plugins, Catalog Pins — are not in the app yet; the parity audit (`ios/PARITY_AUDIT.md`) lists
+  each.
 - **Talks to Zimmer, live** ([Live Mode](/sessions/live/)). The waveform button on the session
   list lands in the current conversation with voice on and the call starting, or a new
   conversation with voice on when none is open. Leaving the thread before that call connects hangs
@@ -487,8 +526,10 @@ web it also resumes a failed session and sends the continue nudge to a stalled w
 *Refresh Transcript* and a failed session is restarted with *Restart Session*. On the hierarchy,
 the web says why a row is *drawn under* a session that did not spawn it — reached through a
 senior, or placed there because the tree was cut short — and the app says only that it is: the
-hierarchy nodes do not carry `ceiling_placed`. The admin pages (API keys, inference accounts,
-connectors, settings) stay in the browser; *Open in browser* on any session gets you there.
+hierarchy nodes do not carry `ceiling_placed`. The Settings sub-pages other than API keys
+(inference accounts, connectors, the model catalog, Zimmer plugins, catalog pins) have no app
+screen yet and no API for most of it; `ios/PARITY_AUDIT.md` lists each with what it needs. *Open in browser* on any
+session gets you there meanwhile.
 
 Parts of the web session page wait on the API carrying them. The conversation endpoint returns
 each message's role, words, time and whether it holds a tool call or result, and nothing else, so
@@ -568,8 +609,9 @@ under the built-in `zimmer-ios` client:
    [the REST API](/extend/rest-api/#the-ios-apps-bearer-token) with it.
 
 No Google credential and no API key ever reaches the phone. The connection is listed on
-**Settings → API keys** with every other OAuth connection, and revoking it there signs the phone out
-on its next request. Signing out in the app revokes it too.
+**Settings → API keys** with every other OAuth connection — and in the app, under *Settings → API
+keys & connections*, marked *This phone* — and revoking it from either signs the phone out on its
+next request. Signing out in the app revokes it too.
 
 Only the token endpoint signs the app out. The app returns to the sign-in screen when `/oauth/token`
 answers `invalid_grant` (the connection was revoked, or its refresh token expired) or
@@ -588,6 +630,17 @@ sends the APNs token and the environment it belongs to: `sandbox` for a developm
 `production` for TestFlight. Tapping a notification opens its session. Signing out unregisters the
 phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
 even if it never signs out.
+
+A phone that ends up with no registration has stopped somewhere the server cannot see, so the app
+says where. Settings → Notifications shows how the last attempt went under *This phone*: registered,
+notifications off, APNs refused a token (the build lacks `aps-environment`, say), or the token could
+not be registered with Zimmer. *Register this phone again* retries. The app also reports each failure to
+`POST /api/v1/apns_devices/failure`, which logs it at WARN as
+`[apns] registration failed on the phone at <declined|apns|register>`, and every request that
+endpoint or the registration itself refuses to a caller that presented a credential (a 401 on the
+app's token, a bad token) is a WARN under `[apns]` too; an anonymous request stays INFO.
+Request lines are INFO and are not shipped to the log store, so without these a missing phone
+leaves no trace. A decline is reported once, not on every launch.
 
 The server sends the same notifications the web push does (*needs input*, a question waiting for an
 answer, *finished*, *failed*, and a custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says

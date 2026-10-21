@@ -289,7 +289,10 @@ Rails.application.routes.draw do
       # Push notifications
       post "notifications/push", to: "notifications#push"
       # The iOS app's push registration (ApnsDevice). The token is hex.
-      resources :apns_devices, only: [ :create, :destroy ], param: :token
+      resources :apns_devices, only: [ :create, :destroy ], param: :token do
+        # What stopped the phone short of a registration, logged at WARN.
+        post :failure, on: :collection
+      end
 
       resources :sessions do
         collection do
@@ -757,6 +760,9 @@ Rails.application.routes.draw do
       patch :update_model
       patch :update_effort
       patch :update_auto_compact_window
+      # One-off memory boost (SessionMemoryBoost): grant or end it.
+      patch :memory_boost, action: :update_memory_boost
+      delete :memory_boost, action: :clear_memory_boost
       patch :update_scheduling_class
       patch :update_precedence
       patch :reorder_precedence

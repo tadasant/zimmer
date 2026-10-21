@@ -751,6 +751,8 @@ semantics.
 `goal`, `goal_check`, `mcp_servers`, `all_mcp_servers`, `injected_mcp_servers`, `catalog_skills`, `catalog_hooks`,
 `catalog_plugins`, `config`, `metadata`, `custom_metadata`,
 `is_autonomous`, `heartbeat_enabled`, `heartbeat_interval_seconds`, `auto_compact_window`,
+`memory_boost_mb`, `memory_boost_expires_at` (both `null` unless the session holds a
+[memory boost](/sessions/spawning/#a-one-off-memory-boost)),
 `genesis`, `source_context`, `last_turn_source`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
 `session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
@@ -929,7 +931,8 @@ prompt, a prompt over the cap, prompt and page together over the cap, or a route
 cannot resolve, and **429** (with `retry_after`, in seconds) past 10 sessions a minute from one
 client address — the ceiling on what a leaked key can spend from one place, not something a person
 dropping pins meets. The `session_url` is built on the instance's configured base URL
-(`ZIMMER_PROD_BASE_URL`), not on the host the request came in on.
+(`ZIMMER_PROD_BASE_URL`), not on the host the request came in on, and is left out while that base
+URL is still the `zimmer.example.com` placeholder.
 
 ## Zimmer plugins
 
@@ -1204,9 +1207,11 @@ changes them through MCP (`action_live_settings`), where the change is recorded 
 `DELETE /notifications/dismiss_all_read` · `POST /notifications/push` (`session_id` + `message`).
 
 `POST /apns_devices` (`token` hex, `environment` `sandbox`|`production`, `device_name`, `app_version`)
-→ 201 `{apns_device}` · `DELETE /apns_devices/:token` → 204. How [the iOS app](/extend/ios-app/#push-notifications)
+→ 201 `{apns_device}` · `DELETE /apns_devices/:token` → 204 · `POST /apns_devices/failure` (`stage`
+`declined`|`apns`|`register`, `error`, `environment`, `device_name`, `app_version`) → 204, logged at WARN
+(422 for an unknown stage). How [the iOS app](/extend/ios-app/#push-notifications)
 registers a phone for push. It is an upsert on the token, and one made with the app's bearer token is
-tied to its grant. Both take the app's token or an API key. `DELETE` reaches only the caller's own
+tied to its grant. All three take the app's token or an API key. `DELETE` reaches only the caller's own
 registrations: those under its grant for the app's token, and grant-less ones for an API key. A token
 outside that scope is left alone and still answers 204.
 

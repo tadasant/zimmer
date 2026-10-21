@@ -129,7 +129,7 @@ servers:
       #
       # Read the word "underneath" literally, because the obvious misreading of it has
       # already been used to argue for more concurrency. cgroup v2 is HIERARCHICAL: the
-      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/sessions/session-<id>,
+      # per-session cgroups live at /sys/fs/cgroup/zimmer.sessions/sessions/shared/session-<id>,
       # which is inside this container's cgroup, so every byte a session charges is charged
       # to this 10g as well. The per-session bound does NOT move session memory out of this
       # budget and does NOT create headroom -- six sessions at 4 GiB is 24 GiB against 10g,

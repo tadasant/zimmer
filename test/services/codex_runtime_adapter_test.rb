@@ -39,7 +39,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       spawned = @mock_process_manager.spawned_processes.first
 
       assert_equal "/bin/sh", spawned[:command].first
-      assert_includes spawned[:command], File.join(parent, "session-5150", "cgroup.procs")
+      assert_includes spawned[:command], File.join(parent, "shared", "session-5150", "cgroup.procs")
       assert_equal [ "codex", "exec" ], spawned[:command].last(2)
     end
   end
