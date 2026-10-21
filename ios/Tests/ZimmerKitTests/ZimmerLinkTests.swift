@@ -60,6 +60,8 @@ final class ZimmerLinkTests: XCTestCase {
         XCTAssertNil(link("https://zimmer.example.com:8443/sessions/1"), "another port is another origin")
         XCTAssertNil(link("http://zimmer.example.com/sessions/1"), "the app only ever signs in over https")
         XCTAssertNil(link("mailto:someone@zimmer.example.com"))
+        XCTAssertNil(link("https://zimmer.example.com@evil.test/sessions/1"), "the host is what follows the @")
+        XCTAssertEqual(link("https://someone@zimmer.example.com/sessions/1"), .session(1))
     }
 
     func testOneOriginServesBoth() {
@@ -73,6 +75,6 @@ final class ZimmerLinkTests: XCTestCase {
         let api = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
         let detail = try await api.session(slug: "fix-ios-links")
         XCTAssertEqual(detail.session.id, 41)
-        XCTAssertEqual(transport.requests.first?.url.path, "/api/v1/sessions/fix-ios-links")
+        XCTAssertEqual(transport.sent.first?.url.path, "/api/v1/sessions/fix-ios-links")
     }
 }

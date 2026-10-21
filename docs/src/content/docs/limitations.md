@@ -8190,8 +8190,8 @@ The web's Status panel rewrites a summary's link to one of the session's own tra
 into an in-page `#message-N` anchor (`SessionStatusSummary#summary_markdown`), so a tap scrolls the
 transcript. The API sends the stored text. The app opens a link to one of Zimmer's own pages on its
 own screen (`ZimmerLink`), but it ignores the `#message-N`. A link to a message in another session
-opens that session at its newest message. A link to a message in the session already open does
-nothing visible.
+opens that session at its newest message. A link to a message in the session already open opens
+the web page in the browser, which scrolls to it.
 
 ## A Zimmer page the iOS app has no screen for opens the browser
 

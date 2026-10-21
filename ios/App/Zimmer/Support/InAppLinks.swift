@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// How a tapped link reaches `AppModel.openInApp`: set once over the tabs, read by what draws
+/// How a tapped link reaches `AppModel.openInApp`: set over the tabs, read by what draws
 /// links people write (`MarkdownText`). An environment value rather than the model itself, so
 /// a view drawn where the model was never passed opens links as any link, rather than crashing
 /// on a missing environment object.
@@ -31,7 +31,8 @@ private struct OpensZimmerLinksInApp: ViewModifier {
     @Environment(\.inAppLinks) private var links
 
     func body(content: Content) -> some View {
-        content.environment(\.openURL, OpenURLAction { url in
+        let links = links
+        return content.environment(\.openURL, OpenURLAction { url in
             // SwiftUI calls this on the main thread, from a tap.
             MainActor.assumeIsolated { links.open(url) } ? .handled : .systemAction
         })
