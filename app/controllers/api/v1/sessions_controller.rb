@@ -276,38 +276,61 @@ class Api::V1::SessionsController < Api::BaseController
   #
   # Ranking takes either `precedence` (an absolute rank) or `place` (a symbolic
   # one the server resolves against the live queue), never both.
+  #
+  # A `scheduling_class` is Sessions::UpdateSchedulingClass's write (shared with
+  # the web Promote / Demote buttons and the `change_scheduling_class` MCP
+  # action), which carries any `precedence` / `place` with it, logs both, and
+  # starts a waiting session it promoted.
   def update
-    was_priority = @session.priority_class == SessionGenesis::PRIORITY
-
-    # The session already holds a rank, so it places itself: excluded from its own
-    # population, and never lowered by a request to put it first.
-    placement = resolved_placement(session_update_params, session: @session)
-
+    place = validated_place(session_update_params)
     attrs = session_update_params.except(:place)
-    attrs[:precedence] = placement unless placement.nil?
+
+    scheduling = nil
+    if attrs.key?(:scheduling_class)
+      scheduling = { scheduling_class: attrs.delete(:scheduling_class) }
+      if place
+        attrs.delete(:precedence)
+        scheduling[:place] = place
+      elsif attrs.key?(:precedence)
+        scheduling[:precedence] = attrs.delete(:precedence)
+      end
+    elsif place
+      # The session already holds a rank, so it places itself: excluded from its
+      # own population, and never lowered by a request to put it first.
+      attrs[:precedence] = @session.precedence_for_place(place)
+    end
 
     # A `title` is a rename, which is Sessions::UpdateTitle's write (shared with
     # the web UI and the `update_title` MCP action). One transaction, so a
-    # rename is not left behind when the rest of the PATCH is refused.
+    # rename is not left behind when the rest of the PATCH is refused. The
+    # scheduling-class write goes last: `saved_change_to_scheduling_class?`,
+    # which the Ranked view's membership broadcast keys on, reads the last save.
     title_given = attrs.key?(:title)
     title = attrs.delete(:title)
+    scheduled = nil
     saved = Session.transaction do
       Sessions::UpdateTitle.call(session: @session, title: title) if title_given
-      next true if attrs.empty?
-
-      @session.update(attrs) || raise(ActiveRecord::Rollback)
+      @session.update(attrs) || raise(ActiveRecord::Rollback) if attrs.any?
+      if scheduling
+        begin
+          scheduled = Sessions::UpdateSchedulingClass.call(session: @session, actor: :rest, start: false, **scheduling)
+        rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
+          # Worded as the model's inclusion validation words it.
+          @session.errors.add(:scheduling_class, "#{e.scheduling_class} is not a known scheduling class")
+          raise ActiveRecord::Rollback
+        rescue ActiveRecord::RecordInvalid
+          raise ActiveRecord::Rollback
+        end
+      end
+      true
     end
 
     if saved
       # Promoting a waiting session starts it, the same as the Ranked view's
       # Promote and `action_session`'s `change_scheduling_class` — which is what
-      # makes the promise above ("moved to priority and started") true. The hold
-      # this releases carries a deferred re-check up to an hour out, and nothing
-      # else would bring it forward. Only on the transition INTO priority, so an
-      # unrelated PATCH cannot restart a session by touching its title.
-      start = if !was_priority && @session.priority_class == SessionGenesis::PRIORITY && @session.waiting?
-        Sessions::StartNow.call(@session, actor: "the REST API promoting it")
-      end
+      # makes the promise above ("moved to priority and started") true. Started
+      # once the PATCH has committed, never inside its transaction.
+      start = Sessions::UpdateSchedulingClass.start_if_promoted(scheduled) if scheduled
 
       # Reported rather than swallowed: a start this refuses (a session asleep on
       # an armed wake, say) is something the caller has to be able to see.
@@ -1866,10 +1889,21 @@ class Api::V1::SessionsController < Api::BaseController
   # renders would otherwise be told it had answered twice when it had not.
   #
   # @param permitted [ActionController::Parameters] the permitted write payload
-  # @param session [Session, nil] the session being placed, when it already exists
   # @raise [PlacementError] on both arguments at once, or an unknown placement
   # @return [Integer, nil]
-  def resolved_placement(permitted, session: nil)
+  def resolved_placement(permitted)
+    place = validated_place(permitted)
+    place && Session.precedence_for_place(place)
+  end
+
+  # The `place` a write named, checked against `precedence` and the known
+  # placements but not yet resolved, or nil when it named none. #update hands it
+  # to `Session#precedence_for_place` or Sessions::UpdateSchedulingClass, both of
+  # which place an existing session against the queue minus itself.
+  #
+  # @raise [PlacementError] as #resolved_placement
+  # @return [String, nil]
+  def validated_place(permitted)
     place = permitted[:place]
     return nil if place.blank?
 
@@ -1879,7 +1913,7 @@ class Api::V1::SessionsController < Api::BaseController
       raise PlacementError, "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}."
     end
 
-    session ? session.precedence_for_place(place.to_s) : Session.precedence_for_place(place.to_s)
+    place.to_s
   end
 
   def render_placement_error(error)

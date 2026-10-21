@@ -52,8 +52,21 @@ module Mcp
       #   precedence out of range, or both arguments at once
       # @return [Integer]
       def resolved_precedence(args, exclude: nil)
+        placement = placement_argument(args)
+        return placement[:precedence] unless placement.key?(:place)
+
+        placed_precedence(placement[:place], exclude)
+      end
+
+      # The caller's placement, validated but not yet resolved against the queue:
+      # `{ place: "top_of_spot" }` or `{ precedence: 640 }`. For a write that
+      # resolves the place itself (Sessions::UpdateSchedulingClass).
+      #
+      # @raise [ToolError] as #resolved_precedence
+      # @return [Hash]
+      def placement_argument(args)
         place = args["place"]
-        return absolute_precedence(args["precedence"]) if place.blank?
+        return { precedence: absolute_precedence(args["precedence"]) } if place.blank?
 
         raise ToolError, SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE unless args["precedence"].nil?
 
@@ -61,7 +74,7 @@ module Mcp
           raise ToolError, "Unknown place: #{place.inspect}. Valid: #{SessionPrecedence::PLACES.join(', ')}."
         end
 
-        placed_precedence(place.to_s, exclude)
+        { place: place.to_s }
       end
 
       # Resolve a placement for a session that may already be in the queue.
