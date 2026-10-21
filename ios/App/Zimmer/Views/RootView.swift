@@ -67,6 +67,8 @@ extension RootView {
         .onChange(of: model.tab) { _, tab in
             if tab == .sessions { Task { await model.pollBoard(ifStale: true) } }
         }
+        // A link to one of this Zimmer's pages, tapped in a transcript, opens its screen here.
+        .environment(\.inAppLinks, InAppLinks(open: { [model] url in model.openInApp(url) }))
         // Presented from the tabs, not from one screen: the button on any tab opens it.
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
         .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
