@@ -113,6 +113,10 @@ class Session < ApplicationRecord
   }
 
   scope :root_sessions, -> { where(parent_session_id: nil) }
+  # Sessions holding a one-off memory boost right now (SessionMemoryBoost).
+  scope :holding_memory_boost, lambda { |now = Time.current|
+    where.not(memory_boost_mb: nil).where(memory_boost_expires_at: now..).where.not(status: :archived)
+  }
   scope :children_of, ->(parent_id) { where(parent_session_id: parent_id) }
 
   # Sessions with an active heartbeat.
@@ -857,6 +861,10 @@ class Session < ApplicationRecord
   # This budget is runtime-scoped: the runtime adapter decides whether to surface
   # and honor it (Claude does; runtimes without a token-budget knob ignore it).
   validates :auto_compact_window, numericality: { only_integer: true, greater_than: 0, less_than_or_equal_to: MAX_AUTO_COMPACT_WINDOW }
+  # A one-off memory boost: the bounds are SessionMemoryBoost's, and the one-at-a-time
+  # rule is Sessions::UpdateMemoryBoost's. Both columns or neither.
+  validates :memory_boost_mb, numericality: { only_integer: true, less_than_or_equal_to: SessionMemoryBoost::MAX_MB }, allow_nil: true
+  validates :memory_boost_expires_at, presence: true, if: :memory_boost_mb?
   validates :heartbeat_interval_seconds, numericality: { only_integer: true, greater_than_or_equal_to: HEARTBEAT_MIN_INTERVAL_SECONDS, less_than_or_equal_to: HEARTBEAT_MAX_INTERVAL_SECONDS }
   # The catalog-artifact columns. Each declaration registers the pair of
   # validators CatalogArtifactReferences defines — see the concern.
@@ -1220,6 +1228,13 @@ class Session < ApplicationRecord
       }.merge(extra),
       remove
     )
+  end
+
+  # Whether this session holds a one-off memory boost right now. Mirrors the
+  # `holding_memory_boost` scope; SessionMemoryBoost is what it means.
+  def memory_boost_active?(now: Time.current)
+    memory_boost_mb.present? && memory_boost_expires_at.present? &&
+      memory_boost_expires_at >= now && !archived?
   end
 
   # Whether this session's heartbeat is due to beat again. Mirrors the

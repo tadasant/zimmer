@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_16_220000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_20_010000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -949,6 +949,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_220000) do
     t.jsonb "mcp_server_env"
     t.jsonb "mcp_server_headers"
     t.jsonb "mcp_servers"
+    t.datetime "memory_boost_expires_at"
+    t.integer "memory_boost_mb"
     t.jsonb "metadata", default: {}
     t.bigint "parent_session_id"
     t.integer "precedence", default: 0, null: false
@@ -993,6 +995,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_16_220000) do
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"
     t.index ["idempotency_key"], name: "index_sessions_on_idempotency_key", unique: true, where: "(idempotency_key IS NOT NULL)"
     t.index ["job_id"], name: "index_sessions_on_job_id"
+    t.index ["memory_boost_expires_at"], name: "index_sessions_on_memory_boost", where: "(memory_boost_mb IS NOT NULL)"
     t.index ["parent_session_id"], name: "index_sessions_on_parent_session_id"
     t.index ["precedence", "created_at", "id"], name: "index_sessions_on_precedence_ranked", order: { precedence: :desc }, where: "(status <> 3)"
     t.index ["scheduling_class"], name: "index_sessions_on_scheduling_class", where: "(scheduling_class IS NOT NULL)"

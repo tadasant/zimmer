@@ -2,9 +2,12 @@ import Foundation
 
 /// What the app asks of Zimmer. A protocol so screens and tests can run against
 /// `FakeZimmerAPI` with no server and no sign-in.
-public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, OperationsActionsAPI, AttachmentsAPI, InteractionAPI, DecisionsAPI, LiveAPI {
+public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI, OperationsAPI, OperationsActionsAPI, AttachmentsAPI, InteractionAPI, AppSettingsAPI, AccountAPI, DecisionsAPI, LiveAPI {
     func sessions(_ filter: SessionFilter) async throws -> [SessionSummary]
     func session(_ id: Int) async throws -> SessionDetail
+    /// A session by the slug its web page is spelled with, which the server resolves as it
+    /// resolves an id: how a link to `/sessions/<slug>` finds the session to open.
+    func session(slug: String) async throws -> SessionDetail
     /// The newest `limit` messages (the server caps it at 200), whole, and how many there are.
     func conversation(_ id: Int, limit: Int) async throws -> Conversation
     /// The `limit` messages just before position `before`: *Show earlier*, past the cap.
@@ -24,6 +27,10 @@ public protocol ZimmerAPI: SessionActionsAPI, SessionDetailExtrasAPI, CatalogAPI
     func registerDevice(token: String, environment: APNsEnvironment, deviceName: String?, appVersion: String?) async throws
     /// Unregister it, on sign-out.
     func unregisterDevice(token: String) async throws
+    /// Tell Zimmer what stopped this phone short of a registration, so it lands in the
+    /// server's logs at WARN rather than only in the phone's.
+    func reportPushFailure(stage: PushFailureStage, error: String?, environment: APNsEnvironment,
+                           deviceName: String?, appVersion: String?) async throws
 }
 
 extension ZimmerAPI {
@@ -66,6 +73,12 @@ public struct ZimmerHTTPClient: ZimmerAPI {
 
     public func session(_ id: Int) async throws -> SessionDetail {
         let segment = ZimmerPathComponent(String(id))
+        let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
+        return response.detail
+    }
+
+    public func session(slug: String) async throws -> SessionDetail {
+        let segment = ZimmerPathComponent(slug)
         let response: SessionShowResponse = try await get("/api/v1/sessions/\(segment)")
         return response.detail
     }
@@ -121,6 +134,16 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     public func unregisterDevice(token: String) async throws {
         let segment = ZimmerPathComponent(token)
         _ = try await perform(method: "DELETE", path: "/api/v1/apns_devices/\(segment)", query: [:], body: nil)
+    }
+
+    public func reportPushFailure(stage: PushFailureStage, error: String?, environment: APNsEnvironment,
+                                  deviceName: String?, appVersion: String?) async throws {
+        var json: [String: Any] = ["stage": stage.rawValue, "environment": environment.rawValue]
+        if let error { json["error"] = error }
+        if let deviceName { json["device_name"] = deviceName }
+        if let appVersion { json["app_version"] = appVersion }
+        let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        _ = try await perform(method: "POST", path: "/api/v1/apns_devices/failure", query: [:], body: body)
     }
 
     // MARK: - Plumbing

@@ -114,7 +114,7 @@ on no other.
 A session can manage itself; it cannot restart, fork, or re-configure anything. In particular the
 capability/config edits on the full surface — `change_mcp_servers`, `change_model`, `change_effort`, `change_skills`,
 `change_hooks`, `change_plugins`, `change_goal`, `change_auto_compact_window`,
-`toggle_push_notifications` — are deliberately absent here: a session must not rewrite
+`set_memory_boost`, `clear_memory_boost`, `toggle_push_notifications` — are deliberately absent here: a session must not rewrite
 its own capabilities or goal through the server injected into it. (The
 *action* is narrowed, not the *target*: every tool takes a `session_id`, and a session is trusted to
 pass its own. See the caution above.)
@@ -656,8 +656,8 @@ queue](/sessions/spot-and-priority/#placing-something-at-the-head-of-the-queue).
 
 `action_session` reaches full parity with the fields the web UI's session-detail editors expose. Its
 config-editing actions — `change_mcp_servers`, `change_model`, `change_effort`, `change_skills`, `change_hooks`,
-`change_plugins`, `change_goal`, `change_auto_compact_window`,
-`toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
+`change_plugins`, `change_goal`, `change_auto_compact_window`, `set_memory_boost` /
+`clear_memory_boost`, `toggle_push_notifications` — mirror the inline editors on the session page. List-valued fields
 (`mcp_servers`, `skills`, `hooks`, `plugins`) use **replace, not merge** semantics, and every id is
 validated against its catalog, so an unknown skill/hook/plugin id is rejected with the valid options
 listed rather than persisted (a bad value would otherwise fail AIR prepare on the next unarchive).

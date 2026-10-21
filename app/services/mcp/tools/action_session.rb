@@ -19,7 +19,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "set_memory_boost", "clear_memory_boost", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -34,6 +34,8 @@ module Mcp
       PLUGINS_DESC = 'Required for "change_plugins" action. Array of catalog plugin IDs to set for the session (replaces the existing set — this is not a merge). Invalid IDs are rejected.'
       GOAL_DESC = 'Required for "change_goal" action. The goal text to set for the session; pass an empty string to clear the goal. Also optional for "follow_up": a non-blank goal is applied to the session along with the prompt, while a blank or omitted one leaves the session\'s current goal alone (use "change_goal" to clear it).'
       AUTO_COMPACT_WINDOW_DESC = 'Required for "change_auto_compact_window" action. The context (auto-compact) window in tokens, a positive integer. Applies on the next turn or restart, not the currently running process.'
+      MEMORY_MB_DESC = "Required for \"set_memory_boost\". The session's boosted memory limit in MB: an integer above the ordinary per-session limit (4096 MB in production) and at most #{SessionMemoryBoost::MAX_MB}. What is actually granted is clamped so the other sessions keep 1 GiB of the shared pool between them — at most 5120 MB on production's 6 GiB pool — and get_session reports the granted figure."
+      HOURS_DESC = "Optional for \"set_memory_boost\". How long the boost lasts, in hours: 1–#{SessionMemoryBoost::MAX_HOURS}, default #{SessionMemoryBoost::DEFAULT_HOURS}. It also ends the moment the session is archived."
       ENABLED_DESC = 'Optional for "set_heartbeat" action. When true, enables the session heartbeat; when false, disables it. Omit to leave the enabled state unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       INTERVAL_SECONDS_DESC = 'Optional for "set_heartbeat" action. Heartbeat cadence in seconds (30–86400). Omit to leave the interval unchanged (at least one of "enabled" or "interval_seconds" must be provided).'
       MESSAGE_INDEX_DESC = 'Required for "fork" action. The transcript message index to fork from.'
@@ -84,6 +86,8 @@ module Mcp
         change_plugins
         change_goal
         change_auto_compact_window
+        set_memory_boost
+        clear_memory_boost
         change_scheduling_class
         change_precedence
         toggle_push_notifications
@@ -179,6 +183,8 @@ module Mcp
         - **change_plugins**: Update the catalog plugins for a session (requires "plugins" parameter; replaces the set). Invalid plugin IDs are rejected. Plugins can bundle MCP servers, so this carries the same next-prepare timing and the same OAuth handling as change_mcp_servers.
         - **change_goal**: Update the goal for a session (requires "goal" parameter; empty string clears it)
         - **change_auto_compact_window**: Update the context (auto-compact) window in tokens (requires "auto_compact_window"; applies on the next turn/restart)
+        - **set_memory_boost**: Give ONE session a larger memory limit for a while (requires "memory_mb"; optional "hours", default #{SessionMemoryBoost::DEFAULT_HOURS}, at most #{SessionMemoryBoost::MAX_HOURS}). For a session that genuinely needs more than the ordinary per-session limit — a large native build, say — and keeps getting OOM-killed. The boost is carved out of the memory every session on the worker shares, not added to it: the boosted session is guaranteed its limit and every other session shares what is left, so one session at a time can hold one (a second is refused, naming the holder). It applies on the worker within a minute, including to a turn already running, and ends when it expires or the session is archived. Re-sending it on the session that holds it replaces the size and expiry. get_session shows what was granted and how much of it is reserved.
+        - **clear_memory_boost**: End a session's memory boost now. The session returns to the ordinary limit within a minute.
         - **change_scheduling_class**: Move this one session between "spot" and "priority" (requires "scheduling_class"; null clears it back to derived). Optionally takes "precedence" (an absolute rank) or "place" (a symbolic one, e.g. "top_of_spot") to place it in the spot queue in the same call — which is what a demotion usually wants, since a demoted session otherwise keeps whatever rank it already had. "place": "top_of_spot" is what the web UI's Demote to spot button does. It applies whichever class you are moving the session to — precedence is carried on a priority session too, and is what a later demotion lands on.
         - **change_precedence**: Set where this session sits in the spot queue (requires "precedence" or "place"). Higher is handled sooner, on an absolute scale — 100000 comes before 50. Pass "place": "top_of_spot" instead of a number to put the session at the head of the queue, worked out server-side against the live queue.
         - **toggle_push_notifications**: Toggle push notifications on a session
@@ -228,6 +234,8 @@ module Mcp
           plugins: { type: "array", items: { type: "string" }, description: PLUGINS_DESC },
           goal: { type: "string", description: GOAL_DESC },
           auto_compact_window: { type: "integer", description: AUTO_COMPACT_WINDOW_DESC },
+          memory_mb: { type: "integer", description: MEMORY_MB_DESC },
+          hours: { type: "integer", description: HOURS_DESC },
           scheduling_class: {
             type: [ "string", "null" ],
             enum: SessionGenesis::CLASSES + [ nil ],
@@ -348,6 +356,8 @@ module Mcp
         when "change_effort" then change_effort(find_session(args["session_id"]), args)
         when "change_goal" then change_goal(find_session(args["session_id"]), args)
         when "change_auto_compact_window" then change_auto_compact_window(find_session(args["session_id"]), args)
+        when "set_memory_boost" then set_memory_boost(find_session(args["session_id"]), args)
+        when "clear_memory_boost" then clear_memory_boost(find_session(args["session_id"]))
         when "change_scheduling_class" then change_scheduling_class(find_session(args["session_id"]), args)
         when "change_precedence" then change_precedence(find_session(args["session_id"]), args)
         when "toggle_push_notifications" then toggle_push_notifications(find_session(args["session_id"]))
@@ -1122,6 +1132,44 @@ module Mcp
           "- **Session ID:** #{session.id}",
           "- **Title:** #{session.title}",
           "- **Auto-compact Window:** #{session.auto_compact_window} tokens"
+        ].join("\n")
+      end
+
+      # Presentation ONLY — the rules are Sessions::UpdateMemoryBoost, shared with the web
+      # UI's memory-boost control.
+      def set_memory_boost(session, args)
+        if args["memory_mb"].nil?
+          raise ToolError, "The \"memory_mb\" parameter is required for the \"set_memory_boost\" action."
+        end
+
+        begin
+          Sessions::UpdateMemoryBoost.grant(session: session, memory_mb: args["memory_mb"], hours: args["hours"], actor: :mcp)
+        rescue Sessions::UpdateMemoryBoost::Error => e
+          raise ToolError, e.message
+        end
+
+        [
+          "## Memory Boost Granted",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **Requested limit:** #{session.memory_boost_mb} MB",
+          "- **Expires:** #{session.memory_boost_expires_at.utc.iso8601} (or when the session is archived)",
+          "",
+          "The worker applies it within a minute; get_session then shows what was granted and how much of it is reserved."
+        ].join("\n")
+      end
+
+      def clear_memory_boost(session)
+        Sessions::UpdateMemoryBoost.clear(session: session, actor: :mcp)
+
+        [
+          "## Memory Boost Cleared",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "",
+          "The session returns to the ordinary per-session limit within a minute."
         ].join("\n")
       end
 
