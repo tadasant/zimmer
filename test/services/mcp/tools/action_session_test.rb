@@ -274,6 +274,42 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes session.logs.pluck(:content), "Precedence set via MCP to 125 (was 0)"
   end
 
+  test "change_scheduling_class goes through Sessions::UpdateSchedulingClass with the placement unresolved" do
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 0)
+    calls = []
+    real_call = Sessions::UpdateSchedulingClass.method(:call)
+    spy = lambda do |**kwargs|
+      calls << kwargs
+      real_call.call(**kwargs)
+    end
+
+    Sessions::UpdateSchedulingClass.stub(:call, spy) do
+      @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+        "scheduling_class" => "spot", "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+    end
+
+    assert_equal 1, calls.size
+    assert_equal :mcp, calls.first[:actor]
+    assert_equal "spot", calls.first[:scheduling_class]
+    assert_equal SessionPrecedence::PLACE_TOP_OF_SPOT, calls.first[:place]
+    assert_includes session.logs.pluck(:content), "Scheduling class set via MCP to spot (was priority)"
+  end
+
+  test "change_scheduling_class keeps a rank already above the head of the queue" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 10)
+    session = sessions(:needs_input)
+    session.update!(scheduling_class: SessionGenesis::PRIORITY, precedence: 1000)
+
+    output = @tool.call("action" => "change_scheduling_class", "session_id" => session.id,
+      "scheduling_class" => "spot", "place" => SessionPrecedence::PLACE_TOP_OF_SPOT)
+
+    assert_equal 1000, session.reload.precedence
+    assert_includes output, "- **Precedence:** 1000"
+    assert_no_match(/\*\*Precedence:\*\* 1000 \(was/, output)
+  end
+
   # A placement applies whichever class the session is being moved to. Precedence
   # is carried on a priority session too, and is what a later demotion lands on,
   # so a caller that names a placement on a promotion means it — unlike the

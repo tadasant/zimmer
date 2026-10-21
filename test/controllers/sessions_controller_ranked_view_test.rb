@@ -597,4 +597,81 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to session_path(session)
   end
+
+  # The demote button resolves `top_of_spot` the way MCP and REST do, through
+  # Sessions::UpdateSchedulingClass and `Session#precedence_for_place`: a session
+  # whose rank is already above the head of the spot queue keeps it, rather than
+  # being rewritten down to a few points above the runner-up.
+  test "demoting a session whose rank is already above the spot queue keeps that rank" do
+    spot(10)
+    session = priority(precedence: 1000)
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+
+    assert_response :success
+    session.reload
+    assert session.spot?
+    assert_equal 1000, session.precedence
+    assert_equal 1000, response.parsed_body["precedence"]
+    assert_not session.logs.where("content LIKE ?", "Precedence set%").exists?, "the rank did not move"
+  end
+
+  test "the scheduling class write goes through Sessions::UpdateSchedulingClass" do
+    session = priority
+    calls = []
+    real_call = Sessions::UpdateSchedulingClass.method(:call)
+    spy = lambda do |**kwargs|
+      calls << kwargs
+      real_call.call(**kwargs)
+    end
+
+    Sessions::UpdateSchedulingClass.stub(:call, spy) do
+      patch update_scheduling_class_session_url(session),
+        params: { scheduling_class: SessionGenesis::SPOT, place: "top_of_spot" }, as: :json
+    end
+
+    assert_response :success
+    assert_equal 1, calls.size
+    assert_equal :web, calls.first[:actor]
+    assert_equal SessionGenesis::SPOT, calls.first[:scheduling_class]
+    assert_equal SessionPrecedence::PLACE_TOP_OF_SPOT, calls.first[:place]
+  end
+
+  test "an explicit precedence rides along with the class and is logged" do
+    session = priority(precedence: 0)
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, precedence: 640 }, as: :json
+
+    assert_response :success
+    assert_equal 640, session.reload.precedence
+    assert_includes session.logs.pluck(:content), "Precedence set to 640 (was 0)"
+  end
+
+  test "an out-of-range precedence alongside the class is a 422 and writes nothing" do
+    session = priority(precedence: 0)
+
+    patch update_scheduling_class_session_url(session),
+      params: { scheduling_class: SessionGenesis::SPOT, precedence: SessionPrecedence::MAX + 1 }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_match(/\ACould not update: /, response.parsed_body["error"])
+    assert session.reload.priority?
+  end
+
+  # with_db_retry answers a 503 itself when it runs out of attempts; the action
+  # must not render a second response on top of it.
+  test "update_scheduling_class answers once with a 503 when the database stays unavailable" do
+    session = priority
+    SessionsController.any_instance.stubs(:sleep)
+
+    Sessions::UpdateSchedulingClass.stub(:call, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      patch update_scheduling_class_session_url(session),
+        params: { scheduling_class: SessionGenesis::SPOT }, as: :json
+    end
+
+    assert_response :service_unavailable
+    assert session.reload.priority?
+  end
 end

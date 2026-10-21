@@ -175,6 +175,79 @@ class Api::V1::SessionsControllerSchedulingClassTest < ActionDispatch::Integrati
     assert session.spot?
   end
 
+  # --- through Sessions::UpdateSchedulingClass ---------------------------------
+
+  test "a class change is logged on the session, with any rank that moved alongside it" do
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input,
+      scheduling_class: SessionGenesis::PRIORITY, precedence: 0)
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "spot", precedence: 640 }, headers: @headers
+
+    assert_response :success
+    assert_equal 640, session.reload.precedence
+    contents = session.logs.pluck(:content)
+    assert_includes contents, "Scheduling class set via the REST API to spot (was priority)"
+    assert_includes contents, "Precedence set via the REST API to 640 (was 0)"
+  end
+
+  test "a class change with place never lowers a rank already above the spot queue" do
+    Session.create!(git_root: "https://github.com/t/r.git", prompt: "x",
+      scheduling_class: SessionGenesis::SPOT, precedence: 10)
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input,
+      scheduling_class: SessionGenesis::PRIORITY, precedence: 1000)
+
+    patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "spot", place: "top_of_spot" }, headers: @headers
+
+    assert_response :success
+    assert session.reload.spot?
+    assert_equal 1000, session.precedence
+  end
+
+  test "the class write goes through Sessions::UpdateSchedulingClass, starting only after the PATCH commits" do
+    session = waiting_spot_session
+    calls = []
+    real_call = Sessions::UpdateSchedulingClass.method(:call)
+    spy = lambda do |**kwargs|
+      calls << kwargs
+      real_call.call(**kwargs)
+    end
+
+    Sessions::UpdateSchedulingClass.stub(:call, spy) do
+      patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "priority", goal: "Ship it" }, headers: @headers
+    end
+
+    assert_response :success
+    assert_equal 1, calls.size
+    assert_equal :rest, calls.first[:actor]
+    assert_equal false, calls.first[:start]
+    assert_equal "started", JSON.parse(response.body)["start"]["outcome"]
+    assert_equal "Ship it", session.reload.goal
+  end
+
+  test "an unknown class refuses the whole PATCH, rename included" do
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", title: "Before",
+      genesis: SessionGenesis::WEB_UI)
+
+    patch "/api/v1/sessions/#{session.id}", params: { title: "After", scheduling_class: "whenever" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_includes response.body, "Scheduling class whenever is not a known scheduling class"
+    session.reload
+    assert_equal "Before", session.title
+    assert_nil session.scheduling_class
+    assert_empty session.logs.where("content LIKE ?", "Scheduling class%")
+  end
+
+  test "an unchanged class and rank write no log row" do
+    session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input,
+      scheduling_class: SessionGenesis::SPOT, precedence: 5)
+
+    assert_no_difference -> { session.logs.count } do
+      patch "/api/v1/sessions/#{session.id}", params: { scheduling_class: "spot", precedence: 5 }, headers: @headers
+    end
+    assert_response :success
+  end
+
   private
 
   # `status: :waiting` is the initial state and so is redundant, but the promote

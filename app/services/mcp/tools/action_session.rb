@@ -1038,6 +1038,10 @@ module Mcp
       # origins nothing triggers; a trigger's feed moves on the trigger. This is
       # the third case — this session, now — and it is what releases a held spot
       # session without moving anything else.
+      #
+      # Argument parsing and presentation ONLY — the write, its log rows and the
+      # start on promotion are Sessions::UpdateSchedulingClass, shared with the
+      # web Promote / Demote buttons and `PATCH /api/v1/sessions/:id`.
       def change_scheduling_class(session, args)
         unless args.key?("scheduling_class")
           raise ToolError, "The \"scheduling_class\" parameter is required for the \"change_scheduling_class\" action. " \
@@ -1045,34 +1049,17 @@ module Mcp
         end
 
         raw = args["scheduling_class"]
-        klass = raw.nil? ? nil : raw.to_s
-        if klass.present? && !SessionGenesis::CLASSES.include?(klass)
-          raise ToolError, "Unknown scheduling_class: #{klass}. Valid: #{SessionGenesis::CLASSES.join(', ')}, or null to derive it."
+        placement = precedence_named?(args) ? placement_argument(args) : {}
+        begin
+          result = Sessions::UpdateSchedulingClass.call(
+            session: session, scheduling_class: raw.nil? ? nil : raw.to_s, actor: :mcp, **placement
+          )
+        rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
+          raise ToolError, "Unknown scheduling_class: #{e.scheduling_class}. Valid: #{SessionGenesis::CLASSES.join(', ')}, or null to derive it."
         end
-
-        previous = session.priority_class
-        previous_precedence = session.precedence
-
-        attrs = { scheduling_class: klass.presence }
-        attrs[:precedence] = resolved_precedence(args, exclude: session) if precedence_named?(args)
-        session.update!(attrs)
-
-        if previous != session.priority_class
-          session.logs.create!(content: "Scheduling class set via MCP to #{session.priority_class} (was #{previous})", level: "info")
-        end
-        if previous_precedence != session.precedence
-          session.logs.create!(content: "Precedence set via MCP to #{session.precedence} (was #{previous_precedence})", level: "info")
-        end
-
-        # Promoting a waiting session starts it, the same as pressing Promote on
-        # the Ranked view. The hold this releases is carrying a deferred re-check
-        # up to an hour out, and "release this one session" is not a request to
-        # keep waiting that long. A session with nothing queued is left alone —
-        # `start_now` is the action for a stranded one, and it says so.
-        start = if previous != SessionGenesis::PRIORITY &&
-                   session.priority_class == SessionGenesis::PRIORITY && session.waiting?
-          Sessions::StartNow.call(session, actor: "an agent promoting it through MCP")
-        end
+        previous = result.previous_class
+        previous_precedence = result.previous_precedence
+        start = result.start
 
         [
           "## Scheduling Class Updated",
