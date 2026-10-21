@@ -109,7 +109,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
   generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
   the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
-  (a [Zimmer link opens the browser](/limitations/#a-zimmer-link-in-the-ios-app-opens-the-browser)); for a failed session, why it failed (`metadata.failure_reason`,
+  (a [link to a message does not scroll to it](/limitations/#a-link-to-a-transcript-message-in-the-ios-app-does-not-scroll-to-it)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
   check** (the web panel's verdict and one line per criterion, when the goal is a catalog goal
   with checks; its tally names the goal, and a router that recorded no PR of its own says whose
@@ -143,7 +143,13 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   conversation follows, newest last, each message with its age, rendered the way the web renders
   it: headings, paragraphs, lists that nest, quotes, tables and rules drawn as blocks, with
   emphasis, code spans and links inside them, and bare URLs made links as the web's autolink
-  makes them. A link opens on a tap. A long press on a paragraph or list item that holds
+  makes them. A link opens on a tap. A link to one of this Zimmer's own pages, on either of the
+  origins the app signed in to, opens the app's screen for it instead of the browser: a session
+  (`/sessions/<id>`, or its slug, which the app looks up) is pushed over the page the link was on,
+  so Back returns to it, and the board, a new session, the inbox, triggers and a trigger, costs,
+  health, CLIs, settings, API keys and Live each open their tab or sheet. A page the app has no
+  screen for [opens the browser](/limitations/#a-zimmer-page-the-ios-app-has-no-screen-for-opens-the-browser),
+  as does every other site's link; *Open in browser* on a session or trigger still opens the web page. A long press on a paragraph or list item that holds
   links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
   so a long signed URL in an agent's message can be pasted elsewhere; a paragraph with links is
   copied through that menu rather than selected. A link in a heading or a table cell opens on a
@@ -637,6 +643,17 @@ sends the APNs token and the environment it belongs to: `sandbox` for a developm
 `production` for TestFlight. Tapping a notification opens its session. Signing out unregisters the
 phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
 even if it never signs out.
+
+A phone that ends up with no registration has stopped somewhere the server cannot see, so the app
+says where. Settings → Notifications shows how the last attempt went under *This phone*: registered,
+notifications off, APNs refused a token (the build lacks `aps-environment`, say), or the token could
+not be registered with Zimmer. *Register this phone again* retries. The app also reports each failure to
+`POST /api/v1/apns_devices/failure`, which logs it at WARN as
+`[apns] registration failed on the phone at <declined|apns|register>`, and every request that
+endpoint or the registration itself refuses to a caller that presented a credential (a 401 on the
+app's token, a bad token) is a WARN under `[apns]` too; an anonymous request stays INFO.
+Request lines are INFO and are not shipped to the log store, so without these a missing phone
+leaves no trace. A decline is reported once, not on every launch.
 
 The server sends the same notifications the web push does (*needs input*, a question waiting for an
 answer, *finished*, *failed*, and a custom message) from `SendPushNotificationJob`, through `ApnsService`, but **the lock screen only says

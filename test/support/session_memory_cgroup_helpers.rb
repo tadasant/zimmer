@@ -162,8 +162,8 @@ module SessionMemoryCgroupHelpers
   # the kill count, which is the session's-own-bound case; pass 0 for a pool kill, or nil
   # to leave the key out of the file entirely.
   def write_session_cgroup(session_id, oom_kills: nil, oom_events: :match, current: nil, peak: nil,
-    limit: 4 * 1024 * 1024 * 1024)
-    path = File.join(SessionMemoryCgroup.parent_path, "session-#{session_id}")
+    limit: 4 * 1024 * 1024 * 1024, tier: SessionMemoryCgroup.shared_path)
+    path = File.join(tier, "session-#{session_id}")
     FileUtils.mkdir_p(path)
     File.write(File.join(path, "memory.max"), limit.to_s) if limit
     File.write(File.join(path, "memory.current"), current.to_s) if current
@@ -195,7 +195,7 @@ module SessionMemoryCgroupHelpers
   #
   # @return [String] the new cgroup's path
   def recreate_session_cgroup(session_id, **)
-    path = File.join(SessionMemoryCgroup.parent_path, "session-#{session_id}")
+    path = File.join(SessionMemoryCgroup.shared_path, "session-#{session_id}")
     FileUtils.remove_entry(path) if File.directory?(path)
     write_session_cgroup(session_id, **)
   end

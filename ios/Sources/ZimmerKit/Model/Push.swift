@@ -7,6 +7,13 @@ public enum APNsEnvironment: String, Sendable, Codable {
     case sandbox, production
 }
 
+/// Where a phone stopped short of a registration Zimmer can deliver to, as the app reports
+/// it (`POST /api/v1/apns_devices/failure`, logged at WARN): the person declined the
+/// permission, APNs refused to issue a token, or Zimmer refused the token.
+public enum PushFailureStage: String, Sendable {
+    case declined, apns, register
+}
+
 public enum PushToken {
     /// The device token as APNs addresses it: lowercase hex.
     public static func hex(_ token: Data) -> String {

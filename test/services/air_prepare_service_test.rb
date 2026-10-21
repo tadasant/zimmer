@@ -34,6 +34,11 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
     # Self-session catalog entry requires ZIMMER_STAGING_API_KEY
     ENV["ZIMMER_STAGING_API_KEY"] = "test-staging-api-key"
+
+    # These tests count and inspect every subprocess `air prepare` spawns, so
+    # the guard's git calls are kept out of them. It is exercised for real in
+    # injected_files_git_guard_test.rb and injected_files_stay_out_of_commits_test.rb.
+    InjectedFilesGitGuard.stubs(:apply!).returns([])
   end
 
   teardown do
@@ -42,6 +47,35 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     FileUtils.rm_rf(@working_dir) if @working_dir && File.exist?(@working_dir)
     FileUtils.rm_rf(@tmp_air_dir) if @tmp_air_dir && File.exist?(@tmp_air_dir)
     ENV.delete("ZIMMER_STAGING_API_KEY")
+  end
+
+  test "both entry points guard the injected files before writing any of them" do
+    InjectedFilesGitGuard.unstub(:apply!)
+    service = AirPrepareService.new(session: @session, working_directory: @working_dir)
+    order = sequence("guard first")
+    InjectedFilesGitGuard.expects(:apply!).with(session: @session, working_directory: @working_dir)
+      .returns([]).in_sequence(order)
+    service.expects(:write_env_file!).in_sequence(order)
+    service.expects(:run_air_prepare!).in_sequence(order)
+    InjectedFilesGitGuard.expects(:apply!).with(session: @session, working_directory: @working_dir)
+      .returns([]).in_sequence(order)
+    service.expects(:write_env_file!).in_sequence(order)
+    service.stubs(:post_processor).returns(stub(post_process!: nil, ensure_baseline!: nil))
+    service.stubs(:artifact_bridge).returns(stub(write!: nil))
+    service.stubs(:write_system_prompt_file!)
+
+    service.prepare!
+    service.ensure_baseline_mcp_config!
+  end
+
+  test "a guard that cannot be written fails the prepare" do
+    InjectedFilesGitGuard.unstub(:apply!)
+    InjectedFilesGitGuard.stubs(:apply!).raises(InjectedFilesGitGuard::Error, "exclude not writable")
+    service = AirPrepareService.new(session: @session, working_directory: @working_dir)
+    service.expects(:run_air_prepare!).never
+
+    error = assert_raises(AirPrepareService::AirPrepareError) { service.prepare! }
+    assert_equal "exclude not writable", error.message
   end
 
   test "ensure_air_installed! re-installs when binary is missing despite version marker" do

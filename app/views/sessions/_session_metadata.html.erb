@@ -532,6 +532,44 @@
       </span>
     </div>
   <% end %>
+  <%
+    # One-off memory boost (SessionMemoryBoost). Detail page only, like the class and
+    # precedence controls above it; the same sentence get_session prints.
+  %>
+  <% if available_models %>
+    <div class="flex flex-wrap items-center gap-1" id="session-memory-boost">
+      <svg class="h-4 w-4 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M13 7H7v6h6V7z" />
+        <path fill-rule="evenodd" d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h2a2 2 0 012 2v2h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H5a2 2 0 01-2-2v-2H2a1 1 0 110-2h1V9H2a1 1 0 010-2h1V5a2 2 0 012-2h2V2zM5 5h10v10H5V5z" clip-rule="evenodd" />
+      </svg>
+      <strong class="text-gray-700">Memory boost:</strong>
+      <% if (boost = SessionMemoryBoost.describe(agent_session)) %>
+        <span class="text-gray-600 break-words min-w-0" data-testid="memory-boost-description"><%= boost %></span>
+        <%= button_to "End boost", memory_boost_session_path(agent_session), method: :delete,
+              form: { data: { turbo: false }, class: "inline" },
+              class: "inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 cursor-pointer" %>
+      <% elsif !agent_session.archived? %>
+        <%= form_with url: memory_boost_session_path(agent_session), method: :patch,
+              data: { turbo: false }, class: "flex flex-wrap items-center gap-1" do %>
+          <%= number_field_tag :memory_mb, nil, min: SessionMemoryBoost.min_mb, max: SessionMemoryBoost::MAX_MB, step: 1,
+                placeholder: "MB", "aria-label": "Memory limit in MB",
+                class: "w-24 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 text-right tabular-nums" %>
+          <span class="text-gray-400">MB for</span>
+          <%= number_field_tag :hours, SessionMemoryBoost::DEFAULT_HOURS, min: 1, max: SessionMemoryBoost::MAX_HOURS, step: 1,
+                "aria-label": "Hours",
+                class: "w-16 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md py-1 px-2 text-right tabular-nums" %>
+          <span class="text-gray-400">h</span>
+          <%= submit_tag "Boost",
+                class: "inline-flex items-center px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-indigo-500 cursor-pointer" %>
+        <% end %>
+        <span class="basis-full text-xs text-gray-400 italic">
+          None — <%= number_to_human_size(SessionMemoryCgroup.limit_bytes) %>, like every session. A boost is carved out of the memory all sessions share, so the others get less while it lasts; one session at a time, and it ends when it expires or this session is archived.
+        </span>
+      <% else %>
+        <span class="text-gray-400">None</span>
+      <% end %>
+    </div>
+  <% end %>
   <%# Goal: always show on detail page (where goals_for_select is available), or on other pages only if set %>
   <% show_goal_section = goals_for_select || agent_session.goal.present? %>
   <% if show_goal_section %>

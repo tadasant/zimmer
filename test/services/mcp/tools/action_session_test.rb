@@ -1393,6 +1393,39 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/must be between 1 and/, zero.message)
   end
 
+  test "set_memory_boost grants a boost, refuses a second session, and clear_memory_boost ends it" do
+    session = sessions(:needs_input)
+    other = sessions(:running)
+
+    result = @tool.call("action" => "set_memory_boost", "session_id" => session.id, "memory_mb" => 6144, "hours" => 2)
+    assert_includes result, "## Memory Boost Granted"
+    assert_includes result, "- **Requested limit:** 6144 MB"
+    assert_equal 6144, session.reload.memory_boost_mb
+    assert_in_delta 2.hours.from_now, session.memory_boost_expires_at, 5
+
+    second = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_memory_boost", "session_id" => other.id, "memory_mb" => 6144)
+    end
+    assert_match(/Session #{session.id} already holds a memory boost/, second.message)
+
+    missing = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "set_memory_boost", "session_id" => other.id)
+    end
+    assert_match(/"memory_mb" parameter is required/, missing.message)
+
+    result = @tool.call("action" => "clear_memory_boost", "session_id" => session.id)
+    assert_includes result, "## Memory Boost Cleared"
+    assert_nil session.reload.memory_boost_mb
+  end
+
+  test "set_memory_boost and its params are in the tool schema" do
+    schema = Mcp::Tools::ActionSession.input_schema.to_h
+    assert_includes schema[:properties][:action][:enum], "set_memory_boost"
+    assert_includes schema[:properties][:action][:enum], "clear_memory_boost"
+    assert_equal "integer", schema[:properties][:memory_mb][:type]
+    assert_equal "integer", schema[:properties][:hours][:type]
+  end
+
   test "toggle_push_notifications flips the push flag" do
     session = sessions(:needs_input)
     session.update!(push_notifications_enabled: false)
