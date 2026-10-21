@@ -165,16 +165,28 @@ cases, so the two cannot drift apart without a test failing.
 
 ### What a session holds
 
-A session gets **its own repository owner's token and no other**. At spawn, every runtime runs
+A session is handed **its own repository owner's token and no other**. At spawn, every runtime runs
 `apply_github_token`, which reads the owner from the clone's `origin` remote. That step sets the
 session's `GH_TOKEN` to that owner's token, unsets every `GH_TOKEN__*`, and pins
-`ZIMMER_GITHUB_DEFAULT_OWNER` to the session's owner. Inside the session, `gh` acts as the owner's
-token, and the git helper routes only that owner. A session working on a `tadasant` repository cannot
-push to a `pulsemcp` one.
+`ZIMMER_GITHUB_DEFAULT_OWNER` to the session's owner. It also points `GH_CONFIG_DIR` at a directory
+with no login in it, so the session's `gh` can never fall back to the stored `gh auth login`
+credential. Inside the session, `gh` acts as the owner's token and the git helper routes only that
+owner, so a session working on a `tadasant` repository cannot push to a `pulsemcp` one. A session
+whose owner has no token gets no `GH_TOKEN`, and both its `git` and its `gh` fail closed.
+
+This is defense in depth, not isolation. Sessions run as the same user as the worker, so a process
+that goes looking can still read another process's environment through `/proc/<pid>/environ`, or the
+stored login from `~/.config/gh` until that login is retired. What the narrowing removes is every
+path by which the session's own `git` and `gh` *use* a token that is not its owner's.
 
 The map is stripped rather than passed through for the helper. The helper only needs the other
 tokens to reach other owners, and no root is cross-owner by design today. A root that needs to be can
 set the extra tokens in its clone's `.env`, which wins here as everywhere.
+
+The routing flag is named `ZIMMER_GITHUB_CREDENTIAL_ROUTING` rather than anything with `TOKEN` in
+it. Runtimes that filter credential-looking variables out of a session's shell, such as Codex's
+`shell_environment_policy`, would otherwise strip it. Its absence would send the helper back to the
+stored login.
 
 The warm process pool counts the token map in its environment key, so a rotation recycles a
 pre-booted process rather than letting it carry the old token for up to an hour.
@@ -182,7 +194,7 @@ pre-booted process rather than letting it carry the old token for up to an hour.
 ### The fine-grained guard
 
 `GhTokenProvisioner` refuses any token that does not start with `github_pat_`. A refused token is not
-published, and it is removed from `ENV` if it was already sitting there. The provisioner logs the
+published, and whatever `ENV` held under that variable is removed. The provisioner logs the
 variable, the owner and the kind of token it saw, and never the value. The switch is
 `ZIMMER_GITHUB_REQUIRE_FINE_GRAINED_TOKENS`: on by default when `RAILS_ENV=production`, off everywhere
 else. Staging runs `RAILS_ENV=staging`, so its existing `tadasant-test` token keeps working.
@@ -192,7 +204,7 @@ else. Staging runs `RAILS_ENV=staging`, so its existing `tadasant-test` token ke
 Until at least one token is published, nothing changes. The helper delegates to `gh auth
 git-credential`, and the stored `gh auth login` credential on the `gh_config` volume authenticates
 everything, as it always has. When `GhTokenProvisioner` publishes its first token, it also sets
-`ZIMMER_GITHUB_TOKEN_ROUTING=1`. From then on the helper never consults the stored login, and every
+`ZIMMER_GITHUB_CREDENTIAL_ROUTING=1`. From then on the helper never consults the stored login, and every
 worker-side `gh` call carries a `GH_TOKEN`, which `gh` prefers over the stored login.
 
 ### Expiry
@@ -223,9 +235,10 @@ needs no shell on the box:
    window empty in practice.
 3. **Verify** within about five minutes, with no redeploy. The `gh` row on `/clis` lists both tokens
    with their accounts and expiry dates. A new session on a `pulsemcp` root can push its branch.
-4. **Retire the stored login.** Until it is gone, a session whose owner has no token falls back to it
-   for `gh` (see [limitations](/limitations/)). Retiring it, and `.github/workflows/gh-auth-prod.yml`
-   that installs it, is owned by the `tadasant-internal` root.
+4. **Retire the stored login.** Zimmer's own `git` and `gh` stop using it once routing is on, but the
+   file stays on the `gh_config` volume, readable by any process on the worker (see
+   [limitations](/limitations/)). Retiring it, and `.github/workflows/gh-auth-prod.yml`, which
+   installs it, is owned by the `tadasant-internal` root.
 
 To roll back, delete the tokens from the store and restart the worker (a redeploy). With no token
 published, routing turns off and the stored login answers again.

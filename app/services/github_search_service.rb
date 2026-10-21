@@ -375,17 +375,23 @@ class GithubSearchService
     # A query whose `repo:` qualifiers span owners that authenticate with different
     # tokens (see GithubTokens) runs once per token, and the results are merged:
     # a fine-grained token sees only its own owner's private repositories, so no
-    # single run could return the whole answer. Each run is the whole query — the
-    # other owners' repos just come back with what that token can see of them
-    # (their public items, at most), and the merge drops the duplicates by URL.
-    # Every run must succeed; a failure in any one raises exactly as a single
-    # search would, because a partial union is the short read this method refuses.
+    # single run could return the whole answer. Each run's repo group is narrowed to
+    # the repositories of the owners that token serves — GitHub answers a search
+    # whose `repo:` terms are ALL invisible to the token with a 422, not an empty
+    # result. A query whose `repo:` terms are not in a narrowable group runs whole,
+    # and the merge drops duplicates by URL either way. Every run must succeed; a
+    # failure in any one raises exactly as a single search would, because a partial
+    # union is the short read this method refuses.
     def search_issues(query, sort: nil, order: nil, limit: nil)
-      owners = token_owners(query)
-      return search_issues_as(query, owner: owners.first, sort: sort, order: order, limit: limit) if owners.size <= 1
+      groups = token_groups(query)
+      if groups.size <= 1
+        return search_issues_as(query, owner: groups.keys.first, sort: sort, order: order, limit: limit)
+      end
 
-      merged = owners.flat_map { |owner| search_issues_as(query, owner: owner, sort: sort, order: order, limit: limit) }
-                     .uniq { |item| item["url"] || item["html_url"] || item["id"] }
+      merged = groups.flat_map do |owner, owners|
+        search_issues_as(narrow_repo_groups(query, owners), owner: owner, sort: sort, order: order, limit: limit)
+      end
+      merged = merged.uniq { |item| item["url"] || item["html_url"] || item["id"] }
       if sort == "created"
         merged = merged.sort_by { |item| item["created_at"].to_s }
         merged.reverse! if order == "desc"
@@ -393,16 +399,24 @@ class GithubSearchService
       limit ? merged.first(limit) : merged
     end
 
-    # One representative owner per distinct token the query's `repo:` qualifiers
-    # authenticate with; nil stands for the default token. A query that names no
-    # repository is a single run with the default token.
-    def token_owners(query)
+    # { representative owner => every owner sharing its token } for the owners the
+    # query's `repo:` qualifiers name. A nil key stands for the default token. A query
+    # that names no repository is a single run with the default token.
+    def token_groups(query)
       owners = query.to_s.scan(%r{(?:\A|[\s(])repo:([A-Za-z0-9-]+)/}).flatten.uniq
-      return [ nil ] if owners.empty?
+      return { nil => [] } if owners.empty?
 
       owners.group_by { |owner| GithubTokens.env_for(owner)[GithubTokens::DEFAULT_VARIABLE] }
-            .map { |token, group| token.nil? ? nil : group.first }
-            .uniq
+            .to_h { |token, group| [ token.nil? ? nil : group.first, group ] }
+    end
+
+    # Keep only `owners`' repositories in every `(repo:a OR repo:b)` group #repo_group built.
+    def narrow_repo_groups(query, owners)
+      wanted = owners.map(&:downcase)
+      query.gsub(/\(repo:[^\s()]+(?: OR repo:[^\s()]+)*\)/) do |group|
+        kept = group[1..-2].split(" OR ").select { |term| wanted.include?(term.delete_prefix("repo:").split("/").first.downcase) }
+        kept.empty? ? group : or_group(kept)
+      end
     end
 
     private def search_issues_as(query, owner:, sort:, order:, limit:)

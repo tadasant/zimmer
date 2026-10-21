@@ -58,8 +58,10 @@ per-owner names are discovered by prefix, so seeding a new `GH_TOKEN__<OWNER>` a
 
 Two consequences follow from that, both deliberate:
 
-- **It is readable by a session.** A session holds its own repository owner's token, and anything
-  running in it can recover that value with `gh auth token`. So the token is minted on a dedicated non-primary account with least-privilege
+- **It is readable by a session.** A session is handed its own repository owner's token, and anything
+  running in it can recover that value with `gh auth token`. Sessions run as the worker's user, so a
+  process that goes looking can read the rest of the map from another process's environment too.
+  The per-session narrowing is defense in depth, not isolation. So the token is minted on a dedicated non-primary account with least-privilege
   scopes and never `workflow` — see [Staging `gh`
   auth](/operate/provisioning/#staging-gh-auth-the-tadasant-test-account). This is the same
   reasoning that keeps the resolver credential *out* of a session's environment: an address is not a

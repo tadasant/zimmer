@@ -33,9 +33,8 @@ require "digest"
 #   3. Otherwise nothing. The call goes out unauthenticated, which for a private
 #      repository fails closed.
 #
-# Rule 2's "no default configured" arm is what keeps a single-token deployment —
-# staging, a self-hoster, dev — behaving exactly as it did before there was a map:
-# GH_TOKEN authenticates everything.
+# Rule 2's "no default configured" arm is what lets a single-token deployment —
+# staging, a self-hoster, dev — run on GH_TOKEN alone: it authenticates every owner.
 #
 # The same rule is implemented twice, here and in `bin/zimmer-git-credential` (git
 # spawns its credential helper itself, with no Ruby in reach). The helper's test
@@ -46,15 +45,17 @@ require "digest"
 #
 # A deployment that has never been given a token still authenticates through
 # `gh auth login`'s stored credential in ~/.config/gh. GhTokenProvisioner sets
-# ZIMMER_GITHUB_TOKEN_ROUTING=1 once it has published at least one token; until then
-# the git helper delegates to `gh auth git-credential` exactly as the image always
-# did, so deploying this changes nothing until a token is seeded. Once the flag is
-# up, the helper never consults the stored login again.
+# ZIMMER_GITHUB_CREDENTIAL_ROUTING=1 once it has published at least one token; until then
+# the git helper delegates to `gh auth git-credential`, so a deployment with no token
+# seeded authenticates through its stored login. Once the flag is up, the helper never
+# consults the stored login again. The flag's name deliberately avoids TOKEN, KEY and
+# SECRET, which runtimes that filter credential-looking variables (Codex's
+# shell_environment_policy) strip from a session's shell.
 module GithubTokens
   DEFAULT_VARIABLE = "GH_TOKEN"
   OWNER_VARIABLE_PREFIX = "GH_TOKEN__"
   DEFAULT_OWNER_VARIABLE = "ZIMMER_GITHUB_DEFAULT_OWNER"
-  ROUTING_VARIABLE = "ZIMMER_GITHUB_TOKEN_ROUTING"
+  ROUTING_VARIABLE = "ZIMMER_GITHUB_CREDENTIAL_ROUTING"
 
   # GitHub's own constraint on user and organization names. Anything else is not an
   # owner, and must never be folded into an environment variable name.
@@ -158,29 +159,45 @@ module GithubTokens
   # The session's GH_TOKEN becomes its owner's token, every GH_TOKEN__* is removed,
   # and ZIMMER_GITHUB_DEFAULT_OWNER is pinned to the session's owner. That last step
   # is what makes the git helper inside the session route only that owner to its
-  # GH_TOKEN: a session working on tadasant/zimmer holds the tadasant token and
-  # nothing else, and a `git push` to a pulsemcp repository from inside it fails.
+  # GH_TOKEN: a session working on tadasant/zimmer is handed the tadasant token and
+  # nothing else, so its `git push` to a pulsemcp repository fails.
   #
-  # A session whose owner has no token gets no GH_TOKEN at all. ZIMMER_GITHUB_TOKEN_ROUTING
-  # stays set, so its git helper still fails closed rather than falling back to the
-  # stored login. Its `gh` CLI is another matter: with no GH_TOKEN, `gh` reads the
-  # stored login if one is still on disk. Retiring that login is what closes it —
-  # see limitations.md.
+  # GH_CONFIG_DIR points at a directory holding no login, so `gh` in the session can
+  # never fall back to the stored `gh auth login` credential — the OAuth token that
+  # reaches every organization. That matters most for a session whose owner has no
+  # token: it gets no GH_TOKEN at all, and without this its `gh` would read the
+  # stored login. Its git helper fails closed on its own, because
+  # ZIMMER_GITHUB_CREDENTIAL_ROUTING stays set.
+  #
+  # This is defense in depth, not isolation. A session runs as the same user as the
+  # worker, so a determined process can still read the full map from another
+  # process's /proc/<pid>/environ, or the stored login from ~/.config/gh. What it
+  # removes is every path by which the session's own `git` and `gh` use a token that
+  # is not its owner's.
   #
   # Before routing is on there is no map to narrow, so the session inherits the
-  # worker's environment exactly as it always has.
+  # worker's environment unchanged.
   #
   # @param owner [String, nil] the owner of the session's repository; nil for a
   #   repository that is not on github.com
+  # @param gh_config_dir [String] the login-free gh config directory
   # @return [Hash{String => String, nil}] nil values unset the variable in the child
-  def session_env(owner, env: ENV)
+  def session_env(owner, env: ENV, gh_config_dir: empty_gh_config_dir)
     return {} unless routing?(env: env)
 
     token = token_for(owner, env: env)
     result = env.keys.select { |key| owner_variable?(key) }.index_with(nil)
     result[DEFAULT_VARIABLE] = token
     result[DEFAULT_OWNER_VARIABLE] = owner.presence
+    result["GH_CONFIG_DIR"] = gh_config_dir
     result
+  end
+
+  # A gh config directory with no login in it, shared by every routed session. `gh`
+  # writes its own state files here; it never holds a credential, because every
+  # session that uses it authenticates through GH_TOKEN or not at all.
+  def empty_gh_config_dir
+    Rails.root.join("tmp", "gh-config-routed").to_s.tap { |dir| FileUtils.mkdir_p(dir) }
   end
 
   # The owner of the repository checked out at `working_dir`, read from its `origin`

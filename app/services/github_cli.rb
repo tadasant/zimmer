@@ -124,7 +124,7 @@ module GithubCli
       elsif arg.start_with?("--repo=")
         arg.delete_prefix("--repo=")
       end
-      return GithubTokens.owner_from_slug(slug) if slug
+      return GithubTokens.owner_from_slug(slug.delete_prefix("github.com/")) if slug
     end
 
     if args[1] == "api"
