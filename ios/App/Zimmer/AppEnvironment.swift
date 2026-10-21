@@ -50,7 +50,8 @@ final class AppEnvironment {
                 .flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil }
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
-                                                                                         relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere), edge: nil)
+                                                                                         relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
+                                                                                         web: origins.web), edge: nil)
             isFixture = true
             return
         }

@@ -118,19 +118,24 @@ final class AppModel: ObservableObject {
     var fixtureSection: SessionPageSection?
     /// `-ZimmerFixtureFullScreen`: the opened session's transcript opens full screen.
     var fixtureOpensFullScreen = false
-    /// `-ZimmerFixtureTrigger <id>`: the Triggers tab opens on that trigger's page.
+    /// `-ZimmerFixtureTrigger <id>`, or a link to `/triggers/<id>`: the Triggers tab opens on
+    /// that trigger's page.
     @Published var fixtureTrigger: Int?
-    /// `-ZimmerFixtureCosts [agent root]`: More opens on Costs, narrowed to the root if one
-    /// is named.
+    /// `-ZimmerFixtureCosts [agent root]`, or a link to `/costs`: More opens on Costs, narrowed
+    /// to the root if one is named.
     @Published var fixtureCosts: CostScope?
-    /// `-ZimmerFixtureSettings [section]`: More opens Settings, scrolled to that section
-    /// (`defaults`, `experimental`, `mcpApps`) if one is named. `-ZimmerFixtureAccount`:
-    /// Settings, with API keys & connections pushed over it.
+    /// `-ZimmerFixtureSettings [section]`, or a link to `/settings`: More opens Settings,
+    /// scrolled to that section (`defaults`, `experimental`, `mcpApps`) if one is named.
+    /// `-ZimmerFixtureAccount`, or a link to `/settings/api_keys`: Settings, with API keys &
+    /// connections pushed over it.
     @Published var fixtureSettings: SettingsOpening?
-    /// `-ZimmerFixtureHealth`: More opens on Health.
+    /// `-ZimmerFixtureHealth`, or a link to `/health`: More opens on Health.
     @Published var fixtureHealth = false
-    /// `-ZimmerFixtureClis`: More opens on CLIs.
+    /// `-ZimmerFixtureClis`, or a link to `/clis`: More opens on CLIs.
     @Published var fixtureClis = false
+    /// Bumped each time a link to one of Zimmer's own pages is opened here, so the full-screen
+    /// transcript the link may have been in gets out of the way.
+    @Published private(set) var linksOpened = 0
     /// Tools not installed or not signed in: the badge on the board's CLIs button on the web,
     /// here on the More row. Read when More comes to the front; a hint, never an error.
     @Published var cliIssues = 0
@@ -669,6 +674,87 @@ final class AppModel: ObservableObject {
     func webURL(path: String) -> URL? {
         guard let web = signedInOrigins?.web else { return nil }
         return ServerURL.join(web, path)
+    }
+
+    /// A link to one of this Zimmer's own pages, opened on the app's screen for it rather than
+    /// in a browser. False when it is not one — another host, or a page the app has no screen
+    /// for — and the caller opens it as any link.
+    func openInApp(_ url: URL) -> Bool {
+        guard let origins = signedInOrigins, let link = ZimmerLink(url: url, origins: origins) else { return false }
+        if case let .session(id) = link, path.last == id {
+            // A link to a message of the session already open: the web page scrolls to it, and
+            // this one cannot yet, so it opens there. Without one there is nothing to do.
+            return url.fragment?.isEmpty ?? true
+        }
+        log.info("opening \(url.path, privacy: .public) in the app")
+        open(link)
+        return true
+    }
+
+    /// What `MarkdownText` opens links with, made once: a fresh closure on every render of the
+    /// tabs would replace `openURL` under every message on every board poll.
+    lazy var inAppLinks = InAppLinks(open: { [weak self] url in self?.openInApp(url) ?? false })
+
+    /// The app's screen for a page of the web UI, wherever the link to it was tapped.
+    func open(_ link: ZimmerLink) {
+        linksOpened += 1
+        showingQuickRouter = false
+        showingLive = false
+        showingNewSession = false
+        switch link {
+        case .board:
+            tab = .sessions
+            path = []
+        case let .session(id):
+            // Pushed over the page the link was on, so Back returns to it.
+            path.append(id)
+        case let .sessionSlug(slug):
+            // The screen is keyed by id, and the server knows which session the slug names. A
+            // slug it cannot resolve opens in the browser, whose page says why.
+            Task {
+                if let id = try? await connection.api.session(slug: slug).session.id {
+                    if path.last != id { path.append(id) }
+                } else if let url = webURL(path: "/sessions/\(slug)") {
+                    _ = await UIApplication.shared.open(url)
+                }
+            }
+        case .newSession:
+            presentAfterCover { $0.showingNewSession = true }
+        case .inbox:
+            tab = .inbox
+        case .triggers:
+            tab = .triggers
+        case let .trigger(id):
+            fixtureTrigger = id
+            tab = .triggers
+        case let .costs(scope):
+            fixtureCosts = scope
+            tab = .more
+        case .health:
+            fixtureHealth = true
+            tab = .more
+        case .clis:
+            fixtureClis = true
+            tab = .more
+        case .settings:
+            tab = .more
+            presentAfterCover { $0.fixtureSettings = SettingsOpening() }
+        case .apiKeys:
+            tab = .more
+            presentAfterCover { $0.fixtureSettings = SettingsOpening(account: true) }
+        case .live:
+            presentAfterCover { $0.showingLive = true }
+        }
+    }
+
+    /// A sheet asked for by a link tapped in the full-screen transcript, which `linksOpened` is
+    /// closing: presented once the cover is gone, since UIKit refuses a second presentation
+    /// while one is still on screen and would leave the sheet's flag set with nothing shown.
+    private func presentAfterCover(_ present: @escaping @MainActor @Sendable (AppModel) -> Void) {
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(450))
+            if let self { present(self) }
+        }
     }
 
     /// Sign in to a deployment: the edge first when machine calls go to a separate app
