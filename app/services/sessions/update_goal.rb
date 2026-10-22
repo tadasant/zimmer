@@ -96,6 +96,9 @@ module Sessions
       previous_goal = nil
       session.transaction do
         previous_goal = session.attribute_in_database("goal").presence
+        # The same rule as Session's `goal_reference` validation (judged only on
+        # a write that changes the goal), checked here so it is refused before
+        # any save and worded the same at every door.
         raise UnknownGoalId, goal if goal != previous_goal && GoalsConfig.unknown_id?(goal)
 
         session.goal = goal
