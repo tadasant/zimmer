@@ -146,13 +146,14 @@ module SessionPrecedence
 
   # The precedence THIS session should take at a symbolic placement — the form
   # every surface wants when it is re-placing a session that is already in the
-  # queue (MCP's `action_session`, `PATCH /api/v1/sessions/:id`).
+  # queue (MCP's `action_session`, `PATCH /api/v1/sessions/:id`, and every
+  # scheduling-class change through Sessions::UpdateSchedulingClass, the Ranked
+  # view's demote button included).
   #
   # Two adjustments over the class method, both about a session measuring itself:
   #
   # 1. It is excluded from the population, so "put this at the head" applied to
-  #    the row already on top does not walk it SLOT_GAP higher every call. Same
-  #    exclusion the Ranked view's demote button applies.
+  #    the row already on top does not walk it SLOT_GAP higher every call.
   # 2. The result is floored at the value the session already holds. Without
   #    that, (1) overshoots in the other direction: a session on top at 1000 with
   #    a runner-up at 10 would be rewritten to 15 — still the head of the spot

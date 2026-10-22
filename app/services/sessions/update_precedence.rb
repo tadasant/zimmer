@@ -11,11 +11,11 @@ module Sessions
   #
   # - A drag-and-drop landing is Sessions::ReorderPrecedence, which derives the
   #   value from two neighbours and may nudge them aside.
-  # - A scheduling-class change that also places the session (the web
-  #   `update_scheduling_class`, MCP `change_scheduling_class`) writes the class
-  #   and the rank in one UPDATE, inline in each door.
-  # - `PATCH /api/v1/sessions/:id` takes `precedence` as one column of a general
-  #   update and logs nothing.
+  # - A scheduling-class change that also places the session is
+  #   Sessions::UpdateSchedulingClass, which writes the class and the rank in
+  #   one UPDATE.
+  # - `PATCH /api/v1/sessions/:id` without a `scheduling_class` takes
+  #   `precedence` as one column of a general update and logs nothing.
   #
   # The value arrives resolved. A symbolic `place` is the surface's to turn into
   # a number (MCP goes through `Session#precedence_for_place`), and so is any
