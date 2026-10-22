@@ -23,6 +23,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var triggerSessions: [Int: [Int]] = [5: [1031]]
     /// The variables each trigger was last run by hand with, for a test to read back.
     public private(set) var triggerVariables: [Int: [String: String]] = [:]
+    /// Condition ids, as the server hands them out: past the sample triggers' own.
+    private var nextConditionID = 100
     private let degraded: Bool
     /// What the Health page's actions change, read back through the report.
     var healthState: HealthState
@@ -1200,6 +1202,162 @@ extension FakeZimmerAPI {
         return TriggerInvocation(sessionID: started, message: "Trigger '\(trigger.name)' fired: session \(started) started")
     }
 
+    public func createTrigger(_ draft: TriggerDraft) async throws -> TriggerWrite {
+        try Self.refuse(draft, existing: nil)
+        let id = (triggerList.map(\.id).max() ?? 0) + 1
+        let trigger = materialize(draft, id: id, existing: nil)
+        // Newest first, as the server lists them.
+        triggerList.insert(trigger, at: 0)
+        return TriggerWrite(trigger: trigger, warnings: Self.warnings(for: draft))
+    }
+
+    public func updateTrigger(_ id: Int, _ draft: TriggerDraft) async throws -> TriggerWrite {
+        guard let index = triggerList.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        let existing = triggerList[index]
+        try Self.refuse(draft, existing: existing)
+        let trigger = materialize(draft, id: id, existing: existing)
+        triggerList[index] = trigger
+        let moved = draft.schedulingClass != existing.schedulingClass ? (triggerSessions[id] ?? []).count : nil
+        return TriggerWrite(trigger: trigger, warnings: Self.warnings(for: draft), reclassifiedWaitingSessions: moved)
+    }
+
+    public func deleteTrigger(_ id: Int) async throws {
+        guard triggerList.contains(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
+        triggerList.removeAll { $0.id == id }
+        triggerSessions[id] = nil
+    }
+
+    public func triggerChannels() async throws -> [SlackChannel] { Self.sampleChannels }
+
+    public func whatsappChats() async throws -> [WhatsAppChat] { Self.sampleChats }
+
+    /// The server's own reasons, in its words (`Trigger` and `TriggerCondition` validations as
+    /// `errors.full_messages` prints them), for the cases the web form shows.
+    static func refuse(_ draft: TriggerDraft, existing: TriggerSummary?) throws {
+        var messages: [String] = []
+        if draft.name.trimmingCharacters(in: .whitespaces).isEmpty { messages.append("Name can't be blank") }
+        if draft.agentRootName.isEmpty { messages.append("Agent root name can't be blank") }
+        if draft.promptTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { messages.append("Prompt template can't be blank") }
+        if draft.filledConditions.isEmpty { messages.append("Trigger conditions must have at least one condition") }
+        if let max = draft.maxSessionsPerMinute, max < 1 { messages.append("Max sessions per minute must be greater than 0") }
+        if let window = draft.coalesceWindowSeconds {
+            if window < 0 { messages.append("Coalesce window seconds must be greater than or equal to 0") }
+            if window > 3600 { messages.append("Coalesce window seconds must be less than or equal to 3600") }
+        }
+        // Without re-use the two switches go as false (the web's hidden "0"s) unless the
+        // caller insists, which the server refuses.
+        if !draft.reuseSession {
+            if draft.enqueueMessages == true { messages.append("Enqueue messages can only be enabled when re-use session is enabled") }
+            if draft.resuscitateArchived == true { messages.append("Resuscitate archived can only be enabled when re-use session is enabled") }
+        }
+        for condition in draft.filledConditions {
+            let c = condition.configuration
+            let prefix = "Trigger conditions configuration "
+            switch condition.type {
+            case "slack":
+                if condition.showsSlackChannel, c.channelID.isEmpty, !["bot_mention", "passive_listen_thread", "passive_listen_channel"].contains(c.eventType) {
+                    messages.append(prefix + "must include channel_id for Slack conditions")
+                }
+                if !c.threadTS.isEmpty, c.channelID.isEmpty { messages.append(prefix + "thread_ts requires a channel_id") }
+                if !c.threadTS.isEmpty, !["new_message", "bot_mention"].contains(c.eventType) { messages.append(prefix + "thread_ts is not supported for \(c.eventType) conditions") }
+            case "whatsapp":
+                if c.chatID.isEmpty {
+                    messages.append(prefix + "must include chat_id for WhatsApp conditions")
+                } else if !c.chatID.contains("@") {
+                    messages.append(prefix + "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us")
+                }
+            case "schedule":
+                if condition.scheduleMode == .oneTime {
+                    if c.scheduledAt.isEmpty { messages.append(prefix + "scheduled_at must be a valid datetime (ISO 8601 format)") }
+                } else if c.unit.isEmpty {
+                    messages.append(prefix + "must include unit for Schedule conditions")
+                } else {
+                    if c.interval.isEmpty { messages.append(prefix + "must include interval for Schedule conditions") }
+                    else if (Int(c.interval) ?? 0) < 1 { messages.append(prefix + "interval must be at least 1") }
+                    if condition.showsTime, c.time.isEmpty { messages.append(prefix + "must include time for \(c.unit) schedules") }
+                    if condition.showsDayOfWeek, c.dayOfWeek.isEmpty { messages.append(prefix + "must include day_of_week for weekly schedules") }
+                    if !c.time.isEmpty, c.time.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) == nil {
+                        messages.append(prefix + "time must be in HH:MM format")
+                    }
+                }
+            case "ao_event":
+                if c.eventName.isEmpty { messages.append(prefix + "must include event_name for Zimmer Event conditions") }
+            case "system_event":
+                if c.eventName.isEmpty { messages.append(prefix + "must include event_name for System Event conditions") }
+            case "github_label", "github_issue":
+                if c.repos.isEmpty { messages.append(prefix + "must include at least one repo for GitHub conditions") }
+                let malformed = c.repos.filter { $0.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) == nil }
+                if !malformed.isEmpty { messages.append(prefix + "repos must be in owner/name format: \(malformed.joined(separator: ", "))") }
+                if condition.type == "github_label", c.labels.isEmpty { messages.append(prefix + "must include at least one label for GitHub label conditions") }
+            default:
+                break
+            }
+        }
+        if !messages.isEmpty { throw TriggerValidationError(messages: messages) }
+    }
+
+    /// The warning the server sends beside a saved trigger whose root the catalog lacks.
+    static func warnings(for draft: TriggerDraft) -> [String] {
+        guard !sampleConfigs.agentRoots.contains(where: { $0.name == draft.agentRootName }) else { return [] }
+        return ["Agent root '\(draft.agentRootName)' is not in this deployment's catalog. The trigger was saved — naming a root before the catalog entry that defines it exists is allowed — but until that name resolves, every fire that has to spawn a session will fail."]
+    }
+
+    /// The trigger as the server would store and report it: the draft's settings, the
+    /// conditions described in the server's words, and the derived fields the page reads.
+    private func materialize(_ draft: TriggerDraft, id: Int, existing: TriggerSummary?) -> TriggerSummary {
+        let conditions = draft.filledConditions.map { condition -> TriggerSummary.Condition in
+            let serverID: Int
+            if let known = condition.serverID {
+                serverID = known
+            } else {
+                serverID = nextConditionID
+                nextConditionID += 1
+            }
+            // A condition the edit kept keeps its own history.
+            let before = existing?.conditions.first { $0.id == serverID }
+            var configuration = condition.configuration
+            if condition.type == "whatsapp", configuration.keywords.isEmpty { configuration.keywords = [] }
+            return TriggerSummary.Condition(id: serverID, type: condition.type, description: condition.description,
+                                            lastTriggeredAt: before?.lastTriggeredAt, configuration: configuration)
+        }
+        let hasSlack = draft.hasSlackCondition
+        let reuse = draft.reuseSession
+        let lastSession = existing?.lastSessionID ?? draft.lastSessionID
+        return TriggerSummary(
+            id: id, name: draft.name, status: draft.status ?? existing?.status ?? "enabled", agentRoot: draft.agentRootName,
+            lastError: existing?.lastError, lastTriggeredAt: existing?.lastTriggeredAt, lastSessionID: lastSession,
+            sessionsCreated: existing?.sessionsCreated ?? 0, conditions: conditions, failedAt: existing?.failedAt,
+            agentRootMissing: !Self.warnings(for: draft).isEmpty, reuseSession: reuse,
+            enqueueMessages: reuse ? (draft.enqueueMessages ?? existing?.enqueueMessages ?? false) : (draft.enqueueMessages ?? false),
+            resuscitateArchived: reuse ? (draft.resuscitateArchived ?? existing?.resuscitateArchived ?? false) : (draft.resuscitateArchived ?? false),
+            skipIfPendingSession: draft.skipIfPendingSession, missedFireCount: existing?.missedFireCount ?? 0,
+            bursting: existing?.bursting ?? false, maxSessionsPerMinute: draft.maxSessionsPerMinute,
+            coalesceWindowSeconds: draft.coalesceWindowSeconds, promptTemplate: draft.promptTemplate,
+            goal: draft.goal.isEmpty ? nil : draft.goal,
+            effectiveCoalesceWindowSeconds: draft.coalesceWindowSeconds ?? 60, coalesceWindowInert: !hasSlack,
+            skipIfPendingSessionInert: draft.skipIfPendingSession && reuse && lastSession != nil,
+            firstMissedFireAt: existing?.firstMissedFireAt, schedulingClass: draft.schedulingClass,
+            effectiveSchedulingClass: draft.schedulingClass ?? (hasSlack ? "priority" : "spot"), precedence: draft.precedence,
+            mcpServers: draft.mcpServers, catalogSkills: draft.catalogSkills, catalogHooks: draft.catalogHooks,
+            catalogPlugins: draft.catalogPlugins,
+            unresolvedCatalogReferences: existing.map { old in old.unresolvedCatalogReferences.mapValues { $0.filter(old.mcpServers.contains) }.filter { !$0.value.isEmpty } } ?? [:]
+        )
+    }
+
+    /// The channels the fixture's Slack bot is in, as `GET /api/v1/triggers/channels` lists them.
+    static let sampleChannels: [SlackChannel] = [
+        SlackChannel(id: "C0ZIMMER01", name: "zimmer", memberCount: 12),
+        SlackChannel(id: "C0SUPPORT1", name: "support", memberCount: 40),
+        SlackChannel(id: "C0OPSPRIV1", name: "ops-private", isPrivate: true, memberCount: 4),
+        SlackChannel(id: "C0GENERAL1", name: "general", memberCount: 58),
+    ]
+
+    /// The chats the fixture's WhatsApp account is in, as `GET /api/v1/triggers/whatsapp_chats` lists them.
+    static let sampleChats: [WhatsAppChat] = [
+        WhatsAppChat(id: "120363012345678901@g.us", name: "Ops on call", isGroup: true, participantCount: 5),
+        WhatsAppChat(id: "15551234567@s.whatsapp.net", name: "Tadas", isGroup: false),
+    ]
+
     /// One week of spend whatever the window, narrowed as the server narrows: a root keeps
     /// its own share of every figure, a session only its own. Every section of the web page
     /// has rows, so each can be photographed.
@@ -1312,11 +1470,18 @@ extension FakeZimmerAPI {
         ]
     }
 
+    /// A condition's configuration as the server would send it, decoded the way a real one is.
+    static func sampleConfiguration(_ raw: [String: Any]) -> ConditionConfiguration {
+        let data = try! JSONSerialization.data(withJSONObject: raw)
+        return try! JSONDecoder().decode(ConditionConfiguration.self, from: data)
+    }
+
     static func sampleTriggers(now: Date = Date()) -> [TriggerSummary] {
         [
             TriggerSummary(id: 5, name: "Nightly dependency sweep", status: "enabled", agentRoot: "zimmer",
                            lastTriggeredAt: now.addingTimeInterval(-20 * 60), lastSessionID: 1031, sessionsCreated: 31,
-                           conditions: [.init(type: "schedule", description: "Every day at 02:00 UTC", lastTriggeredAt: now.addingTimeInterval(-20 * 60))],
+                           conditions: [.init(id: 51, type: "schedule", description: "Every day at 02:00 (UTC)", lastTriggeredAt: now.addingTimeInterval(-20 * 60),
+                                              configuration: sampleConfiguration(["interval": "1", "unit": "days", "time": "02:00", "timezone": "UTC"]))],
                            reuseSession: true, enqueueMessages: true, skipIfPendingSession: true, missedFireCount: 2,
                            promptTemplate: "Sweep the dependencies: bump what is safe, open one PR per ecosystem, and say what you held back on {{date}}.",
                            goal: "Open a reviewed, green PR for each bump.",
@@ -1325,11 +1490,14 @@ extension FakeZimmerAPI {
                            mcpServers: ["github", "linear"], catalogSkills: ["open-pr", "wait-for-ci"], catalogPlugins: ["zimmer-ops"],
                            unresolvedCatalogReferences: ["mcp_servers": ["linear"]]),
             TriggerSummary(id: 6, name: "Slack #zimmer mentions", status: "disabled", agentRoot: "zimmer-orchestrator",
-                           sessionsCreated: 4, conditions: [.init(type: "slack", description: "@zimmer in #zimmer")],
+                           sessionsCreated: 4,
+                           conditions: [.init(id: 61, type: "slack", description: "Slack: @mention in #zimmer + DMs",
+                                              configuration: sampleConfiguration(["channel_id": "C0ZIMMER01", "channel_name": "zimmer", "event_type": "bot_mention"]))],
                            coalesceWindowSeconds: 120, effectiveCoalesceWindowSeconds: 120, effectiveSchedulingClass: "priority"),
             TriggerSummary(id: 7, name: "Slack thread triage", status: "enabled", agentRoot: "zimmer-orchestrator",
                            lastTriggeredAt: now.addingTimeInterval(-3 * 3600), sessionsCreated: 12,
-                           conditions: [.init(type: "slack", description: "Slack: @zimmer in #support", lastTriggeredAt: now.addingTimeInterval(-3 * 3600))],
+                           conditions: [.init(id: 71, type: "slack", description: "Slack: replies in threads Zimmer joined, in #support", lastTriggeredAt: now.addingTimeInterval(-3 * 3600),
+                                              configuration: sampleConfiguration(["channel_id": "C0SUPPORT1", "channel_name": "support", "event_type": "passive_listen_thread"]))],
                            maxSessionsPerMinute: 3,
                            promptTemplate: "Triage this thread: {{text|untrusted}} from {{author}} at {{link}}. Reply in the thread and say what you did on {{date}}.",
                            goal: "Answer the thread or hand it to a person.",
