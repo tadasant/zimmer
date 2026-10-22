@@ -308,24 +308,40 @@ class Api::V1::SessionsController < Api::BaseController
     # so a second save would silence the callbacks keyed on the first (the
     # replacement back-reference on `custom_metadata`, the goal and index
     # broadcasts).
+    #
+    # A `goal` is Sessions::UpdateGoal's write (shared with the web Goal field
+    # and the `change_goal` MCP action), which strips it, refuses one that is
+    # over-long or an unknown id, and logs the change. It rides the same save as
+    # the other columns: Sessions::UpdateGoal's own, or, with a scheduling
+    # class, Sessions::UpdateSchedulingClass's, which it wraps.
     title_given = attrs.key?(:title)
     title = attrs.delete(:title)
+    goal_given = attrs.key?(:goal)
+    goal = attrs.delete(:goal)
     scheduled = nil
     saved = Session.transaction do
       Sessions::UpdateTitle.call(session: @session, title: title) if title_given
-      if scheduling
-        @session.assign_attributes(attrs)
-        begin
-          scheduled = Sessions::UpdateSchedulingClass.call(session: @session, actor: :rest, start: false, **scheduling)
-        rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
-          # Worded as the model's inclusion validation words it.
-          @session.errors.add(:scheduling_class, "#{e.scheduling_class} is not a known scheduling class")
-          raise ActiveRecord::Rollback
-        rescue ActiveRecord::RecordInvalid
-          raise ActiveRecord::Rollback
+      @session.assign_attributes(attrs)
+      save = if scheduling
+        -> { scheduled = Sessions::UpdateSchedulingClass.call(session: @session, actor: :rest, start: false, **scheduling) }
+      else
+        -> { @session.save! }
+      end
+      begin
+        if goal_given
+          Sessions::UpdateGoal.call(session: @session, goal: goal, actor: :rest, &save)
+        elsif scheduling || !attrs.empty?
+          save.call
         end
-      elsif !attrs.empty?
-        @session.update(attrs) || raise(ActiveRecord::Rollback)
+      rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
+        # Worded as the model's inclusion validation words it.
+        @session.errors.add(:scheduling_class, "#{e.scheduling_class} is not a known scheduling class")
+        raise ActiveRecord::Rollback
+      rescue Sessions::UpdateGoal::Error => e
+        @session.errors.add(:goal, e.reason)
+        raise ActiveRecord::Rollback
+      rescue ActiveRecord::RecordInvalid
+        raise ActiveRecord::Rollback
       end
       true
     end

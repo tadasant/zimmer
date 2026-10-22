@@ -1404,6 +1404,35 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_match(/Goal is too long/, error.message)
   end
 
+  test "change_goal goes through Sessions::UpdateGoal and logs via MCP" do
+    session = sessions(:needs_input)
+    session.update!(goal: "Old goal")
+    calls = []
+    real_call = Sessions::UpdateGoal.method(:call)
+    spy = lambda do |**kwargs, &blk|
+      calls << kwargs
+      real_call.call(**kwargs, &blk)
+    end
+
+    Sessions::UpdateGoal.stub(:call, spy) do
+      @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "New goal")
+      @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "")
+    end
+
+    assert_equal [ :mcp, :mcp ], calls.map { |c| c[:actor] }
+    assert_equal [ "Goal updated via MCP", "Goal cleared via MCP" ],
+      session.logs.order(:created_at).pluck(:content).grep(/\AGoal /)
+  end
+
+  test "change_goal to the goal the session already has writes no log row" do
+    session = sessions(:needs_input)
+    session.update!(goal: "Same goal")
+
+    assert_no_difference -> { session.logs.count } do
+      @tool.call("action" => "change_goal", "session_id" => session.id, "goal" => "Same goal")
+    end
+  end
+
   test "change_auto_compact_window updates the window and rejects invalid values" do
     session = sessions(:needs_input)
 
