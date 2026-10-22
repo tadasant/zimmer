@@ -1323,7 +1323,10 @@ session** from the measure and **floors the result at the rank it already holds*
 overshooting the other way, since a session on top at 1000 with a runner-up at 10 would otherwise be
 rewritten down to 15 — still the head of the spot queue, but now beneath a priority session carrying
 500 that would outrank it on a later demotion. Together they make re-placing a session that is
-already first a no-op.
+already first a no-op. A scheduling-class change resolves its `place` the same way on every surface
+— the Ranked view's **Demote to spot**, `change_scheduling_class` and the REST PATCH all go through
+`Sessions::UpdateSchedulingClass` — so a priority session carrying 1000 that is demoted over a spot
+queue topped at 10 keeps 1000 rather than dropping to 15.
 
 :::note[Why a symbolic form rather than a documented recipe]
 The MCP tools used to tell an agent to read the current top with `quick_search_sessions` and pass a
@@ -1497,7 +1500,7 @@ the spot queue is listed under them highest-precedence first, and both halves ar
 | Type a number in a row's precedence field and press **Enter** | the row moves to its new position immediately, with no page load | `PATCH /sessions/:id/update_precedence` |
 | **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
 | Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
-| Open a row's **⋮** menu and press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
+| Open a row's **⋮** menu and press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue, or keeps its rank if that is already higher | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
 | Open a row's **⋮** menu and press **Promote to priority** on a spot row | it moves up to the priority section, keeping its rank for a later demotion, **and starts** | the same endpoint, plus `Sessions::StartNow` |
 | Open a row's **⋮** menu and press **Start now** | the session's queued turn is taken now instead of when the scheduler gets to it | `POST /sessions/:id/start_now` |
 | Open a row's **⋮** menu and press **Trash** | the session is archived and the row leaves the queue | `POST /sessions/:id/archive` — the same action every other Trash affordance posts to, speed bump and Undo toast included |

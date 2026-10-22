@@ -2323,18 +2323,15 @@ class SessionsController < ApplicationController
   # without touching the trigger that spawned it, or the policy every other
   # session of its genesis shares. A blank value clears the choice and returns
   # the session to whatever its origin derives.
+  #
+  # Argument parsing and presentation ONLY — the write, its log rows and the
+  # start on promotion are Sessions::UpdateSchedulingClass, shared with MCP's
+  # `change_scheduling_class` and `PATCH /api/v1/sessions/:id`.
   def update_scheduling_class
     @session = find_session
 
     klass = params[:scheduling_class].to_s.strip
-    if klass.present? && !SessionGenesis::CLASSES.include?(klass)
-      return scheduling_class_failure("Unknown scheduling class: #{klass}")
-    end
-
-    previous = @session.priority_class
-    previous_precedence = @session.precedence
-
-    attrs = { scheduling_class: klass.presence }
+    placement = {}
     # Demoting to spot lands the session at the HEAD of the spot queue, a few
     # points above whatever is currently on top. That is the useful default and
     # the one the ranked view's button asks for: a session you have just decided
@@ -2342,42 +2339,26 @@ class SessionsController < ApplicationController
     # you care most about — and leaving it on whatever rank it happened to carry
     # (usually 0, the bottom) would bury it behind the entire queue.
     if params[:place].to_s == SessionPrecedence::PLACE_TOP_OF_SPOT && klass == SessionGenesis::SPOT
-      attrs[:precedence] = Session.precedence_for_place(
-        SessionPrecedence::PLACE_TOP_OF_SPOT, Session.where.not(id: @session.id)
-      )
+      placement[:place] = SessionPrecedence::PLACE_TOP_OF_SPOT
     elsif params.key?(:precedence)
-      attrs[:precedence] = params[:precedence]
+      placement[:precedence] = params[:precedence]
     end
 
-    unless with_db_retry { @session.update(attrs) }
+    result = begin
+      with_db_retry do
+        Sessions::UpdateSchedulingClass.call(session: @session, scheduling_class: klass, actor: :web, start: false, **placement)
+      end
+    rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e
+      return scheduling_class_failure(e.message)
+    rescue ActiveRecord::RecordInvalid
       return scheduling_class_failure("Could not update: #{@session.errors.full_messages.join(', ')}")
     end
+    # with_db_retry has already answered when it ran out of attempts.
+    return if performed?
 
-    if previous != @session.priority_class
-      @session.logs.create!(
-        content: "Scheduling class set to #{@session.priority_class} (was #{previous})",
-        level: "info"
-      )
-    end
-    if previous_precedence != @session.precedence
-      @session.logs.create!(
-        content: "Precedence set to #{@session.precedence} (was #{previous_precedence})",
-        level: "info"
-      )
-    end
-
-    # Promoting a held session is the whole point of promoting it, so it starts
-    # rather than waiting out the deferred re-check it was already carrying —
-    # which is up to an hour away, and which is exactly what the hold banner's
-    # "Make this one session priority to start it now" already promised.
-    #
-    # Only on the transition INTO priority, and only when the session is waiting:
-    # re-saving a priority session must not restart it, and a demotion must not
-    # start anything at all. `nothing_queued` is left alone deliberately — a
-    # stranded session is not something a promote should nudge behind the user's
-    # back.
-    start = start_after_promotion(previous)
-
+    # Outside the retry block: a retry after a start would find the class
+    # already stored and read as no promotion at all.
+    start = Sessions::UpdateSchedulingClass.start_if_promoted(result)
     respond_to do |format|
       format.json { render json: precedence_payload(@session).merge(start_notice(start)) }
       format.html do
@@ -2386,18 +2367,6 @@ class SessionsController < ApplicationController
       end
     end
   end
-
-  # Start the session this request has just promoted to priority, if promoting is
-  # what this request did. Returns the Sessions::StartNow result, or nil when the
-  # request was not a promotion of a waiting session.
-  def start_after_promotion(previous)
-    return nil unless previous != SessionGenesis::PRIORITY
-    return nil unless @session.priority_class == SessionGenesis::PRIORITY
-    return nil unless @session.waiting?
-
-    Sessions::StartNow.call(@session, actor: "a user promoting it in the web UI")
-  end
-  private :start_after_promotion
 
   # The half of a Sessions::StartNow result the Ranked view shows. A refusal is
   # worth saying out loud (the row stays put and the user should know why); a
