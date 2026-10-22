@@ -2320,6 +2320,70 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "existing goal", session.reload.goal
   end
 
+  test "update_goal goes through Sessions::UpdateGoal and logs the change" do
+    session = sessions(:needs_input)
+    session.update!(goal: nil)
+    calls = []
+    real_call = Sessions::UpdateGoal.method(:call)
+    spy = lambda do |**kwargs, &blk|
+      calls << kwargs
+      real_call.call(**kwargs, &blk)
+    end
+
+    Sessions::UpdateGoal.stub(:call, spy) do
+      patch update_goal_session_url(session), params: { goal: "  Ship the PR  " }, as: :json
+    end
+
+    assert_response :success
+    assert_equal "Ship the PR", JSON.parse(response.body)["goal"]
+    assert_equal 1, calls.size
+    assert_equal :web, calls.first[:actor]
+    assert_equal "Ship the PR", session.reload.goal
+    assert_includes session.logs.pluck(:content), "Goal set"
+  end
+
+  test "update_goal clears the goal with an empty string" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    patch update_goal_session_url(session), params: { goal: "" }, as: :json
+
+    assert_response :success
+    assert_nil JSON.parse(response.body)["goal"]
+    assert_nil session.reload.goal
+    assert_includes session.logs.pluck(:content), "Goal cleared"
+  end
+
+  test "update_goal refuses an over-length goal rather than cutting it short" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+
+    assert_no_difference -> { session.logs.count } do
+      patch update_goal_session_url(session), params: { goal: "a sentence " * 5_000 }, as: :json
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters)",
+      JSON.parse(response.body)["error"]
+    assert_equal "existing goal", session.reload.goal
+  end
+
+  # with_db_retry answers a 503 itself when it runs out of attempts; the action
+  # must not render a second response on top of it.
+  test "update_goal answers once with a 503 when the database stays unavailable" do
+    session = sessions(:needs_input)
+    session.update!(goal: "existing goal")
+    SessionsController.any_instance.stubs(:sleep)
+
+    Sessions::UpdateGoal.stub(:call, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      patch update_goal_session_url(session), params: { goal: "New goal" }, as: :json
+    end
+
+    assert_response :service_unavailable
+    assert_match(/high server activity/, response.parsed_body["error"])
+    assert_equal "existing goal", session.reload.goal
+  end
+
   # Turbo Stream response tests - verify the optimistic message fix works correctly
   # These tests ensure the follow_up action responds with Turbo Stream to avoid
   # page reload, which would cause the optimistic message to disappear.

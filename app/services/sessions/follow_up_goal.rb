@@ -18,8 +18,8 @@ module Sessions
   #   and logs that it did.
   # - A blank goal **preserves** whatever goal the session already has. A follow-up
   #   with no goal is not a request to clear one; clearing is its own operation
-  #   (`PATCH /api/v1/sessions/:id`, the web `update_goal` action, the MCP
-  #   `change_goal` action).
+  #   (Sessions::UpdateGoal, behind `PATCH /api/v1/sessions/:id`, the web
+  #   `update_goal` action and the MCP `change_goal` action).
   #
   # `Trigger#sync_goal!` is the fifth caller and arrives from a different direction:
   # nobody typed the goal at the moment of the fire, it is the trigger's own column

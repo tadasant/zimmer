@@ -251,6 +251,14 @@ running turn, or interrupted in; a blank one preserves the goal the session alre
 clearing it (see
 [the REST API reference](/extend/rest-api/#following-up-and-the-goal-that-rides-along)).
 
+**Changing the goal on its own goes through one writer.** The web **Goal** field
+(`PATCH /sessions/:id/update_goal`), the MCP `change_goal` action and `PATCH /api/v1/sessions/:id`
+with `goal` all call `Sessions::UpdateGoal`, so they agree on the rules. The goal is stripped, and a
+blank one clears it (stored as null). A goal over 50,000 characters is refused, never cut short. An
+id-shaped word the catalog does not know is refused, as below. The change is logged on the session
+as "Goal set", "Goal updated" or "Goal cleared", followed by " via MCP" or " via the REST API" when it
+did not come from the web UI. Re-sending the goal the session already has writes no log row.
+
 **A `reuse_session` trigger is the one writer that is not a person typing.** Every fire re-stamps
 the trigger's own goal onto the session it reuses, so the trigger — not the session row — is the
 source of truth for a session a recurring trigger owns. That has an operator-visible edge: a goal
@@ -269,7 +277,7 @@ goal is stored:
 
 - as a model validation (`goal_reference`) on `Session`, `Trigger` and `EnqueuedMessage`, which
   covers `POST` and `PATCH /api/v1/sessions`, the web forms, the MCP `change_goal` action and the
-  trigger editors
+  trigger editors (the three goal-changing doors also refuse it up front in `Sessions::UpdateGoal`)
 - as an early refusal on every follow-up surface (the REST and MCP `follow_up`, the web follow-up
   form, the enqueued-message editor), before anything is written or delivered
 - in MCP `start_session`, before the id is swapped for its description
