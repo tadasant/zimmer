@@ -360,12 +360,14 @@ private struct TriggerRow: View {
     }
 }
 
-/// Costs, Health and CLIs, the web UI's other top-navigation pages, plus Settings.
+/// Costs, Health, CLIs and Inference, the web UI's other top-navigation pages, plus Settings.
 struct MoreView: View {
     @EnvironmentObject private var app: AppModel
     @State private var showingSettings = false
     /// Costs opened by a fixture launch, narrowed as it asked.
     @State private var openedCosts: CostScope?
+    /// Inference opened by a fixture launch, on the tab it asked for.
+    @State private var openedInference: AppModel.InferenceOpening?
     /// Settings opened by a fixture launch, at the section it asked for.
     @State private var openedSettings: SettingsOpening?
     @State private var openedHealth = false
@@ -382,6 +384,8 @@ struct MoreView: View {
                     row("CLIs", "terminal", "Which command-line tools are installed and signed in", badge: app.cliIssues)
                 }
                 .accessibilityIdentifier("more.clis")
+                NavigationLink { InferenceView() } label: { row("Inference", "cpu", "Accounts, quota windows and the spot policy") }
+                    .accessibilityIdentifier("more.inference")
             }
             .themeRows()
             Section {
@@ -396,6 +400,7 @@ struct MoreView: View {
         .sheet(isPresented: $showingSettings) { SettingsView() }
         .sheet(item: $openedSettings) { opening in SettingsView(opensAt: opening.section, opensAccount: opening.account) }
         .navigationDestination(item: $openedCosts) { scope in CostsView(scope: scope) }
+        .navigationDestination(item: $openedInference) { opening in InferenceView(runtime: opening.runtime, opensLogin: opening.login) }
         .navigationDestination(isPresented: $openedHealth) { HealthView() }
         .navigationDestination(isPresented: $openedClis) { CliToolsView() }
         .task { await app.refreshCliIssues() }
@@ -403,6 +408,11 @@ struct MoreView: View {
             guard let scope else { return }
             openedCosts = scope
             app.fixtureCosts = nil
+        }
+        .onChange(of: app.fixtureInference, initial: true) { _, opening in
+            guard let opening else { return }
+            openedInference = opening
+            app.fixtureInference = nil
         }
         .onChange(of: app.fixtureSettings, initial: true) { _, opening in
             guard let opening else { return }

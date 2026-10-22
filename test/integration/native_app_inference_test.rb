@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "support/fake_parameter_store"
 
 # The Inference page on the REST surface, for the iOS app. The read answers any
 # key or grant with what the page renders — never a token or a key. Every write
@@ -102,6 +103,24 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert api_key_account, "the Codex pool carries its API-key account"
     assert body["accounts"].all? { |a| a["quota"].nil? }
     assert_no_match(/codex_access_token|codex_refresh_token|OPENAI_API_KEY/, response.body)
+  end
+
+  test "the Pi tab carries the key's presence and where it is set, and never the key" do
+    store = FakeParameterStore.new
+    store.seed_secret(PiAuthProvider::OPENROUTER_API_KEY, "sk-or-v1-native-fixture-value")
+
+    SecretProviders.stub(:chain, store.chain) do
+      get "/api/v1/inference", params: { runtime: "pi" }, headers: { "X-API-Key" => API_KEY }
+    end
+
+    assert_response :success
+    key = JSON.parse(response.body)["openrouter_key"]
+    assert_equal "OPENROUTER_API_KEY", key["variable"]
+    assert key["present"]
+    assert key["in_store"]
+    assert_equal "/zimmer/test/secrets/static/OPENROUTER_API_KEY", key["path"]
+    assert_not key.key?("fingerprint"), "Zimmer does not fingerprint the key"
+    assert_no_match(/sk-or-v1-native-fixture-value/, response.body)
   end
 
   test "the read converges a quota_exceeded column whose windows have cleared, as the page does" do

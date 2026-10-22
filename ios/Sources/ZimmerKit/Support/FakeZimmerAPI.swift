@@ -63,11 +63,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The class each session's genesis gives it: what *Derive it* goes back to. The samples
     /// choose no class of their own, so it is the class each starts with.
     private var derivedClasses: [Int: String]
+    /// The Inference page: each runtime's roster, the logins in flight, the policy.
+    var inference: FakeInference
+    /// The grant acts as a relay, not as a person: every Inference write and a change to MCP
+    /// Apps is refused with the server's 403, before anything else is read, and an in-flight
+    /// login's link and code are withheld. Internal, for the Inference extension in its own file.
+    let relayOnly: Bool
     /// The Settings page's row, as `GET /api/v1/app_settings` answers it.
     private var appSettingsRow: AppSettings = FakeZimmerAPI.sampleAppSettings()
-    /// The sign-in is a relay-only grant: the MCP Apps keys are refused, as the server
-    /// refuses them before reading anything else.
-    private let relayOnly: Bool
     /// The deployment's connections, as `GET /api/v1/oauth_grants` lists them: id 7 is this
     /// phone's, so a write that revokes it is a sign-out.
     private var grants: [OAuthGrant]
@@ -92,6 +95,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.trashedElsewhere = trashedElsewhere
         self.degraded = degraded
         self.relayOnly = relayOnly
+        self.inference = FakeInference(now: now)
         self.grants = FakeZimmerAPI.sampleGrants(now: now, relayOnly: relayOnly)
         self.keys = FakeZimmerAPI.sampleAPIKeys(now: now)
         self.healthState = HealthState(degraded: degraded, now: now)

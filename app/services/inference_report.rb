@@ -225,24 +225,21 @@ class InferenceReport
   end
 
   # The Pi tab's one object, which carries no secret value by construction
-  # (ManagedSecret::Status).
+  # (SecretPresence::Status). Zimmer never writes the key, so there is no write
+  # state here: the console that sets it is `console`, nil when none is
+  # configured.
   def openrouter_key_json
-    status = ManagedSecret.openrouter_key.status
+    status = SecretPresence.for(PiAuthProvider::OPENROUTER_API_KEY)
+    console = status.store_configured? ? SecretsLocation.store_console : nil
 
     {
       variable: status.variable,
       present: status.present?,
       provider_label: status.provider_label,
       provider_badge: status.provider_badge,
-      fingerprint: status.fingerprint,
-      path: status.path,
-      project_id: status.project_id,
-      location: status.location,
-      last_write: status.last_write && { at: status.last_write.created_at.iso8601, action: status.last_write.action },
-      writable: status.writable?,
-      deletable: status.deletable?,
-      write_reason: status.write_reason,
-      missing_permissions: status.missing_permissions
+      path: status.store_configured? ? status.path : nil,
+      in_store: status.in_store?,
+      console: console && { url: console[:url], store_name: console[:store_name] }
     }
   end
 

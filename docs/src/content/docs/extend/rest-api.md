@@ -1363,9 +1363,11 @@ column against the reading on file, as opening the page does.
 - `rotation_log` — the runtime's 50 most recent rotations: `at`, `from` and `to` (`{email, deleted}`),
   `reason`, `source`, `triggered_by`, and `session_id` when a session triggered it.
 - `openrouter_key` — on `runtime=pi` only, where the page shows it, and `null` elsewhere: the key's
-  state and never the key — `present`, `provider_badge`, `fingerprint` (a truncated SHA-256),
-  `path`, `last_write`, `writable`, `deletable`, `write_reason`, `missing_permissions`. There is no
-  write for it here; the key is set on the page.
+  state and never the key — `variable`, `present`, `provider_label`, `provider_badge`, `path` (the
+  parameter it belongs at, `null` with no Parameter Store configured), `in_store` (whether the value
+  that resolves came from the store), and `console` (`{url, store_name}` of the secrets console that
+  sets it, or `null`). Zimmer never writes the key, here or on the page — see
+  [Secrets Zimmer itself depends on](/operate/secrets-parameter-store/#secrets-zimmer-itself-depends-on).
 - `spot_policy` — the six knobs (`gating_enabled`, `five_hour_reserve_pct`, `weekly_reserve_pct`,
   `max_concurrent_sessions`, `preemption_enabled`, `starvation_age_ceiling_hours`), `worker_slots`
   and whether the ceiling is out of its reach, the live `decision` (`allowed`, `reason`, `ceiling`,
