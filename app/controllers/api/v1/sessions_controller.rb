@@ -340,7 +340,11 @@ class Api::V1::SessionsController < Api::BaseController
       rescue Sessions::UpdateGoal::Error => e
         @session.errors.add(:goal, e.reason)
         raise ActiveRecord::Rollback
-      rescue ActiveRecord::RecordInvalid
+      rescue ActiveRecord::RecordInvalid => e
+        # Only the session's own refusal is a 422; a log row that will not
+        # save is a server error, not a validation message for the caller.
+        raise unless e.record.equal?(@session)
+
         raise ActiveRecord::Rollback
       end
       true

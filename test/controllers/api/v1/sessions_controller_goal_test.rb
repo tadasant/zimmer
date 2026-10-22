@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # `goal` on `PATCH /api/v1/sessions/:id`: Sessions::UpdateGoal's write, kept in
 # one save with the PATCH's other columns.

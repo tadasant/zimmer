@@ -35,8 +35,8 @@ class Sessions::UpdateGoalTest < ActiveSupport::TestCase
   test "set, updated and cleared are told apart" do
     session = session_with_goal(nil)
 
-    Sessions::UpdateGoal.call(session: session, goal: "First", actor: :web)
-    Sessions::UpdateGoal.call(session: session, goal: "Second", actor: :web)
+    Sessions::UpdateGoal.call(session: session, goal: "The first goal", actor: :web)
+    Sessions::UpdateGoal.call(session: session, goal: "The second goal", actor: :web)
     Sessions::UpdateGoal.call(session: session, goal: "", actor: :web)
 
     assert_equal [ "Goal set", "Goal updated", "Goal cleared" ], log_contents(session)
@@ -74,13 +74,28 @@ class Sessions::UpdateGoalTest < ActiveSupport::TestCase
   end
 
   test "a retry after a failed write still logs the change" do
-    # A failed UPDATE leaves the new goal on the in-memory record; the retry
-    # must compare against what is stored, not read it as a no-op.
+    # The first attempt saves the goal, then fails on its log row and rolls
+    # back. The retry must compare against what is stored, not read the goal
+    # the failed attempt left on the record as a no-op.
     session = session_with_goal("Old goal")
-    session.goal = "New goal"
+    real_create = session.logs.method(:create!)
+    attempts = 0
+    flaky_create = lambda do |**attrs|
+      attempts += 1
+      raise ActiveRecord::ConnectionFailed, "simulated" if attempts == 1
 
-    result = Sessions::UpdateGoal.call(session: session, goal: "New goal", actor: :web)
+      real_create.call(**attrs)
+    end
 
+    result = nil
+    session.logs.stub(:create!, flaky_create) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdateGoal.call(session: session, goal: "New goal", actor: :web)
+      end
+      result = Sessions::UpdateGoal.call(session: session, goal: "New goal", actor: :web)
+    end
+
+    assert_equal 2, attempts
     assert_equal "Old goal", result.previous_goal
     assert_equal "New goal", session.reload.goal
     assert_equal [ "Goal updated" ], log_contents(session)
