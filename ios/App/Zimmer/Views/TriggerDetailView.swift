@@ -5,16 +5,23 @@ import ZimmerKit
 /// did, when it last fired and the session it last started, what fires it, the root and every
 /// setting its sessions get (re-use, pending, coalescing, missed fires, burst cap, scheduling
 /// class, precedence, the catalog artifacts), its goal and prompt, and the sessions it made.
-/// Turn it on or off (or re-arm it), or run it now, filling the template's variables as the
-/// web page's Run Now panel does. Editing it, and its two re-use switches, stay in the browser.
+/// Turn it on or off (or re-arm it), run it now, filling the template's variables as the web
+/// page's Run Now panel does, edit it in the web form's sheet, or delete it after the web
+/// page's confirmation. Its two re-use switches stay in the browser.
 struct TriggerDetailView: View {
     let id: Int
     @EnvironmentObject private var app: AppModel
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
     @State private var detail: TriggerDetail?
     @State private var error: ZimmerError?
     @State private var notice: String?
     @State private var confirmingInvoke = false
+    /// The edit form.
+    @State private var editing = false
+    @State private var confirmingDelete = false
+    /// A delete in flight: the page goes when the server has answered.
+    @State private var deleting = false
     /// The Run Now sheet, for a template with variables to fill.
     @State private var runningWithVariables = false
     /// A toggle in flight: a second tap waits for the first.
@@ -43,6 +50,23 @@ struct TriggerDetailView: View {
             if let trigger = detail?.trigger {
                 TriggerRunSheet(trigger: trigger) { variables in await invoke(variables: variables) }
             }
+        }
+        .sheet(isPresented: $editing) {
+            if let trigger = detail?.trigger {
+                TriggerFormSheet(editing: trigger) { written in
+                    detail?.trigger = written.trigger
+                    notice = written.notice ?? "Saved"
+                    Task { await load() }
+                }
+            }
+        }
+        // The web page's `turbo_confirm`, word for word.
+        .confirmationDialog(
+            "Are you sure you want to delete this trigger?",
+            isPresented: $confirmingDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { Task { await delete() } }
         }
         .refreshable { await load() }
         .task { await load() }
@@ -167,6 +191,8 @@ struct TriggerDetailView: View {
                             .foregroundStyle(Theme.danger)
                     }
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("trigger.detail.agentRoot")
             }
             row("Session re-use") { onOff(trigger.reuseSession) }
             reuseOption("Enqueue messages", on: trigger.enqueueMessages, reuse: trigger.reuseSession)
@@ -271,6 +297,7 @@ struct TriggerDetailView: View {
                     .foregroundStyle(Theme.ink)
                     .textSelection(.enabled)
                     .padding(.vertical, 2)
+                    .accessibilityIdentifier("trigger.detail.prompt")
             } header: {
                 Text("Prompt template").themeLabel()
             } footer: {
@@ -331,8 +358,14 @@ struct TriggerDetailView: View {
                 if let session = trigger.lastSessionID {
                     Button { app.path = [session] } label: { Label("Open Last Session", systemImage: "arrow.up.forward.app") }
                 }
+                Divider()
+                Button { editing = true } label: { Label("Edit", systemImage: "pencil") }
+                    .accessibilityIdentifier("trigger.edit")
+                Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete", systemImage: "trash") }
+                    .disabled(deleting)
+                    .accessibilityIdentifier("trigger.delete")
             }
-            // Editing a trigger, and its re-use switches, are on its web page.
+            // The two re-use switches are on its web page.
             if let url = app.webURL(path: "/triggers/\(id)") {
                 Button { openURL(url) } label: { Label("Open in browser", systemImage: "safari") }
             }
@@ -417,6 +450,10 @@ struct TriggerDetailView: View {
                 app.fixtureOpensRunNow = false
                 runningWithVariables = true
             }
+            if app.fixtureOpensTriggerForm {
+                app.fixtureOpensTriggerForm = false
+                editing = true
+            }
         } catch {
             self.error = error as? ZimmerError ?? .transport(error)
             app.noteError(self.error!)
@@ -432,6 +469,21 @@ struct TriggerDetailView: View {
             detail?.trigger = updated
             notice = updated.isEnabled ? "\(updated.name) on" : "\(updated.name) off"
             Haptics.success()
+        } catch {
+            self.error = error as? ZimmerError ?? .transport(error)
+            Haptics.failure()
+        }
+    }
+
+    /// Gone from the server, so gone from the stack: the list behind this page reads again.
+    private func delete() async {
+        guard !deleting else { return }
+        deleting = true
+        defer { deleting = false }
+        do {
+            try await app.api.deleteTrigger(id)
+            Haptics.success()
+            dismiss()
         } catch {
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()

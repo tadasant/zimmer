@@ -151,14 +151,18 @@ private struct InboxRow: View {
 }
 
 /// The web UI's triggers list: each one's status, what fires it, and when it last did.
-/// Turn one on or off, or invoke it now; tap one for its page. Creating and editing stay in
-/// the browser.
+/// Turn one on or off, or invoke it now; tap one for its page; create one with the plus, as the
+/// web's New Trigger button does.
 struct TriggersView: View {
     @EnvironmentObject private var app: AppModel
     @State private var triggers: [TriggerSummary]?
     @State private var error: ZimmerError?
     @State private var notice: String?
     @State private var invoking: TriggerSummary?
+    /// The new-trigger form.
+    @State private var creating = false
+    /// What the form saved, opened once the sheet is down, as the web lands on the page it made.
+    @State private var created: TriggerSummary?
     /// A trigger whose template has variables to fill before it runs.
     @State private var runningWithVariables: TriggerSummary?
     /// The trigger whose page is open.
@@ -196,7 +200,7 @@ struct TriggersView: View {
         .overlay {
             if triggers == nil && error == nil { LoadingState() }
             if triggers?.isEmpty == true {
-                EmptyState(title: "No triggers", symbol: "bolt.slash", message: "Create one in the browser; it shows up here.")
+                EmptyState(title: "No triggers", symbol: "bolt.slash", message: "Create one with the plus; it shows up here.")
             }
         }
         .overlay(alignment: .bottom) { Toast(text: $notice) }
@@ -214,14 +218,31 @@ struct TriggersView: View {
         .sheet(item: $runningWithVariables) { trigger in
             TriggerRunSheet(trigger: trigger) { variables in await invoke(trigger, variables: variables) }
         }
+        .sheet(isPresented: $creating, onDismiss: openCreated) {
+            TriggerFormSheet(editing: nil) { written in
+                created = written.trigger
+                notice = written.notice
+            }
+        }
         .refreshable { await load() }
         .task { await load() }
         .navigationTitle("Triggers")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { creating = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("New trigger")
+                    .accessibilityIdentifier("trigger.new")
+            }
+        }
         .navigationDestination(item: $opened) { id in TriggerDetailView(id: id) }
         .onChange(of: app.fixtureTrigger, initial: true) { _, id in
             guard let id else { return }
             opened = id
             app.fixtureTrigger = nil
+        }
+        // Back from a page that may have edited or deleted its trigger.
+        .onChange(of: opened) { _, id in
+            if id == nil { Task { await load() } }
         }
     }
 
@@ -229,10 +250,24 @@ struct TriggersView: View {
         do {
             triggers = try await app.api.triggers()
             error = nil
+            if app.fixtureOpensTriggerForm, app.fixtureTrigger == nil, opened == nil {
+                app.fixtureOpensTriggerForm = false
+                creating = true
+            }
         } catch {
             self.error = error as? ZimmerError ?? .transport(error)
             app.noteError(self.error!)
             if triggers == nil { triggers = [] }
+        }
+    }
+
+    /// The sheet is down: list the trigger it made and open its page, as the web redirects.
+    private func openCreated() {
+        guard let created else { return }
+        self.created = nil
+        Task {
+            await load()
+            opened = created.id
         }
     }
 

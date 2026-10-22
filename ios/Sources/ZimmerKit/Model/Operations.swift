@@ -46,28 +46,37 @@ public struct InboxNotification: Hashable, Sendable, Decodable, Identifiable {
 /// A trigger, as the web UI's triggers list shows it (`GET /api/v1/triggers`).
 public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
     public struct Condition: Hashable, Sendable, Decodable {
+        /// The persisted condition's id, which an edit sends back so the server changes it in
+        /// place rather than replacing it.
+        public var id: Int?
         public var type: String?
         public var description: String?
         /// When this condition, rather than another of the trigger's, last fired it.
         public var lastTriggeredAt: Date?
+        /// Its settings, as the form edits them.
+        public var configuration: ConditionConfiguration
 
         enum CodingKeys: String, CodingKey {
-            case description
+            case id, description, configuration
             case type = "condition_type"
             case lastTriggeredAt = "last_triggered_at"
         }
 
-        public init(type: String?, description: String?, lastTriggeredAt: Date? = nil) {
+        public init(id: Int? = nil, type: String?, description: String?, lastTriggeredAt: Date? = nil, configuration: ConditionConfiguration = ConditionConfiguration()) {
+            self.id = id
             self.type = type
             self.description = description
             self.lastTriggeredAt = lastTriggeredAt
+            self.configuration = configuration
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try? container.decodeIfPresent(Int.self, forKey: .id)
             type = try? container.decodeIfPresent(String.self, forKey: .type)
             description = try? container.decodeIfPresent(String.self, forKey: .description)
             lastTriggeredAt = try? container.decodeIfPresent(Date.self, forKey: .lastTriggeredAt)
+            configuration = ((try? container.decodeIfPresent(ConditionConfiguration.self, forKey: .configuration)) ?? nil) ?? ConditionConfiguration()
         }
 
         /// The web page's badge for the type (`TriggersHelper::CONDITION_TYPE_BADGES`).
