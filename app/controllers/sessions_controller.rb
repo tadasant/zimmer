@@ -2605,43 +2605,25 @@ class SessionsController < ApplicationController
 
   # PATCH /sessions/:id/update_goal
   # Update the goal for a session via the web UI.
+  #
+  # The write, its refusals and its log row are Sessions::UpdateGoal, shared
+  # with the `change_goal` MCP action and `PATCH /api/v1/sessions/:id`.
   def update_goal
     @session = find_session
 
-    goal = params[:goal].to_s.strip.presence
-    goal = goal&.first(Session::GOAL_MAX_LENGTH)
-
-    result = with_db_retry do
-      old_goal = @session.goal
-
-      if @session.update(goal: goal)
-        if old_goal != goal
-          change_desc = if goal.blank?
-            "Goal cleared"
-          elsif old_goal.blank?
-            "Goal set"
-          else
-            "Goal updated"
-          end
-
-          @session.logs.create!(
-            content: change_desc,
-            level: "info"
-          )
-        end
-        true
-      else
-        false
+    begin
+      with_db_retry do
+        Sessions::UpdateGoal.call(session: @session, goal: params[:goal], actor: :web)
       end
+    rescue Sessions::UpdateGoal::Error => e
+      return render json: { error: e.message }, status: :unprocessable_entity
+    rescue ActiveRecord::RecordInvalid
+      return render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
     end
-
+    # with_db_retry has already answered when it ran out of attempts.
     return if performed?
 
-    if result
-      render json: { success: true, goal: @session.goal }
-    else
-      render json: { error: @session.errors.full_messages.join(", ") }, status: :unprocessable_entity
-    end
+    render json: { success: true, goal: @session.goal }
   end
 
   # Upload images for a session prompt (used via AJAX from the frontend)
