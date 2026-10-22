@@ -998,31 +998,18 @@ module Mcp
         "#{result.error}. Valid #{label}: #{Sessions::UpdateCatalogSelection.valid_ids(result.attribute).join(', ')}"
       end
 
+      # Argument parsing and presentation ONLY — the write, its refusals and its
+      # log row are Sessions::UpdateGoal, shared with the web Goal field and
+      # `PATCH /api/v1/sessions/:id`.
       def change_goal(session, args)
         unless args.key?("goal")
           raise ToolError, "The \"goal\" parameter is required for the \"change_goal\" action."
         end
 
-        goal = args["goal"].to_s.strip.presence
-        if goal && goal.length > Session::GOAL_MAX_LENGTH
-          raise ToolError, "Goal is too long (maximum #{Session::GOAL_MAX_LENGTH} characters)"
-        end
-        if goal != session.goal && GoalsConfig.unknown_id?(goal)
-          raise ToolError, GoalsConfig.unknown_id_message(goal)
-        end
-
-        old_goal = session.goal
-        session.update!(goal: goal)
-
-        if old_goal != goal
-          change_desc = if goal.blank?
-            "Goal cleared"
-          elsif old_goal.blank?
-            "Goal set"
-          else
-            "Goal updated"
-          end
-          session.logs.create!(content: "#{change_desc} via MCP", level: "info")
+        begin
+          Sessions::UpdateGoal.call(session: session, goal: args["goal"], actor: :mcp)
+        rescue Sessions::UpdateGoal::Error => e
+          raise ToolError, e.message
         end
 
         [
