@@ -15,10 +15,13 @@ require "yaml"
 class IosUiTestShardsTest < ActiveSupport::TestCase
   WORKFLOW = Rails.root.join(".github/workflows/ios-ui-tests.yml")
   SOURCES = Rails.root.join("ios/App/ZimmerUITests")
-  # Any XCTestCase subclass, `final` or not, with or without an attribute before it, however
-  # it spaces the colon: a class this misses is one that never runs and is never reported
-  # missing. `ios/bin/ui-test` accepts the same shape in `--only`.
-  CLASS = /^\s*(?:@\w+\s+)*(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase/
+  # Any direct XCTestCase subclass, `final` or not, with or without attributes (parenthesised
+  # or not) and an access modifier before it, however it spaces the colon: a class this
+  # misses is one that never runs and is never reported missing. `ios/bin/ui-test` accepts
+  # the same shape in `--only`. The one shape neither sees is a class inheriting an
+  # intermediate base (`class X: ZimmerUITestCase`); there is none, and the first one to
+  # appear should widen both.
+  CLASS = /^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:open|public|internal|private|fileprivate)\s+)?(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase/
 
   def job
     @job ||= YAML.load_file(WORKFLOW, aliases: true).dig("jobs", "ui-test")

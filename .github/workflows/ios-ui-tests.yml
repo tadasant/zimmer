@@ -108,15 +108,16 @@ jobs:
     # THE BALANCE is by the per-class seconds of green runs (the last green single run,
     # actions/runs/39113483415, and the full-suite dispatches on the parity branches that
     # added the newer classes: 38970424260, 38908829804, 38974169702, 38991532403):
-    #   operations    Operations 800, Account 625, TriggerEditor 270, OperationsActions 175,
-    #                 Inference ~300 (no green run yet; six tests)              ≈ 2170 s
+    #   operations    Operations 800, TriggerEditor 270, OperationsActions 175,
+    #                 Inference ~300 (no green run yet; six tests)              ≈ 1545 s
     #   session-page  SessionDetailPanels 415, Settings 320, BoardReadParity 270,
     #                 SessionControls 270, TranscriptParity 260                   ≈ 1535 s
     #   board         SessionParity+BoardView+Ranked (one file) 266, SessionActions 125,
     #                 SessionExtras 100, Live 92, Attachments 90, SessionSections 87,
     #                 Catalog 75, QuickRouterKeyboard 72, LiveUpdates 67            ≈  975 s
-    #   photos        Waiting 62, Interaction 59, Decisions 58, SessionList 47,
-    #                 BoardFilters 35, InAppLinks ~30, BoardStaysCurrent 23      ≈  315 s
+    #   photos        Account 625, Waiting 62, Interaction 59, Decisions 58,
+    #                 SessionList 47, BoardFilters 35, InAppLinks ~30,
+    #                 BoardStaysCurrent 23                                        ≈  940 s
     #                 + the photograph pass, some 90 screenshots at a six-second settle
     # A new class goes in whichever shard is lightest; test/config/ios_ui_test_shards_test.rb
     # fails the Linux `test-unit` job on a class that is in no shard or in two, so a class
@@ -128,7 +129,7 @@ jobs:
       matrix:
         shard:
           - name: operations
-            classes: OperationsUITests,AccountUITests,TriggerEditorUITests,OperationsActionsUITests,InferenceUITests
+            classes: OperationsUITests,TriggerEditorUITests,OperationsActionsUITests,InferenceUITests
             photos: false
           - name: session-page
             classes: SessionDetailPanelsUITests,SettingsUITests,BoardReadParityUITests,SessionControlsUITests,TranscriptParityUITests
@@ -137,13 +138,13 @@ jobs:
             classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests
             photos: false
           - name: photos
-            classes: WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests
+            classes: AccountUITests,WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests
             photos: true
-    # Per shard: ten minutes of Xcode build, a simulator boot, 5 to 36 minutes of UI tests
-    # at the balance above (double that on a loaded runner), the photographs on the one
-    # shard that takes them, and the upload. A run cut off here reads as "cancelled", which
-    # hides whether the suite passed, so this is sized for the loaded case — rebalance the
-    # shards, or add a fifth, before raising it.
+    # Per shard: ten minutes of Xcode build, a simulator boot, 16 to 26 minutes of UI tests
+    # at the balance above (double that on a loaded runner: 52 at most), ten minutes of
+    # photographs on the one shard that takes them, and the upload — under the budget even
+    # loaded. A run cut off here reads as "cancelled", which hides whether the suite passed,
+    # so rebalance the shards, or add a fifth, before raising it.
     timeout-minutes: 75
 
     steps:

@@ -737,9 +737,10 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as four shards on four simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
-The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
-photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that
-the smoke run does not cover is therefore first run on `main`, where a failure alerts like any other.
+The full UI suite does not gate pull requests. It is some 110 tests driven one at a time plus some 90
+photographs — well over an hour on one runner, which is why it runs as four shards on four simulators
+after the merge, and too long to gate every iOS pull request on either way. A UI test that the smoke
+run does not cover is therefore first run on `main`, where a red shard alerts like any other failure.
 To get the whole run and the screenshots for a branch before it merges, dispatch it:
 `gh workflow run ios-ui-tests.yml --ref <branch>`.
 

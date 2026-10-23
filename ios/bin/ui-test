@@ -159,7 +159,7 @@ if [ -n "$only" ]; then
     class="${class// /}"
     [ -n "$class" ] || continue
     [[ "$class" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "--only names $class, which is not a class name"
-    grep -rqE "^[[:space:]]*(@[A-Za-z]+[[:space:]]+)*(final[[:space:]]+)?class[[:space:]]+${class}[[:space:]]*:[[:space:]]*XCTestCase" App/ZimmerUITests \
+    grep -rqE "^[[:space:]]*(@[A-Za-z]+(\([^)]*\))?[[:space:]]+)*((open|public|internal|private|fileprivate)[[:space:]]+)?(final[[:space:]]+)?class[[:space:]]+${class}[[:space:]]*:[[:space:]]*XCTestCase" App/ZimmerUITests \
       || fail "--only names $class, and no \`class $class: XCTestCase\` is under App/ZimmerUITests"
     only_testing+=("-only-testing:ZimmerUITests/$class")
     covered="${covered:+$covered,}$class"
