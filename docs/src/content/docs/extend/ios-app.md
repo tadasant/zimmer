@@ -734,12 +734,13 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
-| `ios/bin/ui-test` | `ios-ui-tests.yml`, on push to `main` and on dispatch | Every UI test, and a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>` artifact (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
+| `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as four shards on four simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
-The full UI suite does not gate pull requests. It is some 70 tests driven one at a time plus some 70
-photographs, up to an hour on a loaded runner, which is too long to gate every iOS pull request on. A UI test that
-the smoke run does not cover is therefore first run on `main`, where a failure alerts like any other.
+The full UI suite does not gate pull requests. It is some 110 tests driven one at a time plus some 90
+photographs — well over an hour on one runner, which is why it runs as four shards on four simulators
+after the merge, and too long to gate every iOS pull request on either way. A UI test that the smoke
+run does not cover is therefore first run on `main`, where a red shard alerts like any other failure.
 To get the whole run and the screenshots for a branch before it merges, dispatch it:
 `gh workflow run ios-ui-tests.yml --ref <branch>`.
 
