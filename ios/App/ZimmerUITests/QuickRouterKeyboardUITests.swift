@@ -81,6 +81,10 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         field.typeText("Rotate the staging deploy key")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout))
         XCTAssertTrue(cancel.waitForExistence(timeout: timeout), "Cancel stands beside the bar while it has the keyboard")
+        XCTAssertEqual(cancel.label, "Cancel", "the X still reads as Cancel")
+        // Across the field from send, so a thumb reaching for one does not land on the other.
+        XCTAssertLessThan(cancel.frame.maxX, field.frame.minX, "Cancel is on the field's leading side")
+        XCTAssertLessThan(field.frame.maxX, start.frame.minX, "send is alone on the trailing side")
         XCTAssertTrue(start.isEnabled)
         attachScreenshot(app, named: "quick-router-bar-focused-cancel")
 
