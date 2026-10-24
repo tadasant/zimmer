@@ -254,8 +254,8 @@ struct QuickRouterView: View {
 /// The web UI's prompt box on the board, pinned to the foot of the Sessions screen: the
 /// first thing a thumb reaches, and the most prominent thing on the main screen. Type a
 /// sentence, send it, and the session it starts opens. The sparkles open the sheet with
-/// the words so far, for photos, files and the Advanced choices. While it has the keyboard a
-/// Cancel stands beside it, as beside the search box, and empties it.
+/// the words so far, for photos, files and the Advanced choices. While it has the keyboard an
+/// X on its leading side, across the field from send, empties it as the search box's Cancel does.
 ///
 /// It stands aside while the search box has the keyboard — a second field above the
 /// keyboard would take the room the results need — and while rows are being selected,
@@ -274,6 +274,23 @@ struct QuickRouterBar: View {
 
     private var bar: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            if focused {
+                // The search box's Cancel, beside the bar for as long as it has the keyboard:
+                // the words go and the keyboard with them, as Cancel empties the search. On the
+                // leading side, across the field from send, so a thumb reaching for one does not
+                // land on the other.
+                Button { cancel() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.inkMute)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(Theme.well))
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                .accessibilityLabel("Cancel")
+                .accessibilityHint("Clears the words and puts the keyboard away")
+                .accessibilityIdentifier("quickrouter.bar.cancel")
+            }
             HStack(alignment: .top, spacing: 8) {
                 Button {
                     // Let go of the keyboard first: UIKit hands first responder back to the
@@ -320,17 +337,6 @@ struct QuickRouterBar: View {
             .disabled(!canSend)
             .accessibilityLabel("Start")
             .accessibilityIdentifier("quickrouter.bar.start")
-            if focused {
-                // The search box's Cancel, beside the bar for as long as it has the keyboard:
-                // the words go and the keyboard with them, as Cancel empties the search.
-                Button("Cancel") { cancel() }
-                    .foregroundStyle(Theme.accent)
-                    .fixedSize()
-                    .frame(height: 38)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-                    .accessibilityHint("Clears the words and puts the keyboard away")
-                    .accessibilityIdentifier("quickrouter.bar.cancel")
-            }
         }
         .animation(.easeOut(duration: 0.2), value: focused)
         .padding(.horizontal, Theme.margin)
