@@ -66,8 +66,8 @@ not jitter. The colours come from the Zimmer web UI instead of Motet's:
 
 The Quick Router is placed as the web UI places it: a bar pinned to the foot of the Sessions
 screen, and a round button in the bottom-right corner of every other screen (`quickRouterCorner()`),
-which opens the sheet. While the bar has the keyboard a Cancel stands beside it, as beside the
-search box, and empties it. The button carries the app's one shadow — a thing floating over content
+which opens the sheet. While the bar has the keyboard an X stands on its left, across the field
+from send, and empties it as the search box's Cancel does. The button carries the app's one shadow — a thing floating over content
 needs the lift, as Motet's play button does.
 [`PARITY_AUDIT.md`](PARITY_AUDIT.md) is the running comparison against the web UI and against
 Motet, grouped into the slices that land it.
