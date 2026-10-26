@@ -12,6 +12,17 @@ module SessionsHelper
     @cached_genesis_overrides ||= AppSetting.current.genesis_class_overrides || {}
   end
 
+  # Session#agent_root_key for a page of rows, against one build of the catalog.
+  #
+  # AgentRootsConfig.all builds every AgentRoot afresh — about a millisecond — and
+  # Session#agent_root_key asks for it on every call, so a few hundred rows paid
+  # for a few hundred identical catalogs. Memoized on the view instance for the
+  # same reason as cached_genesis_overrides: one request, one catalog.
+  def session_agent_root_key(agent_session)
+    @cached_agent_roots ||= AgentRootsConfig.all
+    agent_session.agent_root_key(roots: @cached_agent_roots)
+  end
+
   # Extracts the actionable error line(s) from a failed session's exception
   # message so the failure UI can surface them prominently above the raw output.
   # Returns nil when the message doesn't mix warnings and errors (nothing to

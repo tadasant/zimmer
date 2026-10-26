@@ -49,7 +49,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "filtering by agent root returns only that root's sessions" do
-    get root_url(agent_root: "zimmer")
+    get dashboard_board_url(agent_root: "zimmer")
     assert_response :success
 
     # Both the metadata-keyed and the legacy URL+subdirectory session match; the
@@ -61,7 +61,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "filtering by a different agent root returns its sessions" do
-    get root_url(agent_root: "general-agent")
+    get dashboard_board_url(agent_root: "general-agent")
     assert_response :success
 
     # Bounded, so an extra row leaking into this filter fails rather than passing
@@ -76,7 +76,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   end
 
   test "filtering by an unknown agent root returns no sessions" do
-    get root_url(agent_root: "does-not-exist")
+    get dashboard_board_url(agent_root: "does-not-exist")
     assert_response :success
 
     # The board's own placeholder rather than the page-level empty state: the User
@@ -90,7 +90,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   # operator into a separate results presentation is exactly what the User view
   # exists to stop: they lose the row controls they were working down the page.
   test "an active search narrows the board in place rather than replacing it" do
-    get root_url(agent_root: "zimmer")
+    get dashboard_board_url(agent_root: "zimmer")
     assert_response :success
 
     assert_select "#user_view_list"
@@ -102,12 +102,12 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     @zimmer_legacy_session.update!(status: :archived)
 
     # Nothing ticked: the search spans every status, trash included.
-    get root_url(every_status_params(agent_root: "zimmer"))
+    get dashboard_board_url(every_status_params(agent_root: "zimmer"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 2
 
     # Naming one status narrows the same search to it.
-    get root_url(every_status_params(agent_root: "zimmer", status: [ @zimmer_session.status ]))
+    get dashboard_board_url(every_status_params(agent_root: "zimmer", status: [ @zimmer_session.status ]))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
     assert_select "#user_view_row_#{@zimmer_session.id}"
@@ -127,7 +127,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
       status: :needs_input
     )
 
-    get root_url(every_status_params(q: "Findme"))
+    get dashboard_board_url(every_status_params(q: "Findme"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 2
   end
@@ -135,7 +135,7 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
   test "agent root filter and text query combine" do
     @zimmer_session.update!(title: "Special Zimmer")
 
-    get root_url(agent_root: "zimmer", q: "Special")
+    get dashboard_board_url(agent_root: "zimmer", q: "Special")
     assert_response :success
 
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
@@ -147,11 +147,11 @@ class SessionsControllerSearchFilterTest < ActionDispatch::IntegrationTest
     # exactly, but its metadata explicitly assigns it to `general-agent`. It must
     # resolve to `general-agent` only -- the URL fallback is disabled whenever an
     # explicit key is present (parity with AgentRootsConfig.find_for_session).
-    get root_url(agent_root: "general-agent")
+    get dashboard_board_url(agent_root: "general-agent")
     assert_response :success
     assert_select "#user_view_row_#{@other_root_session.id}"
 
-    get root_url(agent_root: "zimmer")
+    get dashboard_board_url(agent_root: "zimmer")
     assert_response :success
     assert_select "#user_view_row_#{@other_root_session.id}", count: 0
   end

@@ -109,7 +109,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
     snoozed = make_session(title: "Back on Friday", visibility: SessionVisibility::SNOOZED, snoozed_until: 3.days.from_now)
 
-    get root_path
+    get dashboard_board_path
 
     assert_response :success
     assert_select board_row(on_board), 1
@@ -120,7 +120,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
   test "a session whose snooze has run out is back on the board with nothing having run" do
     expired = make_session(title: "Snooze is over", visibility: SessionVisibility::SNOOZED, snoozed_until: 1.minute.ago)
 
-    get root_path
+    get dashboard_board_path
 
     assert_response :success
     assert_select board_row(expired), 1
@@ -132,7 +132,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     on_board = make_session(title: "On the board")
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
 
     assert_response :success
     assert_select board_row(hidden), 1
@@ -145,7 +145,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     snoozed = make_session(title: "Back on Friday", visibility: SessionVisibility::SNOOZED,
                            snoozed_until: 3.days.from_now)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
 
     assert_response :success
     assert_select board_row(hidden), text: /Hidden/
@@ -160,7 +160,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     legacy = make_session(title: "Legacy snooze")
     legacy.update_columns(visibility: SessionVisibility::SNOOZED, snoozed_until: nil)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
 
     assert_response :success
     assert_select board_row(legacy), text: /Snoozed/
@@ -170,7 +170,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     on_board = make_session(title: "On the board")
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
 
     assert_response :success
     assert_select board_row(on_board), 1
@@ -181,10 +181,11 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
     make_session(title: "Also tidied", visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
 
-    get root_path
+    get dashboard_board_path
 
     assert_response :success
-    assert_select "#off-board-count", text: /2 sessions tucked away/
+    # The count rides in the board as a stream onto the shell's Filters legend.
+    assert_select "turbo-stream[action=update][target=off-board-count] template", text: /2 sessions tucked away/
   end
 
   # The count is the nudge to reveal, so it has to name sessions revealing would
@@ -193,19 +194,20 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN, status: :needs_input)
     make_session(title: "Also tidied", visibility: SessionVisibility::HIDDEN, status: :failed)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "needs_input" ] }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "needs_input" ] }
 
     assert_response :success
-    assert_select "#off-board-count", text: /1 session tucked away/
+    # The count rides in the board as a stream onto the shell's Filters legend.
+    assert_select "turbo-stream[action=update][target=off-board-count] template", text: /1 session tucked away/
   end
 
   test "the choice persists across a bare visit" do
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
     assert_response :success
 
-    get root_path
+    get dashboard_board_path
 
     assert_response :success
     assert_select board_row(hidden), 1
@@ -237,7 +239,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     snoozed = make_session(title: "Snoozed work", status: :waiting, scheduling_class: "spot", precedence: 800,
                            visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
 
-    get root_path, params: { view: SessionsController::VIEW_MODE_RANKED }
+    get dashboard_board_path, params: { view: SessionsController::VIEW_MODE_RANKED }
 
     assert_response :success
     assert_select "#ranked_row_#{on_board.id}", 1
@@ -250,7 +252,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     snoozed = make_session(title: "Snoozed work", status: :waiting, scheduling_class: "spot", precedence: 800,
                            visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
 
-    get root_path, params: {
+    get dashboard_board_path, params: {
       view: SessionsController::VIEW_MODE_RANKED,
       SessionsController::FILTERS_SUBMITTED_PARAM => "1",
       visibility: "off_board"
@@ -266,7 +268,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     session = make_session(title: "A session")
 
     [ SessionsController::VIEW_MODE_LAST_TOUCHED, SessionsController::VIEW_MODE_CREATED_DESC ].each do |view|
-      get root_path, params: { view: view }
+      get dashboard_board_path, params: { view: view }
 
       assert_response :success
       assert_select "##{ActionView::RecordIdentifier.dom_id(session)} [data-controller='visibility']", 1,
@@ -279,7 +281,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
   test "the User view row carries the control as a button of its own" do
     session = make_session(title: "A session")
 
-    get root_path, params: { view: SessionsController::VIEW_MODE_USER }
+    get dashboard_board_path, params: { view: SessionsController::VIEW_MODE_USER }
 
     assert_response :success
     assert_select "#{board_row(session)} [data-controller='visibility']", 1
@@ -291,7 +293,7 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     session = make_session(title: "Trashed", status: :archived)
     assert_not session.sleepable?
 
-    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "archived" ] }
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", status: [ "archived" ] }
 
     assert_response :success
     assert_select "#{board_row(session)} [data-controller='visibility']", 1

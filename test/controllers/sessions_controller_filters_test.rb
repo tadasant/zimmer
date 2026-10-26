@@ -21,55 +21,55 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   end
 
   test "the dashboard shows only needs_input sessions before anything is filtered" do
-    get root_url
+    get dashboard_board_url
 
     assert_response :success
     assert_cards [ @needs_input ]
   end
 
   test "selecting several statuses shows exactly those" do
-    get root_url(filters: "1", status: %w[running failed])
+    get dashboard_board_url(filters: "1", status: %w[running failed])
 
     assert_response :success
     assert_cards [ @running, @failed ]
   end
 
   test "submitting the Filters form with no status ticked shows every status" do
-    get root_url(filters: "1")
+    get dashboard_board_url(filters: "1")
 
     assert_response :success
     assert_cards [ @waiting, @running, @needs_input, @failed, @archived ]
   end
 
   test "a selection survives a plain reload of the bare dashboard" do
-    get root_url(filters: "1", status: %w[running])
+    get dashboard_board_url(filters: "1", status: %w[running])
     assert_response :success
     assert_cards [ @running ]
 
     # No params at all — the persisted choice, not the default, is what applies.
-    get root_url
+    get dashboard_board_url
     assert_response :success
     assert_cards [ @running ]
   end
 
   test "an explicit show-everything selection also persists" do
-    get root_url(filters: "1")
+    get dashboard_board_url(filters: "1")
     assert_response :success
 
-    get root_url
+    get dashboard_board_url
     assert_response :success
     assert_cards [ @waiting, @running, @needs_input, @failed, @archived ]
   end
 
   test "reset filters clears the persisted selection and returns to the default" do
-    get root_url(filters: "1", status: %w[archived])
+    get dashboard_board_url(filters: "1", status: %w[archived])
     assert_response :success
     assert_cards [ @archived ]
 
     get root_url(reset_filters: "1")
     assert_redirected_to root_path
 
-    follow_redirect!
+    get dashboard_board_url
     assert_response :success
     assert_cards [ @needs_input ]
   end
@@ -86,7 +86,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   test "an unknown status in the query string is dropped rather than matching nothing" do
     # "waiting" survives; "chartreuse" is not a status and is discarded. A hand-edited
     # URL must not silently empty the dashboard, and must not raise.
-    get root_url(filters: "1", status: %w[waiting chartreuse])
+    get dashboard_board_url(filters: "1", status: %w[waiting chartreuse])
 
     assert_response :success
     assert_cards [ @waiting ]
@@ -95,7 +95,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   test "a corrupt filters cookie is ignored rather than 500ing the dashboard" do
     cookies[SessionsController::FILTERS_COOKIE] = "not json at all"
 
-    get root_url
+    get dashboard_board_url
 
     assert_response :success
     assert_cards [ @needs_input ]
@@ -105,31 +105,31 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     # The ticked boxes describe the result set in every view, search included. A rule
     # that quietly widened a search would not be visible in the form, and the form is
     # the only thing telling the user what they are looking at.
-    get root_url(q: "Filterable")
+    get dashboard_board_url(q: "Filterable")
 
     assert_response :success
     assert_cards [ @needs_input ]
   end
 
   test "searching the trash means naming archived in the filter" do
-    get root_url(filters: "1", status: %w[archived], q: "Filterable")
+    get dashboard_board_url(filters: "1", status: %w[archived], q: "Filterable")
 
     assert_response :success
     assert_cards [ @archived ]
   end
 
   test "a search with no status ticked spans every status" do
-    get root_url(filters: "1", q: "Filterable")
+    get dashboard_board_url(filters: "1", q: "Filterable")
 
     assert_response :success
     assert_cards [ @waiting, @running, @needs_input, @failed, @archived ]
   end
 
   test "a persisted selection still applies while searching" do
-    get root_url(filters: "1", status: %w[archived])
+    get dashboard_board_url(filters: "1", status: %w[archived])
     assert_response :success
 
-    get root_url(q: "Filterable")
+    get dashboard_board_url(q: "Filterable")
     assert_response :success
     assert_cards [ @archived ]
   end
@@ -137,12 +137,12 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   test "the scheduling class filter narrows the view you are in rather than replacing it" do
     # It is a filter, not a search. Persisting it must not silently swap the view the
     # operator chose for a different presentation on every later visit.
-    get root_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
+    get dashboard_board_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
     assert_response :success
     assert_select "#user_view_list", count: 1
     assert_select "#flat_sessions", count: 0
 
-    get root_url
+    get dashboard_board_url
     assert_response :success
     assert_select "#user_view_list", count: 1
     assert_select "#flat_sessions", count: 0

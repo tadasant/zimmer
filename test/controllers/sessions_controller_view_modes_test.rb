@@ -50,7 +50,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   test "desktop default is the User view" do
     make_session
 
-    get root_path, headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path, headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_select "#user_view_list", true, "desktop default should render the User view's board"
@@ -62,7 +62,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     # Written by a previous release; "categories" is no longer a valid mode.
     cookies[:sessions_view] = "categories"
-    get root_path, headers: { "User-Agent" => MOBILE_UA }
+    get dashboard_board_path, headers: { "User-Agent" => MOBILE_UA }
 
     assert_response :success
     assert_select "#user_view_list", true,
@@ -73,7 +73,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   test "mobile default is the last touched flat view" do
     make_session
 
-    get root_path, headers: { "User-Agent" => MOBILE_UA }
+    get dashboard_board_path, headers: { "User-Agent" => MOBILE_UA }
 
     assert_response :success
     assert_select "#flat_sessions", true, "mobile default should render the flat list"
@@ -85,7 +85,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   test "explicit view param overrides the desktop default" do
     make_session
 
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_select "#flat_sessions", true
@@ -96,11 +96,11 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     make_session
 
     # First, explicitly pick the flat view (sets the cookie).
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
     assert_select "#flat_sessions", true
 
     # A subsequent visit with no param (still desktop) keeps the flat view.
-    get root_path, headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path, headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
     assert_select "#flat_sessions", true, "the persisted explicit choice should survive navigation"
     assert_select "#user_view_list", false
@@ -109,7 +109,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   test "an invalid view param falls back to the default" do
     make_session
 
-    get root_path(view: "bogus"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "bogus"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_select "#user_view_list", true, "invalid view should fall back to desktop default"
@@ -129,7 +129,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     # Record a recent human view on the older session.
     older_created.touch_user_view!
 
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     # The just-viewed (older-created) session jumps to the top; the never-touched
@@ -143,7 +143,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     newer = make_session
     newer.update_column(:created_at, 5.minutes.ago)
 
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_equal [ "session_#{newer.id}", "session_#{older.id}" ], flat_card_ids
@@ -155,7 +155,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     plain_new = make_session(favorited: false)
     plain_new.update_column(:created_at, 1.minute.ago)
 
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     # Strict last-touched order ignores the favorite flag: the newer plain
@@ -176,7 +176,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     # Touch the oldest — created_desc must ignore activity entirely.
     a.touch_user_view!
 
-    get root_path(view: "created_desc"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "created_desc"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_equal [ "session_#{c.id}", "session_#{b.id}", "session_#{a.id}" ], flat_card_ids
@@ -194,7 +194,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     newer = make_session
     newer.update_column(:created_at, 1.minute.ago)
 
-    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success, "a malformed stored timestamp must not raise"
     # garbage falls back to its created_at (older), so newer sorts above it.
@@ -206,7 +206,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     archived = make_session
     archived.update_column(:status, Session.statuses[:archived])
 
-    get root_path(view: "created_desc"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "created_desc"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     ids = flat_card_ids

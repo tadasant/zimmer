@@ -139,14 +139,17 @@ class AgentRootsConfig
 
     # Find the agent root matching a session's git_root and subdirectory.
     # Prefers the explicit agent_root_key from session metadata when available.
-    def find_for_session(session)
+    #
+    # `roots:` lets a caller resolving many sessions against one catalog build it
+    # once rather than per session — see SessionsHelper#session_agent_root_key.
+    def find_for_session(session, roots: nil)
       key = session.metadata&.dig("agent_root_key")
       if key.present?
-        root = find(key)
+        root = roots ? ArtifactIdentity.find(roots, key) : find(key)
         return root if root
       end
 
-      all.find { |ar| ar.url == session.git_root && ar.subdirectory.to_s == session.subdirectory.to_s }
+      (roots || all).find { |ar| ar.url == session.git_root && ar.subdirectory.to_s == session.subdirectory.to_s }
     end
 
     def names
