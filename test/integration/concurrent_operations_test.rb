@@ -197,7 +197,7 @@ class ConcurrentOperationsTest < IntegrationTestCase
     # deliberately not among the statuses seeded above — so a bare "/" renders
     # none of these ten. Ask for every status, the way the UI does: an explicit
     # Filters submit with nothing ticked.
-    get root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+    get dashboard_board_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     # Every seeded session renders its own card, asserted by id. A bare

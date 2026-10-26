@@ -8088,6 +8088,22 @@ the board thins out as you work it, and goes stale only about things you did not
 The one place that shows is the **Reprioritize** button: the reordering session writes the new order
 and you have to reload to see it. The button says so.
 
+## The board arrives in one piece, after the shell
+
+The dashboard's shell paints first and the board follows in its own request
+([how the page loads](/sessions/user-view/#how-the-page-loads)), but the board itself is still one
+response. Every row arrives at once, not the cheap parts first. At a few hundred User-view rows that
+response is roughly half a second of server rendering and a few megabytes of uncompressed HTML,
+nearly all of it markup that repeats on every row (the Snooze popover alone is about 5KB a row). A
+board near the 500-row cap pays that in full.
+
+Streaming the rows in batches was left out on purpose. The User view's drag-to-reorder needs every
+row inside one list before a drag means anything, and a partly loaded list would let you drop a row
+above one that has not arrived yet.
+
+Opening the dashboard again from another page shows Turbo's cached copy of the old board for a
+moment, then the placeholder rows, then the fresh board.
+
 ## An iPhone photo reaches the agent as a file, not as an image
 
 The [media split](/sessions/prompt-attachments/#the-media-split) sends HEIC stills and video down

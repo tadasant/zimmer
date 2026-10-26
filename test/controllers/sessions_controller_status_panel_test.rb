@@ -158,7 +158,7 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
       metadata: { SessionStatusSummaryGenerator::FORK_MARKER => @session.id }
     )
 
-    get root_url
+    get dashboard_board_url
 
     assert_response :success
     assert_select "#user_view_row_#{@session.id}"

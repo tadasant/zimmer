@@ -38,7 +38,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     low = spot(10)
     high = spot(900)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
 
     assert_response :success
     assert_equal [ high.id, low.id ], spot_row_ids
@@ -48,7 +48,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     queued = spot(10)
     top = priority
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "waiting" ])
 
     assert_includes priority_row_ids, top.id
     assert_not_includes spot_row_ids, top.id
@@ -60,7 +60,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the ranked view defaults to showing unstarted work" do
     queued = spot(10)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_includes spot_row_ids, queued.id,
       "a `waiting` session must be visible without the user choosing a filter first"
@@ -69,7 +69,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "an explicitly chosen status filter still wins in the ranked view" do
     spot(10)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "needs_input" ])
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1", status: [ "needs_input" ])
 
     assert_empty spot_row_ids
     assert_includes response.body, "No spot sessions match these filters"
@@ -81,7 +81,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     live = spot(10, title: "live spot")
     trashed = spot(11, title: "trashed spot", status: :archived)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
       status: SessionsController::UNARCHIVED_STATUSES)
 
     assert_response :success
@@ -93,7 +93,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     queued = spot(10)
     top = priority
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1",
       status: SessionsController::UNARCHIVED_STATUSES, priority_class: SessionGenesis::PRIORITY)
 
     assert_includes priority_row_ids, top.id
@@ -103,19 +103,19 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the All quick filter shows the trash too" do
     trashed = spot(11, title: "trashed spot", status: :archived)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1")
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED, filters: "1")
 
     assert_includes spot_row_ids, trashed.id, "no status ticked is every status"
   end
 
   test "a quick filter is persisted the way an Apply is" do
-    get root_url(filters: "1", status: SessionsController::UNARCHIVED_STATUSES)
+    get dashboard_board_url(filters: "1", status: SessionsController::UNARCHIVED_STATUSES)
     assert_response :success
 
     # A bare visit afterwards keeps the choice rather than snapping back to the
     # needs_input default.
     live = spot(10, title: "live spot")
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_includes spot_row_ids, live.id
   end
@@ -130,7 +130,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the ranked view subscribes to the ranked stream and ids every row's status pill" do
     session = spot(10)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_response :success
     assert_select "turbo-cable-stream-source[signed-stream-name=?]",
@@ -229,7 +229,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the ranked lists are live regions, so a page that missed broadcasts recovers them" do
     spot(10)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     # `sync` rather than `replace`: rows are added, swapped AND removed here, and
     # it reconciles children by id, which is what the rows carry.
@@ -247,7 +247,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     queued = spot(10)
     top = priority
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_select "#ranked_row_#{top.id} [data-controller='overflow-menu'] button[data-ranked-queue-target='demoteAction']"
     assert_select "#ranked_row_#{queued.id} [data-controller='overflow-menu'] button[data-ranked-queue-target='promoteAction']"
@@ -263,7 +263,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the menu also offers Start now and Trash" do
     queued = spot(10)
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_select "#ranked_row_#{queued.id} [role='menu'] a[href=?][data-turbo-method='post']",
       start_now_session_path(queued), text: "Start now"
@@ -280,7 +280,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the row's title is a real link wired to the session drawer" do
     queued = spot(10, title: "Rebuild the AIR catalog index")
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_select "#ranked_row_#{queued.id} a[href=?]", session_path(queued) do |links|
       title_link = links.find { |link| link.text.include?("Rebuild the AIR catalog index") }
@@ -304,7 +304,7 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   test "the row's overflow menu links to the full session page, not the drawer path" do
     queued = spot(10, title: "Rebuild the AIR catalog index")
 
-    get root_url(view: SessionsController::VIEW_MODE_RANKED)
+    get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
     assert_select "#ranked_row_#{queued.id} a[href=?]", session_path(queued), { minimum: 1 }
     assert_select "#ranked_row_#{queued.id} a[href*='/drawer']", false,
