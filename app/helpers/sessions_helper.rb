@@ -20,7 +20,7 @@ module SessionsHelper
   # same reason as cached_genesis_overrides: one request, one catalog.
   def session_agent_root_key(agent_session)
     @cached_agent_roots ||= AgentRootsConfig.all
-    AgentRootsConfig.find_for_session(agent_session, roots: @cached_agent_roots)&.name
+    agent_session.agent_root_key(roots: @cached_agent_roots)
   end
 
   # Extracts the actionable error line(s) from a failed session's exception

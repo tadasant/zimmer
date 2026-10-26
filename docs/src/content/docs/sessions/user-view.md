@@ -144,7 +144,7 @@ frame shows grey placeholder rows shaped like the real ones.
 
 `/board` is its own path rather than a frame variant of `/` for the reason the session drawer's is:
 Turbo's prefetch cache is keyed on the URL alone. Links and buttons inside the board navigate the
-whole page, as they did when the board was inline. The *tucked away* count in the Filters legend
+whole page, never just the frame. The *tucked away* count in the Filters legend
 arrives with the board, because it is counted through every filter the board applies. After a
 phone wakes the page, the reconnect backfill re-fetches `/board` to bring its rows up to date.
 

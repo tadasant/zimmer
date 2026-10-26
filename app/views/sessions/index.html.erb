@@ -675,10 +675,10 @@
           The src carries this page's query string, so the board resolves the
           same filters the shell just did.
 
-          target="_top": a link or form inside the board navigates the page, as
-          it did when the board was rendered inline. data-deferred-panel: the
-          reconnect backfill refetches this frame's src to reconcile the rows'
-          live regions, which the shell's own HTML no longer carries. %>
+          target="_top": a link or form inside the board navigates the whole
+          page, never just the frame. data-deferred-panel: the reconnect
+          backfill refetches this frame's src to reconcile the rows' live
+          regions, which the shell's own HTML does not carry. %>
       <%= turbo_frame_tag "sessions_board",
             src: dashboard_board_path(request.query_parameters),
             target: "_top",

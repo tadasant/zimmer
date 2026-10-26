@@ -88,4 +88,17 @@ class BoardVisibilityTest < ApplicationSystemTestCase
   ensure
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
+
+  # The count is computed by /board and carried to the shell's Filters legend as a
+  # <turbo-stream> inside the board frame, so only a browser shows it arriving.
+  test "the Filters legend says how many sessions the loaded board is holding back" do
+    create_session(title: "Still on the board")
+    create_session(title: "Tucked away", visibility: SessionVisibility::HIDDEN)
+
+    visit root_path(view: SessionsController::VIEW_MODE_USER)
+
+    assert_selector "#user_view_list", text: "Still on the board"
+    assert_selector "#off-board-count", text: "1 session tucked away"
+    assert_no_selector "#user_view_list", text: "Tucked away"
+  end
 end

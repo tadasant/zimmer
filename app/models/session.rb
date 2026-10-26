@@ -1434,8 +1434,11 @@ class Session < ApplicationRecord
   # session built then `update!`d to set its agent_root_key resolves to nil on
   # the first touch and would keep returning nil. The underlying catalog
   # (AgentRootsConfig.all) is itself cached, so re-resolving per call is cheap.
-  def resolved_agent_root
-    AgentRootsConfig.find_for_session(self)
+  #
+  # `roots:` resolves against an already-built catalog — for a caller resolving
+  # many sessions at once (SessionsHelper#session_agent_root_key).
+  def resolved_agent_root(roots: nil)
+    roots ? AgentRootsConfig.find_for_session(self, roots:) : AgentRootsConfig.find_for_session(self)
   end
 
   # The canonical key of the session's agent root from roots.json
@@ -1444,8 +1447,8 @@ class Session < ApplicationRecord
   # Prefers the explicit key stored in metadata at creation time, then falls back
   # to resolving by git_root URL + subdirectory against the current catalog.
   # Returns nil if the session cannot be resolved to a catalog entry.
-  def agent_root_key
-    resolved_agent_root&.name
+  def agent_root_key(roots: nil)
+    resolved_agent_root(roots:)&.name
   end
 
   # The subdirectory this session's agent root declares in the *current* catalog,

@@ -61,7 +61,7 @@ module LiveConversationHelpers
   # say) — so the live name is answered by an override, and everything else
   # reaches the real catalog. Cleared after every test.
   module RootOverride
-    def find(name, **)
+    def find(name)
       overrides = LiveConversationHelpers.root_overrides
       return overrides[name.to_s] if overrides&.key?(name.to_s)
 
