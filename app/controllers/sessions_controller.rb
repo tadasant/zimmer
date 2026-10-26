@@ -154,8 +154,8 @@ class SessionsController < ApplicationController
   # id="sessions_board"> loads the moment the page arrives.
   #
   # Split because the board is the expensive half by a wide margin: a few hundred
-  # User-view rows are seconds of rendering, and while that was inline the browser
-  # showed nothing at all until the last row was done.
+  # User-view rows are most of a second of rendering, and a page that waited on
+  # them would show nothing at all until the last row was done.
   def index
     # "Reset filters" drops the persisted choice and lands the user back on a bare
     # dashboard, so it has to happen before anything reads the cookie.

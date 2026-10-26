@@ -2945,10 +2945,11 @@ direction: elicitation banners are appended when raised *and removed when answer
 them `append` would leave a dead approval prompt on screen after a reopen.
 
 **A deferred panel is fetched from its own URL.** The detail screen's transcript and provenance
-panels are `<turbo-frame>` stubs fetched after first paint, so the page the backfill just fetched has
+panels, and the dashboard's whole board (`<turbo-frame id="sessions_board">`, served by `/board`,
+which holds the dashboard session grids above), are `<turbo-frame>` stubs fetched after first paint, so the page the backfill just fetched has
 them unloaded — a skeleton with no ids in it, which `backfillLiveRegions` correctly finds nothing to
-reconcile against. Their content is at `/sessions/:id/transcript_panel` and
-`/sessions/:id/provenance_panel`, and the recovery fetches those too, for every frame that has
+reconcile against. Their content is at `/sessions/:id/transcript_panel`,
+`/sessions/:id/provenance_panel` and `/board`, and the recovery fetches those too, for every frame that has
 loaded. A frame still unloaded has nothing on screen to bring up to date, so it costs nothing. The
 transcript frame names a wider address for this in `data-backfill-src` — a 100-row tail rather than
 its own 10 — because a reader away for a while can have missed more than ten rows. Rows in that
