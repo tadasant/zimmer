@@ -175,7 +175,7 @@
     <%= render "sessions/ranked_row_status", agent_session: agent_session %>
   </div>
 
-  <span class="hidden shrink-0 text-xs text-gray-400 sm:order-4 sm:inline"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+  <span class="hidden shrink-0 text-xs text-gray-400 sm:order-4 sm:inline"><%= session_agent_root_key(agent_session).presence || agent_session.genesis_key %></span>
 
   <%# Only ever seen on a queue that is revealing tucked-away sessions. %>
   <% unless agent_session.board_visible? %>

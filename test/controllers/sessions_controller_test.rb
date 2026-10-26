@@ -62,7 +62,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # The paginated card grid lives in the two flat sort views now; the User view
     # is deliberately unpaginated (a drag between two rows means nothing if one of
     # them is on another page).
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     assert_select "#sessions_grid turbo-frame", count: 50
@@ -78,7 +78,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Create enough sessions for pagination
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: 2))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: 2))
     assert_response :success
 
     # Should show remaining 10 sessions on second page
@@ -96,12 +96,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     60.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
     # A namespaced hash left over from the removed per-category paginator.
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: { uncategorized: 2 }))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, page: { uncategorized: 2 }))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
 
     # Malformed array param must not raise a TypeError.
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, "page[]" => "2"))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC, "page[]" => "2"))
     assert_response :success
     assert_select "#sessions_grid turbo-frame", count: 50
   end
@@ -119,7 +119,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Second session", title: "Beta Analysis")
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Third session", title: "Alpha Summary")
 
-    get root_url(every_status_params(q: "Alpha"))
+    get dashboard_board_url(every_status_params(q: "Alpha"))
     assert_response :success
 
     # Should find sessions with "Alpha" in title
@@ -138,7 +138,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Another session")
 
-    get root_url(every_status_params(q: "test-project"))
+    get dashboard_board_url(every_status_params(q: "test-project"))
     assert_response :success
 
     # Should find session with matching metadata
@@ -158,12 +158,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Session two")
 
     # Without search_contents, should not find by transcript
-    get root_url(every_status_params(q: "unique content", search_contents: "0"))
+    get dashboard_board_url(every_status_params(q: "unique content", search_contents: "0"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 0
 
     # With search_contents, should find by transcript
-    get root_url(every_status_params(q: "unique content", search_contents: "1"))
+    get dashboard_board_url(every_status_params(q: "unique content", search_contents: "1"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
     # A bounded scan owes the reader the difference between "no matches" and
@@ -171,7 +171,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Transcript scan complete/, response.body)
 
     # The REST API's spelling works here too, so a URL copied either way behaves the same.
-    get root_url(every_status_params(q: "unique content", search_contents: "true"))
+    get dashboard_board_url(every_status_params(q: "unique content", search_contents: "true"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
   end
@@ -191,7 +191,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       genesis: "api")
     other.update!(transcript: '{"role":"user","content":"find this unique content"}')
 
-    get root_url(every_status_params(q: "unique content", search_contents: "1", genesis: "web_ui"))
+    get dashboard_board_url(every_status_params(q: "unique content", search_contents: "1", genesis: "web_ui"))
     assert_response :success
 
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
@@ -223,17 +223,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     archived_session.update!(status: :archived)
 
     # Ticking nothing means every status, so a search spans both.
-    get root_url(every_status_params(q: "Test"))
+    get dashboard_board_url(every_status_params(q: "Test"))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 2
 
     # Naming one status narrows the same search to it.
-    get root_url(every_status_params(q: "Test", status: [ "waiting" ]))
+    get dashboard_board_url(every_status_params(q: "Test", status: [ "waiting" ]))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
 
     # And naming archived is how the trash is searched.
-    get root_url(every_status_params(q: "Test", status: [ "archived" ]))
+    get dashboard_board_url(every_status_params(q: "Test", status: [ "archived" ]))
     assert_response :success
     assert_select "#user_view_list li[id^='user_view_row_']", count: 1
   end
@@ -245,7 +245,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should show empty state when no search results" do
-    get root_url(q: "nonexistent12345")
+    get dashboard_board_url(q: "nonexistent12345")
     assert_response :success
     # The User view keeps its list in the DOM whether or not it has rows — that is
     # where an undone Trash puts a row back — so its own placeholder is the empty
@@ -1919,7 +1919,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     archived_session = sessions(:archived)
     needs_input_session = sessions(:needs_input)
 
-    get root_url
+    get dashboard_board_url
 
     assert_response :success
     # Archived session should not be in the response (check using session path)
@@ -1931,7 +1931,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "should show archived sessions when the status filter selects them" do
     archived_session = sessions(:archived)
 
-    get root_url(every_status_params(status: [ "archived" ]))
+    get dashboard_board_url(every_status_params(status: [ "archived" ]))
 
     assert_response :success
     # Archived session should be in the response (check using session path)
@@ -5948,7 +5948,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "favorite star should appear in session card" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
 
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     # Should have the toggle_favorite form/button
@@ -7313,7 +7313,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: :archived)
     active = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Active", status: :needs_input)
 
-    get root_url
+    get dashboard_board_url
     assert_response :success
 
     assert_select "#user_view_row_#{active.id}"
@@ -7323,7 +7323,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "index shows archived sessions when the status filter selects them" do
     archived = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Archived", status: :archived)
 
-    get root_url(every_status_params(status: [ "archived" ]))
+    get dashboard_board_url(every_status_params(status: [ "archived" ]))
     assert_response :success
 
     assert_select "#user_view_row_#{archived.id}"
@@ -7337,7 +7337,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "index View link carries the separate drawer url for the drawer to load" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Drawer link")
 
-    get root_url(every_status_params)
+    get dashboard_board_url(every_status_params)
     assert_response :success
 
     # NOTE: the { count: 1 } equality is required. With the `?` substitution
@@ -7685,7 +7685,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # The per-card refresh button is on the card, which the two flat sort views
     # render; the User view's rows carry Merge / Snooze / Trash instead.
-    get root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
     [ waiting, needs_input, failed ].each do |session|

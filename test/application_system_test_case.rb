@@ -197,6 +197,7 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # if the source element is missing rather than silently passing because no
   # broadcast was ever needed.
   def wait_for_turbo_streams_connected(timeout: TurboStreamConnectionWait::TIMEOUT)
+    wait_for_dashboard_board
     TurboStreamConnectionWait.wait(timeout:, require_source: true) do
       page.evaluate_script(TurboStreamConnectionWait::READING_SCRIPT)
     end
@@ -239,9 +240,26 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
         "got #{options.inspect}. See test/support/turbo_stream_connection_wait.rb."
     end
 
+    wait_for_dashboard_board
     TurboStreamConnectionWait.wait(timeout: TurboStreamConnectionWait::POST_VISIT_TIMEOUT, require_source: false) do
       page.evaluate_script(TurboStreamConnectionWait::READING_SCRIPT)
     end
+  end
+
+  # The dashboard ("/") renders a shell and loads its session list into
+  # <turbo-frame id="sessions_board"> from /board (SessionsController#board). The
+  # board carries rows a test reads straight after `visit` and, on the Ranked
+  # view, the RANKED_STREAM subscription a test's broadcast depends on — so until
+  # Turbo marks the frame `complete`, neither the rows nor that stream source
+  # exist, and the stream wait above would return having seen only the shell's.
+  #
+  # Waited on here, ahead of both stream waits, so the ~200 dashboard visits in
+  # the suite see the page as a person does once it has loaded, rather than each
+  # remembering to. A no-op on every page without the frame.
+  def wait_for_dashboard_board
+    return unless page.has_css?("turbo-frame#sessions_board", visible: :all, wait: 0)
+
+    page.assert_selector("turbo-frame#sessions_board[complete]", visible: :all, wait: TurboStreamConnectionWait::TIMEOUT)
   end
 
   # The session detail screen's Transcript panel is a collapsed <details> (see

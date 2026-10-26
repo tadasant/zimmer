@@ -90,7 +90,9 @@ not move.
 
 The dashboard's **Filters → Board visibility** control has three settings: *On board* (the default),
 *Snoozed & hidden*, and *Both*. When anything is tucked away, the legend says how many, so a board
-that is holding cards back always says so.
+that is holding cards back always says so. The number arrives with the board itself, a moment after
+the page: it is counted through every other filter, so it costs what the board costs (see
+[how the page loads](/sessions/user-view/#how-the-page-loads)).
 
 Revealed cards carry a badge saying which kind of tucking-away it is and, for a snooze, when it ends
 — and their menu grows a *Put back on the board* row. Nothing is ever unrecoverable.

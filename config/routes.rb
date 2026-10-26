@@ -851,6 +851,9 @@ Rails.application.routes.draw do
 
   # Defines the root path route ("/")
   root "sessions#index"
+  # The dashboard's board, loaded into the shell's <turbo-frame id="sessions_board">.
+  # Its own path, never a frame variant of "/": see SessionsController#board.
+  get "board", to: "sessions#board", as: :dashboard_board
 
   # Catch-all for unmatched paths. MUST stay last so it never shadows a real route.
   # Without it, an unmatched path raises ActionController::RoutingError, which Rails'

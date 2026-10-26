@@ -388,11 +388,10 @@
           <fieldset>
             <legend class="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
               <span>Board visibility</span>
-              <% if @off_board_count.to_i.positive? %>
-                <span class="text-xs text-gray-400" id="off-board-count">
-                  <%= pluralize(@off_board_count, "session") %> tucked away
-                </span>
-              <% end %>
+              <%# Filled in by the board's stream once it loads (sessions/board):
+                  the count is counted through every filter, so it costs what the
+                  board costs. Empty, and so hidden, until then. %>
+              <span class="text-xs text-gray-400 empty:hidden" id="off-board-count"></span>
             </legend>
             <div class="inline-flex flex-wrap rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by board visibility">
               <% [ [ SessionsController::VISIBILITY_ON_BOARD, "On board" ],
@@ -670,88 +669,21 @@
         </div>
       </div>
 
-      <% if @view_mode == SessionsController::VIEW_MODE_USER %>
-        <%# The User view: one list of everything the filters match, worked top to
-            bottom. Search narrows it exactly as the status and visibility filters
-            do — there is no separate "search results" presentation to bounce the
-            operator into. %>
-        <%= render "sessions/content_scan_notice", scan: @content_scan %>
-        <%= render "sessions/user_view_sessions",
-              sessions: @user_view_sessions,
-              limit: @user_view_limit,
-              truncated: @user_view_truncated,
-              visibility_filter: @visibility_filter %>
-      <% elsif @view_mode == SessionsController::VIEW_MODE_RANKED %>
-        <%# The Ranked view: priority above, the spot queue below it in precedence
-            order, both editable in place. Honors the same filters as every other
-            view — with its own default, since a queue of work that has not started
-            is mostly `waiting`. %>
-        <%# The filters travel into the partial because the rows update live and a
-            broadcast has to be judged against the filters THIS page is showing.
-            `live_insert` is off whenever a search, an agent root or a genesis is
-            narrowing the list — the three the client cannot evaluate for a
-            session it has never rendered. %>
-        <%= render "sessions/ranked_sessions",
-              priority_sessions: @ranked_priority_sessions,
-              spot_sessions: @ranked_spot_sessions,
-              section_limit: @ranked_section_limit,
-              status_filter: @status_filter,
-              priority_class_filter: @priority_class_filter,
-              visibility_filter: @visibility_filter,
-              live_insert: !@search_active %>
-      <% else %>
-        <%# Flat sort views: a single list of cards sorted solely by the chosen
-            factor (last touched, or created desc). Honors the same filters/search
-            as every other view. %>
-        <% if @any_sessions %>
-          <%= render "sessions/content_scan_notice", scan: @content_scan %>
-          <%= render "sessions/flat_sessions", sessions: @flat_sessions, title: @flat_view_title %>
-        <% end %>
-      <% end %>
+      <%# The board loads as its own request (SessionsController#board), so
+          everything above this line — header, menu, Filters, the Quick Router,
+          the view switcher — paints without waiting on a single session query.
+          The src carries this page's query string, so the board resolves the
+          same filters the shell just did.
 
-      <%# The page-level empty state. Not rendered in the User view, which carries its
-          own placeholder INSIDE the list section — the list has to stay in the DOM
-          there so it remains a drop target and somewhere an undone Trash can put a
-          row back, so the section is rendered whether or not it has rows. %>
-      <% if !@any_sessions && @view_mode != SessionsController::VIEW_MODE_USER %>
-        <!-- Empty State -->
-        <div class="text-center py-12">
-          <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          <h3 class="mt-2 text-sm font-medium text-gray-900">No sessions<% if @search_active %> found<% end %></h3>
-          <p class="mt-1 text-sm text-gray-500">
-            <% if @search_active %>
-              No sessions match your search. Try adjusting your search terms.
-            <% else %>
-              Get started by creating a new agent session.
-            <% end %>
-          </p>
-          <%# "No matches" and "I stopped looking" are different answers, and this is
-              the screen where confusing them is most costly. %>
-          <% if @content_scan %>
-            <div class="mx-auto mt-4 max-w-xl text-left">
-              <%= render "sessions/content_scan_notice", scan: @content_scan %>
-            </div>
-          <% end %>
-          <div class="mt-6">
-            <% if @search_active %>
-              <%# Drops the search terms but keeps the filter selection — the user is
-                  abandoning a query, not resetting how they filter. "Reset filters"
-                  in the Filters section is the control for the latter. %>
-              <%= link_to root_path(request.query_parameters.except("q", "agent_root", "genesis", "search_contents", "page")), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
-                Clear Search
-              <% end %>
-            <% else %>
-              <%= link_to new_session_path, class: "inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
-                <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
-                </svg>
-                New Session
-              <% end %>
-            <% end %>
-          </div>
-        </div>
+          target="_top": a link or form inside the board navigates the page, as
+          it did when the board was rendered inline. data-deferred-panel: the
+          reconnect backfill refetches this frame's src to reconcile the rows'
+          live regions, which the shell's own HTML no longer carries. %>
+      <%= turbo_frame_tag "sessions_board",
+            src: dashboard_board_path(request.query_parameters),
+            target: "_top",
+            data: { deferred_panel: true } do %>
+        <%= render "sessions/board_skeleton", view_mode: @view_mode %>
       <% end %>
     </div>
   </div>

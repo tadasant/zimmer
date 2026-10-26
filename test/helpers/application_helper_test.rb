@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class ApplicationHelperTest < ActionView::TestCase
   # Basic rendering tests
@@ -229,5 +230,24 @@ class ApplicationHelperTest < ActionView::TestCase
   test "markdown_plain_text drops markup without double-escaping" do
     assert_equal "Merge PR #12 & drop roles.zimmer.",
       markdown_plain_text("Merge [PR #12](https://github.com/o/r/pull/12) & drop `roles.zimmer`.")
+  end
+
+  test "inline_markdown answers a repeat from memory, still html_safe and unchanged" do
+    text = "Memo check #{SecureRandom.hex(4)}: [PR](https://github.com/o/r/pull/1) and `code`."
+    first = inline_markdown(text)
+
+    expects(:sanitize).never
+    second = inline_markdown(text)
+
+    assert_predicate second, :html_safe?
+    assert_equal first.to_s, second.to_s
+  end
+
+  test "markdown_plain_text answers a repeat from memory" do
+    text = "Plain memo #{SecureRandom.hex(4)}: **bold** & `code`."
+    first = markdown_plain_text(text)
+
+    expects(:strip_tags).never
+    assert_equal first, markdown_plain_text(text)
   end
 end

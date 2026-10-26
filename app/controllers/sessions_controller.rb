@@ -145,172 +145,45 @@ class SessionsController < ApplicationController
 
   before_action :load_form_data, only: %i[new create]
 
+  # GET /
+  #
+  # The dashboard's shell: header, menu, Filters, the Quick Router and the view
+  # switcher. It reads params and cookies and nothing else, so it answers in
+  # milliseconds however many sessions the board holds. The board itself — every
+  # query and every row — is #board, which the shell's <turbo-frame
+  # id="sessions_board"> loads the moment the page arrives.
+  #
+  # Split because the board is the expensive half by a wide margin: a few hundred
+  # User-view rows are seconds of rendering, and while that was inline the browser
+  # showed nothing at all until the last row was done.
   def index
     # "Reset filters" drops the persisted choice and lands the user back on a bare
     # dashboard, so it has to happen before anything reads the cookie.
     return if reset_filters!
 
-    # Search inputs. A search is "active" when there is a free-text query, an
-    # agent-root filter, or a genesis narrowing — the three inputs that ask "find me
-    # sessions matching this" and so replace the board with a flat result list. The
-    # transcript-contents toggle only widens an existing text query, so it does not
-    # by itself count.
-    #
-    # The scheduling class is deliberately NOT one of them. It is a filter, and a
-    # filter narrows whichever view you are already in; treating it as a search would
-    # mean that picking "Spot" once — a choice that now persists — silently replaced
-    # the board with a flat list on every later visit, with nothing in the URL to
-    # explain it.
-    @search_query = params[:q].to_s.strip
-    # "1" from this page's own checkbox, "true" from anyone who copied the REST
-    # API's documented spelling — SessionSearchable.search_contents? accepts both.
-    @search_contents = SessionSearchable.search_contents?(params[:search_contents])
-    @agent_root_filter = params[:agent_root].to_s.strip
-    @genesis_filter = params[:genesis].to_s.strip
-    @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
-    @search_active = @search_query.present? || @agent_root_filter.present? ||
-                     @genesis_filter.present?
-
-    # Which view the dashboard renders in. Resolved before the filters because the
-    # Ranked view carries a different DEFAULT status filter — it is a queue of work
-    # that has not run yet, so opening it on `needs_input` alone would show nothing.
-    @view_mode = resolve_view_mode
-
-    # The Filters section: which statuses to show, and the spot/priority narrowing.
-    resolve_filters
-
-    # Build the base visibility scope, applying the status filter. Used for every
-    # fresh scope constructed below so the filters stay consistent.
-    base_scope = lambda do |scope|
-      # An empty status filter is "every status" — the user ticked nothing — so it
-      # narrows nothing here rather than matching nothing.
-      scope = scope.where(status: @status_filter) if @status_filter.any?
-      # Status-summary forks are Zimmer's own bookkeeping, not the operator's
-      # work — they are never a row on the dashboard, trash view included.
-      scope.excluding_status_summary_forks
-    end
-
-    # Board visibility, applied to every branch below through the same lambda so no
-    # view can silently forget it. An expired snooze is already "visible" to the
-    # scope, which is how a snoozed session returns on its own with nothing having
-    # written to its row. See SessionVisibility.
-    board_scope = lambda do |scope|
-      case @visibility_filter
-      when VISIBILITY_OFF_BOARD then scope.board_hidden
-      when VISIBILITY_ALL then scope
-      else scope.board_visible
-      end
-    end
-
-    sessions = base_scope.call(Session.all)
+    resolve_dashboard_inputs
 
     # Roots offered in the Advanced Search agent-root autocomplete. Sourced from the
     # full catalog (not just user-invocable roots) so sessions from any root can be
     # filtered, sorted by name for a stable list.
     @agent_roots_for_filter = AgentRootsConfig.all.sort_by(&:name)
+  end
 
-    if @agent_root_filter.present?
-      sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
-    end
-
-    if @priority_class_filter.present?
-      sessions = sessions.priority_classified(@priority_class_filter)
-    end
-
-    if @genesis_filter.present?
-      sessions = sessions.with_genesis(@genesis_filter)
-    end
-
-    # Deliberately last of the narrowing steps. A content scan spends a wall-clock
-    # budget reading transcripts, so anything it reads that a later filter would have
-    # discarded is budget the caller does not get back — and the notice it produces
-    # says "all N sessions matching these filters", which is only true if every filter
-    # is already applied. The REST and MCP surfaces order it the same way.
-    if @search_query.present?
-      if @search_contents
-        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
-        # the results header reads to say whether the whole corpus was covered.
-        sessions, @content_scan =
-          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
-      else
-        sessions = filter_sessions_by_search(sessions, @search_query)
-      end
-    end
-
-    # Board visibility is the last narrowing, so the reveal count below is counted
-    # through every other filter the operator has set. "3 tucked away" then means
-    # three cards THIS board would otherwise be showing, rather than three
-    # somewhere in the table — the number exists to talk them into revealing, and
-    # it is only persuasive if revealing actually produces those three.
-    @off_board_count = sessions.board_hidden.count
-    sessions = board_scope.call(sessions)
-
-    # The Ranked view: the spot queue in the order it will actually be worked,
-    # with the priority sessions that outrank all of it stacked above. Two
-    # sections rather than one list, because the two halves answer different
-    # questions — a priority session has no rank to compare, it simply starts —
-    # and because the demote button only belongs on one of them.
-    if @view_mode == VIEW_MODE_RANKED
-      @ranked_priority_sessions = sessions.priority_classified(SessionGenesis::PRIORITY)
-        .ranked.limit(RANKED_SECTION_LIMIT).to_a
-      @ranked_spot_sessions = sessions.priority_classified(SessionGenesis::SPOT)
-        .ranked.limit(RANKED_SECTION_LIMIT).to_a
-      @ranked_section_limit = RANKED_SECTION_LIMIT
-      @any_sessions = @ranked_priority_sessions.any? || @ranked_spot_sessions.any?
-      return
-    end
-
-    # Flat sort views completely flatten the presentation: a single list sorted
-    # solely by the chosen factor, honoring the same filters/visibility but
-    # ignoring the pinned favorites float. They apply whether or not a search is active (search just
-    # narrows the eligible set first).
-    if @view_mode == VIEW_MODE_LAST_TOUCHED || @view_mode == VIEW_MODE_CREATED_DESC
-      flat_sorted =
-        if @view_mode == VIEW_MODE_LAST_TOUCHED
-          sessions.order(Session::LAST_TOUCHED_ORDER)
-        else
-          sessions.order(created_at: :desc)
-        end
-      @flat_sessions = flat_sorted.page(scalar_page_param).per(SESSIONS_PER_PAGE)
-      @flat_view_title = @view_mode == VIEW_MODE_LAST_TOUCHED ? "Sorted by last touched" : "Sorted by created (newest first)"
-      @any_sessions = @flat_sessions.any?
-      return
-    end
-
-    # The User view. One unified list of every session the filters match, ordered
-    # so a priority session outranks every spot one and precedence is respected
-    # all the way down.
-    #
-    # The ordering rule itself is Sessions::UserView's, shared with the
-    # `get_user_view` MCP tool so the reprioritizing session reads exactly the
-    # board the human is looking at.
-    #
-    # The select drops `transcript`. It is a legacy JSON column on `sessions`
-    # (transcripts live in session_transcript_chunks now) and this view renders an
-    # order of magnitude more rows than the card grid did, so a row that still
-    # carries one would be paid for on every one of them. Nothing this view
-    # renders reads it — `transcript_line_count` and `transcript_byte_size` are
-    # their own columns, and ChunkedTranscript's `has_attribute?` guards degrade
-    # correctly when the column is not selected.
-    if @view_mode == VIEW_MODE_USER
-      user_scope = sessions
-        .select(Session.column_names - [ "transcript" ])
-        .includes(:status_summary)
-
-      # One more than the cap, so the "showing the first N" notice appears only when
-      # a row was actually cut off rather than whenever exactly N sessions match.
-      fetched = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT + 1)
-      @user_view_truncated = fetched.size > USER_VIEW_LIMIT
-      @user_view_sessions = fetched.first(USER_VIEW_LIMIT)
-      @user_view_limit = USER_VIEW_LIMIT
-      @any_sessions = @user_view_sessions.any?
-      return
-    end
-
-    # No view mode left. Every branch above returns, and VALID_VIEW_MODES has no
-    # fifth member — so reaching here means a mode was added without a branch, and
-    # an empty dashboard would hide that rather than report it.
-    raise "Unhandled dashboard view mode: #{@view_mode.inspect}"
+  # GET /board
+  #
+  # The dashboard's board: the session rows for whichever view the shell is
+  # showing, wrapped in <turbo-frame id="sessions_board"> and rendered without
+  # the layout. Takes exactly the params "/" does — the shell passes its own
+  # query string through — and resolves them through the same methods, so the
+  # two halves of the page cannot disagree about the filters.
+  #
+  # A separate PATH rather than a Turbo-Frame-header variant of "/", for the
+  # reason #drawer gives: Turbo's prefetch cache is keyed on URL alone, and would
+  # hand a frame load of "/" the shell it prefetched on hover.
+  def board
+    resolve_dashboard_inputs
+    load_dashboard_board
+    render layout: false
   end
 
   def new
@@ -2747,6 +2620,170 @@ class SessionsController < ApplicationController
   end
 
   private
+
+  # The search inputs, the view mode and the Filters — everything both halves of
+  # the dashboard read from the request before deciding what to show.
+  def resolve_dashboard_inputs
+    # Search inputs. A search is "active" when there is a free-text query, an
+    # agent-root filter, or a genesis narrowing — the three inputs that ask "find me
+    # sessions matching this" and so replace the board with a flat result list. The
+    # transcript-contents toggle only widens an existing text query, so it does not
+    # by itself count.
+    #
+    # The scheduling class is deliberately NOT one of them. It is a filter, and a
+    # filter narrows whichever view you are already in; treating it as a search would
+    # mean that picking "Spot" once — a choice that now persists — silently replaced
+    # the board with a flat list on every later visit, with nothing in the URL to
+    # explain it.
+    @search_query = params[:q].to_s.strip
+    # "1" from this page's own checkbox, "true" from anyone who copied the REST
+    # API's documented spelling — SessionSearchable.search_contents? accepts both.
+    @search_contents = SessionSearchable.search_contents?(params[:search_contents])
+    @agent_root_filter = params[:agent_root].to_s.strip
+    @genesis_filter = params[:genesis].to_s.strip
+    @genesis_filter = "" unless SessionGenesis.valid?(@genesis_filter)
+    @search_active = @search_query.present? || @agent_root_filter.present? ||
+                     @genesis_filter.present?
+
+    # Which view the dashboard renders in. Resolved before the filters because the
+    # Ranked view carries a different DEFAULT status filter — it is a queue of work
+    # that has not run yet, so opening it on `needs_input` alone would show nothing.
+    @view_mode = resolve_view_mode
+
+    # The Filters section: which statuses to show, and the spot/priority narrowing.
+    resolve_filters
+  end
+
+  # Every query the board makes, for the view #resolve_dashboard_inputs chose.
+  def load_dashboard_board
+    # Build the base visibility scope, applying the status filter. Used for every
+    # fresh scope constructed below so the filters stay consistent.
+    base_scope = lambda do |scope|
+      # An empty status filter is "every status" — the user ticked nothing — so it
+      # narrows nothing here rather than matching nothing.
+      scope = scope.where(status: @status_filter) if @status_filter.any?
+      # Status-summary forks are Zimmer's own bookkeeping, not the operator's
+      # work — they are never a row on the dashboard, trash view included.
+      scope.excluding_status_summary_forks
+    end
+
+    # Board visibility, applied to every branch below through the same lambda so no
+    # view can silently forget it. An expired snooze is already "visible" to the
+    # scope, which is how a snoozed session returns on its own with nothing having
+    # written to its row. See SessionVisibility.
+    board_scope = lambda do |scope|
+      case @visibility_filter
+      when VISIBILITY_OFF_BOARD then scope.board_hidden
+      when VISIBILITY_ALL then scope
+      else scope.board_visible
+      end
+    end
+
+    sessions = base_scope.call(Session.all)
+
+    if @agent_root_filter.present?
+      sessions = filter_sessions_by_agent_root(sessions, @agent_root_filter)
+    end
+
+    if @priority_class_filter.present?
+      sessions = sessions.priority_classified(@priority_class_filter)
+    end
+
+    if @genesis_filter.present?
+      sessions = sessions.with_genesis(@genesis_filter)
+    end
+
+    # Deliberately last of the narrowing steps. A content scan spends a wall-clock
+    # budget reading transcripts, so anything it reads that a later filter would have
+    # discarded is budget the caller does not get back — and the notice it produces
+    # says "all N sessions matching these filters", which is only true if every filter
+    # is already applied. The REST and MCP surfaces order it the same way.
+    if @search_query.present?
+      if @search_contents
+        # Bounded and newest-first — see SessionContentSearch. @content_scan is what
+        # the results header reads to say whether the whole corpus was covered.
+        sessions, @content_scan =
+          search_sessions_by_content(sessions, @search_query, limit: CONTENT_SEARCH_LIMIT)
+      else
+        sessions = filter_sessions_by_search(sessions, @search_query)
+      end
+    end
+
+    # Board visibility is the last narrowing, so the reveal count below is counted
+    # through every other filter the operator has set. "3 tucked away" then means
+    # three cards THIS board would otherwise be showing, rather than three
+    # somewhere in the table — the number exists to talk them into revealing, and
+    # it is only persuasive if revealing actually produces those three.
+    @off_board_count = sessions.board_hidden.count
+    sessions = board_scope.call(sessions)
+
+    # The Ranked view: the spot queue in the order it will actually be worked,
+    # with the priority sessions that outrank all of it stacked above. Two
+    # sections rather than one list, because the two halves answer different
+    # questions — a priority session has no rank to compare, it simply starts —
+    # and because the demote button only belongs on one of them.
+    if @view_mode == VIEW_MODE_RANKED
+      @ranked_priority_sessions = sessions.priority_classified(SessionGenesis::PRIORITY)
+        .ranked.limit(RANKED_SECTION_LIMIT).to_a
+      @ranked_spot_sessions = sessions.priority_classified(SessionGenesis::SPOT)
+        .ranked.limit(RANKED_SECTION_LIMIT).to_a
+      @ranked_section_limit = RANKED_SECTION_LIMIT
+      @any_sessions = @ranked_priority_sessions.any? || @ranked_spot_sessions.any?
+      return
+    end
+
+    # Flat sort views completely flatten the presentation: a single list sorted
+    # solely by the chosen factor, honoring the same filters/visibility but
+    # ignoring the pinned favorites float. They apply whether or not a search is active (search just
+    # narrows the eligible set first).
+    if @view_mode == VIEW_MODE_LAST_TOUCHED || @view_mode == VIEW_MODE_CREATED_DESC
+      flat_sorted =
+        if @view_mode == VIEW_MODE_LAST_TOUCHED
+          sessions.order(Session::LAST_TOUCHED_ORDER)
+        else
+          sessions.order(created_at: :desc)
+        end
+      @flat_sessions = flat_sorted.page(scalar_page_param).per(SESSIONS_PER_PAGE)
+      @flat_view_title = @view_mode == VIEW_MODE_LAST_TOUCHED ? "Sorted by last touched" : "Sorted by created (newest first)"
+      @any_sessions = @flat_sessions.any?
+      return
+    end
+
+    # The User view. One unified list of every session the filters match, ordered
+    # so a priority session outranks every spot one and precedence is respected
+    # all the way down.
+    #
+    # The ordering rule itself is Sessions::UserView's, shared with the
+    # `get_user_view` MCP tool so the reprioritizing session reads exactly the
+    # board the human is looking at.
+    #
+    # The select drops `transcript`. It is a legacy JSON column on `sessions`
+    # (transcripts live in session_transcript_chunks now) and this view renders an
+    # order of magnitude more rows than the card grid did, so a row that still
+    # carries one would be paid for on every one of them. Nothing this view
+    # renders reads it — `transcript_line_count` and `transcript_byte_size` are
+    # their own columns, and ChunkedTranscript's `has_attribute?` guards degrade
+    # correctly when the column is not selected.
+    if @view_mode == VIEW_MODE_USER
+      user_scope = sessions
+        .select(Session.column_names - [ "transcript" ])
+        .includes(:status_summary)
+
+      # One more than the cap, so the "showing the first N" notice appears only when
+      # a row was actually cut off rather than whenever exactly N sessions match.
+      fetched = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT + 1)
+      @user_view_truncated = fetched.size > USER_VIEW_LIMIT
+      @user_view_sessions = fetched.first(USER_VIEW_LIMIT)
+      @user_view_limit = USER_VIEW_LIMIT
+      @any_sessions = @user_view_sessions.any?
+      return
+    end
+
+    # No view mode left. Every branch above returns, and VALID_VIEW_MODES has no
+    # fifth member — so reaching here means a mode was added without a branch, and
+    # an empty dashboard would hide that rather than report it.
+    raise "Unhandled dashboard view mode: #{@view_mode.inspect}"
+  end
 
   # Resolve the dashboard view mode for #index, in precedence order:
   #   1. An explicit, valid ?view= param (or a LEGACY_VIEW_MODES name, remapped) —
