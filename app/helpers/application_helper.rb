@@ -155,7 +155,9 @@ module ApplicationHelper
   def inline_markdown(text)
     return "" if text.blank?
 
-    sanitize(markdown(text), tags: INLINE_MARKDOWN_TAGS, attributes: INLINE_MARKDOWN_ATTRIBUTES)
+    memoized_markdown(:inline, text) do
+      sanitize(markdown(text), tags: INLINE_MARKDOWN_TAGS, attributes: INLINE_MARKDOWN_ATTRIBUTES)
+    end.html_safe
   end
 
   # The same text with its markup gone, for a `title` attribute or anywhere else
@@ -163,9 +165,28 @@ module ApplicationHelper
   def markdown_plain_text(text)
     return "" if text.blank?
 
-    html = markdown(text).gsub(%r{</?q>}, '"')
-    CGI.unescapeHTML(strip_tags(html)).squish
+    memoized_markdown(:plain, text) do
+      html = markdown(text).gsub(%r{</?q>}, '"')
+      CGI.unescapeHTML(strip_tags(html)).squish
+    end
   end
+
+  # Results of the two conversions above, kept in this process.
+  #
+  # Each is a pure function of its text, and each costs about 2ms of Nokogiri
+  # (`sanitize`, `strip_tags`) — against 0.03ms for the markdown itself. The User
+  # view runs both on every row's status summary, so a few hundred rows spent
+  # over a second on them, re-deriving the same answers on every page load.
+  # Keyed on a digest of the text, so a summary that changes is simply a new key
+  # and nothing has to be invalidated. Local memory rather than Rails.cache: a
+  # hit has to cost less than the 4ms it saves, and a network round trip per row
+  # would give a good part of that back. The size cap evicts least recently used.
+  MARKDOWN_MEMO = ActiveSupport::Cache::MemoryStore.new(size: 8.megabytes)
+
+  def memoized_markdown(kind, text, &)
+    MARKDOWN_MEMO.fetch("#{kind}:#{Digest::SHA256.hexdigest(text)}") { yield.to_str }
+  end
+  private :memoized_markdown
 
   # Persisted network-egress health for the global banner (see EgressHealthCheck).
   # Returns the status hash when egress is degraded, otherwise nil so the banner

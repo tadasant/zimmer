@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class SessionsHelperTest < ActionView::TestCase
   # Tests for goal_display_name
@@ -533,5 +534,21 @@ class SessionsHelperTest < ActionView::TestCase
     # A generation that outlived PENDING_TIMEOUT is debris, not a regeneration.
     summary.requested_at = (SessionStatusSummary::PENDING_TIMEOUT + 1.minute).ago
     assert_equal :stale, status_summary_freshness(summary, 7)
+  end
+
+  test "session_agent_root_key matches Session#agent_root_key and builds the catalog once" do
+    roots = AgentRootsConfig.all
+    root = roots.first
+    sessions = [
+      Session.new(git_root: "https://example.invalid/x.git", metadata: { "agent_root_key" => root.name }),
+      Session.new(git_root: root.url, subdirectory: root.subdirectory),
+      Session.new(git_root: "https://example.invalid/nothing.git")
+    ]
+    expected = sessions.map(&:agent_root_key)
+    assert_equal root.name, expected.first
+
+    AgentRootsConfig.expects(:all).once.returns(roots)
+
+    assert_equal expected, sessions.map { |s| session_agent_root_key(s) }
   end
 end

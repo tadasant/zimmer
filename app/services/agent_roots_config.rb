@@ -129,8 +129,11 @@ class AgentRootsConfig
     # ROUTER_ROOT_NAMES and every `metadata["agent_root_key"]` written before
     # qualification was preserved resolve on the FIRST of those: on a catalog
     # where one scope contributes the id, the canonical token IS the bare id.
-    def find(name)
-      ArtifactIdentity.find(all, name)
+    #
+    # `roots:` lets a caller resolving many names against one catalog build the
+    # roots once — see SessionsHelper#session_agent_root_key.
+    def find(name, roots: all)
+      ArtifactIdentity.find(roots, name)
     end
 
     def find!(name)
@@ -139,14 +142,14 @@ class AgentRootsConfig
 
     # Find the agent root matching a session's git_root and subdirectory.
     # Prefers the explicit agent_root_key from session metadata when available.
-    def find_for_session(session)
+    def find_for_session(session, roots: all)
       key = session.metadata&.dig("agent_root_key")
       if key.present?
-        root = find(key)
+        root = find(key, roots: roots)
         return root if root
       end
 
-      all.find { |ar| ar.url == session.git_root && ar.subdirectory.to_s == session.subdirectory.to_s }
+      roots.find { |ar| ar.url == session.git_root && ar.subdirectory.to_s == session.subdirectory.to_s }
     end
 
     def names

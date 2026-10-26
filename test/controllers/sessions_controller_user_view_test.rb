@@ -52,7 +52,7 @@ class SessionsControllerUserViewTest < ActionDispatch::IntegrationTest
   end
 
   def get_board(**params)
-    get root_path(**params.merge(view: "user")), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(**params.merge(view: "user")), headers: { "User-Agent" => DESKTOP_UA }
   end
 
   # ---- Ordering --------------------------------------------------------------

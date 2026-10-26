@@ -126,7 +126,7 @@
     <%# ---- Action line ---- %>
     <div class="mt-2 flex flex-wrap items-center gap-2">
       <span class="shrink-0 max-w-full truncate rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500"
-            title="Agent root"><%= agent_session.agent_root_key.presence || agent_session.genesis_key %></span>
+            title="Agent root"><%= session_agent_root_key(agent_session).presence || agent_session.genesis_key %></span>
 
       <%# The live precedence readout. The user-view controller rewrites it in place
           after a drag, so the number never disagrees with where the row is sitting. %>

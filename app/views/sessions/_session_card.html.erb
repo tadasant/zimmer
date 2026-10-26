@@ -92,9 +92,9 @@
           <%= agent_session.prompt.truncate(80) %>
         </h3>
       <% end %>
-      <% if agent_session.agent_root_key.present? %>
+      <% if (agent_root_key = session_agent_root_key(agent_session)).present? %>
         <div class="text-xs text-gray-500 mb-2 font-mono break-words">
-          <%= agent_session.agent_root_key %>
+          <%= agent_root_key %>
         </div>
       <% end %>
       <%# Genesis and the class it resolves to, so a filtered list is legible at a

@@ -132,6 +132,26 @@ It suggests an order; it does not impose one. Every row is still draggable after
 The iOS app presses the same button through `POST /api/v1/sessions/reprioritize`. Unlike Merge it is
 not limited to a person: it fires the same trigger `/api/v1/triggers/:id/invoke` already reaches.
 
+## How the page loads
+
+The dashboard is two requests. `/` is the shell: the header, the menu, the Filters, the Quick
+Router and the view switcher. It reads the query string and your cookies and touches no session
+row, so it answers in tens of milliseconds whatever the board holds. The board itself (this view's
+rows, or the card grid, or the Ranked queue) is `GET /board`, which the shell's
+`<turbo-frame id="sessions_board">` asks for as soon as the page arrives. It passes the shell's own
+query string, so both halves resolve the same filters and the same view. Until it lands, the
+frame shows grey placeholder rows shaped like the real ones.
+
+`/board` is its own path rather than a frame variant of `/` for the reason the session drawer's is:
+Turbo's prefetch cache is keyed on the URL alone. Links and buttons inside the board navigate the
+whole page, as they did when the board was inline. The *tucked away* count in the Filters legend
+arrives with the board, because it is counted through every filter the board applies. After a
+phone wakes the page, the reconnect backfill re-fetches `/board` to bring its rows up to date.
+
+Each row's status summary is markdown, and turning it into the row's inline HTML and its hover text
+costs about 4ms of HTML sanitizing. Both results are kept in memory, keyed on the summary's text,
+so a board of a few hundred rows pays that once per summary rather than on every page load.
+
 ## What replaced what
 
 The User view replaced the **Categories** view — the category-grouped card grid that was the
