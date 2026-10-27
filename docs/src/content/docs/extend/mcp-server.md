@@ -834,6 +834,15 @@ When it runs out, the result says the session is still working and gives its id,
 anything it has said so far. The caller goes back to polling `get_session`; the session itself is not
 touched.
 
+The timeout bounds the **whole call**, not just the wait. Its clock starts when `McpController` begins
+handling the request, before authentication. Authentication, starting the session and queueing its job all come out of it, and so do 3
+seconds held back for the last re-read, the render and the trip back through the proxies
+(`Sessions::SyncReply::RESPONSE_MARGIN_SECONDS`). The wait gets whatever is left. A create slow
+enough to use the whole budget means no wait at all: the call looks once and returns what it sees.
+If anything fails after the session exists, for example building or running the wait, the result
+still carries its id and URL and says the wait failed. The caller never has to search for a session
+it started.
+
 **How it waits.** Every status change saved through `Session` rings `Sessions::TurnSignal`, a stream on
 the existing solid_cable adapter. The waiting request subscribes to it and re-reads the session on each
 ring, with a 5-second backstop for the changes that do not ring. It holds no database connection while

@@ -8370,6 +8370,14 @@ More edges, all deliberate for now:
   of production cuts a request at 100. The default is 55 (`MCP_SYNC_DEFAULT_TIMEOUT_SECONDS`), because
   many MCP clients give up on a request at 60. A turn that takes longer returns its state so far, and the
   caller falls back to polling. Raising it means raising that edge's limit first.
+- **The budget is a soft bound.** `sync_timeout_seconds` covers the whole call, counted from when
+  `McpController` begins handling it, less a 3-second margin for the render and the hops back. Three
+  things fall outside it. Time the request spends queued for a Puma thread comes before that clock
+  starts, and with three threads, one of them possibly held by another sync wait, that queue is real.
+  Nothing interrupts a database query already in flight. And the reads after the deadline can wait up
+  to the pool's `checkout_timeout` for a connection. Either of the last two can push the answer past
+  the budget by its own length. The margin covers the slow queries production has actually shown,
+  which run a few seconds.
 - **A caller that hangs up does not free the slot.** Puma cannot tell that the client or an edge has
   gone, so the wait runs to its own timeout and holds the slot until then.
 - **Every status change costs one more cable write.** The doorbell is published whether or not anyone is

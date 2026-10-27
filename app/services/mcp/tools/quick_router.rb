@@ -70,9 +70,9 @@ module Mcp
 
         **Pass `sync: true` to get the answer in this call.** It then waits until the router has replied and
         returns its reply text, any session it started for the work (listed with its URL, not waited on), and
-        its status. If the router is still working after `sync_timeout_seconds` (default
-        #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}), it returns the session id, URL and anything said so far,
-        and you follow it as below.
+        its status. The whole call, starting the router included, takes at most `sync_timeout_seconds`
+        (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}). If the router is still working by then, it returns
+        the session id, URL and anything said so far, and you follow it as below.
 
         Without `sync`, it returns the new session's id and URL straight away; the work runs in the background.
         To follow it:
@@ -188,9 +188,10 @@ module Mcp
       def respond(session, wait_for, reused: false)
         return format_result(session, reused: reused) unless wait_for
 
-        waiter = Sessions::SyncReply.first_turn(session, prompt: session.metadata&.dig("original_prompt") || session.prompt)
         heading = reused ? "Quick Router reply (existing session, idempotency_key matched)" : "Quick Router reply"
-        sync_reply_section(waiter, wait_for, heading: heading)
+        sync_reply_section(session.id, wait_for, heading: heading) do
+          Sessions::SyncReply.first_turn(session, prompt: session.metadata&.dig("original_prompt") || session.prompt)
+        end
       end
 
       # The session this connection was written for, when it names one that
