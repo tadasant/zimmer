@@ -46,7 +46,7 @@ set -euo pipefail
 HOST="${1:?usage: install-cloudflared.sh <tailnet-host-or-ip>}"
 
 # PINNED, not latest. Bump the tag here and the next deploy recreates the connector on it.
-IMAGE="cloudflare/cloudflared:2026.10.0"
+IMAGE="cloudflare/cloudflared:2026.10.4"
 NAME="zimmer-cloudflared"
 # Outside /opt/zimmer on purpose: production bind-mounts subdirectories of /opt/zimmer into
 # the app containers, and the token must never be one mount away from an agent session.
