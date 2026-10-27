@@ -28,7 +28,7 @@ It looks like the web UI, too. The colours are the web UI's: a gray-50 page, whi
 hairline borders, indigo as the one accent, and the web's pastel status badges. The web UI has no
 dark mode, so the app's dark mode is built on the PWA's navy (the manifest's `#000e2b` and
 `#031942`, the same navy as the otter mark). The gold of the mark shows up in a few small places:
-the sign-in screen, empty states, the status summary's edge, the favourite star. Every token is in one file,
+the sign-in screen, empty states, the status summary's edge. Every token is in one file,
 `ios/App/Zimmer/Support/Theme.swift`. It is laid out the way the Motet app's design layer is.
 
 - **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
@@ -61,7 +61,7 @@ the sign-in screen, empty states, the status summary's edge, the favourite star.
   (the card's, `_user_view_row`'s and `_ranked_row`'s), the genesis (the card's `genesis · class`
   pill; the class is the *Priority* tag above), the precedence as "rank 50" (`_user_view_row`'s
   `#N` and Ranked's rank; "rank", since `#` is the id) and a heart when the heartbeat is on (the
-  card's top-right heart), all off `session_json`; a star for a favourite; and a snoozed or hidden
+  card's top-right heart), all off `session_json`; and a snoozed or hidden
   one adds when the snooze ends. A trashed session reads in the quieter ink and says when its restore window
   closes ("Expires Oct 16", from `trash_after`; "Deletion pending" once that date has passed), as
   the web page's "Expires 3 days from now" does, as a date. What is deleted then is what was held

@@ -36,12 +36,10 @@ class Session < ApplicationRecord
   # `categories` and `category_feedback_events` tables — and removes this line.
   self.ignored_columns += %w[category_id sort_order]
 
-  # Phase 1 of the two-phase drop of `favorited`. The star's only effect was
-  # floating favorites to the top of the category grid, which went away with
-  # the grid; the web star, the REST and MCP toggles, `Sessions::ToggleFavorite`
-  # and the iOS star went with it. Ignoring the column keeps the old containers
-  # serving through the cutover (#482); a later PR drops the column and its
-  # index and removes this line.
+  # Phase 1 of the two-phase drop of `favorited`: nothing reads or writes it,
+  # and no surface offers it. Ignoring it keeps the old containers serving
+  # through the cutover (#482); a later PR drops the column and
+  # `index_sessions_on_favorited` and removes this line.
   self.ignored_columns += %w[favorited]
 
   has_many :logs, dependent: :destroy
