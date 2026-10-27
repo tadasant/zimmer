@@ -53,8 +53,8 @@ final class SessionControlsUITests: XCTestCase {
 
     func test_the_heartbeat_is_turned_on_and_its_interval_chosen() throws {
         // 1035, not 1038: the session menu is taller than the screen, and XCUITest finds only
-        // the rows laid out on it. 1038's Merge section and View PR row push the heartbeat item
-        // below the fold; 1035 has no PR, so the item is on screen.
+        // the rows laid out on it. 1038's Merge section, View PR row and Effort row push the
+        // heartbeat item below the fold; 1035 has none of the three, so the item is on screen.
         let app = launch(["-ZimmerFixtureOpenSession", "1035"])
         XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout))
 
