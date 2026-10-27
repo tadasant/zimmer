@@ -61,7 +61,7 @@ not jitter. The colours come from the Zimmer web UI instead of Motet's:
 - **Status colours** are `SessionsHelper#status_badge_classes`: the `bg-*-100 text-*-800` pastel
   in light, and the same hue on a deep wash in dark.
 - **The mark's gold** is a signature used sparingly: the primary button's foot, the ring round the
-  mark on sign-in, empty-state rings, the status summary's edge, the favourite star, and the build
+  mark on sign-in, empty-state rings, the status summary's edge, and the build
   strip. It is never used for text.
 
 The Quick Router is placed as the web UI places it: a bar pinned to the foot of the Sessions

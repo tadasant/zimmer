@@ -22,7 +22,7 @@ final class SessionParityTests: XCTestCase {
     func testTheRowReadsWhatTheWebUIsCardShows() throws {
         let json: [String: Any] = [
             "id": 1038, "status": "needs_input", "title": "Merge?",
-            "goal": "PR open, CI green", "session_notes": "ask about the flag", "favorited": true,
+            "goal": "PR open, CI green", "session_notes": "ask about the flag",
             "visibility": "snoozed", "effective_visibility": "visible", "snoozed_until": "2026-10-09T09:00:00Z",
             "priority_class": "priority", "precedence": 12,
             "config": ["model": "opus", "max_turns": 50],
@@ -38,7 +38,6 @@ final class SessionParityTests: XCTestCase {
 
         XCTAssertEqual(row.goal, "PR open, CI green")
         XCTAssertTrue(row.hasNotes)
-        XCTAssertTrue(row.isFavorite)
         XCTAssertEqual(row.visibility, .snoozed)
         XCTAssertEqual(row.boardVisibility, .visible, "an expired snooze reads as visible, as the board draws it")
         XCTAssertEqual(row.model, "opus")
@@ -92,12 +91,11 @@ final class SessionParityTests: XCTestCase {
 
     func testEachSessionActionHitsItsRoute() async throws {
         let ok: ScriptedTransport.Handler = { _ in Fixtures.json(200, ["session": ["id": 5, "status": "running"], "message": "ok"]) }
-        let (api, transport) = client(Array(repeating: ok, count: 11))
+        let (api, transport) = client(Array(repeating: ok, count: 10))
 
         _ = try await api.unarchive(5)
         _ = try await api.restart(5)
         _ = try await api.pause(5)
-        _ = try await api.toggleFavorite(5)
         _ = try await api.setVisibility(5, .hidden)
         _ = try await api.updateNotes(5, notes: "n")
         _ = try await api.rename(5, title: "t")
@@ -110,7 +108,6 @@ final class SessionParityTests: XCTestCase {
             "POST /api/v1/sessions/5/unarchive",
             "POST /api/v1/sessions/5/restart",
             "POST /api/v1/sessions/5/pause",
-            "POST /api/v1/sessions/5/toggle_favorite",
             "PATCH /api/v1/sessions/5/visibility",
             "PATCH /api/v1/sessions/5/notes",
             "PATCH /api/v1/sessions/5",
@@ -119,11 +116,11 @@ final class SessionParityTests: XCTestCase {
             "POST /api/v1/sessions/5/regenerate_status_summary",
             "POST /api/v1/sessions/5/refresh",
         ])
-        XCTAssertEqual(try body(transport.sent[4]) as? [String: String], ["visibility": "hidden"])
-        XCTAssertEqual(try body(transport.sent[5]) as? [String: String], ["session_notes": "n"])
-        XCTAssertEqual(try body(transport.sent[6]) as? [String: String], ["title": "t"])
-        XCTAssertEqual(try body(transport.sent[7]) as? [String: String], ["goal": "g"])
-        XCTAssertEqual(try body(transport.sent[8]) as? [String: String], ["effort": "default"], "nil clears to the model's default")
+        XCTAssertEqual(try body(transport.sent[3]) as? [String: String], ["visibility": "hidden"])
+        XCTAssertEqual(try body(transport.sent[4]) as? [String: String], ["session_notes": "n"])
+        XCTAssertEqual(try body(transport.sent[5]) as? [String: String], ["title": "t"])
+        XCTAssertEqual(try body(transport.sent[6]) as? [String: String], ["goal": "g"])
+        XCTAssertEqual(try body(transport.sent[7]) as? [String: String], ["effort": "default"], "nil clears to the model's default")
     }
 
     func testPromoteDemoteAndHeartbeatSendTheRankedViewsWrites() async throws {
@@ -225,8 +222,6 @@ final class SessionParityTests: XCTestCase {
 
         let restored = try await fake.unarchive(1019)
         XCTAssertEqual(restored.status, .needsInput)
-        let starred = try await fake.toggleFavorite(1035)
-        XCTAssertTrue(starred.isFavorite)
         await XCTAssertThrowsAsync(try await fake.rename(1035, title: "  "), "the server refuses a blank title")
         let restarted = try await fake.restart(1035)
         XCTAssertEqual(restarted.status, .waiting, "a restart hands the turn over; it has not started yet")

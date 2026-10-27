@@ -3,7 +3,7 @@ require "mocha/minitest"
 
 # Tests for newly added session API endpoints:
 # fork, refresh, refresh_all, update_mcp_servers, transcript, update_notes,
-# toggle_favorite, bulk_archive
+# bulk_archive
 class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
   setup do
     @valid_api_key = "test_api_key_12345"
@@ -381,33 +381,6 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
   end
 
   # ============================================================
-  # Toggle favorite tests
-  # ============================================================
-
-  test "toggle_favorite should toggle from false to true" do
-    session = sessions(:needs_input)
-    session.update!(favorited: false)
-
-    post toggle_favorite_api_v1_session_path(session), headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    assert_equal true, json["favorited"]
-    assert_equal true, session.reload.favorited
-  end
-
-  test "toggle_favorite should toggle from true to false" do
-    session = sessions(:needs_input)
-    session.update!(favorited: true)
-
-    post toggle_favorite_api_v1_session_path(session), headers: @headers
-    assert_response :success
-
-    json = JSON.parse(response.body)
-    assert_equal false, json["favorited"]
-  end
-
-  # ============================================================
   # Bulk archive tests
   # ============================================================
 
@@ -445,19 +418,18 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
   # Session JSON should include new fields
   # ============================================================
 
-  test "session json should include session_notes and favorited" do
+  test "session json should include session_notes" do
     session = sessions(:needs_input)
-    session.update!(session_notes: "Test notes", favorited: true)
+    session.update!(session_notes: "Test notes")
 
     get api_v1_session_path(session), headers: @headers
     assert_response :success
 
     json = JSON.parse(response.body)["session"]
     assert json.key?("session_notes")
-    assert json.key?("favorited")
     assert json.key?("session_notes_updated_at")
     assert_equal "Test notes", json["session_notes"]
-    assert_equal true, json["favorited"]
+    refute json.key?("favorited"), "the dead favorite star is not part of the session payload"
   end
 
   # ============================================================
@@ -496,11 +468,6 @@ class Api::V1::SessionsControllerExtendedTest < ActionDispatch::IntegrationTest
 
   test "update_notes should return 401 without API key" do
     patch notes_api_v1_session_path(sessions(:needs_input))
-    assert_response :unauthorized
-  end
-
-  test "toggle_favorite should return 401 without API key" do
-    post toggle_favorite_api_v1_session_path(sessions(:needs_input))
     assert_response :unauthorized
   end
 

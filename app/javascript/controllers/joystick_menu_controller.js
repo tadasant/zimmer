@@ -335,9 +335,6 @@ export default class extends Controller {
         this._submitForm(this.element.dataset.restartUrl, "post")
         break
       }
-      case "favorite":
-        this._submitForm(this.element.dataset.favoriteUrl, "patch")
-        break
     }
   }
 

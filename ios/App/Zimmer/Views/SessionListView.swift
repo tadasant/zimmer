@@ -434,13 +434,7 @@ private struct SwipeableSessionRow: View {
         // 20 leading, where the section headers' text sits, so titles line up under them.
         .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 10))
         .accessibilityIdentifier("session.row.\(session.id)")
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
-            } label: {
-                Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
-            }
-            .tint(Theme.Swipe.favorite)
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
             // The web UI's row Merge button: offered only on an open, green PR.
             if session.mergeablePullRequest != nil {
                 Button { prompts.merge(session) } label: {
@@ -523,11 +517,6 @@ private struct SessionContextMenu: View {
             Button { prompts.merge(session) } label: {
                 Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
             }
-        }
-        Button {
-            Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
-        } label: {
-            Label(session.isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: session.isFavorite ? "star.slash" : "star")
         }
         if session.boardVisibility == .visible {
             Menu {
@@ -690,7 +679,7 @@ private struct FilterSummary: View {
 /// One row of the web UI's board: the title on two lines at most, then one line of what the
 /// card carries — the status pill, Priority, `#id`, a compact age, the latest PR, a notes
 /// mark — then the web rows' facts line — the agent root, the genesis, the precedence, the
-/// heart when the heartbeat is on — and a star when it is a favourite. A trashed session
+/// heart when the heartbeat is on. A trashed session
 /// reads in the quieter ink, as Motet dims what is done, so the ones waiting on you stand out
 /// without a heavier face.
 struct SessionRow: View {
@@ -707,12 +696,6 @@ struct SessionRow: View {
                     .foregroundStyle(quiet ? Theme.inkSoft : Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: 4)
-                if session.isFavorite {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.gold)
-                        .accessibilityLabel("Favorite")
-                }
             }
             HStack(spacing: 5) {
                 StatusBadge(status: session.status, compact: true)

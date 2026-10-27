@@ -7,7 +7,7 @@ module Mcp
   module Tools
     # Mirrors the member actions of Api::V1::SessionsController — follow_up,
     # pause, restart, archive, unarchive, mcp_servers, model, heartbeat, fork,
-    # refresh, refresh_all, notes, title, toggle_favorite, bulk_archive — behind
+    # refresh, refresh_all, notes, title, bulk_archive — behind
     # one `action` switch, exactly as the decoupled server's action_session did.
     #
     # Mcp::Tools::SelfSessionActionSession subclasses this to expose only the
@@ -19,7 +19,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "set_memory_boost", "clear_memory_boost", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "toggle_favorite", "set_visibility", "remove_uncle", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "set_memory_boost", "clear_memory_boost", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "set_visibility", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -98,7 +98,6 @@ module Mcp
         refresh_all
         update_notes
         update_title
-        toggle_favorite
         set_visibility
         remove_uncle
         bulk_archive
@@ -195,7 +194,6 @@ module Mcp
         - **refresh_all**: Refresh all active sessions (no session_id needed)
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
-        - **toggle_favorite**: Toggle favorite status on a session
         - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
         - **remove_uncle**: Detach a session recorded as an additional senior ("uncle") of this one (requires "uncle_session_id"). An uncle edge is written as a SIDE EFFECT of a follow-up or an interrupt, from an `acting_session_id` the caller declares about itself and nothing verifies — so one stale or mistyped id permanently attaches the wrong session as a senior, and because the hierarchy is the scope human messages are gathered over, it permanently widens what context both sessions carry. This is the way back. "session_id" is the JUNIOR (the session whose hierarchy grew) and "uncle_session_id" is the senior being detached; naming the pair the wrong way round is refused with the direction that does exist, rather than removing the opposite claim. It removes exactly that one edge — `parent_session_id` is never touched, no other edge is rewritten — and is recorded on BOTH sessions' timelines with when the edge was written, what entry point wrote it, and who removed it. A non-existent edge is an error rather than a silent success.
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages, or with an agent turn in flight, are reported as errors and left alone unless "force" is set for the batch.
@@ -207,7 +205,7 @@ module Mcp
         **Use cases:**
         - Provide additional instructions to an agent
         - Control session lifecycle (pause, restart, fork, refresh)
-        - Organize sessions (archive, unarchive, bulk_archive, toggle_favorite, set_visibility, update_notes, update_title, toggle_push_notifications)
+        - Organize sessions (archive, unarchive, bulk_archive, set_visibility, update_notes, update_title, toggle_push_notifications)
         - Undo a lineage edge written from a wrong acting_session_id (remove_uncle)
         - Tidy a human's dashboard without touching their work (set_visibility)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
@@ -368,7 +366,6 @@ module Mcp
         when "refresh_all" then refresh_all
         when "update_notes" then update_notes(find_session(args["session_id"]), args)
         when "update_title" then update_title(find_session(args["session_id"]), args)
-        when "toggle_favorite" then toggle_favorite(find_session(args["session_id"]))
         when "set_visibility" then set_visibility(find_session(args["session_id"]), args)
         when "remove_uncle" then remove_uncle(find_session(args["session_id"]), args)
         when "bulk_archive" then bulk_archive(args)
@@ -1366,18 +1363,6 @@ module Mcp
         ].join("\n")
       end
 
-      def toggle_favorite(session)
-        Sessions::ToggleFavorite.call(session: session)
-
-        [
-          "## Favorite Toggled",
-          "",
-          "- **Session ID:** #{session.id}",
-          "- **Title:** #{session.title}",
-          "- **Favorited:** #{session.favorited ? 'Yes' : 'No'}"
-        ].join("\n")
-      end
-
       # Board visibility. One update to two presentation columns, through the same
       # service the web UI and the REST API use, so all three agree on what a
       # snooze time means. Nothing here touches the lifecycle — see
@@ -1414,7 +1399,7 @@ module Mcp
       # `change_*` / `set_*` / `update_*` write one, and there is no value to
       # write here. An uncle edge is a row that is present or absent, one of many
       # a session can carry, so the thing a caller wants is `remove`, in the
-      # `toggle_favorite` / `bulk_archive` family of verbs that name an operation
+      # `toggle_push_notifications` / `bulk_archive` family of verbs that name an operation
       # instead of a field. A `set_lineage` taking the whole senior list would
       # also be a general lineage-editing API — it could ADD an edge, going round
       # `RecordUncleEdge` and the acyclicity invariant that lives there.

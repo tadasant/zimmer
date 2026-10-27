@@ -40,7 +40,7 @@ enum Theme {
     /// white legible where indigo-400 would not.
     static let accentFill = dynamic(light: 0x4F46E5, dark: 0x6366F1)
     /// The gold ring of the app mark. A signature, used sparingly — a hairline under the
-    /// primary button, the ring around an empty state, the favourite star — never for words.
+    /// primary button, the ring around an empty state — never for words.
     static let gold = dynamic(light: 0xE0A526, dark: 0xF2B947)
     /// The gold as a fill, the same in both appearances: the build strip.
     static let signatureGold = Color(uiColor: UIColor(hex: 0xF2B947))
@@ -114,7 +114,6 @@ enum Theme {
     /// Swipe actions carry the system's white label, so their fills are the 600s in both
     /// appearances rather than the lighter dark-mode tints.
     enum Swipe {
-        static let favorite = Color(uiColor: UIColor(hex: 0xCA8A04))
         static let restore = Color(uiColor: UIColor(hex: 0x16A34A))
         static let trash = Color(uiColor: UIColor(hex: 0xDC2626))
         static let snooze = Color(uiColor: UIColor(hex: 0x4F46E5))

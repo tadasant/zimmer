@@ -91,7 +91,6 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var trashAfter: Date?
     public var goal: String?
     public var notes: String?
-    public var favorited: Bool?
     /// The stored board-visibility choice: `visible`, `hidden` or `snoozed`.
     public var visibility: SessionVisibility?
     /// That choice with an expired snooze already resolved back to visible — what a board draws.
@@ -134,7 +133,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var boardRow: BoardRow? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, slug, title, status, prompt, goal, favorited, visibility, precedence, effort, config, metadata, genesis
+        case id, slug, title, status, prompt, goal, visibility, precedence, effort, config, metadata, genesis
         case agentRuntime = "agent_runtime"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -162,7 +161,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         id: Int, slug: String? = nil, title: String? = nil, status: SessionStatus,
         agentRuntime: String? = nil, prompt: String? = nil,
         createdAt: Date? = nil, updatedAt: Date? = nil, archivedAt: Date? = nil,
-        goal: String? = nil, notes: String? = nil, favorited: Bool? = nil,
+        goal: String? = nil, notes: String? = nil,
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
         priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
         agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = [],
@@ -179,7 +178,6 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.archivedAt = archivedAt
         self.goal = goal
         self.notes = notes
-        self.favorited = favorited
         self.visibility = visibility
         self.effectiveVisibility = visibility
         self.snoozedUntil = snoozedUntil
@@ -200,7 +198,6 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         return "Session \(id)"
     }
 
-    public var isFavorite: Bool { favorited ?? false }
     public var isPriority: Bool { priorityClass == "priority" }
     /// The class is the genesis's, not one chosen for this session.
     public var schedulingClassDerived: Bool { (schedulingClass ?? "").isEmpty }
