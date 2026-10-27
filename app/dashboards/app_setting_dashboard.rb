@@ -25,6 +25,9 @@ class AppSettingDashboard < Administrate::BaseDashboard
     # The quota pool's cached verdict, and when it last flipped.
     quota_pool_available: Field::Boolean,
     quota_pool_available_changed_at: Field::DateTime,
+    # When PoolOutageAlert last paged the operator about a pool with no usable
+    # access token — the throttle's clock.
+    pool_outage_alerted_at: Field::DateTime,
     # A JSONB record of the queue drain that recovery mode is running, rendered
     # verbatim. /health is where an operator normally reads this.
     queue_recovery_mode: Field::String.with_options(searchable: false),

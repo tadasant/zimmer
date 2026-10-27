@@ -192,24 +192,42 @@ directories, so that window is one session's lifetime.
 
 ### When the pool cannot serve a token
 
-The spawn fails **closed**. `ClaudeSpawnEnv#apply_session_scoped_credentials` raises
-`MissingCredentialsError` when no account is current or the current one holds no access token.
-The adapters let it through unwrapped and `ProcessLifecycleManager` refuses the spawn: the session
-fails with `failure_reason: spawn_failed` and a session-log line naming the account that came up
-empty, and the worker log carries it at `.warn` rather than `.error` — an empty pool is a
-configuration state that is already red on `/health`'s Agent Authentication card and already
-alerted through the `account_needs_reauth` event when an account died, so paging once more per
-spawn attempt would be noise.
+The spawn fails **closed** — no process starts without a token — but the session **parks**; it does
+not fail. `ClaudeSpawnEnv#apply_session_scoped_credentials` raises `PoolUnavailableError` (a
+`MissingCredentialsError`) when no account is current or the current one holds no access token.
+The adapters let it through unwrapped, `ProcessLifecycleManager` refuses the spawn at `.warn` and
+marks the result `pool_unavailable`, and `AgentSessionJob` hands the turn to
+`AuthOutageParkService.park_refused_spawn!` instead of calling `fail!`. That holds for a first turn
+and for a resume alike.
 
-It used to fall back to the shared file, and that was right while the file was a live rollback.
-Falling back now would point the child at a fossil and every turn would come back
-*Not logged in · Please run /login* with nothing in the log to say why. A session that cannot
-authenticate is a session that cannot work, and failing its spawn is the honest outcome. It is a
-**failed** session rather than a parked one, which differs from how a pool that drains mid-session
-is handled ([When the pool runs dry](#when-the-pool-runs-dry) parks into `waiting`): the park
-machinery is built around a turn that reached the runtime, and this happens before there is a
-process. `AuthWarmupService` settles a usable current account at worker boot so the ordinary
-deploy never reaches this.
+An empty pool is an outage of every session on the runtime, not a fault of the one that happened to
+ask. Failing it was how 2026-10-27 went
+([#1399](https://github.com/tadasant/zimmer/issues/1399)): an account's organization disabled
+Claude Code, Zimmer benched it, every other account was over quota, and with nothing current every
+spawn for the next half hour was refused. Six sessions failed terminally — two `#alerts` triage
+first turns whose trigger fires were spent, three routers woken mid-orchestration by their own
+backstops, and the session spawned to tell the operator the account needed attention.
+
+The park reason follows the pool's shape (`AuthOutageParkService.reason_for_unusable_pool`):
+
+- **`quota_exhausted`** when nothing can serve and something is merely over quota. The pool heals on
+  its own: `QuotaResetCheckerJob` restores the account when its window resets and the same pass
+  resumes the parked sessions.
+- **`auth_unrecoverable`** otherwise — accounts that need re-authentication, hold no token, or were
+  refused. Its wake waits for the pool's credentials to change (a re-auth, a successful refresh, a
+  restored or added account), so it does not wake into the same empty pool every sweep.
+
+The park keeps the turn it refused in `auth_outage_undelivered_prompt`, and the resume delivers that
+instead of the generic recovery nudge: a human's message or a wake-up's prompt verbatim, and for a
+session whose runtime never started, its own prompt — a nudge delivered there would start a
+conversation holding nothing but the nudge. A refused nudge keeps nothing, and the resume sends the
+sweep's own. Authenticating an account on `/inference` runs the wake sweep immediately
+(`AuthOutageParkService.request_prompt_wake!`) rather than at the next fifteen-minute tick.
+
+The operator hears about it from Rails, not from an agent session — see
+[An empty pool pages without a session](#an-empty-pool-pages-without-a-session).
+`AuthWarmupService` settles a usable current account at worker boot so the ordinary deploy never
+reaches this.
 
 ### There is no rollback, and what recovery looks like instead
 
@@ -754,6 +772,31 @@ flowchart LR
     RC[recover_needs_reauth<br/>restore] -.->|update_columns:<br/>skips callbacks| S
     H[human re-auths<br/>LoginDriver#capture!] -->|clear_reauth_alert!| D
 ```
+
+
+### An empty pool pages without a session
+
+The `account_needs_reauth` route has one blind spot, and it is the moment that matters most: the
+notification is an agent session, so when the pool has *no* usable account it is refused for the
+very reason it was created to report. That is what happened to session 25913 on 2026-10-27.
+
+So a spawn refused for want of a token also raises `PoolOutageAlert`, which needs no Claude account:
+
+- an **ERROR** record, which ships to the obs stack and pages `#alerts` through the Grafana rule on
+  Zimmer's error records, and
+- a **push notification** (web push and APNs), attached to the session that was refused.
+
+Both carry one line per account in the pool saying what it needs. An account whose organization
+disabled Claude Code is named as exactly that, because re-authenticating cannot fix it — someone has
+to re-enable Claude Code for that organization, or remove the account from the pool on
+`/inference`. Accounts that need re-authentication say so; accounts over quota say when their window
+resets and that they come back on their own.
+
+One alert per hour, claimed by a single conditional `UPDATE` on `app_settings.pool_outage_alerted_at`
+(visible in `/supervisor`), so a fleet refused in the same minute produces one page rather than one
+per session. The per-park push the other auth parks send is suppressed for this one, for the same
+reason. The Trigger route stays: when only one account is down, the pool still serves its session,
+and it is the configurable one.
 
 ### An account can be capped without ever having been current
 
