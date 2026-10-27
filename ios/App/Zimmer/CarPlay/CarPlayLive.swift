@@ -48,6 +48,8 @@ final class CarPlayLive {
     /// Moves on with every presentation, so a dismissal's completion from an earlier one
     /// presents nothing.
     private var presentation = 0
+    /// The server has no `GET /live_conversations/:id/sessions` (404): asked once per call.
+    private var subjectRouteMissing = false
 
     /// How many sessions need the driver, for the title when the call has no subject yet.
     var needsYou = 0 {
@@ -124,6 +126,8 @@ final class CarPlayLive {
         onChange?()
         if state == .idle {
             dismiss()
+            subjectRouteMissing = false
+            context.sessions = []
             onEnd?()
             return
         }
@@ -147,15 +151,29 @@ final class CarPlayLive {
                 Task { @MainActor in
                     guard let self, let interfaceController = self.interfaceController, self.presentation == mine,
                           let fresh = self.template, self.call.isActive else { return }
-                    interfaceController.presentTemplate(fresh, animated: true, completion: nil)
+                    interfaceController.presentTemplate(fresh, animated: true, completion: self.presented(mine))
                     self.activate()
                     self.drawActivity()
                 }
             }
         } else {
-            interfaceController.presentTemplate(fresh, animated: true, completion: nil)
+            interfaceController.presentTemplate(fresh, animated: true, completion: presented(mine))
             activate()
             drawActivity()
+        }
+        readContext()
+    }
+
+    /// A presentation CarPlay refused leaves no screen: forget the template, so the next state
+    /// change presents again rather than activating a state on a template nobody can see.
+    private func presented(_ mine: Int) -> (Bool, Error?) -> Void {
+        { [weak self] success, _ in
+            guard !success else { return }
+            Task { @MainActor in
+                guard let self, self.presentation == mine else { return }
+                self.template = nil
+                self.drawn = nil
+            }
         }
     }
 
@@ -220,16 +238,23 @@ final class CarPlayLive {
     /// The call relayed a tool call or recorded a line: read which sessions the conversation
     /// has touched. Coalesced, because a tool call and its result arrive within a second.
     private func readContext() {
-        guard let conversation = call.conversationID else { return }
+        guard let conversation = call.conversationID, !subjectRouteMissing else { return }
         contextRead?.cancel()
         contextRead = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
-            // A server from before this route answers 404: then the call has no subject to show.
-            let sessions = (try? await AppEnvironment.shared.connection.api.liveConversationSessions(conversation)) ?? []
-            guard !Task.isCancelled, let self else { return }
-            self.context.sessions = sessions
-            self.scheduleRebuild()
+            do {
+                let sessions = try await AppEnvironment.shared.connection.api.liveConversationSessions(conversation)
+                guard !Task.isCancelled, let self else { return }
+                self.context.sessions = sessions
+                self.scheduleRebuild()
+            } catch let ZimmerError.http(status, _) where status == 404 {
+                // A server from before this route: the call has no subject to show, and is not
+                // asked again.
+                self?.subjectRouteMissing = true
+            } catch {
+                // A read that failed keeps the subject it had: a blink to no subject says nothing true.
+            }
         }
     }
 
@@ -254,7 +279,7 @@ final class CarPlayLive {
             Task { @MainActor in
                 guard let self, let interfaceController = self.interfaceController, self.presentation == mine,
                       let fresh = self.template, self.call.isActive else { return }
-                interfaceController.presentTemplate(fresh, animated: false, completion: nil)
+                interfaceController.presentTemplate(fresh, animated: false, completion: self.presented(mine))
                 self.activate()
                 self.drawActivity()
             }

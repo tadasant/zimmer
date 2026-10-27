@@ -30,6 +30,8 @@ final class LiveCall: ObservableObject {
     @Published private(set) var working: String?
 
     private var conductor = RealtimeConductor()
+    /// An opening line given while the call was still connecting: sent once it is up.
+    private var pendingOpening: String?
     private var socket: URLSessionWebSocketTask?
     private let audio = LiveAudioEngine()
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
@@ -51,7 +53,10 @@ final class LiveCall: ObservableObject {
     /// On a call already running for this conversation it is sent at once.
     func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil) async {
         if isActive(for: conversation) {
-            if let opening { open(with: opening) }
+            if let opening {
+                // Still connecting: there is no socket to send on yet; the start under way sends it.
+                if state == .connecting { pendingOpening = opening } else { open(with: opening) }
+            }
             return
         }
         hangUp()
@@ -82,7 +87,9 @@ final class LiveCall: ObservableObject {
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
             state = .listening
-            if let opening { open(with: opening) }
+            let first = pendingOpening ?? opening
+            pendingOpening = nil
+            if let first { open(with: first) }
         } catch is CancellationError {
             return
         } catch {
@@ -98,6 +105,7 @@ final class LiveCall: ObservableObject {
         state = .idle
         muted = false
         working = nil
+        pendingOpening = nil
     }
 
     /// Put `text` to the model as a typed line and ask for its reply (`RealtimeConductor.open`).

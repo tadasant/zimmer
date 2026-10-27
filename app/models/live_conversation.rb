@@ -106,17 +106,24 @@ class LiveConversation < ApplicationRecord
   end
 
   REFERENCED_SESSIONS_LIMIT = 12
-  REFERENCED_ARGUMENT_KEYS = %w[session_id id session_ids ids].freeze
+  # `session_id` names a session whatever the tool; a bare `id` does only on the
+  # tools whose subject is a session — get_notifications, action_trigger and the
+  # rest take an `id` of their own kind, and a trigger's id is some session's.
+  REFERENCED_SESSION_KEYS = %w[session_id session_ids].freeze
+  REFERENCED_ID_KEYS = %w[id ids].freeze
+  SESSION_TOOLS = %w[get_session get_session_provenance quick_search_sessions action_session self_session_action_session
+                     manage_enqueued_messages respond_to_elicitation wake_me_up_when_session_changes_state].freeze
   REFERENCED_TEXT_PATTERNS = [ /\*\*ID:\*\*\s*(\d+)/, %r{/sessions/(\d+)}, /[Ss]ession\s+#(\d+)/ ].freeze
 
   # @param arguments [Hash, nil] a tool turn's arguments; a Zimmer gateway call
-  #   names its session under `arguments`
+  #   names its tool under `tool` and its session under `arguments`
   # @return [Array<Integer>]
   def self.session_ids_in_arguments(arguments)
     return [] unless arguments.is_a?(Hash)
 
     inner = arguments["arguments"].is_a?(Hash) ? arguments["arguments"] : arguments
-    REFERENCED_ARGUMENT_KEYS.flat_map { |key| Array(inner[key]) }.filter_map { |value| value.to_s.match?(/\A\d+\z/) ? value.to_i : nil }.uniq
+    keys = SESSION_TOOLS.include?(arguments["tool"].to_s) ? REFERENCED_SESSION_KEYS + REFERENCED_ID_KEYS : REFERENCED_SESSION_KEYS
+    keys.flat_map { |key| Array(inner[key]) }.filter_map { |value| value.to_s.match?(/\A\d+\z/) ? value.to_i : nil }.uniq
   end
 
   # @return [Array<Integer>] the ids `text` names, in the order it names them, each once

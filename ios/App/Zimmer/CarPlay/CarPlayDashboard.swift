@@ -104,11 +104,16 @@ final class CarPlayDashboard {
         needsYou.updateSections(sections(board.needsYou))
         needsYou.emptyViewTitleVariants = [failure == nil ? "Nothing needs you" : "Couldn't check"]
         needsYou.emptyViewSubtitleVariants = [failure ?? "Every session is either working or done."]
-        needsYou.showsTabBadge = !board.needsYou.isEmpty
+        let badge = !board.needsYou.isEmpty
         working.updateSections(sections(board.working))
         working.emptyViewTitleVariants = [failure == nil ? "Nothing running" : "Couldn't check"]
         working.emptyViewSubtitleVariants = [failure ?? "Talk to Zimmer to start something."]
-        tabBar.updateTemplates([home, needsYou, working])
+        // The tab bar is told again only when the badge turns on or off: telling it every
+        // minute could put a driver reading a list back on the first tab.
+        if badge != needsYou.showsTabBadge {
+            needsYou.showsTabBadge = badge
+            tabBar.updateTemplates([home, needsYou, working])
+        }
     }
 
     private func sections(_ cards: [DrivingCard]) -> [CPListSection] {
