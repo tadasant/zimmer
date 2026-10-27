@@ -5,8 +5,8 @@ import ZimmerKit
 /// The car's screens when no call is up: a tab bar with three tabs, each one question.
 ///
 /// - **Zimmer**, a grid of four tiles: *Talk to Zimmer* (the default: Live Mode), *Briefing*
-///   (the car says what needs you), *Needs you* and *Running* with their counts. A grid's tiles
-///   are the largest targets CarPlay draws.
+///   (the car says what needs you, only when asked), *Needs you* and *Running* with their
+///   counts. A grid's tiles are the largest targets CarPlay draws.
 /// - **Needs you**, a list of the sessions waiting on a decision — needs input, then failed —
 ///   with a badge on the tab while there are any. A row is one line of what it needs.
 /// - **Running**, a list of the sessions at work, with what each is doing.
@@ -222,10 +222,10 @@ final class CarPlayDashboard {
     }
 }
 
-/// The car speaking on its own — the briefing on connect, a session that just started needing
-/// the driver — under the voice control template, as the category asks of any voice in use.
-/// Two buttons while it speaks: into Live Mode, or dismiss. It leaves on its own a moment after
-/// the words end, so a driver who does nothing is back at the dashboard.
+/// The car speaking the briefing the driver asked for, under the voice control template, as the
+/// category asks of any voice in use. Two buttons while it speaks: into Live Mode, or dismiss.
+/// It leaves on its own a moment after the words end, so a driver who does nothing is back at
+/// the dashboard. Never shown unasked: the car says nothing until something is tapped.
 @MainActor
 final class CarPlayAnnouncement {
     weak var interfaceController: CPInterfaceController?

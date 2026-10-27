@@ -47,14 +47,6 @@ public struct DrivingBoard: Hashable, Sendable {
         return parts.isEmpty ? "Nothing needs you" : parts.joined(separator: " · ")
     }
 
-    /// The cards that entered Needs you since `known` was read: what the car speaks up about
-    /// unasked. Failed sessions count — a failure is a decision too.
-    public func newlyNeedingYou(since known: Set<Int>) -> [DrivingCard] {
-        needsYou.filter { !known.contains($0.id) }
-    }
-
-    public var needsYouIDs: Set<Int> { Set(needsYou.map(\.id)) }
-
     public func card(_ id: Int) -> DrivingCard? {
         (needsYou + working).first { $0.id == id }
     }
@@ -211,8 +203,8 @@ public enum DrivingAction: Hashable, Sendable {
     }
 }
 
-/// The words the car speaks on its own: the briefing when it connects, and the line for a
-/// session that just started needing the driver.
+/// The briefing the driver asks for with the Briefing tile: what needs them, what is running.
+/// The car never says it unasked.
 public enum Briefing {
     /// Up to this many sessions are read in full; the rest are counted.
     public static let spokenLimit = 3
@@ -237,12 +229,6 @@ public enum Briefing {
         if board.waitingTotal > 0 { working.append(board.waitingTotal == 1 ? "one waiting" : "\(board.waitingTotal) waiting") }
         if !working.isEmpty { lines.append(working.joined(separator: ", ") + ".") }
         return lines.joined(separator: " ")
-    }
-
-    /// Spoken, unasked, for a session that entered Needs you while driving.
-    public static func alert(for card: DrivingCard) -> String {
-        let what = card.kind == .failed ? "failed" : "needs you"
-        return "Zimmer: \(DrivingWords.sentence(card.title)) It \(what). \(DrivingWords.sentence(card.headline))"
     }
 
     /// Spoken when the board could not be read: never "nothing needs you" for a network error.

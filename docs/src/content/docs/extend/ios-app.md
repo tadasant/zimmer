@@ -690,14 +690,12 @@ primary way in is talking (`com.apple.developer.carplay-voice-based-conversation
 the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. The design,
 and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md).
 
-**The car talks first.** When the phone connects, Zimmer reads the board and speaks a briefing: how
-many sessions need you and the first three, each as its title and the first sentence of its status
-summary, then how many are running. The briefing screen has two buttons, **Talk to Zimmer** and
-**Dismiss**, and leaves on its own a few seconds after the words end. A call already running when
-the car connects is shown instead.
+**Silent until you ask.** When the phone connects, Zimmer reads the board and shows the home tab,
+and says nothing: it speaks only after you tap something. A call already running when the car
+connects is shown instead.
 
-**Talk to Zimmer is the default.** It is the briefing's big button, the first tile on the home tab,
-and *Talk about it* on every session. One tap starts [Live Mode](/sessions/live/) with voice on —
+**Talk to Zimmer is the default.** It is the first tile on the home tab, the big button on the
+briefing screen, and *Talk about it* on every session. One tap starts [Live Mode](/sessions/live/) with voice on —
 the open conversation, or a new one — on the same call as the phone's, so a call started at the
 desk carries on in the car. Live Mode is the one voice that listens in the car: it checks on
 sessions, passes your answers to them, starts work and follows up through Zimmer's MCP surface.
@@ -707,8 +705,10 @@ names the session the conversation is about — the one it touched last through 
 from `GET /api/v1/live_conversations/:id/sessions` — a label in the bar says what it is doing
 ("Starting work…", "Checking on a session…"), and the two buttons are **Mute** and **Hang up**.
 
-**Under it, three tabs.** *Zimmer* is a grid of four tiles: Talk to Zimmer, Briefing (says it
-again), Needs you and Running with their counts. *Needs you* lists the sessions waiting on a
+**Under it, three tabs.** *Zimmer* is a grid of four tiles: Talk to Zimmer, Briefing, Needs you and
+Running with their counts. **Briefing** speaks what needs you — how many, the first three as title
+and the first sentence of their status summary, then how many are running — under a screen with
+**Talk to Zimmer** and **Dismiss** that leaves on its own a few seconds after the words end. *Needs you* lists the sessions waiting on a
 decision — needs input, then failed, up to twelve — with a badge on the tab while there are any.
 *Running* lists the sessions at work with one line of what each is doing. A row opens a card that
 is read aloud: the headline in large type, the status, the pull request, and up to three buttons
@@ -719,10 +719,10 @@ more; Go ahead and Restart act on the tap. Each action is confirmed out loud, an
 spoken as the server worded it. Trash, new conversation, settings, typing and transcripts are not
 in the car at all.
 
-**Proactive, without notifications.** CarPlay shows no notifications for this category, so the car
-re-reads the board every minute and, when a session enters Needs you or fails while you drive,
-says so — "Zimmer: Rotate the staging deploy key. It failed. …" — with *Talk about it* on the
-screen. A read that fails says so rather than claiming nothing needs you.
+**Proactive, silently.** CarPlay shows no notifications for this category, and the car never speaks
+unasked, so what moves on its own is the glance: the board is re-read every minute, and the Needs
+you badge and the tile counts change. A read that fails says so, in the lists and in the Briefing,
+rather than claiming nothing needs you.
 
 A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/turn-sources/)); the
 car's Live call delegates as the phone does, tagged `live_voice`. The rules — which sessions, in
