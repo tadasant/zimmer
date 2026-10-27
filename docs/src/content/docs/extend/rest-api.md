@@ -222,7 +222,6 @@ and the model refuses to write one, answering `422`.
 | `PATCH` | `/sessions/:id/effort` | `effort`: `low` · `medium` · `high` · `xhigh` · `max`, a level the session's model takes, or `default` (or `null`/`""`) to clear it so the model's default applies. Missing or unsupported → 422 naming the valid levels. Takes effect from the next turn. Same rules as the web effort editor and the `change_effort` MCP action, all through `Sessions::UpdateEffort` |
 | `PATCH` | `/sessions/:id/notes` | `session_notes` ≤ 50,000 characters; blank or absent clears. Over the cap → 422 `Too long`; a non-string → 422 `Validation failed`. Same rules as the web notes panel and the `update_notes` MCP action (which requires the parameter), all through `Sessions::UpdateNotes` |
 | `PATCH` | `/sessions/:id/heartbeat` | `enabled` and/or `interval_seconds` (30–86,400, default 60); omit either to leave it unchanged |
-| `POST` | `/sessions/:id/toggle_favorite` | favorited sessions sort to the top of the dashboard. Same flip as the web star and the `toggle_favorite` MCP action, all through `Sessions::ToggleFavorite`, which reads the star under a row lock so concurrent toggles both land |
 | `PATCH` | `/sessions/:id/visibility` | `visibility` (`visible` \| `hidden` \| `snoozed`), plus `snoozed_until` and `timezone` for a snooze. **Board visibility only** — see [Board visibility](#board-visibility). It changes what the dashboard draws and nothing else: no session is started, stopped, slept, woken or reordered. Unknown value, missing or past-dated `snoozed_until` → 422 |
 | `GET` | `/sessions/:id/transcript` | `format=text` → `text/plain`, else `{transcript_text}` |
 | `GET` | `/sessions/:id/conversation` | the transcript's user and assistant messages as data, oldest first: `{messages: [{role, content, timestamp, has_tool_use, has_tool_result, transcript_index}], total, first_position, truncated}`. `limit` (default 50, max 200) is how many, ending just before `before` (a position, 0 for the first message) or at the newest when `before` is omitted. `first_position` is where the page starts — the `before` of the page above it — and `truncated` says there is one. Each `content` is cut at 4,000 characters; with `full_content=true`, at 100,000, which an agent should rarely want: one long tool result can be most of a context window. Positions count the messages in this list, not `transcript_index`, which is the `message_index` that `fork` takes to fork at that message. What the [iOS app](/extend/ios-app/) renders |
@@ -755,7 +754,7 @@ semantics.
 [memory boost](/sessions/spawning/#a-one-off-memory-boost)),
 `genesis`, `source_context`, `last_turn_source`, `scheduling_class`, `priority_class`, `session_id`, `job_id`,
 `running_job_id`, `archived_at`, `trash_after`, `created_at`, `updated_at`, `session_notes`,
-`session_notes_updated_at`, `favorited`, `visibility`, `effective_visibility`, `snoozed_until`.
+`session_notes_updated_at`, `visibility`, `effective_visibility`, `snoozed_until`.
 
 `source_context` and `last_turn_source` give the [turn source](/sessions/turn-sources/) of the
 initial prompt and of the latest tagged follow-up, as `{surface, modality, client_version?,

@@ -27,7 +27,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     AppSetting.delete_all
   end
 
-  def make_session(favorited: false, prompt: "p")
+  def make_session(prompt: "p")
     Session.create!(
       agent_runtime: "claude_code",
       status: :needs_input,
@@ -35,8 +35,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
       mcp_servers: [],
       config: {},
       git_root: "https://github.com/test/repo.git",
-      branch: "main",
-      favorited: favorited
+      branch: "main"
     )
   end
 
@@ -147,20 +146,6 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal [ "session_#{newer.id}", "session_#{older.id}" ], flat_card_ids
-  end
-
-  test "last touched view does not float favorited sessions" do
-    favorited_old = make_session(favorited: true)
-    favorited_old.update_column(:created_at, 4.hours.ago)
-    plain_new = make_session(favorited: false)
-    plain_new.update_column(:created_at, 1.minute.ago)
-
-    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
-
-    assert_response :success
-    # Strict last-touched order ignores the favorite flag: the newer plain
-    # session sorts above the older favorited one.
-    assert_equal [ "session_#{plain_new.id}", "session_#{favorited_old.id}" ], flat_card_ids
   end
 
   # ---- created_desc ordering -------------------------------------------------

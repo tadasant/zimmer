@@ -39,7 +39,6 @@ public protocol SessionActionsAPI: Sendable {
     func unarchive(_ id: Int) async throws -> SessionSummary
     func restart(_ id: Int) async throws -> SessionSummary
     func pause(_ id: Int) async throws -> SessionSummary
-    func toggleFavorite(_ id: Int) async throws -> SessionSummary
     func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary
     func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary
     /// Rename. The server refuses a blank title.
@@ -288,11 +287,6 @@ extension ZimmerHTTPClient {
     public func pause(_ id: Int) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         return try await sessionAction("/api/v1/sessions/\(segment)/pause")
-    }
-
-    public func toggleFavorite(_ id: Int) async throws -> SessionSummary {
-        let segment = ZimmerPathComponent(String(id))
-        return try await sessionAction("/api/v1/sessions/\(segment)/toggle_favorite")
     }
 
     public func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary {

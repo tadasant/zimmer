@@ -4,8 +4,7 @@
 #
 # `status` says what a session is doing. `visibility` says whether the operator
 # wants to look at it right now: `visible`, `hidden`, or `snoozed` until a chosen
-# time. That is the whole of it. It is a way of tidying a board, in the same
-# family as the `favorited` star and the category a card sits in.
+# time. That is the whole of it. It is a way of tidying a board.
 #
 # **It is strictly orthogonal to everything else.** Nothing here reads or writes
 # `status`, `scheduling_class`, `precedence`, the spot queue, triggers, wake-ups

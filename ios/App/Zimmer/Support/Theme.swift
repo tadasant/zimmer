@@ -114,7 +114,6 @@ enum Theme {
     /// Swipe actions carry the system's white label, so their fills are the 600s in both
     /// appearances rather than the lighter dark-mode tints.
     enum Swipe {
-        static let favorite = Color(uiColor: UIColor(hex: 0xCA8A04))
         static let restore = Color(uiColor: UIColor(hex: 0x16A34A))
         static let trash = Color(uiColor: UIColor(hex: 0xDC2626))
         static let snooze = Color(uiColor: UIColor(hex: 0x4F46E5))

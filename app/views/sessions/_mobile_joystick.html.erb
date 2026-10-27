@@ -83,7 +83,6 @@
          link Turbo would read `data-turbo-confirm` off, so joystick-menu#_commit
          reads this attribute and calls window.confirm itself. %>
      data-restart-confirm="<%= restart_confirmation(@session) %>"
-     data-favorite-url="<%= toggle_favorite_session_path(@session) %>"
      data-touch-url="<%= touch_activity_session_path(@session) %>">
 
   <%# Suppress the page-global chat-bubble FAB and notes-drawer toggle on mobile
@@ -289,11 +288,6 @@
           <span class="flex-1 font-medium">Restart Session</span>
         </button>
       <% end %>
-
-      <button type="button" data-action="click->joystick-menu#fire" data-petal-key="favorite" class="flex items-center w-full px-4 py-3 text-left text-sm <%= @session.favorited? ? 'text-yellow-700' : 'text-gray-800' %> hover:bg-gray-50 active:bg-gray-100">
-        <span class="w-9 h-9 rounded-full bg-yellow-50 text-yellow-600 inline-flex items-center justify-center mr-3"><%= render "sessions/joystick_petal_icon", icon: "star" %></span>
-        <span class="flex-1 font-medium"><%= @session.favorited? ? "Remove from Favorites" : "Add to Favorites" %></span>
-      </button>
 
       <%# Log Level select (kept here for completeness; read-only metadata fits better than radial) %>
       <div class="px-4 py-3">
