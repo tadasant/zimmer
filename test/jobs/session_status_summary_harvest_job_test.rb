@@ -412,4 +412,33 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
       SessionStatusSummaryHarvestJob.perform_now(fork.id)
     end
   end
+
+  # The fork answers the CarPlay-fit question in the same turn as the blurb. The
+  # line is stripped from what is stored and written as an `auto` mark at the
+  # line count the blurb carries, so the two go stale together.
+  test "the fork's carplay-fit trailer becomes an automatic mark and never reaches the stored blurb" do
+    fork = build_fork(answer: "Paste the token into the strad console.\n\ncarplay-fit: laptop_only; reason: credential")
+    pending_record(fork, line_count: 2)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    @source.reload
+    assert_equal "Paste the token into the strad console.", @source.status_summary.summary
+    assert_equal "laptop_only", @source.carplay_fit
+    assert_equal "credential", @source.carplay_fit_reason
+    assert_equal "auto", @source.carplay_fit_source
+    assert_equal 2, @source.carplay_fit_line_count
+  end
+
+  test "a fork answer without the trailer leaves the mark as it was" do
+    @source.update!(carplay_fit: "carplay_ok", carplay_fit_source: "human", carplay_fit_line_count: 1)
+    fork = build_fork(answer: "The PR is open and CI is green.")
+    pending_record(fork)
+
+    SessionStatusSummaryHarvestJob.perform_now(fork.id)
+
+    assert_equal "ready", @source.reload.status_summary.state
+    assert_equal "carplay_ok", @source.carplay_fit
+    assert_equal "human", @source.carplay_fit_source
+  end
 end

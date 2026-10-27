@@ -52,4 +52,22 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_includes request["messages"].first["content"], "## Right now: typed"
     assert_equal [ "Start the docs fix.", "Show me the PR list." ], request["messages"].select { |m| m["role"] == "user" }.pluck("content")
   end
+
+  # The one fact only Zimmer knows about the person's situation: which client is
+  # driving the conversation. Stated when it is CarPlay, silent otherwise, and
+  # rebuilt with the rest of the prompt so a move from the car to the phone
+  # changes the next answer.
+  test "a conversation driven from CarPlay is told so, in the mechanics section, naming the carplay_fit tools" do
+    conversation = create_live_conversation(mode: "voice", client_surface: "carplay")
+
+    prompt = LiveConversations::SystemPrompt.build(conversation)
+
+    assert_includes prompt, "The client driving this conversation right now is CarPlay"
+    assert_includes prompt, "set_carplay_fit"
+    assert_operator prompt.index("## This conversation (written by Zimmer)"), :<, prompt.index("is CarPlay")
+    assert_operator prompt.index("is CarPlay"), :<, prompt.index("## Right now: spoken")
+
+    conversation.update_column(:client_surface, "ios")
+    assert_not_includes LiveConversations::SystemPrompt.build(conversation.reload), "is CarPlay"
+  end
 end

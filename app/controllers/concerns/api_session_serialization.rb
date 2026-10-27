@@ -119,6 +119,18 @@ module ApiSessionSerialization
     json[:visibility] = session.visibility
     json[:effective_visibility] = session.effective_visibility
     json[:snoozed_until] = session.snoozed_until&.iso8601
+    # CarPlay fit — the driver's triage axis, with its provenance. `carplay_fit`
+    # is the stored mark; `effective_carplay_fit` is that mark with staleness
+    # already resolved (nil once the session has written past
+    # `carplay_fit_line_count`), which is what a board filtering for a driver
+    # reads. Presentation and triage only; nothing scheduling reads it.
+    json[:carplay_fit] = session.carplay_fit
+    json[:effective_carplay_fit] = session.effective_carplay_fit
+    json[:carplay_fit_reason] = session.carplay_fit_reason
+    json[:carplay_fit_source] = session.carplay_fit_source
+    json[:carplay_fit_set_at] = session.carplay_fit_set_at&.iso8601
+    json[:carplay_fit_line_count] = session.carplay_fit_line_count
+    json[:carplay_fit_summary] = session.carplay_fit_summary
     json[:transcript] = session.transcript if include_transcript
 
     json

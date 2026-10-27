@@ -65,7 +65,10 @@ The model is told, in this order:
 
 1. the root's AGENTS.md;
 2. a short section Zimmer writes about mechanics only it knows: that the conversation can be typed
-   or spoken and which it is now, the functions, and the conversation's URL;
+   or spoken and which it is now, the functions, the conversation's URL — and, when the client that
+   last drove the conversation is CarPlay, one line saying the person is in a car and naming the
+   [CarPlay fit](/sessions/carplay-fit/) filter and action. Zimmer states the fact; the root's
+   `modes/voice.md` is where what to do about it lives;
 3. **Right now: typed** or **Right now: spoken**. This is the root's style file for the current mode,
    or Zimmer's short default for that mode (`LiveConversations::MODES`) when the root ships none. It
    comes after AGENTS.md and says it takes precedence on style, so an AGENTS.md written with one mode

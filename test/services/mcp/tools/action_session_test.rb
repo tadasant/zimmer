@@ -2651,4 +2651,50 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
 
     assert_match(/Unknown action/, error.message)
   end
+
+  # ---- set_carplay_fit ------------------------------------------------------
+
+  def carplay_fit_session(**attrs)
+    Session.create!({
+      prompt: "p", agent_runtime: "claude_code", status: :needs_input, title: "Walkthrough",
+      git_root: "https://github.com/test/repo.git", branch: "main",
+      transcript: 4.times.map { |i| JSON.generate({ "type" => "user", "message" => { "role" => "user", "content" => "m#{i}" } }) }.join("\n") + "\n"
+    }.merge(attrs))
+  end
+
+  test "set_carplay_fit writes an assistant mark on an unstamped connection and reports the summary" do
+    session = carplay_fit_session
+
+    result = @tool.call({ "session_id" => session.id, "action" => "set_carplay_fit",
+                          "carplay_fit" => "laptop_only", "carplay_fit_reason" => "credential" })
+
+    assert_includes result, "## CarPlay Fit Set"
+    assert_includes result, "Laptop only (a credential) · assistant · current"
+    session.reload
+    assert_equal "laptop_only", session.carplay_fit
+    assert_equal "assistant", session.carplay_fit_source
+    assert_equal 4, session.carplay_fit_line_count
+  end
+
+  test "set_carplay_fit keeps a standing human mark and says so" do
+    session = carplay_fit_session
+    Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", source: "human")
+
+    result = @tool.call({ "session_id" => session.id, "action" => "set_carplay_fit", "carplay_fit" => "carplay_ok" })
+
+    assert_includes result, "## CarPlay Fit Kept"
+    assert_includes result, "Not applied"
+    assert_equal "laptop_only", session.reload.carplay_fit
+  end
+
+  test "set_carplay_fit on a session-stamped connection writes a session mark, and refuses a value off the list" do
+    session = carplay_fit_session
+    tool = Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions", session_id: session.id))
+
+    tool.call({ "session_id" => session.id, "action" => "set_carplay_fit", "carplay_fit" => "carplay_ok" })
+    assert_equal "session", session.reload.carplay_fit_source
+
+    error = assert_raises(Mcp::ToolError) { tool.call({ "session_id" => session.id, "action" => "set_carplay_fit", "carplay_fit" => "maybe" }) }
+    assert_match(/carplay_ok, laptop_only/, error.message)
+  end
 end

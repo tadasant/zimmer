@@ -197,4 +197,24 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes names, "get_user_view"
     assert_not_includes names, "reorder_user_view"
   end
+
+  # ---- CarPlay fit ----------------------------------------------------------
+
+  test "every row carries its CarPlay fit, and the filter drops laptop-only rows without reordering" do
+    laptop = make_session(klass: SessionGenesis::PRIORITY, precedence: 50, title: "needs the mac")
+    laptop.update!(carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+    ok = make_session(klass: SessionGenesis::PRIORITY, precedence: 10, title: "say yes")
+    ok.update!(carplay_fit: "carplay_ok", carplay_fit_reason: "decision", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+    untagged = make_session(klass: SessionGenesis::PRIORITY, precedence: 5, title: "nobody judged")
+
+    board = @read.call({})
+    assert_includes board, "1. needs the mac (ID: #{laptop.id})"
+    assert_includes board, "- **CarPlay fit:** Laptop only (a credential) · auto · current"
+    assert_includes board, "- **CarPlay fit:** untagged"
+
+    driving = @read.call({ "carplay_fit" => "not_laptop_only" })
+    assert_not_includes driving, "needs the mac"
+    assert_includes driving, "1. say yes (ID: #{ok.id})"
+    assert_includes driving, "2. nobody judged (ID: #{untagged.id})"
+  end
 end

@@ -34,6 +34,13 @@ class SessionDashboard < Administrate::BaseDashboard
     status: Field::Select.with_options(searchable: false, collection: ->(field) { field.resource.class.send(field.attribute.to_s.pluralize).keys }),
     visibility: Field::String,
     snoozed_until: Field::DateTime,
+    # CarPlay fit — the driver's triage axis, with its provenance. Presentation
+    # only; nothing scheduling reads it (SessionCarplayFit).
+    carplay_fit: Field::String,
+    carplay_fit_reason: Field::String,
+    carplay_fit_source: Field::String,
+    carplay_fit_set_at: Field::DateTime,
+    carplay_fit_line_count: Field::Number,
     archived_at: Field::DateTime,
     trash_after: Field::DateTime,
     # The scheduling axes. Both are plain strings/integers on the model rather than
