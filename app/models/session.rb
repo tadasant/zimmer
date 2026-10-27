@@ -590,6 +590,7 @@ class Session < ApplicationRecord
     auth_outage_parked_at
     auth_outage_pool_recovers_at
     auth_outage_pool_fingerprint
+    auth_outage_undelivered_prompt
     mcp_retry_count
     mcp_last_retry_at
     broadcast_message_count

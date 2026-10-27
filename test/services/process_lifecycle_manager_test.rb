@@ -278,10 +278,10 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_equal :idle, manager.current_state
   end
 
-  # A pool with nothing to hand the child is a configuration state, already red
-  # on /health and already alerted through needs_reauth — not a runtime fault. It
-  # still refuses the spawn, but at .warn: an .error here would page #alerts once
-  # per spawn attempt for as long as the pool stays empty (issue #618).
+  # A pool with nothing to hand the child is an outage, not a runtime fault of this
+  # spawn. It still refuses the spawn, but at .warn: PoolOutageAlert owns the page,
+  # throttled, and an .error here would page #alerts once per spawn attempt for as
+  # long as the pool stays empty (issue #618).
   test "a spawn refused for want of a Claude credential is reported at warn, not error" do
     @mock_cli_adapter.execute_hook = ->(opts) do
       raise ClaudeSpawnEnv::MissingCredentialsError, "No Claude account in the pool holds a usable access token"
@@ -300,6 +300,23 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     @log_buffer.flush
     assert @session.logs.exists?([ "content LIKE ?", "Cannot spawn:%" ]),
       "the session log has to say why the turn never started"
+  end
+
+  # The two refusals mean different things to the caller: an empty pool is an outage
+  # AgentSessionJob parks the turn on (#1399); a missing session id is a fault of
+  # this spawn, and stays a failure.
+  test "only a pool with no usable access token marks the spawn result pool_unavailable" do
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      raise ClaudeSpawnEnv::PoolUnavailableError, "No Claude account in the pool holds a usable access token"
+    end
+    assert create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test").pool_unavailable?
+
+    @mock_cli_adapter.execute_hook = ->(opts) do
+      raise ClaudeSpawnEnv::MissingCredentialsError, "Cannot spawn Claude Code without a Zimmer session id"
+    end
+    result = create_manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    assert_not result.success?
+    assert_not result.pool_unavailable?
   end
 
   test "state transitions to terminated after terminate" do

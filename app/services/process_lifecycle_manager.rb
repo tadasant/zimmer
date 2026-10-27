@@ -94,9 +94,17 @@ class ProcessLifecycleManager
   SESSION_ID_CONFLICT_BUDGET = RetryBudget::SESSION_ID_CONFLICT
 
   # Result structures
-  SpawnResult = Struct.new(:success, :pid, :stderr_log_path, :error, keyword_init: true) do
+  # `pool_unavailable` is set when the spawn was refused because the runtime's
+  # login pool had no account holding a usable access token
+  # (ClaudeSpawnEnv::PoolUnavailableError) — the one refusal AgentSessionJob parks
+  # rather than fails.
+  SpawnResult = Struct.new(:success, :pid, :stderr_log_path, :error, :pool_unavailable, keyword_init: true) do
     def success?
       success == true
+    end
+
+    def pool_unavailable?
+      pool_unavailable == true
     end
   end
 
@@ -261,16 +269,18 @@ class ProcessLifecycleManager
     rescue ClaudeSpawnEnv::MissingCredentialsError => e
       # The pool has no Claude account holding a usable access token, so there
       # is nothing to hand the child and the spawn cannot proceed (issue #618).
-      # A configuration state a human fixes from /inference, already on
-      # /health's Agent Authentication card and already alerted through the
-      # needs_reauth event when an account died — so it is reported at .warn.
-      # An .error here pages #alerts once per spawn attempt for as long as the
-      # pool stays empty, which is noise on top of a condition that is already
-      # loud where it matters.
+      # `pool_unavailable` tells AgentSessionJob to park the turn rather than
+      # fail it (#1399), and the page comes from PoolOutageAlert, throttled to
+      # one per outage-hour — so this line is .warn. An .error here would page
+      # #alerts once per spawn attempt for as long as the pool stays empty.
       @mutex.synchronize { @state = :idle }
       add_log("Cannot spawn: #{e.message}", level: "error")
       @logger.warn("Spawn refused: no usable Claude credential in the pool", error: e.message)
-      SpawnResult.new(success: false, error: e.message)
+      SpawnResult.new(
+        success: false,
+        error: e.message,
+        pool_unavailable: e.is_a?(ClaudeSpawnEnv::PoolUnavailableError)
+      )
     rescue => e
       @mutex.synchronize { @state = :idle }
       add_log("Failed to spawn process: #{e.message}", level: "error")

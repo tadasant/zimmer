@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_190000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -146,6 +146,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_170000) do
     t.jsonb "mcp_apps_allowed_servers", default: [], null: false
     t.boolean "mcp_apps_enabled", default: false, null: false
     t.boolean "mcp_tool_search_enabled", default: true, null: false
+    t.datetime "pool_outage_alerted_at"
     t.jsonb "queue_recovery_mode", default: {}, null: false
     t.boolean "quota_pool_available"
     t.datetime "quota_pool_available_changed_at"
