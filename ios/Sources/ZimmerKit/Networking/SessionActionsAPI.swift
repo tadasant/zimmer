@@ -1,8 +1,8 @@
 import Foundation
 
 /// Everything else a person does to a session from the web UI's session page and its
-/// mobile action menu: restore, restart, pause, star, hide or snooze, mark the CarPlay fit, rename, goal, notes,
-/// effort, scheduling class and precedence, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
+/// mobile action menu: restore, restart, pause, star, hide or snooze, mark the CarPlay fit,
+/// rename, goal, notes, effort, scheduling class and precedence, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
 ///
 /// Every route here is on `Api::V1::SessionsController`, which the app's token already
 /// reaches (`accepts_native_app_tokens`), so none of it widens what a phone can do on the
