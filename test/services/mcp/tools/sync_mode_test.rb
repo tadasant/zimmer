@@ -121,6 +121,82 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
     assert_includes result, "the wait failed (ActiveRecord::ConnectionTimeoutError)"
   end
 
+  # --- the budget covers the whole call ---------------------------------------
+  #
+  # The incident this pins: a remote assistant asked quick_router for
+  # `sync_timeout_seconds: 55` under a 60-second client clock. The wait ran its
+  # full 55s after the create had already spent some, the client gave up first,
+  # and it never saw the id of the session it had started.
+
+  def monotonic_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+  test "a sync quick_router whose create is slow still answers within sync_timeout_seconds" do
+    started = monotonic_now
+    result = AgentSessionJob.stub(:enqueue_new_session, ->(_id) { sleep 2.5 }) do
+      Mcp::Tools::QuickRouter.new(context: context(base_url: "https://zimmer.example"))
+        .call("prompt" => "a long job", "sync" => true, "sync_timeout_seconds" => 5)
+    end
+    elapsed = monotonic_now - started
+
+    session = Session.order(:id).last
+    assert_operator elapsed, :<, 5, "the call took #{elapsed.round(2)}s against a 5s budget"
+    assert_includes result, "- **ID:** #{session.id}"
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "Still working"
+  end
+
+  test "the budget is counted from when the request arrived, not from the start of the wait" do
+    # The request has already spent 50 of its 55 seconds before the tool runs.
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+
+    started = monotonic_now
+    result = Mcp::Tools::QuickRouter.new(context: ctx).call("prompt" => "a long job", "sync" => true,
+                                                              "sync_timeout_seconds" => 55)
+    elapsed = monotonic_now - started
+
+    session = Session.order(:id).last
+    assert_operator elapsed, :<, 2, "waited #{elapsed.round(2)}s with 5s of budget and a 3s margin left"
+    assert_includes result, "- **ID:** #{session.id}"
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "Still working"
+  end
+
+  test "a request with budget left waits for what remains of it, less the response margin" do
+    ctx = context(request_started_at: monotonic_now - 10)
+    # The expectation is the assertion; what the wait returns does not matter here.
+    Sessions::SyncReply.any_instance.expects(:wait).with { |timeout:| timeout.between?(41.5, 42) }
+      .raises(RuntimeError)
+
+    Mcp::Tools::QuickRouter.new(context: ctx).call("prompt" => "hello", "sync" => true, "sync_timeout_seconds" => 55)
+  end
+
+  test "a sync call that fails building its wait after the create still hands back the session" do
+    Sessions::SyncReply.stubs(:first_turn).raises(ActiveRecord::ConnectionTimeoutError)
+
+    result = Mcp::Tools::QuickRouter.new(context: context(base_url: "https://zimmer.example"))
+      .call("prompt" => "hello", "sync" => true)
+
+    session = Session.order(:id).last
+    assert_includes result, "- **ID:** #{session.id}"
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "the wait failed (ActiveRecord::ConnectionTimeoutError)"
+  end
+
+  test "start_session sync takes its budget from the request start too" do
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+
+    started = monotonic_now
+    result = Mcp::Tools::StartSession.new(context: ctx)
+      .call("agent_root" => "zimmer", "prompt" => "Fix the thing", "title" => "Fix the thing", "sync" => true,
+            "sync_timeout_seconds" => 55)
+    elapsed = monotonic_now - started
+
+    session = Session.order(:id).last
+    assert_operator elapsed, :<, 2
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "Still working"
+  end
+
   # --- action_session follow_up -----------------------------------------------
 
   test "follow_up with sync to an idle session returns that turn's reply, not the previous one" do
@@ -137,6 +213,21 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
     assert_includes result, "## Follow-up Sent"
     assert_includes result, "### Reply\n\nnew answer"
     refute_includes result, "old answer"
+  end
+
+  test "follow_up sync takes its budget from the request start too" do
+    session = create_session(status: :needs_input, prompt: "first")
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+
+    started = monotonic_now
+    result = Mcp::Tools::ActionSession.new(context: ctx)
+      .call("action" => "follow_up", "session_id" => session.id, "prompt" => "second", "sync" => true,
+            "sync_timeout_seconds" => 55)
+    elapsed = monotonic_now - started
+
+    assert_operator elapsed, :<, 2
+    assert_includes result, "https://zimmer.example/sessions/#{session.id}"
+    assert_includes result, "Still working"
   end
 
   test "follow_up with sync to a running session waits through the turn ahead of it" do
