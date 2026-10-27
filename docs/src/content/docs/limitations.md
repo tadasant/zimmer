@@ -8158,11 +8158,14 @@ The CarPlay scene is built, its rules (`DrivingBoard`, `LiveContext`) are unit-t
 TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
 it yet. The template tree, the voice control template's action buttons and bar buttons (iOS 26.4),
 the rebuild of the call screen when the conversation's subject changes, whether the car's audio
-ducks under the briefing, and whether the briefing on connect is what the category expects are all
-unobserved. XCUITest cannot reach the CarPlay window, so there are no screenshots of it either.
+ducks under a tapped briefing, and whether a scene that opens quietly — the default button is the
+voice conversation, but nothing is spoken until it is tapped — is what App Review expects of a
+category whose "primary modality of voice upon launch" could be read either way, are all unobserved.
+XCUITest cannot reach the CarPlay window, so there are no screenshots of it either.
 
-The spoken alert for a session that enters Needs you while driving has no off switch; the only way
-to silence it is to disconnect the car. A call driven from the car is tagged as the phone's (below).
+Nothing in the car tells you a session started needing you while you drive, beyond the badge and
+the counts changing on the next minute's read: there are no CarPlay notifications for this category,
+and the car does not speak unasked. A call driven from the car is tagged as the phone's (below).
 
 ## No iOS push has been sent to a real phone
 

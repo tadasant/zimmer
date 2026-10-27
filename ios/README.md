@@ -206,8 +206,9 @@ decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
   confirms, and the spoken briefing. `LiveContext.swift` is the call screen's title and the words
   for what the call is doing. Both are tested on Linux.
 - `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring: a `CPTabBarTemplate` root (a grid
-  home, two lists), a `CPInformationTemplate` card per session, alerts and a sheet, a minute-by-minute
-  read of the board, the briefing on connect and the spoken alert on a new arrival.
+  home, two lists), a `CPInformationTemplate` card per session, alerts and a sheet, a silent
+  minute-by-minute read of the board, and the briefing when its tile is tapped. The car speaks only
+  after a tap.
   `CarPlayDashboard.swift` builds those templates; `CarPlayLive.swift` is Live Mode's call screen, a
   `CPVoiceControlTemplate` whose title names the session the conversation is about and whose two
   action buttons are Mute and Hang up; `CarPlaySpeech.swift` is the car's own voice

@@ -109,7 +109,7 @@ final class DrivingBoardTests: XCTestCase {
         XCTAssertTrue(opening.contains("ask me what I want to do"))
     }
 
-    func testTheBriefingCountsReadsTheFirstFewAndNeverSaysNothingForAFailure() {
+    func testTheBriefingCountsReadsTheFirstFewAndNeverSaysNothingForAFailedRead() {
         let board = DrivingBoard(sessions: [
             session(2, "Merge PR 1261?", .needsInput, summary: "CI is green.", touched: 1),
             session(3, "Which Postgres?", .needsInput, touched: 2),
@@ -128,17 +128,13 @@ final class DrivingBoardTests: XCTestCase {
         XCTAssertEqual(Briefing.text(for: one), "One session needs you. Which Postgres? Waiting for your reply. 2 running.")
         XCTAssertEqual(Briefing.failure("Couldn't reach Zimmer."), "I couldn't check your sessions. Couldn't reach Zimmer.")
         XCTAssertEqual(board.needsYou.map(\.id), [2, 3, 5, 4], "failed comes after every needs-input session")
-        XCTAssertEqual(Briefing.alert(for: board.needsYou[3]), "Zimmer: Rotate key. It failed. Failed. Restart it, or talk it through.")
-        XCTAssertEqual(Briefing.alert(for: board.needsYou[0]), "Zimmer: Merge PR 1261? It needs you. CI is green.")
     }
 
-    func testNewArrivalsAreTheOnesNotKnownBefore() {
-        let before = DrivingBoard(sessions: [session(2, "Merge?", .needsInput)], now: now)
-        let after = DrivingBoard(sessions: [session(2, "Merge?", .needsInput), session(3, "New", .needsInput), session(4, "Broke", .failed)], now: now)
-        XCTAssertEqual(after.newlyNeedingYou(since: before.needsYouIDs).map(\.id), [3, 4])
-        XCTAssertTrue(before.newlyNeedingYou(since: after.needsYouIDs).isEmpty)
-        XCTAssertEqual(after.card(4)?.kind, .failed)
-        XCTAssertNil(after.card(99))
+    func testACardIsFoundByIdOnEitherList() {
+        let board = DrivingBoard(sessions: [session(2, "Merge?", .needsInput), session(4, "Broke", .failed), session(1, "Run", .running)], now: now)
+        XCTAssertEqual(board.card(4)?.kind, .failed)
+        XCTAssertEqual(board.card(1)?.kind, .running)
+        XCTAssertNil(board.card(99))
     }
 
     func testWordsDropTheMarkdownAndStopAtTheFirstSentence() {

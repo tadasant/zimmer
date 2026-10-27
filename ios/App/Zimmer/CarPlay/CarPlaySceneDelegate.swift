@@ -8,18 +8,16 @@ import os
 /// `ios/CARPLAY_DESIGN.md`; the rules are `DrivingBoard` (ZimmerKit, tested on Linux); the
 /// screens are `CarPlayDashboard` and `CarPlayLive`. This is the wiring.
 ///
-/// Voice first, as the category requires: on connect the car reads the briefing — how many
-/// sessions need the driver and the first few, how many are running — under a screen whose
-/// big button is *Talk to Zimmer*. That button, on the briefing and on the home tab, is the
-/// one thing to hit without thinking: Live Mode, the Realtime call, which can triage, answer,
-/// start work and follow up by voice. Everything else is a tap or two on large targets, each
-/// confirmed out loud: a decision card's *Go ahead*, *Merge*, *Restart*, *Archive*, and *Talk
-/// about it*, which opens the call on that session.
+/// Silent until asked. The car opens on the home tab and says nothing: Zimmer speaks only after
+/// the driver taps something. The one thing to hit without thinking is *Talk to Zimmer*, the
+/// first tile: Live Mode, the Realtime call, which can triage, answer, start work and follow up
+/// by voice. *Briefing* speaks what needs the driver, on request. Everything else is a tap or
+/// two on large targets, each confirmed out loud once tapped: a decision card's *Go ahead*,
+/// *Merge*, *Restart*, *Archive*, and *Talk about it*, which opens the call on that session.
 ///
 /// The board is read again every minute while the car is connected, and after every action or
-/// call. A session that enters Needs you while driving is spoken up about, once, with *Talk
-/// about it* on the screen. CarPlay shows no notifications for this category, so that is how
-/// the car is proactive.
+/// call, silently: the Needs you badge and the tile counts change, and nothing is said.
+/// CarPlay shows no notifications for this category; the counts are how the car is proactive.
 ///
 /// CarPlay connects the scene declared in Info.plist only in a build that signs in the
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
@@ -31,8 +29,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private var live: CarPlayLive?
     private var announcement: CarPlayAnnouncement?
     private var board = DrivingBoard.empty
-    /// The Needs you ids last read, so a new arrival can be told apart; nil until the first read.
-    private var known: Set<Int>?
+    /// Why the last read failed, so the Briefing tile says that rather than "nothing needs you".
+    private var failure: String?
     private var refreshLoop: Task<Void, Never>?
     private var refreshing: Task<Void, Never>?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
@@ -71,10 +69,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         dashboard.callIsActive = LiveCall.shared.isActive
         interfaceController.setRootTemplate(dashboard.tabBar, animated: false, completion: nil)
 
-        // A call already running (started on the phone) is the conversation: show it, and skip
-        // the briefing — the model is the voice now.
+        // A call already running (started on the phone) is the conversation: show it.
         live.showIfActive()
-        refresh(briefing: !LiveCall.shared.isActive)
+        refresh()
         refreshLoop = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.refreshEvery)
@@ -101,20 +98,20 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     // MARK: - The board
 
-    /// Read the board again, soon. One read at a time; a second ask while one runs is dropped,
-    /// because the loop reads again in a minute anyway. `briefing`: speak it once read.
-    private func refresh(briefing: Bool = false) {
+    /// Read the board again, soon, and silently. One read at a time; a second ask while one
+    /// runs is dropped, because the loop reads again in a minute anyway.
+    private func refresh() {
         guard refreshing == nil else { return }
         refreshing = Task { [weak self] in
-            await self?.read(briefing: briefing)
+            await self?.read()
             self?.refreshing = nil
         }
     }
 
-    private func read(briefing: Bool) async {
+    private func read() async {
         let connection = AppEnvironment.shared.connection
         guard await connection.auth.isSignedIn else {
-            failed("Sign in to Zimmer on your phone first.", briefing: briefing)
+            failed("Sign in to Zimmer on your phone first.")
             return
         }
         do {
@@ -122,39 +119,29 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             // The board as the person sees it: visible sessions, each with its status summary.
             let result = try await connection.api.sessions(filters, board: .onBoard, view: .yourBoard)
             let fresh = DrivingBoard(sessions: result.sessions)
-            let arrivals = known.map { fresh.newlyNeedingYou(since: $0) } ?? []
             board = fresh
-            known = fresh.needsYouIDs
+            failure = nil
             dashboard?.show(fresh)
             live?.needsYou = fresh.needsYouTotal + fresh.failedTotal
-            if briefing {
-                await announce(Briefing.text(for: fresh), titleVariants: ["Zimmer briefing", "Briefing"], talkTitle: "Talk to Zimmer", opening: nil)
-            } else if let first = arrivals.first {
-                await announce(Briefing.alert(for: first), titleVariants: [first.title, "Needs you"], talkTitle: "Talk about it", opening: DrivingAction.opening(for: first))
-            }
         } catch {
             log.error("refresh failed: \(String(describing: error), privacy: .public)")
-            failed((error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer.", briefing: briefing)
+            failed((error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer.")
         }
     }
 
-    private func failed(_ reason: String, briefing: Bool) {
+    /// The lists say why, and the Briefing tile will say it too; nothing is said unasked.
+    private func failed(_ reason: String) {
+        failure = reason
         dashboard?.show(failure: reason)
-        if briefing {
-            Task { await speech.speak(Briefing.failure(reason)) }
-        }
     }
 
-    private func announce(_ text: String, titleVariants: [String], talkTitle: String, opening: String?) async {
-        guard let announcement, !(live?.isActive ?? false) else { return }
-        await announcement.announce(text, titleVariants: titleVariants, talkTitle: talkTitle, opening: opening)
-    }
-
-    /// The Briefing tile: say it again, from the board as last read.
+    /// The Briefing tile: what needs the driver, from the board as last read — or why it could
+    /// not be read. The one time the car speaks without a session named, and only when asked.
     private func brief() {
         Task { [weak self] in
-            guard let self else { return }
-            await self.announce(Briefing.text(for: self.board), titleVariants: ["Zimmer briefing", "Briefing"], talkTitle: "Talk to Zimmer", opening: nil)
+            guard let self, let announcement = self.announcement, !(self.live?.isActive ?? false) else { return }
+            let text = self.failure.map { Briefing.failure($0) } ?? Briefing.text(for: self.board)
+            await announcement.announce(text, titleVariants: ["Zimmer briefing", "Briefing"], talkTitle: "Talk to Zimmer", opening: nil)
         }
     }
 
