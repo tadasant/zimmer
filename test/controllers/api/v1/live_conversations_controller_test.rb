@@ -236,9 +236,12 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
   test "the sessions a conversation has touched come back newest first with their board rows, on a key or the app" do
     conversation = create_live_conversation(mode: "voice")
-    started = create_session(title: "Investigate the flaky poller test", status: :running)
+    # Not `create_session`: in an integration test that name is Rails' own, and makes a request session.
+    started = Session.create!(title: "Investigate the flaky poller test", status: :running, prompt: "Look into it", agent_runtime: "claude_code",
+                              git_root: "https://github.com/test/repo.git", branch: "main")
     SessionStatusSummary.create!(session: started, state: "ready", summary: "Reading the **poller** spec.", generated_at: Time.current)
-    checked = create_session(title: "Which Postgres?", status: :needs_input)
+    checked = Session.create!(title: "Which Postgres?", status: :needs_input, prompt: "Pick one", agent_runtime: "claude_code",
+                              git_root: "https://github.com/test/repo.git", branch: "main")
     conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c1", tool_arguments: { "tool" => "quick_router" },
                                tool_output: "- **ID:** #{started.id}\n- **URL:** http://example.com/sessions/#{started.id}")
     conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c2", tool_arguments: { "tool" => "get_session", "arguments" => { "id" => checked.id } }, tool_output: "## Session")
