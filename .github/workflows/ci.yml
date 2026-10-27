@@ -653,6 +653,11 @@ jobs:
           swift --version
           ls /Applications | grep -i '^Xcode' || true
 
+      - name: Test the App Store Connect helper's export retry
+        # What `testflight.yml` retries and what it never does, against a stand-in
+        # xcodebuild and a stubbed App Store Connect. Stdlib only, no credential.
+        run: python3 -m unittest discover -s ios/tools -v
+
       - name: Archive the app for a device, signed ad hoc, and check it is uploadable in shape
         # The credential-free half of `testflight.yml`, run by the same script: the Release
         # configuration, the device SDK, the app icon and the Info.plist keys App Store

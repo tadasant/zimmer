@@ -33,7 +33,8 @@ name: TestFlight
 on:
   # Every merge to `main` that can change the app ships a build. The app is built from
   # ios/ alone: the Xcode project's only package reference is `..` (ios/) and Package.swift
-  # has no remote dependency. The README and the SwiftPM tests are excluded because they are not in the app, and
+  # has no remote dependency. The README, the SwiftPM tests and the App Store Connect helper's tests
+  # are excluded because they are not in the app, and
   # App/ZimmerUITests for the same reason one step along: it is a target of its own, it
   # is not in the `Zimmer` scheme this workflow archives, and it ships in no build.
   push:
@@ -43,6 +44,7 @@ on:
       - "!ios/README.md"
       - "!ios/Tests/**"
       - "!ios/App/ZimmerUITests/**"
+      - "!ios/tools/test_*.py"
       - ".github/workflows/testflight.yml"
   workflow_dispatch:
     inputs:
@@ -74,7 +76,10 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' && github.repository == 'tadasant/zimmer' }}
     runs-on: macos-latest
     environment: testflight
-    timeout-minutes: 90
+    # The archive, up to three export attempts with their backoff (ios/tools/app_store_connect.py
+    # `export`), and up to 45 minutes of processing. A job cancelled at this limit is not red
+    # the way a failure is, and its re-run uploads a second build, so keep it above the sum.
+    timeout-minutes: 105
 
     steps:
       # Pinned by SHA, not tag, in a workflow that holds a key: a moved tag would run
