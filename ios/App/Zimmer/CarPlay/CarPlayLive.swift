@@ -11,6 +11,10 @@ import ZimmerKit
 /// make while driving. *Talk about it* on a session card starts the same call with an opening
 /// line that names the session, so the model answers about that session first.
 ///
+/// A call started here, or taken over from the phone, says it is `carplay` on every request,
+/// so Zimmer tells the live model the person is in a car. When the car disconnects with the
+/// call still up, the call carries on as the phone's again.
+///
 /// While the call runs the screen is a voice control template, as Apple requires of a
 /// voice-based conversational app while it records. It carries what the template can carry:
 ///
@@ -77,9 +81,10 @@ final class CarPlayLive {
 
     var isActive: Bool { call.isActive }
 
-    /// The scene connected with a call already up: show it.
+    /// The scene connected with a call already up: show it, and hand it to the car.
     func showIfActive() {
         guard call.isActive else { return }
+        Task { await call.carryOn(on: .carplay) }
         present()
         readContext()
     }
@@ -89,19 +94,19 @@ final class CarPlayLive {
     func start(opening: String? = nil) {
         Task {
             if call.isActive, let conversation = call.conversationID {
-                await call.start(conversation, opening: opening)
+                await call.start(conversation, opening: opening, from: .carplay)
                 present()
                 return
             }
             do {
-                let api = AppEnvironment.shared.connection.api
+                let api = AppEnvironment.shared.connection.api.live(from: .carplay)
                 let id: Int
                 if let current = try await api.liveConversations().current {
                     id = current
                 } else {
                     id = try await api.startLiveConversation(.voice).id
                 }
-                await call.start(id, opening: opening)
+                await call.start(id, opening: opening, from: .carplay)
             } catch {
                 onFailure?((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.")
             }
@@ -114,6 +119,7 @@ final class CarPlayLive {
 
     /// The scene is going away: the call carries on on the phone; only the screen is dropped.
     func disconnect() {
+        if call.isActive { Task { await call.carryOn(on: .ios) } }
         contextRead?.cancel()
         rebuild?.cancel()
         template = nil

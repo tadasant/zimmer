@@ -48,6 +48,9 @@ struct FakeLiveState: Sendable {
 }
 
 extension FakeZimmerAPI {
+    /// The fake keeps no record of which client spoke: the same one answers for every surface.
+    public nonisolated func live(from surface: ClientSource.Surface) -> any LiveAPI { self }
+
     public func liveAvailability() async throws -> LiveAvailability {
         LiveAvailability(agentRoot: "live-mode", available: true,
                          models: [.text: "gpt-6-luna", .voice: "gpt-realtime-2.1-mini"])

@@ -2,7 +2,8 @@ import SwiftUI
 import ZimmerKit
 
 /// The web UI's filter form for the board, as a sheet: statuses (any number), scheduling
-/// class, agent root and genesis, all combining, plus board visibility and the quick filters.
+/// class, agent root, genesis and CarPlay fit, all combining, plus board visibility and the
+/// quick filters.
 /// Nothing changes until *Apply*, as the web form applies on submit.
 struct BoardFiltersSheet: View {
     @EnvironmentObject private var model: AppModel
@@ -72,6 +73,20 @@ struct BoardFiltersSheet: View {
                     .accessibilityIdentifier("filters.genesis")
                 } header: {
                     Text("Advanced")
+                }
+
+                Section {
+                    Picker("CarPlay fit", selection: $draft.carplayFitFilter) {
+                        Text("Any").tag(CarplayFitFilter?.none)
+                        ForEach(CarplayFitFilter.allCases) { filter in
+                            Text(filter.label).tag(CarplayFitFilter?.some(filter))
+                        }
+                    }
+                    .accessibilityIdentifier("filters.carplayFit")
+                } header: {
+                    Text("CarPlay fit")
+                } footer: {
+                    Text("Whether what a session needs next can be done by voice from a car. Not laptop-only keeps the ones judged CarPlay-ok and the ones not judged yet. A mark the session has moved past counts as untagged.")
                 }
 
                 Section {

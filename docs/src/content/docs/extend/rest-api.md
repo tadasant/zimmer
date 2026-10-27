@@ -68,8 +68,8 @@ way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
 `POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
-The app also sends `X-Zimmer-Client: ios/<version>` on every request, and a tap in CarPlay sends
-`carplay/<version>` with no modality. Any REST caller may send
+The app also sends `X-Zimmer-Client: ios/<version>` on every request, and a tap in CarPlay or a Live
+call from the car sends `carplay/<version>` with no modality. Any REST caller may send
 `X-Zimmer-Input-Modality: text` or `voice_dictation`. These headers only shape the
 [turn-source note](/sessions/turn-sources/) the agent sees. They can narrow `ios` to `carplay` but
 cannot turn an API key into the app. They record no human and authorize nothing. A missing or

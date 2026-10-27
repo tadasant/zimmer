@@ -40,6 +40,25 @@ final class ClientSourceTests: XCTestCase {
         XCTAssertEqual(body, ["prompt": "Ship it."], "the source travels in headers, never in the message")
     }
 
+    func testALiveCallFromTheCarSaysCarPlayOnEveryRequestAndThePhonesStaysIOS() async throws {
+        let reply: ScriptedTransport.Handler = { _ in
+            Fixtures.json(200, ["id": 7, "mode": "voice", "voice": true, "status": "active", "title": "Live Mode", "turns": []])
+        }
+        let (api, transport) = client([reply, reply, reply, reply])
+
+        let car = api.live(from: .carplay)
+        _ = try await car.startLiveConversation(.voice)
+        _ = try await car.setLiveMode(7, mode: .voice)
+        _ = try await api.live(from: .ios).setLiveMode(7, mode: .voice)
+        _ = try await api.setLiveMode(7, mode: .voice)
+
+        XCTAssertEqual(transport.sent.map { $0.headers["X-Zimmer-Client"] }, ["carplay/1.4.2", "carplay/1.4.2", "ios/1.4.2", "ios/1.4.2"],
+                       "the car's copy keeps the version; the phone's, and the client itself, stay ios")
+        for request in transport.sent {
+            XCTAssertNil(request.headers["X-Zimmer-Input-Modality"], "a Live call's modality is its conversation's, never a header")
+        }
+    }
+
     func testAnAppWithNoVersionStillNamesItself() {
         XCTAssertEqual(ClientSource.app(version: nil).headers, ["X-Zimmer-Client": "ios"])
     }

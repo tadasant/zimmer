@@ -67,8 +67,11 @@ module LiveConversations
     end
 
     # Voice: a short-lived secret the client opens its audio connection with.
+    # The client asking is the one about to drive the call, so it is noted
+    # first and the instructions minted with the secret name it.
     def client_secret
       require_voice!
+      note_client!
       RealtimeSession.mint(@conversation, listening_modes: @listening_modes)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
@@ -100,9 +103,12 @@ module LiveConversations
     # Voice: the `session.update` that brings an open call up to the current
     # settings and guidance — what a client sends after a person changed them on
     # the settings page or in the app mid-call. Active, not voice, for the same
-    # reason as tool_call below.
+    # reason as tool_call below. Noted first, like the secret: a call that moves
+    # between the phone and the car asks for this to bring its instructions up
+    # to the client now driving it.
     def session_update
       require_active!
+      note_client!
       realtime_session(@conversation).session_update
     end
 
