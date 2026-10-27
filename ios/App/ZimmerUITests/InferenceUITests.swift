@@ -106,8 +106,9 @@ final class InferenceUITests: XCTestCase {
         field.tap()
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 4) + "250")
         // The number pad has no Done: a scroll puts the keyboard away (the page dismisses it on
-        // a drag), so the tap on Save lands on Save and not on the keys.
-        app.swipeUp()
+        // a drag), so the tap on Save lands on Save and not on the keys. A held drag above the
+        // keys, not a flung swipe, so Save is not carried past the bar and out of the List.
+        drag(app, towardTop: false, from: 0.5)
         XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "the keyboard is gone")
         let save = app.buttons["inference.spot.save"]
         reveal(app, save)
@@ -157,13 +158,12 @@ final class InferenceUITests: XCTestCase {
     }
 
     /// isHittable says yes while a control is still under the navigation bar, where a tap lands
-    /// on the bar, or under the tab bar: scroll until it sits between the two. A quarter-screen
-    /// drag held at the end, so there is no fling to overshoot by: a flung swipe carried the
-    /// first card's Refresh from below the band to above the bar and back, twenty-four swipes
-    /// in a recording, never stopping between. A List keeps only the rows on screen, so an
-    /// element not in the hierarchy is looked for on down the page, or back up it if it was
-    /// last seen above the bar. The drag starts from one of three heights in turn, since a
-    /// press that lands on a full-width button is swallowed by it and moves nothing.
+    /// on the bar, or under the tab bar: scroll until it sits between the two, a quarter-screen
+    /// drag at a time, held at the end so there is no fling to carry it across the band. A List
+    /// keeps only the rows on screen, so an element not in the hierarchy is looked for further
+    /// down the page, or back up it if it was last seen above the bar. The drag starts from one
+    /// of three heights in turn, since a press that lands on a full-width button is swallowed
+    /// by it and moves nothing.
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement) {
         let bar = app.navigationBars.firstMatch
         func top() -> CGFloat { bar.exists ? bar.frame.maxY : 0 }
@@ -171,8 +171,9 @@ final class InferenceUITests: XCTestCase {
             element.exists && !element.frame.isEmpty ? element.frame : nil
         }
         var lastSeenAbove = false
-        /// Whether the finger moves down, to bring what is above into view; nil once in view.
-        func towardTop() -> Bool? {
+        /// Whether what is wanted is above the band (true) or below it (false); nil once it is in
+        /// the band. Reading it also records where a laid-out element was last seen.
+        func revealAbove() -> Bool? {
             guard let frame = laidOut() else { return lastSeenAbove }
             lastSeenAbove = frame.minY < top()
             if lastSeenAbove { return true }
@@ -181,18 +182,23 @@ final class InferenceUITests: XCTestCase {
         }
         let starts: [CGFloat] = [0.7, 0.6, 0.5]
         for attempt in 0..<30 {
-            guard let up = towardTop() else { break }
-            let start = starts[attempt % starts.count]
-            let (from, to): (CGFloat, CGFloat) = up ? (start - 0.25, start) : (start, start - 0.25)
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
-                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)),
-                       withVelocity: .default, thenHoldForDuration: 0.3)
+            guard let above = revealAbove() else { break }
+            drag(app, towardTop: above, from: starts[attempt % starts.count])
         }
-        let placed = towardTop() == nil
+        let placed = revealAbove() == nil
         if !placed {
             print("reveal gave up: element \(laidOut().map { "\($0)" } ?? "not laid out"), bar \(bar.exists ? "\(bar.frame)" : "absent")")
         }
         XCTAssertTrue(placed, "\(element) is scrolled into view")
+    }
+
+    /// A quarter-screen drag starting at height `start`, held at the end so there is no fling. The finger moves
+    /// down to bring what is above into view, up for what is below.
+    private func drag(_ app: XCUIApplication, towardTop: Bool, from start: CGFloat) {
+        let (from, to): (CGFloat, CGFloat) = towardTop ? (start - 0.25, start) : (start, start - 0.25)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+            .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)),
+                   withVelocity: .default, thenHoldForDuration: 0.3)
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
