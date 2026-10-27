@@ -140,23 +140,24 @@ final class OperationsActionsUITests: XCTestCase {
     /// swallowed by it and moves nothing (a recording shows twenty seconds of that), and the
     /// next height is clear of it.
     ///
-    /// The head of the page is the one place an element can be in view and still read as
-    /// above the bar: there the bar shows its large title, and its frame reaches past the top
-    /// of the first row — the queue-recovery banner, on Health. An upward drag there only
-    /// bounces, so an element that every start height in turn leaves where it was is at the
-    /// head of a page that will not scroll further, and it is reached. A recording shows
-    /// twenty-four bounces of that, the banner in plain view under the title.
+    /// At the head of the page the bar shows its large title, and an element can be in plain
+    /// view under it and still read as above the bar: the queue-recovery banner, which heads
+    /// Health, did for twenty-four upward drags in a recording, each of which only bounced
+    /// the page. So an element that upward drags from every start height in turn leave where
+    /// it was, under a bar tall enough to be showing its large title, is at the head of a page
+    /// that will not scroll further, and it is reached. A compact bar never counts: there a
+    /// press swallowed by a button also leaves the element where it was.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, searching: Direction = .down) -> Bool {
-        func placement() -> Direction? {
-            guard element.exists, !element.frame.isEmpty else { return searching }
-            let bar = app.navigationBars.firstMatch
-            let top = bar.exists ? bar.frame.maxY : 0
-            if element.frame.minY < top { return .up }
-            if element.frame.maxY > app.frame.maxY - 100 { return .down }
-            return nil
-        }
+        let bar = app.navigationBars.firstMatch
         func laidOut() -> CGRect? {
             element.exists && !element.frame.isEmpty ? element.frame : nil
+        }
+        func placement() -> Direction? {
+            guard let frame = laidOut() else { return searching }
+            let top = bar.exists ? bar.frame.maxY : 0
+            if frame.minY < top { return .up }
+            if frame.maxY > app.frame.maxY - 100 { return .down }
+            return nil
         }
         _ = element.waitForExistence(timeout: 2)
         let starts: [CGFloat] = [0.7, 0.6, 0.5]
@@ -169,9 +170,11 @@ final class OperationsActionsUITests: XCTestCase {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
                 .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
             if let before, let after = laidOut(), abs(after.minY - before.minY) < 1 { unmoved += 1 } else { unmoved = 0 }
-            if unmoved == starts.count { return true }
+            if unmoved == starts.count, bar.exists, bar.frame.height > 70 { return true }
         }
-        return placement() == nil
+        if placement() == nil { return true }
+        print("scrollTo gave up: element \(laidOut().map { "\($0)" } ?? "not laid out"), bar \(bar.exists ? "\(bar.frame)" : "absent")")
+        return false
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
