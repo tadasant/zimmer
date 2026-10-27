@@ -312,14 +312,19 @@ with voice on. One tap on **Type instead** turns voice off in that thread. **New
 the thread's toolbar and its confirmation are the two taps to a fresh one, in whichever mode the
 thread is in. Back leads to the Live list. The web's `/live` keeps its own entry, which opens the
 list. Starting a call on the phone
-turns voice on first (`POST …/mode`), so Enable voice, Talk and CarPlay's Resume all take the same
-path. A call on the phone opens a **WebSocket** to OpenAI rather than WebRTC.
+turns voice on first (`POST …/mode`), so Enable voice, Talk and the car's Talk to Zimmer all take the
+same path. A call on the phone opens a **WebSocket** to OpenAI rather than WebRTC.
 It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 as
 `input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
 and transcript lines exactly as the browser does: the shared rules are `RealtimeConductor` in
-ZimmerKit. CarPlay offers *New conversation* (which starts with voice on) and *Resume conversation*
-(which turns voice on in the open one, typed until then or not) on the same call. Every TestFlight
-build signs in the CarPlay entitlement that makes it reachable.
+ZimmerKit. In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
+or a new one with voice on, on the same call. *Talk about it* on a session's card starts that call
+with a line put to the model as if typed, naming the session, so it answers about that one first.
+While the call runs, the car's screen names the session the conversation is about, read from
+`GET /api/v1/live_conversations/:id/sessions` — the sessions the conversation's tool calls have
+named, newest first (`LiveConversation#referenced_session_ids`). See
+[CarPlay](/extend/ios-app/#carplay). Every TestFlight build signs in the CarPlay entitlement that
+makes it reachable.
 
 The gear on the app's Live screens opens the same [Live settings](#live-settings) over
 `/api/v1/live/settings`, guidance and history included. A save there sends an open phone call a

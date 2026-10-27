@@ -57,10 +57,10 @@ The credential, or the code path, decides the surface. A client header can only 
 | A Slack message folded into a running session | `slack` | `text` |
 | `message_parent` (a child reporting to its parent) | `agent` | `unknown` |
 
-The iOS app sends `X-Zimmer-Client: ios/<version>` on every request. CarPlay's voice loop sends
-`carplay/<version>` with `voice_dictation` on the follow-ups the driver spoke, and `carplay` with no
-modality on the Approve button. The phone's composers send no modality, because iOS keyboard
-dictation is invisible to the app.
+The iOS app sends `X-Zimmer-Client: ios/<version>` on every request. A tap in CarPlay — Go ahead,
+Restart, Archive — sends `carplay/<version>` with no modality, because a tap is not dictation; what
+the driver says in the car goes through Live Mode and is tagged `live_voice`. The phone's composers
+send no modality, because iOS keyboard dictation is invisible to the app.
 
 The Live modalities can never be claimed in a header. They come only from the Live conversation the
 delegation ran in.

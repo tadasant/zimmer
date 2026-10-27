@@ -11,7 +11,7 @@ import Foundation
 /// every `waiting` session.
 public actor FakeZimmerAPI: ZimmerAPI {
     public internal(set) var all: [SessionSummary]
-    private var summaries: [Int: StatusSummary]
+    var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
     private var queues: [Int: [QueuedMessage]] = FakeZimmerAPI.sampleQueues()
@@ -292,7 +292,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         return try await self.session(session.id)
     }
 
-    private func find(_ id: Int) throws -> SessionSummary {
+    func find(_ id: Int) throws -> SessionSummary {
         // The rest of 1044's family is on no board the fixture draws, but opens from its
         // hierarchy and its goal check as any session does.
         guard let session = all.first(where: { $0.id == id }) ?? Self.sampleFamily().first(where: { $0.id == id }) else {

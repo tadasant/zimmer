@@ -4,61 +4,90 @@ import ZimmerKit
 import os
 
 /// Zimmer in the car, as a CarPlay **voice-based conversational app**
-/// (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+).
+/// (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). The design is
+/// `ios/CARPLAY_DESIGN.md`; the rules are `DrivingBoard` (ZimmerKit, tested on Linux); the
+/// screens are `CarPlayDashboard` and `CarPlayLive`. This is the wiring.
 ///
-/// Voice first, as that category requires: on connect it reads out how many sessions need
-/// the driver and the first of them, and listens for an answer — yes, a reply, archive,
-/// next, stop (`DrivingFlow`, which holds every rule and is tested on Linux). Archive and
-/// replies are confirmed out loud first; "yes" sends the approval at once. The screen underneath is a short
-/// list of the sessions that need input, each row an action sheet (Approve, Reply by
-/// voice, Archive) for a driver who would rather tap; a Talk button restarts the
-/// conversation. Every template used — list, action sheet, voice control — is one the
-/// category allows, and the stack never goes deeper than three.
+/// Silent until asked. The car opens on the home tab and says nothing: Zimmer speaks only after
+/// the driver taps something. The one thing to hit without thinking is *Talk to Zimmer*, the
+/// first tile: Live Mode, the Realtime call, which can triage, answer, start work and follow up
+/// by voice. *Briefing* speaks what needs the driver, on request. Everything else is a tap or
+/// two on large targets, each confirmed out loud once tapped: a decision card's *Go ahead*,
+/// *Merge*, *Restart*, *Archive*, and *Talk about it*, which opens the call on that session.
+///
+/// The board is read again every minute while the car is connected, and after every action or
+/// call, silently: the Needs you badge and the tile counts change, and nothing is said.
+/// CarPlay shows no notifications for this category; the counts are how the car is proactive.
 ///
 /// CarPlay connects the scene declared in Info.plist only in a build that signs in the
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
 /// TestFlight build. A simulator build carries none; see ios/README.md, "CarPlay".
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
-    private var sessions: [SessionSummary] = []
-    /// Why the last refresh failed, spoken instead of "nothing needs you" — a driver
-    /// cannot be expected to read the screen.
-    private var refreshFailure: String?
-    private var summaries: [Int: String] = [:]
-    private var refreshTask: Task<Void, Never>?
-    private var conversation: Task<Void, Never>?
-    private let voice = VoiceIO()
-    /// Live Mode, voice on: start or resume a conversation from the list (CarPlayLive).
-    private let live = CarPlayLive()
-    /// The root list, kept so the Live Mode section can be redrawn in place as a call starts
-    /// and ends without resetting the template stack.
-    private var listTemplate: CPListTemplate?
-    private var sessionsSection = CPListSection(items: [])
+    private let speech = CarPlaySpeech()
+    private var dashboard: CarPlayDashboard?
+    private var live: CarPlayLive?
+    private var announcement: CarPlayAnnouncement?
+    private var board = DrivingBoard.empty
+    /// Why the last read failed, so the Briefing tile says that rather than "nothing needs you".
+    private var failure: String?
+    private var refreshLoop: Task<Void, Never>?
+    private var refreshing: Task<Void, Never>?
+    /// Which read `refreshing` is, so a read from before a reconnect cannot clear a newer one.
+    private var reads = 0
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
-    private enum VoiceState {
-        static let listening = "listening"
-        static let speaking = "speaking"
-    }
+    /// How often the board is read while connected.
+    private static let refreshEvery: Duration = .seconds(60)
 
     func templateApplicationScene(
         _ templateApplicationScene: CPTemplateApplicationScene,
         didConnect interfaceController: CPInterfaceController
     ) {
         self.interfaceController = interfaceController
+        let dashboard = CarPlayDashboard()
+        dashboard.interfaceController = interfaceController
+        dashboard.onTalk = { [weak self] in self?.talk() }
+        dashboard.onBriefing = { [weak self] in self?.brief() }
+        dashboard.onAction = { [weak self] action, card in self?.perform(action, on: card) }
+        dashboard.onOpen = { [weak self] card in Task { await self?.speech.speak(card.spoken) } }
+        self.dashboard = dashboard
+
+        let live = CarPlayLive()
         live.interfaceController = interfaceController
-        live.onChange = { [weak self] in self?.redrawLiveSection() }
-        let loading = CPListTemplate(title: "Zimmer", sections: [])
-        loading.emptyViewSubtitleVariants = ["Checking your sessions…"]
-        interfaceController.setRootTemplate(loading, animated: false, completion: nil)
-        refreshTask = Task {
-            await refresh()
-            // Voice first, as the category requires. The scene only ever connects on
-            // iOS 26.4+, where the voice-based conversational entitlement exists. A Live Mode voice
-            // call already running is the conversation: it carries on, and the screen offers
-            // Back to the call.
-            guard !LiveCall.shared.isActive else { return }
-            startConversation()
+        live.onChange = { [weak self] in
+            let active = LiveCall.shared.isActive
+            self?.dashboard?.callIsActive = active
+            // A call started on the phone takes the voice: the car stops talking.
+            if active {
+                self?.speech.stop()
+                self?.announcement?.dismiss()
+            }
+        }
+        live.onEnd = { [weak self] in self?.refresh() }
+        live.onFailure = { [weak self] message in
+            self?.dashboard?.alert(message)
+            Task { await self?.speech.speak(message) }
+        }
+        self.live = live
+
+        let announcement = CarPlayAnnouncement(speech: speech)
+        announcement.interfaceController = interfaceController
+        announcement.onTalk = { [weak self] opening in self?.talk(opening: opening) }
+        self.announcement = announcement
+
+        dashboard.callIsActive = LiveCall.shared.isActive
+        interfaceController.setRootTemplate(dashboard.tabBar, animated: false, completion: nil)
+
+        // A call already running (started on the phone) is the conversation: show it.
+        live.showIfActive()
+        refresh()
+        refreshLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.refreshEvery)
+                guard !Task.isCancelled else { return }
+                self?.refresh()
+            }
         }
     }
 
@@ -66,206 +95,129 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         _ templateApplicationScene: CPTemplateApplicationScene,
         didDisconnectInterfaceController interfaceController: CPInterfaceController
     ) {
-        refreshTask?.cancel()
-        conversation?.cancel()
-        voice.end()
+        refreshLoop?.cancel()
+        refreshing?.cancel()
+        refreshing = nil
+        speech.stop()
+        announcement?.dismiss()
+        live?.disconnect()
+        dashboard = nil
+        live = nil
+        announcement = nil
         self.interfaceController = nil
     }
 
-    // MARK: - The list
+    // MARK: - The board
 
-    private func refresh() async {
+    /// Read the board again, soon, and silently. One read at a time; a second ask while one
+    /// runs is dropped, because the loop reads again in a minute anyway.
+    private func refresh() {
+        guard refreshing == nil else { return }
+        reads += 1
+        let mine = reads
+        refreshing = Task { [weak self] in
+            await self?.read()
+            guard let self, self.reads == mine else { return }
+            self.refreshing = nil
+        }
+    }
+
+    private func read() async {
         let connection = AppEnvironment.shared.connection
         guard await connection.auth.isSignedIn else {
-            refreshFailure = "Sign in to Zimmer on your phone first."
-            showMessage(refreshFailure!)
+            failed("Sign in to Zimmer on your phone first.")
             return
         }
-        await live.refresh()
         do {
-            sessions = try await connection.api.sessions(.needsInput)
-            summaries = [:]
-            for session in sessions.prefix(DrivingFlow.limit) {
-                if let summary = try? await connection.api.session(session.id).statusSummary?.summary {
-                    // The summary is markdown; a list row and a voice read its words, so a
-                    // link is its text without the brackets and the URL.
-                    summaries[session.id] = String(MarkdownInline.attributed(summary).characters)
-                }
-            }
-            refreshFailure = nil
-            showList()
+            let filters = BoardFilters(statuses: [.needsInput, .failed, .running, .waiting])
+            // The board as the person sees it: visible sessions, each with its status summary.
+            let result = try await connection.api.sessions(filters, board: .onBoard, view: .yourBoard)
+            guard !Task.isCancelled else { return }
+            let fresh = DrivingBoard(sessions: result.sessions)
+            board = fresh
+            failure = nil
+            dashboard?.show(fresh)
+            live?.needsYou = fresh.needsYouTotal + fresh.failedTotal
         } catch {
             log.error("refresh failed: \(String(describing: error), privacy: .public)")
-            refreshFailure = (error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer."
-            showMessage(refreshFailure!)
+            failed((error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer.")
         }
     }
 
-    private func showList() {
-        let items = sessions.prefix(DrivingFlow.limit).map { session -> CPListItem in
-            let item = CPListItem(text: session.displayTitle, detailText: summaries[session.id] ?? session.status.label)
-            item.handler = { [weak self] _, completion in
-                self?.showActions(for: session)
-                completion()
-            }
-            return item
-        }
-        // The Live Mode section is always there, so the list is never empty and its empty view
-        // would never show: an empty queue says so in a row instead.
-        let rows = items.isEmpty ? [CPListItem(text: "Nothing needs you right now.", detailText: nil)] : items
-        sessionsSection = CPListSection(items: rows)
-        let template = CPListTemplate(title: "Needs you", sections: [sessionsSection, live.section()])
-        listTemplate = template
-        template.trailingNavigationBarButtons = [
-            CPBarButton(title: "Talk") { [weak self] _ in self?.startConversation() },
-        ]
-        interfaceController?.setRootTemplate(template, animated: true, completion: nil)
+    /// The lists say why, and the Briefing tile will say it too; nothing is said unasked.
+    private func failed(_ reason: String) {
+        failure = reason
+        dashboard?.show(failure: reason)
     }
 
-    /// A call started or ended: redraw the Live Mode section where it is.
-    private func redrawLiveSection() {
-        listTemplate?.updateSections([sessionsSection, live.section()])
-    }
-
-    private func showMessage(_ text: String) {
-        let template = CPListTemplate(title: "Zimmer", sections: [])
-        template.emptyViewSubtitleVariants = [text]
-        interfaceController?.setRootTemplate(template, animated: true, completion: nil)
-    }
-
-    private func showActions(for session: SessionSummary) {
-        var actions: [CPAlertAction] = [
-            CPAlertAction(title: "Approve", style: .default) { [weak self] _ in
-                self?.dismissThen {
-                    if await self?.perform(.followUp(sessionID: session.id, text: VoiceCommand.approvalText), spoken: false) == true {
-                        await self?.refresh()
-                    }
-                }
-            },
-        ]
-        // Only where the phone can recognise speech on its own: see VoiceIO.
-        if VoiceIO.canListen {
-            actions.append(CPAlertAction(title: "Reply by voice", style: .default) { [weak self] _ in
-                self?.dismissThen { self?.startConversation(focusing: session.id) }
-            })
-        }
-        actions.append(CPAlertAction(title: "Archive", style: .destructive) { [weak self] _ in
-            self?.dismissThen {
-                if await self?.perform(.archive(sessionID: session.id), spoken: false) == true {
-                    await self?.refresh()
-                }
-            }
-        })
-        actions.append(CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
-            self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
-        })
-        let sheet = CPActionSheetTemplate(title: session.displayTitle, message: summaries[session.id], actions: actions)
-        interfaceController?.presentTemplate(sheet, animated: true, completion: nil)
-    }
-
-    private func dismissThen(_ next: @escaping @MainActor () async -> Void) {
-        interfaceController?.dismissTemplate(animated: true) { _, _ in
-            Task { @MainActor in await next() }
+    /// The Briefing tile: what needs the driver, from the board as last read — or why it could
+    /// not be read. The one time the car speaks without a session named, and only when asked.
+    private func brief() {
+        Task { [weak self] in
+            guard let self, let announcement = self.announcement, !(self.live?.isActive ?? false) else { return }
+            let text = self.failure.map { Briefing.failure($0) } ?? Briefing.text(for: self.board)
+            await announcement.announce(text, titleVariants: ["Zimmer briefing", "Briefing"], talkTitle: "Talk to Zimmer", opening: nil)
         }
     }
 
-    // MARK: - The conversation
+    // MARK: - Live Mode
 
-    private func startConversation(focusing sessionID: Int? = nil) {
-        // One conversation with the car at a time: a voice call is it until hung up.
-        guard !LiveCall.shared.isActive else { return }
-        conversation?.cancel()
-        var ordered = sessions
-        if let sessionID, let index = ordered.firstIndex(where: { $0.id == sessionID }) {
-            ordered.insert(ordered.remove(at: index), at: 0)
-        }
-        var flow = DrivingFlow(sessions: ordered, summaries: summaries)
-        let template = CPVoiceControlTemplate(voiceControlStates: [
-            CPVoiceControlState(identifier: VoiceState.listening, titleVariants: ["Listening…"], image: nil, repeats: true),
-            CPVoiceControlState(identifier: VoiceState.speaking, titleVariants: ["Zimmer"], image: nil, repeats: false),
-        ])
-        interfaceController?.presentTemplate(template, animated: true, completion: nil)
+    private func talk(opening: String? = nil) {
+        speech.stop()
+        announcement?.dismiss()
+        live?.start(opening: opening)
+    }
 
-        conversation = Task { [weak self] in
-            guard let self else { return }
-            self.voice.begin()
-            defer {
-                self.voice.end()
-                // Only its own template: a newer conversation's must survive this one ending.
-                if self.interfaceController?.presentedTemplate === template {
-                    self.interfaceController?.dismissTemplate(animated: true, completion: nil)
-                }
-            }
-            if let failure = self.refreshFailure {
-                await self.voice.speak(failure)
-                return
-            }
-            // Say it before asking the driver to speak, not after showing "Listening…".
-            guard VoiceIO.canListen else {
-                let waiting = flow.queue.count
-                let count = waiting == 0 ? "Nothing needs you right now." : waiting == 1 ? "One session needs you." : "\(waiting) sessions need you."
-                await self.voice.speak("\(count) This iPhone can't recognise speech on its own, so use Approve or Archive on the screen.")
-                return
-            }
-            var effects = flow.opening()
-            var misses = 0
-            while !Task.isCancelled {
-                var acted = false
-                var skipNextLine = false
-                for effect in effects {
-                    guard !Task.isCancelled else { return }
-                    switch effect {
-                    case .end:
-                        if acted { await self.refresh() }
-                        return
-                    case let .speak(line):
-                        // The line after an action announces it; a failed action already
-                        // said why, and must not then be called done.
-                        if skipNextLine { skipNextLine = false; continue }
-                        template.activateVoiceControlState(withIdentifier: VoiceState.speaking)
-                        await self.voice.speak(line)
-                    case .followUp, .archive:
-                        if await self.perform(effect, spoken: true) { acted = true } else { skipNextLine = true }
-                    }
-                }
-                // Refresh after the confirmation is spoken, not before it: a driver should
-                // not sit through several requests' silence.
-                if acted { await self.refresh() }
-                template.activateVoiceControlState(withIdentifier: VoiceState.listening)
-                guard let heard = await self.voice.listen(), let command = VoiceCommand(heard) else {
-                    misses += 1
-                    if misses >= 2 { await self.voice.speak("I'll leave it there."); return }
-                    effects = [.speak("Sorry, I didn't catch that.")]
-                    continue
-                }
-                misses = 0
-                effects = flow.handle(command)
-            }
+    // MARK: - A card's buttons
+
+    private func perform(_ action: DrivingAction, on card: DrivingCard) {
+        if let question = action.confirmation(for: card) {
+            dashboard?.confirm(question, action: action) { [weak self] in self?.run(action, on: card) }
+        } else {
+            run(action, on: card)
         }
     }
 
-    /// The effects that touch Zimmer; true when they worked. A failure is spoken here.
-    /// Speech and the end of the conversation are handled by the loop above.
-    /// `spoken`: the driver said it, so the session is told it was dictated in the car;
-    /// a tapped button is still the car, but says nothing about how.
-    private func perform(_ effect: DrivingFlow.Effect, spoken: Bool) async -> Bool {
+    private func run(_ action: DrivingAction, on card: DrivingCard) {
+        switch action {
+        case .talkAboutIt:
+            talk(opening: DrivingAction.opening(for: card))
+        case .readAloud:
+            speech.stop()
+            Task { await speech.speak(card.spoken) }
+        case .goAhead, .merge, .restart, .archive:
+            Task { await act(action, on: card) }
+        }
+    }
+
+    /// The actions that touch Zimmer. A tap is the car, so the session is told so; it says
+    /// nothing about how, because a tap is not dictation. Success is spoken and the card closes,
+    /// since the session has left Needs you; a failure is spoken, and the card stays.
+    private func act(_ action: DrivingAction, on card: DrivingCard) async {
         let api = AppEnvironment.shared.connection.api
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        let source = ClientSource.app(version: version).onCarPlay(modality: spoken ? .voiceDictation : nil)
+        let source = ClientSource.app(version: version).onCarPlay(modality: nil)
         do {
-            switch effect {
-            case let .followUp(sessionID, text):
-                _ = try await api.followUp(sessionID, prompt: text, from: source)
-            case let .archive(sessionID):
-                _ = try await api.archive(sessionID)
-            case .speak, .end:
-                return true
+            switch action {
+            case .goAhead:
+                _ = try await api.followUp(card.id, prompt: DrivingAction.goAheadText, from: source)
+            case .merge:
+                _ = try await api.authorizeMerge(card.id)
+            case .restart:
+                _ = try await api.restart(card.id)
+            case .archive:
+                _ = try await api.archive(card.id)
+            case .talkAboutIt, .readAloud:
+                return
             }
-            return true
+            dashboard?.close(card: card.id)
+            refresh()
+            if let done = action.spokenDone { await speech.speak(done) }
         } catch {
-            log.error("action failed: \(String(describing: error), privacy: .public)")
-            await voice.speak((error as? ZimmerError)?.userMessage ?? "That didn't work.")
-            return false
+            log.error("\(action.title, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            let message = (error as? ZimmerError)?.userMessage ?? "That didn't work."
+            dashboard?.alert(message)
+            await speech.speak(message)
         }
     }
 }

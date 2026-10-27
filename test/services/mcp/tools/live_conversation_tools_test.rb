@@ -49,6 +49,7 @@ class Mcp::Tools::LiveConversationToolsTest < ActiveSupport::TestCase
     assert_includes result, "**user** (spoken): Spin up a docs fix."
     assert_includes result, "**tool** `zimmer` {\"tool\":\"quick_router\"}"
     assert_includes result, "Started session #77"
+    assert_includes result, "**Sessions it has touched:** #77", "the sessions the tool calls named, as the REST route lists them"
     assert_includes result, "**Mode:** voice (voice on)"
     assert_includes result, "**Mode styles:** text from Zimmer's default, voice from the agent root"
 
