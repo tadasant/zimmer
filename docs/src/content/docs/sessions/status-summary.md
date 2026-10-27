@@ -53,6 +53,17 @@ finding a sentence boundary in text full of markdown links and URLs is guesswork
 cached, so a blurb generated without this rule keeps its shape until the session moves or someone
 presses Regenerate.
 
+## One machine-read line at the end
+
+Both prompts end with a third shared rule, `SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE`:
+after the blurb, one final line of its own in the shape
+`carplay-fit: <carplay_ok|laptop_only>; reason: <…>`, saying whether the recommendation sentence can
+be acted on by voice from a car. `StatusSummaryAnswer.clean` strips it before the blurb is stored, so
+no reader sees it, and `StatusSummaryAnswer.apply_carplay_fit` writes it onto the session as an
+`auto` [CarPlay fit](/sessions/carplay-fit/) stamped at the blurb's own line count, so the two go
+stale together. A blurb that arrives without the line is stored exactly as before; the only thing
+missing is the mark.
+
 ## Link, don't explain
 
 The summary is deliberately short and deliberately link-heavy. The rule the generating agent is given

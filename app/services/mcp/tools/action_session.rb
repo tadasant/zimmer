@@ -19,7 +19,7 @@ module Mcp
       tool_name "action_session"
 
       SESSION_ID_DESC = 'Session ID (numeric) or slug (string). Required for most actions. Not required for "refresh_all" and "bulk_archive".'
-      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "set_memory_boost", "clear_memory_boost", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "set_visibility", "remove_uncle", "bulk_archive"'
+      ACTION_DESC = 'Action to perform: "follow_up", "pause", "restart", "start_now", "force_start", "archive", "unarchive", "change_mcp_servers", "change_model", "change_effort", "change_skills", "change_hooks", "change_plugins", "change_goal", "change_auto_compact_window", "set_memory_boost", "clear_memory_boost", "change_scheduling_class", "change_precedence", "pause_into_spot_queue", "toggle_push_notifications", "set_heartbeat", "fork", "regenerate_status_summary", "refresh", "refresh_all", "update_notes", "update_title", "set_visibility", "set_carplay_fit", "remove_uncle", "bulk_archive"'
 
       SCHEDULING_CLASS_DESC = 'Required for "change_scheduling_class" action. "priority" (starts whenever it is ready) or "spot" (starts only while a Claude Code account is under both quota targets and a session slot is free, and then in precedence order). Send null to clear the choice and go back to deriving the class from the session\'s origin. This moves ONE session: use it to release a spot session held behind the quota gate without touching the trigger that spawned it or the policy every other session of its genesis shares. Demoting to "spot" without also passing "precedence" or "place" leaves the session wherever its existing rank puts it, which is usually the bottom — pass one of them when you mean it to be worked on soon, and "place": "top_of_spot" when you mean it to be worked on first.'
       PROMPT_DESC = 'Required for "follow_up" action. The prompt to send to the agent. Not used for other actions.'
@@ -61,6 +61,10 @@ module Mcp
 
       TIMEZONE_DESC = 'Optional for "set_visibility": the IANA timezone name (e.g. "America/New_York") that "snoozed_until" is expressed in. Defaults to "UTC". Send the wall-clock time the human means plus their zone, rather than converting to UTC yourself.'
 
+      CARPLAY_FIT_DESC = 'Required for "set_carplay_fit". "carplay_ok" when what the session needs next from the human can be done by voice from a car — a yes or no, a merge decision the status summary already frames, a short reply, or nothing at all. "laptop_only" when it needs a screen or a keyboard — a credential to paste, a console to click through, something to run on their own machine, a long document or diff to read. "clear" removes the mark. Presentation and triage only: it changes which rows a driver asks for, never when anything runs.'
+
+      CARPLAY_FIT_REASON_DESC = 'Optional for "set_carplay_fit": what kind of human action the session is waiting on. One of "decision", "short_answer", "long_read", "manual_steps", "credential", "local_device", "nothing_needed".'
+
       PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
 
       PLACE_DESC = PrecedenceDocs::PLACE
@@ -99,6 +103,7 @@ module Mcp
         update_notes
         update_title
         set_visibility
+        set_carplay_fit
         remove_uncle
         bulk_archive
       ].freeze
@@ -195,6 +200,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
+        - **set_carplay_fit**: Mark whether what a session needs next from the human can be done BY VOICE, FROM A CAR (requires "carplay_fit": "carplay_ok", "laptop_only" or "clear"; optional "carplay_fit_reason"). Zimmer writes an `auto` mark itself every time a session comes to rest, from the same fork that writes its status summary, so most rows are already marked; set it by hand when a human tells you, or when you have read a summary and the auto mark is missing, stale or wrong. Provenance is taken from this connection — a session-stamped connection writes a `session` mark, any other an `assistant` one — and a standing `human` mark at the same transcript position outranks both, in which case the call reports that it kept the human's mark rather than overwriting it. A mark goes stale on its own once the session says anything new, and the next rest re-derives it. **Presentation and triage only:** it changes which rows `get_user_view` and `quick_search_sessions` return for a `carplay_fit` filter and nothing about scheduling, precedence or execution.
         - **remove_uncle**: Detach a session recorded as an additional senior ("uncle") of this one (requires "uncle_session_id"). An uncle edge is written as a SIDE EFFECT of a follow-up or an interrupt, from an `acting_session_id` the caller declares about itself and nothing verifies — so one stale or mistyped id permanently attaches the wrong session as a senior, and because the hierarchy is the scope human messages are gathered over, it permanently widens what context both sessions carry. This is the way back. "session_id" is the JUNIOR (the session whose hierarchy grew) and "uncle_session_id" is the senior being detached; naming the pair the wrong way round is refused with the direction that does exist, rather than removing the opposite claim. It removes exactly that one edge — `parent_session_id` is never touched, no other edge is rewritten — and is recorded on BOTH sessions' timelines with when the edge was written, what entry point wrote it, and who removed it. A non-existent edge is an error rather than a silent success.
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages, or with an agent turn in flight, are reported as errors and left alone unless "force" is set for the batch.
 
@@ -208,6 +214,7 @@ module Mcp
         - Organize sessions (archive, unarchive, bulk_archive, set_visibility, update_notes, update_title, toggle_push_notifications)
         - Undo a lineage edge written from a wrong acting_session_id (remove_uncle)
         - Tidy a human's dashboard without touching their work (set_visibility)
+        - Mark a session as something a driver can act on by voice, or as laptop-only, after reading its summary (set_carplay_fit)
         - Reconfigure session capabilities (MCP servers, skills, hooks, plugins, model, context window)
         - Set or clear a session's goal
       DESC
@@ -250,6 +257,8 @@ module Mcp
           visibility: { type: "string", enum: SessionVisibility::VISIBILITIES, description: VISIBILITY_DESC },
           snoozed_until: { type: "string", description: SNOOZED_UNTIL_DESC },
           timezone: { type: "string", description: TIMEZONE_DESC },
+          carplay_fit: { type: "string", enum: SessionCarplayFit::FITS + [ "clear" ], description: CARPLAY_FIT_DESC },
+          carplay_fit_reason: { type: "string", enum: SessionCarplayFit::REASONS, description: CARPLAY_FIT_REASON_DESC },
           uncle_session_id: { type: [ "number", "string" ], description: UNCLE_SESSION_ID_DESC },
           acting_session_id: { type: [ "number", "string" ], description: ACTING_SESSION_ID_DESC },
           expected_victim_id: { type: [ "number", "string" ], description: EXPECTED_VICTIM_ID_DESC },
@@ -367,6 +376,7 @@ module Mcp
         when "update_notes" then update_notes(find_session(args["session_id"]), args)
         when "update_title" then update_title(find_session(args["session_id"]), args)
         when "set_visibility" then set_visibility(find_session(args["session_id"]), args)
+        when "set_carplay_fit" then set_carplay_fit(find_session(args["session_id"]), args)
         when "remove_uncle" then remove_uncle(find_session(args["session_id"]), args)
         when "bulk_archive" then bulk_archive(args)
         end
@@ -1389,6 +1399,44 @@ module Mcp
         ].compact.join("\n")
       rescue Sessions::SetVisibility::Error => e
         raise ToolError, e.message
+      end
+
+      # CarPlay fit. Five columns, one update, through the same service the web
+      # UI, the REST API and the status-summary harvest use, so every writer is
+      # held to the same precedence rule. Provenance comes from the connection,
+      # never from the request body: a connection stamped with its own session
+      # (RuntimeConfigPostProcessor writes `session_id` onto the server URL it
+      # injects into a session's runtime config) is that session speaking about
+      # itself; anything else — an OAuth connector, the Live Mode bridge, an
+      # API-key client — is an assistant's judgement.
+      def set_carplay_fit(session, args)
+        result = Sessions::SetCarplayFit.call(
+          session: session,
+          fit: args["carplay_fit"],
+          reason: args["carplay_fit_reason"],
+          source: carplay_fit_source
+        )
+        session.reload
+
+        lines = [
+          result.applied? ? "## CarPlay Fit Set" : "## CarPlay Fit Kept",
+          "",
+          "- **Session ID:** #{session.id}",
+          "- **Title:** #{session.title}",
+          "- **CarPlay fit:** #{session.carplay_fit_summary || 'untagged'}"
+        ]
+        lines << "- **Not applied:** #{result.message}" unless result.applied?
+        lines << ""
+        lines << "This changed which rows a `carplay_fit` filter returns and nothing else. The session's status, " \
+                 "scheduling class, precedence and any armed wake-up are untouched. The mark goes stale on its " \
+                 "own once the session writes anything new, and the next status summary re-derives it."
+        lines.join("\n")
+      rescue Sessions::SetCarplayFit::Error => e
+        raise ToolError, e.message
+      end
+
+      def carplay_fit_source
+        context.self_session_id.present? ? SessionCarplayFit::SOURCE_SESSION : SessionCarplayFit::SOURCE_ASSISTANT
       end
 
       # Detach a mistaken uncle edge — the only action on this tool that UNDOES

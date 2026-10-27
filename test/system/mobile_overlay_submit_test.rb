@@ -205,6 +205,8 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
   # be fooled by one but does see the off-canvas overlays the layout parks to the
   # right of the viewport on purpose (the notes drawer, the chat bubble), which is
   # why those are excluded by their own transform class rather than by position.
+  # A horizontal scroll strip (`overflow-x-auto` — the board's view switcher) is
+  # excluded too: its overflow is reachable by scrolling, which is its purpose.
   test "the deferred panels fit a phone, as skeletons and as content" do
     session = Session.create!(
       prompt: "Initial prompt",
@@ -232,6 +234,62 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("deferred panel content")
   end
 
+  # The CarPlay-fit chip and its control are on the User view row and on the
+  # phone's bottom sheet; the popover is sized for a laptop column, which is
+  # exactly the kind of width that reaches past a phone's right edge.
+  test "the CarPlay fit chip and control fit a phone, on the board and the session page" do
+    session = Session.create!(
+      prompt: "Initial prompt",
+      title: "Paste the Grafana and 1Password secrets into the strad console",
+      status: :needs_input,
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      carplay_fit: SessionCarplayFit::LAPTOP_ONLY,
+      carplay_fit_reason: SessionCarplayFit::REASON_CREDENTIAL,
+      carplay_fit_source: SessionCarplayFit::SOURCE_AUTO,
+      carplay_fit_line_count: 0,
+      carplay_fit_set_at: Time.current
+    )
+
+    visit root_path(view: SessionsController::VIEW_MODE_USER)
+    assert_selector "#user_view_row_#{session.id} [data-carplay-fit='laptop_only']", text: "Laptop only"
+    assert_no_horizontal_overflow("User view row with the CarPlay fit chip")
+
+    find("#user_view_row_#{session.id} details[data-carplay-fit-menu] summary").click
+    assert_selector "#user_view_row_#{session.id} button[name='carplay_fit'][value='carplay_ok']", visible: true
+    assert_no_horizontal_overflow("User view row with the CarPlay fit popover open")
+    # The popover hangs off a control on the LEFT of the row, so the edge it can
+    # fall off at 375px is the left one, which the overflow probes never measure.
+    popover_left = page.evaluate_script(
+      "document.querySelector('#user_view_row_#{session.id} details[data-carplay-fit-menu] form').getBoundingClientRect().left"
+    )
+    assert_operator popover_left, :>=, 0, "the CarPlay fit popover hangs off the left edge at #{MOBILE_WIDTH}px"
+    page.execute_script(
+      "document.querySelector('#user_view_row_#{session.id} details[data-carplay-fit-menu]').scrollIntoView({ block: 'start' })"
+    )
+    page.save_screenshot("tmp/screenshots/carplay-fit-board-375.png")
+
+    visit session_path(session)
+    # The header's control is `hidden md:block`; the phone reaches it from the
+    # bottom sheet, whose disclosure expands inline. The sheet is slid in the way
+    # the joystick controller's fallback does it, so the item is measured on
+    # screen rather than off-canvas.
+    find("[data-joystick-menu-target='sheet'] details[data-carplay-fit-menu] summary", visible: :all)
+    page.execute_script(<<~JS)
+      const sheet = document.querySelector("[data-joystick-menu-target='sheet']");
+      sheet.classList.remove("translate-y-full", "opacity-0");
+      sheet.classList.add("translate-y-0", "opacity-100");
+      document.querySelector("[data-joystick-menu-target='sheetOverlay']").classList.remove("hidden");
+      const item = sheet.querySelector("details[data-carplay-fit-menu]");
+      item.open = true;
+      item.scrollIntoView({ block: "center" });
+    JS
+    assert_selector "[data-joystick-menu-target='sheet'] button[name='carplay_fit'][value='laptop_only']", visible: true
+    assert_no_horizontal_overflow("session page with the CarPlay fit sheet item open")
+    page.save_screenshot("tmp/screenshots/carplay-fit-session-375.png")
+  end
+
   private
 
   def assert_no_horizontal_overflow(label)
@@ -245,6 +303,7 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
         return Array.from(document.querySelectorAll("*"))
           .filter((el) => el.getBoundingClientRect().right > limit + 1)
           .filter((el) => !el.closest('[class*="translate-x-full"]'))
+          .filter((el) => !el.closest('.overflow-x-auto'))
           .slice(0, 20)
           .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value} @ ${Math.round(el.getBoundingClientRect().right)}px`);
       })()

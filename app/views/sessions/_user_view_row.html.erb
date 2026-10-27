@@ -67,6 +67,12 @@
       <% unless agent_session.board_visible? %>
         <span class="shrink-0"><%= render "sessions/visibility_badge", agent_session: agent_session %></span>
       <% end %>
+
+      <%# CarPlay fit — can the next human action be done by voice from a car?
+          Shown whenever a mark exists; visual only. %>
+      <% if agent_session.carplay_fit.present? %>
+        <span class="shrink-0"><%= render "sessions/carplay_fit_badge", agent_session: agent_session %></span>
+      <% end %>
     </div>
 
     <%# ---- The generated status ----
@@ -145,6 +151,12 @@
           popover positions against it. %>
       <span class="relative shrink-0">
         <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :button, compact: true %>
+      </span>
+
+      <%# CarPlay fit. Presentation only, like Snooze: a person's judgement of
+          whether this row can be acted on by voice from a car. %>
+      <span class="relative shrink-0">
+        <%= render "sessions/carplay_fit_menu", agent_session: agent_session, variant: :button, compact: true %>
       </span>
 
       <%# Trash. Posts to the same #archive action every other Trash affordance in

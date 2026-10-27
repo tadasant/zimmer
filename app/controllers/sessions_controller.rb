@@ -106,6 +106,9 @@ class SessionsController < ApplicationController
   VISIBILITY_OFF_BOARD = SessionVisibility::FILTER_OFF_BOARD
   VISIBILITY_ALL = SessionVisibility::FILTER_ALL
   VISIBILITY_FILTER_OPTIONS = SessionVisibility::FILTER_OPTIONS
+  # The driver's triage axis. "" is the dashboard's default: unfiltered, every
+  # row regardless of mark, exactly as the REST and MCP listings default.
+  CARPLAY_FIT_FILTER_OPTIONS = SessionCarplayFit::FILTER_OPTIONS
 
   # Cookie that persists an explicit Filters choice (statuses + scheduling class),
   # so the selection survives a reload and a bare visit to "/" rather than snapping
@@ -1961,6 +1964,34 @@ class SessionsController < ApplicationController
     end
   end
 
+  # CarPlay fit: whether what the session needs next from a human can be done
+  # by voice from a car. A person's mark, written from the web UI, so it is
+  # recorded as `human` — the source that outranks every other writer at the
+  # same transcript position. Presentation and triage only, like visibility:
+  # see Sessions::SetCarplayFit.
+  def update_carplay_fit
+    @session = find_session
+
+    result = Sessions::SetCarplayFit.call(
+      session: @session,
+      fit: params[:carplay_fit],
+      reason: params[:carplay_fit_reason],
+      source: SessionCarplayFit::SOURCE_HUMAN
+    )
+
+    respond_to do |format|
+      format.json { render json: carplay_fit_payload(@session.reload, result) }
+      format.html do
+        redirect_back fallback_location: session_path(@session), notice: carplay_fit_notice(@session.reload)
+      end
+    end
+  rescue Sessions::SetCarplayFit::Error, ActiveRecord::RecordInvalid => e
+    respond_to do |format|
+      format.json { render json: { success: false, error: e.message }, status: :unprocessable_entity }
+      format.html { redirect_back fallback_location: session_path(@session), alert: e.message }
+    end
+  end
+
   # Side-effect-only endpoint: stamp the session with a fresh user-activity
   # marker so PollBackoff resets the GitHub-poll cadence back to the fast
   # (every-cron-tick) end. Triggered by a non-blocking fetch from the UI when
@@ -2662,6 +2693,10 @@ class SessionsController < ApplicationController
     @off_board_count = sessions.board_hidden.count
     sessions = board_scope.call(sessions)
 
+    # The driver's axis, applied only when the Filters form asked for one bucket.
+    # It never reorders: a laptop-only row keeps its place for the laptop.
+    sessions = sessions.carplay_fit_filter(@carplay_fit_filter) if @carplay_fit_filter.present?
+
     # The Ranked view: the spot queue in the order it will actually be worked,
     # with the priority sessions that outrank all of it stacked above. Two
     # sections rather than one list, because the two halves answer different
@@ -2789,11 +2824,13 @@ class SessionsController < ApplicationController
       @status_filter = sanitized_status_filter(params[:status])
       @priority_class_filter = sanitized_priority_class(params[:priority_class])
       @visibility_filter = sanitized_visibility_filter(params[:visibility])
+      @carplay_fit_filter = sanitized_carplay_fit_filter(params[:carplay_fit])
       cookies[FILTERS_COOKIE] = {
         value: {
           "status" => @status_filter,
           "priority_class" => @priority_class_filter,
-          "visibility" => @visibility_filter
+          "visibility" => @visibility_filter,
+          "carplay_fit" => @carplay_fit_filter
         }.to_json,
         expires: 1.year
       }
@@ -2807,12 +2844,14 @@ class SessionsController < ApplicationController
       # sanitizes to the default rather than to nothing — an operator who never
       # asked to see hidden sessions keeps the board they had.
       @visibility_filter = sanitized_visibility_filter(persisted["visibility"])
+      @carplay_fit_filter = sanitized_carplay_fit_filter(persisted["carplay_fit"])
       return
     end
 
     @status_filter = default_status_filter.dup
     @priority_class_filter = sanitized_priority_class(params[:priority_class])
     @visibility_filter = sanitized_visibility_filter(params[:visibility])
+    @carplay_fit_filter = sanitized_carplay_fit_filter(params[:carplay_fit])
   end
 
   # One session's rank, as the ranked view's JavaScript needs it back.
@@ -2882,6 +2921,13 @@ class SessionsController < ApplicationController
   def sanitized_visibility_filter(value)
     choice = value.to_s.strip
     VISIBILITY_FILTER_OPTIONS.include?(choice) ? choice : VISIBILITY_ON_BOARD
+  end
+
+  # CarPlay-fit filter. Anything unrecognized — including a cookie written before
+  # this control existed — is the unfiltered board, which is the default.
+  def sanitized_carplay_fit_filter(value)
+    choice = value.to_s.strip
+    CARPLAY_FIT_FILTER_OPTIONS.include?(choice) ? choice : ""
   end
 
   # Coarse server-side mobile detection used only to pick the default view mode.
@@ -3370,6 +3416,27 @@ class SessionsController < ApplicationController
       snoozed_until: session.snoozed_until&.iso8601,
       summary: session.visibility_summary
     }
+  end
+
+  # The JSON a CarPlay-fit control reads back.
+  def carplay_fit_payload(session, result)
+    {
+      success: true,
+      applied: result.applied?,
+      message: result.message,
+      session_id: session.id,
+      carplay_fit: session.carplay_fit,
+      effective_carplay_fit: session.effective_carplay_fit,
+      carplay_fit_reason: session.carplay_fit_reason,
+      carplay_fit_source: session.carplay_fit_source,
+      summary: session.carplay_fit_summary
+    }
+  end
+
+  def carplay_fit_notice(session)
+    return "Session #{session.id}'s CarPlay fit cleared." if session.carplay_fit.blank?
+
+    "Session #{session.id} marked #{session.carplay_fit_label}."
   end
 
   def visibility_notice(session)

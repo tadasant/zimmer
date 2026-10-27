@@ -138,6 +138,34 @@ class SessionStatusSummaryGenerator
       three sentences in all. Not four.
   RULE
 
+  # The CarPlay-fit trailer, carried by BOTH prompts for the same reason the two
+  # rules above are. The recommendation sentence already says what the reader
+  # must do; this asks the same model, in the same turn, to say whether that can
+  # be done by voice from a car — the one judgement a driver triaging the board
+  # needs and cannot make from the row. It costs no second inference: the fork
+  # is already holding the conversation that decides it.
+  #
+  # The line is machine-read (StatusSummaryAnswer.carplay_fit) and stripped from
+  # the stored blurb (StatusSummaryAnswer.clean), so the reader never sees it.
+  # A missing or malformed trailer costs nothing but the mark: the blurb is
+  # stored as before and the session reads as untagged. The mark it writes is an
+  # `auto` one, which any human, assistant or session mark at the same
+  # transcript position outranks (Sessions::SetCarplayFit).
+  CARPLAY_FIT_TRAILER_RULE = <<~RULE.strip
+    - After the summary, end with ONE final line of its own, exactly in this
+      shape and nothing else on it:
+      `carplay-fit: <carplay_ok|laptop_only>; reason: <#{SessionCarplayFit::REASONS.join('|')}>`
+      It says whether the reader can act on your first sentence BY VOICE, FROM A
+      CAR. `carplay_ok` when the action is a yes or no, a merge decision your
+      sentence already frames, a short reply, or nothing at all (reason
+      `decision`, `short_answer` or `nothing_needed`). `laptop_only` when it
+      needs a screen or a keyboard: a credential to paste or mint
+      (`credential`), a console or checklist to click through (`manual_steps`),
+      something to run on their own machine or phone (`local_device`), or a
+      long document or diff to read (`long_read`). This line is parsed and
+      removed; nobody reads it.
+  RULE
+
   # --- The pool-independent path (see #run_headless) --------------------------
 
   # Wall-clock budget for the one-shot completion. Generous enough for a long
@@ -669,7 +697,8 @@ class SessionStatusSummaryGenerator
   # agent could. That is the trade, and it is the right way round — a slightly
   # terser blurb that is THERE beats a richer one that never arrives.
   def run_headless(summary, line_count)
-    answer = StatusSummaryAnswer.clean(headless_answer)
+    raw = headless_answer
+    answer = StatusSummaryAnswer.clean(raw)
 
     if answer.blank?
       record_failure(headless_failure_reason)
@@ -679,6 +708,10 @@ class SessionStatusSummaryGenerator
     unless publish(summary, answer, line_count)
       return Result.new(outcome: :pending, message: "A newer summary generation took over.")
     end
+
+    # The same model that wrote the recommendation sentence said whether it can
+    # be acted on from a car; stamp that at the line count the blurb carries.
+    StatusSummaryAnswer.apply_carplay_fit(session, raw, line_count: line_count)
 
     @logger.info("Status summary written without a fork", transcript_line_count: line_count)
     note_headless_generation
@@ -855,6 +888,7 @@ class SessionStatusSummaryGenerator
 
       Rules:
       #{RECOMMENDATION_FIRST_RULE}
+      #{CARPLAY_FIT_TRAILER_RULE}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no
@@ -868,7 +902,7 @@ class SessionStatusSummaryGenerator
         linked by what it is ("PR #123", "the failing CI run").
       - Another Zimmer session: #{AppUrl.base_url}/sessions/ID.
       #{conversation_section(excerpt)}
-      Reply with the summary text and nothing else.
+      Reply with the summary text, then the carplay-fit line, and nothing else.
     PROMPT
   end
 
@@ -886,6 +920,7 @@ class SessionStatusSummaryGenerator
 
       Rules:
       #{RECOMMENDATION_FIRST_RULE}
+      #{CARPLAY_FIT_TRAILER_RULE}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no
@@ -904,7 +939,7 @@ class SessionStatusSummaryGenerator
         linked by what it is ("PR #123", "the failing CI run").
       - Another Zimmer session: #{AppUrl.base_url}/sessions/ID.
       #{inline_transcript_for(fork)}
-      Reply with the summary text and nothing else.
+      Reply with the summary text, then the carplay-fit line, and nothing else.
     PROMPT
   end
 

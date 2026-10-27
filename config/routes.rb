@@ -333,6 +333,7 @@ Rails.application.routes.draw do
           get :conversation
           patch :notes, action: :update_notes
           patch :visibility, action: :update_visibility
+          patch :carplay_fit, action: :update_carplay_fit
           patch :heartbeat, action: :update_heartbeat
             end
 
@@ -769,6 +770,8 @@ Rails.application.routes.draw do
       # Board visibility: hide / snooze / restore a card. Presentation only — it
       # does not sleep the session, and no route here does.
       patch :update_visibility
+      # CarPlay fit: the driver's triage axis. Presentation only, like visibility.
+      patch :update_carplay_fit
       patch :toggle_push_notifications
       patch :toggle_heartbeat
       patch :update_heartbeat_interval

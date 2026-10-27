@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_20_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -926,6 +926,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_20_010000) do
     t.datetime "archived_at"
     t.integer "auto_compact_window", default: 1000000, null: false
     t.string "branch", default: "main", null: false
+    t.string "carplay_fit"
+    t.integer "carplay_fit_line_count"
+    t.string "carplay_fit_reason"
+    t.datetime "carplay_fit_set_at"
+    t.string "carplay_fit_source"
     t.jsonb "catalog_hooks", default: []
     t.jsonb "catalog_plugins", default: []
     t.jsonb "catalog_skills", default: []
@@ -984,6 +989,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_20_010000) do
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
+    t.index ["carplay_fit"], name: "index_sessions_on_carplay_fit", where: "(carplay_fit IS NOT NULL)"
     t.index ["category_id"], name: "index_sessions_on_category_id"
     t.index ["created_at"], name: "index_sessions_on_created_at"
     t.index ["execution_provider"], name: "index_sessions_on_execution_provider"

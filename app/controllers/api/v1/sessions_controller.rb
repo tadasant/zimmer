@@ -67,7 +67,7 @@ class Api::V1::SessionsController < Api::BaseController
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
   # Before the lookup, so a refusal says nothing about which ids exist.
   before_action :require_a_person_on_the_app, only: [ :authorize_merge ]
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :update_visibility, :update_heartbeat, :authorize_merge ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :update_visibility, :update_carplay_fit, :update_heartbeat, :authorize_merge ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -87,6 +87,9 @@ class Api::V1::SessionsController < Api::BaseController
   #     ones. OMITTED BY DEFAULT — this listing is unfiltered on that axis, so an
   #     agent checking whether work is already in flight is never shown fewer
   #     sessions because a human tidied their board.
+  #   - carplay_fit: the driver's triage axis — "carplay_ok", "laptop_only",
+  #     "untagged" or "not_laptop_only" (carplay_ok plus untagged). OMITTED BY
+  #     DEFAULT for the same reason; a stale mark counts as untagged.
   #   - view: the dashboard's board view, so a client orders the same rows the web UI
   #     does. "created_desc" (the default) and "last_touched" (Session::LAST_TOUCHED_ORDER)
   #     page as usual. "user" and "ranked" are Sessions::UserView — priority above spot,
@@ -1325,6 +1328,36 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Visibility update failed", [ e.message ], status: :unprocessable_entity)
   end
 
+  # PATCH /api/v1/sessions/:id/carplay_fit
+  # Mark whether what the session needs next from a human can be done by voice
+  # from a car. Presentation and triage only — it changes which rows a
+  # `carplay_fit` listing filter returns and nothing about scheduling.
+  #
+  # Params:
+  #   - carplay_fit: "carplay_ok" | "laptop_only" | "clear" (required)
+  #   - carplay_fit_reason: one of SessionCarplayFit::REASONS (optional)
+  #
+  # Provenance is taken from the credential, never from the body: the iOS app
+  # acting as its person writes a `human` mark; a call that names
+  # `acting_session_id` writes a `session` mark; any other API-key call writes an
+  # `assistant` one. A standing mark that outranks the caller's at the same
+  # transcript position is kept, and the response says so in `carplay_fit_result`.
+  def update_carplay_fit
+    result = Sessions::SetCarplayFit.call(
+      session: @session,
+      fit: params[:carplay_fit],
+      reason: params[:carplay_fit_reason],
+      source: carplay_fit_source
+    )
+
+    render json: {
+      session: session_json(@session.reload),
+      carplay_fit_result: { applied: result.applied?, message: result.message }
+    }
+  rescue Sessions::SetCarplayFit::Error => e
+    render_api_error("CarPlay fit update failed", [ e.message ], status: :unprocessable_entity)
+  end
+
   # PATCH /api/v1/sessions/:id/heartbeat
   # Enable/disable the per-session heartbeat and/or set its interval. Both params
   # are optional; omitting a param leaves that setting unchanged.
@@ -1762,6 +1795,7 @@ class Api::V1::SessionsController < Api::BaseController
     scope = filter_sessions_by_agent_root(scope, agent_root) if agent_root.present?
 
     scope = apply_visibility_filter(scope)
+    scope = scope.carplay_fit_filter(params[:carplay_fit]) if SessionCarplayFit::FILTER_OPTIONS.include?(params[:carplay_fit].to_s)
     scope = scope.where.not(status: :archived) unless params[:show_archived] == "true" || statuses.include?("archived")
     scope
   end
@@ -1797,6 +1831,15 @@ class Api::V1::SessionsController < Api::BaseController
 
   def set_session
     @session = Session.locate!(params[:id])
+  end
+
+  # Who a CarPlay-fit write over REST is from, read off the credential and the
+  # one body field that names a session, in that order.
+  def carplay_fit_source
+    return SessionCarplayFit::SOURCE_HUMAN if native_app_request?
+    return SessionCarplayFit::SOURCE_SESSION if params[:acting_session_id].to_s.strip.match?(/\A\d+\z/)
+
+    SessionCarplayFit::SOURCE_ASSISTANT
   end
 
   # `agent_root` is permitted here alongside the rest of the create payload, but

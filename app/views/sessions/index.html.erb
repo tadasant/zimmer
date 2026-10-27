@@ -413,6 +413,37 @@
             </p>
           </fieldset>
 
+          <!-- CarPlay fit -->
+          <%# The driver's triage axis: whether what a session needs next from a
+              human can be done by voice from a car. Unfiltered by default. Like
+              visibility it narrows what is DRAWN and never reorders anything. %>
+          <fieldset>
+            <legend class="flex items-center gap-2 text-sm text-gray-600 mb-1.5">
+              <span>CarPlay fit</span>
+            </legend>
+            <div class="inline-flex flex-wrap rounded-lg bg-gray-100 p-1 gap-1" role="group" aria-label="Filter by CarPlay fit">
+              <% [ [ "", "All" ],
+                   [ SessionCarplayFit::FILTER_NOT_LAPTOP_ONLY, "Not laptop-only" ],
+                   [ SessionCarplayFit::FILTER_CARPLAY_OK, "CarPlay-ok" ],
+                   [ SessionCarplayFit::FILTER_LAPTOP_ONLY, "Laptop only" ],
+                   [ SessionCarplayFit::FILTER_UNTAGGED, "Untagged" ] ].each do |(value, label)| %>
+                <% active = @carplay_fit_filter.to_s == value %>
+                <% dom_id = "carplay-fit-filter-#{value.presence&.dasherize || 'all'}" %>
+                <label for="<%= dom_id %>"
+                       class="<%= active ? 'bg-white text-slate-800 shadow-sm' : 'text-gray-600 hover:text-gray-900 hover:bg-white/60' %> inline-flex items-center gap-1.5 cursor-pointer px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors">
+                  <%= radio_button_tag :carplay_fit, value, active,
+                        id: dom_id,
+                        class: "h-3.5 w-3.5 border-gray-300 text-slate-700 focus:ring-slate-500" %>
+                  <%= label %>
+                </label>
+              <% end %>
+            </div>
+            <p class="mt-1.5 text-xs text-gray-400">
+              Whether the next thing a session needs from you can be done by voice from a car. Zimmer judges it
+              from the status summary each time a session comes to rest; your own mark outranks that.
+            </p>
+          </fieldset>
+
           <!-- Advanced -->
           <% advanced_active = @search_contents || @agent_root_filter.present? || @genesis_filter.present? %>
           <details class="text-sm"<%= " open" if advanced_active %>>

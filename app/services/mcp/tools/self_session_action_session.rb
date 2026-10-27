@@ -19,9 +19,15 @@ module Mcp
       # `rest_in_needs_input` is the other self-only action. It is a statement
       # about the turn the caller is in — "this one ends with a human" — and only
       # the session in that turn can make it truthfully.
-      ACTIONS = %w[update_notes update_title set_heartbeat pause_into_spot_queue rest_in_needs_input message_parent archive].freeze
+      #
+      # `set_carplay_fit` is here where `set_visibility` is not. Tidying a human's
+      # board is not self-management, but "what I need from the human next, and
+      # can it be done by voice" is exactly the thing a session knows about itself
+      # — the `open-pr` skill holding a PR for a merge decision is the obvious
+      # caller. The mark it writes is a `session` one, which a human's outranks.
+      ACTIONS = %w[update_notes update_title set_heartbeat set_carplay_fit pause_into_spot_queue rest_in_needs_input message_parent archive].freeze
 
-      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "pause_into_spot_queue", "rest_in_needs_input", "message_parent", "archive"'
+      SELF_ACTION_DESC = 'Action to perform: "update_notes", "update_title", "set_heartbeat", "set_carplay_fit", "pause_into_spot_queue", "rest_in_needs_input", "message_parent", "archive"'
 
       SELF_QUEUE_PROMPT_DESC = 'Optional for "pause_into_spot_queue": what you want to be resumed with when the queue reaches you, in place of the default nudge. Write it to your future self — you will read it cold, with no memory of this turn beyond the transcript.'
 
@@ -45,6 +51,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_heartbeat**: Toggle this session's own heartbeat and/or set its interval (provide "enabled" and/or "interval_seconds"). When the heartbeat is enabled and this session sits in needs_input, a recurring nudge prompts it to keep working toward its goal. If you are genuinely blocked or done, set "enabled" to false to stop the nudges.
+        - **set_carplay_fit**: Say whether what you need next from the human can be done BY VOICE, FROM A CAR (requires "carplay_fit": "carplay_ok", "laptop_only" or "clear"; optional "carplay_fit_reason"). Set it when you come to rest needing a person: "carplay_ok" for a yes or no, a merge decision your final message already frames, or a short reply; "laptop_only" when they need a screen or a keyboard — a credential to paste, a console to click through, something to run on their own machine, a long document or diff to read. Zimmer also derives this from your status summary at every rest; yours is a `session` mark that outranks that `auto` one at the same transcript position, and a human's outranks yours. Presentation and triage only — it changes which rows a driver is shown and nothing about scheduling.
         - **rest_in_needs_input**: Make the turn you are in end in `needs_input` — on the human's homepage action queue — instead of going back to sleep on a wake you have armed. Reach for it whenever your final message asks a human for something: a decision, an approval, an answer, a merge. Without it, a turn in which you arm a wake ends asleep in `waiting`, and while a `wake_me_up_later` backstop is armed so does every later turn — including one that answered a human's follow-up — so the human does not see you until the wake fires, possibly hours later. The hand-back lasts until you arm a new wake: a later follow-up, or a recovery after an interrupted turn, does not put you back to sleep on the old one. Your wakes stay armed by default, so whichever comes first, the human's reply or a wake, resumes you ("I need you, and wake me if the child finishes first"). Pass "cancel_wakes": true to also cancel every one-time wake armed on yourself, when the wait no longer has a reason. Do NOT arm a short dummy wake to destroy a backstop; this is the supported way. Call it LAST in the turn — a wake armed after it puts you back to sleep — then end the turn. It does not override a spot-queue park or another sleep you asked for without a wake.
         - **message_parent**: Send a message to the session that started this one (requires "message" and "reason"; optional "force_immediate", "unarchive_parent"). You name no target — Zimmer resolves your parent itself, and there is no way to message any other session from here. Reach for it when you were handed a goal you cannot accomplish because of what you ARE rather than what you did: the work belongs to a different agent root ("wrong_scope"), or you were not given an MCP server, credential, or privilege it needs ("missing_tools"). Your parent is the session that chose your scope and your tools, so it is the one that can fix either — tell it what went wrong and what would unblock it, rather than filing an issue or parking in needs_input for a human. A running parent takes the report on its queue and reads it when its turn ends; a parent asleep or waiting takes it now. An archived or failed parent is refused, with the error naming what to do instead.
         - **pause_into_spot_queue**: Put yourself to sleep in the spot queue instead of at a wall-clock time. Use it in place of `wake_me_up_later` whenever the honest answer to "when should I come back" is "whenever there is quota headroom for me" rather than a time you would be inventing — waiting on nothing in particular, or on work that is not yours and has no deadline. You go dormant in "waiting" with NO wake-up trigger, and Zimmer resumes you when a Claude Code account is under both quota targets and a session slot is free, highest precedence first. It also cancels any one-time wake you had armed, and makes this session "spot" if it was "priority" — a priority session cannot sit in the queue. This is NOT the tool for waiting on a specific event or a deadline: `wake_me_up_later` and `wake_me_up_when_session_changes_state` are, and a session parked here is behind however much of the queue outranks it. End your turn after calling it.
@@ -54,6 +61,7 @@ module Mcp
         - Update session notes to record progress or context
         - Set a meaningful session title
         - Turn off this session's heartbeat when blocked or finished (set_heartbeat with enabled=false)
+        - Say whether the thing you are handing to a human can be done by voice from a car (set_carplay_fit)
         - Park yourself in the spot queue when there is nothing to wait FOR, only quota to wait ON
         - Hand back to a human while a wake is armed, so you rest in `needs_input` where they will see you (rest_in_needs_input)
         - Tell the session that started you that it handed you work you cannot do — the wrong agent root, or a missing MCP server or credential (message_parent)
@@ -85,6 +93,8 @@ module Mcp
           title: { type: "string", description: TITLE_DESC },
           enabled: { type: "boolean", description: ENABLED_DESC },
           interval_seconds: { type: "number", description: INTERVAL_SECONDS_DESC },
+          carplay_fit: { type: "string", enum: SessionCarplayFit::FITS + [ "clear" ], description: CARPLAY_FIT_DESC },
+          carplay_fit_reason: { type: "string", enum: SessionCarplayFit::REASONS, description: CARPLAY_FIT_REASON_DESC },
           prompt: { type: "string", description: SELF_QUEUE_PROMPT_DESC },
           cancel_wakes: { type: "boolean", description: SELF_CANCEL_WAKES_DESC },
           # Carried on this narrowed schema deliberately. A session archiving
