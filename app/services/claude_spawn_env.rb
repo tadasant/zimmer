@@ -21,6 +21,12 @@ module ClaudeSpawnEnv
   # #apply_session_scoped_credentials.
   class MissingCredentialsError < StandardError; end
 
+  # The pool has no account holding a usable access token. Unlike a missing
+  # session id, this is a fact about the whole runtime rather than the session:
+  # every spawn would be refused the same way until an account comes back, so
+  # AgentSessionJob parks the turn (AuthOutageParkService) instead of failing it.
+  class PoolUnavailableError < MissingCredentialsError; end
+
   # MCP server startup timeout in milliseconds. 3 minutes allows time for npm
   # package downloads on cold starts; once cached, servers connect in <5s.
   # Shared with Codex and Pi through McpStartupTimeout so the three runtimes
@@ -190,9 +196,11 @@ module ClaudeSpawnEnv
   # a live rollback. It is not one now: nothing writes it, so falling back would
   # point the child at a fossil and every turn would come back "Not logged in ·
   # Please run /login" with nothing in the log to say why. Raising instead makes
-  # ProcessLifecycleManager refuse the spawn: the session fails with
-  # `failure_reason: spawn_failed` and a session-log line naming the account that
-  # came up empty, rather than running and being unable to think. The adapters
+  # ProcessLifecycleManager refuse the spawn with a session-log line naming the
+  # account that came up empty, rather than running and being unable to think.
+  # An empty pool raises PoolUnavailableError, and AgentSessionJob parks that turn
+  # until the pool recovers (AuthOutageParkService); only a missing session id
+  # fails the session. The adapters
   # let this error through unwrapped and the lifecycle manager logs it at .warn,
   # because an empty pool is a configuration state already surfaced on /health
   # and by the needs_reauth alert, not a runtime fault to page on per attempt.
@@ -218,7 +226,7 @@ module ClaudeSpawnEnv
     if token.blank?
       # Nothing is recorded: no process is about to start, so there is no spawn
       # identity to stamp on the session.
-      raise MissingCredentialsError,
+      raise PoolUnavailableError,
         "No Claude account in the pool holds a usable access token#{account ? " (current: #{account.email})" : ""} — " \
         "authenticate one from /inference"
     end

@@ -129,11 +129,18 @@ module Sessions
       # the prompt choice reads `failure_reason` (cleared just below), and the
       # description reads the status `resume!` is about to move off.
       use_initial_prompt = @session.failed_before_initial_prompt? && @session.prompt.present?
+      # A turn whose spawn was refused because the pool had no usable token
+      # (AuthOutageParkService.park_refused_spawn!) carries the prompt it never
+      # delivered. Spot parks are restarted through here by the fleet wake, and
+      # the key is one of the stale ones cleared below, so read it first: sending
+      # a nudge instead would replace a human's message, or start a never-started
+      # session on a conversation holding nothing but the nudge.
+      undelivered = @session.metadata&.dig(AuthOutageParkService::UNDELIVERED_PROMPT_KEY).presence
       description = action_description
 
       @session.logs.create!(
         content: "#{description}: " \
-                 "#{use_initial_prompt ? 're-sending initial prompt' : 'sending automated recovery prompt'}",
+                 "#{restart_prompt_label(use_initial_prompt, undelivered)}",
         level: "info"
       )
 
@@ -153,9 +160,12 @@ module Sessions
       # this transition would raise on before it opened the transaction.
       @session.resume!
 
-      AgentSessionJob.enqueue_with_prompt(
-        @session.id, use_initial_prompt ? @session.prompt : AutomatedPrompts::SYSTEM_RECOVERY
-      )
+      prompt = if use_initial_prompt
+        @session.prompt
+      else
+        undelivered || AutomatedPrompts::SYSTEM_RECOVERY
+      end
+      AgentSessionJob.enqueue_with_prompt(@session.id, prompt)
 
       @session.logs.create!(
         content: "Session resumed - its turn is queued for a worker",
@@ -163,6 +173,13 @@ module Sessions
       )
 
       description
+    end
+
+    def restart_prompt_label(use_initial_prompt, undelivered)
+      return "re-sending initial prompt" if use_initial_prompt
+      return "delivering the turn an empty login pool refused" if undelivered
+
+      "sending automated recovery prompt"
     end
 
     # Named for the state the session was asked from rather than for the `waiting`

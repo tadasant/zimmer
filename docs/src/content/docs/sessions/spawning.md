@@ -1056,9 +1056,9 @@ and `CLAUDE_CODE_OAUTH_TOKEN`, the current account's subscription **access** tok
 ([the DB owns the chain](/auth/harness/#session-scoped-credentials-the-db-owns-the-chain)). The
 child gets no refresh token, so it cannot rotate the subscription chain, and it reads no shared
 credentials file: there is none. When the pool has no current account holding a token the spawn
-**fails** rather than proceeding without one — `ClaudeSpawnEnv::MissingCredentialsError`, reported
-by `ProcessLifecycleManager` as a spawn failure that fails the session with
-`failure_reason: spawn_failed` and names the account that came up empty. The same two variables
+is **refused** rather than proceeding without one — `ClaudeSpawnEnv::PoolUnavailableError` — and the
+session parks until the pool recovers rather than failing
+([When the pool cannot serve a token](/auth/harness/#when-the-pool-cannot-serve-a-token)). The same two variables
 reach every other `claude` process Zimmer starts — print-mode inference for titles and summaries
 goes through `ClaudeHeadlessCredentials` — so no `claude` invocation inherits the worker's own
 environment for its credentials.

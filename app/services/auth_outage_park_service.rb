@@ -91,7 +91,20 @@ class AuthOutageParkService
     auth_outage_parked_at
     auth_outage_pool_recovers_at
     auth_outage_pool_fingerprint
+    auth_outage_undelivered_prompt
   ].freeze
+
+  # The turn a spawn refusal kept from being delivered (.park_refused_spawn!). The
+  # sweep's resume delivers it in place of the generic recovery nudge, so a human's
+  # message, a wake-up's own prompt, or a never-started session's task is what runs
+  # once the pool is back — not "you may have been interrupted, carry on".
+  UNDELIVERED_PROMPT_KEY = "auth_outage_undelivered_prompt"
+
+  # What the park log says when the session was refused at spawn because no
+  # account in the pool held a usable access token (ClaudeSpawnEnv::PoolUnavailableError).
+  REFUSED_SPAWN_ACTION =
+    "No account in the pool holds a usable access token, so the turn was refused before a " \
+      "process started — nothing in this session went wrong."
 
   # Identity fingerprint of the runtime's usable accounts at the moment of the
   # park. Comparing it against the pool's fingerprint now is what tells an
@@ -148,7 +161,12 @@ class AuthOutageParkService
   # @param detail [String, nil] extra context appended to the log line (e.g. the
   #   quota message from the transcript)
   # @return [Boolean] true when the session was parked
-  def park!(reason:, detail: nil)
+  # @param action [String, nil] overrides the sentence that says what happened —
+  #   the default describes the runtime-reported exits, not a refused spawn
+  # @param notify [Boolean] whether to send the per-park push; a refused spawn
+  #   sends PoolOutageAlert's throttled one instead
+  # @param extra_metadata [Hash] keys written in the same statement as the park
+  def park!(reason:, detail: nil, action: nil, notify: true, extra_metadata: {})
     raise ArgumentError, "unknown park reason: #{reason}" unless REASONS.include?(reason)
     return false unless session
 
@@ -170,9 +188,9 @@ class AuthOutageParkService
     # One statement makes the failure atomic in the direction that matters: either
     # the session is marked to sleep AND says why, or it is neither and comes to
     # rest in needs_input, where this method's rescue says it does.
-    return false unless record_park!(reason, recovers_at)
+    return false unless record_park!(reason, recovers_at, extra_metadata)
 
-    announce_park(reason, recovers_at, detail)
+    announce_park(reason, recovers_at, detail, action: action, notify: notify)
 
     true
   rescue ArgumentError
@@ -242,6 +260,114 @@ class AuthOutageParkService
     false
   ensure
     session&.reload
+  end
+
+  # A turn whose spawn was refused because no account in the runtime's pool holds a
+  # usable access token (ClaudeSpawnEnv::PoolUnavailableError) has hit an outage of
+  # the whole pool, not a fault of its own. Park it instead of failing it.
+  #
+  # Called by AgentSessionJob in place of `fail!`, for first turns and resumes alike.
+  # The session is `waiting` at that point — `running` is stamped only once a process
+  # exists (#1040) — so #record_park! records the outage on a session that is already
+  # dormant, and .parked_sessions picks it up. Nothing about the trigger fire that
+  # created it is spent: the session is still alive, and its turn is carried.
+  #
+  # What the turn was going to say is kept in UNDELIVERED_PROMPT_KEY, so the resume
+  # delivers it rather than a bare nudge:
+  #
+  #   * a follow-up that names work of its own (a human's message, a wake-up's
+  #     prompt) is kept verbatim;
+  #   * a never-started session with no such follow-up keeps its own prompt — a nudge
+  #     delivered to a session whose runtime never ran would spawn a fresh
+  #     conversation holding nothing but the nudge;
+  #   * a nudge to a conversation that exists keeps nothing, and the resume sends the
+  #     sweep's own recovery nudge, which is the same thing said with its reason.
+  #
+  # Then the operator is told directly, without a Claude session — see PoolOutageAlert.
+  #
+  # @return [Boolean] true when the session was parked
+  def self.park_refused_spawn!(session, follow_up_prompt: nil, error: nil, log_buffer: nil, logger: nil)
+    return false unless session
+
+    session.reload
+    # Archived or failed while the clone was being set up: nothing to park, and
+    # nothing to page about on its behalf.
+    return false unless session.waiting? || session.running?
+
+    runtime = session.agent_runtime
+    reason = reason_for_unusable_pool(runtime)
+
+    undelivered = undelivered_prompt_for(session, follow_up_prompt)
+    extra = undelivered.present? ? { UNDELIVERED_PROMPT_KEY => undelivered } : {}
+
+    # A session re-entered while `running` has no process whose end would carry
+    # out a `pending_sleep`. Bring it to rest first, so #record_park! sleeps it
+    # outright from needs_input rather than marking a sleep nothing will perform.
+    session.pause! if session.running? && session.may_pause?
+
+    parked = new(session, log_buffer: log_buffer, logger: logger).park!(
+      reason: reason,
+      action: REFUSED_SPAWN_ACTION,
+      detail: error.presence,
+      notify: false,
+      extra_metadata: extra
+    )
+    return false unless parked
+
+    PoolOutageAlert.alert!(session: session, park_reason: reason, runtime: runtime)
+    true
+  rescue => e
+    Rails.logger.warn "[AuthOutageParkService] Could not park refused spawn for session " \
+      "#{session&.id} (#{e.class}): #{e.message}"
+    false
+  end
+
+  # Run the wake sweep now, when something has just made the pool usable — a human
+  # re-authenticating an account (ClaudeLoginDriver#capture!). QuotaResetCheckerJob
+  # is a SingletonSweep, so this cannot overlap the scheduled run; it only brings the
+  # next one forward. Best effort: the scheduled run is the backstop.
+  def self.request_prompt_wake!
+    return false unless parked_sessions.exists?
+
+    QuotaResetCheckerJob.perform_later
+    true
+  rescue => e
+    Rails.logger.warn "[AuthOutageParkService] Could not request an early wake sweep: #{e.class}: #{e.message}"
+    false
+  end
+
+  # Which park a pool with no usable access token gets.
+  #
+  # QUOTA_EXHAUSTED when nothing can serve and something is merely over quota: the
+  # pool comes back on its own when a window resets, QuotaResetCheckerJob restores
+  # the account, and the sweep wakes on `.available` — no human needed. That is the
+  # 2026-10-27 shape: an org-disabled account benched, every other one drained.
+  #
+  # AUTH_UNRECOVERABLE otherwise — accounts that need re-authentication, carry no
+  # token, or were refused. Its wake waits for the pool's credentials to CHANGE
+  # (.pool_fingerprint), which a re-auth, a successful refresh, a restore or a new
+  # account all do, so it does not wake into the same empty pool every sweep.
+  #
+  # @return [String] one of REASONS
+  def self.reason_for_unusable_pool(runtime)
+    return AUTH_UNRECOVERABLE if ClaudeAccount.any_serviceable_for?(runtime)
+    return QUOTA_EXHAUSTED if RuntimeAuthProvider.for(runtime).accounts.quota_exceeded.exists?
+
+    AUTH_UNRECOVERABLE
+  rescue => e
+    Rails.logger.info "[AuthOutageParkService] Could not classify the #{runtime} pool: #{e.message}"
+    AUTH_UNRECOVERABLE
+  end
+
+  # The prompt a refused turn should run when it resumes, or nil for "the sweep's
+  # nudge is right". See .park_refused_spawn!.
+  def self.undelivered_prompt_for(session, follow_up_prompt)
+    return follow_up_prompt if follow_up_prompt.present? && !AutomatedPrompts.nudge?(follow_up_prompt)
+    return nil if session.metadata&.dig("runtime_started") == true
+    return nil if session.prompt.blank?
+
+    # As a first spawn delivers it, turn-source note included.
+    session.initial_prompt_for_delivery
   end
 
   # Did the turn Zimmer was delivering never reach the runtime?
@@ -466,6 +592,10 @@ class AuthOutageParkService
       woken_per_runtime[runtime] += 1
     end
 
+    # The pool served somebody again, so the outage is over: the next one pages
+    # afresh rather than inside the last one's throttle window.
+    PoolOutageAlert.rearm! if resumed.positive?
+
     if held.positive?
       logger.info("Held parked sessions past the per-sweep wake cap",
         resumed: resumed, held: held, cap: MAX_WAKES_PER_SWEEP)
@@ -672,7 +802,8 @@ class AuthOutageParkService
       reason = session.metadata&.dig("auth_outage_reason")
       raise ActiveRecord::Rollback if reason.blank?
 
-      prompt = AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
+      prompt = session.metadata&.dig(UNDELIVERED_PROMPT_KEY).presence ||
+        AutomatedPrompts.system_recovery(reason: resume_prompt_reason(reason))
 
       updates = {}
       if reason == AUTH_UNRECOVERABLE
@@ -811,8 +942,8 @@ class AuthOutageParkService
   # committed before this runs, so an exception reaching #park!'s own rescue would
   # report "not parked" for a session that is dormant — the reporting half of
   # tadasant/zimmer#608, whose other half #record_park! closes.
-  def announce_park(reason, recovers_at, detail)
-    add_log(park_message(reason, recovers_at, detail), level: "error")
+  def announce_park(reason, recovers_at, detail, action: nil, notify: true)
+    add_log(park_message(reason, recovers_at, detail, action: action), level: "error")
     log_buffer&.flush
 
     # A park is POSITIVE evidence that the pool is empty, and the earliest Zimmer
@@ -823,7 +954,7 @@ class AuthOutageParkService
     # what makes the next recovery a real rising edge.
     QuotaAvailabilityMonitor.record_unavailable!(runtime: session.agent_runtime) if reason == QUOTA_EXHAUSTED
 
-    notify!(reason)
+    notify!(reason) if notify
 
     @logger.warn("Session parked for auth outage",
       reason: reason, pool_recovers_at: recovers_at&.utc&.iso8601)
@@ -873,8 +1004,8 @@ class AuthOutageParkService
   # branch for the record to be atomic with, and the session is dormant regardless.
   #
   # @return [Boolean] whether the outage was recorded
-  def record_park!(reason, recovers_at)
-    outage = outage_record(reason, recovers_at)
+  def record_park!(reason, recovers_at, extra_metadata = {})
+    outage = outage_record(reason, recovers_at).merge(extra_metadata.to_h)
 
     with_db_retry do
       # The reload is here so the in-memory copy the caller goes on to read is the
@@ -899,8 +1030,12 @@ class AuthOutageParkService
         # record is still written, exactly as it was before the two writes were
         # merged. This branch never had a sleep to be atomic WITH, so nothing about
         # it changes: the caller is told the outage was recorded, because it was.
-        @logger.info("Not sleeping a parked session that is neither running nor idle",
-          status: session.status)
+        # `waiting` is the ordinary shape for a refused spawn (.park_refused_spawn!):
+        # already dormant, so there is nothing to say.
+        unless session.waiting?
+          @logger.info("Not sleeping a parked session that is neither running nor idle",
+            status: session.status)
+        end
         session.merge_metadata!(outage)
         true
       end
@@ -943,8 +1078,8 @@ class AuthOutageParkService
     "#{who} The pool's earliest reset is #{recovers_at.utc.iso8601}."
   end
 
-  def park_message(reason, recovers_at, detail)
-    action = case reason
+  def park_message(reason, recovers_at, detail, action: nil)
+    action ||= case reason
     when QUOTA_EXHAUSTED
       "Every account in the pool is quota_exceeded, so there is nothing to rotate into."
     else

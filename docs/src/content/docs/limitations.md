@@ -7431,15 +7431,13 @@ Three consequences to know:
   **Authenticate** the account from `/inference`, which writes the row, and the next spawn reads
   the new token out of it. `~/.claude/.credentials.json` may still exist on a worker as a fossil;
   nothing reads it, and its contents mean nothing.
-- **A spawn with no usable current account fails, and does not park.** It used to fall back to
-  the shared file. `ClaudeSpawnEnv` now raises `MissingCredentialsError`, `ProcessLifecycleManager`
-  refuses the spawn at `.warn`, and the session fails with `failure_reason: spawn_failed` and a
-  session-log line naming the account. Correct — a session that cannot authenticate cannot work —
-  but it is a **failed** session rather than a parked one, unlike a pool that drains mid-session,
-  which `AuthOutageParkService` puts to sleep and wakes when the pool recovers. The park machinery
-  is built around a turn that reached the runtime; this happens before there is a process, and a
-  first turn parked here would be resumed with a recovery prompt in place of the prompt it never
-  delivered. So the session has to be restarted by hand once an account is authenticated.
+- **A spawn with no usable current account parks, and its attachments do not survive the park.**
+  `AgentSessionJob` parks the refused turn (`AuthOutageParkService.park_refused_spawn!`) and the
+  resume redelivers its prompt text, but images or files attached to the refused turn — a follow-up's
+  or a first turn's — are not carried; the resume delivers the words alone. A human message sent to
+  the parked session replaces the stored turn rather than queuing behind it. Recovery waits on the fifteen-minute
+  `QuotaResetCheckerJob` sweep unless a human authenticates an account on `/inference`, which runs
+  it immediately; a refresh that heals an account on its own is noticed at the next tick.
   `AuthWarmupService` settles the pool at worker boot so the ordinary deploy never reaches it.
 - **A revoked MCP credential is not removed from other sessions' stores.** Revoking through
   `McpOauthCredentialInjector#delete_runtime_credentials` reaches the revoking session's own store,
