@@ -114,7 +114,8 @@ jobs:
     #                 SessionControls 270, TranscriptParity 260                   ≈ 1535 s
     #   board         SessionParity+BoardView+Ranked (one file) 266, SessionActions 125,
     #                 SessionExtras 100, Live 92, Attachments 90, SessionSections 87,
-    #                 Catalog 75, QuickRouterKeyboard 72, LiveUpdates 67            ≈  975 s
+    #                 Catalog 75, QuickRouterKeyboard 72, LiveUpdates 67,
+    #                 CarplayFit ~70 (no green run yet; two tests)                ≈ 1045 s
     #   photos        Account 625, Waiting 62, Interaction 59, Decisions 58,
     #                 SessionList 47, BoardFilters 35, InAppLinks ~30,
     #                 BoardStaysCurrent 23                                        ≈  940 s
@@ -135,7 +136,7 @@ jobs:
             classes: SessionDetailPanelsUITests,SettingsUITests,BoardReadParityUITests,SessionControlsUITests,TranscriptParityUITests
             photos: false
           - name: board
-            classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests
+            classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests,CarplayFitUITests
             photos: false
           - name: photos
             classes: AccountUITests,WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests

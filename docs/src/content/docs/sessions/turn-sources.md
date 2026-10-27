@@ -59,7 +59,8 @@ The credential, or the code path, decides the surface. A client header can only 
 
 The iOS app sends `X-Zimmer-Client: ios/<version>` on every request. A tap in CarPlay — Go ahead,
 Restart, Archive — sends `carplay/<version>` with no modality, because a tap is not dictation; what
-the driver says in the car goes through Live Mode and is tagged `live_voice`. The phone's composers
+the driver says in the car goes through Live Mode and is tagged `live_voice`. A Live call from the
+car sends `carplay/<version>` on its own requests too, so its delegations name `carplay`. The phone's composers
 send no modality, because iOS keyboard dictation is invisible to the app.
 
 The Live modalities can never be claimed in a header. They come only from the Live conversation the

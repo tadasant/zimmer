@@ -48,7 +48,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),
   *Waiting*, *Running*, *Failed* and *Archived*. The *Filters* button opens the whole form: any
   number of statuses, a scheduling class (*Priority* or *Spot*), an agent root and a genesis from
-  the catalog, board visibility, and the web UI's quick filters (*All*, *All unarchived*, *All
+  the catalog, a [CarPlay fit](/sessions/carplay-fit/) (*Not laptop-only*, the driving default,
+  *CarPlay-ok*, *Laptop only* or *Untagged*; *Any* by default), board visibility, and the web UI's quick filters (*All*, *All unarchived*, *All
   priority, unarchived*). A combination the chips cannot show is spelled out under them with a
   *Reset*. Filters and board visibility are remembered across launches, as the web UI remembers
   them in a cookie. Over the default filters *Ranked* shows waiting, running, needs-input and failed
@@ -198,7 +199,10 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
 - **Detaches an "also senior" link** from the hierarchy, after a confirmation, as the web UI's
   amber chip does.
 - **The session menu** (the ⋯ button) is the web UI's mobile *Session actions* sheet, in its order:
-  Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board, Refresh
+  Quick Router, Edit Notes, Show Logs, Subagents, View PR, Snooze until… / Hide / Put back on the board,
+  CarPlay fit (the mark in force and the server's line for it, then *CarPlay-ok* or *Laptop only*,
+  each with its reasons, and *Clear*; a `human` mark, and one a standing mark outranks is reported
+  as kept), Refresh
   Transcript, Copy Transcript (the whole transcript as text), Pause Session, Restart Session. Then what the web UI's metadata block and Ranked view
   edit: Rename, Modify Goal (the catalog's goals by name, or your own words), Effort (the levels the session's model accepts, or the model
   default), Model (the models the session's runtime lists), *Modify MCP Servers, Skills, Hooks,
@@ -724,8 +728,12 @@ unasked, so what moves on its own is the glance: the board is re-read every minu
 you badge and the tile counts change. A read that fails says so, in the lists and in the Briefing,
 rather than claiming nothing needs you.
 
-A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/turn-sources/)); the
-car's Live call delegates as the phone does, tagged `live_voice`. The rules — which sessions, in
+A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/turn-sources/)). The
+car's Live call is the phone's `LiveCall`, but every request it makes from the car says `carplay`
+(`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
+the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
+started is handed to the car when the car connects or its *Talk* picks the call up, and back to the
+phone when the car disconnects. The rules — which sessions, in
 what order, every button set, every spoken line — are `DrivingBoard` and `LiveContext` in
 ZimmerKit, tested on Linux. The audio session is held only while the car speaks or the call runs,
 the microphone opens only for the call, and nothing is pushed deeper than a card over the tab bar.

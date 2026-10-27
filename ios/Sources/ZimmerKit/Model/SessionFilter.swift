@@ -49,8 +49,8 @@ public enum SessionFilter: String, Hashable, Sendable, CaseIterable, Identifiabl
 }
 
 /// What the board's list is narrowed to, every part combining with every other as the web
-/// UI's filter form does: any set of statuses, a scheduling class, an agent root and a
-/// genesis. Board visibility is `BoardFilter`, kept apart because it has its own menu.
+/// UI's filter form does: any set of statuses, a scheduling class, an agent root, a genesis
+/// and a CarPlay fit. Board visibility is `BoardFilter`, kept apart because it has its own menu.
 ///
 /// No statuses means every status but archived — the web UI's *All Unarchived*. Archived
 /// sessions appear only when *Archived* is among the statuses, as ticking it does on the web.
@@ -63,12 +63,23 @@ public struct BoardFilters: Hashable, Sendable, Codable {
     public var agentRoot: String?
     /// A `SessionGenesis` key.
     public var genesis: String?
+    /// A `CarplayFitFilter` value (`not_laptop_only`, …); nil for every row. Raw, so a value
+    /// written down by a later build survives being read by this one.
+    public var carplayFit: String?
 
-    public init(statuses: Set<SessionStatus> = [], schedulingClass: String? = nil, agentRoot: String? = nil, genesis: String? = nil) {
+    public init(statuses: Set<SessionStatus> = [], schedulingClass: String? = nil, agentRoot: String? = nil, genesis: String? = nil,
+                carplayFit: CarplayFitFilter? = nil) {
         self.statuses = Set(statuses.map(\.rawValue))
         self.schedulingClass = schedulingClass
         self.agentRoot = agentRoot
         self.genesis = genesis
+        self.carplayFit = carplayFit?.rawValue
+    }
+
+    /// The CarPlay-fit filter, when it is one this build knows.
+    public var carplayFitFilter: CarplayFitFilter? {
+        get { carplayFit.flatMap(CarplayFitFilter.init(rawValue:)) }
+        set { carplayFit = newValue?.rawValue }
     }
 
     /// The phone's default: the sessions waiting on a person.
@@ -93,7 +104,7 @@ public struct BoardFilters: Hashable, Sendable, Codable {
 
     /// How many things beyond statuses narrow the list: what the Filters button counts.
     public var refinementCount: Int {
-        [schedulingClass, agentRoot, genesis].compactMap { $0 }.count
+        [schedulingClass, agentRoot, genesis, carplayFit].compactMap { $0 }.count
     }
 
     /// The quick-filter chip these filters are exactly, or nil for a combination of its own.
@@ -116,6 +127,7 @@ public struct BoardFilters: Hashable, Sendable, Codable {
         if let schedulingClass { parts.append(schedulingClass.capitalized) }
         if let agentRoot { parts.append(agentRoot) }
         if let genesis { parts.append(genesisLabel(genesis) ?? genesis) }
+        if let carplayFit { parts.append(carplayFitFilter?.label ?? carplayFit) }
         return parts.joined(separator: " · ")
     }
 
@@ -133,6 +145,7 @@ public struct BoardFilters: Hashable, Sendable, Codable {
         if let schedulingClass, session.priorityClass != schedulingClass { return false }
         if let agentRoot, session.agentRoot != agentRoot { return false }
         if let genesis, session.genesis != genesis { return false }
+        if let filter = carplayFitFilter, !filter.admits(session) { return false }
         return true
     }
 
@@ -146,6 +159,7 @@ public struct BoardFilters: Hashable, Sendable, Codable {
         if let schedulingClass { query["priority_class"] = schedulingClass }
         if let agentRoot { query["agent_root"] = agentRoot }
         if let genesis { query["genesis"] = genesis }
+        if let carplayFit { query["carplay_fit"] = carplayFit }
         return query
     }
 }

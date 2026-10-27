@@ -147,6 +147,27 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "minting a secret and refreshing a call record the client driving it, so the car's instructions say so" do
+    conversation = create_live_conversation(mode: "voice", client_surface: "ios")
+    minted_for = nil
+    LiveConversations::RealtimeSession.stubs(:mint).with { |*args| minted_for = args.first.client_surface; true }.returns({ client_secret: "ek_car" })
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.4.2")
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", headers: car
+    assert_response :success
+    assert_equal "carplay", minted_for, "noted before the secret's instructions are built"
+    assert_equal "carplay", conversation.reload.client_surface
+
+    post "/api/v1/live_conversations/#{conversation.id}/session_update", headers: @headers
+    assert_response :success
+    assert_equal "ios", conversation.reload.client_surface, "the phone took the call back"
+    refute_match(/client driving this conversation right now is CarPlay/, response.parsed_body.dig("session", "instructions"))
+
+    post "/api/v1/live_conversations/#{conversation.id}/session_update", headers: car
+    assert_equal "carplay", conversation.reload.client_surface
+    assert_match(/client driving this conversation right now is CarPlay/, response.parsed_body.dig("session", "instructions"))
+  end
+
   test "voice relay over the API: secret, tool call that enables a server, transcript" do
     stub_clock_server
     conversation = create_live_conversation(mode: "voice")
