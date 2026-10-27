@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import http.client
 import json
 import os
@@ -50,7 +51,7 @@ PREFLIGHT_BACKOFF_SECONDS = 15
 # then twice that, between attempts, and only after an error in EXPORT_TRANSIENT_ERRORS.
 EXPORT_ATTEMPTS = 3
 EXPORT_BACKOFF_SECONDS = 30
-# Matched against xcodebuild's `error:` lines. Each is App Store Connect or the network failing
+# Matched against xcodebuild's `error:` lines only. Each is App Store Connect or the network failing
 # to answer, never a verdict on the build or the key: a refused key, an unsigned agreement or a
 # signing error reads differently and fails on the first attempt. Run 40583015112 is the
 # worked example of the first: "error: exportArchive Error Downloading App Information", gone
@@ -61,10 +62,19 @@ EXPORT_TRANSIENT_ERRORS = (
     "The network connection was lost.",
     "Could not connect to the server.",
 )
-# What the upload service answers when the build number is already there. After a transient
-# failure it means the failed attempt had in fact been accepted; on a first attempt it is a
-# genuine build-number collision.
-REDUNDANT_UPLOAD = ("Redundant Binary Upload", "ITMS-4238")
+# What the upload service answers, in an `error:` line, when the build number is already
+# there: the altool wording, then the App Store Connect API wording newer Xcodes print. After a
+# transient failure it can mean the failed attempt had in fact been accepted; on a first
+# attempt it is a genuine build-number collision.
+REDUNDANT_UPLOAD = (
+    "Redundant Binary Upload",
+    "ITMS-4238",
+    "ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE",
+)
+# A build App Store Connect lists that was uploaded more than this long before `export` began
+# is not this run's: it is an earlier upload that used the same build number. The slack is
+# for the runner's clock against Apple's.
+CLOCK_SLACK = datetime.timedelta(minutes=2)
 
 
 class TransientError(Exception):
@@ -295,7 +305,7 @@ def wait(args: argparse.Namespace) -> None:
 
 
 def _error_lines(output: str) -> list[str]:
-    return [line for line in output.splitlines() if "error" in line.lower()]
+    return [line for line in output.splitlines() if "error:" in line.lower()]
 
 
 def _transient(output: str) -> str | None:
@@ -308,7 +318,20 @@ def _transient(output: str) -> str | None:
 
 
 def _redundant(output: str) -> bool:
-    return any(marker in output for marker in REDUNDANT_UPLOAD)
+    return any(marker in line for line in _error_lines(output) for marker in REDUNDANT_UPLOAD)
+
+
+def _uploaded(build: dict[str, Any]) -> datetime.datetime | None:
+    value = build.get("attributes", {}).get("uploadedDate") or ""
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _exit_code(code: int) -> int:
+    # A negative code is a signal; report it the way a shell would.
+    return 128 - code if code < 0 else code
 
 
 def _run(command: list[str]) -> tuple[int, str]:
@@ -331,44 +354,71 @@ def export(args: argparse.Namespace) -> None:
     Only an error in EXPORT_TRANSIENT_ERRORS is retried. Every other failure — a signing
     error, a refused key, an agreement, a build-number collision — exits on its first
     attempt, so the run goes red and pages exactly as it did before there was a retry."""
-    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    command = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
     if not command:
         raise SystemExit("export: no command after --")
+    # Cleared before each attempt, so the summary checked afterwards is this attempt's.
+    export_path = command[command.index("-exportPath") + 1] if "-exportPath" in command else ""
     label = f"{args.version} ({args.build})"
+    started = datetime.datetime.now(datetime.timezone.utc)
     client: Client | None = None
     app_id = ""
+
+    def listed() -> dict[str, Any] | None:
+        """The build if App Store Connect lists it, failing on one this run did not upload."""
+        nonlocal client, app_id
+        client = client or Client()
+        app_id = app_id or _asked(lambda: _app_id(client, args.bundle_id), "about the app")
+        found = _asked(
+            lambda: _build(client, app_id, args.version, args.build),
+            f"whether it already has build {label}; not uploading it again blind",
+        )
+        if found:
+            uploaded = _uploaded(found)
+            if uploaded is None or uploaded < started - CLOCK_SLACK:
+                raise SystemExit(
+                    f"build {label} is already in App Store Connect, uploaded "
+                    f"{found.get('attributes', {}).get('uploadedDate')!r}, before this export "
+                    f"began at {started.isoformat()}: the build number was used before. "
+                    "Re-upload with a fresh dispatch."
+                )
+        return found
+
     delay = EXPORT_BACKOFF_SECONDS
     for attempt in range(1, EXPORT_ATTEMPTS + 1):
-        if attempt > 1:
-            # A failed attempt can still have reached Apple. Asked before uploading again,
-            # because App Store Connect refuses a build number it already has.
-            client = client or Client()
-            app_id = app_id or _asked(lambda: _app_id(client, args.bundle_id), "about the app")
-            if _asked(
-                lambda: _build(client, app_id, args.version, args.build),
-                f"whether it already has build {label}; not uploading it again blind",
-            ):
-                _say(f"build {label} is already in App Store Connect; not uploading it again")
-                return
-        if args.export_path:
-            shutil.rmtree(args.export_path, ignore_errors=True)
+        if attempt > 1 and listed():
+            # A failed attempt can still have reached Apple, and App Store Connect refuses a
+            # build number it already has, so this is asked before every upload but the first.
+            _say(
+                f"::warning title=TestFlight export not repeated::build {label} reached App "
+                "Store Connect from a failed attempt, so it is not uploaded again; export left "
+                "no summary of what it signed in"
+            )
+            return
+        if export_path:
+            shutil.rmtree(export_path, ignore_errors=True)
         code, output = _run(command)
         if code == 0:
             return
         if attempt > 1 and _redundant(output):
-            # The previous attempt was accepted after all, and the lookup above was asked
-            # before App Store Connect listed it. `wait` confirms it processes.
-            _say(f"build {label} was already uploaded by an earlier attempt; treating as uploaded")
+            # The previous attempt was accepted after all, and App Store Connect did not list
+            # it yet when asked above. Asked again so that a build number used by an earlier
+            # run still fails; `wait` confirms this one processes.
+            listed()
+            _say(
+                f"::warning title=TestFlight export not repeated::build {label} was uploaded "
+                "by an earlier attempt; export left no summary of what it signed in"
+            )
             return
         marker = _transient(output)
         if marker is None:
-            sys.exit(code)
+            sys.exit(_exit_code(code))
         if attempt == EXPORT_ATTEMPTS:
             _say(
                 f"::error title=TestFlight export failed {attempt} times::"
                 f"'{marker}' persisted across {attempt} attempts, so it is not transient"
             )
-            sys.exit(code)
+            sys.exit(_exit_code(code))
         _say(
             f"::warning title=TestFlight export retried::attempt {attempt} of {EXPORT_ATTEMPTS} "
             f"failed with '{marker}', which App Store Connect gives transiently; "
@@ -406,8 +456,7 @@ def main() -> None:
     exporting.add_argument("--bundle-id", required=True)
     exporting.add_argument("--version", required=True, help="CFBundleShortVersionString")
     exporting.add_argument("--build", required=True, help="CFBundleVersion")
-    exporting.add_argument("--export-path", help="cleared before each attempt")
-    exporting.add_argument("command", nargs=argparse.REMAINDER, help="-- xcodebuild ...")
+    exporting.add_argument("argv", nargs=argparse.REMAINDER, help="-- xcodebuild ...")
     exporting.set_defaults(func=export)
 
     args = parser.parse_args()
