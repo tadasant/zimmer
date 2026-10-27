@@ -161,15 +161,16 @@ final class SessionControlsUITests: XCTestCase {
 
         // The app's main thread waits on the answer, so SpringBoard is asked first: a query of
         // the app while the prompt is up times out as a failed test, not as a false. A tap on
-        // *Allow Paste* does not always take (the prompt stayed up through teardown on main,
-        // run 40560829588), so it is tapped again until the prompt is gone.
+        // *Allow Paste* does not always take, so it is tapped again until the prompt is gone,
+        // within a deadline that leaves room for a few retries.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let springboardAllow = springboard.alerts.buttons["Allow Paste"].firstMatch
         let deadline = Date().addingTimeInterval(timeout * 2)
         while Date() < deadline {
-            let fromSpringboard = springboard.alerts.buttons["Allow Paste"].firstMatch
-            if fromSpringboard.exists {
-                fromSpringboard.tap()
-                let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: fromSpringboard)
+            if springboardAllow.exists {
+                // Hittable, so a prompt that went away late is not tapped after it has gone.
+                if springboardAllow.isHittable { springboardAllow.tap() }
+                let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: springboardAllow)
                 if XCTWaiter().wait(for: [gone], timeout: 5) == .completed { break }
                 continue
             }
@@ -179,6 +180,7 @@ final class SessionControlsUITests: XCTestCase {
             if chip.exists { break }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
+        XCTAssertFalse(springboardAllow.exists, "SpringBoard's Allow Paste prompt never went away")
 
         XCTAssertTrue(pastedChip(app).waitForExistence(timeout: timeout), "the pasted image is attached, as a library photo is")
         attachScreenshot(app, named: "pasted-image")
