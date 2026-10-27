@@ -23,7 +23,7 @@ module Mcp
                 "thread while you wait."
 
     SYNC_TIMEOUT_DESC = "Optional, with `sync: true`. The longest this whole call may take, in seconds, counted " \
-                        "from when Zimmer received it — starting the session comes out of it. Default " \
+                        "from when Zimmer began handling it — starting the session comes out of it. Default " \
                         "#{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, under the 60-second request timeout many " \
                         "MCP clients default to — raise it only if your client waits longer. Maximum " \
                         "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}, the longest a request survives the proxies in " \
@@ -99,7 +99,7 @@ module Mcp
     # hops back. Zero when the create alone used it up: the wait then looks once
     # and returns the state as it is.
     def sync_wait_budget(timeout)
-      started = [ context.request_started_at, @sync_call_started_at ].compact.min || monotonic_now
+      started = context.request_started_at || @sync_call_started_at || monotonic_now
       [ timeout - (monotonic_now - started) - Sessions::SyncReply::RESPONSE_MARGIN_SECONDS, 0 ].max
     end
 
