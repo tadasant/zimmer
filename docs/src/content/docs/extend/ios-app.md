@@ -732,8 +732,8 @@ A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/
 car's Live call is the phone's `LiveCall`, but every request it makes from the car says `carplay`
 (`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
 the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
-started is handed to the car when the car's *Talk* picks it up, and back to the phone when the car
-disconnects. The rules — which sessions, in
+started is handed to the car when the car connects or its *Talk* picks the call up, and back to the
+phone when the car disconnects. The rules — which sessions, in
 what order, every button set, every spoken line — are `DrivingBoard` and `LiveContext` in
 ZimmerKit, tested on Linux. The audio session is held only while the car speaks or the call runs,
 the microphone opens only for the call, and nothing is pushed deeper than a card over the tab bar.

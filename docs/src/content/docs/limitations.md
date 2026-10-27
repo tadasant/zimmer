@@ -4646,17 +4646,18 @@ sends is tagged `voice_dictation`: what is said in the car goes through Live Mod
 
 ### A Live conversation names the client that wrote to it last
 
-`live_conversations.client_surface` is last-writer-wins, and only a write sets it — starting a
-conversation, a mode switch, a message, a relayed tool call — never a read or a minted secret. If
-the web app and the phone both drive one conversation, the next delegation names whichever wrote
-last.
+`live_conversations.client_surface` is last-writer-wins. Starting a conversation, a mode switch, a
+message, a relayed tool call, a minted secret and a `session.update` each set it; a read or a
+transcript line does not. If the web app and the phone both drive one conversation, the next
+delegation names whichever spoke last.
 
 A Live call started from CarPlay sends `X-Zimmer-Client: carplay/<version>` on every request, so it
-records `carplay` and the live model is told the person is in a car. A call that moves mid-call — the
-car's *Talk* on a call the phone started, or the car disconnecting with the call up — is handed over
-with one mode write (voice is already on, so it changes nothing else) and a `session.update` that
-brings the open call up to the new instructions. If that write fails, the call carries on under the
-old surface until its next relayed tool call. None of this has run in a car yet (below).
+records `carplay` and the live model is told the person is in a car. A call that moves mid-call —
+the car connecting, or the car's *Talk*, with a call the phone started; the car disconnecting with
+the call up — asks for a `session.update`, which records the new client and brings the open call up
+to instructions that name it. A call still connecting asks once its socket is open. If that request
+fails, the next relayed tool call records the client for delegations, but the open call keeps the
+instructions it had until the next one. None of this has run in a car yet (below).
 
 ### An API key is `api`, even when an agent holds it
 

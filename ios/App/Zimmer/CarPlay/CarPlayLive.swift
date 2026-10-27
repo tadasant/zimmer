@@ -81,9 +81,10 @@ final class CarPlayLive {
 
     var isActive: Bool { call.isActive }
 
-    /// The scene connected with a call already up: show it.
+    /// The scene connected with a call already up: show it, and hand it to the car.
     func showIfActive() {
         guard call.isActive else { return }
+        Task { await call.carryOn(on: .carplay) }
         present()
         readContext()
     }

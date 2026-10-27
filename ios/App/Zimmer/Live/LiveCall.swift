@@ -64,6 +64,8 @@ final class LiveCall: ObservableObject {
     func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, from surface: ClientSource.Surface = .ios) async {
         if isActive(for: conversation) {
             await carryOn(on: surface)
+            // Hung up, or replaced, while the hand-over was answered.
+            guard isActive(for: conversation) else { return }
             if let opening {
                 // Still connecting: there is no socket to send on yet; the start under way sends it.
                 if state == .connecting { pendingOpening = opening } else { open(with: opening) }
@@ -82,6 +84,7 @@ final class LiveCall: ObservableObject {
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
+            let mintedFor = surface
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
             conductor = RealtimeConductor(listening: secret.listening)
@@ -99,6 +102,10 @@ final class LiveCall: ObservableObject {
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
             state = .listening
+            // Handed over while connecting, after the secret was asked for: its instructions
+            // name the client that started the call, so bring them up to the one driving it.
+            if surface != mintedFor { await refreshSession() }
+            guard mine == generation else { return }
             let first = pendingOpening ?? opening
             pendingOpening = nil
             if let first { open(with: first) }
@@ -156,20 +163,13 @@ final class LiveCall: ObservableObject {
     }
 
     /// The call moved between the phone and the car: from now on its requests name `surface`.
-    /// Zimmer records the client from a conversation's writes, so one is made at once — voice
-    /// is already on, so asking for it changes nothing else — and the call is brought up to the
-    /// instructions that now say where the person is.
+    /// The `session.update` Zimmer builds records the client asking for it, so asking for one
+    /// both tells Zimmer and brings the open call up to instructions that say where the person
+    /// is. A call still connecting is brought up to them by the start under way, once its
+    /// socket is open.
     func carryOn(on surface: ClientSource.Surface) async {
-        guard isActive, surface != self.surface, let conversation = conversationID else { return }
+        guard isActive, surface != self.surface else { return }
         self.surface = surface
-        let mine = generation
-        do {
-            try await turnVoiceOn(conversation)
-        } catch {
-            log.error("live hand-over failed: \(Self.describe(error), privacy: .public)")
-            return
-        }
-        guard mine == generation else { return }
         await refreshSession()
     }
 

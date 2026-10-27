@@ -44,11 +44,11 @@ final class CarplayFitUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout))
 
         app.buttons["detail.actions"].tap()
-        let item = menuItem(app, beginningWith: "CarPlay fit")
+        let item = app.buttons["CarPlay fit"].firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: timeout), "the menu offers CarPlay fit")
-        XCTAssertTrue(item.label.contains("untagged"), "it says no mark stands: \(item.label)")
         item.tap()
-        let laptop = menuItem(app, beginningWith: "Laptop only")
+        XCTAssertTrue(app.buttons["Now: untagged"].firstMatch.waitForExistence(timeout: timeout), "it says no mark stands")
+        let laptop = app.buttons["Laptop only"].firstMatch
         XCTAssertTrue(laptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-menu")
         laptop.tap()
@@ -60,13 +60,14 @@ final class CarplayFitUITests: XCTestCase {
 
         // The menu now says what stands, with who set it.
         app.buttons["detail.actions"].tap()
-        let marked = menuItem(app, beginningWith: "CarPlay fit: Laptop only")
+        let marked = app.buttons["CarPlay fit: Laptop only"].firstMatch
         XCTAssertTrue(marked.waitForExistence(timeout: timeout), "the menu names the mark in force")
-        XCTAssertTrue(marked.label.contains("human"), "a mark from the app is a human one: \(marked.label)")
+        marked.tap()
+        let standing = menuItem(app, beginningWith: "Now: Laptop only (manual steps) · human")
+        XCTAssertTrue(standing.waitForExistence(timeout: timeout), "a mark from the app is a human one")
         attachScreenshot(app, named: "carplay-fit-marked")
 
         // And clears it.
-        marked.tap()
         let clear = app.buttons["Clear"].firstMatch
         XCTAssertTrue(clear.waitForExistence(timeout: timeout))
         clear.tap()
