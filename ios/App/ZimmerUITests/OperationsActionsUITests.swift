@@ -139,6 +139,13 @@ final class OperationsActionsUITests: XCTestCase {
     /// from one of three heights in turn: a press that lands on a full-width button is
     /// swallowed by it and moves nothing (a recording shows twenty seconds of that), and the
     /// next height is clear of it.
+    ///
+    /// The head of the page is the one place an element can be in view and still read as
+    /// above the bar: there the bar shows its large title, and its frame reaches past the top
+    /// of the first row — the queue-recovery banner, on Health. An upward drag there only
+    /// bounces, so an element that every start height in turn leaves where it was is at the
+    /// head of a page that will not scroll further, and it is reached. A recording shows
+    /// twenty-four bounces of that, the banner in plain view under the title.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, searching: Direction = .down) -> Bool {
         func placement() -> Direction? {
             guard element.exists, !element.frame.isEmpty else { return searching }
@@ -148,14 +155,21 @@ final class OperationsActionsUITests: XCTestCase {
             if element.frame.maxY > app.frame.maxY - 100 { return .down }
             return nil
         }
+        func laidOut() -> CGRect? {
+            element.exists && !element.frame.isEmpty ? element.frame : nil
+        }
         _ = element.waitForExistence(timeout: 2)
         let starts: [CGFloat] = [0.7, 0.6, 0.5]
+        var unmoved = 0
         for attempt in 0..<24 {
             guard let direction = placement() else { return true }
+            let before = direction == .up ? laidOut() : nil
             let start = starts[attempt % starts.count]
             let (from, to): (CGFloat, CGFloat) = direction == .down ? (start, start - 0.25) : (start - 0.25, start)
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
                 .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
+            if let before, let after = laidOut(), abs(after.minY - before.minY) < 1 { unmoved += 1 } else { unmoved = 0 }
+            if unmoved == starts.count { return true }
         }
         return placement() == nil
     }
