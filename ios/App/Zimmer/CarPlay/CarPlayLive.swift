@@ -200,11 +200,12 @@ final class CarPlayLive {
                     repeats: false
                 )
                 if #available(iOS 26.4, *) {
-                    let buttons: [CPButton] = [
-                        CPTextButton(title: muted ? "Unmute" : "Mute", textStyle: .normal) { [weak self] _ in self?.call.toggleMute() },
-                        CPTextButton(title: "Hang up", textStyle: .cancel) { [weak self] _ in self?.call.hangUp() },
+                    voiceState.actionButtons = [
+                        CarPlayImages.actionButton(muted ? "Unmute" : "Mute", symbol: muted ? "mic.slash.fill" : "mic.fill") { [weak self] _ in
+                            self?.call.toggleMute()
+                        },
+                        CarPlayImages.actionButton("Hang up", symbol: "phone.down.fill") { [weak self] _ in self?.call.hangUp() },
                     ]
-                    voiceState.actionButtons = buttons
                 }
                 states.append(voiceState)
             }

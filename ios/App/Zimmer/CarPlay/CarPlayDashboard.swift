@@ -259,17 +259,16 @@ final class CarPlayAnnouncement {
         }
         let state = CPVoiceControlState(identifier: Self.state, titleVariants: titleVariants, image: CarPlayImages.announcement, repeats: false)
         if #available(iOS 26.4, *) {
-            let buttons: [CPButton] = [
-                CPTextButton(title: talkTitle, textStyle: .confirm) { [weak self] _ in
+            state.actionButtons = [
+                CarPlayImages.actionButton(talkTitle, symbol: "mic.fill") { [weak self] _ in
                     self?.speech.stop()
                     self?.onTalk?(opening)
                 },
-                CPTextButton(title: "Dismiss", textStyle: .cancel) { [weak self] _ in
+                CarPlayImages.actionButton("Dismiss", symbol: "xmark") { [weak self] _ in
                     self?.speech.stop()
                     self?.dismiss()
                 },
             ]
-            state.actionButtons = buttons
         }
         let template = CPVoiceControlTemplate(voiceControlStates: [state])
         self.template = template
