@@ -68,8 +68,8 @@ way, as `ios_app.enqueued_message_edited`, the counterpart of the web UI's
 `POST /sessions`, as `ios_app.new_session` (the web UI's `web_ui.new_session`). A relay-only connection, an approver with no roster row, or a
 follow-up over an API key records nothing.
 
-The app also sends `X-Zimmer-Client: ios/<version>` on every request, and CarPlay's voice loop sends
-`carplay/<version>` with `X-Zimmer-Input-Modality: voice_dictation`. Any REST caller may send
+The app also sends `X-Zimmer-Client: ios/<version>` on every request, and a tap in CarPlay sends
+`carplay/<version>` with no modality. Any REST caller may send
 `X-Zimmer-Input-Modality: text` or `voice_dictation`. These headers only shape the
 [turn-source note](/sessions/turn-sources/) the agent sees. They can narrow `ios` to `carplay` but
 cannot turn an API key into the app. They record no human and authorize nothing. A missing or
@@ -1114,7 +1114,8 @@ the status off `failed`, including `POST /triggers/:id/toggle`, clears them.
 voice on, switching between the two mid-thread. The same rules as the `/live` pages
 (`LiveConversations::Actions`).
 
-An API key may read: `GET /live`, `GET /live_conversations` and `GET /live_conversations/:id`.
+An API key may read: `GET /live`, `GET /live_conversations`, `GET /live_conversations/:id` and
+`GET /live_conversations/:id/sessions`.
 Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
 and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
 sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
@@ -1132,6 +1133,10 @@ mode it is in right now, empty when there is none ·
 `POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
 that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
+`GET /live_conversations/:id/sessions` → `{sessions: [...], board_rows: {<id>: {agent_root,
+status_summary}}}`, the sessions the conversation's tool calls have named — started, checked on,
+followed up — the most recently named first, each as `GET /sessions` gives it, with its board row.
+What the car shows beside a call ·
 `POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
 is in that mode already; 409 once it has ended, 422 on an unknown mode ·
 `POST /live_conversations/:id/finish` → the ended conversation.

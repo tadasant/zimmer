@@ -115,6 +115,19 @@ public struct RealtimeConductor: Sendable {
         return [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(itemID)]))]
     }
 
+    /// A line the person did not speak, put to the model as if typed: what the car sends when
+    /// the driver taps *Talk about it* on a session, so the call opens on that session rather
+    /// than on silence. A user message item, then a reply asked for under the usual rule —
+    /// once nothing else is running.
+    public mutating func open(with text: String) -> [Effect] {
+        pendingResponse = true
+        let item: JSONValue = .object([
+            "type": .string("message"), "role": .string("user"),
+            "content": .array([.object(["type": .string("input_text"), "text": .string(text)])]),
+        ])
+        return [.send(.object(["type": .string("conversation.item.create"), "item": item]))] + sendPendingResponse()
+    }
+
     /// One server event.
     public mutating func handle(_ event: JSONValue) -> [Effect] {
         switch event["type"]?.string {

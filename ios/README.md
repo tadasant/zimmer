@@ -194,20 +194,26 @@ token.
 ## CarPlay
 
 A voice-based conversational CarPlay app (`com.apple.developer.carplay-voice-based-conversation`,
-iOS 26.4+, Apple CarPlay Developer Guide, June 2026). The other categories don't fit: Zimmer is not
+iOS 26.4+, Apple CarPlay App Programming Guide, 2026-10-13). The other categories don't fit: Zimmer is not
 audio, navigation, communication (SiriKit messaging or VoIP) or a driving task, and what a driver does
 with it is talk. The category allows list, grid, tab bar, alert, action sheet, information and voice
-control templates, with a depth of three, and requires voice as the primary modality at launch.
+control templates, with a depth of three, requires voice as the primary modality at launch, allows
+recording only under the voice control template, and shows no notifications. The design and every
+decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
-- `ZimmerKit/Driving/DrivingFlow.swift` is the conversation as a pure state machine. It holds
-  `VoiceCommand` parsing, at most five needs-input sessions, and a spoken confirmation before
-  any archive or reply. It is tested on Linux.
-- `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` performs its effects. It uses a
-  `CPListTemplate` root, a `CPActionSheetTemplate` per row, and a `CPVoiceControlTemplate` while
-  talking. `VoiceIO` uses `AVSpeechSynthesizer` and `SFSpeechRecognizer`, on-device only, so spoken
-  replies never go to Apple's servers. The tap and the
-  recognition handler are built in a `nonisolated` helper, because a closure formed on the main
-  actor and called from an audio thread is a Swift 6 runtime crash.
+- `ZimmerKit/Driving/DrivingBoard.swift` is what the car shows and says, as pure rules: the two
+  lists (needs you, running), their order and cap, each card's lines and buttons, what each button
+  confirms, and the spoken briefing. `LiveContext.swift` is the call screen's title and the words
+  for what the call is doing. Both are tested on Linux.
+- `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring: a `CPTabBarTemplate` root (a grid
+  home, two lists), a `CPInformationTemplate` card per session, alerts and a sheet, a silent
+  minute-by-minute read of the board, and the briefing when its tile is tapped. The car speaks only
+  after a tap.
+  `CarPlayDashboard.swift` builds those templates; `CarPlayLive.swift` is Live Mode's call screen, a
+  `CPVoiceControlTemplate` whose title names the session the conversation is about and whose two
+  action buttons are Mute and Hang up; `CarPlaySpeech.swift` is the car's own voice
+  (`AVSpeechSynthesizer`), holding a playback audio session only while it speaks. There is no
+  speech recogniser: the car listens only through the Live call.
 - **Signed into every TestFlight build.** Apple granted the entitlement to the team as a managed
   capability, and it is ticked on the App ID. `App/Zimmer/CarPlay.entitlements` holds the key and
   is in the project's exception set; `ios/bin/testflight` signs it in, merged with

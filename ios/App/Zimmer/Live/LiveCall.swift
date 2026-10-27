@@ -25,8 +25,13 @@ final class LiveCall: ObservableObject {
     @Published private(set) var lastError: String?
     /// Bumped on every recorded line or tool call, so an open thread knows to read again.
     @Published private(set) var activity = 0
+    /// What the function call in flight is doing, in words (`LiveActivity`), while the call is
+    /// working; nil between calls. The car's call screen shows it.
+    @Published private(set) var working: String?
 
     private var conductor = RealtimeConductor()
+    /// An opening line given while the call was still connecting: sent once it is up.
+    private var pendingOpening: String?
     private var socket: URLSessionWebSocketTask?
     private let audio = LiveAudioEngine()
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
@@ -41,8 +46,19 @@ final class LiveCall: ObservableObject {
 
     /// `voiceIsOn`: the caller has just turned voice on, so a second `POST …/mode` is not raced
     /// against a Type instead pressed while the call connects.
-    func start(_ conversation: Int, voiceIsOn: Bool = false) async {
-        if isActive(for: conversation) { return }
+    ///
+    /// `opening`: a line to put to the model as soon as the call is up, as if the person had
+    /// typed it — the car's *Talk about it*, which names the session the driver tapped. Recorded
+    /// on the thread as a user turn, so the transcript carries why the model answered as it did.
+    /// On a call already running for this conversation it is sent at once.
+    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil) async {
+        if isActive(for: conversation) {
+            if let opening {
+                // Still connecting: there is no socket to send on yet; the start under way sends it.
+                if state == .connecting { pendingOpening = opening } else { open(with: opening) }
+            }
+            return
+        }
         hangUp()
         generation += 1
         let mine = generation
@@ -71,6 +87,9 @@ final class LiveCall: ObservableObject {
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
             state = .listening
+            let first = pendingOpening ?? opening
+            pendingOpening = nil
+            if let first { open(with: first) }
         } catch is CancellationError {
             return
         } catch {
@@ -85,6 +104,20 @@ final class LiveCall: ObservableObject {
         audio.stop()
         state = .idle
         muted = false
+        working = nil
+        pendingOpening = nil
+    }
+
+    /// Put `text` to the model as a typed line and ask for its reply (`RealtimeConductor.open`).
+    private func open(with text: String) {
+        guard let conversation = conversationID else { return }
+        let mine = generation
+        apply(conductor.open(with: text), generation: mine)
+        Task {
+            _ = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: false)
+            guard mine == generation else { return }
+            activity += 1
+        }
     }
 
     /// Muted, the microphone sends silence rather than nothing (`RealtimeConductor.appendAudio`).
@@ -175,6 +208,7 @@ final class LiveCall: ObservableObject {
             case let .send(event):
                 send(event)
             case let .relay(callID, name, arguments):
+                working = LiveActivity.describe(name: name, arguments: arguments)
                 relay(callID: callID, name: name, arguments: arguments, generation: generation)
             case let .record(role, text):
                 guard let conversation = conversationID else { continue }
@@ -194,6 +228,7 @@ final class LiveCall: ObservableObject {
             case let .state(next):
                 // A reply coming through means the call recovered from whatever went wrong.
                 if next == .speaking { lastError = nil }
+                if next != .working { working = nil }
                 state = next
             case let .failure(message):
                 log.error("realtime error: \(message, privacy: .public)")
