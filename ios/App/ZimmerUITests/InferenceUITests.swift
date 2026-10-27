@@ -157,23 +157,42 @@ final class InferenceUITests: XCTestCase {
     }
 
     /// isHittable says yes while a control is still under the navigation bar, where a tap lands
-    /// on the bar, or under the tab bar: scroll until it sits between the two.
+    /// on the bar, or under the tab bar: scroll until it sits between the two. A quarter-screen
+    /// drag held at the end, so there is no fling to overshoot by: a flung swipe carried the
+    /// first card's Refresh from below the band to above the bar and back, twenty-four swipes
+    /// in a recording, never stopping between. A List keeps only the rows on screen, so an
+    /// element not in the hierarchy is looked for on down the page, or back up it if it was
+    /// last seen above the bar. The drag starts from one of three heights in turn, since a
+    /// press that lands on a full-width button is swallowed by it and moves nothing.
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement) {
         let bar = app.navigationBars.firstMatch
         func top() -> CGFloat { bar.exists ? bar.frame.maxY : 0 }
-        func visible() -> Bool {
-            guard element.exists, !element.frame.isEmpty else { return false }
-            return element.frame.minY >= top() && element.frame.maxY <= app.frame.maxY - 110
+        func laidOut() -> CGRect? {
+            element.exists && !element.frame.isEmpty ? element.frame : nil
         }
-        for _ in 0..<24 {
-            if visible() { break }
-            if element.exists, !element.frame.isEmpty, element.frame.minY < top() {
-                app.swipeDown()
-            } else {
-                app.swipeUp()
-            }
+        var lastSeenAbove = false
+        /// Whether the finger moves down, to bring what is above into view; nil once in view.
+        func towardTop() -> Bool? {
+            guard let frame = laidOut() else { return lastSeenAbove }
+            lastSeenAbove = frame.minY < top()
+            if lastSeenAbove { return true }
+            if frame.maxY > app.frame.maxY - 110 { return false }
+            return nil
         }
-        XCTAssertTrue(visible(), "\(element) is scrolled into view")
+        let starts: [CGFloat] = [0.7, 0.6, 0.5]
+        for attempt in 0..<30 {
+            guard let up = towardTop() else { break }
+            let start = starts[attempt % starts.count]
+            let (from, to): (CGFloat, CGFloat) = up ? (start - 0.25, start) : (start, start - 0.25)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
+                .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)),
+                       withVelocity: .default, thenHoldForDuration: 0.3)
+        }
+        let placed = towardTop() == nil
+        if !placed {
+            print("reveal gave up: element \(laidOut().map { "\($0)" } ?? "not laid out"), bar \(bar.exists ? "\(bar.frame)" : "absent")")
+        }
+        XCTAssertTrue(placed, "\(element) is scrolled into view")
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
