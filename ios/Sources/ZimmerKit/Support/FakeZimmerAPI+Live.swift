@@ -64,6 +64,22 @@ extension FakeZimmerAPI {
         return conversation.with(turns: turns)
     }
 
+    /// As the server: the sessions the conversation's tool turns name, newest first, with
+    /// their board rows.
+    public func liveConversationSessions(_ id: Int) async throws -> [SessionSummary] {
+        guard liveState.conversations[id] != nil else { throw ZimmerError.http(status: 404, message: "Live conversation not found") }
+        let turns = (liveState.turns[id] ?? []).filter { $0.role == .tool }
+        var ids: [Int] = []
+        for turn in turns.reversed() {
+            for id in LiveReferencedSessions.ids(in: turn.toolOutput ?? "") where !ids.contains(id) { ids.append(id) }
+        }
+        return ids.compactMap { id in
+            guard var session = try? find(id) else { return nil }
+            session.boardRow = BoardRow(agentRoot: session.agentRoot, statusSummary: summaries[id])
+            return session
+        }
+    }
+
     public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
         for (id, conversation) in liveState.conversations where conversation.status.isOpen {
             liveState.conversations[id] = conversation.with(status: .ended)

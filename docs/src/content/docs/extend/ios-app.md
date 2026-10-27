@@ -685,40 +685,50 @@ The build signs in the `aps-environment` entitlement only when the `testflight` 
 
 ## CarPlay
 
-Every request the app makes carries `X-Zimmer-Client: ios/<version>`. A follow-up spoken in CarPlay's
-voice loop says `carplay/<version>` and `voice_dictation`, so the session receiving it is told it
-was dictated in the car ([turn sources](/sessions/turn-sources/)).
-
 Zimmer's CarPlay scene is a **voice-based conversational app**, Apple's category for apps whose
 primary way in is talking (`com.apple.developer.carplay-voice-based-conversation`, iOS 26.4+). None of
-the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. When the
-phone connects, it says how many sessions need you and reads the first, its title and *Status
-summary*, then listens:
+the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. The design,
+and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md).
 
-- **"Yes"** (or "go ahead", "merge it") sends *Yes, go ahead.*
-- **"Reply …"**, or anything else, is a reply in your own words. It is read back, and sent when you
-  say yes. A bare **"reply"** asks what to say.
-- **"Archive"** archives, after you say yes.
-- **"Next"** skips, **"repeat"** reads it again, and **"stop"** ends the conversation.
+**The car talks first.** When the phone connects, Zimmer reads the board and speaks a briefing: how
+many sessions need you and the first three, each as its title and the first sentence of its status
+summary, then how many are running. The briefing screen has two buttons, **Talk to Zimmer** and
+**Dismiss**, and leaves on its own a few seconds after the words end. A call already running when
+the car connects is shown instead.
 
-Archive and replies wait for a spoken "yes", so a misheard word costs a sentence, not a session.
-"Yes" on its own sends the approval at once, because it is the usual answer and only tells the agent
-to carry on. If an action fails, the app says why and doesn't claim it worked. If Zimmer can't be
-reached, the app says that instead of "nothing needs you". The screen underneath lists up to five sessions that need input. Each row is an action
-sheet (Approve, Reply by voice, Archive) for a driver who would rather tap, and a Talk button
-restarts the conversation. The voice control, list and action sheet templates are all ones the
-category allows, and the stack never goes deeper than three. Speech is recognised on the phone only
-(`requiresOnDeviceRecognition`), so a spoken reply never goes to Apple's servers. A phone that can't
-recognise its language on the device says so instead of asking for an answer, and offers Approve and
-Archive on the screen without Reply by voice. The audio session is held only while
-the conversation runs. The rules live in `DrivingFlow`, which the unit tests cover.
+**Talk to Zimmer is the default.** It is the briefing's big button, the first tile on the home tab,
+and *Talk about it* on every session. One tap starts [Live Mode](/sessions/live/) with voice on —
+the open conversation, or a new one — on the same call as the phone's, so a call started at the
+desk carries on in the car. Live Mode is the one voice that listens in the car: it checks on
+sessions, passes your answers to them, starts work and follows up through Zimmer's MCP surface.
+While the call runs the screen is the voice control template: its picture and title follow the
+call (Connecting, Listening, Thinking, Speaking, Working on it, with Muted beside it), the title
+names the session the conversation is about — the one it touched last through a tool call, read
+from `GET /api/v1/live_conversations/:id/sessions` — a label in the bar says what it is doing
+("Starting work…", "Checking on a session…"), and the two buttons are **Mute** and **Hang up**.
 
-**Live Mode in the car, voice on.** Under the list, a *Live Mode* section starts a *New
-conversation* or resumes the open one (*Resume conversation*), turning voice on in it whether it was
-typed until then or not. It then shows a call screen whose status row
-follows the call (Connecting, Listening, Thinking, Speaking, Working on it) and has *Mute* and
-*Hang up*. It is the same call as the phone's (`LiveCall.shared`), so a call started at the desk
-carries on in the car. While a call runs, the section offers *Back to the call*.
+**Under it, three tabs.** *Zimmer* is a grid of four tiles: Talk to Zimmer, Briefing (says it
+again), Needs you and Running with their counts. *Needs you* lists the sessions waiting on a
+decision — needs input, then failed, up to twelve — with a badge on the tab while there are any.
+*Running* lists the sessions at work with one line of what each is doing. A row opens a card that
+is read aloud: the headline in large type, the status, the pull request, and up to three buttons
+with the decision first — **Merge #1261** for a session with an open, green PR, else **Go
+ahead** (sends *Yes, go ahead.*), or **Restart** for a failed one — then **Talk about it**, which
+opens the call on that session, and **More** (Read aloud, Archive). Merge and Archive ask once
+more; Go ahead and Restart act on the tap. Each action is confirmed out loud, and a failure is
+spoken as the server worded it. Trash, new conversation, settings, typing and transcripts are not
+in the car at all.
+
+**Proactive, without notifications.** CarPlay shows no notifications for this category, so the car
+re-reads the board every minute and, when a session enters Needs you or fails while you drive,
+says so — "Zimmer: Rotate the staging deploy key. It failed. …" — with *Talk about it* on the
+screen. A read that fails says so rather than claiming nothing needs you.
+
+A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/turn-sources/)); the
+car's Live call delegates as the phone does, tagged `live_voice`. The rules — which sessions, in
+what order, every button set, every spoken line — are `DrivingBoard` and `LiveContext` in
+ZimmerKit, tested on Linux. The audio session is held only while the car speaks or the call runs,
+the microphone opens only for the call, and nothing is pushed deeper than a card over the tab bar.
 
 Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
 in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The

@@ -234,6 +234,32 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_nil response.parsed_body.dig("session", "model")
   end
 
+  test "the sessions a conversation has touched come back newest first with their board rows, on a key or the app" do
+    conversation = create_live_conversation(mode: "voice")
+    started = create_session(title: "Investigate the flaky poller test", status: :running)
+    SessionStatusSummary.create!(session: started, state: "ready", summary: "Reading the **poller** spec.", generated_at: Time.current)
+    checked = create_session(title: "Which Postgres?", status: :needs_input)
+    conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c1", tool_arguments: { "tool" => "quick_router" },
+                               tool_output: "- **ID:** #{started.id}\n- **URL:** http://example.com/sessions/#{started.id}")
+    conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c2", tool_arguments: { "tool" => "get_session", "arguments" => { "id" => checked.id } }, tool_output: "## Session")
+    conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c3", tool_arguments: { "tool" => "get_session", "arguments" => { "id" => 0 } }, tool_output: "no such session")
+
+    get "/api/v1/live_conversations/#{conversation.id}/sessions", headers: @key_headers
+    assert_response :success
+    body = response.parsed_body
+    assert_equal [ checked.id, started.id ], body["sessions"].map { |s| s["id"] }, "most recently named first; an id that is no session is skipped"
+    assert_equal "needs_input", body["sessions"].first["status"]
+    assert_equal "Reading the **poller** spec.", body.dig("board_rows", started.id.to_s, "status_summary", "summary")
+    assert_nil body.dig("board_rows", checked.id.to_s, "status_summary")
+
+    get "/api/v1/live_conversations/#{conversation.id}/sessions", headers: @headers
+    assert_response :success
+    assert_equal 2, response.parsed_body["sessions"].size
+
+    get "/api/v1/live_conversations/#{conversation.id}/sessions"
+    assert_response :unauthorized
+  end
+
   test "an unknown conversation is a 404" do
     get "/api/v1/live_conversations/999999", headers: @headers
     assert_response :not_found

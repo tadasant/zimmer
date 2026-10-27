@@ -24,9 +24,10 @@
   * The CarPlay scene (`CPTemplateApplicationSceneSessionRoleApplication`). CarPlay connects
     it only in a build that signs in the voice-based conversational entitlement
     (App/Zimmer/CarPlay.entitlements, which `ios/bin/testflight` signs into every build).
-  * `NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription` — Live Mode's voice
-    call, and the CarPlay conversation listening for the driver's answer. Without the keys
-    iOS terminates the app the first time it asks, rather than showing the permission prompt.
+  * `NSMicrophoneUsageDescription` — Live Mode's voice call, on the phone and in the car. Without
+    the key iOS terminates the app the first time it asks, rather than showing the permission
+    prompt. The car listens only through that call (no on-device recogniser), so there is no
+    speech-recognition key.
   * `UIBackgroundModes` `audio` — a Live Mode voice call carries on with the screen locked or the
     app in the background (in the car, mostly). It holds audio only while a call runs.
 -->
@@ -67,13 +68,11 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Live Mode listens while you talk to Zimmer, and in the car Zimmer listens for your answer to a session that needs you.</string>
+	<string>Live Mode listens while you talk to Zimmer, on your phone and in the car.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 	</array>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>In the car, Zimmer turns what you say into a reply to the session that asked. Recognition stays on this iPhone.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

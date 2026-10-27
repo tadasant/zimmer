@@ -86,6 +86,45 @@ class LiveConversation < ApplicationRecord
 
   def enabled_mcp_servers = Array(mcp_servers)
 
+  # The sessions this conversation has touched through its tool calls — started,
+  # checked on, followed up, searched for — newest first. Read off the tool turns:
+  # the session named in a call's arguments, and the ids its output writes the
+  # way Zimmer's own tools write them (`**ID:** 1101`, a `/sessions/1101` URL,
+  # "session #1101"). What a client shows beside the conversation, so the person
+  # sees which sessions are being talked about: the car's call screen draws it.
+  #
+  # @param limit [Integer] at most this many, the most recently named first
+  # @return [Array<Integer>]
+  def referenced_session_ids(limit: REFERENCED_SESSIONS_LIMIT)
+    ids = []
+    turns.where(role: "tool").order(id: :desc).each do |turn|
+      self.class.session_ids_in_arguments(turn.tool_arguments).each { |id| ids << id unless ids.include?(id) }
+      self.class.session_ids_in_text(turn.tool_output.to_s).each { |id| ids << id unless ids.include?(id) }
+      break if ids.size >= limit
+    end
+    ids.first(limit)
+  end
+
+  REFERENCED_SESSIONS_LIMIT = 12
+  REFERENCED_ARGUMENT_KEYS = %w[session_id id session_ids ids].freeze
+  REFERENCED_TEXT_PATTERNS = [ /\*\*ID:\*\*\s*(\d+)/, %r{/sessions/(\d+)}, /[Ss]ession\s+#(\d+)/ ].freeze
+
+  # @param arguments [Hash, nil] a tool turn's arguments; a Zimmer gateway call
+  #   names its session under `arguments`
+  # @return [Array<Integer>]
+  def self.session_ids_in_arguments(arguments)
+    return [] unless arguments.is_a?(Hash)
+
+    inner = arguments["arguments"].is_a?(Hash) ? arguments["arguments"] : arguments
+    REFERENCED_ARGUMENT_KEYS.flat_map { |key| Array(inner[key]) }.filter_map { |value| value.to_s.match?(/\A\d+\z/) ? value.to_i : nil }.uniq
+  end
+
+  # @return [Array<Integer>] the ids `text` names, in the order it names them, each once
+  def self.session_ids_in_text(text)
+    REFERENCED_TEXT_PATTERNS.flat_map { |pattern| text.to_enum(:scan, pattern).map { Regexp.last_match.then { |m| [ m.begin(0), m[1].to_i ] } } }
+      .sort_by(&:first).map(&:last).uniq
+  end
+
   def end!
     return if ended? || failed?
 
