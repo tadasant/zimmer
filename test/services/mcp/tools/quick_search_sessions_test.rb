@@ -364,4 +364,32 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     refute_includes output, "ID: #{other.id}"
     assert_match(/No sessions found|found 0|0 sessions/i, @tool.call("query" => "Rotate the deploy key", "agent_root" => "no-such-root"))
   end
+
+  # ---- CarPlay fit ----------------------------------------------------------
+
+  test "carplay_fit is unfiltered by default, narrows when asked, and is reported on the row" do
+    laptop = create_transcript_session(title: "needs the mac", said: "x")
+    laptop.update!(carplay_fit: "laptop_only", carplay_fit_reason: "local_device", carplay_fit_source: "auto",
+                   carplay_fit_line_count: laptop.transcript_line_count)
+    ok = create_transcript_session(title: "say yes", said: "y")
+    ok.update!(carplay_fit: "carplay_ok", carplay_fit_source: "human", carplay_fit_line_count: ok.transcript_line_count)
+    untagged = create_transcript_session(title: "nobody judged", said: "z")
+
+    everything = @tool.call({})
+    assert_includes everything, "needs the mac"
+    assert_includes everything, "- **CarPlay fit:** Laptop only (a local device) · auto · current — presentation only"
+    assert_includes everything, "- **CarPlay fit:** CarPlay-ok · human · current"
+
+    driving = @tool.call({ "carplay_fit" => "not_laptop_only" })
+    assert_includes driving, "say yes (ID: #{ok.id})"
+    assert_includes driving, "nobody judged (ID: #{untagged.id})"
+    assert_not_includes driving, "needs the mac"
+
+    assert_includes @tool.call({ "carplay_fit" => "laptop_only" }), "needs the mac"
+    assert_not_includes @tool.call({ "carplay_fit" => "laptop_only" }), "say yes"
+    assert_not_includes @tool.call({ "carplay_fit" => "untagged" }), "say yes"
+
+    error = assert_raises(Mcp::ToolError) { @tool.call({ "carplay_fit" => "maybe" }) }
+    assert_match(/Invalid carplay_fit/, error.message)
+  end
 end

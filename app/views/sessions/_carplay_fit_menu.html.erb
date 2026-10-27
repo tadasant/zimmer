@@ -1,0 +1,62 @@
+<%# The CarPlay-fit control: mark a session as something a driver can act on by
+    voice, as laptop-only, or clear the mark — with the reason, so a person can
+    say the same thing the MCP action and the REST endpoint can. A person's mark
+    is written as `human` and outranks the automatic one Zimmer derives at every
+    rest.
+
+    Presentation and triage only. It changes which rows a driver is shown and
+    nothing about when the session runs. No JavaScript: one plain PATCH form in
+    a native <details> disclosure, so it works on every surface the same way.
+
+    Locals:
+      agent_session — the session
+      variant       — :button     (session detail header, and the User view row)
+                      :sheet_item (the mobile bottom sheet on the detail page)
+      compact       — only meaningful with variant: :button; row scale. %>
+<% variant ||= :button %>
+<% compact = local_assigns.fetch(:compact, false) %>
+<%# A stale mark is shown struck through on the chip; the control's label goes
+    back to the generic one rather than asserting a judgement the session has
+    moved past. %>
+<% label = agent_session.carplay_fit_current? ? agent_session.carplay_fit_label : "CarPlay fit" %>
+<% car_icon = capture do %>
+  <svg class="<%= variant == :sheet_item ? 'h-5 w-5' : (compact ? 'h-3.5 w-3.5' : 'h-4 w-4') %>" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3 11.5A1.5 1.5 0 014.5 10h.7l1.4-3.5A2 2 0 018.46 5h3.08a2 2 0 011.86 1.5L14.8 10h.7a1.5 1.5 0 011.5 1.5V14a1 1 0 01-1 1h-1a1.5 1.5 0 01-3 0H8a1.5 1.5 0 01-3 0H4a1 1 0 01-1-1v-2.5zm4.2-1.5h5.6l-1-2.5H8.2l-1 2.5z" /></svg>
+<% end %>
+<details class="<%= variant == :sheet_item ? 'block' : 'relative inline-block' %>" data-carplay-fit-menu>
+  <% if variant == :sheet_item %>
+    <summary class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100 cursor-pointer list-none">
+      <span class="w-9 h-9 rounded-full bg-sky-50 text-sky-600 inline-flex items-center justify-center mr-3 shrink-0"><%= car_icon %></span>
+      <span class="flex-1 min-w-0 font-medium">CarPlay fit <span class="block text-xs font-normal text-gray-500 truncate"><%= agent_session.carplay_fit_summary || "untagged" %></span></span>
+    </summary>
+  <% else %>
+    <summary class="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-sky-500 cursor-pointer list-none whitespace-nowrap <%= compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm shadow-sm' %>"
+             title="CarPlay fit: <%= agent_session.carplay_fit_summary || 'untagged' %>. Visual only — it does not affect whether or when this session runs.">
+      <span class="text-gray-400"><%= car_icon %></span>
+      <%= label %>
+    </summary>
+  <% end %>
+  <div class="<%= variant == :sheet_item ? 'px-4 pb-3' : 'absolute left-0 sm:left-auto sm:right-0 z-20 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-gray-200 bg-white p-2 shadow-lg' %>">
+    <%= form_with url: update_carplay_fit_session_path(agent_session), method: :patch, data: { turbo: false }, class: "flex flex-col gap-2" do |f| %>
+      <label class="flex flex-col gap-1 text-xs text-gray-500">
+        <span>What it needs from you</span>
+        <%= f.select :carplay_fit_reason,
+              SessionCarplayFit::REASONS.map { |reason| [ SessionCarplayFit::REASON_LABELS.fetch(reason).capitalize, reason ] },
+              { include_blank: "Not said", selected: agent_session.carplay_fit_reason },
+              class: "w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700" %>
+      </label>
+      <% [ [ SessionCarplayFit::CARPLAY_OK, "CarPlay-ok", "A driver can act on this by voice." ],
+           [ SessionCarplayFit::LAPTOP_ONLY, "Laptop only", "Needs a screen or a keyboard." ],
+           [ "clear", "Clear mark", "Back to untagged; the next status summary re-derives it." ] ].each do |(value, text, hint)| %>
+        <% active = value != "clear" && agent_session.carplay_fit == value %>
+        <%= f.button type: "submit", name: "carplay_fit", value: value,
+              class: "w-full flex flex-col items-start rounded px-3 py-2 text-left text-sm hover:bg-gray-50 #{active ? 'text-sky-700 font-semibold' : 'text-gray-700'}" do %>
+          <span><%= text %><% if active %> ✓<% end %></span>
+          <span class="text-xs text-gray-400"><%= hint %></span>
+        <% end %>
+      <% end %>
+    <% end %>
+    <p class="px-3 py-1.5 text-[11px] text-gray-400">
+      Visual only. Zimmer re-derives the mark from the status summary each time the session comes to rest; yours outranks that until then.
+    </p>
+  </div>
+</details>

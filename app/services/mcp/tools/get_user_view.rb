@@ -45,11 +45,13 @@ module Mcp
         2. Within each class, precedence descending — an absolute scale, so 100000 comes before 50.
         3. Within each, oldest first.
 
-        **Per row:** title, status, scheduling class, precedence, agent root, board visibility, the generated status summary (Zimmer's own cached "where this stands" blurb, with how many messages have landed since it was written), and the session's most recent pull request with its state (`open`/`merged`/`closed`) and CI verdict (`pass`/`fail`/`pending`). A row marked **Mergeable: yes** is one whose Merge button the user is being offered right now — open, and CI green; one marked **Merge already authorized** is one they have already pressed it on.
+        **Per row:** title, status, scheduling class, precedence, agent root, board visibility, CarPlay fit (whether what the row needs from the human can be done by voice from a car — `carplay_ok`, `laptop_only` or untagged, with who judged it and whether that judgement is still current), the generated status summary (Zimmer's own cached "where this stands" blurb, with how many messages have landed since it was written), and the session's most recent pull request with its state (`open`/`merged`/`closed`) and CI verdict (`pass`/`fail`/`pending`). A row marked **Mergeable: yes** is one whose Merge button the user is being offered right now — open, and CI green; one marked **Merge already authorized** is one they have already pressed it on.
 
         **There is no tool for pressing that button, deliberately.** The Merge button is the one sanctioned route to an agent merging its own work, and it is sanctioned precisely because a human clicked it. What proves a human did is the `HumanMessage` the browser writes for the click — not the `[HUMAN-AUTHORIZED MERGE]` text in the message, which any caller can type. Rank the row; do not try to action it, and never send that marker yourself.
 
         **Filters default to the board's own defaults**: status `needs_input`, on-board only. That is the population the view exists for — sessions parked waiting on a human. Widen deliberately.
+
+        **Triaging for a driver:** pass `carplay_fit: "not_laptop_only"` to drop the rows that need a screen or a keyboard, and say how many were dropped rather than reading them out. A row that comes back `untagged` is one nobody has judged — read its summary and mark it with `action_session` → `set_carplay_fit`.
 
         **Write the order back with `reorder_user_view`.** Do not try to reorder with `action_session`/`change_precedence` one session at a time: that is one call per row, and it cannot express "this is the order" — a rank you compute from a board that moved under you lands in the wrong place.
 
@@ -79,6 +81,11 @@ module Mcp
             type: "string",
             enum: SessionVisibility::FILTER_OPTIONS,
             description: '"on_board" (default) hides the rows the user has snoozed or hidden — that is the board as drawn. "off_board" is only those; "all" is both.'
+          },
+          carplay_fit: {
+            type: "string",
+            enum: SessionCarplayFit::FILTER_OPTIONS,
+            description: 'Narrow by CARPLAY FIT — whether what a row needs from the human can be done by voice from a car. Omit for the board as drawn. "not_laptop_only" is the driving default: rows marked carplay_ok plus rows nobody has judged yet. "carplay_ok", "laptop_only" and "untagged" are the single buckets; a mark gone stale because the session moved counts as untagged. The order is unchanged — this only decides which rows are listed.'
           },
           summary_chars: {
             type: "number",
@@ -156,11 +163,16 @@ module Mcp
           scope = scope.where("sessions.metadata->>'agent_root_key' = ?", args["agent_root"].to_s)
         end
 
-        case args["visibility"].presence || SessionVisibility::FILTER_ON_BOARD
+        scope = case args["visibility"].presence || SessionVisibility::FILTER_ON_BOARD
         when SessionVisibility::FILTER_OFF_BOARD then scope.board_hidden
         when SessionVisibility::FILTER_ALL then scope
         else scope.board_visible
         end
+
+        # The driver's axis. Only narrows when asked, and never reorders: a
+        # laptop-only row keeps its place for the laptop.
+        scope = scope.carplay_fit_filter(args["carplay_fit"]) if args["carplay_fit"].present?
+        scope
       end
 
       # An ABSENT status filter defaults to the board's own default; an explicitly
@@ -199,6 +211,8 @@ module Mcp
         if (tucked = session.visibility_summary)
           lines << "- **Visibility:** #{tucked} — presentation only; it does not affect scheduling."
         end
+
+        lines << "- **CarPlay fit:** #{session.carplay_fit_summary || 'untagged'}"
 
         if pr.any?
           detail = [ "state #{pr.status || 'unknown'}" ]

@@ -321,6 +321,19 @@ default**, deliberately, because a session a human snoozed off their board is st
 duplicate check has to find. It is not in the `self_session` group: a session tidying its own card
 off a human's board is not self-management.
 
+`action_session`'s `set_carplay_fit` action writes a session's [CarPlay fit](/sessions/carplay-fit/)
+— whether what it needs next from a human can be done by voice from a car: `carplay_ok`,
+`laptop_only`, or `clear`, with an optional `carplay_fit_reason`. Zimmer derives the mark itself from
+the status summary at every rest, so this is for a human's instruction or for a row the automatic
+mark missed. Provenance comes from the connection: a session-stamped connection writes a `session`
+mark, anything else an `assistant` one, and a standing `human` mark at the same transcript position
+is kept rather than overwritten (the result says "CarPlay Fit Kept"). Unlike `set_visibility` it IS
+on the `self_session` surface, because "what I need from the human next" is a session's own
+knowledge. `quick_search_sessions` and `get_user_view` take a `carplay_fit` filter (`carplay_ok`,
+`laptop_only`, `untagged`, `not_laptop_only`), unset by default; `get_user_view` rows always carry a
+`**CarPlay fit:**` line, and `quick_search_sessions` and `get_session` carry one whenever a mark
+exists. Nothing scheduling reads it.
+
 `get_session` always includes a `### Session Hierarchy` section (the spawn tree this session belongs
 to — an edge means "spawned", not "most recently talked to") and a `### Human Messages` section (the
 messages Zimmer knows a named human authored anywhere in that tree, with author, channel, timestamp,

@@ -59,6 +59,8 @@ module Mcp
 
         **Board visibility is NOT a scheduling signal.** Sessions carry a second, entirely separate field — `visibility`: `visible`, `hidden`, or `snoozed` until a time — whose only purpose is letting a human tidy their dashboard. It does not affect whether, when, or in what order Zimmer runs anything, and no scheduler reads it. A result marked `**Visibility:**` is running, queued and ranked exactly as it would be otherwise; the human just is not looking at its card right now. **This search is unfiltered on that axis by default, deliberately** — a session hidden from a board must never be hidden from a duplicate check — so leave `visibility` unset unless you specifically want one side of it.
 
+                **CarPlay fit** is a third axis, for a driver: whether what a session needs next from the human can be done by voice from a car (`carplay_ok`), needs a screen or keyboard (`laptop_only`), or has not been judged. Zimmer derives it from the status summary at every rest; a row reports its mark, with who wrote it and whether it is current. Filter on it with `carplay_fit` only when you are triaging for a driver — like visibility, it is unset by default and says nothing about scheduling.
+
         **Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
@@ -129,6 +131,11 @@ module Mcp
             type: "string",
             enum: [ "on_board", "off_board" ],
             description: "Filter by BOARD VISIBILITY — presentation only, and unset by default. \"on_board\" is what a tidied dashboard shows (visible, plus snoozed sessions whose snooze has run out); \"off_board\" is the hidden and snoozed ones. This says nothing about scheduling: a snoozed session runs exactly when it otherwise would. Leave it unset for duplicate checks and any other question about what work exists — filtering here can only hide sessions that do exist."
+          },
+          carplay_fit: {
+            type: "string",
+            enum: SessionCarplayFit::FILTER_OPTIONS,
+            description: "Filter by CARPLAY FIT — whether what a session needs next from the human can be done by voice from a car. Unset by default. \"carplay_ok\" is sessions marked good for a driver, \"laptop_only\" the ones marked as needing a screen or keyboard, \"untagged\" the ones nobody has judged (including a mark gone stale because the session has moved since), and \"not_laptop_only\" is carplay_ok plus untagged — the one a driver wants. Presentation and triage only: it says nothing about scheduling. Leave it unset for duplicate checks and any other question about what work exists."
           },
           show_archived: {
             type: "boolean",
@@ -315,6 +322,16 @@ module Mcp
           raise ToolError, "Invalid visibility: #{args['visibility']}. Valid: #{SessionVisibility::FILTER_ON_BOARD}, #{SessionVisibility::FILTER_OFF_BOARD}."
         end
 
+        # CarPlay fit: the driver's triage axis, applied only when asked for and for
+        # the same reason visibility is — a laptop-only session is still the session
+        # a duplicate check is looking for.
+        if (fit = args["carplay_fit"].presence)
+          unless SessionCarplayFit::FILTER_OPTIONS.include?(fit)
+            raise ToolError, "Invalid carplay_fit: #{fit}. Valid: #{SessionCarplayFit::FILTER_OPTIONS.join(', ')}."
+          end
+          scope = scope.carplay_fit_filter(fit)
+        end
+
         if (genesis = args["genesis"].presence)
           unless SessionGenesis.valid?(genesis)
             raise ToolError, "Invalid genesis: #{genesis}. Valid: #{SessionGenesis::KEYS.join(', ')}"
@@ -416,6 +433,12 @@ module Mcp
         if (tucked = session.visibility_summary)
           lines << "- **Visibility:** #{tucked} — presentation only. It does not affect scheduling or execution; " \
                    "this session runs exactly as it would if it were on the board."
+        end
+
+        # The driver's triage axis. Reported whenever a mark exists, stale ones
+        # included — a reader deciding whether to trust it wants to know it is old.
+        if (fit = session.carplay_fit_summary)
+          lines << "- **CarPlay fit:** #{fit} — presentation only; it does not affect scheduling."
         end
 
         lines << "- **Slug:** #{session.slug}" if verbose && session.slug.present?

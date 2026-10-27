@@ -1,0 +1,17 @@
+<%# The CarPlay-fit chip: can what this session needs next from a human be done
+    by voice from a car? Rendered whenever a mark exists, stale ones included — a
+    reader deciding whether to trust it wants to know it was there and that it is
+    old. Visual only: nothing about when the session runs is read from it.
+
+    Locals: agent_session %>
+<% current = agent_session.carplay_fit_current? %>
+<% ok = agent_session.carplay_fit == SessionCarplayFit::CARPLAY_OK %>
+<span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium <%= if !current then 'bg-gray-100 text-gray-500 line-through decoration-gray-400' elsif ok then 'bg-sky-100 text-sky-700' else 'bg-stone-200 text-stone-700' end %>"
+      title="<%= agent_session.carplay_fit_summary %>. Visual only — it does not affect whether or when this session runs."
+      data-carplay-fit="<%= agent_session.carplay_fit %>"
+      data-carplay-fit-current="<%= current %>">
+  <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+    <path d="M3 11.5A1.5 1.5 0 014.5 10h.7l1.4-3.5A2 2 0 018.46 5h3.08a2 2 0 011.86 1.5L14.8 10h.7a1.5 1.5 0 011.5 1.5V14a1 1 0 01-1 1h-1a1.5 1.5 0 01-3 0H8a1.5 1.5 0 01-3 0H4a1 1 0 01-1-1v-2.5zm4.2-1.5h5.6l-1-2.5H8.2l-1 2.5z" />
+  </svg>
+  <%= agent_session.carplay_fit_label %><% if agent_session.carplay_fit_reason.present? %> · <%= SessionCarplayFit::REASON_LABELS[agent_session.carplay_fit_reason] %><% end %>
+</span>

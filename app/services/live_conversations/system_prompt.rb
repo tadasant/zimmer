@@ -46,13 +46,31 @@ module LiveConversations
         "",
         "- You are #{LABEL}, one continuous conversation with the person running this Zimmer. They can type or talk, " \
         "and switch between the two at any time; spoken turns in the thread are transcripts. Right now it is #{mode.voice? ? 'spoken' : 'typed'}.",
+        client_line,
         "- Anything that takes more than about five seconds belongs in a background session: start it through the `#{ToolBridge::ZIMMER_TOOL}` function, say that you have, and keep talking. Check on it later with the same function.",
         "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you. Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`.",
         "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ]
-      lines.join("\n")
+      lines.compact.join("\n")
+    end
+
+    # Which client is driving the conversation right now, when that changes what
+    # the person can do. Zimmer states the fact; what to do with it belongs to
+    # the root's own style file. Rebuilt with the rest of the prompt on every
+    # use, so a conversation that moves from the car to the phone changes its
+    # own context on the next answer. `client_surface` is last-writer-wins, from
+    # the client that last spoke (LiveConversations::Actions#note_client!).
+    def client_line
+      # TurnSource's surface name; the same string LiveConversation.normalize_client_surface stores.
+      return nil unless @conversation.client_surface == "carplay"
+
+      "- The client driving this conversation right now is CarPlay: the person is in a car, with their eyes " \
+        "and hands busy. Sessions carry a CarPlay fit (`carplay_ok`, `laptop_only`, or untagged) saying whether " \
+        "what they need next can be done by voice; `get_user_view` and `quick_search_sessions` take a " \
+        "`carplay_fit` filter (`not_laptop_only` is the driving default) and `action_session` sets it with " \
+        "`set_carplay_fit`."
     end
 
     def guidance_section

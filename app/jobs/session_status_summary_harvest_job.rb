@@ -63,7 +63,8 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     # sniffing the transcript is the same test AgentSessionJob applies to decide
     # whether an exit was a completed turn, so both paths agree on what a park is.
     parked = park_reason(fork)
-    text = (failed || parked) ? nil : extracted_summary(fork)
+    raw = (failed || parked) ? nil : extracted_answer(fork)
+    text = StatusSummaryAnswer.clean(raw)
 
     with_db_retry do
       if text.present?
@@ -74,6 +75,9 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
           state: "ready",
           error: nil
         )
+        # The fork answered the CarPlay-fit question in the same turn; its mark
+        # is stamped at the line count the blurb is, so the two go stale together.
+        StatusSummaryAnswer.apply_carplay_fit(summary.session, raw, line_count: summary.requested_line_count.to_i)
       else
         # NOT a summary write: `summary`, `generated_at` and
         # `transcript_line_count` are all left alone, so whatever was displayed
@@ -104,10 +108,12 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
   private
 
-  # The text of the last assistant message the fork wrote in its own turn.
+  # The raw text of the last assistant message the fork wrote in its own turn.
   # Messages at or before the fork point are the copied conversation, not the
-  # answer, so the scan starts one past it.
-  def extracted_summary(fork)
+  # answer, so the scan starts one past it. Raw rather than cleaned, because the
+  # caller reads two things out of it: the blurb (StatusSummaryAnswer.clean) and
+  # the CarPlay-fit trailer (StatusSummaryAnswer.carplay_fit).
+  def extracted_answer(fork)
     start_index = fork.metadata&.dig("forked_at_message_index").to_i + 1
     total = fork.transcript_line_count
     return nil if total <= start_index
@@ -123,7 +129,7 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
       text_content_from_parts(event[:content]).presence
     end
 
-    StatusSummaryAnswer.clean(texts.last)
+    texts.last
   end
 
   def text_content_from_parts(parts)

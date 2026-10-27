@@ -4651,6 +4651,13 @@ CarPlay's Live call is the phone's `LiveCall`, using the same client, so its del
 the web app and the phone both drive one conversation, the next delegation names whichever spoke
 last.
 
+Until that is fixed on the iOS side (`LiveAPI` passing CarPlay's `ClientSource`), the CarPlay line
+that `LiveConversations::SystemPrompt` adds to the mechanics section when `client_surface` is
+`carplay` never fires for a call started from the car: the surface it records is `ios`. The
+[CarPlay fit](/sessions/carplay-fit/) filter and action work regardless, because the `live-mode`
+root's voice style already assumes the person may be driving; what is missing is Zimmer *telling* it
+so. The fix touches the files the CarPlay redesign is in, so it is sequenced after that lands.
+
 ### An API key is `api`, even when an agent holds it
 
 The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names

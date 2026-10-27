@@ -12,7 +12,7 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     schema = definition[:inputSchema]
 
     assert_equal "action_session", definition[:name]
-    assert_equal %w[update_notes update_title set_heartbeat pause_into_spot_queue rest_in_needs_input message_parent archive], schema[:properties][:action][:enum]
+    assert_equal %w[update_notes update_title set_heartbeat set_carplay_fit pause_into_spot_queue rest_in_needs_input message_parent archive], schema[:properties][:action][:enum]
     assert_equal %w[session_id action], schema[:required]
     assert_match(/self-management/, definition[:description])
   end
@@ -320,5 +320,22 @@ class Mcp::Tools::SelfSessionActionSessionTest < ActiveSupport::TestCase
     properties = Mcp::Tools::SelfSessionActionSession.input_schema.to_h.deep_symbolize_keys[:properties]
 
     assert_equal Sessions::MessageParent::REASONS.keys, properties[:reason][:enum]
+  end
+
+  # "What I need from the human next" is a session's own knowledge, so the
+  # narrowed surface carries the action — unlike set_visibility — and a session
+  # writing it about itself is recorded as such.
+  test "set_carplay_fit is on the self-session surface and writes a session mark" do
+    session = Session.create!(prompt: "p", agent_runtime: "claude_code", status: :needs_input,
+                              git_root: "https://github.com/test/repo.git", branch: "main")
+    tool = Mcp::Tools::SelfSessionActionSession.new(context: Mcp::Context.new(tool_groups: "self_session", session_id: session.id))
+
+    result = tool.call({ "session_id" => session.id, "action" => "set_carplay_fit", "carplay_fit" => "carplay_ok", "carplay_fit_reason" => "decision" })
+
+    assert_includes result, "## CarPlay Fit Set"
+    session.reload
+    assert_equal "carplay_ok", session.carplay_fit
+    assert_equal "session", session.carplay_fit_source
+    assert_not_includes Mcp::Tools::SelfSessionActionSession::ACTIONS, "set_visibility"
   end
 end
