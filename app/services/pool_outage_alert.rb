@@ -42,6 +42,13 @@ class PoolOutageAlert
     new(session: session, park_reason: park_reason, runtime: runtime).alert!
   end
 
+  # The pool recovered: release the throttle so a later, separate outage pages.
+  def self.rearm!
+    AppSetting.where.not(pool_outage_alerted_at: nil).update_all(pool_outage_alerted_at: nil)
+  rescue => e
+    Rails.logger.warn("[PoolOutageAlert] Could not rearm the throttle: #{e.class}: #{e.message}")
+  end
+
   def initialize(session:, park_reason:, runtime:)
     @session = session
     @park_reason = park_reason

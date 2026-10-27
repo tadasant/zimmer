@@ -290,11 +290,20 @@ class AuthOutageParkService
     return false unless session
 
     session.reload
+    # Archived or failed while the clone was being set up: nothing to park, and
+    # nothing to page about on its behalf.
+    return false unless session.waiting? || session.running?
+
     runtime = session.agent_runtime
     reason = reason_for_unusable_pool(runtime)
 
     undelivered = undelivered_prompt_for(session, follow_up_prompt)
     extra = undelivered.present? ? { UNDELIVERED_PROMPT_KEY => undelivered } : {}
+
+    # A session re-entered while `running` has no process whose end would carry
+    # out a `pending_sleep`. Bring it to rest first, so #record_park! sleeps it
+    # outright from needs_input rather than marking a sleep nothing will perform.
+    session.pause! if session.running? && session.may_pause?
 
     parked = new(session, log_buffer: log_buffer, logger: logger).park!(
       reason: reason,
@@ -355,8 +364,10 @@ class AuthOutageParkService
   def self.undelivered_prompt_for(session, follow_up_prompt)
     return follow_up_prompt if follow_up_prompt.present? && !AutomatedPrompts.nudge?(follow_up_prompt)
     return nil if session.metadata&.dig("runtime_started") == true
+    return nil if session.prompt.blank?
 
-    session.prompt.presence
+    # As a first spawn delivers it, turn-source note included.
+    session.initial_prompt_for_delivery
   end
 
   # Did the turn Zimmer was delivering never reach the runtime?
@@ -580,6 +591,10 @@ class AuthOutageParkService
       resumed += 1
       woken_per_runtime[runtime] += 1
     end
+
+    # The pool served somebody again, so the outage is over: the next one pages
+    # afresh rather than inside the last one's throttle window.
+    PoolOutageAlert.rearm! if resumed.positive?
 
     if held.positive?
       logger.info("Held parked sessions past the per-sweep wake cap",
@@ -1015,8 +1030,12 @@ class AuthOutageParkService
         # record is still written, exactly as it was before the two writes were
         # merged. This branch never had a sleep to be atomic WITH, so nothing about
         # it changes: the caller is told the outage was recorded, because it was.
-        @logger.info("Not sleeping a parked session that is neither running nor idle",
-          status: session.status)
+        # `waiting` is the ordinary shape for a refused spawn (.park_refused_spawn!):
+        # already dormant, so there is nothing to say.
+        unless session.waiting?
+          @logger.info("Not sleeping a parked session that is neither running nor idle",
+            status: session.status)
+        end
         session.merge_metadata!(outage)
         true
       end
