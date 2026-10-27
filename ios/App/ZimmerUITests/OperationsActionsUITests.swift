@@ -139,25 +139,42 @@ final class OperationsActionsUITests: XCTestCase {
     /// from one of three heights in turn: a press that lands on a full-width button is
     /// swallowed by it and moves nothing (a recording shows twenty seconds of that), and the
     /// next height is clear of it.
+    ///
+    /// At the head of the page the bar shows its large title, and an element can be in plain
+    /// view under it and still read as above the bar: the queue-recovery banner, which heads
+    /// Health, did for twenty-four upward drags in a recording, each of which only bounced
+    /// the page. So an element that upward drags from every start height in turn leave where
+    /// it was, under a bar tall enough to be showing its large title, is at the head of a page
+    /// that will not scroll further, and it is reached. A compact bar never counts: there a
+    /// press swallowed by a button also leaves the element where it was.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, searching: Direction = .down) -> Bool {
+        let bar = app.navigationBars.firstMatch
+        func laidOut() -> CGRect? {
+            element.exists && !element.frame.isEmpty ? element.frame : nil
+        }
         func placement() -> Direction? {
-            guard element.exists, !element.frame.isEmpty else { return searching }
-            let bar = app.navigationBars.firstMatch
+            guard let frame = laidOut() else { return searching }
             let top = bar.exists ? bar.frame.maxY : 0
-            if element.frame.minY < top { return .up }
-            if element.frame.maxY > app.frame.maxY - 100 { return .down }
+            if frame.minY < top { return .up }
+            if frame.maxY > app.frame.maxY - 100 { return .down }
             return nil
         }
         _ = element.waitForExistence(timeout: 2)
         let starts: [CGFloat] = [0.7, 0.6, 0.5]
+        var unmoved = 0
         for attempt in 0..<24 {
             guard let direction = placement() else { return true }
+            let before = direction == .up ? laidOut() : nil
             let start = starts[attempt % starts.count]
             let (from, to): (CGFloat, CGFloat) = direction == .down ? (start, start - 0.25) : (start - 0.25, start)
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
                 .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: to)))
+            if let before, let after = laidOut(), abs(after.minY - before.minY) < 1 { unmoved += 1 } else { unmoved = 0 }
+            if unmoved == starts.count, bar.exists, bar.frame.height > 70 { return true }
         }
-        return placement() == nil
+        if placement() == nil { return true }
+        print("scrollTo gave up: element \(laidOut().map { "\($0)" } ?? "not laid out"), bar \(bar.exists ? "\(bar.frame)" : "absent")")
+        return false
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
