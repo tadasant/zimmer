@@ -834,8 +834,8 @@ When it runs out, the result says the session is still working and gives its id,
 anything it has said so far. The caller goes back to polling `get_session`; the session itself is not
 touched.
 
-The timeout bounds the **whole call**, not just the wait. Its clock starts when `/mcp` receives the
-request. Authentication, starting the session and queueing its job all come out of it, and so do 3
+The timeout bounds the **whole call**, not just the wait. Its clock starts when `McpController` begins
+handling the request, before authentication. Authentication, starting the session and queueing its job all come out of it, and so do 3
 seconds held back for the last re-read, the render and the trip back through the proxies
 (`Sessions::SyncReply::RESPONSE_MARGIN_SECONDS`). The wait gets whatever is left. A create slow
 enough to use the whole budget means no wait at all: the call looks once and returns what it sees.

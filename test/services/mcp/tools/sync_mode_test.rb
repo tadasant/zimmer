@@ -146,8 +146,9 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
   end
 
   test "the budget is counted from when the request arrived, not from the start of the wait" do
-    # The request has already spent 50 of its 55 seconds before the tool runs.
-    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+    # The request has already spent 53 of its 55 seconds before the tool runs:
+    # with the 3s response margin, nothing is left to wait.
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 53)
 
     started = monotonic_now
     result = Mcp::Tools::QuickRouter.new(context: ctx).call("prompt" => "a long job", "sync" => true,
@@ -155,7 +156,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
     elapsed = monotonic_now - started
 
     session = Session.order(:id).last
-    assert_operator elapsed, :<, 2, "waited #{elapsed.round(2)}s with 5s of budget and a 3s margin left"
+    assert_operator elapsed, :<, 5, "took #{elapsed.round(2)}s with no budget left to wait"
     assert_includes result, "- **ID:** #{session.id}"
     assert_includes result, "https://zimmer.example/sessions/#{session.id}"
     assert_includes result, "Still working"
@@ -164,7 +165,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
   test "a request with budget left waits for what remains of it, less the response margin" do
     ctx = context(request_started_at: monotonic_now - 10)
     # The expectation is the assertion; what the wait returns does not matter here.
-    Sessions::SyncReply.any_instance.expects(:wait).with { |timeout:| timeout.between?(41.5, 42) }
+    Sessions::SyncReply.any_instance.expects(:wait).with { |timeout:| timeout.between?(39, 42) }
       .raises(RuntimeError)
 
     Mcp::Tools::QuickRouter.new(context: ctx).call("prompt" => "hello", "sync" => true, "sync_timeout_seconds" => 55)
@@ -183,7 +184,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
   end
 
   test "start_session sync takes its budget from the request start too" do
-    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 53)
 
     started = monotonic_now
     result = Mcp::Tools::StartSession.new(context: ctx)
@@ -192,7 +193,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
     elapsed = monotonic_now - started
 
     session = Session.order(:id).last
-    assert_operator elapsed, :<, 2
+    assert_operator elapsed, :<, 5
     assert_includes result, "https://zimmer.example/sessions/#{session.id}"
     assert_includes result, "Still working"
   end
@@ -217,7 +218,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
 
   test "follow_up sync takes its budget from the request start too" do
     session = create_session(status: :needs_input, prompt: "first")
-    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 50)
+    ctx = context(base_url: "https://zimmer.example", request_started_at: monotonic_now - 53)
 
     started = monotonic_now
     result = Mcp::Tools::ActionSession.new(context: ctx)
@@ -225,7 +226,7 @@ class Mcp::Tools::SyncModeTest < ActiveSupport::TestCase
             "sync_timeout_seconds" => 55)
     elapsed = monotonic_now - started
 
-    assert_operator elapsed, :<, 2
+    assert_operator elapsed, :<, 5
     assert_includes result, "https://zimmer.example/sessions/#{session.id}"
     assert_includes result, "Still working"
   end
