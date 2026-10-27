@@ -1257,4 +1257,31 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
     assert_equal "failed", record.state
     assert_equal "Source clone directory does not exist", record.error
   end
+
+  # Both prompts carry the CarPlay-fit trailer rule, for the same reason they
+  # both carry the recommendation rule: a blurb from either path lands in the
+  # same row, and the mark is derived from whichever wrote it.
+  test "the fork prompt asks for the carplay-fit trailer" do
+    prompts = []
+    Session.any_instance.stubs(:deliver_follow_up!).with do |prompt, *|
+      prompts << prompt
+      true
+    end
+
+    generate
+
+    assert_includes prompts.first, SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE
+  end
+
+  test "the one-shot prompt asks for the carplay-fit trailer and writes the mark it is answered with" do
+    _result, inference = generate_headless("Merge the PR. It is open and CI is green.\ncarplay-fit: carplay_ok; reason: decision")
+
+    assert_includes inference.prompts.sole, SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE
+    @session.reload
+    assert_equal "Merge the PR. It is open and CI is green.", @session.status_summary.summary
+    assert_equal "carplay_ok", @session.carplay_fit
+    assert_equal "decision", @session.carplay_fit_reason
+    assert_equal "auto", @session.carplay_fit_source
+    assert_equal @session.status_summary.transcript_line_count, @session.carplay_fit_line_count
+  end
 end

@@ -638,6 +638,9 @@ module Mcp
                    "showing this card. It has no effect on scheduling or execution: this session runs exactly " \
                    "as it would if it were on the board, and a snooze expires by itself."
         end
+        if (fit = session.carplay_fit_summary)
+          lines << "- **CarPlay fit:** #{fit} — presentation and triage only; it does not affect scheduling."
+        end
 
         # High in the output, and deliberately: this is the section that answers
         # "has somebody already told this session something?", it is the reason a

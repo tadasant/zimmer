@@ -62,4 +62,52 @@ class StatusSummaryAnswerTest < ActiveSupport::TestCase
 
     assert_equal StatusSummaryAnswer::MAX_SUMMARY_CHARS, cleaned.length
   end
+
+  # ---- The CarPlay-fit trailer ----------------------------------------------
+
+  test "the trailer line is read off the end and stripped from the blurb" do
+    text = "Merge [PR #12](https://x/pull/12). CI is green.\n\ncarplay-fit: carplay_ok; reason: decision"
+
+    assert_equal "Merge [PR #12](https://x/pull/12). CI is green.", StatusSummaryAnswer.clean(text)
+    assert_equal({ fit: "carplay_ok", reason: "decision" }, StatusSummaryAnswer.carplay_fit(text))
+  end
+
+  test "the trailer is matched leniently: backticks, a full stop, odd spacing, inside a fence" do
+    assert_equal({ fit: "laptop_only", reason: "credential" },
+      StatusSummaryAnswer.carplay_fit("Paste the key.\n`carplay-fit: laptop_only ; reason: credential`."))
+    assert_equal({ fit: "laptop_only", reason: nil },
+      StatusSummaryAnswer.carplay_fit("```\nPaste the key.\nCarPlay-Fit: laptop_only\n```"), "the reason is optional")
+    assert_equal({ fit: "laptop_only", reason: nil },
+      StatusSummaryAnswer.carplay_fit("Paste the key.\ncarplay-fit: laptop_only; reason: vibes"), "an unknown reason is dropped, not the fit")
+    assert_equal "Paste the key.", StatusSummaryAnswer.clean("```\nPaste the key.\nCarPlay-Fit: laptop_only\n```")
+  end
+
+  test "an answer without the trailer is stored as before and carries no mark" do
+    text = "The PR is open and CI is green. Waiting on a human to merge."
+
+    assert_equal text, StatusSummaryAnswer.clean(text)
+    assert_nil StatusSummaryAnswer.carplay_fit(text)
+    assert_nil StatusSummaryAnswer.carplay_fit("carplay-fit is a thing we discussed; see above")
+  end
+
+  test "an answer that is only the trailer is not a blurb" do
+    assert_nil StatusSummaryAnswer.clean("carplay-fit: carplay_ok; reason: decision")
+  end
+
+  test "a trailer the parser cannot read is still stripped, and backtick-wrapped values are read" do
+    leaky = "Paste the key.\ncarplay-fit: `laptop_only`; reason: `credential`"
+    assert_equal "Paste the key.", StatusSummaryAnswer.clean(leaky)
+    assert_equal({ fit: "laptop_only", reason: "credential" }, StatusSummaryAnswer.carplay_fit(leaky))
+
+    malformed = "Paste the key.\ncarplay-fit: probably the laptop, reason: it is a console"
+    assert_equal "Paste the key.", StatusSummaryAnswer.clean(malformed), "the reader never sees a trailer line, parseable or not"
+    assert_nil StatusSummaryAnswer.carplay_fit(malformed)
+
+    assert_equal({ fit: "laptop_only", reason: "credential" },
+      StatusSummaryAnswer.carplay_fit("Paste the key.\ncarplay-fit: laptop_only (reason: credential)"))
+  end
+
+  test "a trailer-only answer is a summary failure and yields no mark either" do
+    assert_nil StatusSummaryAnswer.clean("carplay-fit: carplay_ok; reason: decision")
+  end
 end

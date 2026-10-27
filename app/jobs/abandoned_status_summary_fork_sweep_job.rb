@@ -59,7 +59,7 @@
 #   candidate because the candidate set is tiny, and fail-safe: an unreadable
 #   trigger table reads as "asleep on purpose".
 # - Its transcript holds nothing past the fork point. This is the same
-#   comparison SessionStatusSummaryHarvestJob#extracted_summary makes to decide
+#   comparison SessionStatusSummaryHarvestJob#extracted_answer makes to decide
 #   the fork wrote nothing of its own, so both paths agree on what a turn is.
 #   Raw line count against a parsed message index errs the safe way: blank or
 #   unparseable lines inflate the left side, so the test gets HARDER to satisfy,

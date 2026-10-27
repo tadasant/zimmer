@@ -6,6 +6,7 @@ class Session < ApplicationRecord
   include SessionGenesisClassification
   include SessionPrecedence
   include SessionVisibility
+  include SessionCarplayFit
   include RunningTurns
   include CatalogArtifactReferences
   # `transcript` is not a column any more: it is assembled from, and appended to,

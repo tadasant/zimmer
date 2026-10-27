@@ -164,6 +164,7 @@ class TurnSourceTest < ActiveSupport::TestCase
     app/services/enqueued_message_processor_service.rb
     app/services/live_conversations/actions.rb
     app/services/live_conversations/start.rb
+    app/services/live_conversations/system_prompt.rb
     app/services/live_conversations/tool_bridge.rb
     app/services/mcp/context.rb
     app/services/mcp/enqueued_message_sections.rb
