@@ -1,6 +1,8 @@
 @preconcurrency import AVFoundation
+import CarPlay
 import Foundation
 import UIKit
+import ZimmerKit
 import os
 
 /// The car's own voice: the briefing when its tile is tapped, a card read aloud, and the word
@@ -129,6 +131,16 @@ enum CarPlayImages {
     /// The picture the car's own voice speaks under.
     static var announcement: UIImage {
         symbol("speaker.wave.2.fill", pointSize: 120, weight: .regular)
+    }
+
+    /// One of the voice control template's action buttons (iOS 26.4+): a `CPButton`, which takes
+    /// an image and carries its words as a title. `CPTextButton` is a different class and is not
+    /// one of these.
+    @available(iOS 26.4, *)
+    static func actionButton(_ title: String, symbol name: String, handler: @escaping (CPButton) -> Void) -> CPButton {
+        let button = CPButton(image: symbol(name, pointSize: 24, weight: .medium), handler: handler)
+        button.title = title
+        return button
     }
 
     static func symbol(_ name: String, pointSize: CGFloat, weight: UIImage.SymbolWeight) -> UIImage {
