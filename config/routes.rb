@@ -220,6 +220,7 @@ Rails.application.routes.draw do
       post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
+          get :sessions
           post :finish
           post :mode
           post :messages

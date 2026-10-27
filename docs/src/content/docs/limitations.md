@@ -4641,8 +4641,8 @@ the Live conversation a delegation ran in.
 ### Keyboard dictation on the phone is invisible
 
 The phone's composers are plain text fields. iOS keyboard dictation fills them like typing and the
-app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Only CarPlay's own
-speech loop (`VoiceIO`) is tagged `voice_dictation`.
+app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Nothing the app
+sends is tagged `voice_dictation`: what is said in the car goes through Live Mode, as `live_voice`.
 
 ### A Live call from CarPlay is tagged as the phone
 
@@ -8154,11 +8154,15 @@ value is read only from the secret chain.
 
 ## The CarPlay scene has never connected to a car
 
-The CarPlay scene is built, its conversation logic (`DrivingFlow`) is unit-tested, and every
+The CarPlay scene is built, its rules (`DrivingBoard`, `LiveContext`) are unit-tested, and every
 TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
-it yet. Speech recognition in a moving car, the voice-control template's states, and whether iOS
-26.4 starts the conversation the way the category expects are all unobserved. Recognition is on-device only, so on a phone without an on-device
-model for its language, the car can talk but can't listen.
+it yet. The template tree, the voice control template's action buttons and bar buttons (iOS 26.4),
+the rebuild of the call screen when the conversation's subject changes, whether the car's audio
+ducks under the briefing, and whether the briefing on connect is what the category expects are all
+unobserved. XCUITest cannot reach the CarPlay window, so there are no screenshots of it either.
+
+The spoken alert for a session that enters Needs you while driving has no off switch; the only way
+to silence it is to disconnect the car. A call driven from the car is tagged as the phone's (below).
 
 ## No iOS push has been sent to a real phone
 
