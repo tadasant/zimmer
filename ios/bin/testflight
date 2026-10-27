@@ -290,8 +290,16 @@ cat >"$export_options" <<PLIST
 </plist>
 PLIST
 
+# Through the helper, which runs the export again — at most twice more, with backoff — only
+# after an error App Store Connect gives transiently ("Error Downloading App Information",
+# run 40583015112). Before each retry it asks App Store Connect for the build, so the same
+# build number is never uploaded twice, and it clears -exportPath before each attempt. Any
+# other failure exits with xcodebuild's own code on the first attempt, so a real signing, key
+# or build error still fails the run.
 printf '==> signing and uploading %s (%s) to App Store Connect\n' "$version" "$build_number"
-xcodebuild -exportArchive \
+python3 tools/app_store_connect.py export \
+  --bundle-id "$BUNDLE_ID" --version "$version" --build "$build_number" -- \
+  xcodebuild -exportArchive \
   -archivePath "$archive" \
   -exportPath "$work/export" \
   -exportOptionsPlist "$export_options" \
