@@ -159,12 +159,20 @@ final class SessionControlsUITests: XCTestCase {
         attach.tap()
         tapMenuItem(app, "Paste Image")
 
-        // The app's main thread waits on the answer, so SpringBoard is asked first.
+        // The app's main thread waits on the answer, so SpringBoard is asked first: a query of
+        // the app while the prompt is up times out as a failed test, not as a false. A tap on
+        // *Allow Paste* does not always take (the prompt stayed up through teardown on main,
+        // run 40560829588), so it is tapped again until the prompt is gone.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = Date().addingTimeInterval(timeout * 2)
         while Date() < deadline {
             let fromSpringboard = springboard.alerts.buttons["Allow Paste"].firstMatch
-            if fromSpringboard.exists { fromSpringboard.tap(); break }
+            if fromSpringboard.exists {
+                fromSpringboard.tap()
+                let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: fromSpringboard)
+                if XCTWaiter().wait(for: [gone], timeout: 5) == .completed { break }
+                continue
+            }
             let fromApp = app.alerts.buttons["Allow Paste"].firstMatch
             if fromApp.exists { fromApp.tap(); break }
             let chip = pastedChip(app)
