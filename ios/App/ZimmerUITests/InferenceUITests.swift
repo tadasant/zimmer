@@ -192,8 +192,8 @@ final class InferenceUITests: XCTestCase {
         XCTAssertTrue(placed, "\(element) is scrolled into view")
     }
 
-    /// A quarter-screen drag starting at height `start`, held at the end so there is no fling. The finger moves
-    /// down to bring what is above into view, up for what is below.
+    /// A quarter-screen drag starting at height `start`, held at the end so there is no fling.
+    /// The finger moves down to bring what is above into view, up for what is below.
     private func drag(_ app: XCUIApplication, towardTop: Bool, from start: CGFloat) {
         let (from, to): (CGFloat, CGFloat) = towardTop ? (start - 0.25, start) : (start, start - 0.25)
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: from))
