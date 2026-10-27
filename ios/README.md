@@ -25,7 +25,7 @@ ios/
   App/Zimmer/                SwiftUI app, Info.plist, privacy manifest, assets
   App/ZimmerUITests/         XCUITest, one flow
   bin/                       build-app, ci-swift, install-swift-toolchain, testflight, ui-test
-  tools/                     app_store_connect.py (stdlib Python)
+  tools/                     app_store_connect.py (stdlib Python) and its tests
 ```
 
 - **Logic lives in `ZimmerKit`, which imports only Foundation**, so every rule that could be wrong
@@ -237,6 +237,14 @@ role) then signs it with Apple's cloud-managed certificate. After the upload, th
 export's `DistributionSummary.plist` and fails if an admitted key is missing. One key is the
 whole credential. `ZIMMER_SIGNING=archive` (dispatch input `signing=archive`) is the fallback.
 `CFBundleVersion` is `run_number.run_attempt`; re-upload with a fresh dispatch, never "Re-run".
+
+The export is retried, up to three attempts with backoff, only when xcodebuild fails with an error
+App Store Connect gives transiently — "Error Downloading App Information" and three network
+errors, listed in `EXPORT_TRANSIENT_ERRORS` in `tools/app_store_connect.py`. Before each retry
+the helper asks App Store Connect for the build and stops if it is already there, so one build
+number is never uploaded twice. Any other failure — signing, the key, an agreement, a build-number
+collision — fails the run on the first attempt. The retry logic is tested by
+`tools/test_app_store_connect.py`, which the `ios` CI job runs.
 
 **Until the `testflight` environment has its key, the workflow skips the upload with a notice and
 stays green.**

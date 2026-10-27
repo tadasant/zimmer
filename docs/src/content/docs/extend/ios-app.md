@@ -753,6 +753,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as four shards on four simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
+| `python3 -m unittest discover -s ios/tools` | `ios` | The export retry in `ios/tools/app_store_connect.py`: which failures are retried, that every other failure keeps xcodebuild's exit code, and that a build App Store Connect already has is never uploaded again |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
 
 The full UI suite does not gate pull requests. It is some 110 tests driven one at a time plus some 90
@@ -771,6 +772,14 @@ self-hosted pool, because nothing in the pool is a Mac.
 it refuses any other ref or repository; the App Store Connect key is a secret of the `testflight`
 *environment*, behind a `main`-only branch policy; and it runs on an ephemeral hosted runner. Until
 that environment has its key, the run says so in a notice and skips the upload, staying green.
+
+The export is retried only on errors App Store Connect gives transiently, such as "Error
+Downloading App Information", which failed run 71 once and was gone on the re-run. There are at
+most three attempts, with backoff. Before each retry the helper asks App Store Connect whether it
+already has the build, and stops if it does, so a build number is never uploaded twice. Every
+other failure (signing, the key, an agreement, a build-number collision) fails the run on the
+first attempt and alerts as before. A transient error still there after the third attempt fails
+the run too.
 
 ## What a human does, once
 

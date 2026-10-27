@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ask App Store Connect about Zimmer's app record and its builds.
 
-Two questions, both asked by `ios/bin/testflight upload`:
+Three jobs, all done for `ios/bin/testflight upload`:
 
 * ``preflight`` — does an app record exist for the bundle id, and does the key work? Asked
   *before* a ten-minute archive, because both answers are otherwise discovered at the very
@@ -10,6 +10,10 @@ Two questions, both asked by `ios/bin/testflight upload`:
   as successful can still fail processing (a missing icon, an invalid binary), and until it
   is ``VALID`` nobody can install it. "The upload step went green" is not the claim this
   pipeline exists to make.
+* ``export`` — run ``xcodebuild -exportArchive`` (the command after ``--``), and run it again,
+  a bounded number of times with backoff, only when it failed with an error App Store Connect
+  is known to give transiently. Before every retry it asks App Store Connect whether the build
+  is already there, so a retry never uploads one build number twice.
 
 Stdlib only, plus the ``openssl`` binary for the ES256 signature, so it runs on a
 GitHub-hosted macOS runner with no ``pip install`` and no third-party code handed the key.
@@ -25,6 +29,7 @@ import base64
 import http.client
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -41,6 +46,25 @@ POLL_SECONDS = 30
 # 105 seconds of sleeping, about four minutes in all with each attempt's request timeout.
 PREFLIGHT_ATTEMPTS = 4
 PREFLIGHT_BACKOFF_SECONDS = 15
+# `xcodebuild -exportArchive` is run at most this many times, sleeping EXPORT_BACKOFF_SECONDS,
+# then twice that, between attempts, and only after an error in EXPORT_TRANSIENT_ERRORS.
+EXPORT_ATTEMPTS = 3
+EXPORT_BACKOFF_SECONDS = 30
+# Matched against xcodebuild's `error:` lines. Each is App Store Connect or the network failing
+# to answer, never a verdict on the build or the key: a refused key, an unsigned agreement or a
+# signing error reads differently and fails on the first attempt. Run 40583015112 is the
+# worked example of the first: "error: exportArchive Error Downloading App Information", gone
+# on a re-run. A cause that is not transient after all still fails, EXPORT_ATTEMPTS later.
+EXPORT_TRANSIENT_ERRORS = (
+    "Error Downloading App Information",
+    "The request timed out.",
+    "The network connection was lost.",
+    "Could not connect to the server.",
+)
+# What the upload service answers when the build number is already there. After a transient
+# failure it means the failed attempt had in fact been accepted; on a first attempt it is a
+# genuine build-number collision.
+REDUNDANT_UPLOAD = ("Redundant Binary Upload", "ITMS-4238")
 
 
 class TransientError(Exception):
@@ -179,21 +203,32 @@ def _app_id(client: Client, bundle_id: str) -> str:
     )
 
 
-def preflight(args: argparse.Namespace) -> None:
-    """Only a TransientError (a timeout, a dropped connection, a 429 or a 5xx) is asked
-    again. A refused key, a missing app record or any other 4xx is a SystemExit from the
-    first attempt, because asking again cannot change the answer."""
-    client = Client()
+def _build(client: Client, app_id: str, version: str, build: str) -> dict[str, Any] | None:
+    body = client.get(
+        "/v1/builds",
+        {
+            "filter[app]": app_id,
+            "filter[version]": build,
+            "filter[preReleaseVersion.version]": version,
+            "fields[builds]": "version,processingState,uploadedDate,expired",
+            "limit": "1",
+        },
+    )
+    builds = body.get("data", [])
+    return builds[0] if builds else None
+
+
+def _asked(question: Any, what: str) -> Any:
+    """``question()``, asked again after a TransientError with the preflight's backoff. A
+    SystemExit (a refused key, a missing record) is raised from the first attempt."""
     delay = PREFLIGHT_BACKOFF_SECONDS
     for attempt in range(1, PREFLIGHT_ATTEMPTS + 1):
         try:
-            _app_id(client, args.bundle_id)
-            return
+            return question()
         except TransientError as error:
             if attempt == PREFLIGHT_ATTEMPTS:
-                # Nothing has been built yet, so failing here costs a re-run and nothing else.
                 raise SystemExit(
-                    f"App Store Connect could not be asked ({attempt} attempts): {error}"
+                    f"App Store Connect could not be asked {what} ({attempt} attempts): {error}"
                 ) from None
             _say(
                 f"  App Store Connect did not answer (attempt {attempt} of "
@@ -201,6 +236,16 @@ def preflight(args: argparse.Namespace) -> None:
             )
             time.sleep(delay)
             delay *= 2
+    raise AssertionError("unreachable")
+
+
+def preflight(args: argparse.Namespace) -> None:
+    """Only a TransientError (a timeout, a dropped connection, a 429 or a 5xx) is asked
+    again. A refused key, a missing app record or any other 4xx is a SystemExit from the
+    first attempt, because asking again cannot change the answer."""
+    client = Client()
+    # Nothing has been built yet, so failing here costs a re-run and nothing else.
+    _asked(lambda: _app_id(client, args.bundle_id), "about the app record")
 
 
 def wait(args: argparse.Namespace) -> None:
@@ -215,24 +260,15 @@ def wait(args: argparse.Namespace) -> None:
     while True:
         try:
             app_id = app_id or _app_id(client, args.bundle_id)
-            body = client.get(
-                "/v1/builds",
-                {
-                    "filter[app]": app_id,
-                    "filter[version]": args.build,
-                    "filter[preReleaseVersion.version]": args.version,
-                    "fields[builds]": "version,processingState,uploadedDate,expired",
-                    "limit": "1",
-                },
-            )
+            found = _build(client, app_id, args.version, args.build)
+            transient = False
         except TransientError as error:
             _say(f"  App Store Connect did not answer, asking again: {error}")
-            body = {"transient": True}
-        builds = body.get("data", [])
-        if body.get("transient"):
+            found, transient = None, True
+        if transient:
             pass
-        elif builds:
-            state = builds[0]["attributes"].get("processingState")
+        elif found:
+            state = found["attributes"].get("processingState")
             if not seen:
                 _say(f"build {label} has reached App Store Connect")
                 seen = True
@@ -258,6 +294,90 @@ def wait(args: argparse.Namespace) -> None:
         time.sleep(POLL_SECONDS)
 
 
+def _error_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if "error" in line.lower()]
+
+
+def _transient(output: str) -> str | None:
+    """The known-transient error xcodebuild failed with, or None for any other failure."""
+    for line in _error_lines(output):
+        for marker in EXPORT_TRANSIENT_ERRORS:
+            if marker in line:
+                return marker
+    return None
+
+
+def _redundant(output: str) -> bool:
+    return any(marker in output for marker in REDUNDANT_UPLOAD)
+
+
+def _run(command: list[str]) -> tuple[int, str]:
+    """Run ``command``, echoing its output as it arrives, and return its code and output."""
+    lines = []
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    ) as process:
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            lines.append(line)
+    return process.returncode, "".join(lines)
+
+
+def export(args: argparse.Namespace) -> None:
+    """Exit 0 once the build is uploaded; otherwise exit with xcodebuild's own code.
+
+    Only an error in EXPORT_TRANSIENT_ERRORS is retried. Every other failure — a signing
+    error, a refused key, an agreement, a build-number collision — exits on its first
+    attempt, so the run goes red and pages exactly as it did before there was a retry."""
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        raise SystemExit("export: no command after --")
+    label = f"{args.version} ({args.build})"
+    client: Client | None = None
+    app_id = ""
+    delay = EXPORT_BACKOFF_SECONDS
+    for attempt in range(1, EXPORT_ATTEMPTS + 1):
+        if attempt > 1:
+            # A failed attempt can still have reached Apple. Asked before uploading again,
+            # because App Store Connect refuses a build number it already has.
+            client = client or Client()
+            app_id = app_id or _asked(lambda: _app_id(client, args.bundle_id), "about the app")
+            if _asked(
+                lambda: _build(client, app_id, args.version, args.build),
+                f"whether it already has build {label}; not uploading it again blind",
+            ):
+                _say(f"build {label} is already in App Store Connect; not uploading it again")
+                return
+        if args.export_path:
+            shutil.rmtree(args.export_path, ignore_errors=True)
+        code, output = _run(command)
+        if code == 0:
+            return
+        if attempt > 1 and _redundant(output):
+            # The previous attempt was accepted after all, and the lookup above was asked
+            # before App Store Connect listed it. `wait` confirms it processes.
+            _say(f"build {label} was already uploaded by an earlier attempt; treating as uploaded")
+            return
+        marker = _transient(output)
+        if marker is None:
+            sys.exit(code)
+        if attempt == EXPORT_ATTEMPTS:
+            _say(
+                f"::error title=TestFlight export failed {attempt} times::"
+                f"'{marker}' persisted across {attempt} attempts, so it is not transient"
+            )
+            sys.exit(code)
+        _say(
+            f"::warning title=TestFlight export retried::attempt {attempt} of {EXPORT_ATTEMPTS} "
+            f"failed with '{marker}', which App Store Connect gives transiently; "
+            f"trying again in {delay}s"
+        )
+        time.sleep(delay)
+        delay *= 2
+
+
 def _summary(line: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
@@ -279,6 +399,16 @@ def main() -> None:
     waiting.add_argument("--build", required=True, help="CFBundleVersion")
     waiting.add_argument("--timeout-minutes", type=int, default=45)
     waiting.set_defaults(func=wait)
+
+    exporting = commands.add_parser(
+        "export", help="run xcodebuild -exportArchive, retrying known-transient failures"
+    )
+    exporting.add_argument("--bundle-id", required=True)
+    exporting.add_argument("--version", required=True, help="CFBundleShortVersionString")
+    exporting.add_argument("--build", required=True, help="CFBundleVersion")
+    exporting.add_argument("--export-path", help="cleared before each attempt")
+    exporting.add_argument("command", nargs=argparse.REMAINDER, help="-- xcodebuild ...")
+    exporting.set_defaults(func=export)
 
     args = parser.parse_args()
     args.func(args)
