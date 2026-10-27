@@ -9,8 +9,10 @@ Connect is stubbed at `_app_id` / `_build`, so nothing here needs a key or the n
 
 from __future__ import annotations
 
+import datetime
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -75,7 +77,7 @@ class ExportTest(unittest.TestCase):
             "print(output)\n"
             "sys.exit(code)\n"
         )
-        return ["--", sys.executable, "-c", script]
+        return ["--", sys.executable, "-c", script, "-exportPath", self.export_path]
 
     def attempts(self) -> int:
         with open(self.counter) as handle:
@@ -86,8 +88,7 @@ class ExportTest(unittest.TestCase):
             bundle_id="com.tadasant.zimmer",
             version="0.1.0",
             build="71.1",
-            export_path=self.export_path,
-            command=command,
+            argv=command,
         )
         out = io.StringIO()
         code = 0
@@ -122,17 +123,48 @@ class ExportTest(unittest.TestCase):
         self.assertIn("::error title=TestFlight export failed 3 times::", out)
 
     def test_a_build_app_store_connect_already_has_is_not_uploaded_again(self) -> None:
-        self.in_asc = [{"attributes": {"processingState": "PROCESSING"}}]
+        self.in_asc = [just_uploaded()]
         code, out = self.run_export(self.fake_xcodebuild((70, DOWNLOAD_ERROR), (0, "")))
         self.assertEqual((code, self.attempts()), (0, 1))
-        self.assertIn("already in App Store Connect; not uploading it again", out)
+        self.assertIn("not uploaded again", out)
+
+    def test_a_build_number_an_earlier_run_used_fails_even_after_a_transient_error(self) -> None:
+        self.in_asc = [uploaded_minutes_ago(30)]
+        code, out = self.run_export(self.fake_xcodebuild((70, DOWNLOAD_ERROR), (0, "")))
+        self.assertEqual((code, self.attempts()), (1, 1))
+        self.assertIn("the build number was used before", out)
+
+    def test_redundant_upload_on_a_retry_of_an_old_build_number_fails(self) -> None:
+        self.in_asc = [None, uploaded_minutes_ago(30)]
+        code, out = self.run_export(self.fake_xcodebuild((70, DOWNLOAD_ERROR), (70, REDUNDANT)))
+        self.assertEqual((code, self.attempts()), (1, 2))
+        self.assertIn("the build number was used before", out)
+
+    def test_a_signing_error_after_a_transient_one_fails_without_a_third_attempt(self) -> None:
+        code, _ = self.run_export(
+            self.fake_xcodebuild((70, DOWNLOAD_ERROR), (70, SIGNING_ERROR), (0, ""))
+        )
+        self.assertEqual((code, self.attempts()), (70, 2))
+
+    def test_the_lookup_before_the_third_attempt_finds_the_build(self) -> None:
+        self.in_asc = [None, just_uploaded()]
+        code, _ = self.run_export(
+            self.fake_xcodebuild((70, DOWNLOAD_ERROR), (70, DOWNLOAD_ERROR), (0, ""))
+        )
+        self.assertEqual((code, self.attempts(), self.lookups), (0, 2, 2))
+
+    def test_a_signal_is_reported_the_way_a_shell_would(self) -> None:
+        kill = "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"
+        command = ["--", sys.executable, "-c", kill]
+        code, _ = self.run_export(command)
+        self.assertEqual(code, 128 + 15)
 
     def test_redundant_upload_on_a_retry_means_the_earlier_attempt_landed(self) -> None:
         code, out = self.run_export(
             self.fake_xcodebuild((70, DOWNLOAD_ERROR), (70, REDUNDANT))
         )
         self.assertEqual((code, self.attempts()), (0, 2))
-        self.assertIn("treating as uploaded", out)
+        self.assertIn("was uploaded by an earlier attempt", out)
 
     def test_redundant_upload_on_the_first_attempt_is_a_real_collision(self) -> None:
         code, _ = self.run_export(self.fake_xcodebuild((70, REDUNDANT)))
@@ -155,6 +187,42 @@ class ExportTest(unittest.TestCase):
         open(stale, "w").close()
         self.run_export(self.fake_xcodebuild((0, "")))
         self.assertFalse(os.path.exists(stale))
+
+
+class CommandLineTest(unittest.TestCase):
+    """The path `ios/bin/testflight` takes: argparse, the `--`, and the process exit code."""
+
+    def export(self, *command: str) -> subprocess.CompletedProcess[str]:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_store_connect.py")
+        return subprocess.run(
+            [sys.executable, script, "export", "--bundle-id", "b", "--version", "0.1.0",
+             "--build", "1", "--", *command],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_success_and_its_output_pass_through(self) -> None:
+        result = self.export(sys.executable, "-c", "print('** EXPORT SUCCEEDED **')")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("** EXPORT SUCCEEDED **", result.stdout)
+
+    def test_a_signing_error_keeps_xcodebuilds_exit_code(self) -> None:
+        fail = f"import sys; print({SIGNING_ERROR!r}, file=sys.stderr); sys.exit(70)"
+        result = self.export(sys.executable, "-c", fail)
+        self.assertEqual(result.returncode, 70)
+        self.assertIn("No signing certificate", result.stdout)
+
+    def test_no_command_is_refused(self) -> None:
+        self.assertNotEqual(self.export().returncode, 0)
+
+
+def just_uploaded() -> dict[str, object]:
+    return uploaded_minutes_ago(0)
+
+
+def uploaded_minutes_ago(minutes: int) -> dict[str, object]:
+    when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes)
+    stamp = when.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
+    return {"attributes": {"processingState": "PROCESSING", "uploadedDate": stamp}}
 
 
 if __name__ == "__main__":

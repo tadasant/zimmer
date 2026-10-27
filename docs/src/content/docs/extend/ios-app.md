@@ -774,12 +774,15 @@ it refuses any other ref or repository; the App Store Connect key is a secret of
 that environment has its key, the run says so in a notice and skips the upload, staying green.
 
 The export is retried only on errors App Store Connect gives transiently, such as "Error
-Downloading App Information", which failed run 71 once and was gone on the re-run. There are at
-most three attempts, with backoff. Before each retry the helper asks App Store Connect whether it
-already has the build, and stops if it does, so a build number is never uploaded twice. Every
-other failure (signing, the key, an agreement, a build-number collision) fails the run on the
-first attempt and alerts as before. A transient error still there after the third attempt fails
-the run too.
+Downloading App Information", which failed [run 40583015112](https://github.com/tadasant/zimmer/actions/runs/40583015112)
+once and was gone on the re-run. There are at most three attempts, with backoff. Before each retry
+the helper asks App Store Connect whether it already has the build and stops if it does. It treats
+a "Redundant Binary Upload" answer on a retry as the earlier attempt having landed, because App
+Store Connect lists a new build only after a delay. Either way a build number is never uploaded
+twice. A listed build uploaded before this export began is an earlier run's, and fails the run as a
+collision. When the export is not repeated, nothing checks what it signed in, so the run warns.
+Every other failure (signing, the key, an agreement, a build-number collision) fails the run on the
+first attempt and alerts as before. So does a transient error still there after the third attempt.
 
 ## What a human does, once
 

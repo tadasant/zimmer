@@ -241,8 +241,10 @@ whole credential. `ZIMMER_SIGNING=archive` (dispatch input `signing=archive`) is
 The export is retried, up to three attempts with backoff, only when xcodebuild fails with an error
 App Store Connect gives transiently — "Error Downloading App Information" and three network
 errors, listed in `EXPORT_TRANSIENT_ERRORS` in `tools/app_store_connect.py`. Before each retry
-the helper asks App Store Connect for the build and stops if it is already there, so one build
-number is never uploaded twice. Any other failure — signing, the key, an agreement, a build-number
+the helper asks App Store Connect for the build and stops if it is already there. On a retry,
+"Redundant Binary Upload" also means the earlier attempt landed, since App Store Connect lists a
+new build late. So one build number is never uploaded twice, and a listed build uploaded before
+the export began fails the run as a collision. Any other failure — signing, the key, an agreement, a build-number
 collision — fails the run on the first attempt. The retry logic is tested by
 `tools/test_app_store_connect.py`, which the `ios` CI job runs.
 

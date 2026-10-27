@@ -239,6 +239,18 @@ the resolve's retries and then kills the base build fails the job before the app
 attempt is reached. That path has not been observed failing; all the real incidents were the app
 build and the login.
 
+### The TestFlight export retry trusts a short list of error strings
+
+`ios/bin/testflight upload` retries `xcodebuild -exportArchive` up to three times, but only when an
+`error:` line contains one of the strings in `EXPORT_TRANSIENT_ERRORS` in
+`ios/tools/app_store_connect.py` (see [the iOS app](/extend/ios-app/)). It is the opposite trade to
+the release build's blind retry. A transient App Store Connect failure in a wording not on the list
+still fails the run and pages, and has to be re-run by hand. A persistent cause that happens to use a
+listed wording, for example an agreement surfacing as "Error Downloading App Information", goes red
+about two minutes later than before. When a failed attempt turns out to have reached App Store
+Connect, the run does not export again. That leaves no `DistributionSummary.plist` to prove the
+CarPlay entitlement was signed in, so the run only warns about it.
+
 ### Telemetry is a hard no-op when misconfigured, and says nothing
 
 `config/initializers/otel_logs_exporter.rb` needs **both** `OTEL_LOGS_EXPORTER_ENDPOINT` and
