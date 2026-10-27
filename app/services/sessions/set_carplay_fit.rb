@@ -101,7 +101,7 @@ module Sessions
       return nil if standing_rank <= SessionCarplayFit::SOURCE_RANK.fetch(source)
 
       "Kept the standing #{session.carplay_fit_source} mark (#{session.carplay_fit_summary}): it was written " \
-        "against the same transcript position and a #{session.carplay_fit_source} mark outranks a #{source} one."
+        "against the same or a later transcript position and a #{session.carplay_fit_source} mark outranks a #{source} one."
     end
 
     # One line on the session's own timeline for every write a person or an

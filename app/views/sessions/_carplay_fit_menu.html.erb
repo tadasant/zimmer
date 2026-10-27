@@ -15,7 +15,10 @@
       compact       — only meaningful with variant: :button; row scale. %>
 <% variant ||= :button %>
 <% compact = local_assigns.fetch(:compact, false) %>
-<% label = agent_session.carplay_fit_label || "CarPlay fit" %>
+<%# A stale mark is shown struck through on the chip; the control's label goes
+    back to the generic one rather than asserting a judgement the session has
+    moved past. %>
+<% label = agent_session.carplay_fit_current? ? agent_session.carplay_fit_label : "CarPlay fit" %>
 <% car_icon = capture do %>
   <svg class="<%= variant == :sheet_item ? 'h-5 w-5' : (compact ? 'h-3.5 w-3.5' : 'h-4 w-4') %>" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3 11.5A1.5 1.5 0 014.5 10h.7l1.4-3.5A2 2 0 018.46 5h3.08a2 2 0 011.86 1.5L14.8 10h.7a1.5 1.5 0 011.5 1.5V14a1 1 0 01-1 1h-1a1.5 1.5 0 01-3 0H8a1.5 1.5 0 01-3 0H4a1 1 0 01-1-1v-2.5zm4.2-1.5h5.6l-1-2.5H8.2l-1 2.5z" /></svg>
 <% end %>
@@ -44,7 +47,7 @@
       <% [ [ SessionCarplayFit::CARPLAY_OK, "CarPlay-ok", "A driver can act on this by voice." ],
            [ SessionCarplayFit::LAPTOP_ONLY, "Laptop only", "Needs a screen or a keyboard." ],
            [ "clear", "Clear mark", "Back to untagged; the next status summary re-derives it." ] ].each do |(value, text, hint)| %>
-        <% active = agent_session.carplay_fit == value %>
+        <% active = value != "clear" && agent_session.carplay_fit == value %>
         <%= f.button type: "submit", name: "carplay_fit", value: value,
               class: "w-full flex flex-col items-start rounded px-3 py-2 text-left text-sm hover:bg-gray-50 #{active ? 'text-sky-700 font-semibold' : 'text-gray-700'}" do %>
           <span><%= text %><% if active %> ✓<% end %></span>

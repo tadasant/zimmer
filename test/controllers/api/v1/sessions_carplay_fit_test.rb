@@ -118,5 +118,13 @@ class Api::V1::SessionsCarplayFitTest < ActionDispatch::IntegrationTest
 
     get "/api/v1/sessions", params: { status: "needs_input", carplay_fit: "laptop_only" }, headers: @headers
     assert_equal [ laptop.id ], JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+
+    laptop.update!(title: "needs the mac")
+    ok.update!(title: "needs a yes")
+    get "/api/v1/sessions/search", params: { q: "needs", carplay_fit: "not_laptop_only" }, headers: @headers
+    assert_response :success
+    ids = JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+    assert_includes ids, ok.id
+    assert_not_includes ids, laptop.id
   end
 end

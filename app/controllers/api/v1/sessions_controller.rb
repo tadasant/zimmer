@@ -1337,11 +1337,13 @@ class Api::V1::SessionsController < Api::BaseController
   #   - carplay_fit: "carplay_ok" | "laptop_only" | "clear" (required)
   #   - carplay_fit_reason: one of SessionCarplayFit::REASONS (optional)
   #
-  # Provenance is taken from the credential, never from the body: the iOS app
-  # acting as its person writes a `human` mark; a call that names
-  # `acting_session_id` writes a `session` mark; any other API-key call writes an
-  # `assistant` one. A standing mark that outranks the caller's at the same
-  # transcript position is kept, and the response says so in `carplay_fit_result`.
+  # Provenance: the iOS app acting as its person writes a `human` mark, which
+  # only the grant-backed credential can reach. Below that, a call naming
+  # `acting_session_id` writes a `session` mark and any other API-key call an
+  # `assistant` one — a self-declared, unverified distinction, the same as it is
+  # everywhere else in this API, and harmless here because the two share a rank.
+  # A standing mark that outranks the caller's at the same transcript position
+  # is kept, and the response says so in `carplay_fit_result`.
   def update_carplay_fit
     result = Sessions::SetCarplayFit.call(
       session: @session,
@@ -1833,8 +1835,8 @@ class Api::V1::SessionsController < Api::BaseController
     @session = Session.locate!(params[:id])
   end
 
-  # Who a CarPlay-fit write over REST is from, read off the credential and the
-  # one body field that names a session, in that order.
+  # Who a CarPlay-fit write over REST is from: `human` from the credential alone,
+  # the other two from the self-declared `acting_session_id`.
   def carplay_fit_source
     return SessionCarplayFit::SOURCE_HUMAN if native_app_request?
     return SessionCarplayFit::SOURCE_SESSION if params[:acting_session_id].to_s.strip.match?(/\A\d+\z/)
