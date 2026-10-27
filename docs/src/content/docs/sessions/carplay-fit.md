@@ -56,7 +56,9 @@ mark untouched and the session reads as untagged, which is the honest answer.
 Three other writers can override it:
 
 - **`human`** — the CarPlay fit control on the session page, the User view row and the phone's
-  bottom sheet, and `PATCH /api/v1/sessions/:id/carplay_fit` from the iOS app acting as its person.
+  bottom sheet, and `PATCH /api/v1/sessions/:id/carplay_fit` from the iOS app acting as its person:
+  the *CarPlay fit* item in the app's session menu, which names the mark in force and offers each
+  side with its reasons, or Clear.
 - **`assistant`** — `action_session` → `set_carplay_fit` on the full `sessions` surface, which is
   what [Live Mode](/sessions/live/) calls during a drive after reading a summary.
 - **`session`** — the same action on the `self_session` surface, a session speaking about itself.
@@ -94,8 +96,9 @@ check is looking for.
 | `untagged` | Never marked, or marked against an earlier transcript. |
 | `not_laptop_only` | `carplay_ok` plus `untagged`. The driving default. |
 
-The filter is on the dashboard's Filters form, on `GET /api/v1/sessions` and `/sessions/search`,
-and on the `quick_search_sessions` and `get_user_view` MCP tools. `get_user_view` rows always carry a
+The filter is on the dashboard's Filters form, the iOS app's Filters sheet, on
+`GET /api/v1/sessions` and `/sessions/search`, and on the `quick_search_sessions` and
+`get_user_view` MCP tools. `get_user_view` rows always carry a
 `**CarPlay fit:**` line; `quick_search_sessions` and `get_session` carry one whenever a mark exists,
 stale ones included.
 

@@ -9,6 +9,10 @@ import os
 /// a typed thread, Talk on a spoken one and CarPlay's Resume all take the same path: Zimmer
 /// mints a secret only for a conversation in voice, with instructions written for speech.
 ///
+/// Every request the call makes names the client driving it: `carplay` for a call the car
+/// started or took over, `ios` otherwise. Zimmer records it on the conversation, and from the
+/// car the live model's instructions say the person is driving.
+///
 /// The audio never touches Zimmer. Zimmer mints a short-lived OpenAI Realtime secret whose
 /// session config it chose (`POST /live_conversations/:id/client_secret`); the phone opens a
 /// WebSocket to OpenAI's `websocket_url` with it, streams the microphone up as
@@ -38,7 +42,10 @@ final class LiveCall: ObservableObject {
     private var generation = 0
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-call")
 
-    private var api: ZimmerAPI { AppEnvironment.shared.connection.api }
+    /// The phone or the car: which client is driving the call.
+    private(set) var surface: ClientSource.Surface = .ios
+
+    private var api: any LiveAPI { AppEnvironment.shared.connection.api.live(from: surface) }
 
     var isActive: Bool { state != .idle }
 
@@ -51,8 +58,12 @@ final class LiveCall: ObservableObject {
     /// typed it — the car's *Talk about it*, which names the session the driver tapped. Recorded
     /// on the thread as a user turn, so the transcript carries why the model answered as it did.
     /// On a call already running for this conversation it is sent at once.
-    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil) async {
+    ///
+    /// `surface`: the client starting it. A call already running for this conversation is
+    /// handed over to it (`carryOn(on:)`).
+    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, from surface: ClientSource.Surface = .ios) async {
         if isActive(for: conversation) {
+            await carryOn(on: surface)
             if let opening {
                 // Still connecting: there is no socket to send on yet; the start under way sends it.
                 if state == .connecting { pendingOpening = opening } else { open(with: opening) }
@@ -62,6 +73,7 @@ final class LiveCall: ObservableObject {
         hangUp()
         generation += 1
         let mine = generation
+        self.surface = surface
         conversationID = conversation
         conductor = RealtimeConductor()
         lastError = nil
@@ -141,6 +153,24 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             lastError = "The new Live settings did not reach this call: \(message)"
         }
+    }
+
+    /// The call moved between the phone and the car: from now on its requests name `surface`.
+    /// Zimmer records the client from a conversation's writes, so one is made at once — voice
+    /// is already on, so asking for it changes nothing else — and the call is brought up to the
+    /// instructions that now say where the person is.
+    func carryOn(on surface: ClientSource.Surface) async {
+        guard isActive, surface != self.surface, let conversation = conversationID else { return }
+        self.surface = surface
+        let mine = generation
+        do {
+            try await turnVoiceOn(conversation)
+        } catch {
+            log.error("live hand-over failed: \(Self.describe(error), privacy: .public)")
+            return
+        }
+        guard mine == generation else { return }
+        await refreshSession()
     }
 
     // MARK: - Internals

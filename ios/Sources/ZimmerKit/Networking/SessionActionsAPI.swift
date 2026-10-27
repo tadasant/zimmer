@@ -1,7 +1,7 @@
 import Foundation
 
 /// Everything else a person does to a session from the web UI's session page and its
-/// mobile action menu: restore, restart, pause, star, hide or snooze, rename, goal, notes,
+/// mobile action menu: restore, restart, pause, star, hide or snooze, mark the CarPlay fit, rename, goal, notes,
 /// effort, scheduling class and precedence, heartbeat, and the two refreshes. Plus the board's visibility filter, search, and "Send now".
 ///
 /// Every route here is on `Api::V1::SessionsController`, which the app's token already
@@ -40,6 +40,10 @@ public protocol SessionActionsAPI: Sendable {
     func restart(_ id: Int) async throws -> SessionSummary
     func pause(_ id: Int) async throws -> SessionSummary
     func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary
+    /// Mark whether what the session needs next can be done by voice from a car, or clear the
+    /// mark. From the app it is a `human` mark; one that a standing mark outranks is kept, and
+    /// the result says so rather than throwing.
+    func setCarplayFit(_ id: Int, _ change: CarplayFitChange) async throws -> CarplayFitResult
     func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary
     /// Rename. The server refuses a blank title.
     func rename(_ id: Int, title: String) async throws -> SessionSummary
@@ -295,6 +299,13 @@ extension ZimmerHTTPClient {
         return response.session
     }
 
+    public func setCarplayFit(_ id: Int, _ change: CarplayFitChange) async throws -> CarplayFitResult {
+        let segment = ZimmerPathComponent(String(id))
+        let response: CarplayFitResponse = try await patch("/api/v1/sessions/\(segment)/carplay_fit", json: change.body)
+        return CarplayFitResult(session: response.session, applied: response.carplay_fit_result?.applied ?? true,
+                                message: response.carplay_fit_result?.message)
+    }
+
     public func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary {
         let segment = ZimmerPathComponent(String(id))
         let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/notes", json: ["session_notes": notes])
@@ -500,6 +511,15 @@ struct RefreshAllResponse: Decodable {
 /// Any response whose `session` key is the API's one session shape.
 struct SessionEnvelope: Decodable {
     let session: SessionSummary
+}
+
+struct CarplayFitResponse: Decodable {
+    struct Result: Decodable {
+        let applied: Bool?
+        let message: String?
+    }
+    let session: SessionSummary
+    let carplay_fit_result: Result?
 }
 
 struct MessageEnvelope: Decodable {
