@@ -17,10 +17,11 @@ final class CarplayFitUITests: XCTestCase {
         XCTAssertTrue(row(app, 1044).waitForExistence(timeout: timeout), "the parity audit needs input")
 
         more.tap()
-        let picker = app.buttons["filters.carplayFit"].firstMatch
-        XCTAssertTrue(picker.waitForExistence(timeout: timeout))
-        // The section sits below the fold of the sheet.
-        for _ in 0..<4 where !picker.isHittable { app.swipeUp() }
+        // The section sits below the fold, and a Form builds its rows as they scroll into view.
+        XCTAssertTrue(app.buttons["filters.apply"].waitForExistence(timeout: timeout))
+        let picker = app.descendants(matching: .any)["filters.carplayFit"].firstMatch
+        for _ in 0..<6 where !(picker.exists && picker.isHittable) { app.swipeUp() }
+        XCTAssertTrue(picker.waitForExistence(timeout: timeout), "the Filters sheet offers CarPlay fit")
         picker.tap()
         let notLaptop = app.buttons["Not laptop-only"].firstMatch
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
