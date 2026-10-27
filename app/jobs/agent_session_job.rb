@@ -1884,6 +1884,25 @@ class AgentSessionJob < ApplicationJob
           resume: is_resume
         )
 
+        # The pool has no account holding a usable access token. That is an outage of
+        # every session on the runtime, not a fault of this one: park the turn until
+        # the pool recovers instead of failing it (#1399). First turns and resumes
+        # alike — a failed resume is a router that stops orchestrating, and a failed
+        # first turn is a trigger fire nothing will replace.
+        if spawn_result.pool_unavailable?
+          session.update!(running_job_id: nil)
+          if AuthOutageParkService.park_refused_spawn!(
+            session,
+            follow_up_prompt: follow_up_prompt,
+            error: spawn_result.error,
+            log_buffer: log_buffer
+          )
+            log_buffer.flush
+            @broadcast_service.session_status(session.reload)
+            return
+          end
+        end
+
         unless spawn_result.success?
           log_buffer.add(
             "Failed to spawn #{runtime_label} CLI process: #{spawn_result.error}",

@@ -111,6 +111,11 @@ class ClaudeLoginDriver < RuntimeLoginDriver
     # `active` without a human involved (the auto-heal sweep, a recovery probe),
     # and releasing on those turns a drained pool into an alert per attempt.
     account.clear_reauth_alert!
+
+    # Sessions parked because the pool had no usable account wait on the sweep in
+    # QuotaResetCheckerJob. A human re-authenticating is the clearest recovery
+    # signal there is, so run that sweep now rather than up to fifteen minutes later.
+    AuthOutageParkService.request_prompt_wake!
   end
 
   # The Claude CLI keeps its interactive TUI open after a successful code paste
