@@ -167,7 +167,7 @@ module Mcp
         Perform an action on an agent session.
 
         **Actions:**
-        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one. Pass "sync": true to wait for the session's answer to THIS prompt and get it back inline (reply text, sessions it started, resulting status) instead of polling `get_session` — a queued prompt is waited on through the turn ahead of it, and the wait lasts "sync_timeout_seconds" (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}), after which you get the session's state so far.
+        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one. Pass "sync": true to wait for the session's answer to THIS prompt and get it back inline (reply text, sessions it started, resulting status) instead of polling `get_session` — a queued prompt is waited on through the turn ahead of it, and the call lasts at most "sync_timeout_seconds", counted from when Zimmer received it (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}), after which you get the session's state so far.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input. On a connection restricted to specific agent roots, only sessions belonging to one of those roots can be restarted
@@ -430,10 +430,12 @@ module Mcp
           end
         return text unless wait_for
 
-        waiter = direct_waiter ||
-          Sessions::SyncReply.queued(session, prompt: prompt, enqueued_message: @queued_follow_up,
+        reply = sync_reply_section(session.id, wait_for, heading: "Reply") do
+          direct_waiter ||
+            Sessions::SyncReply.queued(session, prompt: prompt, enqueued_message: @queued_follow_up,
                                                 transcript_index: transcript_floor)
-        "#{text}\n\n#{sync_reply_section(waiter, wait_for, heading: 'Reply')}"
+        end
+        "#{text}\n\n#{reply}"
       end
 
       # Checked before anything is sent. A session cannot wait on its own reply:

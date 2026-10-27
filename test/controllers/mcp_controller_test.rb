@@ -357,6 +357,28 @@ class McpControllerTest < ActionDispatch::IntegrationTest
 
   # --- Tool calls ---
 
+  # A sync call's budget runs from the request's arrival, so time spent before
+  # the tool runs (here, building the connection's context) comes out of it.
+  test "a sync quick_router answers within sync_timeout_seconds of the request arriving" do
+    Sessions::SyncReply.reset_semaphore!
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    body = HealthActionCooldown.stub(:fingerprint, ->(*) { sleep 2.5; "slow" }) do
+      rpc("tools/call", { "name" => "quick_router",
+                          "arguments" => { "prompt" => "a long job", "sync" => true, "sync_timeout_seconds" => 5 } })
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    session = Session.order(:id).last
+    text = body.dig("result", "content", 0, "text")
+    assert_operator elapsed, :<, 5, "the request took #{elapsed.round(2)}s against a 5s budget"
+    refute body.dig("result", "isError")
+    assert_includes text, "- **ID:** #{session.id}"
+    assert_includes text, "/sessions/#{session.id}"
+    assert_includes text, "Still working"
+  ensure
+    Sessions::SyncReply.reset_semaphore!
+  end
+
   test "tools/call runs a tool and returns text content" do
     body = rpc("tools/call", { "name" => "get_configs", "arguments" => {} })
 

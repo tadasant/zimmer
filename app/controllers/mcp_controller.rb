@@ -38,6 +38,10 @@ require "mcp"
 # serve any request. A server built per request is also what lets the same
 # endpoint serve every scoped variant.
 class McpController < Api::BaseController
+  # Before authentication, so a `sync: true` call's budget counts everything
+  # this request does (see Mcp::Context#request_started_at).
+  prepend_before_action :stamp_request_start
+
   def handle
     status, headers, body = transport.handle_request(request)
 
@@ -52,6 +56,10 @@ class McpController < Api::BaseController
   end
 
   private
+
+  def stamp_request_start
+    @request_started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
 
   # An OAuth access token (it carries a prefix no API key does) is checked as
   # one; anything else takes the API-key path, unchanged. Either refusal carries
@@ -182,7 +190,8 @@ class McpController < Api::BaseController
         # pick a default scheduling class, and the tools that deliver words into a
         # session read its scope to decide whether those words are the human's
         # (Mcp::Context#capture_assistant_message). Nothing reads it as a scope on reach.
-        oauth_grant: @oauth_grant
+        oauth_grant: @oauth_grant,
+        request_started_at: @request_started_at
       )
     end
   end
