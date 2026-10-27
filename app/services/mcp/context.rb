@@ -15,7 +15,8 @@ module Mcp
   # allowed_agent_roots restricts which agent roots start_session may spawn and
   # which sessions the cross-session wake tool may watch.
   class Context
-    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint, :self_session_id, :oauth_grant_id
+    attr_reader :tool_groups, :allowed_agent_roots, :base_url, :caller_fingerprint, :self_session_id, :oauth_grant_id,
+                :request_started_at
 
     # The SDK wraps whatever is handed to `MCP::Server.new(server_context:)` in an
     # MCP::ServerContext (which carries progress/cancellation plumbing and
@@ -59,8 +60,14 @@ module Mcp
     #   OauthServer::ACT_AS_HUMAN_SCOPE — the approver's explicit choice — makes the words its client
     #   delivers into a session a HumanMessage (see #capture_assistant_message).
     # @param oauth_grant [OauthServer::Grant, nil] the grant itself, when the caller already loaded it
+    # @param request_started_at [Float, nil] when the request arrived, on Process::CLOCK_MONOTONIC.
+    #   `sync: true` measures its budget from here rather than from the start of its wait, so the
+    #   work done before the wait (authentication, the create) comes out of the caller's
+    #   `sync_timeout_seconds` instead of being added to it. Nil for a context that outlives one
+    #   request (Live Mode's tool bridge), where the tool call's own start is the clock.
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
-                   session_id: nil, oauth_grant_id: nil, oauth_grant: nil, turn_source: nil)
+                   session_id: nil, oauth_grant_id: nil, oauth_grant: nil, turn_source: nil,
+                   request_started_at: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
@@ -69,6 +76,7 @@ module Mcp
       @oauth_grant_id = oauth_grant&.id || oauth_grant_id
       @oauth_grant = oauth_grant
       @turn_source = turn_source
+      @request_started_at = request_started_at
     end
 
     # Where the words this connection delivers into a session came from, for the

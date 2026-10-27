@@ -72,6 +72,12 @@ module Sessions
     DEFAULT_TIMEOUT_SECONDS = [ Integer(ENV.fetch("MCP_SYNC_DEFAULT_TIMEOUT_SECONDS", "55")), MAX_TIMEOUT_SECONDS ].min
     MIN_TIMEOUT_SECONDS = 1
 
+    # Held back from the caller's budget for what follows the wait: the last
+    # re-read, the render, and the hops back through the proxies. A caller's
+    # `sync_timeout_seconds` bounds the whole call (Mcp::SyncMode), so the wait
+    # itself gets the budget less what the request had already spent, less this.
+    RESPONSE_MARGIN_SECONDS = 3
+
     MAX_CONCURRENT_WAITS = Integer(ENV.fetch("MCP_SYNC_MAX_CONCURRENT_WAITS", "1"))
 
     BACKSTOP_SECONDS = 5

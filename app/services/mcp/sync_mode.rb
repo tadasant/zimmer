@@ -13,7 +13,8 @@ module Mcp
                 "answered THIS prompt — it comes to rest in needs_input, goes to sleep on a wake-up, " \
                 "archives itself, fails, or hands its turn on — and the result carries the session's reply " \
                 "text inline, any sessions it started, and its resulting status. Use it when you would " \
-                "otherwise poll `get_session` for the answer. The wait lasts `sync_timeout_seconds` " \
+                "otherwise poll `get_session` for the answer. The call lasts at most `sync_timeout_seconds`, " \
+                "starting the session included " \
                 "(default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most " \
                 "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}): if the session is still working then, the " \
                 "call returns its id, URL, status and anything it has said so far, and you follow it with " \
@@ -21,7 +22,8 @@ module Mcp
                 "Zimmer session, prefer `wake_me_up_when_session_changes_state`, which holds no server " \
                 "thread while you wait."
 
-    SYNC_TIMEOUT_DESC = "Optional, with `sync: true`. How long to wait, in seconds. Default " \
+    SYNC_TIMEOUT_DESC = "Optional, with `sync: true`. The longest this whole call may take, in seconds, counted " \
+                        "from when Zimmer began handling it — starting the session comes out of it. Default " \
                         "#{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, under the 60-second request timeout many " \
                         "MCP clients default to — raise it only if your client waits longer. Maximum " \
                         "#{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}, the longest a request survives the proxies in " \
@@ -55,7 +57,10 @@ module Mcp
     end
 
     # Checked before anything is sent, so a bad value never costs a delivery.
+    # Also the start of this call's clock when the context carries no request
+    # start of its own (see #sync_wait_budget).
     def sync_timeout(args)
+      @sync_call_started_at = monotonic_now
       Sessions::SyncReply.timeout_from(args["sync_timeout_seconds"])
     rescue ArgumentError, TypeError
       raise ToolError, "sync_timeout_seconds must be a positive number of seconds " \
@@ -64,20 +69,42 @@ module Mcp
 
     # Wait in a slot, or report the state now when every slot is taken, and
     # render it. The prompt has been delivered by the time this runs, so a
-    # failure inside the wait must still hand the caller its session.
-    def sync_reply_section(waiter, timeout, heading:)
-      result = Sessions::SyncReply.with_slot { waiter.wait(timeout: timeout) } || waiter.over_capacity
+    # failure inside the wait must still hand the caller its session: the
+    # waiter is built inside the rescue for that reason.
+    #
+    # `timeout` is the caller's budget for the whole call, counted from when the
+    # request arrived (Mcp::Context#request_started_at), not from here. The
+    # create before this and the render after it come out of it, so the call
+    # answers within `sync_timeout_seconds` — a client whose own clock is that
+    # long still gets the session id rather than a bare timeout.
+    def sync_reply_section(session_id, timeout, heading:)
+      waiter = yield
+      budget = sync_wait_budget(timeout)
+      result = Sessions::SyncReply.with_slot { waiter.wait(timeout: budget) } || waiter.over_capacity
       format_sync_result(result, heading: heading)
     rescue StandardError => e
-      Rails.logger.error("[Mcp::SyncMode] Waiting on session #{waiter.session_id} failed: #{e.class}: #{e.message}")
+      Rails.logger.error("[Mcp::SyncMode] Waiting on session #{session_id} failed: #{e.class}: #{e.message}")
       [
         "## #{heading}",
         "",
-        "- **ID:** #{waiter.session_id}",
-        "- **URL:** #{context.base_url.to_s.chomp('/')}/sessions/#{waiter.session_id}",
+        "- **ID:** #{session_id}",
+        "- **URL:** #{context.base_url.to_s.chomp('/')}/sessions/#{session_id}",
         "- **Outcome:** Not waited on — the wait failed (#{e.class}). The prompt was sent; call `get_session` " \
-        "with id `#{waiter.session_id}` to follow it."
+        "with id `#{session_id}` to follow it."
       ].join("\n")
+    end
+
+    # What is left of the caller's budget for the wait itself, after what the
+    # request has spent so far and RESPONSE_MARGIN_SECONDS for the render and the
+    # hops back. Zero when the create alone used it up: the wait then looks once
+    # and returns the state as it is.
+    def sync_wait_budget(timeout)
+      started = context.request_started_at || @sync_call_started_at || monotonic_now
+      [ timeout - (monotonic_now - started) - Sessions::SyncReply::RESPONSE_MARGIN_SECONDS, 0 ].max
+    end
+
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def format_sync_result(result, heading:)
