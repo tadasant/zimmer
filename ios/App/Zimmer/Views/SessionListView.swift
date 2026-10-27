@@ -435,12 +435,6 @@ private struct SwipeableSessionRow: View {
         .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 10))
         .accessibilityIdentifier("session.row.\(session.id)")
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
-            } label: {
-                Label(session.isFavorite ? "Unfavorite" : "Favorite", systemImage: session.isFavorite ? "star.slash" : "star.fill")
-            }
-            .tint(Theme.Swipe.favorite)
             // The web UI's row Merge button: offered only on an open, green PR.
             if session.mergeablePullRequest != nil {
                 Button { prompts.merge(session) } label: {
@@ -523,11 +517,6 @@ private struct SessionContextMenu: View {
             Button { prompts.merge(session) } label: {
                 Label("Merge \(pr.label)", systemImage: "arrow.triangle.merge")
             }
-        }
-        Button {
-            Task { await model.perform(session.isFavorite ? "Removed from favorites" : "Added to favorites", on: session.id) { try await $0.toggleFavorite(session.id) } }
-        } label: {
-            Label(session.isFavorite ? "Remove from Favorites" : "Add to Favorites", systemImage: session.isFavorite ? "star.slash" : "star")
         }
         if session.boardVisibility == .visible {
             Menu {
@@ -707,12 +696,6 @@ struct SessionRow: View {
                     .foregroundStyle(quiet ? Theme.inkSoft : Theme.ink)
                     .lineLimit(2)
                 Spacer(minLength: 4)
-                if session.isFavorite {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.gold)
-                        .accessibilityLabel("Favorite")
-                }
             }
             HStack(spacing: 5) {
                 StatusBadge(status: session.status, compact: true)

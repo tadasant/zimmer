@@ -65,7 +65,6 @@ class SessionDashboard < Administrate::BaseDashboard
     heartbeat_last_beat_at: Field::DateTime,
     is_autonomous: Field::Boolean,
     push_notifications_enabled: Field::Boolean,
-    favorited: Field::Boolean,
     auto_compact_window: Field::Number,
     memory_boost_mb: Field::Number,
     memory_boost_expires_at: Field::DateTime,

@@ -341,7 +341,6 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| `:15-19` (PATCH `toggle_favorite`) | Favourite star | SDV :630-661 toolbar star → `POST toggle_favorite` | present |  |
 | `_session_heartbeat.html.erb:3-58` `heartbeat` (PATCH `toggle_heartbeat`, `update_heartbeat_interval`) | Heartbeat popover: on/off + "Beat every" 30 s…1 h | SDV :962-990 → `PATCH heartbeat` | present |  |
 | `:26-43` (PATCH `toggle_push_notifications`) | Per-session push notifications on/off | — | missing | needs API: no toggle route; `session_json` lacks `push_notifications_enabled` |
 | `:46-67` `transcript-copy` (GET `transcript.text`) | Copy full transcript to clipboard | SDV :305-314 Copy Transcript → `GET /transcript` | present |  |
@@ -437,7 +436,6 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | `:273-276` Refresh Transcript |  | SDV | present |  |
 | `:278-283` Pause (running) |  | SDV | present |  |
 | `:286-291` Restart (`restartable_by_hand?`, `window.confirm`) |  | SDV | present |  |
-| `:293-296` Add/Remove Favorites |  | SDV toolbar star | present |  |
 | `:299-312` Log Level select |  | SDV picker | partial | See filter row |
 | `_mobile_mcp_servers.html.erb:7-124` (stacked editor; OAuth-required banner inside; live target `session_X_mobile_mcp_servers`) | Modify MCP Servers sheet | `CatalogEditorSheet` | present |  |
 | `_mobile_catalog_skills/_hooks/_plugins.html.erb` | Modify sheets | `CatalogEditorSheet` | present |  |
@@ -466,7 +464,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | index.html.erb:40–41 | Title "Agent Sessions" + subtitle | SessionListView.swift:154 `.navigationTitle("Sessions")` | present |  |
 | index.html.erb:46, 174 | **New Session** button (mobile icon + desktop) → `sessions#new` | SessionListView.swift:305 pencil → `NewSessionView` | present |  |
 | index.html.erb:152 / 275 | **Refresh All** (`POST sessions#refresh_all`; refreshes transcripts, restarts failed, continues stalled waiting, max 50) | SessionListView.swift:51–55, 291 view menu → confirm → `refreshAll()` (`POST /api/v1/sessions/refresh_all`) | present |  |
-| index.html.erb:30 `turbo_stream_from "sessions_index_individual"` | Live: card replaced on status/title/slug/prompt/catalog/metadata/custom_metadata/favorite/notes-blankness change (`Session#should_broadcast_to_index?`, session.rb:2984), throttled 30 s for `last_timeline_entry_at`; new session prepended to `#sessions_grid`; archived card removed | RootView.swift:92–116 `BoardPoller` (30 s poll while the board is in front, and on foreground) | partial | Polling, not streaming: up to 30 s stale, and only while the board tab is in front with nothing selected. Neither side re-renders a row when a summary lands |
+| index.html.erb:30 `turbo_stream_from "sessions_index_individual"` | Live: card replaced on status/title/slug/prompt/catalog/metadata/custom_metadata/notes-blankness change (`Session#should_broadcast_to_index?`, session.rb:2984), throttled 30 s for `last_timeline_entry_at`; new session prepended to `#sessions_grid`; archived card removed | RootView.swift:92–116 `BoardPoller` (30 s poll while the board is in front, and on foreground) | partial | Polling, not streaming: up to 30 s stale, and only while the board tab is in front with nothing selected. Neither side re-renders a row when a summary lands |
 | index.html.erb:31 `turbo_stream_from "notification_badge"` | Live unread count | `refreshUnreadCount()` after each board read | partial | Polled |
 | _ranked_sessions.html.erb:59 `turbo_stream_from Session::RANKED_STREAM` | Ranked view live: status pill replace (`broadcast_ranked_row`) and membership envelopes (`broadcast_ranked_membership` → `_ranked_delivery`) judged client-side against filters; deliveries held mid-drag | same `BoardPoller` | partial | Polled; the poll is suppressed while reordering (`isEditingBoard`), so a status change during a long drag is not seen |
 | index.html.erb:29 `stream-visibility-recovery` | After a backgrounded PWA's socket dies, re-sync the board on visibility/pageshow | RootView.swift:105 refresh on `scenePhase == .active` | present |  |
@@ -522,7 +520,6 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| _session_card.html.erb:8 **Favorite star** (`toggle_favorite`) | Star/unstar | SessionListView.swift:369 leading swipe; context menu; star glyph in `SessionRow` | present | Note: `GET /sessions` docs claim favorites sort to the top; neither web view does (`LAST_TOUCHED_ORDER` session.rb:711 ignores it) — parity holds |
 | _session_heartbeat.html.erb (card top-right) **Heartbeat** heart + popover (on/off, interval) | Per-session heartbeat from the card | SessionDetailView.swift (`setHeartbeat`, `setHeartbeatInterval`) | partial | Session page only; not on the row. API exists (`PATCH /sessions/:id/heartbeat`). The web card shows the heart state at a glance; iOS rows show nothing |
 | _session_card.html.erb:19–37 status badge with **running elapsed** (`time-since`, colour by age) | How long since the last timeline entry | `StatusBadge` | partial | No elapsed/age colour. `last_timeline_entry_at` is not in `session_json`. Needs API: `last_timeline_entry_at` |
 | _session_card.html.erb:51–62 per-card **Refresh** (`sessions#refresh`: re-sync transcript, restart failed, nudge stalled waiting; hidden while running) | Refresh one session | SessionListView.swift:439 context menu "Refresh Transcript" (`POST /api/v1/sessions/:id/refresh`) | partial | API `refresh` only re-reads the transcript; the web action also restarts a failed session and sends the continue nudge. Needs API: the web `refresh` semantics |

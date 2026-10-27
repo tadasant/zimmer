@@ -332,7 +332,6 @@ Rails.application.routes.draw do
           # renders as a session's transcript.
           get :conversation
           patch :notes, action: :update_notes
-          post :toggle_favorite
           patch :visibility, action: :update_visibility
           patch :heartbeat, action: :update_heartbeat
             end
@@ -767,7 +766,6 @@ Rails.application.routes.draw do
       patch :update_precedence
       patch :reorder_precedence
       patch :update_goal
-      patch :toggle_favorite
       # Board visibility: hide / snooze / restore a card. Presentation only — it
       # does not sleep the session, and no route here does.
       patch :update_visibility

@@ -106,7 +106,6 @@ module ApiSessionSerialization
 
     json[:session_notes] = session.session_notes
     json[:session_notes_updated_at] = session.session_notes_updated_at&.iso8601
-    json[:favorited] = session.favorited
     # Board visibility — a SECOND axis, entirely separate from `status`. It is how
     # the operator tidies their dashboard (hide a card, or snooze it out of sight
     # until a time) and it has no effect whatsoever on scheduling or execution: a

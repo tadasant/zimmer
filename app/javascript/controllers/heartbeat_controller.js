@@ -3,7 +3,7 @@ import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="heartbeat"
 //
-// Per-session heartbeat control: a heart icon next to the favorite star with a
+// Per-session heartbeat control: a heart icon with a
 // popout to configure how often the heartbeat beats. Clicking the heart when the
 // heartbeat is OFF turns it on and opens the popout; clicking when ON just opens
 // the popout (where the interval can be changed or the heartbeat turned off).

@@ -850,15 +850,6 @@ struct SessionDetailView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             if let session = model.detail?.session {
-                Button {
-                    Task { await model.apply(session.isFavorite ? "Removed from favorites" : "Added to favorites") { try await $0.toggleFavorite(session.id) } }
-                } label: {
-                    Image(systemName: session.isFavorite ? "star.fill" : "star")
-                        .foregroundStyle(session.isFavorite ? Theme.gold : Theme.accent)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .accessibilityLabel(session.isFavorite ? "Remove from Favorites" : "Add to Favorites")
-                .accessibilityIdentifier("detail.favorite")
                 actionsMenu(session)
                 if session.status == .archived {
                     Button {

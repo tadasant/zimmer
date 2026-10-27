@@ -317,7 +317,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
             SessionSummary(id: 1038, title: "PR #1261 is green and ready — merge it?", status: .needsInput,
                            agentRuntime: "claude_code", createdAt: ago(240), updatedAt: ago(6),
-                           goal: "Unmerged PR is open and CI is green.", favorited: true,
+                           goal: "Unmerged PR is open and CI is green.",
                            priorityClass: "priority", precedence: 5,
                            effort: EffortSummary(level: "high", source: "default", default: "high", levels: ["low", "medium", "high", "xhigh", "max"]),
                            model: "opus", agentRoot: "zimmer", lastUserActivityAt: ago(30),
@@ -637,10 +637,6 @@ extension FakeZimmerAPI {
         try change(id, refusal: "Session is not running", when: { $0.status != .running }) {
             $0.status = .needsInput
         }
-    }
-
-    public func toggleFavorite(_ id: Int) async throws -> SessionSummary {
-        try change(id) { $0.favorited = !$0.isFavorite }
     }
 
     public func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary {

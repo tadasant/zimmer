@@ -1,7 +1,7 @@
 import XCTest
 
 /// What the web UI's board and session page let a person do, done from the phone against
-/// the `-ZimmerFixture` in-memory Zimmer: star, pause, snooze and restore from the list;
+/// the `-ZimmerFixture` in-memory Zimmer: pause, snooze and restore from the list;
 /// notes, restart and effort from a session's menu; and search.
 @MainActor
 final class SessionParityUITests: XCTestCase {
@@ -11,23 +11,9 @@ final class SessionParityUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_star_pause_snooze_and_restore_from_the_list() throws {
+    func test_pause_snooze_and_restore_from_the_list() throws {
         let app = launch()
         tapFilter(app, "active")
-
-        // Swipe right to star: the session's page then offers to remove it from favourites.
-        let postgres = row(app, 1035)
-        XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
-        postgres.swipeRight()
-        // A long enough swipe stars it outright; a shorter one leaves the button to tap.
-        let favorite = app.buttons["Favorite"].firstMatch
-        if favorite.waitForExistence(timeout: 2) { favorite.tap() }
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
-        postgres.tap()
-        let star = app.buttons["detail.favorite"]
-        XCTAssertTrue(star.waitForExistence(timeout: timeout))
-        XCTAssertEqual(star.label, "Remove from Favorites")
-        app.navigationBars.buttons["Sessions"].tap()
 
         // Press and hold a running session to pause it.
         let running = row(app, 1042)
