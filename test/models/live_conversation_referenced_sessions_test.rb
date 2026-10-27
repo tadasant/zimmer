@@ -30,9 +30,19 @@ class LiveConversationReferencedSessionsTest < ActiveSupport::TestCase
   test "argument ids are read only when they are numbers, under the gateway's nesting or flat" do
     assert_equal [ 7 ], LiveConversation.session_ids_in_arguments({ "arguments" => { "session_id" => 7 } })
     assert_equal [ 7, 8 ], LiveConversation.session_ids_in_arguments({ "session_ids" => [ 7, "8", "x" ] })
-    assert_equal [], LiveConversation.session_ids_in_arguments({ "arguments" => { "id" => "abc" } })
+    assert_equal [], LiveConversation.session_ids_in_arguments({ "tool" => "get_session", "arguments" => { "id" => "abc" } })
     assert_equal [], LiveConversation.session_ids_in_arguments(nil)
     assert_equal [ 1101, 1038, 1035 ], LiveConversation.session_ids_in_text("- **ID:** 1101\nsee /sessions/1038 and session #1035, and /sessions/1101 again")
+  end
+
+  test "a bare id names a session only on a session tool: a notification's or a trigger's id is not one" do
+    assert_equal [ 42 ], LiveConversation.session_ids_in_arguments({ "tool" => "get_session", "arguments" => { "id" => 42 } })
+    assert_equal [], LiveConversation.session_ids_in_arguments({ "tool" => "get_notifications", "arguments" => { "id" => 42 } })
+    assert_equal [], LiveConversation.session_ids_in_arguments({ "tool" => "action_trigger", "arguments" => { "id" => 42 } })
+    assert_equal [ 9 ], LiveConversation.session_ids_in_arguments({ "tool" => "action_trigger", "arguments" => { "id" => 42, "session_id" => 9 } }),
+                 "session_id counts on any tool"
+    tool_turn(arguments: { "tool" => "get_notifications", "arguments" => { "id" => 42 } }, output: "unread: 3")
+    assert_equal [], @conversation.referenced_session_ids
   end
 
   private

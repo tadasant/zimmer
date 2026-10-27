@@ -211,18 +211,19 @@ public enum Briefing {
 
     public static func text(for board: DrivingBoard) -> String {
         var lines: [String] = []
-        let needing = board.needsYou
-        switch needing.count {
+        // The totals, not the capped list: twenty sessions are twenty, however many a car shows.
+        let total = board.needsYouTotal + board.failedTotal
+        switch total {
         case 0: lines.append("Nothing needs you.")
         case 1: lines.append("One session needs you.")
-        default: lines.append("\(needing.count) sessions need you.")
+        default: lines.append("\(total) sessions need you.")
         }
-        for (index, card) in needing.prefix(spokenLimit).enumerated() {
-            let ordinal = needing.count == 1 ? "" : "\(Self.ordinal(index + 1)): "
+        for (index, card) in board.needsYou.prefix(spokenLimit).enumerated() {
+            let ordinal = total == 1 ? "" : "\(Self.ordinal(index + 1)): "
             lines.append(ordinal + card.spoken)
         }
-        if needing.count > spokenLimit {
-            lines.append("And \(needing.count - spokenLimit) more.")
+        if total > spokenLimit {
+            lines.append("And \(total - spokenLimit) more.")
         }
         var working: [String] = []
         if board.runningTotal > 0 { working.append(board.runningTotal == 1 ? "One running" : "\(board.runningTotal) running") }

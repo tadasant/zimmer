@@ -41,6 +41,8 @@ final class DrivingBoardTests: XCTestCase {
         let board = DrivingBoard(sessions: many, now: now)
         XCTAssertEqual(board.needsYou.count, DrivingBoard.listLimit)
         XCTAssertEqual(board.needsYouTotal, 20, "the count still says how many there really are")
+        XCTAssertTrue(Briefing.text(for: board).hasPrefix("20 sessions need you."), "and so does the briefing")
+        XCTAssertTrue(Briefing.text(for: board).contains("And 17 more."))
     }
 
     func testACardReadsTheSummaryAsPlainWordsOrFallsBackToTheStatus() {

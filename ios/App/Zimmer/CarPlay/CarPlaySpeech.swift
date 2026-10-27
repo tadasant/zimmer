@@ -3,9 +3,9 @@ import Foundation
 import UIKit
 import os
 
-/// The car's own voice: the briefing when it connects, a card read aloud, a session that just
-/// started needing the driver, and the word that an action worked. Speech only, never
-/// listening: listening is Live Mode's, over the Realtime call. So the audio session is
+/// The car's own voice: the briefing when its tile is tapped, a card read aloud, and the word
+/// that an action worked — never anything unasked. Speech only, never listening: listening is
+/// Live Mode's, over the Realtime call. So the audio session is
 /// playback, held only while a line is being said, and ducks the car's audio rather than
 /// stopping it — Apple's rule for a voice-based conversational app, which may hold audio only
 /// while voice is in use and must not configure recording outside the voice control template.

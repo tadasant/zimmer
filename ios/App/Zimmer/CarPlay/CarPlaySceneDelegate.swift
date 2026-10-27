@@ -33,6 +33,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private var failure: String?
     private var refreshLoop: Task<Void, Never>?
     private var refreshing: Task<Void, Never>?
+    /// Which read `refreshing` is, so a read from before a reconnect cannot clear a newer one.
+    private var reads = 0
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     /// How often the board is read while connected.
@@ -53,7 +55,15 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
         let live = CarPlayLive()
         live.interfaceController = interfaceController
-        live.onChange = { [weak self] in self?.dashboard?.callIsActive = LiveCall.shared.isActive }
+        live.onChange = { [weak self] in
+            let active = LiveCall.shared.isActive
+            self?.dashboard?.callIsActive = active
+            // A call started on the phone takes the voice: the car stops talking.
+            if active {
+                self?.speech.stop()
+                self?.announcement?.dismiss()
+            }
+        }
         live.onEnd = { [weak self] in self?.refresh() }
         live.onFailure = { [weak self] message in
             self?.dashboard?.alert(message)
@@ -87,6 +97,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     ) {
         refreshLoop?.cancel()
         refreshing?.cancel()
+        refreshing = nil
         speech.stop()
         announcement?.dismiss()
         live?.disconnect()
@@ -102,9 +113,12 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     /// runs is dropped, because the loop reads again in a minute anyway.
     private func refresh() {
         guard refreshing == nil else { return }
+        reads += 1
+        let mine = reads
         refreshing = Task { [weak self] in
             await self?.read()
-            self?.refreshing = nil
+            guard let self, self.reads == mine else { return }
+            self.refreshing = nil
         }
     }
 
@@ -118,6 +132,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             let filters = BoardFilters(statuses: [.needsInput, .failed, .running, .waiting])
             // The board as the person sees it: visible sessions, each with its status summary.
             let result = try await connection.api.sessions(filters, board: .onBoard, view: .yourBoard)
+            guard !Task.isCancelled else { return }
             let fresh = DrivingBoard(sessions: result.sessions)
             board = fresh
             failure = nil
