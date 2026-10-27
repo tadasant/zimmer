@@ -160,6 +160,7 @@ class TurnSourceTest < ActiveSupport::TestCase
     app/models/live_conversation.rb
     app/models/session.rb
     app/models/trigger.rb
+    app/services/auth_outage_park_service.rb
     app/services/turn_source.rb
     app/services/enqueued_message_processor_service.rb
     app/services/live_conversations/actions.rb
