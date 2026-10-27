@@ -325,9 +325,11 @@ can be done by voice from a car. Five fields travel together on every serialized
 `laptop_only`, `untagged`, or `not_laptop_only` (the driving default: good plus not yet judged). A
 stale mark counts as untagged. Unset means unfiltered, for the reason `visibility` is.
 
-`PATCH /sessions/:id/carplay_fit` writes it. Provenance is taken from the credential, never from the
-body: the iOS app acting as its person writes a `human` mark, a call naming `acting_session_id` writes
-a `session` mark, any other API-key call an `assistant` one. At the same transcript position `human`
+`PATCH /sessions/:id/carplay_fit` writes it, judged against the session's current transcript
+position. Provenance: the iOS app acting as its person writes a `human` mark, which only that
+grant-backed credential reaches; a call naming `acting_session_id` writes a `session` mark and any
+other API-key call an `assistant` one — self-declared and unverified, as `acting_session_id` is
+everywhere in this API, and the two share a rank. At the same or a later transcript position `human`
 outranks the other two, which outrank `auto`; a refused write answers 200 with
 `carplay_fit_result.applied: false` and the reason, because the standing mark is the right answer.
 

@@ -135,4 +135,15 @@ class Sessions::SetCarplayFitTest < ActiveSupport::TestCase
     Sessions::SetCarplayFit.call(session: session, fit: "carplay_ok", source: "auto")
     assert_equal 1, session.logs.where("content LIKE ?", "CarPlay fit%").count
   end
+
+  test "a standing human mark at a later position than the write is kept, and the message says so" do
+    session = make_session
+    Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", source: "human", line_count: 12)
+
+    result = Sessions::SetCarplayFit.call(session: session, fit: "carplay_ok", source: "auto", line_count: 10)
+
+    assert_not result.applied?
+    assert_match(/same or a later transcript position/, result.message)
+    assert_equal "laptop_only", session.reload.carplay_fit
+  end
 end

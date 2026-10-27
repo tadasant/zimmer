@@ -15,9 +15,11 @@
 # It ships with the deploy because AGENTS.md ("ops actions ship with the deploy")
 # leaves no other route: nobody has a shell on the production box. Its answer is
 # in `post_deploy_task_runs` — on /health, in `GET /api/v1/health`, from
-# `get_system_health` and at /supervisor/post_deploy_task_runs — and the marks
-# themselves are on the board, in `get_user_view` and under the dashboard's
-# "CarPlay fit" filter.
+# `get_system_health` and at /supervisor/post_deploy_task_runs — as the count of
+# classifications it handed to the inference lane; each job's own outcome
+# (applied, kept, skipped, failed) is a log line, and the marks themselves are
+# on the board, in `get_user_view` and under the dashboard's "CarPlay fit"
+# filter.
 #
 # IDEMPOTENT. The sweep only visits sessions with no mark, and the job it
 # enqueues checks again before it writes, so a second run of this task, a retry

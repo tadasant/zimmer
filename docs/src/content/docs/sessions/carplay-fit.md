@@ -45,8 +45,10 @@ machine-read line:
 carplay-fit: laptop_only; reason: credential
 ```
 
-`StatusSummaryAnswer` strips that line from the stored blurb and writes the mark as an `auto` one,
-stamped at the blurb's own line count. It costs no second inference: the blurb's first sentence
+`StatusSummaryAnswer` strips that line from the stored blurb — any last line opening with
+`carplay-fit:`, parseable or not, so the reader never sees one — and writes the mark as an `auto`
+one, stamped at the blurb's own line count. An answer that is *only* the trailer is a summary
+failure, not a mark: there is no blurb to stamp it against. It costs no second inference: the blurb's first sentence
 already says what the human must do, and the fork holding the conversation is the one thing that
 can say whether that is voice-able. A summary that fails, or answers without the line, leaves the
 mark untouched and the session reads as untagged, which is the honest answer.
@@ -54,7 +56,7 @@ mark untouched and the session reads as untagged, which is the honest answer.
 Three other writers can override it:
 
 - **`human`** — the CarPlay fit control on the session page, the User view row and the phone's
-  bottom sheet.
+  bottom sheet, and `PATCH /api/v1/sessions/:id/carplay_fit` from the iOS app acting as its person.
 - **`assistant`** — `action_session` → `set_carplay_fit` on the full `sessions` surface, which is
   what [Live Mode](/sessions/live/) calls during a drive after reading a summary.
 - **`session`** — the same action on the `self_session` surface, a session speaking about itself.

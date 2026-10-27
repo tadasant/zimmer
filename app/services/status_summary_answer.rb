@@ -48,12 +48,18 @@ module StatusSummaryAnswer
   ].freeze
 
   # The CarPlay-fit trailer both prompts ask for as their last line
-  # (SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE). Matched on the
-  # last non-blank line only, leniently on punctuation and wrapping: a model
-  # that puts the line in backticks, or ends it with a full stop, has still
-  # answered. The fit is required; the reason is optional, and an unknown reason
-  # is dropped rather than refusing the fit it came with.
-  CARPLAY_FIT_TRAILER = /\A[\s`*_]*carplay-fit\s*:\s*(?<fit>carplay_ok|laptop_only)\s*(?:[;,·|]\s*reason\s*:\s*(?<reason>[a-z_]+))?[\s`*_.]*\z/i
+  # (SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE). Two patterns,
+  # because two questions are asked of the last non-blank line. CARPLAY_FIT_LINE
+  # is "is this the trailer at all?" — anything that opens with `carplay-fit:`,
+  # however the rest came out — and a line that matches it is never stored,
+  # since the reader was promised not to see it. CARPLAY_FIT_TRAILER is "what
+  # does it say?", lenient on punctuation and on backticks or quotes around the
+  # values: a model that wrote `` carplay-fit: `laptop_only`; reason: `credential` ``
+  # has still answered. The fit is required; the reason is optional, and an
+  # unknown reason is dropped rather than refusing the fit it came with. A line
+  # that opens like the trailer but names no fit is stripped and yields no mark.
+  CARPLAY_FIT_LINE = /\A[\s`*_>-]*carplay-fit\s*:/i
+  CARPLAY_FIT_TRAILER = /\A[\s`*_>-]*carplay-fit\s*:\s*[`"'*_]*(?<fit>carplay_ok|laptop_only)[`"'*_]*\s*(?:[;,·|(]\s*reason\s*:\s*[`"'*_]*(?<reason>[a-z_]+))?/i
 
   module_function
 
@@ -89,6 +95,8 @@ module StatusSummaryAnswer
     return nil if trailer.nil?
 
     match = trailer.match(CARPLAY_FIT_TRAILER)
+    return nil if match.nil?
+
     reason = match[:reason]&.downcase
     reason = nil unless SessionCarplayFit::REASONS.include?(reason)
     { fit: match[:fit].downcase, reason: reason }
@@ -128,12 +136,12 @@ module StatusSummaryAnswer
   end
 
   # The text with its trailer line removed, and the trailer line itself (nil
-  # when the last non-blank line is not one).
+  # when the last non-blank line does not open like one).
   def split_carplay_fit_trailer(text)
     lines = text.to_s.rstrip.lines.map(&:rstrip)
     last = lines.rindex { |line| !line.strip.empty? }
     return [ text, nil ] if last.nil?
-    return [ text, nil ] unless lines[last].match?(CARPLAY_FIT_TRAILER)
+    return [ text, nil ] unless lines[last].match?(CARPLAY_FIT_LINE)
 
     trailer = lines[last]
     [ lines[0...last].join("\n").rstrip, trailer ]

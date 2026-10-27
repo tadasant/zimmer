@@ -93,4 +93,21 @@ class StatusSummaryAnswerTest < ActiveSupport::TestCase
   test "an answer that is only the trailer is not a blurb" do
     assert_nil StatusSummaryAnswer.clean("carplay-fit: carplay_ok; reason: decision")
   end
+
+  test "a trailer the parser cannot read is still stripped, and backtick-wrapped values are read" do
+    leaky = "Paste the key.\ncarplay-fit: `laptop_only`; reason: `credential`"
+    assert_equal "Paste the key.", StatusSummaryAnswer.clean(leaky)
+    assert_equal({ fit: "laptop_only", reason: "credential" }, StatusSummaryAnswer.carplay_fit(leaky))
+
+    malformed = "Paste the key.\ncarplay-fit: probably the laptop, reason: it is a console"
+    assert_equal "Paste the key.", StatusSummaryAnswer.clean(malformed), "the reader never sees a trailer line, parseable or not"
+    assert_nil StatusSummaryAnswer.carplay_fit(malformed)
+
+    assert_equal({ fit: "laptop_only", reason: "credential" },
+      StatusSummaryAnswer.carplay_fit("Paste the key.\ncarplay-fit: laptop_only (reason: credential)"))
+  end
+
+  test "a trailer-only answer is a summary failure and yields no mark either" do
+    assert_nil StatusSummaryAnswer.clean("carplay-fit: carplay_ok; reason: decision")
+  end
 end

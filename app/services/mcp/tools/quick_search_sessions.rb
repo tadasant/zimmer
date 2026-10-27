@@ -59,9 +59,9 @@ module Mcp
 
         **Board visibility is NOT a scheduling signal.** Sessions carry a second, entirely separate field — `visibility`: `visible`, `hidden`, or `snoozed` until a time — whose only purpose is letting a human tidy their dashboard. It does not affect whether, when, or in what order Zimmer runs anything, and no scheduler reads it. A result marked `**Visibility:**` is running, queued and ranked exactly as it would be otherwise; the human just is not looking at its card right now. **This search is unfiltered on that axis by default, deliberately** — a session hidden from a board must never be hidden from a duplicate check — so leave `visibility` unset unless you specifically want one side of it.
 
-        **CarPlay fit** is a third axis, for a driver: whether what a session needs next from the human can be done by voice from a car (`carplay_ok`), needs a screen or keyboard (`laptop_only`), or has not been judged. Zimmer derives it from the status summary at every rest; a row reports its mark, with who wrote it and whether it is current. Filter on it with `carplay_fit` only when you are triaging for a driver — like visibility, it is unset by default and says nothing about scheduling.
+                **CarPlay fit** is a third axis, for a driver: whether what a session needs next from the human can be done by voice from a car (`carplay_ok`), needs a screen or keyboard (`laptop_only`), or has not been judged. Zimmer derives it from the status summary at every rest; a row reports its mark, with who wrote it and whether it is current. Filter on it with `carplay_fit` only when you are triaging for a driver — like visibility, it is unset by default and says nothing about scheduling.
 
-**Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
+        **Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
         still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
         a pause outranks precedence and scheduling class. Skip it and take the next candidate.
 
