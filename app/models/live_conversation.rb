@@ -97,7 +97,8 @@ class LiveConversation < ApplicationRecord
   # @return [Array<Integer>]
   def referenced_session_ids(limit: REFERENCED_SESSIONS_LIMIT)
     ids = []
-    turns.where(role: "tool").order(id: :desc).each do |turn|
+    # `reorder`: the association orders ascending, and a second `order` would only append.
+    turns.where(role: "tool").reorder(id: :desc).each do |turn|
       self.class.session_ids_in_arguments(turn.tool_arguments).each { |id| ids << id unless ids.include?(id) }
       self.class.session_ids_in_text(turn.tool_output.to_s).each { |id| ids << id unless ids.include?(id) }
       break if ids.size >= limit
