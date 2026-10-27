@@ -67,7 +67,7 @@ class Api::V1::SessionsController < Api::BaseController
   prepend_before_action :refuse_an_oversized_follow_up, only: [ :follow_up ]
   # Before the lookup, so a refusal says nothing about which ids exist.
   before_action :require_a_person_on_the_app, only: [ :authorize_merge ]
-  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :toggle_favorite, :update_visibility, :update_heartbeat, :authorize_merge ]
+  before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :update_visibility, :update_heartbeat, :authorize_merge ]
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -1293,16 +1293,6 @@ class Api::V1::SessionsController < Api::BaseController
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   rescue ActiveRecord::RecordInvalid => e
     render_api_error("Update failed", e.record.errors.full_messages, status: :unprocessable_entity)
-  end
-
-  # POST /api/v1/sessions/:id/toggle_favorite
-  # Toggle the favorited status of a session.
-  #
-  # Dispatch ONLY — Sessions::ToggleFavorite owns the flip, shared with the web
-  # star and the `toggle_favorite` MCP action.
-  def toggle_favorite
-    Sessions::ToggleFavorite.call(session: @session)
-    render json: { session: session_json(@session), favorited: @session.favorited }
   end
 
   # PATCH /api/v1/sessions/:id/visibility

@@ -5900,92 +5900,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # Test toggle_favorite action
-  test "should toggle favorite from false to true" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    # With referrer from sessions index, should redirect back there
-    patch toggle_favorite_session_url(session), headers: { "HTTP_REFERER" => root_url }
-
-    assert_redirected_to root_path
-    session.reload
-    assert_equal true, session.favorited
-  end
-
-  test "should toggle favorite from true to false" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: true)
-
-    # With referrer from sessions index, should redirect back there
-    patch toggle_favorite_session_url(session), headers: { "HTTP_REFERER" => root_url }
-
-    assert_redirected_to root_path
-    session.reload
-    assert_equal false, session.favorited
-  end
-
-  test "should return json response for toggle_favorite" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    patch toggle_favorite_session_url(session), as: :json
-
-    assert_response :success
-    json_response = JSON.parse(response.body)
-    assert_equal true, json_response["success"]
-    assert_equal true, json_response["favorited"]
-  end
-
-  test "should route to toggle_favorite" do
-    assert_routing(
-      { method: :patch, path: "/sessions/1/toggle_favorite" },
-      { controller: "sessions", action: "toggle_favorite", id: "1" }
-    )
-  end
-
-  # Test favorites sorted first in index
-  # The star lives on the card, and cards are rendered by the two flat sort views.
-  # (The User view renders rows, and nothing on this board floats favourites: it is
-  # ordered by scheduling class and precedence, top to bottom.)
-  test "favorite star should appear in session card" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
-    assert_response :success
-
-    # Should have the toggle_favorite form/button
-    assert_select "form[action=?]", toggle_favorite_session_path(session)
-  end
-
-  test "should render turbo_stream response for toggle_favorite" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    patch toggle_favorite_session_url(session), as: :turbo_stream
-
-    assert_response :success
-    assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
-    assert_match(/turbo-stream/, response.body)
-    assert_match(/action="replace"/, response.body)
-    # Should update both session card (for index) and header actions (for detail page)
-    assert_match(/session_#{session.id}/, response.body)
-    assert_match(/session_#{session.id}_header_actions/, response.body)
-  end
-
-  test "should return 404 for toggle_favorite with invalid session" do
-    patch toggle_favorite_session_url(id: 99999)
-    assert_response :not_found
-  end
-
-  test "favorite star should appear in session show page header actions" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    get session_url(session)
-    assert_response :success
-
-    # Should have the toggle_favorite link in the header actions
-    assert_select "a[href=?]", toggle_favorite_session_path(session)
-    # Should have the star SVG icon
-    assert_select "a[href=?] svg", toggle_favorite_session_path(session)
-  end
-
   # === toggle_push_notifications action ===
 
   test "should toggle push_notifications_enabled from false to true" do
@@ -6197,41 +6111,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     # The heartbeat Stimulus control renders with the session id value.
     assert_select "[data-controller='heartbeat'][data-heartbeat-session-id-value=?]", session.id.to_s
-  end
-
-  test "toggle_favorite should redirect to session show when referrer is session show page" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    # Set the referrer to the session show page
-    patch toggle_favorite_session_url(session), headers: { "HTTP_REFERER" => session_url(session) }
-
-    assert_redirected_to session_path(session)
-    session.reload
-    assert_equal true, session.favorited
-  end
-
-  test "toggle_favorite should redirect to sessions index when referrer is sessions index" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    # Set the referrer to the sessions index page
-    patch toggle_favorite_session_url(session), headers: { "HTTP_REFERER" => root_url }
-
-    assert_redirected_to root_path
-    session.reload
-    assert_equal true, session.favorited
-  end
-
-  test "toggle_favorite should redirect to sessions index when no referrer" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test prompt", favorited: false)
-
-    # No referrer header
-    patch toggle_favorite_session_url(session)
-
-    # Default behavior without referrer should redirect to session show page
-    # (since we changed the logic to check for sessions_path in referrer)
-    assert_redirected_to session_path(session)
-    session.reload
-    assert_equal true, session.favorited
   end
 
   test "new sessions default to is_autonomous true" do
@@ -7676,7 +7555,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
   test "dashboard renders a per-session refresh button for non-running sessions" do
     Session.where.not(status: :archived).update_all(status: :archived)
-    Session.update_all(favorited: false)
 
     waiting = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Waiting card", status: :waiting)
     needs_input = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Needs input card", status: :needs_input)

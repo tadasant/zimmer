@@ -93,13 +93,13 @@ class Sessions::TogglePushNotificationsTest < ActiveSupport::TestCase
   end
 
   test "flips only the push flag" do
-    session = make_session(push_notifications_enabled: false, title: "Stays", favorited: true)
+    session = make_session(push_notifications_enabled: false, title: "Stays", session_notes: "notes")
 
     Sessions::TogglePushNotifications.call(session: session)
 
     session.reload
     assert_equal "Stays", session.title
-    assert_equal true, session.favorited
+    assert_equal "notes", session.session_notes
     assert_equal true, session.push_notifications_enabled
   end
 end

@@ -2483,35 +2483,6 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal 30.seconds, Session::BROADCAST_THROTTLE_INTERVAL
   end
 
-  # === Tests for favorited attribute ===
-  test "favorited should default to false" do
-    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
-    assert_equal false, session.favorited
-  end
-
-  test "favorited should be persistable" do
-    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test", status: :waiting)
-    session.update!(favorited: true)
-    session.reload
-    assert_equal true, session.favorited
-  end
-
-  test "favorited change should trigger broadcast to index" do
-    session = sessions(:running)
-
-    # Track broadcast calls
-    broadcast_called = false
-    session.define_singleton_method(:broadcast_update_to_sessions_index) do
-      broadcast_called = true
-    end
-
-    # Update favorited
-    session.update!(favorited: true)
-
-    # Broadcast should have been called
-    assert broadcast_called, "Expected broadcast when favorited changes"
-  end
-
   # === Tests for push_notifications_enabled attribute ===
   test "push_notifications_enabled should default to false" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")

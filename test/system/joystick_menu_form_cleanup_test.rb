@@ -24,6 +24,10 @@ class JoystickMenuFormCleanupTest < ApplicationSystemTestCase
       git_root: "https://github.com/test/repo.git",
       branch: "main"
     )
+    # A queued message makes Trash refuse: SessionsController#archive answers on
+    # its turbo_stream branch with a flash and leaves the session where it is,
+    # so the action repeats and the document survives each one.
+    session.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
 
     page.driver.browser.manage.window.resize_to(*MOBILE)
     visit session_path(session)
@@ -32,22 +36,19 @@ class JoystickMenuFormCleanupTest < ApplicationSystemTestCase
     assert_equal 0, body_form_count, "the page should start with no forms on document.body"
     watch_for_appended_forms
 
-    # Favorite is the repeatable action here: it toggles, and #toggle_favorite
-    # answers on its turbo_stream branch, so the document survives each one.
     ACTIONS.times do |i|
       # Reveal the bottom sheet directly rather than driving the press-and-hold
       # gesture: what is under test is the submit path behind the sheet's rows,
       # and the gesture has its own coverage.
       reveal_sheet
-      favorited_before = session.reload.favorited?
-      row = find("[data-joystick-menu-target='sheet'] button[data-petal-key='favorite']")
+      row = find("[data-joystick-menu-target='sheet'] button[data-petal-key='trash']")
       scroll_into_center(row)
       row.click
-      assert_eventually("favorite ##{i + 1} should have toggled the session") do
-        session.reload.favorited? != favorited_before
-      end
-      assert_eventually("the form from favorite ##{i + 1} should be removed") { body_form_count.zero? }
+      assert_eventually("trash ##{i + 1} should have submitted") { appended_form_count == i + 1 }
+      assert_eventually("the form from trash ##{i + 1} should be removed") { body_form_count.zero? }
     end
+
+    refute session.reload.archived?, "a Trash over a queued message is refused"
 
     # Both halves matter. Without the second, a refactor that stopped building
     # a form at all — a bare fetch, a server-rendered button_to — would keep

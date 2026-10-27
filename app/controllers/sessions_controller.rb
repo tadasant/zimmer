@@ -1961,61 +1961,6 @@ class SessionsController < ApplicationController
     end
   end
 
-  # Presentation ONLY — the flip is Sessions::ToggleFavorite, shared with
-  # POST /api/v1/sessions/:id/toggle_favorite and the `toggle_favorite` MCP action.
-  def toggle_favorite
-    @session = find_session
-
-    result = with_db_retry do
-      Sessions::ToggleFavorite.call(session: @session)
-    end
-
-    return if performed?
-
-    if result != false
-      respond_to do |format|
-        format.html do
-          # Determine where to redirect based on the referrer
-          # If coming from the sessions index, redirect back to trigger page refresh
-          # so favorites reorder correctly. Otherwise, redirect to session show page.
-          if referrer_is_sessions_index?
-            redirect_to root_path
-          else
-            redirect_to @session
-          end
-        end
-        format.json { render json: { success: true, favorited: @session.favorited } }
-        format.turbo_stream do
-          render turbo_stream: [
-            # Update session card on index page
-            turbo_stream.replace(
-              "session_#{@session.id}",
-              partial: "sessions/session_card_frame",
-              locals: { agent_session: @session }
-            ),
-            # Update header actions on detail page (for smooth in-place update)
-            turbo_stream.replace(
-              "session_#{@session.id}_header_actions",
-              partial: "sessions/session_header_actions",
-              locals: { agent_session: @session }
-            )
-          ]
-        end
-      end
-    else
-      respond_to do |format|
-        format.html do
-          if referrer_is_sessions_index?
-            redirect_to root_path, alert: "Failed to update favorite status"
-          else
-            redirect_to @session, alert: "Failed to update favorite status"
-          end
-        end
-        format.json { render json: { error: "Failed to update favorite status" }, status: :unprocessable_entity }
-      end
-    end
-  end
-
   # Side-effect-only endpoint: stamp the session with a fresh user-activity
   # marker so PollBackoff resets the GitHub-poll cadence back to the fast
   # (every-cron-tick) end. Triggered by a non-blocking fetch from the UI when
@@ -2734,7 +2679,7 @@ class SessionsController < ApplicationController
 
     # Flat sort views completely flatten the presentation: a single list sorted
     # solely by the chosen factor, honoring the same filters/visibility but
-    # ignoring the pinned favorites float. They apply whether or not a search is active (search just
+    # ignoring any grouping. They apply whether or not a search is active (search just
     # narrows the eligible set first).
     if @view_mode == VIEW_MODE_LAST_TOUCHED || @view_mode == VIEW_MODE_CREATED_DESC
       flat_sorted =
@@ -3489,7 +3434,7 @@ class SessionsController < ApplicationController
   end
 
   # Check if the HTTP referer is the sessions index (home) page
-  # Used to determine redirect behavior after toggle_favorite action
+  # Used to determine redirect behavior after refresh
   # Must match exactly / or /sessions (with optional query params)
   # but NOT /sessions/123 (individual session show pages)
   # Also validates the referrer host matches to prevent cross-origin false matches

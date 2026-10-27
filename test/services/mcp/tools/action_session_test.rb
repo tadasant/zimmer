@@ -1633,13 +1633,11 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "session_notes must be a string.", error.message
   end
 
-  test "toggle_favorite flips the favorited flag" do
-    session = sessions(:needs_input)
-
-    result = @tool.call("action" => "toggle_favorite", "session_id" => session.id)
-
-    assert_includes result, "- **Favorited:** Yes"
-    assert session.reload.favorited
+  test "toggle_favorite is not an action" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "toggle_favorite", "session_id" => sessions(:needs_input).id)
+    end
+    assert_match(/Unknown action/, error.message)
   end
 
   test "bulk_archive archives the given sessions and reports failures" do

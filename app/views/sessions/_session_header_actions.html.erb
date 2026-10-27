@@ -6,17 +6,11 @@
     and the button lands mid-line. The row is flush with the page's right edge;
     the button is not. %>
 <div id="session_<%= agent_session.id %>_header_actions" data-live-region="replace" class="relative flex flex-wrap gap-2 items-center ml-auto">
-  <!-- Favorite Star Button -->
   <%# turbo_frame: "_top" on every link in this header, including the ones that
       answer with a Turbo Stream and so never navigate anything. The rule the
       drawer needs is "nothing in here navigates the frame", and a rule with
       case-by-case exceptions is one nobody can check — `sessions_controller_test`
       asserts it over the whole rendered drawer body instead. %>
-  <%= link_to toggle_favorite_session_path(agent_session), data: { turbo_method: :patch, turbo_frame: "_top" }, class: "inline-flex items-center justify-center w-10 h-10 rounded-full hover:bg-gray-100 transition-colors #{agent_session.favorited? ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'}", title: agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-label" => agent_session.favorited? ? "Remove from favorites" : "Add to favorites", "aria-pressed" => agent_session.favorited?.to_s do %>
-    <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-    </svg>
-  <% end %>
 
   <!-- Heartbeat Toggle (heart icon + interval popout) -->
   <%= render "sessions/session_heartbeat", agent_session: agent_session %>

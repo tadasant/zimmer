@@ -36,6 +36,12 @@ class Session < ApplicationRecord
   # `categories` and `category_feedback_events` tables — and removes this line.
   self.ignored_columns += %w[category_id sort_order]
 
+  # Phase 1 of the two-phase drop of `favorited`: nothing reads or writes it,
+  # and no surface offers it. Ignoring it keeps the old containers serving
+  # through the cutover (#482); a later PR drops the column and
+  # `index_sessions_on_favorited` and removes this line.
+  self.ignored_columns += %w[favorited]
+
   has_many :logs, dependent: :destroy
   has_many :subagent_transcripts, dependent: :destroy
   has_many :enqueued_messages, dependent: :destroy
@@ -3071,7 +3077,6 @@ class Session < ApplicationRecord
       saved_change_to_catalog_plugins? ||
       saved_change_to_metadata? ||
       saved_change_to_custom_metadata? ||
-      saved_change_to_favorited? ||
       saved_change_to_is_autonomous? ||
       (saved_change_to_session_notes? && (session_notes_previously_was.blank? != session_notes.blank?))
 
