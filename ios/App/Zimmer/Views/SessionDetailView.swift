@@ -280,6 +280,20 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
+    /// Mark the CarPlay fit by hand, or clear it. A standing mark that outranks this one is
+    /// kept, and the notice says why rather than claiming it changed.
+    func setCarplayFit(_ change: CarplayFitChange) async {
+        do {
+            let result = try await api.setCarplayFit(id, change)
+            detail?.session = result.session
+            notice = result.applied ? change.done : (result.message ?? "The CarPlay fit was kept as it was.")
+            error = nil
+            if result.applied { Haptics.success() } else { Haptics.failure() }
+        } catch {
+            fail(error)
+        }
+    }
+
     /// Promote or demote. A promotion that tried to start the session and could not says why,
     /// rather than claiming it worked.
     func reschedule(priority: Bool) async {
@@ -1110,6 +1124,7 @@ struct SessionDetailView: View {
                         Label("Put back on the board", systemImage: "eye")
                     }
                 }
+                carplayFitMenu(session)
                 Button {
                     Task { await model.run { try await $0.refreshTranscript(session.id) } }
                 } label: {
@@ -1230,6 +1245,42 @@ struct SessionDetailView: View {
     /// The web UI's heart and its popout: on or off, and "Beat every" from its intervals. When
     /// on, a session waiting for input is nudged to keep working toward its goal on that
     /// cadence. A new interval leaves the heartbeat on or off, as the popout's select does.
+    /// The web sheet's *CarPlay fit* item: whether what this session needs next can be done by
+    /// voice from a car, with the reason, set by hand as a `human` mark, or cleared. Its label
+    /// says what stands — the server's line, stale or not — so the menu is also where it is read.
+    private func carplayFitMenu(_ session: SessionSummary) -> some View {
+        let current = session.currentCarplayFit
+        return Menu {
+            ForEach(CarplayFit.allCases) { fit in
+                Menu {
+                    Button("No reason given") { Task { await model.setCarplayFit(.mark(fit, reason: nil)) } }
+                    ForEach(fit.reasons) { reason in
+                        Button(reason.label) { Task { await model.setCarplayFit(.mark(fit, reason: reason)) } }
+                    }
+                } label: {
+                    Label(current == fit ? "\(fit.label) ✓" : fit.label, systemImage: fit.systemImage)
+                }
+                .accessibilityIdentifier("detail.carplayFit.\(fit.rawValue)")
+            }
+            if session.carplayFit != nil {
+                Button(role: .destructive) {
+                    Task { await model.setCarplayFit(.clear) }
+                } label: {
+                    Label("Clear", systemImage: "xmark.circle")
+                }
+                .accessibilityIdentifier("detail.carplayFit.clear")
+            }
+        } label: {
+            Label {
+                Text(current.map { "CarPlay fit: \($0.label)" } ?? "CarPlay fit")
+                Text(session.carplayFitSummary ?? "untagged")
+            } icon: {
+                Image(systemName: current?.systemImage ?? "car")
+            }
+        }
+        .accessibilityIdentifier("detail.carplayFit")
+    }
+
     private func heartbeatMenu(_ session: SessionSummary) -> some View {
         let enabled = session.heartbeatEnabled ?? false
         let interval = Binding<Int>(

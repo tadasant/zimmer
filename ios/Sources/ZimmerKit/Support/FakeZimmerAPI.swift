@@ -311,7 +311,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
-        return wired(ran(trashed([
+        return carplayMarked(now, wired(ran(trashed([
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
@@ -361,7 +361,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
-        ])))
+        ]))))
     }
 
     /// The MCP servers the web UI draws a connection chip for: 1038's chosen server, the one
@@ -422,6 +422,25 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// Every sample but the sweep (1031, held at the starting line) has had its agent launch,
     /// so a restart from Needs input continues its conversation rather than starting over.
+    /// The CarPlay-fit marks the summary fork would have written at rest: the merge is a yes
+    /// or no from the car, the parity audit is a long read for the laptop, and the Postgres
+    /// question is not judged yet.
+    private static func carplayMarked(_ now: Date, _ sessions: [SessionSummary]) -> [SessionSummary] {
+        sessions.map { session in
+            var session = session
+            switch session.id {
+            case 1038: (session.carplayFit, session.carplayFitReason) = ("carplay_ok", "decision")
+            case 1044: (session.carplayFit, session.carplayFitReason) = ("laptop_only", "long_read")
+            default: return session
+            }
+            session.effectiveCarplayFit = session.carplayFit
+            session.carplayFitSource = "auto"
+            session.carplayFitSetAt = now.addingTimeInterval(-5 * 60)
+            session.carplayFitSummary = carplayFitSummary(session)
+            return session
+        }
+    }
+
     private static func ran(_ sessions: [SessionSummary]) -> [SessionSummary] {
         sessions.map { session in
             var session = session
@@ -651,6 +670,36 @@ extension FakeZimmerAPI {
             }
             session.effectiveVisibility = session.visibility
         }
+    }
+
+    /// As the server, for the app's `human` mark: it always applies, at the session's own
+    /// position, so it is current until the session says something new.
+    public func setCarplayFit(_ id: Int, _ change: CarplayFitChange) async throws -> CarplayFitResult {
+        let session = try self.change(id) { session in
+            switch change {
+            case let .mark(fit, reason):
+                session.carplayFit = fit.rawValue
+                session.carplayFitReason = reason?.rawValue
+                session.carplayFitSource = "human"
+                session.carplayFitSetAt = Date()
+            case .clear:
+                session.carplayFit = nil
+                session.carplayFitReason = nil
+                session.carplayFitSource = nil
+                session.carplayFitSetAt = nil
+            }
+            session.effectiveCarplayFit = session.carplayFit
+            session.carplayFitSummary = Self.carplayFitSummary(session)
+        }
+        return CarplayFitResult(session: session, message: change == .clear ? "CarPlay fit cleared." : "CarPlay fit set to \(session.carplayFit ?? "").")
+    }
+
+    /// `SessionCarplayFit#carplay_fit_summary`, for a current mark.
+    static func carplayFitSummary(_ session: SessionSummary) -> String? {
+        guard let fit = session.carplayFit.flatMap(CarplayFit.init(rawValue:)) else { return nil }
+        var head = fit.label
+        if let reason = session.carplayFitReason.flatMap(CarplayFitReason.init(rawValue:)) { head += " (\(reason.label.lowercased()))" }
+        return [head, session.carplayFitSource, "current"].compactMap { $0 }.joined(separator: " · ")
     }
 
     public func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary {

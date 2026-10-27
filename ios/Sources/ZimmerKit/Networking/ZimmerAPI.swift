@@ -54,7 +54,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     private let auth: AuthSession
     private let transport: HTTPTransport
     private let edge: EdgeCredential
-    private let source: ClientSource
+    private var source: ClientSource
 
     /// - Parameter source: what every request says about where it comes from (see
     ///   `ClientSource`); the app passes its version.
@@ -111,6 +111,14 @@ public struct ZimmerHTTPClient: ZimmerAPI {
         let response: FollowUpResponse = try await post("/api/v1/sessions/\(segment)/follow_up", json: ["prompt": prompt], source: source)
         let queued = response.enqueued_message != nil
         return FollowUpResult(queued: queued, message: response.message ?? (queued ? "Queued" : "Sent"))
+    }
+
+    /// A copy whose every request names `surface`, with this client's version; the car never
+    /// claims a modality here, because a Live call's is the conversation's own.
+    public func live(from surface: ClientSource.Surface) -> any LiveAPI {
+        var client = self
+        client.source = surface == .carplay ? source.onCarPlay(modality: nil) : .app(version: source.version)
+        return client
     }
 
     public func archive(_ id: Int) async throws -> SessionSummary {

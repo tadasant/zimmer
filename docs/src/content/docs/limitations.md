@@ -4644,19 +4644,19 @@ The phone's composers are plain text fields. iOS keyboard dictation fills them l
 app cannot see it, so a phone message is tagged `ios` with an `unknown` modality. Nothing the app
 sends is tagged `voice_dictation`: what is said in the car goes through Live Mode, as `live_voice`.
 
-### A Live call from CarPlay is tagged as the phone
+### A Live conversation names the client that wrote to it last
 
-CarPlay's Live call is the phone's `LiveCall`, using the same client, so its delegations are tagged
-`ios · live_voice` rather than `carplay`. `live_conversations.client_surface` is last-writer-wins: if
-the web app and the phone both drive one conversation, the next delegation names whichever spoke
+`live_conversations.client_surface` is last-writer-wins, and only a write sets it — starting a
+conversation, a mode switch, a message, a relayed tool call — never a read or a minted secret. If
+the web app and the phone both drive one conversation, the next delegation names whichever wrote
 last.
 
-Until that is fixed on the iOS side (`LiveAPI` passing CarPlay's `ClientSource`), the CarPlay line
-that `LiveConversations::SystemPrompt` adds to the mechanics section when `client_surface` is
-`carplay` never fires for a call started from the car: the surface it records is `ios`. The
-[CarPlay fit](/sessions/carplay-fit/) filter and action work regardless, because the `live-mode`
-root's voice style already assumes the person may be driving; what is missing is Zimmer *telling* it
-so. The fix touches the files the CarPlay redesign is in, so it is sequenced after that lands.
+A Live call started from CarPlay sends `X-Zimmer-Client: carplay/<version>` on every request, so it
+records `carplay` and the live model is told the person is in a car. A call that moves mid-call — the
+car's *Talk* on a call the phone started, or the car disconnecting with the call up — is handed over
+with one mode write (voice is already on, so it changes nothing else) and a `session.update` that
+brings the open call up to the new instructions. If that write fails, the call carries on under the
+old surface until its next relayed tool call. None of this has run in a car yet (below).
 
 ### An API key is `api`, even when an agent holds it
 
@@ -8172,7 +8172,9 @@ XCUITest cannot reach the CarPlay window, so there are no screenshots of it eith
 
 Nothing in the car tells you a session started needing you while you drive, beyond the badge and
 the counts changing on the next minute's read: there are no CarPlay notifications for this category,
-and the car does not speak unasked. A call driven from the car is tagged as the phone's (below).
+and the car does not speak unasked. A Live call from the car is tagged `carplay`, and Zimmer adds a
+CarPlay line to the live model's instructions; both are tested against a recorded transport, not
+observed in a car.
 
 ## No iOS push has been sent to a real phone
 

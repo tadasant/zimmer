@@ -96,6 +96,20 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// That choice with an expired snooze already resolved back to visible — what a board draws.
     public var effectiveVisibility: SessionVisibility?
     public var snoozedUntil: Date?
+    /// The stored CarPlay-fit mark, `carplay_ok` or `laptop_only` (see `CarplayFit`), current
+    /// or stale. Raw, so a value from a later server decodes rather than failing the row.
+    public var carplayFit: String?
+    /// That mark while it is current, nil once the session has moved past it — what a board
+    /// filtering for a driver reads.
+    public var effectiveCarplayFit: String?
+    public var carplayFitReason: String?
+    /// Who wrote the mark: `auto`, `human`, `assistant` or `session`.
+    public var carplayFitSource: String?
+    public var carplayFitSetAt: Date?
+    /// The transcript position the mark was written against.
+    public var carplayFitLineCount: Int?
+    /// The server's line for it: "Laptop only (a credential) · auto · current".
+    public var carplayFitSummary: String?
     /// `priority` or `spot`: the class the session actually runs under.
     public var priorityClass: String?
     /// The class chosen for this one session, or nil when its genesis decides — the web
@@ -142,6 +156,13 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case notes = "session_notes"
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
+        case carplayFit = "carplay_fit"
+        case effectiveCarplayFit = "effective_carplay_fit"
+        case carplayFitReason = "carplay_fit_reason"
+        case carplayFitSource = "carplay_fit_source"
+        case carplayFitSetAt = "carplay_fit_set_at"
+        case carplayFitLineCount = "carplay_fit_line_count"
+        case carplayFitSummary = "carplay_fit_summary"
         case priorityClass = "priority_class"
         case schedulingClass = "scheduling_class"
         case heartbeatEnabled = "heartbeat_enabled"
@@ -218,6 +239,14 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
 
     /// What the board shows for this session's visibility, with an expired snooze read as visible.
     public var boardVisibility: SessionVisibility { effectiveVisibility ?? visibility ?? .visible }
+
+    /// The CarPlay-fit mark in force: nil when there is none, when it is stale, or when it is
+    /// a value this build does not know.
+    public var currentCarplayFit: CarplayFit? { effectiveCarplayFit.flatMap(CarplayFit.init(rawValue:)) }
+    /// Why, when the mark in force says.
+    public var currentCarplayFitReason: CarplayFitReason? {
+        currentCarplayFit == nil ? nil : carplayFitReason.flatMap(CarplayFitReason.init(rawValue:))
+    }
 
     public var hasNotes: Bool {
         !(notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

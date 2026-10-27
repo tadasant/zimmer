@@ -3,6 +3,10 @@ import Foundation
 /// Live Mode over `/api/v1/live*` — the same rules the web's `/live` pages keep
 /// (`LiveConversations::Actions` on the server).
 public protocol LiveAPI: Sendable {
+    /// The same Live Mode calls, each saying it comes from `surface`. Zimmer records the client
+    /// driving a conversation from its writes (`live_conversations.client_surface`, last writer
+    /// wins), and a call from the car is what tells the live model the person is driving.
+    func live(from surface: ClientSource.Surface) -> any LiveAPI
     /// Can Live Mode start, and if not, why not.
     func liveAvailability() async throws -> LiveAvailability
     /// The newest conversations and the open one.
