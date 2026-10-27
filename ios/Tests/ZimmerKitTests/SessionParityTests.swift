@@ -116,11 +116,11 @@ final class SessionParityTests: XCTestCase {
             "POST /api/v1/sessions/5/regenerate_status_summary",
             "POST /api/v1/sessions/5/refresh",
         ])
-        XCTAssertEqual(try body(transport.sent[4]) as? [String: String], ["visibility": "hidden"])
-        XCTAssertEqual(try body(transport.sent[5]) as? [String: String], ["session_notes": "n"])
-        XCTAssertEqual(try body(transport.sent[6]) as? [String: String], ["title": "t"])
-        XCTAssertEqual(try body(transport.sent[7]) as? [String: String], ["goal": "g"])
-        XCTAssertEqual(try body(transport.sent[8]) as? [String: String], ["effort": "default"], "nil clears to the model's default")
+        XCTAssertEqual(try body(transport.sent[3]) as? [String: String], ["visibility": "hidden"])
+        XCTAssertEqual(try body(transport.sent[4]) as? [String: String], ["session_notes": "n"])
+        XCTAssertEqual(try body(transport.sent[5]) as? [String: String], ["title": "t"])
+        XCTAssertEqual(try body(transport.sent[6]) as? [String: String], ["goal": "g"])
+        XCTAssertEqual(try body(transport.sent[7]) as? [String: String], ["effort": "default"], "nil clears to the model's default")
     }
 
     func testPromoteDemoteAndHeartbeatSendTheRankedViewsWrites() async throws {
