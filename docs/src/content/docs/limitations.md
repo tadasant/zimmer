@@ -7433,8 +7433,9 @@ Three consequences to know:
   nothing reads it, and its contents mean nothing.
 - **A spawn with no usable current account parks, and its attachments do not survive the park.**
   `AgentSessionJob` parks the refused turn (`AuthOutageParkService.park_refused_spawn!`) and the
-  resume redelivers its prompt text, but images or files attached to a follow-up that was refused
-  are not carried — the resume delivers the words alone. Recovery waits on the fifteen-minute
+  resume redelivers its prompt text, but images or files attached to the refused turn — a follow-up's
+  or a first turn's — are not carried; the resume delivers the words alone. A human message sent to
+  the parked session replaces the stored turn rather than queuing behind it. Recovery waits on the fifteen-minute
   `QuotaResetCheckerJob` sweep unless a human authenticates an account on `/inference`, which runs
   it immediately; a refresh that heals an account on its own is noticed at the next tick.
   `AuthWarmupService` settles the pool at worker boot so the ordinary deploy never reaches it.

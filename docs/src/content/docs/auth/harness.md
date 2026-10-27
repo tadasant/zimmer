@@ -221,7 +221,10 @@ The park keeps the turn it refused in `auth_outage_undelivered_prompt`, and the 
 instead of the generic recovery nudge: a human's message or a wake-up's prompt verbatim, and for a
 session whose runtime never started, its own prompt — a nudge delivered there would start a
 conversation holding nothing but the nudge. A refused nudge keeps nothing, and the resume sends the
-sweep's own. Authenticating an account on `/inference` runs the wake sweep immediately
+sweep's own. The same key is honoured on the fleet path: a spot park is restarted by the ranked fleet
+wake through `Sessions::RestartWithPrompt`, which delivers the stored turn instead of its nudge. A
+session refused while it was already `running` (a re-entered turn) is paused and slept outright, since
+there is no process whose end would carry out a `pending_sleep`. Authenticating an account on `/inference` runs the wake sweep immediately
 (`AuthOutageParkService.request_prompt_wake!`) rather than at the next fifteen-minute tick.
 
 The operator hears about it from Rails, not from an agent session — see
@@ -794,7 +797,8 @@ resets and that they come back on their own.
 
 One alert per hour, claimed by a single conditional `UPDATE` on `app_settings.pool_outage_alerted_at`
 (visible in `/supervisor`), so a fleet refused in the same minute produces one page rather than one
-per session. The per-park push the other auth parks send is suppressed for this one, for the same
+per session. The wake sweep clears the stamp as soon as it resumes a parked session, so the next,
+separate outage pages straight away. The per-park push the other auth parks send is suppressed for this one, for the same
 reason. The Trigger route stays: when only one account is down, the pool still serves its session,
 and it is the configurable one.
 

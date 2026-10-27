@@ -195,4 +195,55 @@ class AgentSessionJobPoolUnavailableTest < ActiveJob::TestCase
       assert AuthOutageParkService.request_prompt_wake!
     end
   end
+
+  # Spot parks are not the sweep's to resume: the ranked fleet wake restarts them
+  # through Sessions::RestartWithPrompt, which must deliver the refused turn too.
+  test "a spot park restarted by the fleet wake delivers the refused turn, not a nudge" do
+    account!(email: "drained@example.com", status: :quota_exceeded)
+    @session.update!(scheduling_class: SessionGenesis::SPOT)
+
+    run_refused_turn
+    @session.reload
+    assert AuthOutageParkService.parked?(@session)
+    assert_not AuthOutageWakeAuthority.sweep_owned?(@session)
+
+    clear_enqueued_jobs
+    assert Sessions::RestartWithPrompt.call(@session, actor: :mcp).ok?
+    assert_equal [ "Triage this alert" ], enqueued_turn_prompts
+    assert_nil @session.reload.metadata[AuthOutageParkService::UNDELIVERED_PROMPT_KEY]
+  end
+
+  # The follow-up arm admits a session re-entered while `running`. With no process
+  # to end, a `pending_sleep` would never be carried out — it must come to rest.
+  test "a session refused while already running parks into waiting" do
+    account!(email: "drained@example.com", status: :quota_exceeded)
+    @session.update!(status: :running)
+
+    assert AuthOutageParkService.park_refused_spawn!(@session, follow_up_prompt: "keep going on the report")
+
+    @session.reload
+    assert_equal "waiting", @session.status
+    assert AuthOutageParkService.parked?(@session)
+    assert_equal "keep going on the report", @session.metadata[AuthOutageParkService::UNDELIVERED_PROMPT_KEY]
+  end
+
+  test "a session archived before its spawn was refused is not parked and pages nobody" do
+    @session.update!(status: :archived)
+    errors = []
+    Rails.logger.stubs(:error).with { |msg| errors << msg.to_s; true }
+
+    assert_not AuthOutageParkService.park_refused_spawn!(@session)
+    assert_nil @session.reload.metadata["auth_outage_reason"]
+    assert_empty errors.grep(/\[PoolOutageAlert\]/)
+  end
+
+  test "the throttle is released once the pool serves a parked session again" do
+    drained = account!(email: "drained@example.com", status: :quota_exceeded)
+    run_refused_turn
+    assert_not_nil AppSetting.current.pool_outage_alerted_at
+
+    drained.update!(status: :active)
+    assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    assert_nil AppSetting.current.pool_outage_alerted_at
+  end
 end
