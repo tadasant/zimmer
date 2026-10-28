@@ -199,11 +199,25 @@ actually happened to the work.**
 | Slack threw a fetch away before its cursor moved, so the deferred poll re-reads it | WARN | the per-channel / per-thread / per-DM rescues, and each deferral |
 | The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its GlitchTip report |
 | The failure loses work the deferral cannot bring back | ERROR | `#process_message`, whose caller advances the cursor past that message either way |
-| Not transient at all — a renamed channel, a bad cursor, a bug in the job | ERROR | every non-`TransientError` in those same rescues |
+| Slack said `not_in_channel` or `channel_not_found`, and a read in that channel has succeeded within the last 15 minutes | WARN | the same rescues, while the channel's first-seen marker is younger than `CHANNEL_ACCESS_ERROR_GRACE` |
+| The bot really has lost the channel — every read there has failed for 15 minutes | ERROR | the same rescues, once that marker has aged past the grace |
+| Not transient at all — a bad cursor, a bug in the job | ERROR | every other non-`TransientError` in those same rescues |
 
 The third row is why this is a property of the **call site** rather than of the exception. The
 same `SlackService::RateLimitedError` is a recovery at one rescue and a lost message at
 another, so demoting by exception class alone would silence the ones that matter.
+
+The `not_in_channel` rows exist because Slack has returned that code from
+`conversations.replies` for a channel the bot was in, during sustained 429s, and the same
+thread read normally a few minutes later ([#1408](https://github.com/tadasant/zimmer/issues/1408)).
+So the first sight of either code in a channel records a first-seen time under
+`channel_access_errors` in the condition's configuration and logs at WARN. Any successful
+Slack read in that channel deletes the entry. An entry that reaches 15 minutes old means no
+read there has worked since, which is what a removed bot or an archived channel looks like,
+and from then on every poll logs the failure at ERROR and pages. Two limits: the rescues
+only know the channel for channel and thread reads, so a DM failure still logs at ERROR on
+first sight, and a channel that drops out of an all-channels condition's member list is
+never polled at all, so it stops logging rather than pages.
 
 Nothing is suppressed and no message content is dropped: Slack's own words, the channel, and
 the thread stay in the line. Only the severity changes, which is what makes the ERROR that

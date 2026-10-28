@@ -3190,4 +3190,103 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     assert_nil job.instance_variable_get(:@transient_error),
       "a non-transient failure must not be mistaken for a reason to defer"
   end
+
+  # --- A channel the bot can suddenly not see (#1408) --------------------------
+  #
+  # Slack has twice answered conversations.replies with not_in_channel for a channel
+  # the bot polls continuously, during sustained 429s, and both times the same thread
+  # read normally minutes later while the same poll kept reading the channel's other
+  # threads. Each one paged. So not_in_channel and channel_not_found are suspect on
+  # first sight and WARN; they reach ERROR only once no read in that channel has
+  # succeeded for CHANNEL_ACCESS_ERROR_GRACE, which is what a bot really removed from
+  # the channel looks like.
+
+  def slack_not_in_channel
+    SlackService::ApiError.new("Slack API error: not_in_channel", code: "not_in_channel")
+  end
+
+  # The 2026-10-28 incident's shape: a passive thread check fails with not_in_channel,
+  # and the next poll reads the same thread fine.
+  test "a one-off not_in_channel on a thread, followed by a successful read, logs no ERROR" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    parent_ts = passive_ts(5.hours)
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).returns([])
+    SlackService.stubs(:get_channel_history).with(PASSIVE_CHANNEL, limit: 50).returns([
+      OpenStruct.new(ts: parent_ts, reply_count: 2, latest_reply: passive_ts(1.minute),
+                     user: "U222", thread_ts: nil, bot_id: nil)
+    ])
+    SlackService.stubs(:get_thread_replies).raises(slack_not_in_channel)
+
+    first = capture_log_lines { SlackTriggerPollerJob.new.send(:process_condition, condition) }
+
+    assert_empty first.grep(/^ERROR/), "a first-sight not_in_channel must not page"
+    assert_equal 1, first.grep(/^WARN.*passively checking thread #{Regexp.escape(parent_ts)} in #{PASSIVE_CHANNEL}.*not_in_channel/).size,
+      "the line must survive at WARN with Slack's words, the thread and the channel intact"
+    assert condition.reload.channel_access_errors.key?(PASSIVE_CHANNEL), "first sight must be recorded"
+
+    SlackService.stubs(:get_thread_replies).returns([ passive_message(passive_ts(1.minute)) ])
+    second = travel(3.minutes) { capture_log_lines { SlackTriggerPollerJob.new.send(:process_condition, condition.reload) } }
+
+    assert_empty second.grep(/^ERROR/)
+    assert_empty condition.reload.channel_access_errors, "a successful read in the channel clears the marker"
+  end
+
+  # The case that must still page: the bot really was removed from the channel, so
+  # every read there fails, poll after poll.
+  test "a not_in_channel that persists past the grace logs ERROR" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+
+    SlackService.stubs(:get_messages_since).raises(slack_not_in_channel)
+    SlackService.stubs(:get_channel_history).raises(slack_not_in_channel)
+    SlackService.stubs(:get_thread_replies).raises(slack_not_in_channel)
+
+    poll = -> { capture_log_lines { SlackTriggerPollerJob.new.send(:process_condition, condition.reload) } }
+
+    first = poll.call
+    within_grace = travel(SlackTriggerPollerJob::CHANNEL_ACCESS_ERROR_GRACE - 1.minute) { poll.call }
+    past_grace = travel(SlackTriggerPollerJob::CHANNEL_ACCESS_ERROR_GRACE + 1.minute) { poll.call }
+    still_failing = travel(SlackTriggerPollerJob::CHANNEL_ACCESS_ERROR_GRACE + 2.minutes) { poll.call }
+
+    assert_empty first.grep(/^ERROR/)
+    assert_empty within_grace.grep(/^ERROR/), "inside the grace it is still suspect"
+    assert_equal 1, past_grace.grep(/^ERROR.*passively polling channel #{PASSIVE_CHANNEL}: .*not_in_channel/).size,
+      "every read in the channel has failed for the whole grace: that is a lost channel, and it pages"
+    assert_equal 1, still_failing.grep(/^ERROR/).size, "and it keeps paging until somebody fixes it"
+  end
+
+  test "channel_not_found is suspect on first sight too, and only within its own channel" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    job = SlackTriggerPollerJob.new
+    gone = SlackService::ApiError.new("Slack API error: channel_not_found", code: "channel_not_found")
+
+    lines = capture_log_lines do
+      job.send(:note_unit_failure, gone, "polling channel C1 for mentions", condition: condition, channel_id: "C1")
+      travel(SlackTriggerPollerJob::CHANNEL_ACCESS_ERROR_GRACE + 1.minute) do
+        # C2 has no marker of its own, so C1's age does not make it persistent.
+        job.send(:note_unit_failure, gone, "polling channel C2 for mentions", condition: condition, channel_id: "C2")
+        job.send(:note_unit_failure, gone, "polling channel C1 for mentions", condition: condition, channel_id: "C1")
+      end
+    end
+
+    assert_equal 2, lines.grep(/^WARN/).size
+    assert_equal 1, lines.grep(/^ERROR.*channel C1/).size
+  end
+
+  # The marker is poller state, so a plain UI save must not wipe it and restart the
+  # grace on a channel that is genuinely lost.
+  test "channel_access_errors survives an edit that omits it" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update_column(:configuration, condition.configuration.merge(
+      "channel_access_errors" => { "C1" => 1.hour.ago.iso8601 }
+    ))
+
+    condition.reload.update!(configuration: condition.configuration.except("channel_access_errors"))
+
+    assert condition.reload.channel_access_errors.key?("C1")
+  end
 end
