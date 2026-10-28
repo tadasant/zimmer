@@ -8106,6 +8106,13 @@ the board thins out as you work it, and goes stale only about things you did not
 The one place that shows is the **Reprioritize** button: the reordering session writes the new order
 and you have to reload to see it. The button says so.
 
+## Turning CarPlay-ok off does not stick
+
+The car icon on the [User view](/sessions/user-view/) row and the session page clears the mark when
+you turn it off, rather than writing laptop-only. A cleared mark is untagged, so the next time the
+session comes to rest Zimmer derives a fresh `auto` mark, and if that says CarPlay-ok the icon is on
+again. The only lasting "no" is *Laptop only* behind the chevron. See [CarPlay fit](/sessions/carplay-fit/).
+
 ## The board arrives in one piece, after the shell
 
 The dashboard's shell paints first and the board follows in its own request

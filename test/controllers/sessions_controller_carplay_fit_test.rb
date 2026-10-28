@@ -116,7 +116,7 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     get session_path(session)
     assert_select "#session_#{session.id}_header_actions [data-carplay-fit-toggle='on'] a[aria-pressed='true']" do |links|
       assert_equal update_carplay_fit_session_path(session, carplay_fit: "clear"), links.first["href"]
-      assert_match(/set by you/, links.first["aria-label"])
+      assert_match(/set by you/, links.first["title"])
       assert_no_match(/border-dashed/, links.first["class"])
     end
 
@@ -131,7 +131,7 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
 
     get dashboard_board_path, params: { view: "user" }
     assert_select "#user_view_row_#{auto_ok.id} [data-carplay-fit-toggle='on'] a.border-dashed[aria-pressed='true']" do |links|
-      assert_match(/set by Zimmer/, links.first["aria-label"])
+      assert_match(/set by Zimmer/, links.first["title"])
     end
     assert_select "#user_view_row_#{laptop.id} [data-carplay-fit-toggle='laptop_only'] a[aria-pressed='false']" do |links|
       assert_equal update_carplay_fit_session_path(laptop, carplay_fit: "carplay_ok"), links.first["href"]
