@@ -26,12 +26,12 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 | Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | No Now Playing, contact, map, point of interest or search template |
 | Depth of 3 templates, the root included | Root → one pushed screen → one more; modals (alerts, sheets, the voice control template) sit on top |
 | "Primary modality of voice upon launch" | The one default button is the voice conversation; the car itself stays silent until the driver taps it (see Decisions) |
-| "Only hold an audio session open when voice features are actively being used" | The audio session is held while the car speaks or a call runs, never idle |
+| "Only hold an audio session open when voice features are actively being used" | The audio session is held only while a call runs, never idle |
 | Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the Live Mode call |
 | "Don't show text or imagery in response to queries" | Answers are spoken; the screen shows state and one line of context, never a transcript |
-| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and Hang up on the call; Talk and Dismiss on the briefing |
-| Some cars cap a list at 12 items; a grid holds up to 8; a tab bar up to 5 tabs | Lists stop at 12, the grid has 4 tiles, the tab bar 3 tabs |
-| Notifications: communication, EV charging, parking, public safety and driving task apps only | **This category cannot show notifications in CarPlay.** The car is proactive by speaking instead |
+| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and Hang up on the call |
+| Some cars cap a list at 12 items; a grid holds up to 8; a tab bar up to 5 tabs | Lists stop at 12, the grid has 3 tiles, the tab bar 3 tabs |
+| Notifications: communication, EV charging, parking, public safety and driving task apps only | **This category cannot show notifications in CarPlay.** The car is proactive through the badge and the counts, silently |
 
 Everything below fits inside that table. Where a nicer design wanted something outside it — a
 Now Playing-style status card, an overlay of the call over the board, a notification — the
@@ -39,48 +39,44 @@ section says what it would take.
 
 ## Decisions
 
-**One voice path, and it is Live Mode.** The first CarPlay app had two voices: an on-device
-speech recogniser with a small command grammar (yes, archive, next, reply …) and, under it, a
-section that started a Live Mode call. Two voices are one too many for a driver, who should never
-have to wonder which one is listening, and the command grammar could not do what the driver
-actually wants (ask what is going on, start something, follow up in their own words). The
-recogniser is gone. Live Mode, the OpenAI Realtime call that delegates to Zimmer's MCP surface, is
-the conversation. The car still speaks on its own, with the system voice, for the things that are
-not a conversation: the briefing, a card read aloud, a confirmation that a tap worked.
+**One voice, and it is Live Mode's.** The first CarPlay app had two voices that listened: an
+on-device speech recogniser with a small command grammar, and a Live Mode call. The redesign
+(#1396) cut the recogniser but kept a second voice that *spoke*: the system's `AVSpeechSynthesizer`,
+for a briefing, a card read aloud, and "Told it to go ahead." after a tap. Tadas heard it in the car
+and cut it ([#1410](https://github.com/tadasant/zimmer/issues/1410)): *"I should never hear the
+robotic voice that just reads stuff. It should always be real-time."* The car now has exactly one
+voice, the OpenAI Realtime call, and no other code path can make a sound. A source guard
+(`CarPlayTests`) fails the build on any `AVSpeechSynthesizer` in the app.
 
-**The default is Talk to Zimmer.** It is the first tile on the home tab, the big button on the
-briefing screen, and *Talk about it* on every card. One tap, no choice to make: the open Live
-Mode conversation with voice on, or a new one with voice on. *New conversation* and *Resume* were
-two buttons for a question a driver should not be asked; the phone keeps both.
+**One thread.** In the same message: *"there should be no separate ways to talk to single
+sessions… Everything should just be managed by the live mode. There should only be one thread
+throughout the whole CarPlay app."* So the car has no per-session screen and no per-session
+buttons. The session cards (Merge, Go ahead, Restart, Archive, Read aloud, More) are gone. A
+session's row is a way into the one conversation: tapping it starts, or carries on, the Live Mode
+call with an opening line that names the session, and Live Mode does the rest with its own tools
+(`action_session`, `authorize_merge` through the gateway, and so on), with its own guardrails: it
+confirms before anything consequential, including merges. A source guard fails the build on any
+direct follow-up, merge, restart or archive call in the CarPlay scene.
 
-**Silent until asked.** Opening the app says nothing: it lands on the home tab, and Zimmer speaks
-only after the driver taps something. Entering Live Mode is the action that has to happen before
-Zimmer says anything on its own. The first version of this design spoke a briefing on connect and
-a line for every session that entered Needs you while driving; Tadas cut both. A car that starts
-talking when you get in, or interrupts the radio because a session failed, is the car deciding when
-you are listening. The category's "primary modality of voice upon launch" is read as *the default
-action is voice*, not *the app speaks first*; if App Review reads it the other way, the briefing
-screen is one line from being shown on connect again. A briefing is still there, as the *Briefing*
-tile, and only when tapped.
+**The default is Talk to Zimmer.** It is the first tile on the home tab. One tap, no choice to
+make: the open Live Mode conversation with voice on, or a new one with voice on. *New conversation*
+and *Resume* were two buttons for a question a driver should not be asked; the phone keeps both.
 
-**Once asked, the car speaks and the driver does not read.** The Briefing tile is spoken. Opening
-a card speaks it. Each tap that touches Zimmer is confirmed out loud ("Told it to go ahead.",
-"Merge authorized."), and a failure is spoken as the server worded it rather than announced as
-success. The screen underneath carries the same words in large type for the glance that checks
-them.
+**Silent until asked.** Opening the app says nothing: it lands on the home tab, and nothing is
+heard until the driver taps Talk to Zimmer or a row. The first version of this design spoke a
+briefing on connect and a line for every session that entered Needs you while driving; Tadas cut
+both. A car that starts talking when you get in, or interrupts the radio because a session failed,
+is the car deciding when you are listening. The category's "primary modality of voice upon launch"
+is read as *the default action is voice*, not *the app speaks first*.
 
-**Decisions are taps; conversation is voice.** A yes-or-no decision on a session that needs the
-driver — go ahead, merge, restart, archive — is a large button on a card, because a tap is
-deliberate and a misheard word is not. Merge and archive ask once more (an alert with two
-buttons); go ahead and restart act on the tap, because both only tell an agent to carry on.
-Anything open-ended — a reply in the driver's own words, a question about a session, new work —
-is *Talk about it* or *Talk to Zimmer*. Live Mode's own guardrails then apply: it confirms before
-anything consequential, including merges and spending.
+**Live Mode unavailable is shown, never spoken.** When the call cannot connect, or drops, the Talk
+tile says *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds,
+silently (`LiveRetry`). Once those are spent it says *Live Mode unavailable. Tap to retry*; a tap
+is a fresh budget, and hanging up ends the retries. There is no fallback voice to fall back to.
 
-**Unavailable while driving:** trash (irreversible, and the card offers nothing it cannot say
-aloud), new conversation, Live settings, typing, transcripts, logs, links, the hierarchy, notes,
-scheduling, effort, catalog changes. The phone has all of them. The car offers what fits in one
-glance and one tap.
+**Unavailable while driving:** trash, new conversation, Live settings, typing, transcripts, logs,
+links, the hierarchy, notes, scheduling, effort, catalog changes, and every per-session button. The
+phone has all of them. The car offers what fits in one glance and one tap, and the conversation.
 
 **Proactive, but silent.** The category cannot show CarPlay notifications, and the car does not
 speak unasked, so what is proactive is what the eye catches in a glance: the board is re-read
@@ -106,43 +102,36 @@ Not built here; see Follow-ups.
 flowchart TD
   connect([Car connects, silently]) --> tabs
   subgraph tabs [Tab bar — root, depth 1]
-    home["Zimmer (grid)\n[Talk to Zimmer] [Briefing]\n[Needs you · n] [Running · n]"]
+    home["Zimmer (grid)\n[Talk to Zimmer]\n[Needs you · n] [Running · n]"]
     needs["Needs you (list, ≤12)\nneeds input, then failed\n● badge while any"]
     running["Running (list, ≤12)\nrunning, then waiting"]
   end
   home -- Talk to Zimmer --> call
-  home -- Briefing --> briefing["Briefing (voice control template, modal)\nspoken: what needs you, what is running\n[Talk to Zimmer] [Dismiss]"]
-  briefing -- ends or Dismiss --> tabs
-  briefing -- Talk to Zimmer --> call
-  needs -- row --> card
-  running -- row --> card
-  card["Session card (information template, depth 2)\nspoken on open\nNeeds you · Status · Pull request\n[Merge / Go ahead / Restart] [Talk about it] [More]"]
-  card -- More --> sheet["Action sheet (modal)\nGo ahead · Read aloud · Archive"]
-  card -- Merge / Archive --> confirm["Alert (modal)\n[Merge #1261] [Cancel]"]
-  card -- Talk about it --> call
+  needs -- row: talk about this session --> call
+  running -- row: talk about this session --> call
   call["Live Mode call (voice control template, modal)\nstate picture + title with the subject session\nactivity label in the bar\n[Mute] [Hang up]"]
   call -- Hang up --> tabs
+  call -- cannot connect, or drops --> retry["Talk tile: Live Mode unavailable, retrying…\n(2 s, 5 s, 15 s, silently)"]
+  retry -- retry connects --> call
+  retry -- retries spent --> tap["Talk tile: Live Mode unavailable. Tap to retry"]
 ```
 
 | Screen | Template | Depth | Why this template |
 | --- | --- | --- | --- |
 | Root | Tab bar, 3 tabs | 1 | One tap between the three questions, no back button; the *Needs you* tab wears the red badge |
-| Zimmer (home) | Grid, 4 tiles | 1 (a tab) | A grid's tiles are the largest targets CarPlay draws; four fill one row |
+| Zimmer (home) | Grid, 3 tiles | 1 (a tab) | A grid's tiles are the largest targets CarPlay draws |
 | Needs you, Running | List, ≤ 12 rows | 1 (a tab) | A row is a title and one line; the car may show only 12 |
-| Session card | Information template | 2 | Large labels and up to three footer buttons: the one screen that must be read, kept to three lines |
-| More | Action sheet | modal | The rest of the actions, the destructive one last |
-| Merge? Archive? | Alert | modal | One question, two buttons |
-| Briefing | Voice control template | modal | Apple's screen for a voice in use, with the two action buttons 26.4 allows |
 | Live Mode call | Voice control template | modal | The only screen allowed while recording |
 
-Nothing is pushed deeper than the card. A sheet, an alert or a voice screen is presented over
-whatever is there, one at a time.
+Nothing is pushed. The call screen is the only modal, and it is presented, rebuilt and dismissed
+through `CarPlayNavigator`, one change at a time.
 
 ### The home tab
 
-Four tiles: **Talk to Zimmer** (first; *Back to the call* while one runs), **Briefing** (speaks
-what needs you), **Needs you · n** and **Running · n** (each switches to its tab). The counts are
-the glance; the tiles are the taps. This is what the car opens on, and it opens quietly.
+Three tiles: **Talk to Zimmer** (first; *Back to the call* while one runs; *Live Mode unavailable,
+retrying…* or *Tap to retry* when the call will not connect), **Needs you · n** and **Running · n**
+(each switches to its tab). The counts are the glance; the tiles are the taps. This is what the car
+opens on, and it opens quietly.
 
 ### Needs you and Running
 
@@ -153,27 +142,9 @@ Needs input comes before failed; running before waiting; within each, the sessio
 touched last comes first, as the board's own view orders it. Sessions hidden or snoozed off the
 board stay off the car's lists too. Both lists stop at twelve.
 
-### The session card
-
-Opening a row pushes the card and speaks it. The card is an information template:
-
-- **Needs you** (or **Now**): the headline, in the template's large type.
-- **Status**: "Needs input · 12m".
-- **Pull request**: "#1261 · open · CI green", when the session has one.
-
-The footer holds at most three buttons, the decision first and drawn as the confirming style:
-
-| Session | First | Second | More |
-| --- | --- | --- | --- |
-| Needs input, with an open green PR | **Merge #1261** | Talk about it | Go ahead · Read aloud · Archive |
-| Needs input | **Go ahead** | Talk about it | Read aloud · Archive |
-| Failed | **Restart** | Talk about it | Read aloud · Archive |
-| Running or waiting | Talk about it | Read aloud | — |
-
-*Go ahead* sends "Yes, go ahead." as a follow-up tagged `carplay` with no modality (a tap is not
-dictation). *Merge* is the person's sign-off (`POST /sessions/:id/authorize_merge`), which the
-server takes only from the app on a grant that acts as you. A successful action is spoken, the
-card closes, and the board is read again. A speaker button in the bar reads the card again.
+Tapping a row starts the Live Mode call — or, with one up, puts the line to it — with an opening
+that names the session: "Let's talk about session 1038, "PR #1261 is green — merge it?". It is
+needs input. Tell me where it stands in a sentence, then ask me what I want to do."
 
 ### The Live Mode call
 
@@ -181,8 +152,10 @@ While a call runs the screen is the voice control template, as the category requ
 that is recording. It carries everything the template can:
 
 - **The call's state**, as the picture and the title: Connecting, Listening, Thinking, Speaking,
-  Working on it; "· Muted" beside it. Ten states are built up front (five states, muted and not),
-  so a state change is one `activateVoiceControlState`.
+  Working on it. **Five states, one per call state** (`LiveCallScreen`), because CarPlay keeps the
+  first five a voice control template is given and ignores the rest. "· Muted" is in the title, so
+  muting rebuilds the screen. The first version built ten states (each with a muted twin), and
+  CarPlay dropped Speaking and Working.
 - **The session the conversation is about**, in the title's long variant: "Listening · Investigate
   the flaky poller test: running". It is the session the conversation touched last through a tool
   call — started with `quick_router`, checked with `get_session`, followed up with
@@ -197,36 +170,37 @@ that is recording. It carries everything the template can:
 - **Mute** and **Hang up**, the two action buttons.
 
 The call is the phone's `LiveCall`, so a call started at the desk carries on in the car and the
-other way round; hanging up in the car ends it everywhere.
+other way round; hanging up in the car ends it everywhere. A call already running when the car
+connects is shown at once.
 
 On iOS 27 the voice control template can be presented as an overlay over another template, which
 would let the Needs you list stay visible under the call. CI builds with Xcode 26.6, which has no
 iOS 27 SDK, so that is a follow-up.
 
-### The briefing
+A read of the board that fails never becomes "nothing needs you": the lists say the error.
 
-The **Briefing** tile speaks the board as last read: "Two sessions need you. First: PR 1261 is
-green — merge it? CI is green and the review is done. Second: Which Postgres version should staging
-run? Waiting for your reply. One running." Up to three are read in full; the rest are counted. It
-is spoken under a voice control template titled *Zimmer briefing* with two buttons, **Talk to
-Zimmer** and **Dismiss**, which stays four seconds after the words end and then leaves on its
-own. It is never spoken unasked.
+## Crash-proofing
 
-A read that fails never becomes "nothing needs you": the lists say the error, and the Briefing
-tile says "I couldn't check your sessions" and why.
+What made the first TestFlight builds crash in the car, and what holds each fix:
 
-A call already running when the car connects (started on the phone) is shown at once; the model
-is the voice then.
+| Cause | Fix | Held by |
+| --- | --- | --- |
+| Template changes (present, dismiss, push, pop) made with `completion: nil`. CarPlay throws an exception when it refuses one of those and has no completion to report to, and it refuses a present over another modal or a change made mid-animation, which a call failing fast made easy | Every modal change goes through `CarPlayNavigator`, one at a time, against what is on screen at that moment. `CarPlayInterface.swift` calls the interface controller only through its async forms, which always give CarPlay a completion | `CarPlayTests`: the navigator against a strict fake that refuses what CarPlay refuses; a source guard on every interface-controller call |
+| A voice control template built with ten states; CarPlay keeps five | Five states, muted in the title | `LiveContextTests`, and a source guard on how `CarPlayLive` builds them |
+| The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one — the car connecting or disconnecting is a route change | `LiveAudioEngine` is main-actor only; its observers run on the main queue; a media-services reset ends the call rather than touching a dead engine | Review; no test can drive AVAudioEngine on Linux |
+| A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
+| The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | `CarPlayTests` source guard |
 
 ## Voice triage, end to end
 
 1. The car connects. The scene sets the tab bar as root and reads the board
    (`GET /sessions?view=user&status=needs_input,failed,running,waiting&include=board_row`, which
    carries each session's status summary in one call). The tiles show the counts; nothing is said.
-2. The driver taps **Talk to Zimmer** (the home tile, or the Briefing screen's button). The scene reads
+2. The driver taps **Talk to Zimmer**. The scene reads
    `GET /live_conversations` for the open conversation, or starts one with `POST
    /live_conversations {mode: voice}`, and `LiveCall` turns voice on, mints the Realtime secret
-   and opens the WebSocket. The call screen comes up.
+   and opens the WebSocket. The call screen comes up. If it cannot, the Talk tile says so and the
+   car retries, silently.
 3. The driver talks. Live Mode's agent root (`live-mode`, in `tadasant/tadasant-internal`) has
    Zimmer's MCP surface: it checks sessions with `get_session` and `quick_search_sessions`,
    starts work with `quick_router`, passes answers with `action_session`, and answers questions
@@ -235,7 +209,7 @@ is the voice then.
 4. The scene watches the call's activity. After each relay it reads
    `GET /live_conversations/:id/sessions`, the sessions those tool turns name, and the call
    screen's title names the newest.
-5. **Talk about it** on a card starts the same call with an opening line, put to the model as if
+5. Tapping a session's row starts the same call with an opening line, put to the model as if
    typed (`conversation.item.create` with a user message, then `response.create` under the
    conductor's usual rule) and recorded on the thread: "Let's talk about session 1038, "PR #1261
    is green — merge it?". It is needs input. Tell me where it stands in a sentence, then ask me
@@ -262,17 +236,18 @@ in `tadasant/tadasant-internal`, not here:
 
 | Guideline | How the app follows it |
 | --- | --- |
-| Voice is the primary modality at launch | The default button is the voice conversation; the car itself speaks only when asked (a deliberate reading, see Decisions) |
-| Audio session only while voice is in use | `CarPlaySpeech` holds a playback session only while a line is spoken and releases it; `LiveCall` holds its own only for the call; nothing is held while the home tab sits there |
+| Voice is the primary modality at launch | The default button is the voice conversation; nothing is heard until it, or a row, is tapped (a deliberate reading, see Decisions) |
+| Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call; nothing is held while the home tab sits there |
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template; the car has no other recogniser |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word, one subject line and one activity label |
-| Depth of 3 | Tab bar (1) → card (2); everything else is modal |
+| Depth of 3 | Tab bar (1); nothing is pushed; the call screen is modal |
 | Lists may be capped at 12 | `DrivingBoard.listLimit = 12`; the counts still say how many there are |
-| Grid up to 8, tab bar up to 5 | 4 tiles, 3 tabs |
-| Few, large targets | Grid tiles; list rows of a title and one line; card footers of at most three text buttons; alerts of two |
-| No dense text | A card shows three labelled lines; a row one line; nothing scrolls but a list |
-| Destructive actions confirmed | Merge and archive ask; trash is not offered |
-| Nothing a driver cannot act on | Failures are spoken and shown as the server worded them; a read that fails never claims an empty board |
+| Grid up to 8, tab bar up to 5 | 3 tiles, 3 tabs |
+| Voice control template keeps 5 states | 5 states, one per call state (`LiveCallScreen`) |
+| Few, large targets | Grid tiles; list rows of a title and one line |
+| No dense text | A row is one line; nothing scrolls but a list |
+| Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud before it acts; trash is not offered |
+| Nothing a driver cannot act on | A call that will not connect says so on the Talk tile and retries; a read that fails never claims an empty board |
 
 ## The backend
 
@@ -285,17 +260,23 @@ it to show the same strip.
 
 ## What is proven, and what is not
 
-- `DrivingBoard`, `DrivingCard`, `DrivingAction`, `Briefing`, `DrivingWords`, `LiveActivity`,
-  `LiveContext`, `LiveReferencedSessions` and the conductor's opening line are in ZimmerKit and
-  tested on Linux: the split, the order, the caps, every button set, every confirmation, the
-  spoken lines, the title variants and the rebuild rule.
+- `DrivingBoard`, `DrivingCard`, `DrivingWords`, `LiveActivity`, `LiveContext`, `LiveCallScreen`,
+  `LiveRetry`, `CarPlayNavigator`, `LiveReferencedSessions` and the conductor's opening line are in
+  ZimmerKit and tested on Linux and macOS on every iOS pull request: the split, the order, the
+  caps, the row's opening line, the title variants, the rebuild rule, the five states, the retry
+  budget, and the navigator against a strict fake that refuses what CarPlay refuses.
+- `CarPlayTests` also reads the scene's source: no interface-controller call outside
+  `CarPlayInterface.swift` or without a completion, no system speech anywhere in the app, no
+  direct session action from the car, and the call screen built from `LiveCallScreen.states`.
+  Each of those guards fails against the scene as it was before #1410.
 - The Rails route and the id reading have controller and model tests.
 - The CarPlay scene compiles in CI's Xcode job and is built into every TestFlight build, which
-  signs in the entitlement. **No head unit or CarPlay Simulator has shown it.** The template
-  tree, the voice control template's action buttons and bar buttons on iOS 26.4, the rebuild on a
-  new subject, and how the car's audio ducks under a tapped briefing are unobserved until the
-  first TestFlight build is tried in a car. XCUITest cannot reach the CarPlay window, so there are no
-  screenshots.
+  signs in the entitlement. It has run in a car, where the first builds crashed (#1410). **No CI
+  run drives the real CarPlay screen:** XCUITest cannot reach the CarPlay window, the simulator's
+  CarPlay display has no command-line control, and Apple's CarPlay Simulator needs a physical
+  iPhone. The template tree as a car draws it, the action and bar buttons on iOS 26.4, the rebuild
+  on a new subject or on Mute, and the audio route moving to the car are confirmed only by
+  driving.
 
 ## Follow-ups
 
@@ -303,9 +284,9 @@ it to show the same strip.
   Xcode 27 in CI.
 - **Siri App Intents.** "What needs me?" and "Tell Zimmer to …" without opening the app; works in
   CarPlay without the entitlement. A phone-app change.
-- **Tag the car's call as `carplay`.** The car's Live call is the phone's `LiveCall` on the phone's
-  client, so its delegations are tagged `ios · live_voice`. A per-call client source on the live
-  routes would make them `carplay`.
+- **Crash reports.** The app ships no crash reporter; a crash in the car is visible only in
+  TestFlight's crash feedback in App Store Connect. MetricKit (`MXCrashDiagnostic`) posted to Zimmer,
+  or the Sentry SDK against GlitchTip, would bring them where an agent can read them.
 - **A spoken new-arrival alert, opt-in or in-call.** Cut from this design; if wanted, it belongs
   inside an active Live call (the model mentions it) or behind a phone Setting that defaults off.
 - **The prompt**, above, in `tadasant/tadasant-internal`.
