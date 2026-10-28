@@ -4,29 +4,27 @@ import ZimmerKit
 
 /// The car's screens when no call is up: a tab bar with three tabs, each one question.
 ///
-/// - **Zimmer**, a grid of four tiles: *Talk to Zimmer* (the default: Live Mode), *Briefing*
-///   (the car says what needs you, only when asked), *Needs you* and *Running* with their
-///   counts. A grid's tiles are the largest targets CarPlay draws.
+/// - **Zimmer**, a grid of three tiles: *Talk to Zimmer* (Live Mode, the one conversation), then
+///   *Needs you* and *Running* with their counts. A grid's tiles are the largest targets CarPlay
+///   draws. The Talk tile is also where the car says Live Mode is not there: *Live Mode
+///   unavailable, retrying…*, never a voice.
 /// - **Needs you**, a list of the sessions waiting on a decision — needs input, then failed —
 ///   with a badge on the tab while there are any. A row is one line of what it needs.
 /// - **Running**, a list of the sessions at work, with what each is doing.
 ///
-/// A row opens a card (an information template): the headline in large type, the status, the
-/// PR, and up to three buttons — the decision first (*Merge*, *Go ahead* or *Restart*), *Talk
-/// about it*, and *More* for the rest. Merge and Archive ask first; Trash is not offered at all.
-/// Opening a card reads it aloud, so the driver need not look.
+/// A row is a way into the one conversation, not a screen of its own: tapping it starts (or
+/// carries on) the Live Mode call with a line that names the session, and the conversation
+/// takes it from there — merging, answering, restarting, archiving, all by voice, through Live
+/// Mode's tools. The car has no per-session buttons and no other voice.
 ///
-/// Depth: the tab bar is the root (1), a card is pushed on it (2), and an alert or a sheet is
-/// presented over that. A voice-based conversational app may go three deep; this stops at two.
+/// Depth: the tab bar is the root (1) and nothing is pushed on it. The only modal is the call's
+/// voice control template, which `CarPlayLive` presents.
 @MainActor
 final class CarPlayDashboard {
     let tabBar: CPTabBarTemplate
-    weak var interfaceController: CPInterfaceController?
     var onTalk: (() -> Void)?
-    var onBriefing: (() -> Void)?
-    var onAction: ((DrivingAction, DrivingCard) -> Void)?
-    /// A card was opened: say it.
-    var onOpen: ((DrivingCard) -> Void)?
+    /// A row was tapped: talk about this session, in the one conversation.
+    var onTalkAbout: ((DrivingCard) -> Void)?
 
     private let home: CPGridTemplate
     private let needsYou: CPListTemplate
@@ -34,8 +32,8 @@ final class CarPlayDashboard {
     private var board = DrivingBoard.empty
     private var failure: String?
 
-    var callIsActive = false {
-        didSet { drawHome() }
+    var talkTile = LiveTalkTile.ready {
+        didSet { if talkTile != oldValue { drawHome() } }
     }
 
     init() {
@@ -73,12 +71,8 @@ final class CarPlayDashboard {
     // MARK: - Home
 
     private func drawHome() {
-        let talk = CPGridButton(
-            titleVariants: callIsActive ? ["Back to the call", "Call"] : ["Talk to Zimmer", "Talk"],
-            image: CarPlayImages.tile(callIsActive ? "waveform" : "mic.fill")
-        ) { [weak self] _ in self?.onTalk?() }
-        let briefing = CPGridButton(titleVariants: ["Briefing"], image: CarPlayImages.tile("speaker.wave.2.fill")) { [weak self] _ in
-            self?.onBriefing?()
+        let talk = CPGridButton(titleVariants: talkTile.titleVariants, image: CarPlayImages.tile(talkTile.symbol)) { [weak self] _ in
+            self?.onTalk?()
         }
         let needs = needsYouCount
         let needsTile = CPGridButton(
@@ -90,7 +84,7 @@ final class CarPlayDashboard {
             titleVariants: running > 0 ? ["Running · \(running)", "Running"] : ["Running"],
             image: CarPlayImages.tile("play.circle.fill")
         ) { [weak self] _ in self?.select(self?.working) }
-        home.updateGridButtons([talk, briefing, needsTile, runningTile])
+        home.updateGridButtons([talk, needsTile, runningTile])
     }
 
     private func select(_ template: CPTemplate?) {
@@ -119,9 +113,8 @@ final class CarPlayDashboard {
     private func sections(_ cards: [DrivingCard]) -> [CPListSection] {
         let items = cards.map { card -> CPListItem in
             let item = CPListItem(text: card.title, detailText: card.detail, image: CarPlayImages.row(Self.symbol(for: card)))
-            item.accessoryType = .disclosureIndicator
             item.handler = { [weak self] _, completion in
-                self?.open(card)
+                self?.onTalkAbout?(card)
                 completion()
             }
             return item
@@ -135,157 +128,6 @@ final class CarPlayDashboard {
         case .failed: return "exclamationmark.triangle.fill"
         case .running: return "play.circle.fill"
         case .waiting: return "clock.fill"
-        }
-    }
-
-    // MARK: - A card
-
-    func open(_ card: DrivingCard) {
-        guard let interfaceController else { return }
-        // One card at a time: a row tapped from a card's tab replaces the card.
-        if interfaceController.topTemplate as? CPInformationTemplate != nil {
-            interfaceController.popTemplate(animated: false, completion: nil)
-        }
-        interfaceController.pushTemplate(cardTemplate(card), animated: true, completion: nil)
-        onOpen?(card)
-    }
-
-    /// The card for `id` is on top: take it down (the session left the list).
-    func close(card id: Int) {
-        guard let interfaceController, let top = interfaceController.topTemplate as? CPInformationTemplate, top.userInfo as? Int == id else { return }
-        interfaceController.popTemplate(animated: true, completion: nil)
-    }
-
-    private func cardTemplate(_ card: DrivingCard) -> CPInformationTemplate {
-        var items = [
-            CPInformationItem(title: card.kind == .needsInput || card.kind == .failed ? "Needs you" : "Now", detail: card.headline),
-            CPInformationItem(title: "Status", detail: card.statusLine),
-        ]
-        if let pullRequest = card.pullRequestLine {
-            items.append(CPInformationItem(title: "Pull request", detail: pullRequest))
-        }
-        var actions = card.actions.enumerated().map { index, action in
-            CPTextButton(title: action.title, textStyle: index == 0 ? .confirm : .normal) { [weak self] _ in
-                self?.onAction?(action, card)
-            }
-        }
-        if !card.more.isEmpty {
-            actions.append(CPTextButton(title: "More", textStyle: .normal) { [weak self] _ in self?.showMore(card) })
-        }
-        let template = CPInformationTemplate(title: card.title, layout: .leading, items: items, actions: actions)
-        template.userInfo = card.id
-        template.trailingNavigationBarButtons = [
-            CPBarButton(image: CarPlayImages.bar("speaker.wave.2")) { [weak self] _ in self?.onAction?(.readAloud, card) },
-        ]
-        return template
-    }
-
-    private func showMore(_ card: DrivingCard) {
-        var actions = card.more.map { action in
-            CPAlertAction(title: action.title, style: action.isDestructive ? .destructive : .default) { [weak self] _ in
-                self?.dismissThen { self?.onAction?(action, card) }
-            }
-        }
-        actions.append(CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
-            self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
-        })
-        let sheet = CPActionSheetTemplate(title: card.title, message: card.headline, actions: actions)
-        interfaceController?.presentTemplate(sheet, animated: true, completion: nil)
-    }
-
-    // MARK: - Alerts
-
-    /// A question before an action that ships or files something away: one button to do it,
-    /// one to leave it.
-    func confirm(_ question: String, action: DrivingAction, then proceed: @escaping @MainActor () -> Void) {
-        let alert = CPAlertTemplate(titleVariants: [question], actions: [
-            CPAlertAction(title: action.title, style: action.isDestructive ? .destructive : .default) { [weak self] _ in
-                self?.dismissThen(proceed)
-            },
-            CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
-                self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
-            },
-        ])
-        interfaceController?.presentTemplate(alert, animated: true, completion: nil)
-    }
-
-    /// Something went wrong, in one line, with one button.
-    func alert(_ message: String) {
-        guard let interfaceController, interfaceController.presentedTemplate == nil else { return }
-        let alert = CPAlertTemplate(titleVariants: [message], actions: [
-            CPAlertAction(title: "OK", style: .cancel) { [weak self] _ in
-                self?.interfaceController?.dismissTemplate(animated: true, completion: nil)
-            },
-        ])
-        interfaceController.presentTemplate(alert, animated: true, completion: nil)
-    }
-
-    private func dismissThen(_ next: @escaping @MainActor () -> Void) {
-        interfaceController?.dismissTemplate(animated: true) { _, _ in
-            Task { @MainActor in next() }
-        }
-    }
-}
-
-/// The car speaking the briefing the driver asked for, under the voice control template, as the
-/// category asks of any voice in use. Two buttons while it speaks: into Live Mode, or dismiss.
-/// It leaves on its own a moment after the words end, so a driver who does nothing is back at
-/// the dashboard. Never shown unasked: the car says nothing until something is tapped.
-@MainActor
-final class CarPlayAnnouncement {
-    weak var interfaceController: CPInterfaceController?
-    /// The driver chose to talk, with the opening line the announcement was about, if any.
-    var onTalk: ((String?) -> Void)?
-
-    private let speech: CarPlaySpeech
-    private var template: CPVoiceControlTemplate?
-    private static let state = "speaking"
-    /// How long the buttons stay after the words end.
-    private static let linger: Duration = .seconds(4)
-
-    init(speech: CarPlaySpeech) {
-        self.speech = speech
-    }
-
-    var isShowing: Bool { template != nil }
-
-    /// Says `text` under a screen titled `titleVariants`, offering `talkTitle` (which starts
-    /// Live Mode with `opening`) and Dismiss. With a modal already up, or a call running, it
-    /// only speaks — or, in a call, says nothing.
-    func announce(_ text: String, titleVariants: [String], talkTitle: String, opening: String?) async {
-        guard let interfaceController, interfaceController.presentedTemplate == nil, !LiveCall.shared.isActive else {
-            await speech.speak(text)
-            return
-        }
-        let state = CPVoiceControlState(identifier: Self.state, titleVariants: titleVariants, image: CarPlayImages.announcement, repeats: false)
-        if #available(iOS 26.4, *) {
-            state.actionButtons = [
-                CarPlayImages.actionButton(talkTitle, symbol: "mic.fill") { [weak self] _ in
-                    self?.speech.stop()
-                    self?.onTalk?(opening)
-                },
-                CarPlayImages.actionButton("Dismiss", symbol: "xmark") { [weak self] _ in
-                    self?.speech.stop()
-                    self?.dismiss()
-                },
-            ]
-        }
-        let template = CPVoiceControlTemplate(voiceControlStates: [state])
-        self.template = template
-        interfaceController.presentTemplate(template, animated: true, completion: nil)
-        template.activateVoiceControlState(withIdentifier: Self.state)
-        await speech.speak(text)
-        guard self.template === template else { return }
-        try? await Task.sleep(for: Self.linger)
-        guard self.template === template else { return }
-        dismiss()
-    }
-
-    func dismiss() {
-        guard let template else { return }
-        self.template = nil
-        if let interfaceController, interfaceController.presentedTemplate === template {
-            interfaceController.dismissTemplate(animated: true, completion: nil)
         }
     }
 }

@@ -23,7 +23,9 @@ final class LiveContextTests: XCTestCase {
         XCTAssertEqual(context.titleVariants(for: .listening), ["Listening · Investigate the flaky transcript poller test: running", "Listening"])
         XCTAssertEqual(context.titleVariants(for: .working), ["Working on it… · Investigate the flaky transcript poller test: running", "Working on it…"],
                        "the activity is not in the title: it changes with every call, and a title is fixed when the template is built")
-        XCTAssertEqual(context.titleVariants(for: .speaking, muted: true), ["Speaking · Muted · Investigate the flaky transcript poller test: running", "Speaking · Muted"])
+        var muted = context
+        muted.muted = true
+        XCTAssertEqual(muted.titleVariants(for: .speaking), ["Speaking · Muted · Investigate the flaky transcript poller test: running", "Speaking · Muted"])
 
         let nothing = LiveContext()
         XCTAssertEqual(nothing.titleVariants(for: .connecting), ["Connecting…"])
@@ -49,6 +51,25 @@ final class LiveContextTests: XCTestCase {
         XCTAssertTrue(a.differs(from: d), "a newer subject")
         XCTAssertTrue(LiveContext(needsYou: 1).differs(from: LiveContext(needsYou: 2)), "with no subject the count is the line")
         XCTAssertFalse(LiveContext(needsYou: 1).differs(from: LiveContext(needsYou: 1)))
+    }
+
+    func testMutingRebuildsTheScreenBecauseMutedIsInTheTitleNotAStateOfItsOwn() {
+        XCTAssertTrue(LiveContext(muted: true).differs(from: LiveContext(muted: false)))
+        let subject = [SessionSummary(id: 1, title: "A", status: .running)]
+        XCTAssertTrue(LiveContext(sessions: subject, muted: true).differs(from: LiveContext(sessions: subject)))
+    }
+
+    /// The regression test for the call screen CarPlay could not show: ten states, a muted twin
+    /// of each, of which CarPlay keeps five — so *speaking* and *working* were never there to
+    /// activate.
+    func testTheCallScreenFitsTheFiveStatesCarPlayKeepsAndNamesOneForEveryCallState() {
+        XCTAssertLessThanOrEqual(LiveCallScreen.states.count, LiveCallScreen.maximumStates)
+        XCTAssertEqual(Set(LiveCallScreen.states.map(\.rawValue)).count, LiveCallScreen.states.count, "no two states share an identifier")
+        let built = Set(LiveCallScreen.states.map(\.rawValue))
+        for state in [LiveVoiceState.idle, .connecting, .listening, .thinking, .speaking, .working] {
+            XCTAssertTrue(built.contains(LiveCallScreen.identifier(for: state)), "\(state) activates a state the screen has")
+        }
+        XCTAssertEqual(LiveCallScreen.states.first, .connecting, "the screen opens on connecting")
     }
 
     func testReferencedSessionIDsAreReadTheWayZimmersToolsWriteThem() {

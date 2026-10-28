@@ -695,48 +695,69 @@ the other categories fit: Zimmer isn't audio, navigation, messaging, or a drivin
 and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md).
 
 **Silent until you ask.** When the phone connects, Zimmer reads the board and shows the home tab,
-and says nothing: it speaks only after you tap something. A call already running when the car
+and says nothing: the call starts only when you tap something. A call already running when the car
 connects is shown instead.
 
-**Talk to Zimmer is the default.** It is the first tile on the home tab, the big button on the
-briefing screen, and *Talk about it* on every session. One tap starts [Live Mode](/sessions/live/) with voice on —
-the open conversation, or a new one — on the same call as the phone's, so a call started at the
-desk carries on in the car. Live Mode is the one voice that listens in the car: it checks on
-sessions, passes your answers to them, starts work and follows up through Zimmer's MCP surface.
-While the call runs the screen is the voice control template: its picture and title follow the
-call (Connecting, Listening, Thinking, Speaking, Working on it, with Muted beside it), the title
-names the session the conversation is about — the one it touched last through a tool call, read
-from `GET /api/v1/live_conversations/:id/sessions` — a label in the bar says what it is doing
-("Starting work…", "Checking on a session…"), and the two buttons are **Mute** and **Hang up**.
+**One thread, one voice.** Everything you say to Zimmer in the car goes through one
+[Live Mode](/sessions/live/) conversation, over the OpenAI Realtime call, and Live Mode delegates to
+sessions itself: it checks on them, passes your answers on, merges, restarts, archives, starts work
+and follows up through Zimmer's MCP surface. The car has no other voice: no system speech, no
+read-aloud, no spoken confirmations. It has no per-session buttons either.
 
-**Under it, three tabs.** *Zimmer* is a grid of four tiles: Talk to Zimmer, Briefing, Needs you and
-Running with their counts. **Briefing** speaks what needs you — how many, the first three as title
-and the first sentence of their status summary, then how many are running — under a screen with
-**Talk to Zimmer** and **Dismiss** that leaves on its own a few seconds after the words end. *Needs you* lists the sessions waiting on a
-decision — needs input, then failed, up to twelve — with a badge on the tab while there are any.
-*Running* lists the sessions at work with one line of what each is doing. A row opens a card that
-is read aloud: the headline in large type, the status, the pull request, and up to three buttons
-with the decision first — **Merge #1261** for a session with an open, green PR, else **Go
-ahead** (sends *Yes, go ahead.*), or **Restart** for a failed one — then **Talk about it**, which
-opens the call on that session, and **More** (Read aloud, Archive). Merge and Archive ask once
-more; Go ahead and Restart act on the tap. Each action is confirmed out loud, and a failure is
-spoken as the server worded it. Trash, new conversation, settings, typing and transcripts are not
-in the car at all.
+**Talk to Zimmer is the default.** It is the first tile on the home tab. One tap starts Live Mode
+with voice on — the open conversation, or a new one — on the same call as the phone's, so a call
+started at the desk carries on in the car. While the call runs the screen is the voice control
+template: its picture and title follow the call (Connecting, Listening, Thinking, Speaking, Working
+on it, with Muted beside it), the title names the session the conversation is about — the one it
+touched last through a tool call, read from `GET /api/v1/live_conversations/:id/sessions` — a label
+in the bar says what it is doing ("Starting work…", "Checking on a session…"), and the two buttons
+are **Mute** and **Hang up**.
+
+**When Live Mode can't connect, the tile says so.** If the call can't start, or drops, the Talk
+tile reads *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds,
+silently. Once those three are spent it reads *Live Mode unavailable. Tap to retry*. Hanging up
+ends the retries.
+
+**Under it, three tabs.** *Zimmer* is a grid of three tiles: Talk to Zimmer, then Needs you and
+Running with their counts. *Needs you* lists the sessions waiting on a decision — needs input, then
+failed, up to twelve — with a badge on the tab while there are any. *Running* lists the sessions at
+work with one line of what each is doing. Tapping a row starts (or carries on) the same Live Mode
+call with a line that names the session, so the model tells you where it stands and asks what to
+do. Trash, new conversation, settings, typing and transcripts are not in the car at all.
 
 **Proactive, silently.** CarPlay shows no notifications for this category, and the car never speaks
 unasked, so what moves on its own is the glance: the board is re-read every minute, and the Needs
-you badge and the tile counts change. A read that fails says so, in the lists and in the Briefing,
-rather than claiming nothing needs you.
+you badge and the tile counts change. A read that fails says so in the lists rather than claiming
+nothing needs you.
 
-A tap in the car is tagged `carplay` with no modality ([turn sources](/sessions/turn-sources/)). The
-car's Live call is the phone's `LiveCall`, but every request it makes from the car says `carplay`
+A call from the car is tagged `carplay` ([turn sources](/sessions/turn-sources/)). The car's Live
+call is the phone's `LiveCall`, but every request it makes from the car says `carplay`
 (`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
 the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
 started is handed to the car when the car connects or its *Talk* picks the call up, and back to the
-phone when the car disconnects. The rules — which sessions, in
-what order, every button set, every spoken line — are `DrivingBoard` and `LiveContext` in
-ZimmerKit, tested on Linux. The audio session is held only while the car speaks or the call runs,
-the microphone opens only for the call, and nothing is pushed deeper than a card over the tab bar.
+phone when the car disconnects. The audio session is held only while the call runs, and the
+microphone opens only for the call.
+
+**What keeps it from crashing, and the tests that hold it.** The rules are in ZimmerKit and tested
+on Linux and macOS in every iOS pull request's CI (`CarPlayTests`, `LiveContextTests`,
+`DrivingBoardTests`):
+
+- Every modal change (the call screen going up, coming down, rebuilt for a new subject or for
+  Mute) goes through `CarPlayNavigator`, one at a time. CarPlay presents one modal at a time and
+  refuses a change made mid-animation, and a refused change with no completion handler is an
+  exception, so it crashes the app. The tests drive the navigator against a strict fake that refuses
+  exactly what CarPlay does.
+- The scene calls `CPInterfaceController` only from `CarPlayInterface.swift`, and only through the
+  async forms, which always give CarPlay a completion. A source guard fails the build on any other
+  call.
+- The call screen has five states, one per call state (`LiveCallScreen`): CarPlay keeps the first
+  five a voice control template is given. Muted is in the title, and muting rebuilds the screen.
+- Source guards fail the build on any system speech (`AVSpeechSynthesizer`) anywhere in the app,
+  and on any direct follow-up, merge, restart or archive from the CarPlay scene.
+- The Live call's audio engine is main-actor only, so a route change (the car connecting or
+  disconnecting) can't reconfigure it on one thread while a hang-up stops it on another. Its
+  microphone tap takes the input's own format, so a route that changes the hardware rate can't
+  install a mismatched tap.
 
 Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives
 in `App/Zimmer/CarPlay.entitlements`, which `testflight` signs into every TestFlight build. The
