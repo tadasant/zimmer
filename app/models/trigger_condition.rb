@@ -136,7 +136,7 @@ class TriggerCondition < ApplicationRecord
   SLACK_POLL_STATE_KEYS = %w[
     channel_timestamps thread_timestamps bot_activity_timestamps
     participating_threads dm_timestamps allowed_user_ids
-    thread_recheck_cursors
+    thread_recheck_cursors channel_access_errors
   ].freeze
 
   # How a `whatsapp` condition decides that a batch of new messages is worth a session.
@@ -352,6 +352,15 @@ class TriggerCondition < ApplicationRecord
   # ring. See SlackTriggerPollerJob#rotating_recheck_slice.
   def thread_recheck_cursors
     configuration["thread_recheck_cursors"] || {}
+  end
+
+  # When the Slack poller first saw a not_in_channel or channel_not_found in a
+  # channel that no read has succeeded in since. Returns a hash of channel_id =>
+  # ISO 8601 time. An entry is deleted by the next successful read there, so one
+  # that has aged is a channel the bot has really lost. See
+  # SlackTriggerPollerJob#channel_access_error_persistent?.
+  def channel_access_errors
+    configuration["channel_access_errors"] || {}
   end
 
   # Get per-channel "when did Zimmer last speak here" timestamps for
