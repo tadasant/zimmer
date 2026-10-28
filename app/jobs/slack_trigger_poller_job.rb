@@ -172,8 +172,8 @@ class SlackTriggerPollerJob < ApplicationJob
   # How long every read in a channel has to keep failing with one of those codes —
   # no successful read in between — before the rescue logs it at ERROR. Long enough
   # to outlast the observed one-offs (healed within 1–10 minutes), short enough that
-  # a bot really removed from a trigger channel pages within the quarter hour, the
-  # same horizon as the deferral chain's give-up.
+  # a bot really removed from a trigger channel pages on the first poll past the
+  # quarter hour, the same horizon as the deferral chain's give-up.
   CHANNEL_ACCESS_ERROR_GRACE = 15.minutes
 
   def perform
@@ -326,7 +326,7 @@ class SlackTriggerPollerJob < ApplicationJob
     elsif suspect_channel_error?(error) && condition && channel_id.present? &&
           !channel_access_error_persistent?(condition, channel_id)
       Rails.logger.warn "[SlackTriggerPollerJob] Error #{while_doing}: #{error.message} — " \
-                        "first seen in #{channel_id} at #{condition.channel_access_errors[channel_id]}; " \
+                        "first seen in #{channel_id} at #{condition.channel_access_errors.dig(channel_id, 'first_seen')}; " \
                         "logs at ERROR if no read there succeeds for #{CHANNEL_ACCESS_ERROR_GRACE.inspect}"
     else
       Rails.logger.error "[SlackTriggerPollerJob] Error #{while_doing}: #{error.message}"
@@ -337,29 +337,52 @@ class SlackTriggerPollerJob < ApplicationJob
     error.is_a?(SlackService::ApiError) && SUSPECT_CHANNEL_ERROR_CODES.include?(error.code)
   end
 
-  # Whether a suspect channel error has stopped being suspect: true once the first-seen
-  # marker for this channel is at least CHANNEL_ACCESS_ERROR_GRACE old. Records the
-  # marker on first sight, and that first sight is never persistent.
+  # Whether a suspect channel error has stopped being suspect: true once this channel
+  # has failed this way continuously for CHANNEL_ACCESS_ERROR_GRACE. Records the marker
+  # on first sight, and that first sight is never persistent.
   #
   # The marker lives in the condition's configuration under channel_access_errors
-  # (channel_id => ISO 8601 first-seen time), and #note_channel_read deletes it on any
-  # successful read in that channel. So an age past the grace means every read of
-  # this channel since the marker was set has failed — which is what a bot removed
-  # from the channel, or an archived channel, looks like, and that pages on the first
-  # poll past the grace and on every poll after it until somebody fixes it.
+  # (channel_id => { "first_seen", "last_seen" }, ISO 8601), and #note_channel_read
+  # deletes it on any successful read in that channel. So a first_seen past the grace
+  # means every read of this channel since then has failed — which is what a bot
+  # removed from the channel, or an archived channel, looks like, and that pages on
+  # the first poll past the grace and on every poll after it until somebody fixes it.
+  #
+  # last_seen is what keeps that honest across a gap in polling — a disabled trigger,
+  # a channel that left the member list and came back. A marker nothing has touched
+  # for a whole grace says nothing about the channel now, so it restarts rather than
+  # turning the next one-off into an instant page.
   #
   # update_column, as #advance_recheck_cursor! does: it also sets the in-memory
-  # attribute, so the callers' batched update! merges over it rather than undoing it,
-  # and a write that cannot be lost to a later rescue does not need one of its own.
+  # attribute, so the callers' batched update! merges over it rather than undoing it.
+  # And rescued, because this runs INSIDE the callers' unit rescues: a failed write
+  # that escaped would abort the sweep before its batched cursor writes, and the next
+  # poll would replay what this one already fired. A marker that cannot be written
+  # stays suspect, at WARN — the next poll writes it.
   def channel_access_error_persistent?(condition, channel_id)
-    first_seen = condition.channel_access_errors[channel_id]
-    first_seen_at = Time.zone.parse(first_seen.to_s) if first_seen.present?
-    return first_seen_at <= CHANNEL_ACCESS_ERROR_GRACE.ago if first_seen_at
+    now = Time.current
+    marker = condition.channel_access_errors[channel_id]
+    marker = {} unless marker.is_a?(Hash)
+    first_seen_at = parse_marker_time(marker["first_seen"])
+    last_seen_at = parse_marker_time(marker["last_seen"])
+    first_seen_at = nil if last_seen_at.nil? || last_seen_at <= now - CHANNEL_ACCESS_ERROR_GRACE
+    first_seen_at ||= now
 
     condition.update_column(:configuration, condition.configuration.merge(
-      "channel_access_errors" => condition.channel_access_errors.merge(channel_id => Time.current.iso8601)
+      "channel_access_errors" => condition.channel_access_errors.merge(
+        channel_id => { "first_seen" => first_seen_at.iso8601, "last_seen" => now.iso8601 }
+      )
     ))
+    first_seen_at <= now - CHANNEL_ACCESS_ERROR_GRACE
+  rescue => e
+    Rails.logger.warn "[SlackTriggerPollerJob] Could not record a channel access error for #{channel_id}: #{e.message}"
     false
+  end
+
+  def parse_marker_time(value)
+    Time.zone.parse(value.to_s) if value.present?
+  rescue ArgumentError
+    nil
   end
 
   # A Slack read in this channel succeeded, so whatever suspect channel error was on
@@ -371,6 +394,10 @@ class SlackTriggerPollerJob < ApplicationJob
     condition.update_column(:configuration, condition.configuration.merge(
       "channel_access_errors" => condition.channel_access_errors.except(channel_id)
     ))
+  rescue => e
+    # Outside any rescue that should own it — a failure here would cost the channel
+    # its poll — and a marker left behind is cleared by the next successful read.
+    Rails.logger.warn "[SlackTriggerPollerJob] Could not clear the channel access error for #{channel_id}: #{e.message}"
   end
 
   # Slack is unavailable or throttling us. Give the slot back.

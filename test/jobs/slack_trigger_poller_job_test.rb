@@ -3242,8 +3242,6 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
     condition.save!
 
     SlackService.stubs(:get_messages_since).raises(slack_not_in_channel)
-    SlackService.stubs(:get_channel_history).raises(slack_not_in_channel)
-    SlackService.stubs(:get_thread_replies).raises(slack_not_in_channel)
 
     poll = -> { capture_log_lines { SlackTriggerPollerJob.new.send(:process_condition, condition.reload) } }
 
@@ -3266,6 +3264,9 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
 
     lines = capture_log_lines do
       job.send(:note_unit_failure, gone, "polling channel C1 for mentions", condition: condition, channel_id: "C1")
+      travel(10.minutes) do
+        job.send(:note_unit_failure, gone, "polling channel C1 for mentions", condition: condition, channel_id: "C1")
+      end
       travel(SlackTriggerPollerJob::CHANNEL_ACCESS_ERROR_GRACE + 1.minute) do
         # C2 has no marker of its own, so C1's age does not make it persistent.
         job.send(:note_unit_failure, gone, "polling channel C2 for mentions", condition: condition, channel_id: "C2")
@@ -3273,7 +3274,7 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
       end
     end
 
-    assert_equal 2, lines.grep(/^WARN/).size
+    assert_equal 3, lines.grep(/^WARN/).size
     assert_equal 1, lines.grep(/^ERROR.*channel C1/).size
   end
 
@@ -3282,11 +3283,65 @@ class SlackTriggerPollerJobTest < ActiveJob::TestCase
   test "channel_access_errors survives an edit that omits it" do
     condition = trigger_conditions(:bot_mention_slack_condition)
     condition.update_column(:configuration, condition.configuration.merge(
-      "channel_access_errors" => { "C1" => 1.hour.ago.iso8601 }
+      "channel_access_errors" => { "C1" => { "first_seen" => 1.hour.ago.iso8601, "last_seen" => 1.minute.ago.iso8601 } }
     ))
 
     condition.reload.update!(configuration: condition.configuration.except("channel_access_errors"))
 
     assert condition.reload.channel_access_errors.key?("C1")
+  end
+
+  # A marker nothing has touched for a whole grace — the trigger was disabled, the
+  # channel left the member list — says nothing about the channel now, so the next
+  # failure starts a fresh grace instead of paging on sight.
+  test "a stale marker restarts the grace instead of paging on the next one-off" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.update_column(:configuration, condition.configuration.merge(
+      "channel_access_errors" => { "C1" => { "first_seen" => 3.days.ago.iso8601, "last_seen" => 3.days.ago.iso8601 } }
+    ))
+    job = SlackTriggerPollerJob.new
+
+    lines = capture_log_lines do
+      job.send(:note_unit_failure, slack_not_in_channel, "checking thread 1.0 in C1", condition: condition, channel_id: "C1")
+    end
+
+    assert_empty lines.grep(/^ERROR/)
+    assert_operator Time.zone.parse(condition.reload.channel_access_errors.dig("C1", "first_seen")), :>, 1.minute.ago
+  end
+
+  # This write runs inside the unit rescues. If it escaped, the sweep would abort before
+  # its batched cursor writes and the next poll would replay what this one fired.
+  test "a marker write that fails stays at WARN and does not escape the rescue" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.stubs(:update_column).raises(ActiveRecord::StatementTimeout.new("canceling statement"))
+    job = SlackTriggerPollerJob.new
+
+    lines = capture_log_lines do
+      assert_nothing_raised do
+        job.send(:note_unit_failure, slack_not_in_channel, "checking thread 1.0 in C1", condition: condition, channel_id: "C1")
+      end
+    end
+
+    assert_empty lines.grep(/^ERROR/)
+  end
+
+  test "a successful thread read clears the marker, not only a channel read" do
+    condition = stub_passive_listening(event_type: "passive_listen_thread")
+    parent_ts = passive_ts(5.hours)
+    condition.configuration["channel_timestamps"] = { PASSIVE_CHANNEL => passive_ts(3.hours) }
+    condition.save!
+    condition.update_column(:configuration, condition.configuration.merge(
+      "channel_access_errors" => { PASSIVE_CHANNEL => { "first_seen" => 5.minutes.ago.iso8601, "last_seen" => 1.minute.ago.iso8601 } }
+    ))
+
+    SlackService.stubs(:get_thread_replies).returns([ passive_message(passive_ts(1.minute)) ])
+    history = [
+      OpenStruct.new(ts: parent_ts, reply_count: 1, latest_reply: passive_ts(1.minute),
+                     user: "U222", thread_ts: nil, bot_id: nil)
+    ]
+
+    SlackTriggerPollerJob.new.send(:check_thread_replies_passively, condition, PASSIVE_CHANNEL, history, bot_id: "U_BOT_123")
+
+    assert_empty condition.reload.channel_access_errors
   end
 end

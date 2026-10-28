@@ -354,10 +354,11 @@ class TriggerCondition < ApplicationRecord
     configuration["thread_recheck_cursors"] || {}
   end
 
-  # When the Slack poller first saw a not_in_channel or channel_not_found in a
-  # channel that no read has succeeded in since. Returns a hash of channel_id =>
-  # ISO 8601 time. An entry is deleted by the next successful read there, so one
-  # that has aged is a channel the bot has really lost. See
+  # When the Slack poller first and last saw a not_in_channel or channel_not_found
+  # in a channel that no read has succeeded in since. Returns a hash of channel_id =>
+  # { "first_seen" => ISO 8601, "last_seen" => ISO 8601 }. An entry is deleted by
+  # the next successful read there, so one whose failures have spanned the grace is
+  # a channel the bot has really lost. See
   # SlackTriggerPollerJob#channel_access_error_persistent?.
   def channel_access_errors
     configuration["channel_access_errors"] || {}
