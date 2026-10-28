@@ -98,6 +98,49 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     assert_select "[data-carplay-fit='laptop_only']", text: /Laptop only · a credential/
   end
 
+  test "the car icon toggles CarPlay-ok: off marks it as a human, on clears it" do
+    session = make_session
+
+    get dashboard_board_path, params: { view: "user" }
+    assert_select "#user_view_row_#{session.id} [data-carplay-fit-toggle='off'] a[aria-pressed='false'][data-turbo-method='patch']" do |links|
+      assert_equal update_carplay_fit_session_path(session, carplay_fit: "carplay_ok"), links.first["href"]
+    end
+
+    # The link carries its choice in the query string, the way Turbo submits it.
+    patch update_carplay_fit_session_path(session, carplay_fit: "carplay_ok"), headers: { "Referer" => root_path }
+    assert_redirected_to root_path
+    session.reload
+    assert_equal "carplay_ok", session.carplay_fit
+    assert_equal "human", session.carplay_fit_source
+
+    get session_path(session)
+    assert_select "#session_#{session.id}_header_actions [data-carplay-fit-toggle='on'] a[aria-pressed='true']" do |links|
+      assert_equal update_carplay_fit_session_path(session, carplay_fit: "clear"), links.first["href"]
+      assert_match(/set by you/, links.first["title"])
+      assert_no_match(/border-dashed/, links.first["class"])
+    end
+
+    patch update_carplay_fit_session_path(session, carplay_fit: "clear"), headers: { "Referer" => root_path }
+    assert_nil session.reload.carplay_fit
+  end
+
+  test "the toggle tells an automatic mark from a human one, and shows laptop-only and stale marks as off" do
+    auto_ok = make_session(title: "auto ok", carplay_fit: "carplay_ok", carplay_fit_source: "auto", carplay_fit_line_count: 3)
+    laptop = make_session(title: "laptop", carplay_fit: "laptop_only", carplay_fit_source: "auto", carplay_fit_line_count: 3)
+    stale = make_session(title: "stale", carplay_fit: "carplay_ok", carplay_fit_source: "human", carplay_fit_line_count: 1)
+
+    get dashboard_board_path, params: { view: "user" }
+    assert_select "#user_view_row_#{auto_ok.id} [data-carplay-fit-toggle='on'] a.border-dashed[aria-pressed='true']" do |links|
+      assert_match(/set by Zimmer/, links.first["title"])
+    end
+    assert_select "#user_view_row_#{laptop.id} [data-carplay-fit-toggle='laptop_only'] a[aria-pressed='false']" do |links|
+      assert_equal update_carplay_fit_session_path(laptop, carplay_fit: "carplay_ok"), links.first["href"]
+    end
+    assert_select "#user_view_row_#{stale.id} [data-carplay-fit-toggle='off']"
+    # The full menu is still one click away on every row.
+    assert_select "#user_view_row_#{laptop.id} [data-carplay-fit-menu] button[name='carplay_fit'][value='laptop_only']"
+  end
+
   test "the Filters form narrows the board on CarPlay fit and remembers the choice" do
     laptop = make_session(title: "needs the mac", carplay_fit: "laptop_only", carplay_fit_source: "auto", carplay_fit_line_count: 3)
     ok = make_session(title: "say yes", carplay_fit: "carplay_ok", carplay_fit_source: "auto", carplay_fit_line_count: 3)

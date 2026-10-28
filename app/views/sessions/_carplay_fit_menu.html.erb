@@ -5,37 +5,93 @@
     rest.
 
     Presentation and triage only. It changes which rows a driver is shown and
-    nothing about when the session runs. No JavaScript: one plain PATCH form in
-    a native <details> disclosure, so it works on every surface the same way.
+    nothing about when the session runs. No JavaScript: plain PATCHes, and the
+    full set of choices in a native <details> disclosure, so it works on every
+    surface the same way.
 
     Locals:
       agent_session — the session
-      variant       — :button     (session detail header, and the User view row)
+      variant       — :button     (session detail header, and the User view row):
+                                  a car icon that toggles CarPlay-ok, with a
+                                  chevron beside it opening every choice
                       :sheet_item (the mobile bottom sheet on the detail page)
-      compact       — only meaningful with variant: :button; row scale. %>
+      compact       — only meaningful with variant: :button; row scale (a
+                      bordered icon button like the row's others) rather than
+                      header scale (a round icon like the bell beside it). %>
 <% variant ||= :button %>
 <% compact = local_assigns.fetch(:compact, false) %>
-<%# A stale mark is shown struck through on the chip; the control's label goes
-    back to the generic one rather than asserting a judgement the session has
-    moved past. %>
-<% label = agent_session.carplay_fit_current? ? agent_session.carplay_fit_label : "CarPlay fit" %>
 <% car_icon = capture do %>
-  <svg class="<%= variant == :sheet_item ? 'h-5 w-5' : (compact ? 'h-3.5 w-3.5' : 'h-4 w-4') %>" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3 11.5A1.5 1.5 0 014.5 10h.7l1.4-3.5A2 2 0 018.46 5h3.08a2 2 0 011.86 1.5L14.8 10h.7a1.5 1.5 0 011.5 1.5V14a1 1 0 01-1 1h-1a1.5 1.5 0 01-3 0H8a1.5 1.5 0 01-3 0H4a1 1 0 01-1-1v-2.5zm4.2-1.5h5.6l-1-2.5H8.2l-1 2.5z" /></svg>
+  <svg class="<%= variant == :sheet_item ? 'h-5 w-5' : (compact ? 'h-4 w-4' : 'h-5 w-5') %>" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M3 11.5A1.5 1.5 0 014.5 10h.7l1.4-3.5A2 2 0 018.46 5h3.08a2 2 0 011.86 1.5L14.8 10h.7a1.5 1.5 0 011.5 1.5V14a1 1 0 01-1 1h-1a1.5 1.5 0 01-3 0H8a1.5 1.5 0 01-3 0H4a1 1 0 01-1-1v-2.5zm4.2-1.5h5.6l-1-2.5H8.2l-1 2.5z" /></svg>
 <% end %>
-<details class="<%= variant == :sheet_item ? 'block' : 'relative inline-block' %>" data-carplay-fit-menu>
+<% if variant == :button %>
+  <%# The toggle. On means a CURRENT CarPlay-ok mark, whoever wrote it; a stale
+      mark reads as off, the way every filter treats it. Clicking on writes a
+      human CarPlay-ok; clicking off clears the mark — the menu's "Clear mark",
+      after which the next rest re-derives it. Clearing rather than writing
+      laptop-only, because "not CarPlay-ok" is not a claim that it needs a
+      laptop; that stays one click away in the menu.
+
+      A mark Zimmer, an assistant or the session wrote has a dashed outline; a
+      solid one is yours. A laptop-only mark is the car struck through. %>
+  <% current = agent_session.carplay_fit_current? %>
+  <% on = current && agent_session.carplay_fit == SessionCarplayFit::CARPLAY_OK %>
+  <% laptop = current && agent_session.carplay_fit == SessionCarplayFit::LAPTOP_ONLY %>
+  <% by_human = agent_session.carplay_fit_source == SessionCarplayFit::SOURCE_HUMAN %>
+  <% writer = { SessionCarplayFit::SOURCE_HUMAN => "you", SessionCarplayFit::SOURCE_AUTO => "Zimmer",
+                SessionCarplayFit::SOURCE_ASSISTANT => "an assistant", SessionCarplayFit::SOURCE_SESSION => "the session" }[agent_session.carplay_fit_source] %>
+  <% state_text =
+       if on then "CarPlay-ok: on#{" (set by #{writer})" if writer} — click to clear"
+       elsif laptop then "Laptop only#{" (set by #{writer})" if writer} — click to mark CarPlay-ok"
+       else "CarPlay-ok: off — click to mark CarPlay-ok"
+       end %>
+  <% tone =
+       if on then compact ? "text-sky-600 bg-sky-50 border-sky-300" : "text-sky-600"
+       elsif laptop then compact ? "text-stone-500 bg-white border-gray-300 hover:text-sky-600" : "text-stone-500 hover:text-sky-600"
+       else compact ? "text-gray-400 bg-white border-gray-300 hover:text-sky-600" : "text-gray-300 hover:text-sky-600"
+       end %>
+  <% outline = (on || laptop) && !by_human ? "border-dashed" : "" %>
+  <% outline = "#{outline} border #{(on || laptop) && !by_human ? (on ? 'border-sky-400' : 'border-stone-400') : 'border-transparent'}" unless compact %>
+  <%# Where the panel positions. The header never makes the pair `relative`: the
+      car sits third in a row that wraps, so a panel hung off it could open past
+      the left edge (or the drawer's), and the header row is already the
+      `relative` box Snooze's popover uses; the panel opens from its left edge,
+      near the car. The User view row makes it `relative`
+      from sm: up only; on a phone the panel opens from the row's action line
+      instead, because a car mid-line would put the panel past the right edge. %>
+  <div class="<%= 'sm:relative' if compact %> inline-flex items-center" data-carplay-fit-toggle="<%= on ? 'on' : (laptop ? 'laptop_only' : 'off') %>">
+    <%= link_to update_carplay_fit_session_path(agent_session, carplay_fit: on ? "clear" : SessionCarplayFit::CARPLAY_OK),
+          data: { turbo_method: :patch, turbo_frame: "_top" },
+          class: "relative inline-flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500 #{tone} #{outline} #{compact ? 'rounded-l-md border px-2 py-1.5 hover:bg-gray-50' : 'w-10 h-10 rounded-full hover:bg-gray-100'}",
+          title: "#{state_text}. Visual only — it does not affect whether or when this session runs.",
+          role: "button",
+          "aria-label" => "CarPlay-ok",
+          "aria-pressed" => on.to_s do %>
+      <%= car_icon %>
+      <% if laptop %>
+        <span class="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
+          <span class="block h-0.5 rotate-45 rounded bg-current <%= compact ? 'w-5' : 'w-6' %>"></span>
+        </span>
+      <% end %>
+    <% end %>
+<% end %>
+<%# Not `relative`: with variant :button the panel positions against the box
+    chosen above, never against the narrow chevron. And `hidden` until open:
+    Chromium still lays out a closed <details>'s content, against the details
+    itself, which leaves an invisible panel measuring past a phone's right edge. %>
+<details class="<%= variant == :sheet_item ? 'block' : 'group inline-block' %>" data-carplay-fit-menu>
   <% if variant == :sheet_item %>
     <summary class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100 cursor-pointer list-none">
       <span class="w-9 h-9 rounded-full bg-sky-50 text-sky-600 inline-flex items-center justify-center mr-3 shrink-0"><%= car_icon %></span>
       <span class="flex-1 min-w-0 font-medium">CarPlay fit <span class="block text-xs font-normal text-gray-500 truncate"><%= agent_session.carplay_fit_summary || "untagged" %></span></span>
     </summary>
   <% else %>
-    <summary class="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-sky-500 cursor-pointer list-none whitespace-nowrap <%= compact ? 'px-2.5 py-1.5 text-xs' : 'px-4 py-2 text-sm shadow-sm' %>"
-             title="CarPlay fit: <%= agent_session.carplay_fit_summary || 'untagged' %>. Visual only — it does not affect whether or when this session runs.">
-      <span class="text-gray-400"><%= car_icon %></span>
-      <%= label %>
+    <summary class="inline-flex items-center justify-center text-gray-400 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500 cursor-pointer list-none <%= compact ? 'rounded-r-md border border-l-0 border-gray-300 bg-white px-1 py-1.5 hover:bg-gray-50' : 'w-5 h-10 rounded-md hover:bg-gray-100' %>"
+             title="CarPlay fit: <%= agent_session.carplay_fit_summary || 'untagged' %>. More choices — laptop only, a reason, or clear."
+             aria-label="More CarPlay fit choices">
+      <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd" /></svg>
     </summary>
   <% end %>
-  <div class="<%= variant == :sheet_item ? 'px-4 pb-3' : 'absolute left-0 sm:left-auto sm:right-0 z-20 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-gray-200 bg-white p-2 shadow-lg' %>">
+  <div class="<%= variant == :sheet_item ? 'px-4 pb-3' : "hidden group-open:block absolute top-full left-0 #{'sm:left-auto sm:right-0' if compact} z-20 mt-1 w-64 max-w-[calc(100vw-2rem)] rounded-md border border-gray-200 bg-white p-2 shadow-lg" %>">
     <%= form_with url: update_carplay_fit_session_path(agent_session), method: :patch, data: { turbo: false }, class: "flex flex-col gap-2" do |f| %>
       <label class="flex flex-col gap-1 text-xs text-gray-500">
         <span>What it needs from you</span>
@@ -60,3 +116,6 @@
     </p>
   </div>
 </details>
+<% if variant == :button %>
+  </div>
+<% end %>

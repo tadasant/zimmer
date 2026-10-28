@@ -59,6 +59,15 @@ Three other writers can override it:
   bottom sheet, and `PATCH /api/v1/sessions/:id/carplay_fit` from the iOS app acting as its person:
   the *CarPlay fit* item in the app's session menu, which names the mark in force and offers each
   side with its reasons, or Clear.
+
+  On the session page (beside the heart and bell icons) and on each User view row (beside Snooze
+  and Trash) the control is a car icon that toggles CarPlay-ok. It reads as on while a *current*
+  CarPlay-ok mark stands, whoever wrote it. Clicking it on writes a `human` CarPlay-ok, replacing a
+  laptop-only mark and its reason if one stands. Clicking it off clears the mark, the same as *Clear mark*, rather than writing laptop-only: "not
+  CarPlay-ok" does not mean the session needs a laptop. A mark Zimmer, an assistant or the session
+  wrote gets a dashed outline, and a solid one is yours. Laptop-only shows as the car struck
+  through. The chevron beside the car opens the full set of choices: Laptop only, a reason, or
+  Clear. The phone's bottom sheet keeps the full menu.
 - **`assistant`** — `action_session` → `set_carplay_fit` on the full `sessions` surface, which is
   what [Live Mode](/sessions/live/) calls during a drive after reading a summary.
 - **`session`** — the same action on the `self_session` surface, a session speaking about itself.
