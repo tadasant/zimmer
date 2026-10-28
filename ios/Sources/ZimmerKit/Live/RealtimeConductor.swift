@@ -116,7 +116,7 @@ public struct RealtimeConductor: Sendable {
     }
 
     /// A line the person did not speak, put to the model as if typed: what the car sends when
-    /// the driver taps *Talk about it* on a session, so the call opens on that session rather
+    /// the driver taps a session's row, so the call opens on that session rather
     /// than on silence. A user message item, then a reply asked for under the usual rule —
     /// once nothing else is running.
     public mutating func open(with text: String) -> [Effect] {

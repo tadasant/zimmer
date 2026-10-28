@@ -55,7 +55,7 @@ final class LiveCall: ObservableObject {
     /// against a Type instead pressed while the call connects.
     ///
     /// `opening`: a line to put to the model as soon as the call is up, as if the person had
-    /// typed it — the car's *Talk about it*, which names the session the driver tapped. Recorded
+    /// typed it — a tapped session row in the car, which names that session. Recorded
     /// on the thread as a user turn, so the transcript carries why the model answered as it did.
     /// On a call already running for this conversation it is sent at once.
     ///

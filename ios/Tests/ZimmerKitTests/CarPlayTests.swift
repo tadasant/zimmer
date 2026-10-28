@@ -33,14 +33,14 @@ final class CarPlayTests: XCTestCase {
         /// CarPlay refuses the next change for its own reasons (the car is busy).
         var refuseNext = false
 
-        func present(_ template: Template) async throws {
+        func present(_ template: Template, animated: Bool) async throws {
             try refuseIf(animating, "present \(template.name) during an animation")
             try refuseIf(presentedTemplate != nil, "present \(template.name) over \(presentedTemplate?.name ?? "")")
             try await animate { self.presentedTemplate = template }
             history.append("present \(template.name)")
         }
 
-        func dismissPresented() async throws {
+        func dismissPresented(animated: Bool) async throws {
             try refuseIf(animating, "dismiss during an animation")
             try refuseIf(presentedTemplate == nil, "dismiss with nothing presented")
             let name = presentedTemplate?.name ?? ""
@@ -78,13 +78,13 @@ final class CarPlayTests: XCTestCase {
         let host = StrictHost()
         let call = Template("call")
         let alert = Template("alert")
-        async let first: Void? = try? host.present(call)
-        async let second: Void? = try? host.present(alert)
+        async let first: Void? = try? host.present(call, animated: true)
+        async let second: Void? = try? host.present(alert, animated: true)
         _ = await (first, second)
         XCTAssertFalse(host.violations.isEmpty, "two presents inside one animation: CarPlay refuses one, and without a completion that is a crash")
 
         let empty = StrictHost()
-        try? await empty.dismissPresented()
+        try? await empty.dismissPresented(animated: true)
         XCTAssertEqual(empty.violations, ["dismiss with nothing presented"])
     }
 
@@ -197,19 +197,33 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(retry.failed(), .seconds(2))
         XCTAssertEqual(retry.tile(callIsActive: false), .retrying)
         XCTAssertEqual(retry.tile(callIsActive: false).titleVariants.first, "Live Mode unavailable, retrying…")
-        retry.attempting()
-        XCTAssertEqual(retry.tile(callIsActive: true), .inCall)
+        XCTAssertEqual(retry.tile(callIsActive: false), .retrying, "a retry connecting is still retrying, not Talk to Zimmer")
         XCTAssertEqual(retry.failed(), .seconds(5))
-        retry.attempting()
         XCTAssertEqual(retry.failed(), .seconds(15))
-        retry.attempting()
-        XCTAssertNil(retry.failed(), "three retries per tap, then it stops")
+        XCTAssertNil(retry.failed(), "three retries in a row, then it stops")
         XCTAssertEqual(retry.tile(callIsActive: false), .unavailable)
         XCTAssertNil(retry.failed(), "and stays stopped")
 
         retry.asked()
         XCTAssertEqual(retry.tile(callIsActive: false), .ready, "a tap is a fresh budget")
         XCTAssertEqual(retry.failed(), .seconds(2))
+    }
+
+    func testACallThatComesUpEarnsTheWholeBudgetBackAndAnOffMicrophoneIsNotRetried() {
+        var retry = LiveRetry()
+        retry.asked()
+        _ = retry.failed()
+        _ = retry.failed()
+        retry.connected()
+        XCTAssertEqual(retry.tile(callIsActive: true), .inCall)
+        XCTAssertEqual(retry.tile(callIsActive: false), .ready, "a call that came up is not a failure")
+        XCTAssertEqual(retry.failed(), .seconds(2), "a drop after a good call starts the budget over")
+
+        var denied = LiveRetry()
+        denied.asked()
+        denied.gaveUp()
+        XCTAssertEqual(denied.tile(callIsActive: false), .unavailable)
+        XCTAssertNil(denied.failed())
     }
 
     func testNothingIsRetriedThatTheDriverDidNotAskForOrHungUp() {
@@ -309,5 +323,17 @@ final class CarPlayTests: XCTestCase {
         let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
         XCTAssertTrue(live.contains("LiveCallScreen.states"), "CarPlayLive builds its states from LiveCallScreen.states")
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
+    }
+
+    /// `@Published` publishes in `willSet`: a sink that reads the call synchronously reads the
+    /// state it is leaving, which put the call screen up only once the microphone was already
+    /// open, and activated the previous state's picture. Every sink on the call is received on
+    /// the main queue's next turn.
+    func testEverySinkOnTheCallReadsTheCallAfterItChanged() {
+        for (name, text) in Self.carPlaySources {
+            for (number, line) in Self.code(text) where line.contains("call.$") {
+                XCTAssertTrue(line.contains(".receive(on: DispatchQueue.main)"), "\(name):\(number): a sink on LiveCall that runs before the value is stored\n\(line)")
+            }
+        }
     }
 }

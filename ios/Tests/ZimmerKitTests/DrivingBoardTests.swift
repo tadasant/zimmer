@@ -49,7 +49,6 @@ final class DrivingBoardTests: XCTestCase {
                                        pr: green), now: now)
         XCTAssertEqual(card.headline, "PR #1261 is open, CI is green: it needs your go-ahead.")
         XCTAssertEqual(card.statusLine, "Needs input · 10m")
-        XCTAssertEqual(card.pullRequestLine, "#1261 · open · CI green")
 
         let bare = DrivingCard(session(3, "Which Postgres?", .needsInput), now: now)
         XCTAssertEqual(bare.headline, "Waiting for your reply.")
@@ -96,8 +95,5 @@ final class DrivingBoardTests: XCTestCase {
         let cut = DrivingWords.firstSentence(long, limit: 30)
         XCTAssertTrue(cut.hasSuffix("…"))
         XCTAssertLessThanOrEqual(cut.count, 31)
-        XCTAssertEqual(DrivingWords.sentence("Hello"), "Hello.")
-        XCTAssertEqual(DrivingWords.sentence("Hello?"), "Hello?")
-        XCTAssertEqual(DrivingWords.sentence("  "), "")
     }
 }

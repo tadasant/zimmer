@@ -161,8 +161,8 @@ that is recording. It carries everything the template can:
   call — started with `quick_router`, checked with `get_session`, followed up with
   `action_session` — read from `GET /live_conversations/:id/sessions` every time the call relays
   a call or records a line. A voice control state's title is fixed when the state is made, so a
-  new subject rebuilds the template and presents it in place of the old one: a blink, allowed only
-  when the subject changes and not more than once in a couple of seconds. With no subject yet, the
+  new subject rebuilds the template and presents it in place of the old one: a blink, unanimated,
+  after a moment's wait so a burst of tool calls is one rebuild. Muting rebuilds at once. With no subject yet, the
   long title says how many sessions need the driver.
 - **What the call is doing**, while it works, as a trailing bar button used as a label:
   "Starting work…", "Checking on a session…", "Following up…". A bar button is the one text on

@@ -13,10 +13,8 @@ public struct LiveRetry: Hashable, Sendable {
 
     /// The driver asked for a call and has not hung up.
     public private(set) var wanted = false
-    /// Failures since the driver last asked.
+    /// Failures since the driver last asked, or since the call last came up.
     public private(set) var failures = 0
-    /// Waiting to try again.
-    public private(set) var retrying = false
 
     public init() {}
 
@@ -24,19 +22,23 @@ public struct LiveRetry: Hashable, Sendable {
     public mutating func asked() {
         wanted = true
         failures = 0
-        retrying = false
     }
 
-    /// The call is up again, or a retry is starting it.
-    public mutating func attempting() {
-        retrying = false
+    /// The call came up: the next drop gets the whole budget again.
+    public mutating func connected() {
+        failures = 0
+    }
+
+    /// A failure no retry can fix (the microphone is off for Zimmer): stop, and say unavailable.
+    public mutating func gaveUp() {
+        wanted = false
+        failures = max(failures, 1)
     }
 
     /// The driver hung up, or the car went away: nothing more to retry.
     public mutating func stopped() {
         wanted = false
         failures = 0
-        retrying = false
     }
 
     /// The call failed. How long to wait before trying again, or nil when the car should stop
@@ -45,21 +47,19 @@ public struct LiveRetry: Hashable, Sendable {
         guard wanted else { return nil }
         guard failures < Self.delays.count else {
             wanted = false
-            retrying = false
             return nil
         }
         let wait = Self.delays[failures]
         failures += 1
-        retrying = true
         return wait
     }
 
     /// What the Talk tile says.
     public func tile(callIsActive: Bool) -> LiveTalkTile {
         if callIsActive { return .inCall }
-        if retrying { return .retrying }
-        if failures > 0 && !wanted { return .unavailable }
-        return .ready
+        guard failures > 0 else { return .ready }
+        // Waiting to retry, or a retry connecting: either way it is still trying.
+        return wanted ? .retrying : .unavailable
     }
 }
 

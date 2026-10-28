@@ -15,9 +15,9 @@ public protocol CarPlayModalHost: AnyObject {
     /// The modal on screen, if any.
     var presentedTemplate: Template? { get }
     /// Present `template` modally. Throws when CarPlay refuses.
-    func present(_ template: Template) async throws
+    func present(_ template: Template, animated: Bool) async throws
     /// Dismiss the modal on screen. Throws when CarPlay refuses — including when none is.
-    func dismissPresented() async throws
+    func dismissPresented(animated: Bool) async throws
 }
 
 /// Every modal change the car makes, one at a time.
@@ -49,13 +49,13 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
         await serially { host in
             if host.presentedTemplate === template { return true }
             if host.presentedTemplate != nil {
-                do { try await host.dismissPresented() } catch {
+                do { try await host.dismissPresented(animated: false) } catch {
                     self.report("dismiss before present", error)
                     return false
                 }
             }
             do {
-                try await host.present(template)
+                try await host.present(template, animated: true)
                 return true
             } catch {
                 self.report("present", error)
@@ -68,19 +68,20 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     public func dismiss(_ template: Template) async {
         await serially { host in
             guard host.presentedTemplate === template else { return }
-            do { try await host.dismissPresented() } catch { self.report("dismiss", error) }
+            do { try await host.dismissPresented(animated: true) } catch { self.report("dismiss", error) }
         } otherwise: { () }
     }
 
-    /// Swap `old` for `new` if `old` is on screen: the call screen rebuilt for a new subject.
-    /// With `old` gone already, nothing is presented: whatever took it down meant it.
+    /// Swap `old` for `new` if `old` is on screen: the call screen rebuilt for a new subject or
+    /// for Mute, without animation, so it is a blink rather than a slide down and up. With `old`
+    /// gone already, nothing is presented: whatever took it down meant it.
     @discardableResult
     public func replace(_ old: Template, with new: Template) async -> Bool {
         await serially { host in
             guard host.presentedTemplate === old else { return false }
             do {
-                try await host.dismissPresented()
-                try await host.present(new)
+                try await host.dismissPresented(animated: false)
+                try await host.present(new, animated: false)
                 return true
             } catch {
                 self.report("replace", error)

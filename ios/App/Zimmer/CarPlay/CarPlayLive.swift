@@ -78,26 +78,29 @@ final class CarPlayLive {
         let navigator = CarPlayNavigator(host: interfaceController)
         navigator.onError = { [log] message in log.error("\(message, privacy: .public)") }
         self.navigator = navigator
-        // LiveCall is main-actor and publishes from there.
-        call.$state.removeDuplicates().dropFirst().sink { [weak self] state in
+        // A `@Published` property publishes in its `willSet`, before the value is stored, so a
+        // sink that reads the call (`isActive`, `state`, `lastError`) would read the state it
+        // is leaving. Each sink is received on the main queue's next turn instead, when every
+        // property says the same thing: the screen activates the state the call is in, and the
+        // tile counts a call that just ended as ended. LiveCall is main-actor and publishes
+        // from there, so the main queue is also the actor.
+        call.$state.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] state in
             MainActor.assumeIsolated { self?.stateChanged(state) }
         }.store(in: &watchers)
-        call.$muted.removeDuplicates().dropFirst().sink { [weak self] muted in
+        call.$muted.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] muted in
             MainActor.assumeIsolated { self?.mutedChanged(muted) }
         }.store(in: &watchers)
-        call.$activity.removeDuplicates().dropFirst().sink { [weak self] _ in
+        call.$activity.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.readContext() }
         }.store(in: &watchers)
-        call.$working.combineLatest(call.$lastError).dropFirst().sink { [weak self] _ in
+        call.$working.combineLatest(call.$lastError).dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.drawActivity() }
         }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
-        call.$lastError.dropFirst().sink { [weak self] error in
+        call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
             MainActor.assumeIsolated { self?.errorChanged(error) }
         }.store(in: &watchers)
     }
-
-    var isActive: Bool { call.isActive }
 
     var tile: LiveTalkTile { retry.tile(callIsActive: call.isActive) }
 
@@ -120,12 +123,12 @@ final class CarPlayLive {
     }
 
     private func attempt() {
-        retry.attempting()
         let opening = self.opening
         Task {
             if call.isActive, let conversation = call.conversationID {
                 await call.start(conversation, opening: opening, from: .carplay)
-                self.opening = nil
+                // A row tapped meanwhile has its own opening still to send.
+                if self.opening == opening { self.opening = nil }
                 present()
                 return
             }
@@ -139,7 +142,7 @@ final class CarPlayLive {
                 }
                 await call.start(id, opening: opening, from: .carplay)
             } catch {
-                failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.")
+                failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
             }
         }
     }
@@ -172,12 +175,14 @@ final class CarPlayLive {
         // An error while the call is up is shown in the bar (`drawActivity`); one that ended the
         // call is a failure. A call the phone started is the phone's to retry.
         guard let error, !call.isActive, call.surface == .carplay else { return }
-        failed(error)
+        // The microphone switched off for Zimmer stays off however often the car retries.
+        failed(error, retryable: error != LiveAudioEngine.Failure.microphoneDenied.description)
     }
 
-    private func failed(_ reason: String) {
+    private func failed(_ reason: String, retryable: Bool) {
         log.error("live call from the car failed: \(reason, privacy: .public)")
-        guard let wait = retry.failed() else {
+        if !retryable { retry.gaveUp() }
+        guard retryable, let wait = retry.failed() else {
             onChange?()
             return
         }
@@ -185,8 +190,13 @@ final class CarPlayLive {
         retryWait?.cancel()
         retryWait = Task { [weak self] in
             try? await Task.sleep(for: wait)
-            guard !Task.isCancelled, let self, self.retry.wanted, !self.call.isActive else { return }
-            self.attempt()
+            guard !Task.isCancelled, let self, self.retry.wanted else { return }
+            if self.call.isActive {
+                // A call started meanwhile (on the phone, say) is the conversation now.
+                self.retry.stopped()
+            } else {
+                self.attempt()
+            }
             self.onChange?()
         }
     }
@@ -194,8 +204,11 @@ final class CarPlayLive {
     // MARK: - The screen
 
     private func stateChanged(_ state: LiveVoiceState) {
+        if state == .listening {
+            opening = nil
+            retry.connected()
+        }
         onChange?()
-        if state == .listening { opening = nil }
         if state == .idle {
             dismiss()
             subjectRouteMissing = false
