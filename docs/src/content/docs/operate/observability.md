@@ -199,11 +199,33 @@ actually happened to the work.**
 | Slack threw a fetch away before its cursor moved, so the deferred poll re-reads it | WARN | the per-channel / per-thread / per-DM rescues, and each deferral |
 | The retry budget is spent — five deferrals, ~15 minutes of unavailability | ERROR | the give-up line, alongside its GlitchTip report |
 | The failure loses work the deferral cannot bring back | ERROR | `#process_message`, whose caller advances the cursor past that message either way |
-| Not transient at all — a renamed channel, a bad cursor, a bug in the job | ERROR | every non-`TransientError` in those same rescues |
+| Slack said `not_in_channel` or `channel_not_found`, and that started less than 15 minutes ago with no successful read in the channel since | WARN | the same rescues, while the channel's first-seen marker is younger than `CHANNEL_ACCESS_ERROR_GRACE` |
+| The bot really has lost the channel — every read there has failed for 15 minutes | ERROR | the same rescues, once that marker has aged past the grace |
+| Not transient at all — a bad cursor, a bug in the job | ERROR | every other non-`TransientError` in those same rescues |
 
 The third row is why this is a property of the **call site** rather than of the exception. The
 same `SlackService::RateLimitedError` is a recovery at one rescue and a lost message at
 another, so demoting by exception class alone would silence the ones that matter.
+
+The `not_in_channel` rows exist because Slack has returned that code from
+`conversations.replies` for a channel the bot was in, during sustained 429s, and the same
+thread read normally a few minutes later ([#1408](https://github.com/tadasant/zimmer/issues/1408)).
+So the first sight of either code in a channel records first-seen and last-seen times under
+`channel_access_errors` in the condition's configuration and logs at WARN. Any successful
+Slack read in that channel deletes the entry. Once the failures have spanned 15 minutes with
+no read there working, which is what a removed bot or an archived channel looks like, every
+poll logs the failure at ERROR and pages. An entry whose last sighting is itself more than 15
+minutes old (polling stopped in between) starts the grace over instead of paging on sight.
+
+Limits:
+
+- Only the per-channel and per-thread rescues in the channel sweeps know which channel failed,
+  so only they apply the grace. A DM failure still logs at ERROR on first sight.
+- `new_message` conditions and thread-scoped `bot_mention` conditions have no per-unit rescue.
+  A `not_in_channel` there reaches the per-condition rescue, which logs ERROR and reports to
+  GlitchTip on first sight.
+- A channel that drops out of an all-channels condition's member list is never polled again,
+  so losing it stops the logging rather than paging.
 
 Nothing is suppressed and no message content is dropped: Slack's own words, the channel, and
 the thread stay in the line. Only the severity changes, which is what makes the ERROR that

@@ -160,6 +160,22 @@ class SlackTriggerPollerJob < ApplicationJob
   # in the checking loop.
   RecheckThreadParent = Struct.new(:ts, :latest_reply, :user)
 
+  # Slack error codes that say the bot cannot see a channel. Persistent, they mean
+  # what they say — the bot was removed, or the channel was archived or deleted — and
+  # that has to page, because the trigger has gone deaf. But Slack has also returned
+  # not_in_channel from conversations.replies for a channel the bot is in, during
+  # sustained 429s, and the same thread read normally a few minutes later while the
+  # same poll kept reading the channel's other threads. So on first sight these are
+  # suspect rather than fatal: see #channel_access_error_persistent?.
+  SUSPECT_CHANNEL_ERROR_CODES = %w[not_in_channel channel_not_found].freeze
+
+  # How long every read in a channel has to keep failing with one of those codes —
+  # no successful read in between — before the rescue logs it at ERROR. Long enough
+  # to outlast the observed one-offs (healed within 1–10 minutes), short enough that
+  # a bot really removed from a trigger channel pages on the first poll past the
+  # quarter hour, the same horizon as the deferral chain's give-up.
+  CHANNEL_ACCESS_ERROR_GRACE = 15.minutes
+
   def perform
     return unless SlackService.configured?
 
@@ -293,17 +309,95 @@ class SlackTriggerPollerJob < ApplicationJob
   # The 429 that IS worth paging for is the one that outlives its deferrals, and
   # #defer_poll logs that one at ERROR itself.
   #
-  # Anything else is a real per-unit defect that the deferral cannot fix — a
-  # renamed channel, a bad cursor, a bug in this file — and keeps its ERROR.
-  def note_unit_failure(error, while_doing)
+  # A not_in_channel or channel_not_found is suspect on first sight rather than either
+  # of those: it logs at WARN until it has persisted across CHANNEL_ACCESS_ERROR_GRACE
+  # with no successful read in that channel, and at ERROR from then on. That needs the
+  # condition and channel the unit belongs to, so a caller that cannot name them gets
+  # the plain ERROR. See #channel_access_error_persistent?.
+  #
+  # Anything else is a real per-unit defect that the deferral cannot fix — a bad
+  # cursor, a bug in this file — and keeps its ERROR.
+  def note_unit_failure(error, while_doing, condition: nil, channel_id: nil)
     note_transient(error)
 
     if error.is_a?(SlackService::TransientError)
       Rails.logger.warn "[SlackTriggerPollerJob] Slack unavailable while #{while_doing}: " \
                         "#{error.message} — deferring the poll rather than failing it"
+    elsif suspect_channel_error?(error) && condition && channel_id.present? &&
+          !channel_access_error_persistent?(condition, channel_id)
+      Rails.logger.warn "[SlackTriggerPollerJob] Error #{while_doing}: #{error.message} — " \
+                        "first seen in #{channel_id} at #{condition.channel_access_errors.dig(channel_id, 'first_seen')}; " \
+                        "logs at ERROR if no read there succeeds for #{CHANNEL_ACCESS_ERROR_GRACE.inspect}"
     else
       Rails.logger.error "[SlackTriggerPollerJob] Error #{while_doing}: #{error.message}"
     end
+  end
+
+  def suspect_channel_error?(error)
+    error.is_a?(SlackService::ApiError) && SUSPECT_CHANNEL_ERROR_CODES.include?(error.code)
+  end
+
+  # Whether a suspect channel error has stopped being suspect: true once this channel
+  # has failed this way continuously for CHANNEL_ACCESS_ERROR_GRACE. Records the marker
+  # on first sight, and that first sight is never persistent.
+  #
+  # The marker lives in the condition's configuration under channel_access_errors
+  # (channel_id => { "first_seen", "last_seen" }, ISO 8601), and #note_channel_read
+  # deletes it on any successful read in that channel. So a first_seen past the grace
+  # means every read of this channel since then has failed — which is what a bot
+  # removed from the channel, or an archived channel, looks like, and that pages on
+  # the first poll past the grace and on every poll after it until somebody fixes it.
+  #
+  # last_seen is what keeps that honest across a gap in polling — a disabled trigger,
+  # a channel that left the member list and came back. A marker nothing has touched
+  # for a whole grace says nothing about the channel now, so it restarts rather than
+  # turning the next one-off into an instant page.
+  #
+  # update_column, as #advance_recheck_cursor! does: it also sets the in-memory
+  # attribute, so the callers' batched update! merges over it rather than undoing it.
+  # And rescued, because this runs INSIDE the callers' unit rescues: a failed write
+  # that escaped would abort the sweep before its batched cursor writes, and the next
+  # poll would replay what this one already fired. A marker that cannot be written
+  # stays suspect, at WARN — the next poll writes it.
+  def channel_access_error_persistent?(condition, channel_id)
+    now = Time.current
+    marker = condition.channel_access_errors[channel_id]
+    marker = {} unless marker.is_a?(Hash)
+    first_seen_at = parse_marker_time(marker["first_seen"])
+    last_seen_at = parse_marker_time(marker["last_seen"])
+    first_seen_at = nil if last_seen_at.nil? || last_seen_at <= now - CHANNEL_ACCESS_ERROR_GRACE
+    first_seen_at ||= now
+
+    condition.update_column(:configuration, condition.configuration.merge(
+      "channel_access_errors" => condition.channel_access_errors.merge(
+        channel_id => { "first_seen" => first_seen_at.iso8601, "last_seen" => now.iso8601 }
+      )
+    ))
+    first_seen_at <= now - CHANNEL_ACCESS_ERROR_GRACE
+  rescue => e
+    Rails.logger.warn "[SlackTriggerPollerJob] Could not record a channel access error for #{channel_id}: #{e.message}"
+    false
+  end
+
+  def parse_marker_time(value)
+    Time.zone.parse(value.to_s) if value.present?
+  rescue ArgumentError
+    nil
+  end
+
+  # A Slack read in this channel succeeded, so whatever suspect channel error was on
+  # record for it was not the bot losing the channel. Costs a write only when there is
+  # a marker to clear.
+  def note_channel_read(condition, channel_id)
+    return unless condition.channel_access_errors.key?(channel_id)
+
+    condition.update_column(:configuration, condition.configuration.merge(
+      "channel_access_errors" => condition.channel_access_errors.except(channel_id)
+    ))
+  rescue => e
+    # Outside any rescue that should own it — a failure here would cost the channel
+    # its poll — and a marker left behind is cleared by the next successful read.
+    Rails.logger.warn "[SlackTriggerPollerJob] Could not clear the channel access error for #{channel_id}: #{e.message}"
   end
 
   # Slack is unavailable or throttling us. Give the slot back.
@@ -507,6 +601,7 @@ class SlackTriggerPollerJob < ApplicationJob
   def process_channel_mentions(condition, bot_id:)
     channel_id = condition.channel_id
     all_messages = fetch_new_messages(channel_id, condition.last_message_ts)
+    note_channel_read(condition, channel_id)
 
     # ONE baseline, read before last_message_ts moves and used by both halves of the
     # thread scan — which threads to visit, and which replies in them are new.
@@ -535,7 +630,8 @@ class SlackTriggerPollerJob < ApplicationJob
     check_thread_replies_for_mentions(condition, channel_id, thread_parents,
                                       bot_id: bot_id, channel_baseline_ts: baseline_ts)
   rescue => e
-    note_unit_failure(e, "polling channel #{condition.channel_id} for mentions")
+    note_unit_failure(e, "polling channel #{condition.channel_id} for mentions",
+                      condition: condition, channel_id: condition.channel_id)
   end
 
   # Poll all channels the bot is a member of for @bot mentions from allowed users.
@@ -549,6 +645,7 @@ class SlackTriggerPollerJob < ApplicationJob
       last_ts = condition.channel_timestamps[channel.id]
 
       all_messages = fetch_new_messages(channel.id, last_ts)
+      note_channel_read(condition, channel.id)
 
       # One baseline for both halves of the thread scan, read before this channel's
       # cursor is collected — and deciding which threads to visit reads the channel's
@@ -571,7 +668,7 @@ class SlackTriggerPollerJob < ApplicationJob
       check_thread_replies_for_mentions(condition, channel.id, thread_parents,
                                         bot_id: bot_id, channel_baseline_ts: baseline_ts)
     rescue => e
-      note_unit_failure(e, "polling channel #{channel.id} for mentions")
+      note_unit_failure(e, "polling channel #{channel.id} for mentions", condition: condition, channel_id: channel.id)
     end
 
     # Batch-write all channel timestamp updates in a single DB call
@@ -657,6 +754,7 @@ class SlackTriggerPollerJob < ApplicationJob
 
       # Fetch new replies in this thread
       replies = SlackService.get_thread_replies(channel_id, parent.ts, oldest: last_reply_ts)
+      note_channel_read(condition, channel_id)
       # Slack's oldest parameter is inclusive, so filter out the already-seen reply
       replies.reject! { |r| r.ts == last_reply_ts } if last_reply_ts.present?
       next if replies.empty?
@@ -679,7 +777,7 @@ class SlackTriggerPollerJob < ApplicationJob
       newest_reply_ts = replies.map { |r| r.ts }.max
       thread_ts_updates[thread_key] = newest_reply_ts
     rescue => e
-      note_unit_failure(e, "checking thread #{parent.ts} in #{channel_id}")
+      note_unit_failure(e, "checking thread #{parent.ts} in #{channel_id}", condition: condition, channel_id: channel_id)
     end
 
     # Batch-write thread timestamp updates
@@ -726,7 +824,7 @@ class SlackTriggerPollerJob < ApplicationJob
       channel_ts_updates[channel_id] = result[:channel_ts] if result[:channel_ts].present?
       bot_activity_updates[channel_id] = result[:bot_activity_ts] if result[:bot_activity_ts].present?
     rescue => e
-      note_unit_failure(e, "passively polling channel #{channel_id}")
+      note_unit_failure(e, "passively polling channel #{channel_id}", condition: condition, channel_id: channel_id)
     end
 
     # One write for both cursor hashes plus last_polled_at. condition.configuration
@@ -754,6 +852,7 @@ class SlackTriggerPollerJob < ApplicationJob
   def process_channel_passively(condition, channel_id, bot_id:)
     last_ts = condition.channel_timestamps[channel_id]
     new_messages = fetch_new_messages(channel_id, last_ts)
+    note_channel_read(condition, channel_id)
 
     # First poll for this channel only establishes the cursor — same baseline rule
     # every other Slack path follows, so enabling a passive condition never replays
@@ -883,6 +982,7 @@ class SlackTriggerPollerJob < ApplicationJob
       next if latest_reply.present? && last_reply_ts.present? && latest_reply <= last_reply_ts
 
       replies = SlackService.get_thread_replies(channel_id, parent.ts, oldest: last_reply_ts)
+      note_channel_read(condition, channel_id)
       # Slack's oldest parameter is inclusive, so drop the already-seen reply.
       replies.reject! { |reply| reply.ts == last_reply_ts } if last_reply_ts.present?
       next if replies.empty?
@@ -916,7 +1016,8 @@ class SlackTriggerPollerJob < ApplicationJob
 
       process_messages(condition, candidates, channel_id: channel_id, prior_ts: effective_prior_ts)
     rescue => e
-      note_unit_failure(e, "passively checking thread #{parent.ts} in #{channel_id}")
+      note_unit_failure(e, "passively checking thread #{parent.ts} in #{channel_id}",
+                        condition: condition, channel_id: channel_id)
     end
 
     # Only threads that actually moved produce updates, so a channel of dormant
