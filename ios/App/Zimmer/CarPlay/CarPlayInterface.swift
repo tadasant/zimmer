@@ -18,12 +18,12 @@ extension CPInterfaceController: CarPlayModalHost {
         var description: String { "CarPlay did not \(what)" }
     }
 
-    public func present(_ template: CPTemplate) async throws {
-        guard try await presentTemplate(template, animated: true) else { throw Refused(what: "present \(type(of: template))") }
+    public func present(_ template: CPTemplate, animated: Bool) async throws {
+        guard try await presentTemplate(template, animated: animated) else { throw Refused(what: "present \(type(of: template))") }
     }
 
-    public func dismissPresented() async throws {
-        guard try await dismissTemplate(animated: true) else { throw Refused(what: "dismiss") }
+    public func dismissPresented(animated: Bool) async throws {
+        guard try await dismissTemplate(animated: animated) else { throw Refused(what: "dismiss") }
     }
 
     /// The scene's root, set once on connect.

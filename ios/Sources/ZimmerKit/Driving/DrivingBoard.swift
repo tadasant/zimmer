@@ -66,8 +66,6 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
     public let headline: String
     /// "Needs input · 12m".
     public let statusLine: String
-    /// "#1261 · open · CI green", for the newest pull request.
-    public let pullRequestLine: String?
 
     public var id: Int { session.id }
     public var title: String { session.displayTitle }
@@ -86,12 +84,6 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
         var status = session.status.label
         if let at = session.updatedAt { status += " · \(Format.age(at, now: now))" }
         statusLine = status
-        pullRequestLine = session.pullRequests.last.map { pr in
-            var line = pr.label
-            if let state = pr.state { line += " · \(state)" }
-            if let ci = pr.ci { line += ci == "pass" ? " · CI green" : " · CI \(ci)" }
-            return line
-        }
     }
 
     static func fallbackHeadline(_ kind: Kind) -> String {
@@ -152,13 +144,6 @@ public enum DrivingWords {
             sentence = String(atWord).trimmingCharacters(in: .punctuationCharacters) + "…"
         }
         return sentence
-    }
-
-    /// `text` ending in a full stop, so sentences read with a pause between them.
-    public static func sentence(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let last = trimmed.last else { return "" }
-        return ".!?…".contains(last) ? trimmed : trimmed + "."
     }
 
     /// The index just past the first sentence's end mark: a `.`, `!` or `?` followed by a
