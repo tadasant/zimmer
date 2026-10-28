@@ -36,6 +36,9 @@
     <% end %>
   <% end %>
 
+  <!-- CarPlay fit (car icon toggle + choices; triage only — says whether a driver can act on this by voice) -->
+  <%= render "sessions/carplay_fit_menu", agent_session: agent_session, variant: :button %>
+
   <!-- Copy Transcript Button (icon-only) -->
   <div data-controller="transcript-copy" data-transcript-copy-url-value="<%= transcript_session_path(agent_session, format: :text) %>">
     <button type="button"
@@ -77,9 +80,6 @@
 
   <!-- Snooze / Hide (board visibility only — does NOT sleep the session) -->
   <%= render "sessions/visibility_menu", agent_session: agent_session, variant: :button %>
-
-  <!-- CarPlay fit (triage only — says whether a driver can act on this by voice) -->
-  <%= render "sessions/carplay_fit_menu", agent_session: agent_session, variant: :button %>
 
   <!-- Pause Button (only show when running) -->
   <% if agent_session.running? %>

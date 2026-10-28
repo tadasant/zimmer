@@ -300,4 +300,36 @@ class UserViewBoardTest < ApplicationSystemTestCase
     assert_selector "#user_view_row_#{red.id}"
     assert_no_selector "#user_view_merge_#{red.id} button"
   end
+
+  test "the CarPlay car icon toggles the mark, and its menu stays on a 375px screen" do
+    row = spot(100, title: "Say yes from the car")
+
+    page.driver.browser.manage.window.resize_to(375, 812)
+    begin
+      visit_board
+      toggle = "#user_view_row_#{row.id} [data-carplay-fit-toggle]"
+      assert_selector "#{toggle}[data-carplay-fit-toggle='off']"
+
+      find("#{toggle} a").click
+      assert_selector "#{toggle}[data-carplay-fit-toggle='on']"
+      assert_equal [ "carplay_ok", "human" ], row.reload.values_at(:carplay_fit, :carplay_fit_source)
+
+      find("#user_view_row_#{row.id} [data-carplay-fit-menu] summary").click
+      assert_selector "#user_view_row_#{row.id} [data-carplay-fit-menu] button[value='laptop_only']", visible: true
+      overflow = page.evaluate_script(<<~JS)
+        (() => {
+          const panel = document.querySelector("#user_view_row_#{row.id} [data-carplay-fit-menu] > div");
+          return panel.getBoundingClientRect().right - document.documentElement.clientWidth;
+        })()
+      JS
+      assert_operator overflow, :<=, 1, "the CarPlay-fit panel sticks out past the right edge of a phone"
+      assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1")
+
+      find("#{toggle} a").click
+      assert_selector "#{toggle}[data-carplay-fit-toggle='off']"
+      assert_nil row.reload.carplay_fit
+    ensure
+      page.driver.browser.manage.window.resize_to(1400, 900)
+    end
+  end
 end

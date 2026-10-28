@@ -129,8 +129,10 @@
       <p class="mt-1 text-xs italic text-gray-400">No status summary yet.</p>
     <% end %>
 
-    <%# ---- Action line ---- %>
-    <div class="mt-2 flex flex-wrap items-center gap-2">
+    <%# ---- Action line ----
+        `relative` so the CarPlay-fit panel has the line to open against on a
+        phone; see _carplay_fit_menu. %>
+    <div class="relative mt-2 flex flex-wrap items-center gap-2">
       <span class="shrink-0 max-w-full truncate rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] text-gray-500"
             title="Agent root"><%= session_agent_root_key(agent_session).presence || agent_session.genesis_key %></span>
 
@@ -154,8 +156,9 @@
       </span>
 
       <%# CarPlay fit. Presentation only, like Snooze: a person's judgement of
-          whether this row can be acted on by voice from a car. %>
-      <span class="relative shrink-0">
+          whether this row can be acted on by voice from a car. A car icon that
+          toggles CarPlay-ok, with the other choices behind its chevron. %>
+      <span class="shrink-0 sm:relative">
         <%= render "sessions/carplay_fit_menu", agent_session: agent_session, variant: :button, compact: true %>
       </span>
 
