@@ -988,7 +988,7 @@ struct SessionDetailView: View {
     // MARK: - Header
 
     /// The web UI's phone header: the title, then one wrapping line of chips — status,
-    /// priority, id and age, each PR, visibility — and one line of what runs it.
+    /// priority, agent root, id and age, each PR, visibility — and one line of what runs it.
     private func header(_ detail: SessionDetail) -> some View {
         let session = detail.session
         return VStack(alignment: .leading, spacing: 7) {
@@ -1007,6 +1007,19 @@ struct SessionDetailView: View {
                         .padding(.vertical, 3)
                         .foregroundStyle(Theme.danger)
                         .background(Theme.danger.opacity(0.12), in: Capsule())
+                }
+                // The metadata block's root key, beside the status so it reads at a glance.
+                if let root = session.agentRoot {
+                    Text(verbatim: root)
+                        .font(Theme.mono.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .foregroundStyle(Theme.inkSoft)
+                        .background(Theme.well, in: Capsule())
+                        .accessibilityLabel("Agent root \(root)")
+                        .accessibilityIdentifier("detail.agentRoot")
                 }
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)
@@ -1040,7 +1053,8 @@ struct SessionDetailView: View {
         return "#\(session.id) · \(Format.age(date))"
     }
 
-    /// Root · runtime · model · effort — the web UI's metadata block, on one quiet line.
+    /// Runtime · model · effort — the web UI's metadata block, on one quiet line. The root
+    /// is a chip beside the status.
     @ViewBuilder
     private func metadataLine(_ session: SessionSummary) -> some View {
         let line = metadataParts(session).joined(separator: " · ")
@@ -1057,7 +1071,6 @@ struct SessionDetailView: View {
 
     private func metadataParts(_ session: SessionSummary) -> [String] {
         var parts: [String] = []
-        if let root = session.agentRoot { parts.append(root) }
         if let runtime = session.agentRuntime { parts.append(runtime) }
         if let model = session.model { parts.append(Format.modelName(model)) }
         if let effort = session.effort?.level { parts.append("effort \(effort)") }
