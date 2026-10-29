@@ -2390,7 +2390,7 @@ class SessionsController < ApplicationController
   # re-sorts the row in place; HTML for the session detail page's form.
   #
   # Presentation ONLY — the write and its log row are Sessions::UpdatePrecedence,
-  # shared with the `change_precedence` MCP action.
+  # shared with the `change_precedence` MCP action and REST's PATCH.
   def update_precedence
     @session = find_session
 
