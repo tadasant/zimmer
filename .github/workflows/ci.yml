@@ -727,14 +727,10 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # ZimmerKit — the iOS app's Foundation-only logic — built and tested on Linux, the way
-  # Motet's `bin/ci` does it. It proves the package stays free of Apple-only imports, so its
-  # rules are testable without a Mac, and it is the cheap half: the macOS `ios` job runs the
-  # same tests against Xcode's toolchain. Gated on `ios-changes` like `ios`.
   # The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-  # the flows that crashed it in a car (#1410) — a Live call that cannot connect, its retries
-  # putting the call screen up and down, giving up on the tile, hanging up mid-connect, a
-  # Needs you row — failing on any crash. XCUITest cannot reach a real head unit, but it can
+  # the whole car app (#1410): one Talk button; a Live call that cannot connect, its retries
+  # putting the call screen up and down, giving up with no call screen left behind; a call
+  # muted and ended — failing on any crash. XCUITest cannot reach a real head unit, but it can
   # reach the Simulator's CarPlay window, which `ios/bin/ui-test --carplay` opens from the
   # Simulator's own menu. A job of its own rather than a step in `ios`, because the drill's
   # build is signed ad hoc with the CarPlay entitlement (the CarPlay window lists no app
@@ -765,6 +761,10 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
+  # ZimmerKit — the iOS app's Foundation-only logic — built and tested on Linux, the way
+  # Motet's `bin/ci` does it. It proves the package stays free of Apple-only imports, so its
+  # rules are testable without a Mac, and it is the cheap half: the macOS `ios` job runs the
+  # same tests against Xcode's toolchain. Gated on `ios-changes` like `ios`.
   ios_swift_linux:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes

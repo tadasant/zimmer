@@ -45,6 +45,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     public private(set) var pushFailures: [PushFailureStage] = []
     private let live: Bool
+    let liveSecretDelay: Duration?
     /// A session trashed somewhere else — the web, a router, its own agent — as soon as the
     /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
     private let trashedElsewhere: Int?
@@ -88,10 +89,13 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// `degraded`: queue recovery mode is on and network egress is degraded, so the two
     /// site-wide banners show.
     /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
+    /// `liveSecretDelay`: a Live call's Realtime secret takes this long to arrive, so the call
+    /// stays connecting long enough for the CarPlay drill to mute it and end it.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
-                web: URL = URL(string: "https://fixture.invalid")!) {
+                web: URL = URL(string: "https://fixture.invalid")!, liveSecretDelay: Duration? = nil) {
         self.live = live
+        self.liveSecretDelay = liveSecretDelay
         self.trashedElsewhere = trashedElsewhere
         self.degraded = degraded
         self.relayOnly = relayOnly

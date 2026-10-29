@@ -95,26 +95,26 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(empty.violations, ["dismiss with nothing presented"])
     }
 
-    /// The storm that crashed the car: the call comes up, fails at once, the car retries, the
-    /// subject changes and the scene disconnects, none of them waiting on the others.
+    /// The storm that crashed the car: the call comes up, fails at once, the car retries, fails
+    /// again, and the scene disconnects, none of them waiting on the others.
     func testTheNavigatorMakesEveryChangeInTurnSoCarPlayRefusesNone() async {
         let host = StrictHost()
         let navigator = CarPlayNavigator(host: host)
         var errors: [String] = []
         navigator.onError = { errors.append($0) }
         let call = Template("call")
-        let rebuilt = Template("call, new subject")
         let retry = Template("call, retry")
+        let again = Template("call, retry again")
 
         let changes: [@MainActor () async -> Void] = [
             { await navigator.present(call) },
             { await navigator.dismiss(call) },
             { await navigator.present(retry) },
-            { await navigator.replace(retry, with: rebuilt) },
-            { await navigator.present(rebuilt) },
+            { await navigator.dismiss(retry) },
+            { await navigator.present(again) },
             { await navigator.dismiss(call) },
-            { await navigator.dismiss(rebuilt) },
-            { await navigator.dismiss(rebuilt) },
+            { await navigator.dismiss(again) },
+            { await navigator.dismiss(again) },
         ]
         await withTaskGroup(of: Void.self) { group in
             for change in changes { group.addTask { await change() } }
@@ -157,13 +157,15 @@ final class CarPlayTests: XCTestCase {
         XCTAssertNotNil(host.presentedTemplate)
         await navigator.present(call)
         XCTAssertEqual(host.history, ["present call"], "presenting the same screen twice is once, stand-in or not")
-        let rebuilt = Template("call, muted")
-        let replaced = await navigator.replace(call, with: rebuilt)
-        XCTAssertTrue(replaced, "a rebuild finds the screen it is replacing")
         await navigator.dismiss(call)
-        XCTAssertNotNil(host.presentedTemplate, "a stale dismissal leaves the rebuilt screen")
-        await navigator.dismiss(rebuilt)
         XCTAssertNil(host.presentedTemplate, "the call screen comes down")
+
+        let retry = Template("call, retry")
+        await navigator.present(retry)
+        await navigator.dismiss(call)
+        XCTAssertNotNil(host.presentedTemplate, "a stale dismissal leaves the retry's screen")
+        await navigator.dismiss(retry)
+        XCTAssertNil(host.presentedTemplate, "and the retry's comes down too")
         XCTAssertEqual(host.violations, [])
     }
 
@@ -190,21 +192,6 @@ final class CarPlayTests: XCTestCase {
         await navigator.dismiss(call)
         XCTAssertTrue(host.presentedTemplate === other, "a stale dismissal leaves someone else's modal alone")
         XCTAssertEqual(host.violations, [], "nor does it dismiss with nothing presented")
-    }
-
-    func testReplacingATemplateThatIsGonePresentsNothing() async {
-        let host = StrictHost()
-        let navigator = CarPlayNavigator(host: host)
-        let old = Template("old")
-        let fresh = Template("fresh")
-        let replaced = await navigator.replace(old, with: fresh)
-        XCTAssertFalse(replaced)
-        XCTAssertNil(host.presentedTemplate, "the call ended before its rebuild: no screen comes back")
-
-        await navigator.present(old)
-        let swapped = await navigator.replace(old, with: fresh)
-        XCTAssertTrue(swapped)
-        XCTAssertTrue(host.presentedTemplate === fresh)
     }
 
     func testARefusalIsReportedNotThrown() async {
@@ -366,6 +353,21 @@ final class CarPlayTests: XCTestCase {
         let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
         XCTAssertTrue(live.contains("LiveCallScreen.states"), "CarPlayLive builds its states from LiveCallScreen.states")
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
+    }
+
+    /// Radically simple: the car is one button and one call screen. A list, a tab bar, a card,
+    /// an alert, an action sheet or a pushed screen is one more template CarPlay can refuse a
+    /// change to, and the car had all of them when it crashed.
+    func testTheCarIsOneButtonAndOneCallScreen() {
+        let others = ["CPListTemplate", "CPTabBarTemplate", "CPInformationTemplate", "CPAlertTemplate", "CPActionSheetTemplate",
+                      "CPNowPlayingTemplate", "CPSearchTemplate", "CPPointOfInterestTemplate", "CPContactTemplate", "pushTemplate"]
+        for (name, text) in Self.carPlaySources {
+            for (number, line) in Self.code(text) {
+                for other in others {
+                    XCTAssertFalse(line.contains(other), "\(name):\(number): \(other) — the car is a Talk button (CPGridTemplate) and the call screen (CPVoiceControlTemplate)\n\(line)")
+                }
+            }
+        }
     }
 
     /// `@Published` publishes in `willSet`: a sink that reads the call synchronously reads the
