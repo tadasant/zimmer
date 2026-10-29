@@ -359,15 +359,21 @@ final class CarPlayTests: XCTestCase {
     /// an alert, an action sheet or a pushed screen is one more template CarPlay can refuse a
     /// change to, and the car had all of them when it crashed.
     func testTheCarIsOneButtonAndOneCallScreen() {
-        let others = ["CPListTemplate", "CPTabBarTemplate", "CPInformationTemplate", "CPAlertTemplate", "CPActionSheetTemplate",
-                      "CPNowPlayingTemplate", "CPSearchTemplate", "CPPointOfInterestTemplate", "CPContactTemplate", "pushTemplate"]
+        let allowed: Set = ["CPTemplate", "CPGridTemplate", "CPVoiceControlTemplate"]
+        let template = try! NSRegularExpression(pattern: #"\bCP[A-Za-z]*Template\b"#)
+        var seen: Set<String> = []
         for (name, text) in Self.carPlaySources {
             for (number, line) in Self.code(text) {
-                for other in others {
-                    XCTAssertFalse(line.contains(other), "\(name):\(number): \(other) — the car is a Talk button (CPGridTemplate) and the call screen (CPVoiceControlTemplate)\n\(line)")
+                for match in template.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+                    guard let range = Range(match.range, in: line) else { continue }
+                    let used = String(line[range])
+                    seen.insert(used)
+                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a Talk button (CPGridTemplate) and the call screen (CPVoiceControlTemplate)\n\(line)")
                 }
+                XCTAssertFalse(line.contains("pushTemplate"), "\(name):\(number): nothing is pushed in the car\n\(line)")
             }
         }
+        XCTAssertTrue(seen.isSuperset(of: ["CPGridTemplate", "CPVoiceControlTemplate"]), "the guard sees the two templates the car does use: \(seen)")
     }
 
     /// `@Published` publishes in `willSet`: a sink that reads the call synchronously reads the

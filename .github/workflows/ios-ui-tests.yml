@@ -156,7 +156,7 @@ jobs:
     # at the balance above (double that on a loaded runner: 52 at most), ten minutes of
     # photographs on the one shard that takes them, and the upload — under the budget even
     # loaded. A run cut off here reads as "cancelled", which hides whether the suite passed,
-    # so rebalance the shards, or add a fifth, before raising it.
+    # so rebalance the shards, or add another, before raising it.
     timeout-minutes: 75
 
     steps:

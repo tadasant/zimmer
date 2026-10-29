@@ -89,7 +89,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
     }
 
-    /// Any element with these words: a tile's text, the call screen's title, the bar's line.
+    /// Any element with these words: the button's text, or the call screen's title.
     private func text(_ label: String) -> XCUIElement {
         car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
@@ -122,12 +122,13 @@ final class CarPlayDrillUITests: XCTestCase {
         return labels.contains(where: { text($0).exists })
     }
 
-    /// The call screen's title begins with the call's state ("Connecting… · 4 need you"). With
-    /// no call it must be gone: a call screen left up over a car that gave up is the bug this
-    /// drill first caught (CarPlay hands back a stand-in for the template it presented, so a
-    /// dismissal that compared by identity never happened).
+    /// The call screen's title is one of its five states. With no call it must be gone: a call
+    /// screen left up over a car that gave up is the bug this drill first caught (CarPlay hands
+    /// back a stand-in for the template it presented, so a dismissal that compared by identity
+    /// never happened).
     private func assertNoCallScreen(_ when: String) {
-        let title = car.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Connecting' OR label BEGINSWITH 'Listening' OR label BEGINSWITH 'Speaking' OR label BEGINSWITH 'Thinking'")).firstMatch
+        let titles = ["Connecting…", "Listening", "Speaking", "Working on it…", "Muted"]
+        let title = car.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", titles)).firstMatch
         let gone = NSPredicate(format: "exists == false")
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
         XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,

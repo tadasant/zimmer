@@ -169,13 +169,16 @@ final class CarPlayLive {
         }
     }
 
+    /// Put the call screen up: this call's, or a new one. The driver may have closed it with
+    /// CarPlay's ✕ while the call carried on; *Back to the call* puts the same one up again,
+    /// and the navigator knows it is not on screen, so it presents it rather than calling it up.
     private func present() {
-        guard let navigator, template == nil, call.isActive else { return }
-        let fresh = build()
-        template = fresh
+        guard let navigator, call.isActive else { return }
+        let screen = template ?? build()
+        template = screen
         Task {
-            let shown = await navigator.present(fresh)
-            guard self.template === fresh else { return }
+            let shown = await navigator.present(screen)
+            guard self.template === screen else { return }
             if shown {
                 self.activate()
             } else {

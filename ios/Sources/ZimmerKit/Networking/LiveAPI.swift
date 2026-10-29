@@ -13,9 +13,6 @@ public protocol LiveAPI: Sendable {
     func liveConversations() async throws -> LiveOverview
     /// One conversation with its turns; `afterTurn` reads only turns newer than that one.
     func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
-    /// The sessions a conversation has touched through its tool calls — started, checked on,
-    /// followed up — newest first, with their board rows. What the car shows beside a call.
-    func liveConversationSessions(_ id: Int) async throws -> [SessionSummary]
     /// Start a fresh conversation, typed or spoken from the start, ending the open one.
     func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation
     func finishLiveConversation(_ id: Int) async throws -> LiveConversation
@@ -53,14 +50,6 @@ struct LiveSessionUpdateResponse: Decodable {
     let session: JSONValue
 }
 
-/// `GET /live_conversations/:id/sessions`: the sessions, and their board rows by id.
-struct LiveSessionsResponse: Decodable {
-    let sessions: [SessionSummary]
-    let board_rows: [String: BoardRow]?
-
-    var rows: [SessionSummary] { BoardRow.attach(board_rows, to: sessions) }
-}
-
 /// `current_id` is the open conversation; a server from before voice folded into Live Mode sends
 /// only `current`, keyed by mode.
 struct LiveIndexResponse: Decodable {
@@ -86,11 +75,6 @@ extension ZimmerHTTPClient {
         var query: [String: String] = [:]
         if let afterTurn { query["after_turn_id"] = String(afterTurn) }
         return try await get("/api/v1/live_conversations/\(id)", query: query)
-    }
-
-    public func liveConversationSessions(_ id: Int) async throws -> [SessionSummary] {
-        let response: LiveSessionsResponse = try await get("/api/v1/live_conversations/\(id)/sessions")
-        return response.rows
     }
 
     public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
