@@ -22,9 +22,8 @@ public protocol CarPlayModalHost: AnyObject {
 
 /// Every modal change the car makes, one at a time.
 ///
-/// The CarPlay scene changes its modal from several places that do not wait on each other: a
-/// call starting, the call's state going idle, a new subject rebuilding the call screen, the
-/// scene disconnecting. Made directly, two of those inside one animation collide — a present
+/// The CarPlay scene changes its modal from places that do not wait on each other: a call
+/// starting, the call's state going idle, a retry starting the next, the scene disconnecting. Made directly, two of those inside one animation collide — a present
 /// while another is still going up, a dismiss of a modal that is already on its way down — and
 /// CarPlay refuses the second. So every change goes through here: each waits for the one before
 /// it to finish, looks at what is on screen *then*, and does only what still needs doing. A
@@ -34,6 +33,13 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     public typealias Template = Host.Template
 
     private weak var host: Host?
+    /// The modal this navigator put up and has not taken down. Compared by this rather than by
+    /// `host.presentedTemplate === template`, because CarPlay's `presentedTemplate` is not the
+    /// object that was presented: compared by identity, every dismissal of the call screen was
+    /// skipped and it stayed up — "Connecting…" over a car that had given up — which the
+    /// CarPlay drill caught in the Simulator's CarPlay window. The host is asked only whether
+    /// anything is up, which also covers a modal the driver closed with CarPlay's own button.
+    private var shown: Template?
     /// The last change queued; the next one waits for it.
     private var tail: Task<Void, Never>?
     /// A change CarPlay refused, in words, for the log.
@@ -47,15 +53,17 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     @discardableResult
     public func present(_ template: Template) async -> Bool {
         await serially { host in
-            if host.presentedTemplate === template { return true }
+            if self.shown === template, host.presentedTemplate != nil { return true }
             if host.presentedTemplate != nil {
                 do { try await host.dismissPresented(animated: false) } catch {
                     self.report("dismiss before present", error)
                     return false
                 }
             }
+            self.shown = nil
             do {
                 try await host.present(template, animated: true)
+                self.shown = template
                 return true
             } catch {
                 self.report("present", error)
@@ -67,27 +75,11 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     /// Take `template` down if it is the modal on screen. Anything else on screen stays.
     public func dismiss(_ template: Template) async {
         await serially { host in
-            guard host.presentedTemplate === template else { return }
+            guard self.shown === template else { return }
+            self.shown = nil
+            guard host.presentedTemplate != nil else { return }
             do { try await host.dismissPresented(animated: true) } catch { self.report("dismiss", error) }
         } otherwise: { () }
-    }
-
-    /// Swap `old` for `new` if `old` is on screen: the call screen rebuilt for a new subject or
-    /// for Mute, without animation, so it is a blink rather than a slide down and up. With `old`
-    /// gone already, nothing is presented: whatever took it down meant it.
-    @discardableResult
-    public func replace(_ old: Template, with new: Template) async -> Bool {
-        await serially { host in
-            guard host.presentedTemplate === old else { return false }
-            do {
-                try await host.dismissPresented(animated: false)
-                try await host.present(new, animated: false)
-                return true
-            } catch {
-                self.report("replace", error)
-                return false
-            }
-        } otherwise: { false }
     }
 
     /// Wait for every change queued so far.

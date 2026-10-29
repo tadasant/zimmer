@@ -26,7 +26,14 @@ final class CarPlayTests: XCTestCase {
             let description: String
         }
 
-        private(set) var presentedTemplate: Template?
+        /// What is on screen. `presentedTemplate` is what CarPlay hands back for it: with
+        /// `proxies` on, a stand-in object rather than the one presented, as CarPlay's is.
+        private var onScreen: Template?
+        var proxies = false
+        var presentedTemplate: Template? {
+            guard let onScreen else { return nil }
+            return proxies ? Template(onScreen.name + " (proxy)") : onScreen
+        }
         private(set) var violations: [String] = []
         private(set) var history: [String] = []
         private var animating = false
@@ -35,16 +42,16 @@ final class CarPlayTests: XCTestCase {
 
         func present(_ template: Template, animated: Bool) async throws {
             try refuseIf(animating, "present \(template.name) during an animation")
-            try refuseIf(presentedTemplate != nil, "present \(template.name) over \(presentedTemplate?.name ?? "")")
-            try await animate { self.presentedTemplate = template }
+            try refuseIf(onScreen != nil, "present \(template.name) over \(onScreen?.name ?? "")")
+            try await animate { self.onScreen = template }
             history.append("present \(template.name)")
         }
 
         func dismissPresented(animated: Bool) async throws {
             try refuseIf(animating, "dismiss during an animation")
-            try refuseIf(presentedTemplate == nil, "dismiss with nothing presented")
-            let name = presentedTemplate?.name ?? ""
-            try await animate { self.presentedTemplate = nil }
+            try refuseIf(onScreen == nil, "dismiss with nothing presented")
+            let name = onScreen?.name ?? ""
+            try await animate { self.onScreen = nil }
             history.append("dismiss \(name)")
         }
 
@@ -88,26 +95,26 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(empty.violations, ["dismiss with nothing presented"])
     }
 
-    /// The storm that crashed the car: the call comes up, fails at once, the car retries, the
-    /// subject changes and the scene disconnects, none of them waiting on the others.
+    /// The storm that crashed the car: the call comes up, fails at once, the car retries, fails
+    /// again, and the scene disconnects, none of them waiting on the others.
     func testTheNavigatorMakesEveryChangeInTurnSoCarPlayRefusesNone() async {
         let host = StrictHost()
         let navigator = CarPlayNavigator(host: host)
         var errors: [String] = []
         navigator.onError = { errors.append($0) }
         let call = Template("call")
-        let rebuilt = Template("call, new subject")
         let retry = Template("call, retry")
+        let again = Template("call, retry again")
 
         let changes: [@MainActor () async -> Void] = [
             { await navigator.present(call) },
             { await navigator.dismiss(call) },
             { await navigator.present(retry) },
-            { await navigator.replace(retry, with: rebuilt) },
-            { await navigator.present(rebuilt) },
+            { await navigator.dismiss(retry) },
+            { await navigator.present(again) },
             { await navigator.dismiss(call) },
-            { await navigator.dismiss(rebuilt) },
-            { await navigator.dismiss(rebuilt) },
+            { await navigator.dismiss(again) },
+            { await navigator.dismiss(again) },
         ]
         await withTaskGroup(of: Void.self) { group in
             for change in changes { group.addTask { await change() } }
@@ -137,6 +144,44 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(host.violations, [])
     }
 
+    /// The bug the CarPlay drill found in the Simulator's CarPlay window: CarPlay's
+    /// `presentedTemplate` is not the object presented, so a navigator that compared by
+    /// identity never took the call screen down, and "Connecting…" stayed over a car that had
+    /// given up.
+    func testTheCallScreenComesDownWhenCarPlayHandsBackAStandInForIt() async {
+        let host = StrictHost()
+        host.proxies = true
+        let navigator = CarPlayNavigator(host: host)
+        let call = Template("call")
+        await navigator.present(call)
+        XCTAssertNotNil(host.presentedTemplate)
+        await navigator.present(call)
+        XCTAssertEqual(host.history, ["present call"], "presenting the same screen twice is once, stand-in or not")
+        await navigator.dismiss(call)
+        XCTAssertNil(host.presentedTemplate, "the call screen comes down")
+
+        let retry = Template("call, retry")
+        await navigator.present(retry)
+        await navigator.dismiss(call)
+        XCTAssertNotNil(host.presentedTemplate, "a stale dismissal leaves the retry's screen")
+        await navigator.dismiss(retry)
+        XCTAssertNil(host.presentedTemplate, "and the retry's comes down too")
+        XCTAssertEqual(host.violations, [])
+    }
+
+    func testAScreenTheDriverClosedIsNotDismissedAgain() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        let call = Template("call")
+        await navigator.present(call)
+        try? await host.dismissPresented(animated: true)
+        await navigator.dismiss(call)
+        XCTAssertEqual(host.violations, [], "no dismissal with nothing presented")
+        let again = await navigator.present(call)
+        XCTAssertTrue(again, "and the next call puts it up again")
+        XCTAssertEqual(host.history, ["present call", "dismiss call", "present call"])
+    }
+
     func testDismissTakesDownOnlyItsOwnTemplate() async {
         let host = StrictHost()
         let navigator = CarPlayNavigator(host: host)
@@ -147,21 +192,6 @@ final class CarPlayTests: XCTestCase {
         await navigator.dismiss(call)
         XCTAssertTrue(host.presentedTemplate === other, "a stale dismissal leaves someone else's modal alone")
         XCTAssertEqual(host.violations, [], "nor does it dismiss with nothing presented")
-    }
-
-    func testReplacingATemplateThatIsGonePresentsNothing() async {
-        let host = StrictHost()
-        let navigator = CarPlayNavigator(host: host)
-        let old = Template("old")
-        let fresh = Template("fresh")
-        let replaced = await navigator.replace(old, with: fresh)
-        XCTAssertFalse(replaced)
-        XCTAssertNil(host.presentedTemplate, "the call ended before its rebuild: no screen comes back")
-
-        await navigator.present(old)
-        let swapped = await navigator.replace(old, with: fresh)
-        XCTAssertTrue(swapped)
-        XCTAssertTrue(host.presentedTemplate === fresh)
     }
 
     func testARefusalIsReportedNotThrown() async {
@@ -318,11 +348,32 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
-    /// The call screen is built from `LiveCallScreen.states` and nothing else: CarPlay keeps five.
+    /// The call screen is built from `LiveCallScreen.identifiers` and nothing else: CarPlay keeps five.
     func testTheCallScreenIsBuiltFromTheFiveStates() {
         let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
-        XCTAssertTrue(live.contains("LiveCallScreen.states"), "CarPlayLive builds its states from LiveCallScreen.states")
+        XCTAssertTrue(live.contains("LiveCallScreen.identifiers"), "CarPlayLive builds its states from LiveCallScreen.identifiers")
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
+    }
+
+    /// Radically simple: the car is one button and one call screen. A list, a tab bar, a card,
+    /// an alert, an action sheet or a pushed screen is one more template CarPlay can refuse a
+    /// change to, and the car had all of them when it crashed.
+    func testTheCarIsOneButtonAndOneCallScreen() {
+        let allowed: Set = ["CPTemplate", "CPGridTemplate", "CPVoiceControlTemplate"]
+        let template = try! NSRegularExpression(pattern: #"\bCP[A-Za-z]*Template\b"#)
+        var seen: Set<String> = []
+        for (name, text) in Self.carPlaySources {
+            for (number, line) in Self.code(text) {
+                for match in template.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+                    guard let range = Range(match.range, in: line) else { continue }
+                    let used = String(line[range])
+                    seen.insert(used)
+                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a Talk button (CPGridTemplate) and the call screen (CPVoiceControlTemplate)\n\(line)")
+                }
+                XCTAssertFalse(line.contains("pushTemplate"), "\(name):\(number): nothing is pushed in the car\n\(line)")
+            }
+        }
+        XCTAssertTrue(seen.isSuperset(of: ["CPGridTemplate", "CPVoiceControlTemplate"]), "the guard sees the two templates the car does use: \(seen)")
     }
 
     /// `@Published` publishes in `willSet`: a sink that reads the call synchronously reads the

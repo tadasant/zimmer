@@ -10,25 +10,15 @@ enum CarPlayImages {
         symbol(name, pointSize: 40, weight: .medium)
     }
 
-    /// A tab's icon (24pt).
-    static func tab(_ name: String) -> UIImage {
-        symbol(name, pointSize: 24, weight: .medium)
-    }
-
-    /// A list row's leading image.
-    static func row(_ name: String) -> UIImage {
-        symbol(name, pointSize: 28, weight: .regular)
-    }
-
-    /// The voice control template's picture for a call state (150pt in the guide).
-    static func voice(_ state: LiveVoiceState, muted: Bool) -> UIImage {
+    /// The voice control template's picture for one of its states (150pt in the guide).
+    static func voice(_ identifier: String) -> UIImage {
         let name: String
-        switch state {
-        case .idle, .connecting: name = "antenna.radiowaves.left.and.right"
-        case .listening: name = muted ? "mic.slash.fill" : "mic.fill"
-        case .thinking: name = "ellipsis.bubble.fill"
-        case .speaking: name = "waveform"
-        case .working: name = "gearshape.2.fill"
+        switch identifier {
+        case "listening": name = "mic.fill"
+        case "speaking": name = "waveform"
+        case "working": name = "gearshape.2.fill"
+        case "muted": name = "mic.slash.fill"
+        default: name = "antenna.radiowaves.left.and.right"
         }
         return symbol(name, pointSize: 120, weight: .regular)
     }

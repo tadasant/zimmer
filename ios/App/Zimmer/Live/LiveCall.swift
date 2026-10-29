@@ -29,9 +29,6 @@ final class LiveCall: ObservableObject {
     @Published private(set) var lastError: String?
     /// Bumped on every recorded line or tool call, so an open thread knows to read again.
     @Published private(set) var activity = 0
-    /// What the function call in flight is doing, in words (`LiveActivity`), while the call is
-    /// working; nil between calls. The car's call screen shows it.
-    @Published private(set) var working: String?
 
     private var conductor = RealtimeConductor()
     /// An opening line given while the call was still connecting: sent once it is up.
@@ -123,7 +120,6 @@ final class LiveCall: ObservableObject {
         audio.stop()
         state = .idle
         muted = false
-        working = nil
         pendingOpening = nil
     }
 
@@ -238,7 +234,6 @@ final class LiveCall: ObservableObject {
             case let .send(event):
                 send(event)
             case let .relay(callID, name, arguments):
-                working = LiveActivity.describe(name: name, arguments: arguments)
                 relay(callID: callID, name: name, arguments: arguments, generation: generation)
             case let .record(role, text):
                 guard let conversation = conversationID else { continue }
@@ -258,7 +253,6 @@ final class LiveCall: ObservableObject {
             case let .state(next):
                 // A reply coming through means the call recovered from whatever went wrong.
                 if next == .speaking { lastError = nil }
-                if next != .working { working = nil }
                 state = next
             case let .failure(message):
                 log.error("realtime error: \(message, privacy: .public)")

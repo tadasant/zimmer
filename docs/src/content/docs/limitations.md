@@ -8177,28 +8177,34 @@ The route trusts the JWKS it fetches from the team domain over HTTPS. A team dom
 host someone else controls would let that host mint handoffs. The default is Tadas's team, and the
 value is read only from the secret chain.
 
-## CarPlay has no automated run against a real CarPlay screen
+## CarPlay is tested in the Simulator's CarPlay window, not in a car
 
 The CarPlay scene has run in a car: TestFlight builds crashed there, repeatedly, and sometimes spoke
 with the system voice ([#1410](https://github.com/tadasant/zimmer/issues/1410)). The causes found
 were all ones CarPlay documents: a voice control template with ten states, of which CarPlay keeps
 five; template changes made without a completion handler, which CarPlay turns into an exception
 when it refuses them; and the call's audio engine restarted on a notification thread while a
-hang-up stopped it on the main one. Each now has a Linux test or a source guard. What they test is
-Zimmer's code against a fake that refuses what Apple's documentation says CarPlay refuses. They don't
-test CarPlay itself.
+hang-up stopped it on the main one. Each now has a Linux test or a source guard, and every iOS
+pull request also runs the CarPlay drill: Zimmer in the iOS Simulator's CarPlay window, driven
+through the car app (one button; a call that cannot connect, its retries and giving up, and a
+tap that tries again), failing on any crash. The car app itself was cut to one flow (open, talk,
+mute, end) so there is little left to drive. The drill cannot press Mute or End: XCUITest finds
+the voice control template's action buttons but no tap, by element or by coordinate, reaches them.
 
-Nothing automated drives the real CarPlay screen. XCUITest can't reach the CarPlay window, the
-simulator's CarPlay display is a menu item with no command-line control, and Apple's CarPlay
-Simulator needs a physical iPhone over USB. So the template tree as a car draws it, the voice
-control template's action and bar buttons (iOS 26.4), the call screen's rebuild on a new subject
-or on Mute, and the audio route moving to the car are confirmed only by driving. The app ships no
-crash reporter, so a crash in the car reaches nobody unless TestFlight's crash feedback is read in
-App Store Connect.
+The Simulator is not a car. Its CarPlay window has no audio route of a car's own, so the call's
+microphone and speaker moving to the car, and the audio engine's restart when they do, are
+confirmed only by driving, or by Apple's CarPlay Simulator app with a physical iPhone over USB,
+which no CI runner has. The drill's call never connects (CI has no microphone and no OpenAI key),
+so a conversation's own states (listening, speaking, working) are not driven either. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
+(the window stays blank), so the drill runs in one process; whether a car does the same after
+Zimmer crashes or is killed is untested. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
+GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails the drill rather
+than skipping it. The app ships no crash reporter, so a crash in the car reaches nobody unless
+TestFlight's crash feedback is read in App Store Connect.
 
-Nothing in the car tells you a session started needing you while you drive, beyond the badge and
-the counts changing on the next minute's read: there are no CarPlay notifications for this category,
-and the car does not speak unasked. A Live call from the car is tagged `carplay`, and Zimmer adds a
+Nothing in the car tells you a session started needing you while you drive: there are no CarPlay
+notifications for this category, the car shows no board, and it does not speak unasked. Ask Live
+Mode. A Live call from the car is tagged `carplay`, and Zimmer adds a
 CarPlay line to the live model's instructions; both are tested against a recorded transport, not
 observed in a car.
 
