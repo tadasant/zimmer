@@ -242,7 +242,7 @@ class SlackEventJobTest < ActiveJob::TestCase
     session = Session.order(:id).last
     claims = TriggerEventClaim.order(:event_key)
     assert_equal [ "slack:#{CHANNEL}:1756500000.000100", "slack:#{CHANNEL}:1756500000.600100" ], claims.pluck(:event_key)
-    assert_equal %w[poll poll], claims.pluck(:claimed_via)
+    assert_equal %w[poll_record poll_record], claims.pluck(:claimed_via)
     assert_equal [ session.id ] * 2, claims.pluck(:session_id)
   end
 

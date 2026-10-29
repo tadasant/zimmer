@@ -57,9 +57,23 @@ class TriggerConditionMcpEventTest < ActiveSupport::TestCase
     assert_not blank.trigger_conditions.first.configuration.key?("arguments")
   end
 
-  test "payload filters must name fields and allow at least one value" do
+  test "payload filters must name fields and allow at least one scalar value" do
     assert_not build_trigger(valid_config("payload_filters" => { "not a field" => [ "x" ] })).valid?
     assert_not build_trigger(valid_config("payload_filters" => { "user_id" => [] })).valid?
+    assert_not build_trigger(valid_config("payload_filters" => { "user_id" => [ { "id" => "U1" } ] })).valid?
+  end
+
+  test "a workflow trigger cannot carry an mcp_event condition" do
+    trigger = build_trigger(valid_config)
+    trigger.workflow_id = "anything"
+    assert_not trigger.valid?
+    assert_match(/cannot be combined with an MCP event condition/, trigger.errors.full_messages.join)
+  end
+
+  test "|id renders only a string or number in an identifier's shape" do
+    trigger = build_trigger(valid_config, template: "[{{event.a|id}}][{{event.b|id}}][{{event.c|id}}][{{event.d|id}}]")
+    rendered = trigger.interpolate_prompt(event_data: { "a" => "C0123", "b" => true, "c" => nil, "d" => 1793.5 })
+    assert_equal "[C0123][][][1793.5]", rendered
   end
 
   test "payload filters fail closed on a field the payload does not carry" do

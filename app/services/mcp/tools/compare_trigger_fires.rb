@@ -22,7 +22,10 @@ module Mcp
         (say an `mcp_event` condition on strad's Slack server) shadows an existing one (a Slack
         trigger) and should fire on exactly the same messages.
 
-        Every fire of a Slack, GitHub or MCP event condition records a claim per event. This tool
+        Every fire of a Slack or MCP event condition records a claim per event (a GitHub condition
+        records one only while its webhook is on). A Slack message burst control or a pending
+        session stopped records nothing, while an MCP event condition retries such an event, so a
+        few `only_b` rows can be by design: read the sessions before calling one a miss. This tool
         joins the two triggers' claims on the event's identity — an MCP event's
         `mcp:<server>:<eventId>` with the server prefix stripped, so strad's
         `slack:<channel>:<ts>` lines up with the Slack poller's — and reports, since `since`:
@@ -91,7 +94,14 @@ module Mcp
       def find_trigger(id)
         raise ToolError, "Missing required parameter: trigger ids" if id.blank?
 
-        Trigger.find_by(id: id.to_i) || raise(ToolError, "Trigger not found: #{id}")
+        trigger = Trigger.find_by(id: id.to_i)
+        # A restricted connection compares only triggers on the roots it may act on, as
+        # search_triggers shows it only those; "not found" avoids confirming the rest exist.
+        if trigger.nil? || (context.restricted? && !context.allowed_agent_roots.include?(trigger.agent_root_name))
+          raise ToolError, "Trigger not found: #{id}"
+        end
+
+        trigger
       end
 
       def parse_since(value)

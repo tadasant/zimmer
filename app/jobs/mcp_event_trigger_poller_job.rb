@@ -74,7 +74,12 @@ class McpEventTriggerPollerJob < ApplicationJob
     any_due = false
     any_polled = false
     conditions.find_each do |condition|
-      next unless due?(condition)
+      unless due?(condition)
+        # Backing off after failures is not health: it still counts as a condition that did not
+        # poll cleanly, so a server that keeps failing still stops the heartbeat.
+        any_due = true if condition.configuration["failures"].to_i.positive?
+        next
+      end
 
       any_due = true
       any_polled = true if process_condition(condition)
@@ -84,16 +89,16 @@ class McpEventTriggerPollerJob < ApplicationJob
       report(condition, e)
     end
 
-    # A tick on which every server asked to be left alone a while longer (`nextPollMs`) is a
-    # healthy one too.
+    # A tick on which every healthy server asked to be left alone a while longer (`nextPollMs`) is
+    # a healthy one too.
     PollerHeartbeat.stamp(:mcp_event) if any_polled || !any_due
   end
 
   private
 
   def due?(condition)
-    next_at = condition.configuration["next_poll_at"].presence
-    next_at.nil? || Time.zone.parse(next_at.to_s).nil? || Time.zone.parse(next_at.to_s) <= Time.current
+    next_at = Time.zone.parse(condition.configuration["next_poll_at"].to_s)
+    next_at.nil? || next_at <= Time.current
   end
 
   def ensure_fireable!(trigger)
@@ -116,11 +121,16 @@ class McpEventTriggerPollerJob < ApplicationJob
       return true
     end
 
+    # While the trigger's burst is open every fire is refused, and each refusal counts toward the
+    # window that keeps it open — so a backlog retried into an open burst would hold it open for
+    # good. The events wait on the server until the burst closes.
+    return true if condition.trigger.reload.bursting?
+
+    fires = 0
     MAX_PAGES.times do
       result = client.poll(name: condition.mcp_event_name, arguments: condition.mcp_event_arguments, cursor: cursor)
       note_truncation(condition, subscription, cursor) if result.truncated
 
-      fires = 0
       settled = true
       result.events.each do |occurrence|
         if fires >= MAX_FIRES_PER_TICK
@@ -129,8 +139,13 @@ class McpEventTriggerPollerJob < ApplicationJob
         end
 
         outcome = settle(condition, subscription, cursor, occurrence)
-        fires += 1 if outcome.is_a?(Session) || outcome == :held
-        settled = false if %i[held rolled_back failed].include?(outcome)
+        fires += 1 if outcome.is_a?(Session)
+        next unless %i[held rolled_back failed].include?(outcome)
+
+        # Stop at the first event that did not settle: the ones after it would fire ahead of it,
+        # and a cause that holds or breaks one usually holds or breaks the next.
+        settled = false
+        break
       end
 
       moved = advance!(condition, subscription, cursor, settled ? result.cursor : cursor, result.next_poll_ms)
@@ -214,6 +229,8 @@ class McpEventTriggerPollerJob < ApplicationJob
 
     return :held if session.nil?
     return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
+    # The fire that opened a burst spawns the notice about it, not a session for this event.
+    return :held if session.metadata.to_h["burst_notice"]
 
     session
   end
@@ -274,9 +291,18 @@ class McpEventTriggerPollerJob < ApplicationJob
   # A server that refused or could not be reached. WARN, so this does not page every minute on its
   # own; the liveness check pages when nothing polls cleanly, and a single condition failing
   # MAX_FAILURES_BEFORE_REPORT times running is reported.
+  #
+  # A failing server is backed off — one minute after the first failure, doubling to
+  # MAX_NEXT_POLL — so one unreachable server does not hold the single `pollers` thread every tick.
   def record_failure(condition, error)
-    failures = condition.configuration["failures"].to_i + 1
-    condition.update_columns(configuration: condition.configuration.merge("failures" => failures))
+    failures = nil
+    condition.with_lock do
+      failures = condition.configuration["failures"].to_i + 1
+      backoff = [ (2**(failures - 1)).minutes, MAX_NEXT_POLL ].min
+      condition.update_columns(configuration: condition.configuration.merge(
+        "failures" => failures, "next_poll_at" => (Time.current + backoff).iso8601
+      ))
+    end
     Rails.logger.warn "[McpEventTriggerPollerJob] Condition #{condition.id} not polled (#{failures} in a row): #{error.class}: #{error.message}"
     report(condition, error) if failures == MAX_FAILURES_BEFORE_REPORT
   end
@@ -299,7 +325,7 @@ class McpEventTriggerPollerJob < ApplicationJob
   def describe(outcome)
     case outcome
     when Session then "fired session #{outcome.id}"
-    when :held then "not fired yet (burst control, a pending session, or a busy reused session); retried next tick"
+    when :held then "not fired yet (burst control, a pending session, or a busy reused session); retried on a later tick"
     when :rolled_back then "rolled back (the condition was edited mid-poll)"
     when :filtered then "filtered out by payload_filters"
     else outcome.to_s

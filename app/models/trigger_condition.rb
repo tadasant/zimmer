@@ -1093,6 +1093,10 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
+  def mcp_event_filter_scalar?(value)
+    value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false
+  end
+
   # The form submits `arguments` and `payload_filters` as JSON text; the API and MCP send objects.
   # Text is parsed here so the row always holds objects. Text that does not parse is left as text,
   # which validation then refuses.
@@ -1113,7 +1117,11 @@ class TriggerCondition < ApplicationRecord
         end
       end
     end
-    configuration["payload_filters"] = configuration["payload_filters"].transform_values { |values| Array(values).map(&:to_s) } if configuration["payload_filters"].is_a?(Hash)
+    if configuration["payload_filters"].is_a?(Hash)
+      configuration["payload_filters"] = configuration["payload_filters"].transform_values do |values|
+        Array(values).map { |value| mcp_event_filter_scalar?(value) ? value.to_s : value }
+      end
+    end
     %w[server event_name].each { |key| configuration[key] = configuration[key].to_s.strip if configuration.key?(key) }
   end
 
@@ -1472,6 +1480,8 @@ class TriggerCondition < ApplicationRecord
       errors.add(:configuration, "payload_filters names fields that are not payload field names: #{bad.join(', ')}") if bad.any?
       empty = filters.select { |_field, values| Array(values).empty? }.keys
       errors.add(:configuration, "payload_filters must list at least one allowed value for #{empty.join(', ')}") if empty.any?
+      nested = filters.reject { |_field, values| Array(values).all? { |value| mcp_event_filter_scalar?(value) } }.keys
+      errors.add(:configuration, "payload_filters values must be strings, numbers or booleans (#{nested.join(', ')})") if nested.any?
     end
   end
 
