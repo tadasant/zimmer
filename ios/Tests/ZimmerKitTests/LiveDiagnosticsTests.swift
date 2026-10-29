@@ -154,6 +154,13 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(timeline.summary["turns"], .number(1))
     }
 
+    func testALineAGatedCallDroppedIsAWarningNamingTheMode() {
+        let dropped = LiveEvent.lineHeard(respond: false, dropped: true, ms: 0.4, listening: "wake_word")
+        XCTAssertEqual(dropped.level, .warn, "kept at every level but off: the person got no answer")
+        XCTAssertEqual(dropped.fields()["listening"], .string("wake_word"))
+        XCTAssertEqual(LiveEvent.lineHeard(respond: true, dropped: false, ms: 0.4, listening: "dynamic").level, .debug)
+    }
+
     func testATranscriptIsReportedByItsLengthNeverItsWords() {
         var timeline = LiveCallTimeline()
         let line = timeline.observe(event(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"merge the docs fix"}"#), at: 1)

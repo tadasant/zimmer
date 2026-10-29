@@ -416,7 +416,8 @@ final class LiveCall: ObservableObject {
         Task {
             let heard = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: true)
             guard generation == self.generation else { return }
-            telemetry.track(.lineHeard(respond: heard?.respond ?? true, dropped: heard?.dropped == true, ms: Self.now - asked))
+            telemetry.track(.lineHeard(respond: heard?.respond ?? true, dropped: heard?.dropped == true, ms: Self.now - asked,
+                                       listening: listening))
             if heard?.dropped != true { activity += 1 }
             apply(conductor.heard(itemID: itemID, respond: heard?.respond ?? true), generation: generation)
         }
