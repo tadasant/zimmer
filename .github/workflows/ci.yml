@@ -800,8 +800,9 @@ jobs:
   #   2. It passes on an allowlist, never a denylist: every dependency must report
   #      `success` or `skipped`, and anything else fails it. GitHub reports more results
   #      than it documents: a hosted job that no runner ever picks up comes through as
-  #      `abandoned` ("The job was not acquired by Runner of type hosted even after
-  #      multiple attempts", which macOS arm64 capacity makes routine). A gate that
+  #      `abandoned` in needs.*.result ("The job was not acquired by Runner of type hosted
+  #      even after multiple attempts", which a macOS arm64 capacity shortage causes; the
+  #      UI and jobs API show it as `cancelled`). A gate that
   #      looked only for `failure` and `cancelled` passed run 40899943842 with an `ios`
   #      job that never ran.
   #   3. `skipped` dependencies do NOT fail it and are NOT counted as passes: the several
@@ -832,6 +833,7 @@ jobs:
       - ios_swift_linux
     steps:
       - name: Verify every required check succeeded or was skipped
+        shell: bash
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
@@ -850,4 +852,4 @@ jobs:
                 exit 1 ;;
             esac
           done
-          echo "All required CI checks passed (skipped fork-guarded jobs are allowed)."
+          echo "All required CI checks passed (skipped jobs are allowed: fork guards, the iOS path filter)."

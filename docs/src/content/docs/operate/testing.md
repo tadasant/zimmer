@@ -30,11 +30,12 @@ of enumerating every job. It runs with `if: ${{ !cancelled() }}`, passes only wh
 reported `success` or `skipped`, and fails on anything else. A `skipped` dependency — the
 fork-guarded jobs skip on fork PRs — counts as neither a pass nor a failure.
 
-It checks against an allowlist, because GitHub reports results it does not document. A hosted job that no
-runner ever picks up ends as `abandoned`, with the annotation "The job was not acquired by Runner of
-type hosted even after multiple attempts". That is what a short supply of hosted macOS arm64 runners does to the `ios`
-job. A gate that looked only for `failure` and `cancelled` passed such a run on `main` with an iOS
-build that never happened.
+It checks against an allowlist, because GitHub reports results it does not document. A hosted job
+that no runner ever picks up comes through as `abandoned` in `needs.*.result`, though the Actions UI
+and the jobs API show it as `cancelled`. Its annotation, "The job was not acquired by Runner of type
+hosted even after multiple attempts", is what tells it apart from a superseded run. That is what a
+shortage of hosted macOS arm64 runners does to the `ios` job. A gate that looked only for `failure`
+and `cancelled` passed such a run on `main` with an iOS build that never happened.
 
 `!cancelled()` rather than `always()`, and rather than a bare `needs:`. A bare `needs:` job is
 skipped when any dependency fails, which would leave the required check perpetually "skipped" and
