@@ -122,6 +122,26 @@ class Api::V1::SessionsControllerPrecedenceTest < ActionDispatch::IntegrationTes
     assert_empty session.logs
   end
 
+  test "a blank precedence is the model's say-nothing, written as the default and logged" do
+    session = spot_session(precedence: 5)
+
+    patch "/api/v1/sessions/#{session.id}", params: { precedence: "" }, headers: @headers
+
+    assert_response :success
+    assert_equal SessionPrecedence::DEFAULT, session.reload.precedence
+    assert_equal [ "Precedence set via the REST API to #{SessionPrecedence::DEFAULT} (was 5)" ], precedence_logs(session)
+  end
+
+  test "a non-integer precedence is a 422 and writes nothing" do
+    session = spot_session(precedence: 5)
+
+    patch "/api/v1/sessions/#{session.id}", params: { precedence: "urgent" }, headers: @headers
+
+    assert_response :unprocessable_entity
+    assert_equal 5, session.reload.precedence
+    assert_empty session.logs
+  end
+
   test "a PATCH without a rank writes no precedence log row" do
     session = spot_session(precedence: 5)
 
