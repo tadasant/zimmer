@@ -597,9 +597,9 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     assert_nil superseded.held_at
   end
 
-  # Must-not-silence (c): a held row riding out an open PR does not shelter the
-  # unheld rows beside it.
-  test "an unheld row still ages into a new band and pages while a held row has an open PR" do
+  # Must-not-silence (c): an unheld row ages into a new band and pages while a
+  # held row beside it rides out an open PR with its hold intact.
+  test "an unheld row still ages into a new band and pages beside a hold suspended by an open PR" do
     held = started_row(started_at: 40.days.ago)
     held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
     held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")

@@ -24,7 +24,7 @@ module Mcp
 
         **It lapses after #{WorkBacklogItem::HOLD_DURATION.inspect}.** The row is then stranded again with its original age, and the next sweep pages on the lapse — that page is the reminder that the decision is still owed. A hold cannot be extended while it is active, and cannot be renewed until its lapse has paged. After that you may hold the row again, but read it first: the question is whether the decision is still the one owed.
 
-        **It is void the moment the evidence changes.** The hold records the row's `liveness_state`; if a later sweep reads a different one (the issue closed, a PR opened, moved, stalled or merged), the hold is cleared and the row is triaged afresh. A failed GitHub read (`unknown`) does not void it.
+        **It is void when the evidence changes.** The hold records the row's `liveness_state`; if a later sweep reads a different one (the issue closed, a newer row superseded it, a PR merged onto a row that had none, a PR stalled), the hold is cleared and the row is triaged afresh. A failed GitHub read (`unknown`) does not void it, and neither does a moving open PR (`pr_open`): that suspends the hold, and once the PR merges or closes the hold is judged on what the row reads then. A PR that only mentions the issue therefore leaves it in force.
 
         **Refused** for a row that is not stranded (queued, in flight, parked, or resolved), for a row the sweep has not read yet (no `liveness_state`, or `unknown`), for a row a newer row has superseded, for a row already held, and for a row whose lapsed hold has not paged yet.
 
