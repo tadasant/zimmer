@@ -140,6 +140,24 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "or the `pollers` GoodJob worker is down. The poller's WARN log line names the error. " \
           "Check the GoodJob dashboard (/jobs)."
       end
+    ),
+    Poller.new(
+      key: :mcp_event,
+      # McpEventTriggerPollerJob stamps only when at least one mcp_event condition's server
+      # answered a poll. A server that refuses every poll — strad down, the catalog credential gone,
+      # the event type removed — stops the sweep without a stamp, so this is what pages for it: an
+      # events-driven trigger otherwise just goes quiet.
+      threshold: 30.minutes,
+      watched: -> { TriggerCondition.mcp_event.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
+      seedable: -> { true },
+      title: "MCP event trigger polling stalled",
+      details: lambda do |minutes, last_at|
+        "No MCP event trigger poll has completed cleanly in ~#{minutes} minutes (last success " \
+          "#{last_at}). MCP event triggers are not firing. Likely causes: the server the condition " \
+          "names refuses Zimmer or is down (for a strad slug, check strad's /health and the slug's " \
+          "entitlement), the event type is gone from its events/list, or the `pollers` GoodJob worker " \
+          "is down. The poller's WARN log line names the error. Check the GoodJob dashboard (/jobs)."
+      end
     )
   ].freeze
 

@@ -60,7 +60,8 @@ class TriggersHelperTest < ActionView::TestCase
     "github_issue" => { "repos" => [ "tadasant/zimmer" ], "exclude_labels" => [ "hold issue work gate" ] },
     "system_event" => { "event_name" => "quota_available" },
     "whatsapp" => { "chat_id" => "120363012345678901@g.us", "chat_name" => "Wedding", "mode" => "listen" },
-    "email" => { "query" => "in:inbox" }
+    "email" => { "query" => "in:inbox" },
+    "mcp_event" => { "server" => "slack-zimmer", "event_name" => "slack-zimmer__message_posted" }
   }.freeze
 
   # The detail page's badge is the same drift hazard as the row's icon: a type

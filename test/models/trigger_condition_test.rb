@@ -51,6 +51,8 @@ class TriggerConditionTest < ActiveSupport::TestCase
                        when "github_issue" then { "repos" => [ "tadasant/zimmer" ] }
                        when "whatsapp" then { "chat_id" => "120363012345678901@g.us", "mode" => "listen" }
                        when "email" then { "query" => "in:inbox" }
+                       # `zimmer` is a streamable-http server in the test catalog.
+                       when "mcp_event" then { "server" => "zimmer", "event_name" => "zimmer__session_changed" }
                        end
       )
       assert condition.valid?, "Expected condition_type '#{type}' to be valid, got errors: #{condition.errors.full_messages}"

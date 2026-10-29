@@ -81,6 +81,8 @@ module Mcp
           issue carries one of the condition's `exclude_labels`
         - **whatsapp**: Triggers fired by new messages in a WhatsApp chat
         - **email**: Triggers fired by new mail in the polled mailbox, one session per thread
+        - **mcp_event**: Triggers fired by events a catalog MCP server publishes (the MCP Events
+          extension), one session per event
 
         A trigger may have multiple conditions (OR semantics) — filtering by trigger_type returns triggers that have at least one condition of that type. Fetching a trigger by id lists each condition with its own id, which is what action_trigger's `conditions` array uses to address one of them.
 

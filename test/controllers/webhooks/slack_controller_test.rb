@@ -371,13 +371,17 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
 
   # --- poll mode is unchanged ----------------------------------------------------------
 
-  test "with Slack on poll, the poller claims nothing and fires exactly as before" do
+  # On poll a claim is only a record of what fired — compare_trigger_fires reads it — so the poller
+  # fires exactly as before and leaves one claim per fired message, pointing at its session.
+  test "with Slack on poll, the poller fires exactly as before and records what it fired" do
     ENV["SLACK_TRIGGER_INGEST_MODE"] = "poll"
 
     assert_difference -> { Session.count }, 1 do
       poll_channel([ polled_message(ts: "1756500000.000100") ])
     end
 
-    assert_equal 0, TriggerEventClaim.count
+    claim = TriggerEventClaim.sole
+    assert_equal "poll", claim.claimed_via
+    assert_equal Session.order(:id).last.id, claim.session_id
   end
 end

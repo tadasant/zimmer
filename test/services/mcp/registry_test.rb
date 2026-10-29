@@ -83,7 +83,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "a readonly group drops write tools" do
     names = Mcp::Registry.tools_for([ "triggers_readonly" ]).map(&:tool_name)
 
-    assert_equal [ "search_triggers" ], names
+    assert_equal %w[search_triggers list_mcp_event_sources compare_trigger_fires], names
   end
 
   test "groups compose" do
@@ -96,7 +96,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 50, names.size
+    assert_equal 52, names.size
   end
 
   # A spawn, so it rides with start_session; a session managing itself has no

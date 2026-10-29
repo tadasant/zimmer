@@ -228,6 +228,24 @@ class SlackEventJobTest < ActiveJob::TestCase
     assert_equal %w[poll poll webhook], TriggerEventClaim.order(:claimed_via).pluck(:claimed_via)
   end
 
+  test "on poll the poller still records a claim, with its session, for every message it fired" do
+    teardown_slack_webhook
+    setup_slack_webhook(mode: "poll")
+
+    assert_difference -> { Session.count }, 1 do
+      poll_channel([
+        polled_message(ts: "1756500000.000100", user: "U_ALERTS", text: "alert one"),
+        polled_message(ts: "1756500000.600100", user: "U_ALERTS", text: "alert two")
+      ])
+    end
+
+    session = Session.order(:id).last
+    claims = TriggerEventClaim.order(:event_key)
+    assert_equal [ "slack:#{CHANNEL}:1756500000.000100", "slack:#{CHANNEL}:1756500000.600100" ], claims.pluck(:event_key)
+    assert_equal %w[poll poll], claims.pluck(:claimed_via)
+    assert_equal [ session.id ] * 2, claims.pluck(:session_id)
+  end
+
   # --- the source message, on the session (SlackOutageMarker) --------------------------
 
   test "a fired session records the channel and ts of the message it was spawned for" do
