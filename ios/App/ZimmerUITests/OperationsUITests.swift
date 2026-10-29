@@ -306,13 +306,17 @@ final class OperationsUITests: XCTestCase {
         return laidOut().map(onScreen) ?? false
     }
 
-    /// Swipe `row` left until its trailing action titled `title` is on screen, three tries at
-    /// most. One swipe is not always enough: on a loaded simulator a main-branch run swiped the
-    /// nightly trigger while the list was still redrawing the switch tapped a moment before, the
-    /// row never opened, and the run spent its retries looking for an Invoke that was not there.
+    /// Swipe `row` left until its trailing action titled `title` exists, three swipes at most.
+    /// One swipe is not always enough: on a loaded simulator a main-branch run swiped the nightly
+    /// trigger while the list was still redrawing the switch tapped a moment before, the row
+    /// never opened, and the tap on Invoke found nothing. Each retry first swipes the row closed:
+    /// a row that opened too slowly to be seen would take a second left swipe as a full swipe,
+    /// which runs the action itself and takes its button away. Neither row has a leading action,
+    /// so a right swipe only closes.
     private func swipeAction(_ app: XCUIApplication, _ row: XCUIElement, titled title: String) -> XCUIElement {
         let action = app.buttons[title].firstMatch
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
+            if attempt > 0 { row.swipeRight() }
             row.swipeLeft()
             if action.waitForExistence(timeout: 5) { break }
         }
