@@ -33,6 +33,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         // A connect without the disconnect before it (CarPlay restarting the scene) starts clean.
         tearDown()
         log.notice("carplay scene connected")
+        LiveTelemetry.shared.track(.carPlay("scene_connected"))
 
         let home = CarPlayHome()
         home.onTalk = { [weak self] in self?.live?.start() }
@@ -52,6 +53,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
                 log.notice("carplay root template set")
             } catch {
                 log.error("root template refused: \(String(describing: error), privacy: .public)")
+                LiveTelemetry.shared.track(.carPlay("root_refused", level: .error, ["message": .string(String(describing: error))]))
             }
             // A call already running (started on the phone) is the conversation: show it.
             guard let self, self.live === live else { return }
@@ -64,6 +66,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         didDisconnectInterfaceController interfaceController: CPInterfaceController
     ) {
         log.notice("carplay scene disconnected")
+        LiveTelemetry.shared.track(.carPlay("scene_disconnected"))
+        LiveTelemetry.shared.flush()
         tearDown()
     }
 

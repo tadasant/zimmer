@@ -187,6 +187,25 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert response.parsed_body["respond"]
   end
 
+  test "the car answers every line: a gated Listening setting gates the phone's call, never the car's" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.agent("live conversation #1"))
+    conversation = create_live_conversation(mode: "voice")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.5.0")
+    phone = @headers.merge("X-Zimmer-Client" => "ios/1.5.0")
+
+    post "/api/v1/live_conversations/#{conversation.id}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal false, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response"), "the phone asks for its own replies"
+
+    post "/api/v1/live_conversations/#{conversation.id}/session_update", params: { listening_modes: "1" }, headers: car
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+                 response.parsed_body.dig("session", "audio", "input", "turn_detection"),
+                 "handed to the car, OpenAI ends each turn and answers it")
+
+    post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "talking to my friend", listening_modes: "1" }, headers: car
+    assert_response :created
+    assert response.parsed_body["respond"], "no line is dropped in the car"
+  end
+
   test "with Listening gated, an app that asks for its own replies has a stray line dropped and a named one answered" do
     LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     conversation = create_live_conversation(mode: "voice")

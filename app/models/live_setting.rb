@@ -89,6 +89,16 @@ class LiveSetting < ApplicationRecord
     "gpt-4o-transcribe" => "gpt-4o-transcribe — more accurate"
   }.freeze
 
+  # How much the iOS app reports about a voice call (LiveConversations::Telemetry):
+  # a threshold, so each level keeps everything above it. An error is reported at
+  # every level but `off`.
+  TELEMETRY = {
+    "debug" => "Verbose — every step of every call (turn detection, timings, cues)",
+    "info" => "Milestones — connects, hang-ups, settings in use, timings, plus warnings and errors",
+    "warn" => "Problems — warnings and errors only",
+    "off" => "Off — the app reports nothing"
+  }.freeze
+
   GUIDANCE_MAX_LENGTH = 8_000
 
   FIELDS = [
@@ -139,7 +149,10 @@ class LiveSetting < ApplicationRecord
               options: NOISE_REDUCTION, min: nil, max: nil),
     Field.new(key: :voice_transcription_model, path: :voice, type: :enum, label: "Transcription model",
               help: "Writes down what you said, for the thread on the page.",
-              options: TRANSCRIPTION_MODELS, min: nil, max: nil)
+              options: TRANSCRIPTION_MODELS, min: nil, max: nil),
+    Field.new(key: :voice_telemetry, path: :voice, type: :enum, label: "Call telemetry (iOS app)",
+              help: "How much the phone and the car report about each voice call, to the shipped logs. Takes effect on the next call.",
+              options: TELEMETRY, min: nil, max: nil)
   ].freeze
 
   FIELDS_BY_KEY = FIELDS.index_by(&:key).freeze
@@ -171,6 +184,9 @@ class LiveSetting < ApplicationRecord
     when :voice_vad_prefix_padding_ms then 300
     when :voice_vad_silence_duration_ms then 500
     when :voice_transcription_model then "gpt-4o-mini-transcribe"
+    # Verbose while the CarPlay app is being stabilised; turn it down on the
+    # Live settings page, no deploy needed.
+    when :voice_telemetry then "debug"
     end
   end
 

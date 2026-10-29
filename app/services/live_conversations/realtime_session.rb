@@ -54,8 +54,9 @@ module LiveConversations
         # than not at all, and say why.
         warning = "OpenAI refused the Live settings (#{e.message.truncate(200)}), so this call runs on the defaults. Change them on the Live settings page."
         Rails.logger.warn("[LiveConversations::RealtimeSession] #{warning}")
-        # Listening is Zimmer's, not OpenAI's: it stays as set.
-        @setting = LiveSetting.new(guidance: @setting.guidance, voice_listening: @setting.voice_listening)
+        # Listening and telemetry are Zimmer's, not OpenAI's: they stay as set.
+        @setting = LiveSetting.new(guidance: @setting.guidance, voice_listening: @setting.voice_listening,
+                                   voice_telemetry: @setting.voice_telemetry)
         config = session_config
         create_secret(config)
       end
@@ -72,6 +73,9 @@ module LiveConversations
         websocket_url: "#{OpenaiClient.base_url.sub(/\Ahttp/, 'ws')}/realtime?model=#{ERB::Util.url_encode(model)}",
         tools: tools,
         listening: listening,
+        # How much the app reports about this call (Telemetry); the app keeps
+        # it for the calls after, until the next secret says otherwise.
+        telemetry: @setting.effective(:voice_telemetry),
         settings_warning: warning
       }.compact
     end

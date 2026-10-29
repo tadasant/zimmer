@@ -8202,6 +8202,14 @@ GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails t
 than skipping it. The app ships no crash reporter, so a crash in the car reaches nobody unless
 TestFlight's crash feedback is read in App Store Connect.
 
+The call's cues, its microphone watchdog and its call log are tested on Linux as pure rules
+(`LiveDiagnosticsTests`), and the call log end to end through the server and the real OTLP
+exporter. Neither the sounds nor a stalled microphone have been heard in a car, and how well the
+echo canceller removes a cue there is untested. The call log reaches VictoriaLogs only on a
+deployment whose log exporter is configured. Elsewhere Zimmer accepts each batch, logs one INFO
+line saying how many events it kept, and ships nothing. Events recorded while the phone is offline
+wait in a 500-event buffer, and the oldest are dropped first, counted on the next batch.
+
 Nothing in the car tells you a session started needing you while you drive: there are no CarPlay
 notifications for this category, the car shows no board, and it does not speak unasked. Ask Live
 Mode. A Live call from the car is tagged `carplay`, and Zimmer adds a

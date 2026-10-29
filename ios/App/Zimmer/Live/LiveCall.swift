@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import ZimmerKit
 import os
 
@@ -19,11 +20,19 @@ import os
 /// `input_audio_buffer.append`, and plays `response.output_audio.delta` back. What to do with
 /// every server event is `RealtimeConductor`'s call (ZimmerKit, tested on Linux): function calls
 /// are relayed to Zimmer and answered, transcript lines recorded, `response.create` sent once.
+///
+/// Three things keep a driver from having to look: the cues (`LiveCueDirector`: a ding when the
+/// call is up, a soft tick while Zimmer works on an answer, falling notes when it drops); the
+/// microphone watchdog (`MicWatchdog`), which sends silence when the microphone stops delivering
+/// so OpenAI's turn detection always gets to the end of a turn; and the call log
+/// (`LiveTelemetry`), which records every step for whoever reads the trace afterwards.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
 
-    @Published private(set) var state: LiveVoiceState = .idle
+    @Published private(set) var state: LiveVoiceState = .idle {
+        didSet { if state != oldValue { stateChanged(from: oldValue) } }
+    }
     @Published private(set) var conversationID: Int?
     @Published private(set) var muted = false
     @Published private(set) var lastError: String?
@@ -38,6 +47,21 @@ final class LiveCall: ObservableObject {
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
     private var generation = 0
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-call")
+    private let telemetry = LiveTelemetry.shared
+    private var timeline = LiveCallTimeline()
+    private var cues = LiveCueDirector()
+    private var watchdog = MicWatchdog()
+    private var watching: Task<Void, Never>?
+    private var listening: String?
+
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    init() {
+        // Whatever the call log holds goes before iOS suspends the app.
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            LiveTelemetry.shared.flush()
+        }
+    }
 
     /// The phone or the car: which client is driving the call.
     private(set) var surface: ClientSource.Surface = .ios
@@ -75,15 +99,26 @@ final class LiveCall: ObservableObject {
         self.surface = surface
         conversationID = conversation
         conductor = RealtimeConductor()
+        cues = LiveCueDirector()
+        timeline = LiveCallTimeline()
+        timeline.started(at: Self.now)
+        listening = nil
         lastError = nil
         muted = false
+        telemetry.beginCall(conversation: conversation)
+        telemetry.updateClient { $0.surface = surface.rawValue }
+        telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil, listening: nil))
         state = .connecting
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
             let mintedFor = surface
+            let asked = Self.now
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
+            telemetry.adopt(secret.telemetry)
+            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            listening = secret.listening
             conductor = RealtimeConductor(listening: secret.listening)
             var request = URLRequest(url: secret.websocketURL)
             request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
@@ -98,6 +133,8 @@ final class LiveCall: ObservableObject {
             // Hung up, or replaced by a newer call, while the microphone was opening: close only
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
+            telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: listening, gated: conductor.gated))
+            watch(generation: mine)
             state = .listening
             // Handed over while connecting, after the secret was asked for: its instructions
             // name the client that started the call, so bring them up to the one driving it.
@@ -114,13 +151,37 @@ final class LiveCall: ObservableObject {
     }
 
     func hangUp() {
+        end(reason: "hang_up")
+    }
+
+    /// End the call: `reason` is for the log; a `farewell` plays the falling notes first.
+    private func end(reason: String, farewell: Bool = false) {
         generation += 1
+        watching?.cancel()
+        watching = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
-        audio.stop()
+        // The falling notes are the engine's last sound: it stays up just long enough to play them.
+        var goodbye: LiveCue?
+        if farewell {
+            for action in cues.dropped() {
+                if case let .play(cue) = action {
+                    goodbye = cue
+                    telemetry.track(.cue(cue))
+                } else {
+                    perform(action)
+                }
+            }
+        }
+        audio.stop(farewell: goodbye)
         state = .idle
         muted = false
         pendingOpening = nil
+        if telemetry.callID != nil {
+            telemetry.track(.callEnded(reason: reason, duration: timeline.sinceStart(Self.now), summary: timeline.summary))
+            telemetry.endCall()
+            telemetry.flush()
+        }
     }
 
     /// Put `text` to the model as a typed line and ask for its reply (`RealtimeConductor.open`).
@@ -138,6 +199,7 @@ final class LiveCall: ObservableObject {
     /// Muted, the microphone sends silence rather than nothing (`RealtimeConductor.appendAudio`).
     func toggleMute() {
         muted.toggle()
+        telemetry.track(.muted(muted))
     }
 
     /// The Live settings or guidance changed (the settings screen saved): bring an open call up
@@ -166,6 +228,8 @@ final class LiveCall: ObservableObject {
     func carryOn(on surface: ClientSource.Surface) async {
         guard isActive, surface != self.surface else { return }
         self.surface = surface
+        telemetry.updateClient { $0.surface = surface.rawValue }
+        telemetry.track(.handedOver(to: surface.rawValue))
         await refreshSession()
     }
 
@@ -195,7 +259,52 @@ final class LiveCall: ObservableObject {
 
     private func sendAudio(_ pcm: Data, generation: Int) {
         guard generation == self.generation, !pcm.isEmpty else { return }
+        if case let .resumed(stalled, silence)? = watchdog.frame(at: Self.now) {
+            telemetry.track(.micResumed(stalledMs: stalled, silenceSentMs: silence))
+        }
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
+    }
+
+    /// The microphone watchdog: every 100 ms, silence in place of a microphone that stopped
+    /// delivering (`MicWatchdog`), so the turn the person was in the middle of still ends; and a
+    /// stalled engine is asked to restart.
+    private func watch(generation: Int) {
+        watching?.cancel()
+        watchdog = MicWatchdog()
+        watchdog.arm(at: Self.now)
+        watching = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, generation == self.generation, !Task.isCancelled else { return }
+                let (silence, change) = self.watchdog.tick(at: Self.now)
+                if case let .stalled(after)? = change {
+                    self.log.error("microphone stalled for \(after) ms; sending silence")
+                    self.telemetry.track(.micStalled(afterMs: after))
+                    self.audio.recoverIfStopped()
+                }
+                if silence > 0 { self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence))) }
+            }
+        }
+    }
+
+    /// Every state change: logged, and the cues follow it.
+    private func stateChanged(from previous: LiveVoiceState) {
+        telemetry.track(.stateChanged(from: previous, to: state, muted: muted))
+        for action in cues.transition(to: state) { perform(action) }
+    }
+
+    private func perform(_ action: LiveCueDirector.Action) {
+        switch action {
+        case let .play(cue):
+            audio.play(cue)
+            telemetry.track(.cue(cue))
+        case .startThinking:
+            audio.startThinking()
+            telemetry.track(.thinkingCue(true))
+        case .stopThinking:
+            audio.stopThinking()
+            telemetry.track(.thinkingCue(false))
+        }
     }
 
     private func send(_ event: JSONValue) {
@@ -216,10 +325,12 @@ final class LiveCall: ObservableObject {
             Task { @MainActor in
                 guard let self, generation == self.generation else { return }
                 if let failure {
+                    self.telemetry.track(.socketClosed(failure))
                     self.fail("The call dropped: \(failure)", generation: generation)
                     return
                 }
                 if let text, let event = JSONValue.parse(text) {
+                    for entry in self.timeline.observe(event, at: Self.now) { self.telemetry.track(entry) }
                     let effects = self.conductor.handle(event)
                     self.apply(effects, generation: generation)
                 }
@@ -265,9 +376,11 @@ final class LiveCall: ObservableObject {
     /// stray reply beats a call gone quiet.
     private func hear(itemID: String?, text: String, generation: Int) {
         guard let conversation = conversationID else { return }
+        let asked = Self.now
         Task {
             let heard = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: true)
             guard generation == self.generation else { return }
+            telemetry.track(.lineHeard(respond: heard?.respond ?? true, dropped: heard?.dropped == true, ms: Self.now - asked))
             if heard?.dropped != true { activity += 1 }
             apply(conductor.heard(itemID: itemID, respond: heard?.respond ?? true), generation: generation)
         }
@@ -275,6 +388,7 @@ final class LiveCall: ObservableObject {
 
     private func relay(callID: String, name: String, arguments: String, generation: Int) {
         guard let conversation = conversationID else { return }
+        let asked = Self.now
         Task {
             var result: LiveToolResult?
             var failure: String?
@@ -284,6 +398,7 @@ final class LiveCall: ObservableObject {
                 failure = Self.describe(error)
             }
             guard generation == self.generation else { return }
+            telemetry.track(.toolCall(name, ms: Self.now - asked, ok: failure == nil && result?.error != true))
             activity += 1
             let effects = conductor.relayed(callID: callID, result: result, failure: failure)
             apply(effects, generation: generation)
@@ -293,7 +408,8 @@ final class LiveCall: ObservableObject {
     private func fail(_ message: String, generation: Int) {
         guard generation == self.generation else { return }
         log.error("live call ended: \(message, privacy: .public)")
-        hangUp()
+        telemetry.track(.callFailed(message, state: state))
+        end(reason: "failed", farewell: true)
         lastError = message
     }
 

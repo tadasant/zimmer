@@ -13,6 +13,8 @@ struct FakeLiveState: Sendable {
     var guidance = ""
     var settingsHistory: [LiveSettingChange] = []
     var nextSettingChangeID = 1
+    /// Every call-telemetry batch the app sent.
+    var telemetryBatches: [LiveTelemetryBatch] = []
 
     /// A few of the server's fields, enough for the settings screen to show each kind.
     static let settingFields: [LiveSettingField] = [
@@ -122,6 +124,14 @@ extension FakeZimmerAPI {
         return LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }
+
+    public func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer {
+        liveState.telemetryBatches.append(batch)
+        return LiveTelemetryAnswer(accepted: batch.events.count, telemetry: "debug")
+    }
+
+    /// The call-telemetry batches reported so far.
+    public var liveTelemetryBatches: [LiveTelemetryBatch] { liveState.telemetryBatches }
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         _ = appendLiveTurn(id, LiveTurn(id: 0, role: .tool, toolName: name, toolOutput: "ok"))

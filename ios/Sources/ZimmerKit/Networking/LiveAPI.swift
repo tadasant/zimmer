@@ -33,6 +33,9 @@ public protocol LiveAPI: Sendable {
     /// Live settings and guidance — sent after they changed somewhere else, such as the settings
     /// screen.
     func liveSessionUpdate(_ id: Int) async throws -> JSONValue
+    /// Voice: what the app's calls did, for the shipped logs (`LiveTelemetry`). The answer
+    /// carries the level in force, which the app adopts.
+    func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer
 
     /// The Live settings, each field's choices or range, the guidance, and recent history.
     func liveSettings() async throws -> LiveSettings
@@ -114,6 +117,16 @@ extension ZimmerHTTPClient {
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
         let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: Self.listeningModes)
         return response.session
+    }
+
+    public func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer {
+        let body = try JSONEncoder().encode(batch)
+        let response = try await perform(method: "POST", path: "/api/v1/live/telemetry", query: [:], body: body)
+        do {
+            return try ZimmerJSON.decoder.decode(LiveTelemetryAnswer.self, from: response.body)
+        } catch {
+            throw ZimmerError.decoding("/api/v1/live/telemetry: \(error)")
+        }
     }
 
     public func liveSettings() async throws -> LiveSettings {

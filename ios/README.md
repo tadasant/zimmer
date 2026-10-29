@@ -294,4 +294,8 @@ Each unblocks the next:
   OpenAI have not run. A simulator has no microphone worth testing echo cancellation on, and no
   deployment has the OpenAI key yet. The Realtime sequencing they drive (`RealtimeConductor`) and
   the PCM conversion (`RealtimeAudio`) are covered by ZimmerKit's tests, and the screens by
-  `LiveUITests` against the fixture.
+  `LiveUITests` against the fixture. So are the rules for the call's cues (`LiveCue`,
+  `LiveCueGate`, `LiveCueDirector`), its microphone watchdog (`MicWatchdog`) and its call log
+  (`LiveTelemetry`, `LiveCallTimeline`), in `LiveDiagnosticsTests`. The sounds themselves have not
+  been heard on a device. When a call goes wrong on a real phone or in the car, its trace is in
+  VictoriaLogs under `scope.name:="ios.live"` (docs: Operate → Observability → The iOS app's call log).
