@@ -283,12 +283,15 @@ class Api::V1::SessionsController < Api::BaseController
   # A `scheduling_class` is Sessions::UpdateSchedulingClass's write (shared with
   # the web Promote / Demote buttons and the `change_scheduling_class` MCP
   # action), which carries any `precedence` / `place` with it, logs both, and
-  # starts a waiting session it promoted.
+  # starts a waiting session it promoted. Without one, a `precedence` / `place`
+  # is Sessions::UpdatePrecedence's write (shared with the web rank editor and
+  # the `change_precedence` MCP action), which logs the move.
   def update
     place = validated_place(session_update_params)
     attrs = session_update_params.except(:place)
 
     scheduling = nil
+    ranking = nil
     if attrs.key?(:scheduling_class)
       scheduling = { scheduling_class: attrs.delete(:scheduling_class) }
       if place
@@ -300,7 +303,10 @@ class Api::V1::SessionsController < Api::BaseController
     elsif place
       # The session already holds a rank, so it places itself: excluded from its
       # own population, and never lowered by a request to put it first.
-      attrs[:precedence] = @session.precedence_for_place(place)
+      attrs.delete(:precedence)
+      ranking = { precedence: @session.precedence_for_place(place) }
+    elsif attrs.key?(:precedence)
+      ranking = { precedence: attrs.delete(:precedence) }
     end
 
     # A `title` is a rename, which is Sessions::UpdateTitle's write (shared with
@@ -317,6 +323,10 @@ class Api::V1::SessionsController < Api::BaseController
     # over-long or an unknown id, and logs the change. It rides the same save as
     # the other columns: Sessions::UpdateGoal's own, or, with a scheduling
     # class, Sessions::UpdateSchedulingClass's, which it wraps.
+    #
+    # A rank without a scheduling class rides that same save too:
+    # Sessions::UpdatePrecedence assigns it, the one `save!` writes it with the
+    # other columns, and its log row follows in the PATCH's transaction.
     title_given = attrs.key?(:title)
     title = attrs.delete(:title)
     goal_given = attrs.key?(:goal)
@@ -327,13 +337,15 @@ class Api::V1::SessionsController < Api::BaseController
       @session.assign_attributes(attrs)
       save = if scheduling
         -> { scheduled = Sessions::UpdateSchedulingClass.call(session: @session, actor: :rest, start: false, **scheduling) }
+      elsif ranking
+        -> { Sessions::UpdatePrecedence.call(session: @session, actor: :rest, **ranking) { @session.save! } }
       else
         -> { @session.save! }
       end
       begin
         if goal_given
           Sessions::UpdateGoal.call(session: @session, goal: goal, actor: :rest, &save)
-        elsif scheduling || !attrs.empty?
+        elsif scheduling || ranking || !attrs.empty?
           save.call
         end
       rescue Sessions::UpdateSchedulingClass::UnknownSchedulingClass => e

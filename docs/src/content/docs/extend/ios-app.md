@@ -568,10 +568,9 @@ notifications bell and the *Context window* (auto-compact window) editor have no
 window is set on the create form and read on the page, not edited), and the
 session JSON does not say whether push is on; *Derive it* cannot name the genesis's class while a
 class is chosen, because the API reports only the class in force. A precedence changed from the
-app on its own is not in the session's log: the web page writes "Precedence set to … (was …)"
-there, and `PATCH /api/v1/sessions/:id` without a `scheduling_class` writes nothing. A class change
-is logged either way, as "Scheduling class set via the REST API to … (was …)", along with any
-precedence that moved with it. The
+app is logged as "Precedence set via the REST API to … (was …)", where the web page writes
+"Precedence set to … (was …)", and a class change as "Scheduling class set via the REST API to …
+(was …)", along with any precedence that moved with it. The
 Ranked row's inline precedence field is not on the phone's row: the rank is read there and edited
 from the session's page. The session's cost is one more read per page load; the board's rows carry
 no cost, since `session_json` does not.
