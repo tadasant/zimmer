@@ -45,6 +45,11 @@ module AppStoreConnect
 
     class NotFound < Error; end
 
+    TRANSPORT_ERRORS = [
+      Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Net::HTTPBadResponse, OpenSSL::SSL::SSLError,
+      EOFError, SocketError, SystemCallError, IOError
+    ].freeze
+
     Credentials = Data.define(:issuer_id, :key_id, :private_key)
 
     # The three values, or nil when any is missing. A store that cannot be
@@ -77,15 +82,26 @@ module AppStoreConnect
 
     # @param path [String] e.g. "/v1/apps" — or a full `links.next` URL
     # @return [Hash] the parsed JSON document
+    #
+    # Every way the request can fail surfaces as an Error (NotFound for a 404),
+    # so a caller rescues one class rather than a list of network exceptions.
     def get(path, params = {})
       uri = path.start_with?("http") ? URI(path) : URI("#{@base_url}#{path}")
       uri.query = URI.encode_www_form(params) if params.any?
-      status, body = @transport.call(uri, { "Authorization" => "Bearer #{token}", "Accept" => "application/json" })
+      status, body = begin
+        @transport.call(uri, { "Authorization" => "Bearer #{token}", "Accept" => "application/json" })
+      rescue *TRANSPORT_ERRORS => e
+        raise Error, "App Store Connect request for #{uri.path} failed: #{e.class}"
+      end
 
       raise NotFound.new("App Store Connect: #{uri.path} not found", status: status) if status == 404
       raise Error.new("App Store Connect answered #{status} for #{uri.path}#{error_detail(body)}", status: status) unless (200..299).cover?(status)
 
-      JSON.parse(body)
+      begin
+        JSON.parse(body.to_s)
+      rescue JSON::ParserError
+        raise Error.new("App Store Connect answered #{status} for #{uri.path} with a body that is not JSON", status: status)
+      end
     end
 
     # The signed bearer token. Re-minted per request: it is a local signature,

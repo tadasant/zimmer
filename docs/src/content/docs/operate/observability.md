@@ -753,7 +753,8 @@ had already marked as seen.
 **The log stream gets a pointer.** Each crash, once its log has been fetched, is shipped as one
 WARN record under scope `ios.crash`, next to the app's `ios.live` call telemetry, so a crash
 reads in time order with what the app reported around it. WARN rather than ERROR because a
-tester's crash is not a page. The record carries the submission id, build, device, OS and the
+tester's crash is not a page. It is stamped with when the log arrived, so a crash whose log
+lagged still shows in a recent window; `submitted_at` is an attribute. The record carries the submission id, build, device, OS and the
 crash's headline (exception type, termination reason, crashed thread). It never carries the log
 or the tester's comment.
 

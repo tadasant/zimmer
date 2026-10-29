@@ -75,6 +75,14 @@ class AppStoreConnect::ClientTest < ActiveSupport::TestCase
     assert_equal "cursor=abc", seen.query
   end
 
+  test "a network failure or a body that is not JSON is an Error, so the job has one class to rescue" do
+    error = assert_raises(AppStoreConnect::Client::Error) { client(->(*) { raise OpenSSL::SSL::SSLError, "unexpected eof" }).get("/v1/apps") }
+    assert_match(/OpenSSL::SSL::SSLError/, error.message)
+
+    assert_raises(AppStoreConnect::Client::Error) { client(->(*) { raise Net::ReadTimeout }).get("/v1/apps") }
+    assert_raises(AppStoreConnect::Client::Error) { client(->(*) { [ 200, "<html>" ] }).get("/v1/apps") }
+  end
+
   test "a 404 is NotFound and any other failure is an Error naming Apple's error code, not the body" do
     assert_raises(AppStoreConnect::Client::NotFound) do
       client(->(*) { [ 404, "{}" ] }).get("/v1/betaFeedbackCrashSubmissions/x/crashLog")

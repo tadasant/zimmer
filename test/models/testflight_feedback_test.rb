@@ -12,6 +12,14 @@ class TestflightFeedbackTest < ActiveSupport::TestCase
     assert_nil TestflightFeedback.new(kind: "crash", crash_log: "not an Apple crash report").headline
   end
 
+  test "the headline is read from an .ips report too" do
+    ips = { app_name: "Zimmer", bug_type: "309" }.to_json + "\n" +
+      { exception: { type: "EXC_BAD_ACCESS", signal: "SIGSEGV" }, termination: { namespace: "SIGNAL", indicator: "Segmentation fault: 11" }, faultingThread: 3 }.to_json
+
+    assert_equal "Exception Type: EXC_BAD_ACCESS SIGSEGV · Termination Reason: SIGNAL Segmentation fault: 11 · Crashed Thread: 3",
+      TestflightFeedback.new(kind: "crash", crash_log: ips).headline
+  end
+
   test "asc_id is unique, so a submission is stored once" do
     TestflightFeedback.create!(asc_id: "dup", kind: "crash")
 

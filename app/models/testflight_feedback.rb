@@ -29,18 +29,47 @@ class TestflightFeedback < ApplicationRecord
   # A crash whose log App Store Connect has not given us yet, and is recent
   # enough to keep asking for. Past the window a log that never arrived is not
   # going to, and asking forever would spend a request per row per tick.
-  scope :awaiting_crash_log, ->(since:) { crashes.where(crash_log: nil).where(created_at: since..) }
+  scope :awaiting_crash_log, ->(since:) {
+    crashes.where(crash_log: nil).where("COALESCE(submitted_at, created_at) >= ?", since)
+  }
 
-  # The lines of a crash report a person reads first, in the order they appear.
-  # Apple's `.crash` text format; anything else simply yields fewer lines.
+  # The lines of a crash report a person reads first, in the order they appear,
+  # in Apple's `.crash` text format.
   HEADLINE_PREFIXES = [ "Exception Type:", "Exception Codes:", "Termination Reason:", "Crashed Thread:" ].freeze
 
   def crash? = kind == "crash"
 
+  # What crashed, in one line, from either of the two formats Apple writes a
+  # crash report in: `.crash` text, or `.ips` — a JSON header line followed by
+  # a JSON body. Nil when the log is neither.
   def headline
     return nil if crash_log.blank?
 
+    ips_headline || text_headline
+  end
+
+  private
+
+  def text_headline
     crash_log.each_line.map(&:strip).select { |line| HEADLINE_PREFIXES.any? { |prefix| line.start_with?(prefix) } }
       .first(HEADLINE_PREFIXES.size).join(" · ").presence
+  end
+
+  def ips_headline
+    return nil unless crash_log.lstrip.start_with?("{")
+
+    _header, body = crash_log.lstrip.split("\n", 2)
+    report = JSON.parse(body.to_s)
+    return nil unless report.is_a?(Hash)
+
+    exception = report["exception"].is_a?(Hash) ? report["exception"] : {}
+    termination = report["termination"].is_a?(Hash) ? report["termination"] : {}
+    [
+      ("Exception Type: #{[ exception['type'], exception['signal'] ].compact.join(' ')}" if exception.any?),
+      ("Termination Reason: #{[ termination['namespace'], termination['indicator'] ].compact.join(' ')}" if termination.any?),
+      ("Crashed Thread: #{report['faultingThread']}" unless report["faultingThread"].nil?)
+    ].compact.join(" · ").presence
+  rescue JSON::ParserError
+    nil
   end
 end

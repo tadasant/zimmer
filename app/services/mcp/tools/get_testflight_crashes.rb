@@ -30,9 +30,13 @@ module Mcp
           tester's comment, and the crash log text. Crash logs are long: `offset` and `max_chars` page
           through one, and the result says which call returns the rest.
 
-        Crash logs are as App Store Connect returns them (Apple's crash report text, usually
-        symbolicated for TestFlight builds). A crash whose log App Store Connect has not produced yet is
-        listed with `log pending` and retried by the poller for 7 days.
+        Crash logs are as App Store Connect returns them (Apple's crash report, `.crash` text or `.ips`
+        JSON). A crash whose log App Store Connect has not produced yet is listed with `log pending` and
+        retried by the poller for 7 days after it was submitted.
+
+        **Private.** Testers' comments and crash logs are private. tadasant/zimmer is a public repository:
+        do not quote them into a PR, an issue or a comment there. Describe the crash (exception, the
+        frames that matter) in your own words instead.
       DESC
 
       input_schema({
@@ -98,7 +102,6 @@ module Mcp
         lines << "- **Submitted:** #{row.submitted_at&.iso8601 || 'unknown'}"
         lines << "- **Build:** #{row.build_number || 'unknown'}"
         lines << "- **Device:** #{row.device_model || 'unknown'} · #{row.os_version || 'unknown'}"
-        lines << "- **Tester:** #{row.tester_email}" if row.tester_email.present?
         lines << "- **Headline:** #{row.headline}" if row.headline
         lines << "" << "### Comment" << "" << (row.comment.presence || "_none_")
         lines << "" << "### Attributes" << "" << "```json" << JSON.pretty_generate(row.raw_attributes.except("comment", "email")) << "```"
@@ -111,6 +114,7 @@ module Mcp
 
         text = row.crash_log
         offset = [ args["offset"].to_i, 0 ].max
+        raise ToolError, "offset #{offset} is past the end of this crash log (#{text.length} characters)." if offset >= text.length
         max_chars = (args["max_chars"].to_i.nonzero? || DEFAULT_MAX_CHARS).clamp(1_000, MAX_MAX_CHARS)
         slice = text[offset, max_chars].to_s
         shown_end = offset + slice.length
