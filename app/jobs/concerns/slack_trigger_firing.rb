@@ -252,10 +252,16 @@ module SlackTriggerFiring
   # session, or nil when nothing was spawned.
   #
   # +via+ is "poll" or "webhook". A webhook fire always claims its messages in
-  # TriggerEventClaim; a poll fire claims them only while the webhook path is switched on,
-  # so with Slack on `poll` the poller claims nothing and takes no lock. The claim happens in
-  # the same transaction as the spawn, so a message the other path already fired is not fired
-  # again, and a fire that raises releases its claim with its rollback.
+  # TriggerEventClaim before it spawns; a poll fire does so only while the webhook path is switched
+  # on, so with Slack on `poll` the poller takes no lock and lets no claim decide anything. The claim
+  # happens in the same transaction as the spawn, so a message the other path already fired is not
+  # fired again, and a fire that raises releases its claim with its rollback.
+  #
+  # On `poll` the poller still RECORDS a claim for every message a session was spawned for, after
+  # the spawn and in the same transaction, with the session on it. Nothing reads it to decide
+  # anything there; it is the record of which messages this condition fired on, which is what
+  # compare_trigger_fires lines up against another path's fires — an `mcp_event` trigger shadowing
+  # this one, say.
   #
   # +rendered+ is a fire the caller already rendered (SlackEventJob does, before opening its own
   # transaction). Without one it is rendered here, still before the transaction.
@@ -342,9 +348,13 @@ module SlackTriggerFiring
             )
           end
 
+          fired_keys = fired.map { |fired_message| TriggerEventClaim.slack_event_key(channel_id, fired_message.ts) }
           if claiming
-            TriggerEventClaim.attach_session!(
-              condition, fired.map { |fired_message| TriggerEventClaim.slack_event_key(channel_id, fired_message.ts) }, session
+            TriggerEventClaim.attach_session!(condition, fired_keys, session)
+          else
+            TriggerEventClaim.claim!(
+              condition, fired_keys,
+              via: via, group_key: coalescing_group_key(message, channel_id), anchor_ts: message.ts, session_id: session.id
             )
           end
         end

@@ -26,7 +26,10 @@
 # and folds it in one pass (SlackTriggerFiring#coalesced_groups); the webhook sees it one message
 # per request, so it finds the burst's open group here instead — see .open_group.
 class TriggerEventClaim < ApplicationRecord
-  VIA = %w[webhook poll].freeze
+  # `mcp_event` is McpEventTriggerPollerJob's claim on an event an MCP server published. It is the
+  # only path that fires an `mcp_event` condition, so its claim decides nothing against another
+  # path; it is what makes a replayed `events/poll` page fire nothing twice.
+  VIA = %w[webhook poll mcp_event].freeze
 
   # How long a claim must outlive the message it covers. In webhook_with_poll_fallback mode the
   # poller sees a message within a poll or two — a few minutes across Slack deferrals, about
@@ -53,6 +56,21 @@ class TriggerEventClaim < ApplicationRecord
   # within a channel. The same string whichever path saw it, which is the whole point.
   def self.slack_event_key(channel_id, ts)
     "slack:#{channel_id}:#{ts}"
+  end
+
+  # The identity of an event an MCP server published: the server's catalog name and the event's
+  # `eventId`, which the SEP makes unique within one subscription. Namespaced by server so two
+  # servers' ids cannot collide; #natural_key strips the namespace back off when fires of different
+  # paths are compared (Mcp::Tools::CompareTriggerFires).
+  def self.mcp_event_key(server, event_id)
+    "mcp:#{server}:#{event_id}"
+  end
+
+  # An event key with an MCP server's namespace removed: a strad Slack event's
+  # `mcp:slack-zimmer:slack:C0123:1793.456` is the same message as the Slack poller's
+  # `slack:C0123:1793.456`.
+  def self.natural_key(event_key)
+    event_key.to_s.sub(/\Amcp:[^:]+:/, "")
   end
 
   # The identity of a new GitHub issue for a `github_issue` condition: its repository and number,
