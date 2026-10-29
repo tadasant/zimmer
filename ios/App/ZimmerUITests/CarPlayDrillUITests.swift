@@ -60,12 +60,12 @@ final class CarPlayDrillUITests: XCTestCase {
         let end = callButton("End", or: "hang up")
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "the call screen has Mute; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(end.exists, "and End")
-        mute.tap()
+        press(mute)
         XCTAssertTrue(waitFor(anyOf: ["Muted"], seconds: 5), "the call screen says Muted; the car showed:\n\(car.debugDescription)")
         photograph("carplay-call-muted")
-        mute.tap()
+        press(mute)
         XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 5), "Mute again unmutes: back to the call's own state")
-        end.tap()
+        press(end)
         XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 10), "End goes back to Talk to Zimmer")
         assertNoCallScreen("after End")
         // Past the fifteen seconds the ended call would have failed in: nothing is retried.
@@ -86,7 +86,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // A tap after giving up is a fresh set of retries.
         tapTile("Retry", or: "Live Mode unavailable. Tap to retry")
         XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 10), "a tap tries again")
-        callButton("End", or: "hang up").tap()
+        press(callButton("End", or: "hang up"))
         XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 10), "and End stops it")
         assertNoCallScreen("after the last End")
         assertAlive("at the end of the drill")
@@ -113,6 +113,13 @@ final class CarPlayDrillUITests: XCTestCase {
     /// "hang up". Either is accepted, so a title CarPlay starts reading out still matches.
     private func callButton(_ title: String, or symbolLabel: String) -> XCUIElement {
         car.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label CONTAINS[c] %@", title, symbolLabel)).firstMatch
+    }
+
+    /// A call-screen button, pressed at the middle of its frame. XCUITest finds the voice
+    /// control template's action buttons but computes no hit point for them ({-1, -1}), so a
+    /// plain `tap()` lands nowhere; a coordinate from the frame does land.
+    private func press(_ button: XCUIElement) {
+        button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
     /// Any element with these words: a tile's text, the call screen's title, the bar's line.
