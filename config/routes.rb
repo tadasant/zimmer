@@ -93,6 +93,9 @@ Rails.application.routes.draw do
     # nothing performed, and deleting one would make the task run again. Re-arm a
     # failed task from the health page.
     resources :post_deploy_task_runs, only: [ :index, :show ]
+    # Read-only: a row is what App Store Connect reported about a TestFlight
+    # submission. TestflightFeedbackPollJob is the only writer.
+    resources :testflight_feedbacks, only: [ :index, :show ]
     # No create: a batch exists because someone clicked Analyze All. Edit is
     # limited to `status`/`state` (the dashboards' FORM_ATTRIBUTES) — the escape
     # hatch for a batch or item wedged in `running` that the pump cannot resolve.

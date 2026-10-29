@@ -8576,6 +8576,24 @@ Gating has costs:
 - A dropped line sits in the call until Zimmer has decided. A reply that starts in that moment can
   hear it.
 
+## TestFlight crash collection has not yet run against Apple
+
+`TestflightFeedbackPollJob` was proven against a local stand-in for App Store Connect that checks
+the token's signature and answers in the shapes of Apple's OpenAPI spec (4.5.1), not against Apple
+itself. The API key is not in Zimmer yet, so three things are still assumptions until the first
+real tick:
+
+- How App Store Connect answers for a crash log it has not produced yet. A 404, or a 200 with no
+  `logText`, both read as "pending" and are retried. Any other answer is logged at WARN for that
+  crash, and the other crashes are still fetched.
+- Whether `logText` is `.crash` text or `.ips` JSON. Both are stored whole, and the headline is
+  read from either; a third format would be stored with no headline.
+- Whether the key's role may read TestFlight feedback. If it may not, every tick logs a WARN naming
+  Apple's error code.
+
+The first tick after the key is seeded settles all three: its outcome is in the log stream under
+`[testflight]`, and `get_testflight_crashes` lists what it stored.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
