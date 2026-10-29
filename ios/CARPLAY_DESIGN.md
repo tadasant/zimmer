@@ -124,9 +124,12 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 - the car opens on one button and nothing else;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
-  tries again;
-- a call held connecting (`-ZimmerFixtureSlowLive`: fifteen seconds, then it fails) is muted (the
-  title says Muted), unmuted, and ended, back on the button, with no retry.
+  tries again.
+
+It does not press Mute or End. XCUITest finds the voice control template's two action buttons
+(labelled by their symbols, "microphone off" and "hang up") but computes no hit point for them,
+and neither an element tap nor a coordinate tap reaches them. The five states they switch between
+are `LiveCallScreenTests`'; pressing them is confirmed only by driving.
 
 It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
 the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`

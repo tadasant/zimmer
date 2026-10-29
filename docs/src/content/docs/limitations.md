@@ -8186,9 +8186,10 @@ five; template changes made without a completion handler, which CarPlay turns in
 when it refuses them; and the call's audio engine restarted on a notification thread while a
 hang-up stopped it on the main one. Each now has a Linux test or a source guard, and every iOS
 pull request also runs the CarPlay drill: Zimmer in the iOS Simulator's CarPlay window, driven
-through the whole car app (one button; a call that cannot connect, its retries and giving up; a
-call muted and ended), failing on any crash. The car app itself was cut to that flow (open, talk,
-mute, end) so there is little left to drive.
+through the car app (one button; a call that cannot connect, its retries and giving up, and a
+tap that tries again), failing on any crash. The car app itself was cut to one flow (open, talk,
+mute, end) so there is little left to drive. The drill cannot press Mute or End: XCUITest finds
+the voice control template's action buttons but no tap, by element or by coordinate, reaches them.
 
 The Simulator is not a car. Its CarPlay window has no audio route of a car's own, so the call's
 microphone and speaker moving to the car, and the audio engine's restart when they do, are

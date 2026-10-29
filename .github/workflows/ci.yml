@@ -728,9 +728,9 @@ jobs:
           if-no-files-found: warn
 
   # The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-  # the whole car app (#1410): one Talk button; a Live call that cannot connect, its retries
-  # putting the call screen up and down, giving up with no call screen left behind; a call
-  # muted and ended — failing on any crash. XCUITest cannot reach a real head unit, but it can
+  # the car app (#1410): one Talk button; a Live call that cannot connect, its retries
+  # putting the call screen up and down, giving up with no call screen left behind, a tap
+  # that tries again — failing on any crash. XCUITest cannot reach a real head unit, but it can
   # reach the Simulator's CarPlay window, which `ios/bin/ui-test --carplay` opens from the
   # Simulator's own menu. A job of its own rather than a step in `ios`, because the drill's
   # build is signed ad hoc with the CarPlay entitlement (the CarPlay window lists no app
