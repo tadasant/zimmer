@@ -28,6 +28,10 @@ final class CarPlayDrillUITests: XCTestCase {
         guard environment["ZIMMER_UI_TEST_CARPLAY"] == "1" else {
             throw XCTSkip("needs the Simulator's CarPlay window: run it with ios/bin/ui-test --carplay")
         }
+    }
+
+    /// Zimmer launched on the fixture and opened in the car: the first line of every test.
+    private func start() {
         XCTAssertGreaterThanOrEqual(XCUIScreen.screens.count, 2, "the CarPlay window is a second screen, and there is none")
         zimmer = XCUIApplication()
         zimmer.launchArguments = ["-ZimmerFixture"]
@@ -38,6 +42,7 @@ final class CarPlayDrillUITests: XCTestCase {
     // MARK: - The drill
 
     func test_the_car_opens_on_talk_and_the_two_counts() {
+        start()
         XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "the first tile is Talk to Zimmer")
         XCTAssertTrue(text("Needs you · 4").exists, "the fixture has four sessions that need you")
         XCTAssertTrue(text("Running · 2").exists, "and two at work")
@@ -49,6 +54,7 @@ final class CarPlayDrillUITests: XCTestCase {
     }
 
     func test_a_call_that_cannot_connect_retries_quietly_gives_up_on_the_tile_and_never_crashes() {
+        start()
         tapTile("Talk to Zimmer")
         // The fixture's call fails at once and the car retries after 2, 5 and 15 seconds.
         // Each retry puts the call screen up and takes it down: the churn that crashed it.
@@ -65,6 +71,7 @@ final class CarPlayDrillUITests: XCTestCase {
     }
 
     func test_hanging_up_while_it_connects_leaves_the_car_on_the_board() {
+        start()
         tapTile("Talk to Zimmer")
         let hangUp = car.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'hang' OR label CONTAINS[c] 'phone.down' OR label CONTAINS[c] 'end'")).firstMatch
         guard hangUp.waitForExistence(timeout: 30) else {
@@ -77,6 +84,7 @@ final class CarPlayDrillUITests: XCTestCase {
     }
 
     func test_a_needs_you_row_opens_the_one_call() {
+        start()
         car.buttons["Needs you"].tap()
         let row = car.cells.firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "the Needs you list has the fixture's sessions")
