@@ -1270,7 +1270,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   test "an mcp_event trigger's form and detail do not overflow horizontally on a phone" do
     events = FakeEventsMcpServer.start
     fake = ServersConfig::Server.new("slack-zimmer", { "title" => "Slack (fake)", "type" => "streamable-http", "url" => events.url, "headers" => {} })
-    ServersConfig.stubs(:all).returns(ServersConfig.all.reject { |server| server.name == "slack-zimmer" } + [ fake ])
+    # Array(): a degraded catalog resolves to nil, and this test needs only the one server.
+    ServersConfig.stubs(:all).returns(Array(ServersConfig.all).reject { |server| server.name == "slack-zimmer" } + [ fake ])
 
     trigger = Trigger.new(
       name: "slack-mention-listener-mcp-events-parity-shadow",

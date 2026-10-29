@@ -6,7 +6,7 @@
 module McpEventCatalogHelper
   def stub_events_catalog_server(url, name: FakeEventsMcpServer::SLUG)
     fake = ServersConfig::Server.new(name, { "title" => "Slack (fake)", "type" => "streamable-http", "url" => url, "headers" => {} })
-    real = ServersConfig.all.reject { |server| server.name == name }
+    real = Array(ServersConfig.all).reject { |server| server.name == name }
     ServersConfig.stubs(:all).returns(real + [ fake ])
     fake
   end
