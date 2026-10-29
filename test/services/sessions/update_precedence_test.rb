@@ -71,4 +71,27 @@ class Sessions::UpdatePrecedenceTest < ActiveSupport::TestCase
     assert_equal SessionGenesis::SPOT, @session.scheduling_class
     assert @session.needs_input?
   end
+
+  test "labels the REST log row" do
+    Sessions::UpdatePrecedence.call(session: @session, precedence: 70, actor: :rest)
+
+    assert_equal "Precedence set via the REST API to 70 (was 10)", @session.logs.order(:created_at).last.content
+  end
+
+  test "a caller that owns the save passes a block, and its assigned columns ride along" do
+    @session.slug = "ridden-along"
+    saves = 0
+
+    result = Sessions::UpdatePrecedence.call(session: @session, precedence: 300, actor: :rest) do
+      saves += 1
+      @session.save!
+    end
+
+    assert_equal 1, saves
+    assert result.changed?
+    @session.reload
+    assert_equal 300, @session.precedence
+    assert_equal "ridden-along", @session.slug
+    assert_equal "Precedence set via the REST API to 300 (was 10)", @session.logs.order(:created_at).last.content
+  end
 end
