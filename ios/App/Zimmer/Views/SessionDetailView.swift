@@ -1009,17 +1009,23 @@ struct SessionDetailView: View {
                         .background(Theme.danger.opacity(0.12), in: Capsule())
                 }
                 // The metadata block's root key, beside the status so it reads at a glance.
-                if let root = session.agentRoot {
-                    Text(verbatim: root)
-                        .font(Theme.mono.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .foregroundStyle(Theme.inkSoft)
-                        .background(Theme.well, in: Capsule())
-                        .accessibilityLabel("Agent root \(root)")
-                        .accessibilityIdentifier("detail.agentRoot")
+                if let root = session.agentRoot, !root.isEmpty {
+                    // A glyph ahead of the name, so the root does not read as part of the mono id.
+                    HStack(spacing: 4) {
+                        Image(systemName: "square.stack.3d.up")
+                            .font(.caption2.weight(.semibold))
+                        Text(verbatim: root)
+                            .font(Theme.mono.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .foregroundStyle(Theme.inkSoft)
+                    .background(Theme.well, in: Capsule())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Agent root \(root)")
+                    .accessibilityIdentifier("detail.agentRoot")
                 }
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)
