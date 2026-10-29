@@ -54,9 +54,9 @@ final class AppEnvironment {
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
                                                                                          web: origins.web,
-                                                                                         // `-ZimmerFixtureSlowLive`: a Live call stays connecting
-                                                                                         // for a minute, for the CarPlay drill's Mute and End.
-                                                                                         liveSecretDelay: arguments.contains("-ZimmerFixtureSlowLive") ? .seconds(60) : nil), edge: nil)
+                                                                                         // `-ZimmerFixtureSlowLive`: a Live call stays connecting for 15 s,
+                                                                                         // then fails: time for the CarPlay drill to mute and end it.
+                                                                                         liveSecretDelay: arguments.contains("-ZimmerFixtureSlowLive") ? .seconds(15) : nil), edge: nil)
             isFixture = true
             return
         }

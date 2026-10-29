@@ -8195,7 +8195,9 @@ microphone and speaker moving to the car, and the audio engine's restart when th
 confirmed only by driving, or by Apple's CarPlay Simulator app with a physical iPhone over USB,
 which no CI runner has. The drill's call never connects (CI has no microphone and no OpenAI key),
 so a conversation's own states (listening, speaking, working) and the line's activity are not
-driven either. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
+driven either. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
+(the window stays blank), so the drill runs in one process; whether a car does the same after
+Zimmer crashes or is killed is untested. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
 GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails the drill rather
 than skipping it. The app ships no crash reporter, so a crash in the car reaches nobody unless
 TestFlight's crash feedback is read in App Store Connect.

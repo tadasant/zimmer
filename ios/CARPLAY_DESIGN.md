@@ -124,10 +124,14 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
   tries again;
-- a call held connecting (`-ZimmerFixtureSlowLive`) is muted (the line says Muted), unmuted, and
-  ended, back on the button, with no retry.
+- a call held connecting (`-ZimmerFixtureSlowLive`: fifteen seconds, then it fails) is muted (the
+  line says Muted), unmuted, and ended, back on the button, with no retry.
 
-Zimmer must be running after every step, and any crash report fails the job.
+It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
+the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`
+never fires, even after going home and tapping the icon again. Whether a head unit does the same
+when iOS relaunches Zimmer (after a crash, say) is unknown; see *What is proven*. Zimmer must be
+running after every step, and any crash report fails the job.
 
 ## Driver-distraction checklist
 
@@ -154,7 +158,9 @@ Zimmer must be running after every step, and any crash report fails the job.
   pull request.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
-  and the line's activity are confirmed only by driving.
+  and the line's activity are confirmed only by driving. Nor is a relaunch: in the Simulator a
+  relaunched Zimmer never gets its CarPlay scene back (the window stays blank), and whether a car
+  behaves the same after Zimmer crashes or is killed is untested.
 
 ## Follow-ups
 
