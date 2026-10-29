@@ -66,6 +66,11 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertEqual(app.descendants(matching: .any)["detail.agentRoot"].label, "Agent root zimmer")
         XCTAssertFalse(app.descendants(matching: .any)["detail.metadata"].label.contains("zimmer"))
         attachScreenshot(app, named: "detail")
+        // The page opens on the conversation; Top brings the header, and the chip, on screen.
+        app.buttons["detail.sections.overview"].tap()
+        let root = app.descendants(matching: .any)["detail.agentRoot"]
+        XCTAssertTrue(waitForHittable(root), "the root chip is on screen at the top of the page")
+        attachScreenshot(app, named: "detail-header")
 
         // Notes, in a sheet.
         openMenu(app, "Edit Notes")
@@ -143,6 +148,11 @@ final class SessionParityUITests: XCTestCase {
     private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
         let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
         return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForHittable(_ element: XCUIElement) -> Bool {
+        let hittable = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [hittable], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
