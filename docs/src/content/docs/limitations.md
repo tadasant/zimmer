@@ -875,11 +875,11 @@ gone quiet is still a human job.
 
 ### A hosted macOS runner shortage reddens `main`
 
-The `ios` and `ios_carplay` jobs run on GitHub-hosted `macos-latest`, and GitHub is sometimes short of macOS
-arm64 capacity. A job that waits about half an hour without a runner is given up as `abandoned`, the
-run concludes `failure`, and `#alerts` pages, even though no code is wrong. `all-checks-pass` fails
-it too, deliberately: the iOS build did not run. The fix is a re-run of the failed jobs
-(`gh run rerun <id> --failed`), and nothing re-runs it automatically.
+The `ios` and `ios_carplay` jobs run on GitHub-hosted `macos-latest`, and GitHub is sometimes short
+of macOS arm64 capacity. A job that waits about half an hour without a runner is given up as
+`abandoned`, the run concludes `failure`, and `#alerts` pages, even though no code is wrong.
+`all-checks-pass` fails it too, deliberately: the iOS build did not run. The fix is a re-run of the
+failed jobs (`gh run rerun <id> --failed`), and nothing re-runs it automatically.
 
 ### The trigger-poll liveness alarm depends on Redis, and fails quiet
 
