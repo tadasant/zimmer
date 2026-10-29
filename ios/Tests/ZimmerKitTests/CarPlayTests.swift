@@ -348,10 +348,10 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
-    /// The call screen is built from `LiveCallScreen.states` and nothing else: CarPlay keeps five.
+    /// The call screen is built from `LiveCallScreen.identifiers` and nothing else: CarPlay keeps five.
     func testTheCallScreenIsBuiltFromTheFiveStates() {
         let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
-        XCTAssertTrue(live.contains("LiveCallScreen.states"), "CarPlayLive builds its states from LiveCallScreen.states")
+        XCTAssertTrue(live.contains("LiveCallScreen.identifiers"), "CarPlayLive builds its states from LiveCallScreen.identifiers")
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
     }
 

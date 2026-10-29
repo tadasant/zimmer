@@ -61,10 +61,10 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "the call screen has Mute; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(end.exists, "and End")
         mute.tap()
-        XCTAssertTrue(waitFor(anyOf: ["Muted"], seconds: 5), "the line says Muted; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(waitFor(anyOf: ["Muted"], seconds: 5), "the call screen says Muted; the car showed:\n\(car.debugDescription)")
         photograph("carplay-call-muted")
         mute.tap()
-        XCTAssertTrue(waitForGone("Muted", seconds: 5), "Mute again unmutes")
+        XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 5), "Mute again unmutes: back to the call's own state")
         end.tap()
         XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 10), "End goes back to Talk to Zimmer")
         assertNoCallScreen("after End")
@@ -113,14 +113,6 @@ final class CarPlayDrillUITests: XCTestCase {
     /// "hang up". Either is accepted, so a title CarPlay starts reading out still matches.
     private func callButton(_ title: String, or symbolLabel: String) -> XCUIElement {
         car.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label CONTAINS[c] %@", title, symbolLabel)).firstMatch
-    }
-
-    private func waitForGone(_ label: String, seconds: Int) -> Bool {
-        for _ in 0..<seconds {
-            if !text(label).exists { return true }
-            Thread.sleep(forTimeInterval: 1)
-        }
-        return !text(label).exists
     }
 
     /// Any element with these words: a tile's text, the call screen's title, the bar's line.

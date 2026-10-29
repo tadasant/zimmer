@@ -23,16 +23,15 @@ import os
 /// While the call runs the screen is a voice control template, as Apple requires of a
 /// voice-based conversational app while it records, and it is kept minimal:
 ///
-/// - the call's state as its picture and title — connecting, listening, thinking, speaking,
-///   working — one state each, the five CarPlay keeps (`LiveCallScreen`);
-/// - one line in the bar, the one text on this template that changes in place: an error, or
-///   Muted and what the call is doing ("Starting work…");
+/// - the call's state as its picture and title — Connecting…, Listening, Speaking, Working on
+///   it…, or Muted while the microphone is off: the five states CarPlay keeps
+///   (`LiveCallScreen`);
 /// - Mute and End, the two action buttons iOS 26.4 allows.
 ///
 /// The template is built once per call, put up when the call starts and taken down when it
-/// ends. It is never rebuilt: every template change is one more CarPlay can refuse, and each
-/// goes through `CarPlayNavigator`, one at a time, because a refused change with no completion
-/// is a crash.
+/// ends. It is never rebuilt, and Mute is a state like the others: every template change is one
+/// more CarPlay can refuse, and each goes through `CarPlayNavigator`, one at a time, because a
+/// refused change with no completion is a crash.
 @MainActor
 final class CarPlayLive {
     /// The call's state, or the retry's, changed: the Talk button should say so.
@@ -59,8 +58,8 @@ final class CarPlayLive {
         call.$state.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] state in
             MainActor.assumeIsolated { self?.stateChanged(state) }
         }.store(in: &watchers)
-        call.$muted.combineLatest(call.$working, call.$lastError).dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.drawLine() }
+        call.$muted.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.activate() }
         }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
         call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
@@ -128,8 +127,7 @@ final class CarPlayLive {
     // MARK: - Failing quietly
 
     private func errorChanged(_ error: String?) {
-        // An error while the call is up is shown on the line (`drawLine`); one that ended the
-        // call is a failure. A call the phone started is the phone's to retry.
+        // An error while the call is up leaves it up; one that ended the call is a failure. A call the phone started is the phone's to retry.
         guard let error, !call.isActive, call.surface == .carplay else { return }
         // The microphone switched off for Zimmer stays off however often the car retries.
         failed(error, retryable: error != LiveAudioEngine.Failure.microphoneDenied.description)
@@ -180,7 +178,6 @@ final class CarPlayLive {
             guard self.template === fresh else { return }
             if shown {
                 self.activate()
-                self.drawLine()
             } else {
                 // A presentation CarPlay refused leaves no screen: forget the template, so the
                 // next state change presents again rather than activating a state nobody sees.
@@ -195,14 +192,14 @@ final class CarPlayLive {
         Task { await navigator.dismiss(template) }
     }
 
-    /// Every call state, each with its picture, its title and the two buttons, so a state change
-    /// is one `activate`. Five states: CarPlay ignores any after the fifth.
+    /// Every state, each with its picture, its title and the two buttons, so a state change —
+    /// Mute included — is one `activate`. Five states: CarPlay ignores any after the fifth.
     private func build() -> CPVoiceControlTemplate {
-        let states = LiveCallScreen.states.map { state -> CPVoiceControlState in
+        let states = LiveCallScreen.identifiers.map { identifier -> CPVoiceControlState in
             let voiceState = CPVoiceControlState(
-                identifier: LiveCallScreen.identifier(for: state),
-                titleVariants: [LiveCallScreen.title(for: state)],
-                image: CarPlayImages.voice(state),
+                identifier: identifier,
+                titleVariants: [LiveCallScreen.title(for: identifier)],
+                image: CarPlayImages.voice(identifier),
                 repeats: false
             )
             if #available(iOS 26.4, *) {
@@ -218,17 +215,6 @@ final class CarPlayLive {
 
     private func activate() {
         guard call.isActive else { return }
-        template?.activateVoiceControlState(withIdentifier: LiveCallScreen.identifier(for: call.state))
-    }
-
-    /// The one line in the bar: an error, or Muted and what the call is doing.
-    private func drawLine() {
-        guard #available(iOS 26.4, *), let template else { return }
-        let line = LiveCallScreen.line(error: call.lastError, working: call.working, muted: call.muted)
-        template.trailingNavigationBarButtons = line.map { text in
-            let label = CPBarButton(title: text) { _ in }
-            label.isEnabled = false
-            return [label]
-        } ?? []
+        template?.activateVoiceControlState(withIdentifier: LiveCallScreen.identifier(for: call.state, muted: call.muted))
     }
 }

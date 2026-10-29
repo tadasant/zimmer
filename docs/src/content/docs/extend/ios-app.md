@@ -698,9 +698,8 @@ and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/ta
 shows one button, **Talk to Zimmer**, and says nothing. One tap starts [Live Mode](/sessions/live/)
 with voice on, in the open conversation or a new one, on the same call as the phone's, so a call
 started at the desk carries on in the car. While the call runs the screen is the voice control
-template. Its picture and title follow the call (Connecting…, Listening, Thinking…, Speaking,
-Working on it…). One line in the bar says *Muted*, what the call is doing ("Starting work…",
-"Checking on a session…") or what went wrong. Its two buttons are **Mute** and **End**. A call
+template. Its picture and title follow the call (Connecting…, Listening, Speaking, Working on
+it…), or say **Muted** while the microphone is off. Its two buttons are **Mute** and **End**. A call
 already running when the car connects is shown at once. There are no tabs, lists, counts, session
 cards or per-session buttons.
 
