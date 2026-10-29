@@ -224,7 +224,7 @@ production.
 | `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `respond_to_elicitation`, `get_outcome_analysis`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
-| `health` | `get_system_health`, `action_health`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
+| `health` | `get_system_health`, `action_health`, `get_testflight_crashes`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items`, `hold_work_backlog_item_for_decision` |
 | `outcome_analyses` (opt-in) | `action_outcome_analysis` (its read, `get_outcome_analysis`, is in `sessions`) |
@@ -997,6 +997,20 @@ that turn and the wake stays armed to fire afterwards. Only a takeover ends it: 
 from scratch, or archiving the session. `follow_up`'s own result says so, with an **Its own wake-up**
 line naming the time, so a router redirecting a sleeper can see it does not have to wake it →
 [A follow-up does not cancel a wake](/sessions/lifecycle/#a-follow-up-does-not-cancel-a-wake).
+
+### `get_testflight_crashes`
+
+Reads the TestFlight feedback the iOS app's testers sent, pulled from App Store Connect by
+`TestflightFeedbackPollJob`: crash reports with their full crash logs, and screenshot feedback.
+With no arguments it lists the newest crashes, one line each (submission id, time, build, device,
+OS, the crash's headline, the start of the comment). `kind` takes `crash`, `screenshot` or
+`all`. With `id` it returns that submission in full: every attribute App Store Connect sent, the
+comment, and the crash log, `max_chars` (default 40,000) at a time from `offset`, with a note
+naming the call that returns the rest. The list's first line says whether the App Store Connect
+key is configured, so an empty list can be told apart from a poller that is not running.
+
+It is a read in `health`, so `health_readonly` carries it too, which puts it on `zimmer-fleet`.
+See [TestFlight crash reports](/operate/observability/#testflight-crash-reports).
 
 ### `get_costs`
 

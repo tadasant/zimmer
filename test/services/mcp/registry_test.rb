@@ -89,14 +89,14 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "groups compose" do
     names = Mcp::Registry.tools_for([ "health", "notifications_readonly" ]).map(&:tool_name)
 
-    assert_equal %w[get_notifications get_system_health action_health get_spot_policy action_spot_policy get_costs].sort, names.sort
+    assert_equal %w[get_notifications get_system_health action_health get_testflight_crashes get_spot_policy action_spot_policy get_costs].sort, names.sort
   end
 
   test "every registered tool class exists and declares a unique name" do
     names = Mcp::Registry::ALL_TOOLS.map { |d| d.klass.constantize.tool_name }
 
     assert_equal names.uniq.size, names.size, "duplicate tool names: #{names.tally.select { |_, c| c > 1 }.keys}"
-    assert_equal 49, names.size
+    assert_equal 50, names.size
   end
 
   # A spawn, so it rides with start_session; a session managing itself has no

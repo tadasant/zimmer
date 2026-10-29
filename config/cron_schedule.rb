@@ -488,6 +488,14 @@ module CronSchedule
       description: "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)",
       environments: %i[production staging development]
     },
+    # A no-op wherever no App Store Connect key resolves, which is every environment
+    # but production today. Staging keeps the entry so a key set there is collected.
+    testflight_feedback_poll: {
+      cron: "*/15 * * * *", # Every 15 minutes — four App Store Connect reads when nothing is new
+      class: "TestflightFeedbackPollJob",
+      description: "Pull new TestFlight crash (with crash logs) and screenshot feedback for the iOS app from App Store Connect",
+      environments: %i[production staging]
+    },
     cert_expiry_monitor: {
       cron: "0 7 * * *", # Daily at 07:00 UTC (offset from claude_code_update at 06:00)
       class: "CertExpiryMonitorJob",

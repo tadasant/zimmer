@@ -738,6 +738,44 @@ The SIGTERM and API-error panels remain alongside it: they carry rate-limit pres
 account-quota detail the generic section has no equivalent of. They read their numbers
 from the same per-budget query rather than from a second copy of it.
 
+## TestFlight crash reports
+
+The iOS app has no crash reporter of its own. What TestFlight testers send — a crash, or a
+screenshot with a comment — lands in App Store Connect, and `TestflightFeedbackPollJob` pulls it
+into Zimmer every 15 minutes (see [Background jobs](/operate/background-jobs/)).
+
+**The full crash log lives in Zimmer's database**, in `testflight_feedbacks`, one row per App
+Store Connect submission, deduped on its id. That table, not the log stream, is the record:
+a crash log runs to tens of kilobytes, which the exporter's `MAX_BODY_CHARS` (8,000) would cut,
+and the exporter drops a batch when the obs stack is down, which would lose a crash the dedupe
+had already marked as seen.
+
+**The log stream gets a pointer.** Each crash, once its log has been fetched, is shipped as one
+WARN record under scope `ios.crash`, next to the app's `ios.live` call telemetry, so a crash
+reads in time order with what the app reported around it. WARN rather than ERROR because a
+tester's crash is not a page. The record carries the submission id, build, device, OS and the
+crash's headline (exception type, termination reason, crashed thread). It never carries the log
+or the tester's comment.
+
+Reading them:
+
+| From | How |
+| --- | --- |
+| An agent session | `get_testflight_crashes` on the `zimmer` or `zimmer-fleet` server (the `health` group). With no arguments it lists the newest crashes; with `id` it returns one in full, crash log included, paged by `offset`/`max_chars`. See [the MCP server](/extend/mcp-server/#get_testflight_crashes). |
+| Grafana / VictoriaLogs | `{service.name="zimmer"} scope:="ios.crash"` |
+| A human | `/supervisor/testflight_feedbacks` |
+
+The poller needs an App Store Connect API key, as three values resolved through the
+[secret chain](/operate/secrets-parameter-store/#secrets-zimmer-itself-depends-on):
+`TESTFLIGHT_ASC_ISSUER_ID`, `TESTFLIGHT_ASC_KEY_ID` and `TESTFLIGHT_ASC_KEY_P8` (the `.p8`
+file's text; escaped `\n` newlines and base64 are accepted too). Without them the job is a
+no-op that logs one WARN per process, and `get_testflight_crashes` says the poller is not
+configured. The key has to be allowed to read the app's TestFlight feedback. When it is not,
+each tick's WARN names App Store Connect's error code (`FORBIDDEN_ERROR`, `NOT_AUTHORIZED`)
+rather than failing quietly. These are deliberately not the
+`APP_STORE_CONNECT_API_*` names that workflow uses: `ios/bin/testflight` reads those names, and
+a store-resolved value can reach a session's environment.
+
 ## Failure mode
 
 If the collector is down or wedged, the exporter's background thread logs once and **drops the
