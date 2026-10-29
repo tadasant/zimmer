@@ -23,7 +23,7 @@ final class CarplayFitUITests: XCTestCase {
         for _ in 0..<6 where !(picker.exists && picker.isHittable) { app.swipeUp() }
         XCTAssertTrue(picker.waitForExistence(timeout: timeout), "the Filters sheet offers CarPlay fit")
         picker.tap()
-        let notLaptop = app.buttons["Not laptop-only"].firstMatch
+        let notLaptop = menuItem(app, titled: "Not laptop-only")
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-filter-choices")
         notLaptop.tap()
@@ -45,15 +45,15 @@ final class CarplayFitUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["detail.title"].waitForExistence(timeout: timeout))
 
         app.buttons["detail.actions"].tap()
-        let item = app.buttons["CarPlay fit"].firstMatch
+        let item = menuItem(app, titled: "CarPlay fit")
         XCTAssertTrue(item.waitForExistence(timeout: timeout), "the menu offers CarPlay fit")
         item.tap()
-        XCTAssertTrue(app.buttons["Now: untagged"].firstMatch.waitForExistence(timeout: timeout), "it says no mark stands")
-        let laptop = app.buttons["Laptop only"].firstMatch
+        XCTAssertTrue(menuItem(app, titled: "Now: untagged").waitForExistence(timeout: timeout), "it says no mark stands")
+        let laptop = menuItem(app, titled: "Laptop only")
         XCTAssertTrue(laptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-menu")
         laptop.tap()
-        let manual = app.buttons["Manual steps"].firstMatch
+        let manual = menuItem(app, titled: "Manual steps")
         XCTAssertTrue(manual.waitForExistence(timeout: timeout), "the laptop side offers its reasons")
         attachScreenshot(app, named: "carplay-fit-reasons")
         manual.tap()
@@ -61,7 +61,7 @@ final class CarplayFitUITests: XCTestCase {
 
         // The menu now says what stands, with who set it.
         app.buttons["detail.actions"].tap()
-        let marked = app.buttons["CarPlay fit: Laptop only"].firstMatch
+        let marked = menuItem(app, titled: "CarPlay fit: Laptop only")
         XCTAssertTrue(marked.waitForExistence(timeout: timeout), "the menu names the mark in force")
         marked.tap()
         let standing = menuItem(app, beginningWith: "Now: Laptop only (manual steps) · human")
@@ -69,7 +69,7 @@ final class CarplayFitUITests: XCTestCase {
         attachScreenshot(app, named: "carplay-fit-marked")
 
         // And clears it.
-        let clear = app.buttons["Clear"].firstMatch
+        let clear = menuItem(app, titled: "Clear")
         XCTAssertTrue(clear.waitForExistence(timeout: timeout))
         clear.tap()
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "CarPlay fit cleared"))
@@ -88,9 +88,18 @@ final class CarplayFitUITests: XCTestCase {
         app.descendants(matching: .any)["session.row.\(id)"]
     }
 
+    /// A menu item by its title, whatever element type it reads as. A row of a menu-style
+    /// Picker, or a submenu, carries a legacy Button type and a modern PopUpButton one, and
+    /// XCUITest resolves the mismatch either way from one run to the next: a board-shard run
+    /// on main found "Not laptop-only" as a Button, screenshotted the open menu, and then
+    /// retried the tap for forty seconds against a PopUpButton that `app.buttons` never matched.
+    private func menuItem(_ app: XCUIApplication, titled title: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", title)).firstMatch
+    }
+
     /// A menu item whose title is followed by a second line, or a mark, matched on its start.
     private func menuItem(_ app: XCUIApplication, beginningWith title: String) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
+        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
     }
 
     private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
