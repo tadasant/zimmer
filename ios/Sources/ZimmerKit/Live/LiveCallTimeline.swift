@@ -159,8 +159,12 @@ public extension LiveEvent {
         LiveEvent(.info, muted ? "call.muted" : "call.unmuted")
     }
 
-    static func lineHeard(respond: Bool, dropped: Bool, ms: TimeInterval) -> LiveEvent {
-        LiveEvent(.debug, "listening.heard") { ["respond": .bool(respond), "dropped": .bool(dropped), "duration_ms": .ms(ms)] }
+    /// Zimmer's verdict on a line a gated call heard (`listening` is the mode that judged it). A
+    /// dropped line is a warning: the person said something and got no answer.
+    static func lineHeard(respond: Bool, dropped: Bool, ms: TimeInterval, listening: String?) -> LiveEvent {
+        LiveEvent(respond ? .debug : .warn, "listening.heard") {
+            ["respond": .bool(respond), "dropped": .bool(dropped), "duration_ms": .ms(ms), "listening": .text(listening)]
+        }
     }
 
     static func toolCall(_ name: String, ms: TimeInterval, ok: Bool) -> LiveEvent {
