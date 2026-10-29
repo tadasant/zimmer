@@ -43,9 +43,10 @@ jobs:
     # self-hosted runners are what broke.
     runs-on: ubuntu-latest
 
-    # A stalled connection to Slack must not sit on a GitHub-hosted (billable) runner
-    # until the 6-hour default job limit.
-    timeout-minutes: 5
+    # Long enough for the runner-loss re-run below to finish (it waits at most 110 minutes),
+    # short of the 6-hour default. The Slack step carries its own 5-minute limit, so a
+    # stalled connection to Slack still dies quickly.
+    timeout-minutes: 125
 
     # Alert on genuine main-branch CI failures, and nothing else:
     #   conclusion in (failure, startup_failure, timed_out)
@@ -82,8 +83,42 @@ jobs:
         github.event.workflow_run.event != 'pull_request' &&
         github.event.workflow_run.name != 'CI failure alert' )
 
+    # Only the runner-loss re-run needs these: checking out its script, reading a run's jobs
+    # and their annotations, and re-running it.
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+
     steps:
+      # workflow_run checks out the default branch, never the failed run's code, so this
+      # executes only what is already on main.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Re-run a job GitHub never gave a runner, and wait for it
+        # A hosted job no runner picks up ("not acquired by Runner of type hosted") fails the
+        # run with no code at fault, which a macOS arm64 capacity shortage does to the iOS
+        # jobs. One automatic re-run answers it; the script says what it found in `note`, and
+        # sets `page=false` only when the re-run passed or was superseded. Attempt 2 is never
+        # re-run, and a failure here falls through to the alert.
+        id: retry
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: bash .github/scripts/rerun-unacquired-jobs.sh
+
       - name: Post the failure to Slack
+        # `always()` so a retry step that crashed still pages: only an explicit `false` from
+        # it stays quiet.
+        if: ${{ always() && steps.retry.outputs.page != 'false' }}
+        timeout-minutes: 5
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL_ID: ${{ secrets.SLACK_ALERTS_CHANNEL_ID }}
@@ -98,6 +133,7 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
           COMMIT_AUTHOR: ${{ github.event.workflow_run.head_commit.author.name }}
           FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
+          RETRY_NOTE: ${{ steps.retry.outputs.note }}
         run: |
           set -euo pipefail
 
@@ -143,6 +179,7 @@ jobs:
             --arg subject "$COMMIT_SUBJECT" \
             --arg author "$COMMIT_AUTHOR" \
             --arg url "$RUN_URL" \
+            --arg note "${RETRY_NOTE:-}" \
             '
             # Slack mrkdwn gives & < > special meaning; escape them or a commit message
             # like `fix: guard a < b` renders as a broken tag -- and an author name of
@@ -153,6 +190,7 @@ jobs:
               text: ("🚨 *CI failure on `main`* in `\($repo | slack)`\n"
                    + "*Workflow:* \($workflow | slack)\n"
                    + "*Commit:* \($subject | slack) — _\($author | slack)_\n"
+                   + (if $note == "" then "" else "*Note:* \($note | slack)\n" end)
                    + "<\($url)|View the failed run>")
             }')"
           echo "Slack payload:"

@@ -1450,7 +1450,18 @@ them it logs a warning and exits 0: a missing alert secret must not turn into a 
 red X on `main`. With them, a Slack rejection *does* fail the job, because a rejected
 alert is a silently broken alert and this is the only place it can surface.
 
-Three details worth knowing before you touch it:
+**A job GitHub never gave a runner is re-run once before anyone is paged.** A hosted job
+that waits too long for a runner ends with the annotation "The job was not acquired by Runner
+of type hosted even after multiple attempts". A shortage of macOS arm64 runners does this to
+the iOS jobs in `ci.yml` and the shards of `ios-ui-tests.yml`. When a failed attempt-1 run has
+such a job, `.github/scripts/rerun-unacquired-jobs.sh` re-runs its failed jobs and waits up to
+110 minutes for the result. It stays quiet if the re-run passes or is superseded. It pages, with
+a *Note:* line saying what happened, if the re-run fails, never finishes, or could not be
+started. It waits in the same job rather than letting attempt 2 report for itself, because a
+re-run requested with `GITHUB_TOKEN` fires no `workflow_run` event when it completes. Attempt 2
+is never re-run again, and any answer the script cannot reach pages.
+
+Four details worth knowing before you touch it:
 
 - It fires on an **allowlist** of conclusions — `failure`, `startup_failure`,
   `timed_out` — never on "not success". `ci.yml` sets `cancel-in-progress`, so two
@@ -1467,6 +1478,9 @@ Three details worth knowing before you touch it:
   so editing it on a PR branch changes nothing until it merges. To prove Slack delivery
   works, run the workflow's `workflow_dispatch` trigger by hand — it posts a smoke-test
   message instead of an alert.
+- The job's `timeout-minutes` is 125 because of that wait, and the Slack step has its own
+  5-minute limit. Keep the script's `WAIT_MINUTES` below the job limit, or a re-run that
+  never finishes times the job out without paging.
 
 ### Running on the shared self-hosted runner
 
