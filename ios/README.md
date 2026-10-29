@@ -94,7 +94,8 @@ nothing is impossible.
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
 | `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
 | `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
-| `ios/bin/ui-test --only A,B [--no-photos]` | One shard of the suite: the named `ZimmerUITests` classes only, each checked against the sources before the build; `--no-photos` skips the photograph pass. `ios-ui-tests.yml` runs four of these at once | Xcode + simulator |
+| `ios/bin/ui-test --only A,B [--no-photos]` | One shard of the suite: the named `ZimmerUITests` classes only, each checked against the sources before the build; `--no-photos` skips the photograph pass. `ios-ui-tests.yml` runs five of these at once | Xcode + simulator |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos` | The CarPlay drill: builds signed ad hoc with the CarPlay entitlement, opens the Simulator's CarPlay window from its I/O menu (System Events), and drives Zimmer in it; any crash report fails the run, and the Mac's screen, with the CarPlay window on it, is kept as `mac-screen.png` | Xcode + simulator + the Simulator app's GUI |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 
@@ -105,10 +106,13 @@ anything under `ios/**` or the three iOS workflows moved, and fails open to "bui
 `--also` for each UI test file the change touches, and keeps the `ios-ui-test` artifact (video,
 result bundle, and the app's crash reports in `crashes/`, whose crashed thread is also printed in
 the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
-`ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All three carry the fork-PR guard and are
-in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, as
-four shards on four simulators (`--only` a quarter of the classes each, the `photos` shard taking
-the screenshots; `test/config/ios_ui_test_shards_test.rb` holds every class to one shard), on
+`ios_carplay` (`macos-latest`, in parallel with `ios`) runs `ui-test --carplay --only
+CarPlayDrillUITests`: Zimmer in the Simulator's CarPlay window, through a Live call that cannot
+connect, its retries and giving up, and a tap that tries again, failing on any crash. It keeps the
+`ios-carplay-drill` artifact. `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All four
+carry the fork-PR guard and are in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, as
+five shards on five simulators (`--only` a share of the classes each, the `photos` shard taking
+the screenshots, the `carplay` shard running the drill with `--carplay`; `test/config/ios_ui_test_shards_test.rb` holds every class to one shard), on
 each push to `main` that touches `ios/**`, and on demand: against a branch
 (`gh workflow run ios-ui-tests.yml --ref <branch>`) or against a server named by the *name* of a
 repository variable.
@@ -197,26 +201,26 @@ A voice-based conversational CarPlay app (`com.apple.developer.carplay-voice-bas
 iOS 26.4+, Apple CarPlay App Programming Guide, 2026-10-13). The other categories don't fit: Zimmer is not
 audio, navigation, communication (SiriKit messaging or VoIP) or a driving task, and what a driver does
 with it is talk. The category allows list, grid, tab bar, alert, action sheet, information and voice
-control templates (Zimmer uses tab bar, grid, list and voice control), with a depth of three, requires voice as the primary modality at launch, allows
+control templates (Zimmer uses two: a grid and the voice control template), with a depth of three, requires voice as the primary modality at launch, allows
 recording only under the voice control template, and shows no notifications. The design and every
 decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
-- `ZimmerKit/Driving/` holds the car's rules, tested on Linux: `DrivingBoard.swift` (the two
-  lists, needs you and running, their order and cap, each row's lines, and the opening line a
-  tapped row gives Live Mode), `LiveContext.swift` (the call screen's five states, `LiveCallScreen`,
-  and its title), `LiveRetry.swift` (what the Talk tile says, and the quiet retries when Live Mode
-  can't connect), and `CarPlayNavigator.swift` (every modal change, one at a time).
-  `Tests/ZimmerKitTests/CarPlayTests.swift` drives the navigator against a strict fake that
-  refuses what CarPlay refuses, and holds the scene's source to its rules: no system speech, no
-  direct session actions, and no interface-controller call without a completion.
-- `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring: a `CPTabBarTemplate` root (a grid
-  home of Talk to Zimmer, Needs you and Running, and two lists) and a silent minute-by-minute read
-  of the board. `CarPlayDashboard.swift` builds those templates; a row starts the Live Mode call on
-  that session. `CarPlayLive.swift` is the call screen, a `CPVoiceControlTemplate` whose title names
-  the session the conversation is about and whose two action buttons are Mute and Hang up.
-  `CarPlayInterface.swift` is the only place the interface controller is called, through its async
-  forms. The car has one voice, the Realtime call, and listens only through it: there is no speech
-  synthesizer and no recogniser.
+- The car is radically simple: one **Talk to Zimmer** button, and the Live Mode call screen with
+  Mute and End. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
+  call screen's five states, Muted one of them, and the words for what the call is doing),
+  `LiveRetry.swift` (what the button says, and the quiet retries when Live Mode can't connect),
+  and `CarPlayNavigator.swift` (every modal change, one at a time, tracking what it presented).
+  `Tests/ZimmerKitTests/CarPlayTests.swift` drives the navigator against a strict fake that refuses
+  what CarPlay refuses, and holds the scene's source to its rules: no system speech, no direct
+  session actions, no template but the grid and the call screen, and no interface-controller call
+  without a completion.
+- `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring; `CarPlayHome.swift` is the grid
+  with its one button; `CarPlayLive.swift` is the call screen, a `CPVoiceControlTemplate` built once
+  per call, presented and dismissed and never rebuilt. `CarPlayInterface.swift` is the only place
+  the interface controller is called, through its async forms. The car has one voice, the Realtime
+  call, and listens only through it: there is no speech synthesizer and no recogniser.
+- `App/ZimmerUITests/CarPlayDrillUITests.swift` is the CarPlay drill (`ui-test --carplay`): the
+  whole car app driven in the Simulator's CarPlay window.
 - **Signed into every TestFlight build.** Apple granted the entitlement to the team as a managed
   capability, and it is ticked on the App ID. `App/Zimmer/CarPlay.entitlements` holds the key and
   is in the project's exception set; `ios/bin/testflight` signs it in, merged with

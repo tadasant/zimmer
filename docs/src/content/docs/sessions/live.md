@@ -321,13 +321,10 @@ It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 a
 `input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
 and transcript lines exactly as the browser does: the shared rules are `RealtimeConductor` in
 ZimmerKit. In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
-or a new one with voice on, on the same call. Tapping a session's row starts that call
-with a line put to the model as if typed, naming the session, so it answers about that one first.
-The car has no other voice: if the call can't connect, the Talk tile says *Live Mode unavailable,
-retrying…* and the car retries silently.
-While the call runs, the car's screen names the session the conversation is about, read from
-`GET /api/v1/live_conversations/:id/sessions` — the sessions the conversation's tool calls have
-named, newest first (`LiveConversation#referenced_session_ids`). See
+or a new one with voice on, on the same call, with Mute and End while it runs. The car has no
+other voice: if the call can't connect, the button says *Live Mode unavailable, retrying…* and the
+car retries silently. `GET /api/v1/live_conversations/:id/sessions` returns the sessions the
+conversation's tool calls have named, newest first (`LiveConversation#referenced_session_ids`). See
 [CarPlay](/extend/ios-app/#carplay). Every TestFlight build signs in the CarPlay entitlement that
 makes it reachable.
 
