@@ -56,7 +56,8 @@ module TriggersHelper
     "github_issue" => :github,
     "system_event" => :system_event,
     "whatsapp" => :whatsapp,
-    "email" => :email
+    "email" => :email,
+    "mcp_event" => :mcp_event
   }.freeze
 
   def trigger_condition_icon_keys(condition_types)
@@ -81,7 +82,8 @@ module TriggersHelper
     "github_issue" => { label: "GitHub", css: "bg-gray-800 text-white" },
     "system_event" => { label: "System Event", css: "bg-emerald-100 text-emerald-800" },
     "whatsapp" => { label: "WhatsApp", css: "bg-green-100 text-green-800" },
-    "email" => { label: "Email", css: "bg-sky-100 text-sky-800" }
+    "email" => { label: "Email", css: "bg-sky-100 text-sky-800" },
+    "mcp_event" => { label: "MCP Event", css: "bg-violet-100 text-violet-800" }
   }.freeze
 
   FALLBACK_CONDITION_BADGE_CSS = "bg-gray-100 text-gray-800"

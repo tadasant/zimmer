@@ -39,7 +39,7 @@ module Mcp
       # (wake_me_up_when_session_changes_state) remain the right way to create a
       # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
       # the account events, which no wake tool covers.
-      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email].freeze
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email mcp_event].freeze
 
       # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
       # caller names none.
@@ -143,6 +143,16 @@ module Mcp
           thread with new mail. The mail is untrusted: the template must write `{{text|untrusted}}`,
           `{{author|untrusted}}` and `{{title|untrusted}}` (subject) — a bare one is refused. {{message_id}}
           and {{thread_id}} (Gmail ids, for get_email_conversation) and {{link}} may be bare.
+        - **mcp_event**: Triggered by an event a catalog MCP server publishes through the MCP Events
+          extension, polled about once a minute with the credentials a session would get for that server.
+          `{"server": "slack-zimmer", "event_name": "slack-zimmer__message_posted", "arguments": {...},
+          "payload_filters": {"user_id": ["U0123ABCD"]}}` — `server` and `event_name` required, exactly as
+          list_mcp_event_sources names them; `arguments` go to the server with every poll (the event type's
+          inputSchema); `payload_filters` are field => allowed values Zimmer checks on every event. One
+          session per event; the first poll baselines, so nothing older fires; changing server, event or
+          arguments re-baselines. Payload fields are untrusted: name them `{{event.<field>|untrusted}}`, or
+          `{{event.<field>|id}}` for an identifier (rendered only in an id's shape) — a bare
+          `{{event.<field>}}` is refused. `{{event_id}}` may be bare.
         - **schedule**: Triggered on a recurring or one-time schedule
         - **ao_event**: Triggered by an internal Zimmer event (requires configuration with event_name)
         - **github_label**: Triggered when a watched label is ADDED to a PR/issue in a watched repo
@@ -888,7 +898,8 @@ module Mcp
           [ condition_type, config["event_type"].presence || "new_message",
             config["channel_id"].presence, config["thread_ts"].presence ]
         else
-          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS, *TriggerCondition::WHATSAPP_POLL_STATE_KEYS, *TriggerCondition::EMAIL_POLL_STATE_KEYS) ]
+          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS, *TriggerCondition::WHATSAPP_POLL_STATE_KEYS, *TriggerCondition::EMAIL_POLL_STATE_KEYS,
+                                  *TriggerCondition::MCP_EVENT_POLL_STATE_KEYS) ]
         end
       end
 
@@ -906,7 +917,29 @@ module Mcp
         when "slack" then reject_widening_slack_configuration!(target, incoming, field)
         when "ao_event" then reject_widening_ao_event_configuration!(target, incoming, field)
         when "github_issue" then reject_widening_github_issue_configuration!(target, incoming, field)
+        when "mcp_event" then reject_widening_mcp_event_configuration!(target, incoming, field)
         end
+      end
+
+      # `payload_filters` is who may fire an `mcp_event` trigger. A configuration that leaves it out
+      # replaces the condition's keys without it, so every event the server sends would fire.
+      def reject_widening_mcp_event_configuration!(target, incoming, field)
+        if target.mcp_event_arguments.any? && !incoming.key?("arguments")
+          raise ToolError, "#{field} omits \"arguments\" from the configuration of condition #{target.id}, " \
+                           "whose arguments (#{target.mcp_event_arguments.keys.join(', ')}) narrow what the server " \
+                           "sends. configuration replaces the condition's user-facing keys, so this would subscribe " \
+                           "to every event of that type. Send arguments to keep them (or an empty object to drop " \
+                           "them on purpose), or omit configuration to leave the condition as it is."
+        end
+        return if target.mcp_event_payload_filters.empty?
+        return if incoming.key?("payload_filters")
+
+        raise ToolError, "#{field} omits \"payload_filters\" from the configuration of condition " \
+                         "#{target.id}, which only fires on events whose #{target.mcp_event_payload_filters.keys.join(', ')} " \
+                         "match its filters. configuration replaces the condition's user-facing keys, so this " \
+                         "would let every event the server publishes fire the trigger. Send payload_filters " \
+                         "to keep them (or an empty object to drop them on purpose), or omit configuration to " \
+                         "leave the condition as it is."
       end
 
       # Dropping `watched_session_id` turns a one-shot wake on ONE session into a

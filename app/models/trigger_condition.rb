@@ -32,12 +32,21 @@
 #     { "query" => "in:inbox", "include_automated" => false }
 #     `query` narrows what counts (a Gmail search, default `in:inbox`). The mailbox's own mail
 #     never fires, and bulk, mailing-list and auto-reply mail fires only with `include_automated`.
+# - "mcp_event": Fires once per event a catalog MCP server publishes through the MCP Events
+#     extension (McpEvents), polled by McpEventTriggerPollerJob with the credentials a session
+#     would get for that server.
+#     { "server" => "slack-zimmer", "event_name" => "slack-zimmer__message_posted",
+#       "arguments" => { "addressed_to_bot" => true },
+#       "payload_filters" => { "user_id" => ["U0123ABCD"] } }
+#     `arguments` go to the server with every poll (its event type's inputSchema says what it
+#     takes); `payload_filters` are checked by Zimmer on each event's top-level payload fields, so
+#     who may fire a trigger stays decided here even when the server also filters.
 #
 # Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email mcp_event].freeze
 
   # The passive-listening event types, in the order the UI offers them. They are
   # two separate conditions on purpose: a Trigger ORs its conditions, so carrying
@@ -177,6 +186,23 @@ class TriggerCondition < ApplicationRecord
   # `failed_reads` is message id => ticks in a row the mailbox server would not return it.
   EMAIL_POLL_STATE_KEYS = %w[seen_messages failed_reads].freeze
 
+  # The MCP event poller's keys inside an `mcp_event` condition's configuration, merged back across
+  # an edit like EMAIL_POLL_STATE_KEYS. `cursor` is the server's opaque cursor — absent means the
+  # condition has not been baselined; `next_poll_at` is when the server asked to be polled next
+  # (`nextPollMs`); `failures` counts polls in a row that raised; `last_truncated_at` is the last
+  # time the server said it skipped events.
+  MCP_EVENT_POLL_STATE_KEYS = %w[cursor next_poll_at failures last_truncated_at].freeze
+
+  # What an `mcp_event` condition's subscription is: changing any of these is a different stream of
+  # events, so the cursor is dropped and the new one baselined rather than replayed.
+  MCP_EVENT_SUBSCRIPTION_KEYS = %w[server event_name arguments].freeze
+
+  # A payload field a filter or a template may name: a top-level key of an event's `data`.
+  MCP_EVENT_FIELD_FORMAT = /\A[A-Za-z_][A-Za-z0-9_]{0,63}\z/
+
+  # A subscription's arguments are sent with every poll and stored on the row, so they are small.
+  MAX_MCP_EVENT_ARGUMENTS_BYTES = 4_096
+
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
   has_many :trigger_event_claims, dependent: :delete_all
@@ -191,6 +217,8 @@ class TriggerCondition < ApplicationRecord
   before_validation :rebaseline_on_thread_change, if: -> { condition_type == "slack" }
   before_validation :preserve_whatsapp_poll_state, if: -> { condition_type == "whatsapp" }
   before_validation :preserve_email_poll_state, if: -> { condition_type == "email" }
+  before_validation :normalize_mcp_event_configuration, if: -> { condition_type == "mcp_event" }
+  before_validation :preserve_mcp_event_poll_state, if: -> { condition_type == "mcp_event" }
 
   # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
   # from (see #armed_before?). Stamped on create for every condition type, so the
@@ -204,6 +232,7 @@ class TriggerCondition < ApplicationRecord
   scope :github, -> { where(condition_type: GITHUB_CONDITION_TYPES) }
   scope :whatsapp, -> { where(condition_type: "whatsapp") }
   scope :email, -> { where(condition_type: "email") }
+  scope :mcp_event, -> { where(condition_type: "mcp_event") }
 
   # Slack configuration accessors
   def channel_id
@@ -452,6 +481,49 @@ class TriggerCondition < ApplicationRecord
   def email_failed_reads
     failed = configuration["failed_reads"]
     failed.is_a?(Hash) ? failed.transform_values(&:to_i) : {}
+  end
+
+  # MCP event configuration accessors
+
+  # The catalog name of the server this condition polls.
+  def mcp_event_server
+    configuration["server"].to_s.strip.presence
+  end
+
+  # The event type, as the server names it in `events/list`.
+  def mcp_event_name
+    configuration["event_name"].to_s.strip.presence
+  end
+
+  # The subscription arguments sent with every poll.
+  def mcp_event_arguments
+    arguments = configuration["arguments"]
+    arguments.is_a?(Hash) ? arguments : {}
+  end
+
+  # payload field => the values that may fire, as strings.
+  def mcp_event_payload_filters
+    filters = configuration["payload_filters"]
+    filters.is_a?(Hash) ? filters.transform_values { |values| Array(values).map(&:to_s) } : {}
+  end
+
+  # The server's opaque cursor; nil until the condition is baselined.
+  def mcp_event_cursor
+    configuration["cursor"].presence
+  end
+
+  # Whether +data+ (an event's payload) passes every payload filter. A filter on a field the
+  # payload does not carry fails, so a filter can never be satisfied by leaving a field out.
+  def mcp_event_payload_allowed?(data)
+    mcp_event_payload_filters.all? do |field, allowed|
+      value = data[field]
+      (value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false) && allowed.include?(value.to_s)
+    end
+  end
+
+  # What a stream of events this condition reads: changing it is a different subscription.
+  def mcp_event_subscription
+    [ mcp_event_server, mcp_event_name, mcp_event_arguments ]
   end
 
   # Schedule configuration accessors
@@ -780,6 +852,9 @@ class TriggerCondition < ApplicationRecord
     when "email"
       automated = email_include_automated? ? ", automated mail included" : ""
       "Email: new mail matching #{email_query}#{automated}"
+    when "mcp_event"
+      filtered = mcp_event_payload_filters.any? ? ", filtered on #{mcp_event_payload_filters.keys.join(', ')}" : ""
+      "MCP Event: #{mcp_event_name || '(no event)'} from #{mcp_event_server || '(no server)'}#{filtered}"
     when "schedule"
       schedule_description || "Schedule trigger"
     when "ao_event"
@@ -1013,6 +1088,59 @@ class TriggerCondition < ApplicationRecord
     end
 
     EMAIL_POLL_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
+
+  def mcp_event_filter_scalar?(value)
+    value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false
+  end
+
+  # The form submits `arguments` and `payload_filters` as JSON text; the API and MCP send objects.
+  # Text is parsed here so the row always holds objects. Text that does not parse is left as text,
+  # which validation then refuses.
+  def normalize_mcp_event_configuration
+    return unless configuration.is_a?(Hash)
+
+    %w[arguments payload_filters].each do |key|
+      value = configuration[key]
+      next unless value.is_a?(String)
+
+      if value.strip.empty?
+        configuration.delete(key)
+      else
+        begin
+          configuration[key] = JSON.parse(value)
+        rescue JSON::ParserError
+          errors.add(:configuration, "#{key} is not valid JSON")
+        end
+      end
+    end
+    if configuration["payload_filters"].is_a?(Hash)
+      configuration["payload_filters"] = configuration["payload_filters"].transform_values do |values|
+        Array(values).map { |value| mcp_event_filter_scalar?(value) ? value.to_s : value }
+      end
+    end
+    %w[server event_name].each { |key| configuration[key] = configuration[key].to_s.strip if configuration.key?(key) }
+  end
+
+  # The MCP event poller's cursor survives a save that omits it, as the other pollers' state does.
+  # Changing the subscription — server, event, or arguments — drops it instead, so the new stream
+  # is baselined from now rather than replayed from a cursor that belonged to another one. Editing
+  # the template, the payload filters or anything else on the trigger keeps it.
+  def preserve_mcp_event_poll_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    before = TriggerCondition.new(condition_type: "mcp_event", configuration: configuration_was)
+    if mcp_event_subscription != before.mcp_event_subscription
+      MCP_EVENT_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
+      return
+    end
+
+    MCP_EVENT_POLL_STATE_KEYS.each do |key|
       next if configuration.key?(key)
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
@@ -1316,6 +1444,44 @@ class TriggerCondition < ApplicationRecord
       validate_whatsapp_configuration
     when "email"
       validate_email_configuration
+    when "mcp_event"
+      validate_mcp_event_configuration
+    end
+  end
+
+  def validate_mcp_event_configuration
+    server = mcp_event_server
+    if server.blank?
+      errors.add(:configuration, "must include server for MCP event conditions")
+    elsif (catalog = ServersConfig.find(server)).nil?
+      errors.add(:configuration, "server #{server} is not in the MCP server catalog")
+    elsif !catalog.remote?
+      errors.add(:configuration, "server #{server} is a #{catalog.type} server; MCP events are polled from a remote one")
+    end
+
+    name = mcp_event_name
+    if name.blank?
+      errors.add(:configuration, "must include event_name for MCP event conditions")
+    elsif !name.match?(McpEvents::NAME_FORMAT)
+      errors.add(:configuration, "event_name must be the name the server lists in events/list")
+    end
+
+    if configuration.key?("arguments") && !configuration["arguments"].is_a?(Hash)
+      errors.add(:configuration, "arguments must be a JSON object")
+    elsif mcp_event_arguments.to_json.bytesize > MAX_MCP_EVENT_ARGUMENTS_BYTES
+      errors.add(:configuration, "arguments must be at most #{MAX_MCP_EVENT_ARGUMENTS_BYTES} bytes of JSON")
+    end
+
+    filters = configuration["payload_filters"]
+    if filters.present? && !filters.is_a?(Hash)
+      errors.add(:configuration, "payload_filters must be a JSON object of field => allowed values")
+    elsif filters.is_a?(Hash)
+      bad = filters.keys.reject { |field| field.to_s.match?(MCP_EVENT_FIELD_FORMAT) }
+      errors.add(:configuration, "payload_filters names fields that are not payload field names: #{bad.join(', ')}") if bad.any?
+      empty = filters.select { |_field, values| Array(values).empty? }.keys
+      errors.add(:configuration, "payload_filters must list at least one allowed value for #{empty.join(', ')}") if empty.any?
+      nested = filters.reject { |_field, values| Array(values).all? { |value| mcp_event_filter_scalar?(value) } }.keys
+      errors.add(:configuration, "payload_filters values must be strings, numbers or booleans (#{nested.join(', ')})") if nested.any?
     end
   end
 

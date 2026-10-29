@@ -85,6 +85,7 @@ export default defineConfig({
             { label: "Prompt attachments", slug: "sessions/prompt-attachments" },
             { label: "Outcome analysis", slug: "sessions/outcomes" },
             { label: "Triggers and schedules", slug: "sessions/triggers" },
+            { label: "MCP Events spec pin", slug: "sessions/mcp-events-spec-pin" },
             { label: "Workflows", slug: "sessions/workflows" },
             { label: "Root data", slug: "sessions/root-data" },
             { label: "Elicitation", slug: "sessions/elicitation" },

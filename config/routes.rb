@@ -426,6 +426,7 @@ Rails.application.routes.draw do
         collection do
           get :channels
           get :whatsapp_chats
+          get :mcp_event_sources
         end
       end
 
@@ -724,6 +725,7 @@ Rails.application.routes.draw do
     collection do
       get :channels
       get :whatsapp_chats
+      get :mcp_event_sources
     end
   end
 

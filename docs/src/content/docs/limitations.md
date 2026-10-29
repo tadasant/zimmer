@@ -5178,6 +5178,28 @@ the raw headers. Two things follow:
 - A message the mailbox server will not return five ticks running (a body past the MCP client's
   2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
 
+### MCP event triggers follow an unmerged draft, poll only
+
+[`mcp_event` triggers](/sessions/triggers/#mcp_event) implement the poll mode of the MCP Events
+extension, SEP-3415, which is still an open draft. Its wire format can change without a release, so
+what is built, and against which revision, is recorded on the
+[spec pin](/sessions/mcp-events-spec-pin/) page. What this costs:
+
+- **Poll only.** There is no push (`events/stream`), because that needs a long-running listener
+  Zimmer does not run. There is no webhook either, because Zimmer has no public way in. An event
+  fires about a minute after the server has it, and later if the server asks for a longer
+  `nextPollMs`.
+- **The protocol version is the old one.** The extension is defined for the 2026-07-28 revision and
+  its `server/discover`. Zimmer's MCP client still speaks 2025-06-18 and reads the extension off the
+  `initialize` result. That works against strad, which answers it there. A server that declares the
+  extension only through `server/discover` looks to Zimmer like a server without events.
+- **Saving does not ask the server.** An event name the server does not publish, or arguments its
+  `inputSchema` refuses, are accepted at save and show up on the first poll as a reported error.
+- **No coalescing.** Every event is its own session. A Slack trigger folds a burst from one person
+  into one session, but an `mcp_event` trigger on strad's Slack events does not.
+- **`compare_trigger_fires` sees 30 days.** It reads `trigger_event_claims`, which
+  `InboundEventRetentionJob` deletes after 30 days.
+
 ### GitHub is polled, and the webhooks have no public way in
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and

@@ -8,7 +8,7 @@ class Api::V1::TriggersController < Api::BaseController
   # Zimmer's iOS app: everything the triggers pages offer a signed-in person — list,
   # read, create, edit, delete, turn on or off, flip the trigger page's two re-use
   # switches, invoke, and the Slack channel and WhatsApp chat pickers the form fetches.
-  accepts_native_app_tokens only: %i[index show create update destroy toggle toggle_enqueue_messages toggle_resuscitate_archived invoke channels whatsapp_chats]
+  accepts_native_app_tokens only: %i[index show create update destroy toggle toggle_enqueue_messages toggle_resuscitate_archived invoke channels whatsapp_chats mcp_event_sources]
 
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :toggle_enqueue_messages,
                                       :toggle_resuscitate_archived, :invoke ]
@@ -124,6 +124,13 @@ class Api::V1::TriggersController < Api::BaseController
   #       - include_automated: also fire on promotions/social/forums/updates, bounces, no-reply
   #         senders and auto-replies (default false)
   #       The template must write {{text}}, {{author}} and {{title}} as {{name|untrusted}}.
+  #       For mcp_event (one session per event a catalog MCP server publishes; polled each minute
+  #       with the credentials a session would get for that server):
+  #       - server: catalog MCP server name (required; GET /api/v1/triggers/mcp_event_sources)
+  #       - event_name: the event type, as the server's events/list names it (required)
+  #       - arguments: object sent with every events/poll (optional; the type's inputSchema)
+  #       - payload_filters: object of payload field => allowed values, checked by Zimmer (optional)
+  #       The template must write payload fields as {{event.<field>|untrusted}} or {{event.<field>|id}}.
   def create
     @trigger = Trigger.new(trigger_params)
 
@@ -275,6 +282,16 @@ class Api::V1::TriggersController < Api::BaseController
     render_api_error(e.message, e.message, status: :service_unavailable)
   end
 
+  # GET /api/v1/triggers/mcp_event_sources[?server=<name>]
+  # The catalog MCP servers that publish events and their event types (inputSchema, payloadSchema),
+  # as of the last six-hourly sweep — or, given `server`, that one server asked now. For an
+  # `mcp_event` condition's server and event_name.
+  def mcp_event_sources
+    render json: McpEvents::Sources.listing(server: params[:server])
+  rescue McpEvents::Sources::Unavailable => e
+    render_api_error(e.message, e.message, status: :service_unavailable)
+  end
+
   # GET /api/v1/triggers/whatsapp_chats
   # List the WhatsApp chats the bridge's account is in, for a `whatsapp` condition's chat_id.
   def whatsapp_chats
@@ -331,7 +348,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
       ]
     )
     permitted[:mcp_servers] ||= []

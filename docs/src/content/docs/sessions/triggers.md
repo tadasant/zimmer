@@ -15,7 +15,7 @@ Every trigger on this page renders a **prompt template**. A trigger can instead 
 `workflow_id`, and then it has no template at all. Nothing in production fires a workflow trigger
 yet, and no surface can create one, so everything below describes every trigger you will meet.
 
-## The eight condition types
+## The nine condition types
 
 ```mermaid
 flowchart LR
@@ -28,6 +28,7 @@ flowchart LR
         GI["github_issue<br/>repos + exclude_labels"]
         WA["whatsapp<br/>chat_id + mode<br/>(listen | addressed)"]
         EM["email<br/>query + include_automated"]
+        ME["mcp_event<br/>server + event_name<br/>+ arguments + payload_filters"]
     end
 
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
@@ -38,6 +39,7 @@ flowchart LR
     GI -->|"GithubTriggerPollerJob<br/>(cron, every minute)"| T
     WA -->|"WhatsappTriggerPollerJob<br/>(cron, every minute)"| T
     EM -->|"EmailTriggerPollerJob<br/>(cron, every minute)"| T
+    ME -->|"McpEventTriggerPollerJob<br/>(cron, every minute)"| T
 
     T --> H["reconcile catalog refs<br/>(unresolvable ones kept but filtered;<br/>agent root repointed, never raised)"]
     H --> D{"reuse_session?"}
@@ -499,8 +501,11 @@ what catches a message Slack never delivered. The two paths share `trigger_event
 either fires a condition for a message, it claims `slack:<channel>:<ts>` for that condition in the
 same transaction that creates the session. The first path to claim fires; the other finds the claim
 and fires nothing. A fire that raises rolls its claim back, so the other path can still fire the
-message. On `poll`, the poller claims nothing, takes no lock, and fires exactly as the poll-only
-path does.
+message. On `poll`, the poller takes no lock and no claim decides anything, but it still records a
+`poll_record` claim, with its session, for every message it fired, in the transaction that spawned
+the session.
+That record is how [`compare_trigger_fires`](#parity-comparing-two-triggers-fires) lines a Slack
+trigger's fires up against another path's.
 
 **Coalescing still gives one session per burst.** The poller folds a burst it finds in one pass into
 the first prompt. The webhook sees the same burst one message at a time, so the first message spawns
@@ -551,8 +556,9 @@ For each source it gives the ingest mode, the time of the last delivery, and, ov
 the number of deliveries and the number of trigger events claimed by the webhook and by the poller. A
 claim is one message for one trigger condition, so a coalesced burst counts once per message.
 
-The poller only claims while the webhook is switched on, so a poll claim on a condition the webhook
-serves is a message the webhook did not deliver first. Passive listening is left out of the counts:
+A poll claim on a condition the webhook serves is a message the webhook did not deliver first. On
+`poll` the poller records what it fired as `poll_record` claims instead, which the panel never
+counts. Passive listening is left out of the counts:
 the webhook never serves it, so the poller claims every one of those messages by design.
 
 The panel reads *warning* in three cases: a switched-on source has poll claims in the window, a
@@ -771,6 +777,118 @@ covers a Google token that was never consented, was revoked, or has expired, and
 down. `TriggerPollerLivenessCheckJob` then pages "Email trigger polling stalled" to `#alerts` 30
 minutes later, and the poller's `WARN` line names the error. A single thread that keeps failing
 reports through the error reporter on every tick instead.
+
+### `mcp_event`
+
+Fires once per event a catalog MCP server publishes through the **MCP Events extension**, the draft
+SEP-3415. Zimmer polls the server itself, from Rails: no agent session is involved, and the
+credentials are the ones a session would get for that server. A strad slug is reached at its catalog
+URL with `Bearer ${STRAD_API_KEY}`, resolved by `McpServerEndpoint` exactly as for MCP Apps.
+
+```json
+{
+  "server": "slack-zimmer",
+  "event_name": "slack-zimmer__message_posted",
+  "arguments": { "addressed_to_bot": true },
+  "payload_filters": { "user_id": ["U0123ABCD", "U0456EFGH"] }
+}
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `server` | yes | The catalog name of a remote (`streamable-http` or `sse`) MCP server |
+| `event_name` | yes | The event type, exactly as the server's `events/list` names it. A gateway prefixes it with the slug, the way it prefixes tools |
+| `arguments` | no | An object sent with every `events/poll`. The event type's `inputSchema` says what it takes. At most 4 KB of JSON |
+| `payload_filters` | no | Payload field => the values allowed to fire. Zimmer checks it on every event's top-level `data`. A field the payload does not carry fails the filter |
+
+The form takes `arguments` and `payload_filters` as JSON text; the API and `action_trigger` take
+objects.
+
+#### Which servers publish events
+
+A server publishes events if its `initialize` result declares `io.modelcontextprotocol/events` under
+`capabilities.extensions`. `McpEventSourcesRefreshJob` asks every remote catalog server every six
+hours, and keeps the ones that declare it, with their event types, as a roster in the cache. The
+form's server field suggests from that roster. Choosing a server asks that one server live, and the
+event field then suggests its event types and says what arguments each takes. The same two reads are
+`GET /api/v1/triggers/mcp_event_sources[?server=<name>]` and the `list_mcp_event_sources` MCP tool.
+
+Saving checks the configuration's shape: the server is a remote catalog server, the event name is
+printable ASCII, and `arguments` is an object. It does not ask the server. An event type the server
+does not publish, or arguments its schema refuses, show up on the first poll as an error the poller
+reports.
+
+#### What fires
+
+`McpEventTriggerPollerJob` runs every minute on the `pollers` queue, one sweep at a time:
+
+1. **A new condition is baselined.** Its first poll sends a `null` cursor, which by the SEP means
+   "from now": the server answers with no events and a cursor. Nothing fires, so turning a trigger on
+   never replays history.
+2. **Then it polls from the stored cursor**, following `hasMore` for up to five pages.
+3. **One session per event.** Each event that passes `payload_filters` is claimed in
+   `trigger_event_claims` as `mcp:<server>:<eventId>`, and the trigger fires, in one transaction. A
+   claim the condition already holds fires nothing, so a page polled twice fires each event once.
+4. **The cursor moves only when the whole page settled.** If an event's fire raised or was held, the
+   rest of the page waits behind it, and the cursor stays put. The same happens past ten fires a tick,
+   counted across pages. The next tick polls the same page and the claims skip what already fired. A
+   held event is one that `skip_if_pending_session`, a reused session that would not take it, or burst
+   control stopped. Unlike Slack, **burst control defers an event rather than dropping it**: the
+   server keeps the event, so waiting loses nothing. While the trigger's burst is open the condition
+   is not polled at all, so a backlog cannot hold the burst open by retrying into it.
+
+A server's `nextPollMs` is honoured, clamped to between 15 seconds and 15 minutes. The cron's
+minute is the floor in practice.
+
+Changing `server`, `event_name` or `arguments` is a different subscription, so the cursor is dropped
+and the condition is baselined again. Editing the template, the filters or anything else on the
+trigger keeps the cursor. That makes it safe to turn a shadow trigger into the real one in place.
+
+A session an `mcp_event` trigger spawns has genesis `mcp_event`, **spot** by default. The metadata
+carries `mcp_event_server`, `mcp_event_name` and `mcp_event_id`. A trigger whose events have a
+person waiting on them sets priority on its own row.
+
+#### The payload is untrusted
+
+An event's `data` is whatever the server relayed. For strad's Slack events, that is what somebody
+typed into Slack. A template names payload fields as:
+
+- `{{event.<field>|untrusted}}`: fenced like any untrusted value. A value that is not a string is
+  rendered as JSON.
+- `{{event.<field>|id}}`: rendered only if the value looks like an identifier
+  (`[A-Za-z0-9._:-]`, at most 128 characters), and empty otherwise. Use it for channel ids,
+  timestamps and user ids.
+
+A bare `{{event.<field>}}` is refused at save on a trigger with an `mcp_event` condition, and the
+poller refuses again at fire time for a row edited behind the validation. `{{event_id}}` is a
+trusted identifier and may be bare. The payload never chooses the agent root, MCP servers or skills.
+Only the trigger row does that. No payload value reaches a log line.
+
+#### When the server refuses
+
+A server that refuses a poll or cannot be reached is logged at WARN and backed off: the condition
+waits one minute after the first failure, doubling up to 15 minutes, so one unreachable server does
+not hold the single `pollers` thread every tick. The condition's `failures` counts how many polls in
+a row have failed, and the fifth is reported. A condition that is backing off still counts as not
+polling cleanly for the heartbeat. When no condition has polled
+cleanly for 30 minutes, `TriggerPollerLivenessCheckJob` pages *MCP event trigger polling stalled*.
+A `truncated: true` answer means the server says it skipped events, for example because the cursor
+was older than its retention. That is reported at most once an hour per condition and stamped as
+`last_truncated_at`.
+
+#### Parity: comparing two triggers' fires
+
+`compare_trigger_fires` (MCP, triggers group, read-only) lines up the events two triggers fired on.
+It is built for a shadow trigger that should fire on exactly the same events as an existing one, such
+as an `mcp_event` condition on strad's Slack events shadowing a Slack `bot_mention` trigger. It
+joins the two triggers' claims on the event's identity. An MCP event's key loses its `mcp:<server>:`
+prefix, so strad's `slack:<channel>:<ts>` meets the Slack poller's own key for the same message. It
+reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
+sessions. It decides nothing; a parity session reads it and judges. Claims are kept 30 days, so that
+is the furthest back it can see.
+
+What is implemented, and where it departs from the draft, is on the
+[spec pin](/sessions/mcp-events-spec-pin/) page.
 
 ### `schedule`
 
@@ -1854,7 +1972,7 @@ stranger wrote, and some are facts the poller read off an API.
 | `{{title}}` | GitHub, email | **Untrusted.** The issue/PR title as typed, or the newest message's subject. An email trigger must fence it |
 | `{{labels}}` | GitHub | Label names, comma-separated. Whoever can label in the repo chose them |
 | `{{channel}}` | Slack, WhatsApp | The channel name, `DM`, or the WhatsApp chat's name. Whoever created or renamed it chose it |
-| `{{event}}` | GitHub, `ao_event`, `system_event`, WhatsApp, email | Zimmer's description of the event. For `ao_event` it includes the session's title, which was generated from that session's prompt |
+| `{{event}}` | GitHub, `ao_event`, `system_event`, WhatsApp, email, `mcp_event` | Zimmer's description of the event (`mcp_event` for an MCP event). For `ao_event` it includes the session's title, which was generated from that session's prompt |
 | `{{link}}` | Slack, GitHub, email | The permalink Slack returns, the item's `html_url`, or the Gmail link the mailbox server builds from the message id |
 | `{{repo}}`, `{{number}}` | GitHub | Fields of the search API's result |
 | `{{channel_id}}` | Slack | The conversation the poller read the message from |
@@ -1864,6 +1982,8 @@ stranger wrote, and some are facts the poller read off an API.
 | `{{chat_id}}` | WhatsApp | The chat the poller read, as the bridge reported it |
 | `{{message_id}}` | WhatsApp, email | The id of the newest message in the batch, or the Gmail id of the thread's newest new message |
 | `{{thread_id}}` | email | The Gmail thread the fire is about |
+| `{{event_id}}` | `mcp_event` | The event's `eventId`, as the server sent it, in an identifier's shape |
+| `{{event.<field>\|untrusted}}`, `{{event.<field>\|id}}` | `mcp_event` | **Untrusted.** A top-level field of the event's payload, fenced or shape-checked. A bare `{{event.<field>}}` is refused |
 | `{{time}}`, `{{date}}` | all | The clock at fire time, `HH:MM` and `YYYY-MM-DD` |
 
 A manual fire takes every one of these except `{{time}}` and `{{date}}` from the caller instead (see

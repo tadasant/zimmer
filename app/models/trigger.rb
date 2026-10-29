@@ -267,6 +267,7 @@ class Trigger < ApplicationRecord
   validate :validate_last_session_requires_reuse_session, on: :create
   validate :validate_watched_session_not_requester, on: :create
   validate :validate_email_template_fences_sender_content
+  validate :validate_mcp_event_template_fences_payload
 
   # A change to the selector reaches the sessions this trigger already spawned
   # and has not started yet — the whole point of changing it during a backlog.
@@ -642,8 +643,21 @@ class Trigger < ApplicationRecord
     "chat_id" => TriggerCondition::WHATSAPP_CHAT_ID_FORMAT,
     "message_id" => /\A[0-9A-Za-z]{1,128}\z/,
     # Email conditions: the Gmail thread the fire is about, as the mailbox server printed it.
-    "thread_id" => EmailService::ID_FORMAT
+    "thread_id" => EmailService::ID_FORMAT,
+    # MCP event conditions: the event's `eventId`, as the server sent it — the key the fire is
+    # deduplicated on. A strad Slack event's is `slack:<channel>:<ts>`.
+    "event_id" => McpEvents::Client::EVENT_ID_FORMAT
   }.freeze
+
+  # One field of an MCP event's payload in a template: `{{event.<field>|untrusted}}`, fenced like
+  # any untrusted value, or `{{event.<field>|id}}`, rendered only when the value has an
+  # identifier's shape (MCP_EVENT_ID_FIELD_FORMAT) and as an empty string otherwise. A bare
+  # `{{event.<field>}}` is refused on a trigger with an `mcp_event` condition
+  # (#validate_mcp_event_template_fences_payload), and renders as `|id` would anywhere else.
+  EVENT_FIELD_PATTERN = /\{\{event\.([A-Za-z_][A-Za-z0-9_]{0,63})(\|untrusted|\|id)?\}\}/
+
+  # What `{{event.<field>|id}}` lets through: an id, a timestamp, a channel — never prose.
+  MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:-]{1,128}\z/
 
   # The variables an `email` condition fills with what the SENDER wrote: the message, the From
   # header, the subject. Anyone on the internet can write all three, and From is spoofable, so a
@@ -661,8 +675,12 @@ class Trigger < ApplicationRecord
   # the template language knows match; any other `{{...}}` is left as written.
   PLACEHOLDER_PATTERN = /\{\{(#{Regexp.union(USER_INPUT_VARIABLES + %w[time date]).source})(\|untrusted)?\}\}/
 
+  # Every placeholder the template language renders, in one pass: PLACEHOLDER_PATTERN's two
+  # captures, then EVENT_FIELD_PATTERN's two.
+  TEMPLATE_PATTERN = Regexp.union(PLACEHOLDER_PATTERN, EVENT_FIELD_PATTERN)
+
   # The begin marker #fence_untrusted writes: the variable's name, then the render's code.
-  FENCE_BEGIN_PATTERN = /\[begin untrusted (\w+) (\h{16}):/
+  FENCE_BEGIN_PATTERN = /\[begin untrusted ([\w.]+) (\h{16}):/
 
   # The variables that IDENTIFY which GitHub item a session was fired for.
   #
@@ -685,6 +703,12 @@ class Trigger < ApplicationRecord
     EMAIL_SENDER_VARIABLES & bare_placeholder_names
   end
 
+  # The MCP event payload fields this template writes as `{{event.<field>}}`, with neither
+  # `|untrusted` nor `|id`.
+  def unfenced_mcp_event_fields
+    prompt_template.to_s.scan(EVENT_FIELD_PATTERN).reject(&:last).map(&:first).uniq
+  end
+
   # Whether this trigger's template identifies the GitHub item on its own.
   def references_github_context?
     GITHUB_IDENTITY_VARIABLES.intersect?(template_placeholder_names)
@@ -695,8 +719,10 @@ class Trigger < ApplicationRecord
   # {{event}}; for GitHub conditions {{repo}}, {{number}}, {{title}}, {{labels}}; and for
   # Slack conditions the trusted identifiers {{channel_id}}, {{message_ts}}, {{thread_ts}}
   # and {{author_id}}, for WhatsApp conditions {{chat_id}} and {{message_id}}, and for email
-  # conditions {{message_id}} and {{thread_id}} (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written
-  # {{name|untrusted}} to render fenced off as untrusted input (#fence_untrusted).
+  # conditions {{message_id}} and {{thread_id}}, and for MCP event conditions {{event_id}}
+  # (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written {{name|untrusted}} to render fenced off
+  # as untrusted input (#fence_untrusted). An MCP event's payload fields render as
+  # {{event.<field>|untrusted}} or {{event.<field>|id}} (EVENT_FIELD_PATTERN), from +event_data+.
   #
   # One pass over the template: a value is inserted once and never scanned again,
   # so a Slack message that quotes `{{channel}}`, or a title that quotes `{{labels}}`,
@@ -710,7 +736,8 @@ class Trigger < ApplicationRecord
   def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil,
                          repo: nil, number: nil, title: nil, labels: nil,
                          channel_id: nil, message_ts: nil, thread_ts: nil, author_id: nil,
-                         chat_id: nil, message_id: nil, thread_id: nil)
+                         chat_id: nil, message_id: nil, thread_id: nil,
+                         event_id: nil, event_data: nil)
     raise ArgumentError, workflow_fire_mismatch_message if workflow_backed?
 
     now = Time.current
@@ -722,17 +749,31 @@ class Trigger < ApplicationRecord
     }
     { "channel_id" => channel_id, "message_ts" => message_ts,
       "thread_ts" => thread_ts, "author_id" => author_id,
-      "chat_id" => chat_id, "message_id" => message_id, "thread_id" => thread_id }.each do |name, value|
+      "chat_id" => chat_id, "message_id" => message_id, "thread_id" => thread_id,
+      "event_id" => event_id }.each do |name, value|
       value = value.to_s.strip
       values[name] = value.match?(TRUSTED_IDENTIFIER_FORMATS.fetch(name)) ? value : ""
     end
+    event_data = event_data.is_a?(Hash) ? event_data.to_h { |field, value| [ field.to_s, value ] } : {}
+    event_values = event_data.transform_values { |value| value.is_a?(String) ? value : JSON.generate(value) }
 
     boundary = nil
-    prompt_template.gsub(PLACEHOLDER_PATTERN) do
-      name, untrusted = Regexp.last_match.captures
+    prompt_template.gsub(TEMPLATE_PATTERN) do
+      name, untrusted, field, filter = Regexp.last_match.captures
+      if field
+        value = event_values.fetch(field, "")
+        unless filter == "|untrusted"
+          # Only a string or a number can be an identifier; `true` or `null` is not one.
+          raw = event_data[field]
+          next (raw.is_a?(String) || raw.is_a?(Numeric)) && value.strip.match?(MCP_EVENT_ID_FIELD_FORMAT) ? value.strip : ""
+        end
+
+        boundary ||= untrusted_boundary(values.values + event_values.values)
+        next fence_untrusted("event.#{field}", value, boundary)
+      end
       next values.fetch(name) unless untrusted
 
-      boundary ||= untrusted_boundary(values.values)
+      boundary ||= untrusted_boundary(values.values + event_values.values)
       fence_untrusted(name, values.fetch(name), boundary)
     end
   end
@@ -1572,6 +1613,27 @@ class Trigger < ApplicationRecord
   # put them in the prompt as if whoever configured the trigger had written them, so it is refused
   # at save rather than trusted to the template author's care. The trusted identifiers
   # ({{message_id}}, {{thread_id}}) and {{link}} may be bare.
+  # An MCP event's payload is whatever the server relayed — for strad's Slack events, what somebody
+  # typed into Slack. A trigger with an `mcp_event` condition must therefore fence every payload
+  # field it names, or ask for it as an identifier; a bare one is refused at save.
+  def validate_mcp_event_template_fences_payload
+    return unless trigger_conditions.any? { |condition| condition.condition_type == "mcp_event" && !condition.marked_for_destruction? }
+
+    if workflow_backed?
+      # McpEventTriggerPollerJob fires a rendered template only; a workflow trigger would be polled
+      # and refused every minute.
+      errors.add(:workflow_id, "cannot be combined with an MCP event condition, which fires a prompt template")
+      return
+    end
+
+    bare = unfenced_mcp_event_fields
+    return if bare.empty?
+
+    errors.add(:prompt_template, "must fence what an MCP event's payload carries: write " \
+                                 "#{bare.map { |field| "{{event.#{field}|untrusted}}" }.join(', ')} " \
+                                 "(or |id for an identifier) instead of #{bare.map { |field| "{{event.#{field}}}" }.join(', ')}")
+  end
+
   def validate_email_template_fences_sender_content
     return if workflow_backed?
     return unless trigger_conditions.any? { |condition| condition.condition_type == "email" && !condition.marked_for_destruction? }

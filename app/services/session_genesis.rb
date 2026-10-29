@@ -26,7 +26,7 @@
 # The defaults below are policy, not physics — but where you change them depends
 # on the kind, and the split is deliberate:
 #
-#   - Eight of the eleven kinds (`slack`, `whatsapp`, `email`, `github_issue`,
+#   - Nine of the twelve kinds (`slack`, `whatsapp`, `email`, `mcp_event`, `github_issue`,
 #     `github_label`, `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
 #     types. Their
 #     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
@@ -51,6 +51,7 @@ module SessionGenesis
   SLACK = "slack"
   WHATSAPP = "whatsapp"
   EMAIL = "email"
+  MCP_EVENT = "mcp_event"
   GITHUB_ISSUE = "github_issue"
   GITHUB_LABEL = "github_label"
   SCHEDULE = "schedule"
@@ -92,6 +93,14 @@ module SessionGenesis
       description: "An email trigger fired on new mail in a watched mailbox. Anyone can send " \
                    "mail, and nobody expects an answer to it within the minute, so it waits for " \
                    "quota headroom like the other automated feeds."
+    ),
+    Kind.new(
+      key: MCP_EVENT,
+      label: "MCP event trigger",
+      default_class: SPOT,
+      description: "An MCP event trigger fired on an event a catalog MCP server published. It is " \
+                   "an automated feed by default; a trigger whose events have a person waiting on " \
+                   "the answer sets priority on its own row."
     ),
     Kind.new(
       key: GITHUB_ISSUE,
@@ -163,13 +172,14 @@ module SessionGenesis
     "github_label" => "github_label",
     "github_issue" => "github_issue",
     "whatsapp" => "whatsapp",
-    "email" => "email"
+    "email" => "email",
+    "mcp_event" => "mcp_event"
   }.freeze
 
   # Which genesis wins when one trigger carries several condition types. The
   # human-facing kinds come first, so a mixed trigger is never silently demoted
   # to spot on the strength of a condition that did not fire.
-  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event email github_label github_issue ao_event schedule].freeze
+  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event email mcp_event github_label github_issue ao_event schedule].freeze
 
   # The kinds a trigger can produce. Their class is chosen per trigger, so there
   # is no per-kind setting for them.
