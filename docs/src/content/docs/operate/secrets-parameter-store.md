@@ -787,12 +787,15 @@ name within the 10-second negative TTL. No redeploy.
 
 ## Secrets Zimmer itself depends on
 
-Two values in this store are for Zimmer's own use, not for an MCP server:
-`OPENROUTER_API_KEY`, the provider key every Pi session runs on, and
-`LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key).
+Some values in this store are for Zimmer's own use, not for an MCP server:
+`OPENROUTER_API_KEY`, the provider key every Pi session runs on;
+`LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key); and
+`TESTFLIGHT_ASC_ISSUER_ID`, `TESTFLIGHT_ASC_KEY_ID` and `TESTFLIGHT_ASC_KEY_P8`, the App Store
+Connect API key that [TestFlight crash collection](/operate/observability/#testflight-crash-reports)
+reads with. Keep that one store-only: a name in `mcp_secrets` is in every session's environment.
 
 **Zimmer does not write to its store.** No page, endpoint or MCP tool creates,
-rotates, deletes or reads back a value. A human sets both keys the same way as any
+rotates, deletes or reads back a value. A human sets each of them the same way as any
 other secret: in the secrets console that administers this store, or with the
 `gcloud` commands in [Adding a secret](#adding-a-secret). The path is
 `/zimmer/<env>/secrets/static/<NAME>`, for example
