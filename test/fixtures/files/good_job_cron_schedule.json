@@ -85,6 +85,16 @@
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
     },
+    "mcp_event_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "McpEventTriggerPollerJob",
+      "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
+    },
+    "mcp_event_sources_refresh": {
+      "cron": "17 */6 * * *",
+      "class": "McpEventSourcesRefreshJob",
+      "description": "Find which catalog MCP servers publish events, for the trigger form and list_mcp_event_sources"
+    },
     "slack_outage_marker": {
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
@@ -397,6 +407,16 @@
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
     },
+    "mcp_event_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "McpEventTriggerPollerJob",
+      "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
+    },
+    "mcp_event_sources_refresh": {
+      "cron": "17 */6 * * *",
+      "class": "McpEventSourcesRefreshJob",
+      "description": "Find which catalog MCP servers publish events, for the trigger form and list_mcp_event_sources"
+    },
     "slack_outage_marker": {
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
@@ -693,6 +713,16 @@
       "cron": "* * * * *",
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
+    },
+    "mcp_event_trigger_poller": {
+      "cron": "* * * * *",
+      "class": "McpEventTriggerPollerJob",
+      "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
+    },
+    "mcp_event_sources_refresh": {
+      "cron": "17 */6 * * *",
+      "class": "McpEventSourcesRefreshJob",
+      "description": "Find which catalog MCP servers publish events, for the trigger form and list_mcp_event_sources"
     },
     "slack_outage_marker": {
       "cron": "* * * * *",

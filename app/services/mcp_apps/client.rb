@@ -7,7 +7,7 @@ require "json"
 module McpApps
   # A minimal MCP client for the Streamable HTTP transport, speaking exactly the
   # four requests this feature needs: `initialize`, `tools/list`, `resources/read`
-  # and `tools/call`.
+  # and `tools/call`. McpEvents::Client adds the events extension's two on top.
   #
   # Why not a gem: the `mcp` gem Zimmer already depends on implements the SERVER
   # half of the protocol (it is what `POST /mcp` is built on) and ships no client.
@@ -89,6 +89,15 @@ module McpApps
       collect_paginated("resources/list", "resources")
     end
 
+    # What the server declared in its `initialize` result's `capabilities`. Initializes
+    # the connection if it has not been already.
+    #
+    # @return [Hash]
+    def server_capabilities
+      ensure_initialized!
+      @server_capabilities
+    end
+
     # @param uri [String] the resource URI to read
     # @return [Hash] the `resources/read` result
     def resources_read(uri)
@@ -123,9 +132,11 @@ module McpApps
       items
     end
 
-    def request(method, params)
+    # +headers+ are added to this one POST only — the per-request headers a method may
+    # call for (McpEvents::Client sends `Mcp-Method` / `Mcp-Name`).
+    def request(method, params, headers: {})
       ensure_initialized!
-      rpc(method, params)
+      rpc(method, params, headers: headers)
     end
 
     def ensure_initialized!
@@ -136,14 +147,15 @@ module McpApps
         "capabilities" => {},
         "clientInfo" => CLIENT_INFO
       })
+      @server_capabilities = result["capabilities"].is_a?(Hash) ? result["capabilities"] : {}
       @initialized = true
       notify("notifications/initialized")
     end
 
-    def rpc(method, params)
+    def rpc(method, params, headers: {})
       @next_id += 1
       body = { "jsonrpc" => "2.0", "id" => @next_id, "method" => method, "params" => params || {} }
-      response = post(body)
+      response = post(body, headers: headers)
       message = extract_message(response, @next_id)
 
       raise Error, "no response to #{method}" if message.nil?
@@ -166,14 +178,14 @@ module McpApps
       nil
     end
 
-    def post(body)
+    def post(body, headers: {})
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = @uri.scheme == "https"
       http.open_timeout = OPEN_TIMEOUT_SECONDS
       http.read_timeout = READ_TIMEOUT_SECONDS
 
       post = Net::HTTP::Post.new(@uri.request_uri)
-      @headers.each { |key, value| post[key] = value }
+      @headers.merge(headers).each { |key, value| post[key] = value }
       post["Content-Type"] = "application/json"
       post["Accept"] = "application/json, text/event-stream"
       post["MCP-Protocol-Version"] = MCP_PROTOCOL_VERSION

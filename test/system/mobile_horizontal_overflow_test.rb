@@ -1265,6 +1265,46 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     page.save_screenshot("tmp/screenshots/proof-email-trigger-form-375.png")
   end
 
+  # An mcp_event condition carries a slug-prefixed event name and JSON with no break opportunity in
+  # it, and the form asks the server live and writes the event types it publishes under the field.
+  test "an mcp_event trigger's form and detail do not overflow horizontally on a phone" do
+    events = FakeEventsMcpServer.start
+    fake = ServersConfig::Server.new("slack-zimmer", { "title" => "Slack (fake)", "type" => "streamable-http", "url" => events.url, "headers" => {} })
+    # Array(): a degraded catalog resolves to nil, and this test needs only the one server.
+    ServersConfig.stubs(:all).returns(Array(ServersConfig.all).reject { |server| server.name == "slack-zimmer" } + [ fake ])
+
+    trigger = Trigger.new(
+      name: "slack-mention-listener-mcp-events-parity-shadow",
+      prompt_template: "Parity test for {{event_id}} in {{event.channel_id|id}}",
+      status: "enabled",
+      agent_root_name: AgentRootsConfig.all.first.name
+    )
+    trigger.trigger_conditions.build(condition_type: "mcp_event", configuration: {
+      "server" => "slack-zimmer", "event_name" => FakeEventsMcpServer::EVENT_NAME,
+      "arguments" => { "addressed_to_bot" => true, "channel_ids" => %w[C0BG98BRH7U C0BGHMMDX8T C0BHYV0KKC0 C0BLYG4V95H] },
+      "payload_filters" => { "user_id" => %w[U0BFTSUN8MD U0BGU04U6F6] }
+    })
+    trigger.save!
+
+    visit trigger_path(trigger)
+    assert_text FakeEventsMcpServer::EVENT_NAME
+    assert_no_horizontal_overflow("mcp_event trigger detail")
+    page.save_screenshot("tmp/screenshots/proof-mcp-event-trigger-detail-375.png")
+
+    visit edit_trigger_path(trigger)
+    assert_selector "[data-trigger-form-target=mcpEventConfig]", visible: true
+    assert_text "Publishes: #{FakeEventsMcpServer::EVENT_NAME}"
+    assert_no_horizontal_overflow("mcp_event trigger edit form")
+    page.execute_script("document.querySelector('[data-trigger-form-target=\"mcpEventConfig\"]').scrollIntoView({ block: 'start' })")
+    page.save_screenshot("tmp/screenshots/proof-mcp-event-trigger-form-375.png")
+
+    visit new_trigger_path(type: "mcp_event")
+    assert_selector "[data-trigger-form-target=mcpEventConfig]", visible: true
+    assert_no_horizontal_overflow("new mcp_event trigger form")
+  ensure
+    events&.stop
+  end
+
   # A failed trigger renders an error string it did not choose — an exception
   # message with no break opportunity is the normal case, not the pathological
   # one. Both surfaces show it, so both are measured with one in place.

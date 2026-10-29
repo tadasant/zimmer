@@ -201,6 +201,18 @@ module CronSchedule
       description: "Poll the mailbox for new mail and create a session per new thread",
       environments: %i[production staging development]
     },
+    mcp_event_trigger_poller: {
+      cron: "* * * * *", # Every minute — one events/poll per mcp_event condition (fewer when a server asks for nextPollMs)
+      class: "McpEventTriggerPollerJob",
+      description: "Poll MCP servers that publish events (the MCP Events extension) and create a session per event",
+      environments: %i[production staging development]
+    },
+    mcp_event_sources_refresh: {
+      cron: "17 */6 * * *", # Every six hours — one initialize per remote catalog server, plus events/list where declared
+      class: "McpEventSourcesRefreshJob",
+      description: "Find which catalog MCP servers publish events, for the trigger form and list_mcp_event_sources",
+      environments: %i[production staging development]
+    },
     slack_outage_marker: {
       cron: "* * * * *", # Every minute — one query; Slack is called only during an outage
       class: "SlackOutageMarkerJob",

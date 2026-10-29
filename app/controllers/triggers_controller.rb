@@ -176,6 +176,14 @@ class TriggersController < ApplicationController
     render json: { error: e.message }, status: :service_unavailable
   end
 
+  # The MCP servers that publish events, for an `mcp_event` condition's pickers — the swept roster,
+  # or one named server asked now (the form's "check this server").
+  def mcp_event_sources
+    render json: McpEvents::Sources.listing(server: params[:server])
+  rescue McpEvents::Sources::Unavailable => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
+
   # The WhatsApp chats the bridge's account is in, for the form's chat picker.
   def whatsapp_chats
     unless WhatsappService.configured?
@@ -306,7 +314,7 @@ class TriggersController < ApplicationController
       catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [] ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
       ]
     ).tap do |p|
       # An empty number field means "no cap" (unbounded), not 0. Only rewrite the

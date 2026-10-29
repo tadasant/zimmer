@@ -24,6 +24,7 @@
           ["Slack - Channel messages or @mentions", "slack"],
           ["WhatsApp - Messages in a chat", "whatsapp"],
           ["Email - New mail in a mailbox", "email"],
+          ["MCP Event - An event an MCP server publishes", "mcp_event"],
           ["Schedule - Time-based (recurring or one-time)", "schedule"],
           ["Zimmer Event - Internal system event", "ao_event"],
           ["System Event - The deployment changed state", "system_event"],
@@ -192,6 +193,54 @@
              <%= "disabled" unless email %>
              class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
       <label for="<%= cf.object_name.parameterize %>_include_automated" class="ml-2 text-xs text-gray-600">Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.</label>
+    </div>
+  </div>
+
+  <!-- MCP Event Configuration -->
+  <% mcp_event = condition.condition_type == "mcp_event" %>
+  <% mcp_list_id = "#{cf.object_name.parameterize}_mcp_event" %>
+  <div data-trigger-form-target="mcpEventConfig" class="<%= 'hidden' unless mcp_event %> space-y-3">
+    <p class="text-xs text-gray-500">Fires one session per event a catalog MCP server publishes through the MCP Events extension, polled about once a minute with the credentials a session would get for that server. Payload fields are untrusted: write them <code class="bg-gray-100 px-1 rounded break-all">{{event.text|untrusted}}</code>, or <code class="bg-gray-100 px-1 rounded break-all">{{event.channel_id|id}}</code> for an identifier. <code class="bg-gray-100 px-1 rounded">{{event_id}}</code> is safe to write bare.</p>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Server <span class="text-red-500">*</span></label>
+      <input type="text"
+             name="<%= cf.object_name %>[configuration][server]"
+             value="<%= condition.mcp_event_server if mcp_event %>"
+             list="<%= mcp_list_id %>_servers"
+             placeholder="slack-zimmer"
+             autocomplete="off"
+             data-trigger-form-target="mcpEventServer"
+             data-action="change->trigger-form#handleMcpEventServerChange"
+             <%= "disabled" unless mcp_event %>
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+      <datalist id="<%= mcp_list_id %>_servers" data-trigger-form-target="mcpEventServerList"></datalist>
+      <p class="mt-1 text-xs text-gray-500 break-words" data-trigger-form-target="mcpEventStatus">The catalog name of a remote MCP server that publishes events.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Event <span class="text-red-500">*</span></label>
+      <input type="text"
+             name="<%= cf.object_name %>[configuration][event_name]"
+             value="<%= condition.mcp_event_name if mcp_event %>"
+             list="<%= mcp_list_id %>_events"
+             placeholder="slack-zimmer__message_posted"
+             autocomplete="off"
+             <%= "disabled" unless mcp_event %>
+             class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+      <datalist id="<%= mcp_list_id %>_events" data-trigger-form-target="mcpEventNameList"></datalist>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Arguments <span class="text-gray-400 font-normal">(optional, JSON)</span></label>
+      <textarea name="<%= cf.object_name %>[configuration][arguments]" rows="3" placeholder='{"addressed_to_bot": true}'
+                <%= "disabled" unless mcp_event %>
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"><%= condition.mcp_event_arguments.to_json if mcp_event && condition.mcp_event_arguments.any? %></textarea>
+      <p class="mt-1 text-xs text-gray-500">Sent to the server with every poll; the event type's input schema says what it takes. Changing the server, event or arguments starts the condition over from now.</p>
+    </div>
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1">Payload filters <span class="text-gray-400 font-normal">(optional, JSON)</span></label>
+      <textarea name="<%= cf.object_name %>[configuration][payload_filters]" rows="2" placeholder='{"user_id": ["U0123ABCD"]}'
+                <%= "disabled" unless mcp_event %>
+                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"><%= condition.mcp_event_payload_filters.to_json if mcp_event && condition.mcp_event_payload_filters.any? %></textarea>
+      <p class="mt-1 text-xs text-gray-500">Payload field =&gt; the values allowed to fire, checked by Zimmer on every event. Use it for who may trigger a session, even when the server filters too.</p>
     </div>
   </div>
 

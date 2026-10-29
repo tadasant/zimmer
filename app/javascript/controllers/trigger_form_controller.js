@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Handles trigger form interactivity including:
 // - Adding/removing trigger conditions
-// - Condition type switching (Slack, WhatsApp, Email, Schedule, Zimmer Event, GitHub) per condition card
+// - Condition type switching (Slack, WhatsApp, Email, MCP Event, Schedule, Zimmer Event, GitHub) per condition card
 // - Schedule mode switching (Recurring/One-time) per condition card
 // - Schedule unit-dependent field visibility (day of week, time, timezone)
 export default class extends Controller {
@@ -11,6 +11,7 @@ export default class extends Controller {
     "slackConfig", "scheduleConfig", "aoEventConfig", "systemEventConfig",
     "githubConfig", "githubLabelFields", "githubIssueFields",
     "emailConfig",
+    "mcpEventConfig", "mcpEventServer", "mcpEventServerList", "mcpEventNameList", "mcpEventStatus",
     "whatsappConfig", "whatsappChatSelect", "whatsappChatStatus", "whatsappChatId", "whatsappChatName",
     "channelSelect", "channelStatus", "channelId", "channelName",
     "channelManual", "channelManualInput", "slackChannelField", "slackEventTypeSelect",
@@ -24,6 +25,7 @@ export default class extends Controller {
     slackConfigured: Boolean,
     channelsUrl: { type: String, default: "/triggers/channels" },
     whatsappChatsUrl: { type: String, default: "/triggers/whatsapp_chats" },
+    mcpEventSourcesUrl: { type: String, default: "/triggers/mcp_event_sources" },
     conditions: Array,
     conditionIndex: { type: Number, default: 0 }
   }
@@ -64,6 +66,7 @@ export default class extends Controller {
 
       this.updateWhatsappFieldsInCard(card, typeSelect ? typeSelect.value : "")
       this.updateEmailFieldsInCard(card, typeSelect ? typeSelect.value : "")
+      this.updateMcpEventFieldsInCard(card, typeSelect ? typeSelect.value : "")
     })
   }
 
@@ -109,6 +112,7 @@ export default class extends Controller {
     this.updateGithubFieldsInCard(card, type)
     this.updateWhatsappFieldsInCard(card, type)
     this.updateEmailFieldsInCard(card, type)
+    this.updateMcpEventFieldsInCard(card, type)
 
     // Lazily load the channel list the first time this card's Slack config is shown
     if (type === "slack") this.loadChannelsForCard(card)
@@ -214,6 +218,93 @@ export default class extends Controller {
     const isEmail = type === "email"
     config.classList.toggle("hidden", !isEmail)
     config.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !isEmail })
+  }
+
+  // Show/hide a card's MCP event fields, disabled while hidden like the email ones. Showing them
+  // loads the swept roster of event-publishing servers into the server field's suggestions.
+  updateMcpEventFieldsInCard(card, type) {
+    const config = card.querySelector("[data-trigger-form-target='mcpEventConfig']")
+    if (!config) return
+
+    const isMcpEvent = type === "mcp_event"
+    config.classList.toggle("hidden", !isMcpEvent)
+    config.querySelectorAll("input, select, textarea").forEach(el => { el.disabled = !isMcpEvent })
+    if (isMcpEvent) this.loadMcpEventSourcesForCard(card)
+  }
+
+  loadMcpEventSourcesForCard(card) {
+    const list = card.querySelector("[data-trigger-form-target='mcpEventServerList']")
+    if (!list || card.dataset.mcpEventSourcesLoaded === "true") return
+    card.dataset.mcpEventSourcesLoaded = "true"
+
+    if (!this.mcpEventSourcesPromise) {
+      this.mcpEventSourcesPromise = this.fetchMcpEventSources(this.mcpEventSourcesUrlValue)
+    }
+    this.mcpEventSourcesPromise
+      .then((data) => {
+        (data.sources || []).forEach((source) => {
+          const option = document.createElement("option")
+          option.value = source.server
+          option.textContent = source.title || source.server
+          list.appendChild(option)
+        })
+        const server = card.querySelector("[data-trigger-form-target='mcpEventServer']")
+        if (server && server.value) this.describeMcpEventServer(card, server.value)
+      })
+      .catch(() => {})
+  }
+
+  handleMcpEventServerChange(event) {
+    const card = event.target.closest("[data-trigger-form-target='conditionCard']")
+    if (card) this.describeMcpEventServer(card, event.target.value.trim())
+  }
+
+  // Ask the named server for its event types now, and offer them as the event field's suggestions,
+  // with what each takes as arguments.
+  describeMcpEventServer(card, server) {
+    const list = card.querySelector("[data-trigger-form-target='mcpEventNameList']")
+    const status = card.querySelector("[data-trigger-form-target='mcpEventStatus']")
+    if (!server || !list) return
+
+    const setStatus = (text, isError = false) => {
+      if (!status) return
+      status.textContent = text
+      status.classList.toggle("text-red-600", isError)
+      status.classList.toggle("text-gray-500", !isError)
+    }
+
+    setStatus(`Asking ${server} for its events…`)
+    const url = `${this.mcpEventSourcesUrlValue}?server=${encodeURIComponent(server)}`
+    this.fetchMcpEventSources(url)
+      .then((data) => {
+        list.replaceChildren()
+        const events = (data.sources && data.sources[0] && data.sources[0].events) || []
+        if (!data.publishes_events) {
+          setStatus(`${server} does not declare the MCP Events extension.`, true)
+          return
+        }
+        events.forEach((descriptor) => {
+          const option = document.createElement("option")
+          option.value = descriptor.name
+          option.textContent = descriptor.description || descriptor.name
+          list.appendChild(option)
+        })
+        const described = events.map((descriptor) => {
+          const args = Object.keys((descriptor.inputSchema && descriptor.inputSchema.properties) || {})
+          return `${descriptor.name}${args.length ? ` (arguments: ${args.join(", ")})` : ""}`
+        })
+        setStatus(events.length ? `Publishes: ${described.join("; ")}` : `${server} publishes no events right now.`)
+      })
+      .catch((error) => setStatus(`Could not ask ${server} for its events (${error.message}).`, true))
+  }
+
+  fetchMcpEventSources(url) {
+    return fetch(url, { headers: { Accept: "application/json" } })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+        return data
+      })
   }
 
   // Copy the picked chat into the submitted chat_id / chat_name fields.
@@ -548,6 +639,7 @@ export default class extends Controller {
             <option value="slack">Slack - Channel messages or @mentions</option>
             <option value="whatsapp">WhatsApp - Messages in a chat</option>
             <option value="email">Email - New mail in a mailbox</option>
+            <option value="mcp_event">MCP Event - An event an MCP server publishes</option>
             <option value="schedule">Schedule - Time-based (recurring or one-time)</option>
             <option value="ao_event">Zimmer Event - Internal system event</option>
             <option value="system_event">System Event - The deployment changed state</option>
@@ -640,6 +732,36 @@ export default class extends Controller {
             <input type="checkbox" id="email_include_automated_${index}" name="${name}[configuration][include_automated]" value="1" disabled
                    class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
             <label for="email_include_automated_${index}" class="ml-2 text-xs text-gray-600">Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.</label>
+          </div>
+        </div>
+
+        <div data-trigger-form-target="mcpEventConfig" class="hidden space-y-3">
+          <p class="text-xs text-gray-500">Fires one session per event a catalog MCP server publishes through the MCP Events extension, polled about once a minute with the credentials a session would get for that server. Payload fields are untrusted: write them <code class="bg-gray-100 px-1 rounded break-all">{{event.text|untrusted}}</code>, or <code class="bg-gray-100 px-1 rounded break-all">{{event.channel_id|id}}</code> for an identifier. <code class="bg-gray-100 px-1 rounded">{{event_id}}</code> is safe to write bare.</p>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Server <span class="text-red-500">*</span></label>
+            <input type="text" name="${name}[configuration][server]" list="mcp_event_${index}_servers" placeholder="slack-zimmer" autocomplete="off" disabled
+                   data-trigger-form-target="mcpEventServer" data-action="change->trigger-form#handleMcpEventServerChange"
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+            <datalist id="mcp_event_${index}_servers" data-trigger-form-target="mcpEventServerList"></datalist>
+            <p class="mt-1 text-xs text-gray-500 break-words" data-trigger-form-target="mcpEventStatus">The catalog name of a remote MCP server that publishes events.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Event <span class="text-red-500">*</span></label>
+            <input type="text" name="${name}[configuration][event_name]" list="mcp_event_${index}_events" placeholder="slack-zimmer__message_posted" autocomplete="off" disabled
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+            <datalist id="mcp_event_${index}_events" data-trigger-form-target="mcpEventNameList"></datalist>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Arguments <span class="text-gray-400 font-normal">(optional, JSON)</span></label>
+            <textarea name="${name}[configuration][arguments]" rows="3" placeholder='{"addressed_to_bot": true}' disabled
+                      class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+            <p class="mt-1 text-xs text-gray-500">Sent to the server with every poll; the event type's input schema says what it takes. Changing the server, event or arguments starts the condition over from now.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Payload filters <span class="text-gray-400 font-normal">(optional, JSON)</span></label>
+            <textarea name="${name}[configuration][payload_filters]" rows="2" placeholder='{"user_id": ["U0123ABCD"]}' disabled
+                      class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
+            <p class="mt-1 text-xs text-gray-500">Payload field =&gt; the values allowed to fire, checked by Zimmer on every event. Use it for who may trigger a session, even when the server filters too.</p>
           </div>
         </div>
 
