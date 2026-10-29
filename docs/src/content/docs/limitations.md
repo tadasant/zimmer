@@ -873,15 +873,20 @@ is most often imagined to cover. Running the alert job on `ubuntu-latest` protec
 *degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
 gone quiet is still a human job.
 
-### A hosted macOS runner shortage reddens `main`
+### A hosted macOS runner shortage reddens `main` for up to two hours
 
 The `ios` and `ios_carplay` jobs run on GitHub-hosted `macos-latest`, and GitHub is sometimes short
 of macOS arm64 capacity. A job that waits too long without a runner (about half an hour in run
 40899943842) is given up. The run concludes `failure` and `#alerts` pages, even though no code is
 wrong. The job itself shows as `cancelled`, like a superseded one; the annotation "The job was not
 acquired by Runner of type hosted even after multiple attempts" is what tells them apart.
-`all-checks-pass` fails the run too, deliberately, because the iOS build did not run. The fix is a
-re-run of the failed jobs (`gh run rerun <id> --failed`), and nothing re-runs it automatically.
+`all-checks-pass` fails the run too, deliberately, because the iOS build did not run.
+
+`alert-ci-failure.yml` re-runs such a run once and waits for it, so `#alerts` hears only when
+the re-run fails too ([CI failure alerts](/operate/deploying/#ci-failure-alerts)). Until the
+re-run finishes, `main` shows red, and a shortage that outlasts both attempts still pages. On a
+pull request nothing re-runs automatically: `gh run rerun <id> --failed`. A flaky real failure
+that happens to sit beside a lost runner gets the same one free retry and may never page.
 
 ### The trigger-poll liveness alarm depends on Redis, and fails quiet
 
