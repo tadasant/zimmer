@@ -18,7 +18,8 @@ module Issues
   #   stranded  a row that left the queue — started, or mechanically removed —
   #             whose issue is still open and whose premise has expired
   #   awaiting  a stranded row a triager held for a human decision, until the
-  #   decision  hold lapses or its evidence changes
+  #   decision  hold lapses or its evidence changes (a moving open PR only
+  #             suspends it)
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #

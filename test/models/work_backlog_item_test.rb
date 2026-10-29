@@ -136,12 +136,120 @@ class WorkBacklogItemTest < ActiveSupport::TestCase
     item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
     assert item.reload.hold_active?, "the same evidence keeps the hold"
 
-    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_STALLED)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
     item.reload
     assert_not item.hold_active?
     assert_nil item.held_at
     assert_nil item.hold_reason
     assert_equal [ item.id ], WorkBacklogItem.stranded.pluck(:id)
+  end
+
+  # #1420: tadasant/zimmer#1418 said "Related to #141 and #217 … It closes
+  # neither". While it was open both rows read `pr_open`, and voiding on that
+  # wiped their holds; once it merged they read `pr_merged_issue_open` again —
+  # the evidence the holds were recorded against — and re-paged at 48 days.
+  test "a PR that opens and merges without resolving anything leaves the hold in force" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#141")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    item.hold_for_decision!(reason: "Tadas to pick one of #79/#141/#217", by: "fleet-maintenance")
+    held_until = item.held_until
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+    assert item.reload.hold_active?, "an open PR has not changed the evidence yet"
+    assert_empty WorkBacklogItem.stranded, "a row with a moving PR is not stranded either way"
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    item.reload
+    assert item.hold_active?
+    assert_equal held_until, item.held_until, "suspending a hold does not extend it"
+    assert_equal "Tadas to pick one of #79/#141/#217", item.hold_reason
+    assert_empty WorkBacklogItem.stranded
+    assert_equal [ item.id ], WorkBacklogItem.awaiting_decision.pluck(:id)
+  end
+
+  # `pr_stalled` is unresolved: a hold kept across it would be a silenced row
+  # with nothing moving, so it is judged like any other verdict.
+  test "an open PR that goes quiet on a held row voids the hold" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    item.hold_for_decision!(reason: "pick one", by: "human")
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_STALLED)
+
+    assert_nil item.reload.held_at
+    assert_equal [ item.id ], WorkBacklogItem.stranded.pluck(:id)
+  end
+
+  test "a mentioning PR that closes unmerged leaves a no_pr hold in force" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    item.hold_for_decision!(reason: "needs a secret only a human can seed", by: "human")
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+
+    assert item.reload.hold_active?
+    assert_equal [ item.id ], WorkBacklogItem.awaiting_decision.pluck(:id)
+  end
+
+  # The item's own `awaiting_decision` flag agrees with the scope: a held row
+  # with a moving PR is in neither list, and comes back to this one when the PR lands.
+  test "as_api_json reports awaiting_decision as the scope does across a suspension" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    item.hold_for_decision!(reason: "pick one", by: "human")
+    assert item.as_api_json[:awaiting_decision]
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+    assert_not item.reload.as_api_json[:awaiting_decision]
+    assert_empty WorkBacklogItem.awaiting_decision
+    assert_equal "pick one", item.as_api_json[:hold_reason], "the suspended hold is still on the row"
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    assert item.reload.as_api_json[:awaiting_decision]
+  end
+
+  # The open PR is judged by what the row reads once it has landed: a PR that
+  # actually changed something still voids the hold.
+  test "a hold suspended by an open PR is voided when the row lands on different evidence" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    item = backlog_item(key: "zimmer#1")
+    item.mark_started!(session: sessions(:archived), by: nil)
+    item.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+    item.hold_for_decision!(reason: "needs a secret only a human can seed", by: "human")
+
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+    assert item.reload.hold_active?
+    item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+
+    assert_nil item.reload.held_at
+    assert_equal [ item.id ], WorkBacklogItem.stranded.pluck(:id)
+  end
+
+  test "a closed issue or a superseding row clears a hold, open PR or not" do
+    sessions(:archived).update_columns(archived_at: 2.days.ago)
+    [ WorkBacklogItem::LIVENESS_ISSUE_CLOSED, WorkBacklogItem::LIVENESS_SUPERSEDED ].each_with_index do |state, index|
+      item = backlog_item(key: "zimmer##{index + 1}")
+      item.mark_started!(session: sessions(:archived), by: nil)
+      item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+      item.hold_for_decision!(reason: "pick one", by: "human")
+      item.record_liveness!(WorkBacklogItem::LIVENESS_PR_OPEN)
+
+      item.record_liveness!(state)
+
+      item.reload
+      assert_nil item.held_at, "#{state} clears the hold"
+      assert_nil item.held_liveness_state
+    end
   end
 
   # The sweep holds its row objects across a slow GitHub probe. A hold recorded

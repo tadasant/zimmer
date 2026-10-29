@@ -174,11 +174,27 @@ class WorkBacklogItem < ApplicationRecord
   # is active, and a lapsed one cannot be renewed until that page has gone out:
   # WorkBacklog::Hold refuses a row still carrying a spent hold.
   #
-  # And it is VOID the moment the evidence it was recorded against changes. A
-  # hold says "given THIS, a person has to decide"; once the issue closes, a PR
-  # opens, or a PR merges, that sentence is about a row that no longer exists.
-  # See `record_liveness!`.
+  # And it is VOID once the evidence it was recorded against has changed. A hold
+  # says "given THIS, a person has to decide"; once the issue closes, the row is
+  # superseded, or the row reads a different verdict, that sentence is about a
+  # row that no longer exists. See `record_liveness!`.
+  #
+  # A MOVING OPEN PR SUSPENDS IT instead (#1420). `pr_open` is the promise of
+  # new evidence, not new evidence: it hides whatever the row reads underneath,
+  # and a PR that only mentions the issue ("Related to #141 … It closes
+  # neither") reads `pr_open` while it is open and changes nothing once it has
+  # merged. Voiding on it wipes a human-decision hold for good and re-pages the
+  # row at its full age the moment the PR lands. So the hold is judged on what
+  # the row reads once the PR has merged, closed or gone quiet. `pr_stalled` is
+  # judged like any other verdict: it is unresolved, so a hold that survived it
+  # would be a silenced row with nothing moving. The hold lapses on its own
+  # clock throughout, and a `pr_open` row is not stranded, so a lapse while the
+  # PR is open pages on the first pass after the row is stranded again.
   HOLD_DURATION = 14.days
+
+  # Verdicts that say nothing about the evidence a hold stands on: a read that
+  # failed, and an open PR that is still moving.
+  HOLD_SUSPENDING_LIVENESS_STATES = [ LIVENESS_UNKNOWN, LIVENESS_PR_OPEN ].freeze
   HOLD_REASON_MAX = 2000
 
   # What a voided or spent hold is reset to.
@@ -503,9 +519,11 @@ class WorkBacklogItem < ApplicationRecord
   # the whole point of looking.
   #
   # A hold recorded against different evidence is voided here, in the same
-  # write, so no reader can see the new evidence beside the old hold. `unknown`
-  # is the exception: a read that failed says nothing about the row, and
-  # voiding on it would let a GitHub blip re-page every held row at once.
+  # write, so no reader can see the new evidence beside the old hold. The
+  # HOLD_SUSPENDING_LIVENESS_STATES are the exception. A read that failed says
+  # nothing about the row, and voiding on it would let a GitHub blip re-page
+  # every held row at once. A moving open PR says nothing YET, and voiding on it
+  # would let a PR that only mentions the issue wipe the hold for good (#1420).
   #
   # Under the row lock, which reloads the row first: the sweep holds this object
   # from before its GitHub probe, and a hold recorded in the meantime must be
@@ -524,6 +542,13 @@ class WorkBacklogItem < ApplicationRecord
   # Is a hold in force on this row right now?
   def hold_active?(now: Time.current) = held_until.present? && held_until > now
 
+  # Is this row in `awaiting_decision`? A hold in force on a row that is not
+  # resolved. A held row whose PR is moving (`pr_open`) is resolved, so it is in
+  # neither `stranded` nor here until the PR lands — see HOLD_DURATION.
+  def awaiting_decision?(now: Time.current)
+    hold_active?(now: now) && RESOLVED_LIVENESS_STATES.exclude?(liveness_state)
+  end
+
   # Record that what remains of this row is a person's decision. The caller has
   # checked the row is unresolved and its evidence has been read (WorkBacklog::Hold
   # does both); this only writes. `liveness_state` is copied as the evidence the
@@ -535,7 +560,7 @@ class WorkBacklogItem < ApplicationRecord
 
   # Would recording `state` void the hold on this row?
   def hold_voided_by?(state)
-    held_at.present? && state != LIVENESS_UNKNOWN && state != held_liveness_state
+    held_at.present? && HOLD_SUSPENDING_LIVENESS_STATES.exclude?(state) && state != held_liveness_state
   end
 
   # A human's hand-placement: the item goes exactly where they put it and stays
@@ -589,7 +614,7 @@ class WorkBacklogItem < ApplicationRecord
       removal_reason: removal_reason,
       liveness_state: liveness_state,
       liveness_checked_at: liveness_checked_at&.iso8601,
-      awaiting_decision: hold_active?,
+      awaiting_decision: awaiting_decision?,
       held_at: held_at&.iso8601,
       held_until: held_until&.iso8601,
       held_by: held_by,
