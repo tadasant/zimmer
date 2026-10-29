@@ -338,10 +338,27 @@ before the hourly sweep ran, and the row would never page again. After the page,
 the row again and hold it again.
 
 **A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
-and the sweep clears it, in the same write, the first time it records a different one: the issue
-closed, a PR opened, moved, stalled or merged, or a newer row superseded it. A failed read
-(`unknown`) does not void it, or a GitHub outage would re-page every held row at once. The Issues
-view also drops a held row whose issue its live snapshot shows closed, as it does for Stranded.
+and the sweep clears it, in the same write, the first time it records a different settled one: the
+issue closed, a newer row superseded it, or the row reads `pr_merged_issue_open` or `no_pr` where it
+read something else. A failed read (`unknown`) does not void it, or a GitHub outage would re-page
+every held row at once. The Issues view also drops a held row whose issue its live snapshot shows
+closed, as it does for Stranded.
+
+**An open PR suspends a hold instead of voiding it.** `pr_open` and `pr_stalled` mean an open PR
+references the issue, and that hides whatever the row reads underneath. A PR that only mentions the
+issue reads `pr_open` while it is open and changes nothing once it has merged. Before
+[#1420](https://github.com/tadasant/zimmer/issues/1420), voiding on `pr_open` let one such PR wipe two
+human-decision holds for good, and the rows re-paged at 48 days the moment it merged. So the hold
+stays on the row while the PR is open. Once the PR has merged or closed, the hold is judged on what
+the row reads then. The same evidence as before keeps it, and different evidence voids it. The hold
+lapses on its own clock throughout. A row with a moving PR is not stranded, so a lapse during
+`pr_open` pages on the first pass after the row is stranded again.
+
+**A bare mention still counts as a reference.** The probe reads GitHub's cross-reference events, and
+those do not tell "Refs #141" from "Related to #141". Neither is a closing keyword, and the fleet's
+deliberate partial fixes are worded freely ("Addresses #419"). Counting only certain phrasings would
+turn real partials into `no_pr` and drop the evidence a triager needs. Holds no longer depend on it:
+a mention cannot void one any more.
 
 `WorkBacklog::Hold` refuses a row that is not stranded (queued, in flight, parked or resolved), a
 row the sweep has not read yet (no `liveness_state`, or `unknown`), a row a newer row has

@@ -517,6 +517,107 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     assert held.hold_active?
   end
 
+  # --- #1420: a PR that only mentions a held issue ----------------------------
+
+  # The production sequence, 2026-10-29. Rows 306 (zimmer#141, removed 48 days
+  # earlier) and 541 were held at `pr_merged_issue_open`. zimmer#1418 said
+  # "Related to #141 and #217 … It closes neither"; the pass while it was open
+  # read `pr_open` and voided both holds, and the pass after it merged read
+  # `pr_merged_issue_open` again and paged band 6w five hours after band 1w.
+  test "held, then a mentioning PR opens, then merges: still held and no new page" do
+    held = removed_row(reason: "issue_has_open_pr", key: "zimmer#141", number: 141, removed_at: 48.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 7.days.ago - 1.hour)
+    earlier_merge = reference(state: "MERGED", updated_at: 40.days.ago, number: 100)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    held.hold_for_decision!(reason: "Tadas to pick one of #79/#141/#217", by: "fleet-maintenance")
+
+    with_alerts do |alerts|
+      sweep(probes: { 141 => probe(number: 141, references: [ earlier_merge ]), 2 => probe(number: 2) })
+      assert_equal 1, alerts.pages.size, "the unheld 7-day row pages band 1w"
+      assert_match(/1 more held for a human decision, not counted/, alerts.pages.last)
+
+      mention_open = reference(state: "OPEN", updated_at: Time.current, number: 1418)
+      sweep(probes: { 141 => probe(number: 141, references: [ earlier_merge, mention_open ]), 2 => probe(number: 2) })
+      assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, held.reload.liveness_state
+      assert held.hold_active?, "an open PR that resolves nothing does not void the hold"
+
+      mention_merged = reference(state: "MERGED", updated_at: Time.current, number: 1418)
+      result = sweep(probes: { 141 => probe(number: 141, references: [ earlier_merge, mention_merged ]),
+                               2 => probe(number: 2) })
+
+      held.reload
+      assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, held.liveness_state
+      assert held.hold_active?
+      assert_equal "Tadas to pick one of #79/#141/#217", held.hold_reason
+      assert_equal [ held.id ], WorkBacklogItem.awaiting_decision.pluck(:id)
+      assert_in_delta (7.days + 1.hour).to_i, result.oldest_stranded_age, 5, "the held row's 48 days are not counted"
+      assert_equal 1, alerts.pages.size, "no 6w page"
+      assert_equal [ "weeks-1" ], alerts.events.map { |event| event[:fingerprint][1] }
+    end
+  end
+
+  # Must-not-silence (a): the hold's own clock runs while an open PR suspends it,
+  # and the lapse pages the first pass the row is stranded again.
+  test "a hold that lapses while an open PR stands pages on the lapse once the PR lands" do
+    held = started_row(started_at: 20.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
+
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) do
+        sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
+        assert_empty alerts.pages, "a row with a moving PR is not stranded, held or not"
+
+        sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: Time.current) ]) })
+        assert_equal 1, alerts.pages.size
+        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.pages.last)
+        assert_equal "weeks-4", alerts.events.last[:fingerprint][1]
+        assert_nil held.reload.held_at, "the spent hold is cleared once paged"
+      end
+    end
+  end
+
+  # Must-not-silence (b): evidence that resolves the row still clears the hold.
+  test "a closed issue or a superseding row clears the hold through the sweep" do
+    closed = started_row(started_at: 20.days.ago)
+    superseded = started_row(key: "zimmer#2", number: 2, started_at: 20.days.ago)
+    [ closed, superseded ].each do |item|
+      item.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+      item.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+    end
+    backlog_item(key: "zimmer#2")
+
+    sweep(probes: { 1 => probe(state: "CLOSED"), 2 => probe(number: 2) })
+
+    assert_equal WorkBacklogItem::LIVENESS_ISSUE_CLOSED, closed.reload.liveness_state
+    assert_nil closed.held_at
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, superseded.reload.liveness_state
+    assert_nil superseded.held_at
+  end
+
+  # Must-not-silence (c): a held row riding out an open PR does not shelter the
+  # unheld rows beside it.
+  test "an unheld row still ages into a new band and pages while a held row has an open PR" do
+    held = started_row(started_at: 40.days.ago)
+    held.record_liveness!(WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    held.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+    started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
+
+    with_alerts do |alerts|
+      moving = ->(at) { { 1 => probe(references: [ reference(state: "OPEN", updated_at: at) ]), 2 => probe(number: 2) } }
+      sweep(probes: moving.call(Time.current))
+      travel 7.days do
+        sweep(probes: moving.call(Time.current))
+      end
+
+      assert_equal [ "weeks-1", "weeks-2" ], alerts.events.map { |event| event[:fingerprint][1] }
+      assert_equal 2, alerts.pages.size
+      assert held.reload.held_at.present?
+    end
+  end
+
   test "a pass that could not read a repo says nothing" do
     started_row(started_at: 9.days.ago)
 
