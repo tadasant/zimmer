@@ -530,6 +530,15 @@ PY
 done
 rm -f "$artifacts/.started"
 
+# The app's own log, for the drill: the CarPlay scene's connects, disconnects and refusals,
+# which no screenshot shows.
+if [ -n "$carplay" ]; then
+  xcrun simctl spawn "$udid" log show --last 30m --info --predicate 'subsystem == "com.tadasant.zimmer"' \
+    >"$artifacts/app-log.txt" 2>/dev/null || true
+  printf '==> the app'"'"'s CarPlay log\n'
+  grep -i -E 'carplay' "$artifacts/app-log.txt" | cut -c1-240 | tail -60 || true
+fi
+
 # In the drill a crash is the failure being looked for, whatever the assertions made of it:
 # a crash between two checks, or in a scene the test was not looking at, still fails the run.
 if [ -n "$carplay" ] && compgen -G "$artifacts/crashes/*.ips" >/dev/null; then

@@ -42,6 +42,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     ) {
         // A connect without the disconnect before it (CarPlay restarting the scene) starts clean.
         tearDown()
+        log.notice("carplay scene connected")
 
         let dashboard = CarPlayDashboard()
         dashboard.onTalk = { [weak self] in self?.live?.start() }
@@ -60,6 +61,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         Task { [weak self, log] in
             do {
                 try await interfaceController.setRoot(dashboard.tabBar)
+                log.notice("carplay root template set")
             } catch {
                 log.error("root template refused: \(String(describing: error), privacy: .public)")
             }
@@ -81,6 +83,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         _ templateApplicationScene: CPTemplateApplicationScene,
         didDisconnectInterfaceController interfaceController: CPInterfaceController
     ) {
+        log.notice("carplay scene disconnected")
         tearDown()
     }
 
