@@ -438,7 +438,8 @@ final class RealtimeConductorTests: XCTestCase {
         let truncate = RealtimeConductor.truncate(itemID: "r1", audioEndMs: 1_250)
         XCTAssertEqual(truncate["type"]?.string, "conversation.item.truncate")
         XCTAssertEqual(truncate["audio_end_ms"], .number(1_250))
-        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad")])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad"), .state(.listening)],
+                       "nothing running: the call says it is listening")
     }
 
     func testMicrophoneAudioIsResampledTo24kPCM16() {
@@ -480,7 +481,9 @@ final class RealtimeConductorTests: XCTestCase {
 
     func testAGatedLineNobodyCouldReadIsDropped() {
         var conductor = RealtimeConductor(listening: "dynamic")
-        let delete = { (id: String) in [RealtimeConductor.Effect.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(id)]))] }
+        let delete = { (id: String) in
+            [RealtimeConductor.Effect.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(id)])), .state(.listening)]
+        }
         XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"  "}"#)), delete("u1"))
         XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"u2"}"#)), delete("u2"))
         var always = RealtimeConductor()

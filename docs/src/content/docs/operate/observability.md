@@ -52,6 +52,39 @@ requests, so that is what the log exporter is shaped around. It ships two kinds 
 - **`rails.logger`** — every WARN/ERROR/FATAL line, broadcast off `Rails.logger`. The
   catch-all, so a plain `Rails.logger.error` from anywhere in the app still lands.
 
+### The iOS app's call log
+
+A third kind of record comes from the phone. The iOS app logs every step of its Live voice calls
+and posts them to `POST /api/v1/live/telemetry`. `LiveConversations::Telemetry` enqueues each event
+on this exporter as a structured record under the scope **`ios.live`**, stamped with the phone's own
+clock. It carries the event's name and level, its `call_id`, `conversation_id` and `seq` (one
+counter per app launch, so a trace sorts even within a millisecond), `mono_ms` (the phone's uptime),
+the app and phone (`surface`, `app_version`, `app_build`, `os`, `device`), and the event's fields
+as attributes. What is covered is under [CarPlay](/extend/ios-app/#carplay).
+
+These records are INFO and DEBUG as well as WARN, because they are enqueued directly rather than
+through `Rails.logger`, whose appender drops anything under WARN. An `error` event ships as **WARN**
+with `level=error`: an ERROR record pages `#alerts`, and a car losing signal on a drive is not worth
+a page. How much arrives is the [Call telemetry](/sessions/live/#call-telemetry) Live setting.
+
+Every call from the car, newest first:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.connected" surface:="carplay"
+```
+
+One call's trace, in order:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" call_id:="<id>" | sort by (seq)
+```
+
+Every problem in the last week, which is the question a check-in on whether to turn the logging down asks:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" level:in("warn","error") _time:7d | stats by (event) count() events
+```
+
 ### Client-caused rejections are re-logged at INFO, not suppressed
 
 A request the *client* got wrong is not broken server behavior, but Rails logs several of
@@ -172,6 +205,14 @@ invisible; at INFO the record would reach container stdout and nothing else, and
 on the production box to read stdout with. WARN does not page, so the record costs nobody a
 notification. See [Every change to these numbers is
 recorded](/sessions/spot-and-priority/#every-change-to-both-ceilings-is-recorded).
+
+`[LiveSettings]` lines do the same for the [Live settings](/sessions/live/#live-settings): who
+changed them (a person, or an agent such as the live model itself) and every value that moved. The
+guidance is named but not quoted.
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production "[LiveSettings]"
+```
 
 `[AppSettings]` lines are the same record for the Settings page's half of the row: the global
 default runtime and model, and the Experimental toggles. They are what every later session is

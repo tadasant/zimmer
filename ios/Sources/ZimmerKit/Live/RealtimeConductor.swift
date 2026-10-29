@@ -111,8 +111,10 @@ public struct RealtimeConductor: Sendable {
             pendingResponse = true
             return sendPendingResponse()
         }
-        guard let itemID else { return [] }
-        return [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(itemID)]))]
+        // Not answered: back to listening, or the call would read as working on it for ever.
+        let listening: [Effect] = responseActive || playingItem != nil ? [] : [.state(.listening)]
+        guard let itemID else { return listening }
+        return [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(itemID)]))] + listening
     }
 
     /// A line the person did not speak, put to the model as if typed: what the car sends when
@@ -136,6 +138,12 @@ public struct RealtimeConductor: Sendable {
             if gated { return playingItem == nil ? [.state(.listening)] : [] }
             defer { playingItem = nil }
             return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
+        case "input_audio_buffer.speech_stopped":
+            // The person stopped talking: the call is working on an answer from here — the
+            // thinking cue starts and the screen says so — until the reply starts, or (gated)
+            // the line turns out not to be one to answer. Not while a reply plays (gated speech
+            // does not cut it off).
+            return playingItem == nil ? [.state(.thinking)] : []
         case "response.created":
             responseActive = true
             requested = false
@@ -159,7 +167,7 @@ public struct RealtimeConductor: Sendable {
             playingItem = nil
             if event["response"]?["status"]?.string == "failed" {
                 let message = event["response"]?["status_details"]?["error"]?["message"]?.string
-                return finish(event["response"]) + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
+                return finish(event["response"]).filter { $0 != .state(.listening) } + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
             }
             return finish(event["response"])
         case "conversation.item.input_audio_transcription.completed":
@@ -176,7 +184,10 @@ public struct RealtimeConductor: Sendable {
         case "error":
             // A refused `response.create` never gets its `response.created`.
             requested = false
-            return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")]
+            // With nothing running or about to, no answer is coming: back to listening, or the
+            // call would read as working on it (and tick) for ever.
+            let idle = !responseActive && inFlight.isEmpty && !pendingResponse && playingItem == nil
+            return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")] + (idle ? [.state(.listening)] : [])
         default:
             return []
         }
@@ -250,7 +261,8 @@ public struct RealtimeConductor: Sendable {
                 if inFlight.contains(callID) { dropped.insert(callID) }
                 answered.remove(callID)
             }
-            return effects
+            // Cancelled or cut short with nothing asked for after it: no answer is coming.
+            return requested ? effects : effects + [.state(.listening)]
         }
         guard !calls.isEmpty else { return effects + [.state(.listening)] }
 

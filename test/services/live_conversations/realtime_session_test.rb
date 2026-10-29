@@ -25,6 +25,10 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "marin", session.dig("audio", "output", "voice")
     assert_equal "gpt-4o-mini-transcribe", session.dig("audio", "input", "transcription", "model")
     assert_equal "semantic_vad", session.dig("audio", "input", "turn_detection", "type")
+    # The turn detection a call starts with: OpenAI ends the turn and answers it.
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+                 session.dig("audio", "input", "turn_detection"))
+    assert_equal "debug", minted[:telemetry], "the app reports every step of a call until the setting is turned down"
     assert session["instructions"].start_with?("# Live\nBe brief.")
     assert_includes session["instructions"], "## Right now: spoken"
     assert_includes session["instructions"], "you are heard, not read"

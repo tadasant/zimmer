@@ -37,6 +37,9 @@ module LiveConversations
     DISABLE_SERVER = "disable_mcp_server"
     GET_SETTINGS = "get_live_settings"
     UPDATE_SETTINGS = "update_live_settings"
+    # Settings the live model may not change itself: how much the app reports
+    # about calls is for whoever reads the trace, not for the call.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry].freeze
     DIRECT_SEPARATOR = "__"
 
     MAX_ENABLED_SERVERS = 8
@@ -350,7 +353,7 @@ module LiveConversations
     # --- Its own settings -------------------------------------------------------
 
     def settings_functions
-      properties = LiveSetting::FIELDS.to_h do |field|
+      properties = LiveSetting::FIELDS.reject { |field| LIVE_MODEL_EXCLUDED.include?(field.key) }.to_h do |field|
         schema = if field.numeric?
           { type: %w[number string], minimum: field.min, maximum: field.max }
         else
@@ -390,7 +393,13 @@ module LiveConversations
     def update_settings(args)
       reset = ActiveModel::Type::Boolean.new.cast(args["reset_to_defaults"]) ? true : false
       actor = SettingsUpdate::Actor.agent("live conversation ##{@conversation.id}", live_conversation: @conversation)
-      result = SettingsUpdate.call(args.except("reset_to_defaults"), actor: actor, reset: reset)
+      excluded = args.keys & LIVE_MODEL_EXCLUDED.map(&:to_s)
+      raise ToolFailure, "Nothing changed. #{excluded.join(', ')} is a person's to change, on the Live settings page." if excluded.any?
+
+      changes = args.except("reset_to_defaults")
+      # A reset from the call leaves them as a person set them.
+      changes = changes.merge(LIVE_MODEL_EXCLUDED.to_h { |key| [ key.to_s, LiveSetting.current[key] ] }) if reset
+      result = SettingsUpdate.call(changes, actor: actor, reset: reset)
       @session_changed = result.mid_call_changed?
       return "Nothing changed: those are already the settings." unless result.changed?
 
