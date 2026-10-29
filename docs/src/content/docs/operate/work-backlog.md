@@ -338,27 +338,32 @@ before the hourly sweep ran, and the row would never page again. After the page,
 the row again and hold it again.
 
 **A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
-and the sweep clears it, in the same write, the first time it records a different settled one: the
-issue closed, a newer row superseded it, or the row reads `pr_merged_issue_open` or `no_pr` where it
-read something else. A failed read (`unknown`) does not void it, or a GitHub outage would re-page
-every held row at once. The Issues view also drops a held row whose issue its live snapshot shows
-closed, as it does for Stranded.
+and the sweep clears it, in the same write, the first time it records a different one: the issue
+closed, a newer row superseded it, or the row reads `pr_merged_issue_open`, `no_pr` or `pr_stalled`
+where it read something else. A failed read (`unknown`) does not void it, or a GitHub outage would
+re-page every held row at once. The Issues view also drops a held row whose issue its live snapshot
+shows closed, as it does for Stranded.
 
-**An open PR suspends a hold instead of voiding it.** `pr_open` and `pr_stalled` mean an open PR
-references the issue, and that hides whatever the row reads underneath. A PR that only mentions the
-issue reads `pr_open` while it is open and changes nothing once it has merged. Before
-[#1420](https://github.com/tadasant/zimmer/issues/1420), voiding on `pr_open` let one such PR wipe two
-human-decision holds for good, and the rows re-paged at 48 days the moment it merged. So the hold
-stays on the row while the PR is open. Once the PR has merged or closed, the hold is judged on what
-the row reads then. The same evidence as before keeps it, and different evidence voids it. The hold
-lapses on its own clock throughout. A row with a moving PR is not stranded, so a lapse during
-`pr_open` pages on the first pass after the row is stranded again.
+**A moving open PR suspends a hold instead of voiding it.** `pr_open` means an open PR referencing
+the issue has moved recently, and that hides whatever the row reads underneath. A PR that only
+mentions the issue reads `pr_open` while it is open and changes nothing once it has merged. Voiding
+on it would wipe the hold for good and re-page the row at its full age when the PR lands, which is
+what [#1420](https://github.com/tadasant/zimmer/issues/1420) was: one such PR re-paged two held rows
+at 48 days. So the hold stays on the row while the PR is moving, and the row sits in neither
+Stranded nor Awaiting your decision, because a moving PR resolves it for the time being. Once the
+PR merges, closes or goes quiet, the hold is judged on what the row reads then: the same verdict
+keeps it, a different one voids it. The hold lapses on its own clock throughout, and a lapse while
+the PR is open pages on the first pass after the row is stranded again.
 
-**A bare mention still counts as a reference.** The probe reads GitHub's cross-reference events, and
+`pr_stalled` is not a suspension. A stalled row is unresolved, so a hold kept across it would be a
+silenced row with nothing moving.
+
+**A bare mention counts as a reference.** The probe reads GitHub's cross-reference events, and
 those do not tell "Refs #141" from "Related to #141". Neither is a closing keyword, and the fleet's
 deliberate partial fixes are worded freely ("Addresses #419"). Counting only certain phrasings would
-turn real partials into `no_pr` and drop the evidence a triager needs. Holds no longer depend on it:
-a mention cannot void one any more.
+turn real partials into `no_pr` and drop the evidence a triager needs. The cost is that a mention
+can still void a hold whose verdict it changes: a row held at `no_pr` reads `pr_merged_issue_open`
+once a mentioning PR merges. See [limitations](/limitations/#a-hold-for-a-decision-is-voided-by-a-change-of-verdict-not-by-every-change).
 
 `WorkBacklog::Hold` refuses a row that is not stranded (queued, in flight, parked or resolved), a
 row the sweep has not read yet (no `liveness_state`, or `unknown`), a row a newer row has

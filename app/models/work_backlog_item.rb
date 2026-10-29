@@ -176,24 +176,25 @@ class WorkBacklogItem < ApplicationRecord
   #
   # And it is VOID once the evidence it was recorded against has changed. A hold
   # says "given THIS, a person has to decide"; once the issue closes, the row is
-  # superseded, or the row lands on a different verdict, that sentence is about a
+  # superseded, or the row reads a different verdict, that sentence is about a
   # row that no longer exists. See `record_liveness!`.
   #
-  # An OPEN pull request is not a change of evidence yet, only the promise of
-  # one (#1420). `pr_open` and `pr_stalled` say an open PR references the issue,
-  # and that hides whatever the row reads underneath it. A PR that merely
-  # mentions the issue ("Related to #141 … It closes neither") reads `pr_open`
-  # while it is open and nothing once it has merged, and voiding on the first
-  # wiped human-decision holds for good, re-paging their rows at their full age
-  # the moment the PR landed. So the hold is suspended rather than voided while
-  # an open PR stands, and judged on what the row reads once the PR has merged
-  # or closed. The hold still lapses on its own clock throughout: a lapse during
-  # `pr_open` is paged the first pass the row is stranded again.
+  # A MOVING OPEN PR SUSPENDS IT instead (#1420). `pr_open` is the promise of
+  # new evidence, not new evidence: it hides whatever the row reads underneath,
+  # and a PR that only mentions the issue ("Related to #141 … It closes
+  # neither") reads `pr_open` while it is open and changes nothing once it has
+  # merged. Voiding on it wipes a human-decision hold for good and re-pages the
+  # row at its full age the moment the PR lands. So the hold is judged on what
+  # the row reads once the PR has merged, closed or gone quiet. `pr_stalled` is
+  # judged like any other verdict: it is unresolved, so a hold that survived it
+  # would be a silenced row with nothing moving. The hold lapses on its own
+  # clock throughout, and a `pr_open` row is not stranded, so a lapse while the
+  # PR is open pages on the first pass after the row is stranded again.
   HOLD_DURATION = 14.days
 
-  # Verdicts that say nothing about the evidence a hold stands on. `unknown` is
-  # a read that failed; the other two are an open PR that has not landed.
-  HOLD_SUSPENDING_LIVENESS_STATES = [ LIVENESS_UNKNOWN, LIVENESS_PR_OPEN, LIVENESS_PR_STALLED ].freeze
+  # Verdicts that say nothing about the evidence a hold stands on: a read that
+  # failed, and an open PR that is still moving.
+  HOLD_SUSPENDING_LIVENESS_STATES = [ LIVENESS_UNKNOWN, LIVENESS_PR_OPEN ].freeze
   HOLD_REASON_MAX = 2000
 
   # What a voided or spent hold is reset to.
@@ -521,8 +522,8 @@ class WorkBacklogItem < ApplicationRecord
   # write, so no reader can see the new evidence beside the old hold. The
   # HOLD_SUSPENDING_LIVENESS_STATES are the exception. A read that failed says
   # nothing about the row, and voiding on it would let a GitHub blip re-page
-  # every held row at once. An open PR says nothing YET, and voiding on it let a
-  # PR that only mentioned the issue wipe the hold for good (#1420).
+  # every held row at once. A moving open PR says nothing YET, and voiding on it
+  # would let a PR that only mentions the issue wipe the hold for good (#1420).
   #
   # Under the row lock, which reloads the row first: the sweep holds this object
   # from before its GitHub probe, and a hold recorded in the meantime must be
@@ -540,6 +541,13 @@ class WorkBacklogItem < ApplicationRecord
 
   # Is a hold in force on this row right now?
   def hold_active?(now: Time.current) = held_until.present? && held_until > now
+
+  # Is this row in `awaiting_decision`? A hold in force on a row that is not
+  # resolved. A held row whose PR is moving (`pr_open`) is resolved, so it is in
+  # neither `stranded` nor here until the PR lands — see HOLD_DURATION.
+  def awaiting_decision?(now: Time.current)
+    hold_active?(now: now) && RESOLVED_LIVENESS_STATES.exclude?(liveness_state)
+  end
 
   # Record that what remains of this row is a person's decision. The caller has
   # checked the row is unresolved and its evidence has been read (WorkBacklog::Hold
@@ -606,7 +614,7 @@ class WorkBacklogItem < ApplicationRecord
       removal_reason: removal_reason,
       liveness_state: liveness_state,
       liveness_checked_at: liveness_checked_at&.iso8601,
-      awaiting_decision: hold_active?,
+      awaiting_decision: awaiting_decision?,
       held_at: held_at&.iso8601,
       held_until: held_until&.iso8601,
       held_by: held_by,
