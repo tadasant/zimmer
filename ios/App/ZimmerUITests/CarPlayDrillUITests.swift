@@ -99,10 +99,15 @@ final class CarPlayDrillUITests: XCTestCase {
 
     // MARK: - Getting there
 
-    /// Zimmer's CarPlay scene, from the CarPlay home screen. A relaunched app has its scene
-    /// connected again, or is back on the home screen with its icon to tap.
+    /// Zimmer's CarPlay scene, from the CarPlay home screen. A relaunched Zimmer leaves the car
+    /// on an empty app screen, its scene gone with the old process, so the car's home button
+    /// goes back to the icons first.
     private func openInTheCar() {
         if text("Talk to Zimmer").waitForExistence(timeout: 5) { return }
+        let home = dashboard.descendants(matching: .any)["CARStatusBarHomeButton"]
+        if home.exists {
+            home.tap()
+        }
         let icon = dashboard.descendants(matching: .any).matching(NSPredicate(format: "label == 'Zimmer'")).firstMatch
         XCTAssertTrue(icon.waitForExistence(timeout: timeout), "Zimmer is on the CarPlay home screen; it showed:\n\(dashboard.debugDescription)")
         icon.tap()
