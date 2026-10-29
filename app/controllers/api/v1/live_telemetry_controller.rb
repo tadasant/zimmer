@@ -16,6 +16,9 @@ class Api::V1::LiveTelemetryController < Api::BaseController
   accepts_native_app_tokens
 
   before_action :require_the_app
+  # The app sends a batch at most every few seconds; a phone looping on this
+  # route must not crowd the shipped logs.
+  rate_limit to: 60, within: 1.minute, by: -> { native_app_grant&.id }, only: :create
 
   def create
     batch = params.to_unsafe_h.slice("client", "dropped", "events")

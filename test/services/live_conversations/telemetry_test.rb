@@ -5,9 +5,15 @@ require "test_helper"
 class LiveConversations::TelemetryTest < ActiveSupport::TestCase
   class FakeExporter
     attr_reader :records
+    attr_accessor :busy
 
-    def initialize = @records = []
+    def initialize
+      @records = []
+      @busy = 0
+    end
+
     def enqueue(record) = @records << record
+    def pending = @busy + @records.size
   end
 
   CLIENT = { "surface" => "carplay", "app_version" => "1.5.0", "app_build" => "212", "os" => "iOS 26.4", "device" => "iPhone17,1" }.freeze
@@ -77,6 +83,14 @@ class LiveConversations::TelemetryTest < ActiveSupport::TestCase
     @exporter.records.clear
     many = (1..250).map { |seq| event(seq, "vad.speech_started", "debug") }
     assert_equal LiveConversations::Telemetry::MAX_EVENTS, ingest(many).accepted
+  end
+
+  test "the app's events never take more than half the export queue, so records that page still fit" do
+    @exporter.busy = LiveConversations::Telemetry::MAX_QUEUE_SHARE - 1
+    result = ingest([ event(1, "call.connected", "info"), event(2, "call.ended", "info") ])
+
+    assert_equal 1, result.accepted
+    assert_equal 1, result.shed
   end
 
   test "what the app had to drop before sending is on every record of the batch" do

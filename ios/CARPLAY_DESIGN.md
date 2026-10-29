@@ -51,8 +51,8 @@ listening or working. The call has three short synthesized cues, which are tones
 (`LiveCue`): two soft rising notes when the call is up, a quiet low tick about once a second from
 the end of speech until Zimmer's voice starts, and the notes falling when a call drops. Rising is
 *on*, falling is *off*, and the tick shares neither pitch nor shape with the notes. The tick waits
-a third of a second, so a quick answer never gets one, and it stops the instant the reply's audio
-starts. The cues play through the call's voice-processing engine, so the echo canceller has them as
+a third of a second, so an answer that starts sooner gets none, stops the instant the reply's audio
+starts, and gives up after 45 seconds with no answer. The cues play through the call's voice-processing engine, so the echo canceller has them as
 reference, and while one sounds the microphone is sent as silence (`LiveCueGate`), so turn
 detection never takes a cue for speech.
 

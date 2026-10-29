@@ -54,13 +54,19 @@ final class LiveAudioEngine {
         private let lock = NSLock()
         private var frames: (@Sendable (Data) -> Void)?
         private var gate = LiveCueGate()
+        private var lastBuffer: TimeInterval?
 
         func set(_ frames: (@Sendable (Data) -> Void)?) {
             lock.withLock {
                 self.frames = frames
                 gate = LiveCueGate()
+                lastBuffer = nil
             }
         }
+
+        /// When the microphone last delivered a buffer, on the audio thread's clock: what the
+        /// watchdog reads, so frames still queued for the main actor never count as a stall.
+        var lastAudio: TimeInterval? { lock.withLock { lastBuffer } }
 
         func changeGate(_ change: (inout LiveCueGate) -> Void) {
             lock.withLock { change(&gate) }
@@ -69,7 +75,10 @@ final class LiveAudioEngine {
         /// `seconds`: how much audio the buffer holds, which ended about now.
         func send(_ pcm: Data, seconds: TimeInterval) {
             let now = ProcessInfo.processInfo.systemUptime
-            let (frames, closed) = lock.withLock { (self.frames, gate.closes(now - seconds, length: seconds)) }
+            let (frames, closed) = lock.withLock { () -> ((@Sendable (Data) -> Void)?, Bool) in
+                lastBuffer = now
+                return (self.frames, gate.closes(now - seconds, length: seconds))
+            }
             frames?(closed ? Data(count: pcm.count) : pcm)
         }
     }
@@ -83,6 +92,11 @@ final class LiveAudioEngine {
     /// and stopping the thinking tick never cuts the reply.
     private var cuePlayer: AVAudioPlayerNode?
     private var thinking = false
+    /// Between an interruption's `.began` and its `.ended`: the session belongs to someone else
+    /// (a phone call, Siri), and reactivating it would fail and end the call.
+    private var interrupted = false
+    /// The last call's engine, kept up to play its farewell cue.
+    private var farewell: (task: Task<Void, Never>, engine: AVAudioEngine, cuePlayer: AVAudioPlayerNode?)?
     private var failed: (@Sendable (String) -> Void)?
     private var observers: [NSObjectProtocol] = []
     /// Bumped by every start and stop, so a start still waiting on the permission prompt, or a
@@ -97,6 +111,7 @@ final class LiveAudioEngine {
     @discardableResult
     func start(frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
         stop()
+        interrupted = false
         token += 1
         let mine = token
         let asked = ProcessInfo.processInfo.systemUptime
@@ -163,6 +178,10 @@ final class LiveAudioEngine {
         try engine.start()
         player.play()
         cuePlayer.play()
+        // How long a cue takes from scheduling to coming back through the microphone.
+        let session = AVAudioSession.sharedInstance()
+        let latency = session.outputLatency + session.inputLatency + session.ioBufferDuration
+        sink.changeGate { $0.latency = latency }
         Self.telemetry.track(.audioEngineStarted(inputRate: format.sampleRate, inputChannels: Int(format.channelCount),
                                                  voiceProcessing: voiceProcessing && input.isVoiceProcessingEnabled, restart: restart))
     }
@@ -199,6 +218,7 @@ final class LiveAudioEngine {
                 MainActor.assumeIsolated {
                     Self.telemetry.track(.audioInterruption(began: type == .began, shouldResume: options.map { $0.contains(.shouldResume) },
                                                             reason: reason))
+                    self?.interrupted = type == .began
                     if type == .ended { self?.recoverIfStopped() }
                 }
             },
@@ -224,9 +244,11 @@ final class LiveAudioEngine {
     }
 
     /// Restart an engine that stopped under the call: after a configuration change, an
-    /// interruption that ended, or the microphone going quiet. A running engine is left alone.
+    /// interruption that ended, or the microphone going quiet. A running engine is left alone,
+    /// and so is one stopped by an interruption still under way: the session is not ours until
+    /// it ends, and the call carries on (its turn kept alive with silence) until then.
     func recoverIfStopped() {
-        guard let engine, let player, let cuePlayer, !engine.isRunning else { return }
+        guard !interrupted, let engine, let player, let cuePlayer, !engine.isRunning else { return }
         player.stop()
         cuePlayer.stop()
         let wasThinking = thinking
@@ -243,6 +265,9 @@ final class LiveAudioEngine {
             failed?("The microphone stopped when the audio route changed. Start the call again.")
         }
     }
+
+    /// When the microphone last delivered audio (system uptime), or nil before it has.
+    var lastMicAudio: TimeInterval? { sink.lastAudio }
 
     // MARK: - Cues
 
@@ -329,6 +354,12 @@ final class LiveAudioEngine {
     /// enough to play it.
     func stop(token expected: Int? = nil, farewell: LiveCue? = nil) {
         if let expected, expected != token { return }
+        // The last call's goodbye is cut short rather than left running beside a new engine.
+        if let pending = self.farewell {
+            self.farewell = nil
+            pending.task.cancel()
+            Self.tearDown(pending.engine, cuePlayer: pending.cuePlayer, deactivate: false)
+        }
         let engine = self.engine
         let player = self.player
         let cuePlayer = self.cuePlayer
@@ -341,11 +372,14 @@ final class LiveAudioEngine {
             Self.tearDown(engine, cuePlayer: cuePlayer, deactivate: true)
             return
         }
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(farewell.duration() + 0.05))
+        let goodbye = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(farewell.duration + 0.05))
+            guard !Task.isCancelled, let self, self.farewell?.engine === engine else { return }
+            self.farewell = nil
             // A new call may have started meanwhile: it owns the audio session now.
-            Self.tearDown(engine, cuePlayer: cuePlayer, deactivate: self?.engine == nil)
+            Self.tearDown(engine, cuePlayer: cuePlayer, deactivate: self.engine == nil)
         }
+        self.farewell = (goodbye, engine, cuePlayer)
     }
 
     private static func tearDown(_ engine: AVAudioEngine, cuePlayer: AVAudioPlayerNode?, deactivate: Bool) {

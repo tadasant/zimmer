@@ -130,9 +130,6 @@ extension FakeZimmerAPI {
         return LiveTelemetryAnswer(accepted: batch.events.count, telemetry: "debug")
     }
 
-    /// The call-telemetry batches reported so far.
-    public var liveTelemetryBatches: [LiveTelemetryBatch] { liveState.telemetryBatches }
-
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         _ = appendLiveTurn(id, LiveTurn(id: 0, role: .tool, toolName: name, toolOutput: "ok"))
         return LiveToolResult(output: "ok")

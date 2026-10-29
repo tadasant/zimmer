@@ -125,7 +125,7 @@ extension ZimmerHTTPClient {
         do {
             return try ZimmerJSON.decoder.decode(LiveTelemetryAnswer.self, from: response.body)
         } catch {
-            throw ZimmerError.decoding("/api/v1/live/telemetry: \(error)")
+            throw ZimmerError.decoding("live telemetry answer: \(error)")
         }
     }
 

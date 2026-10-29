@@ -16,6 +16,7 @@ class Api::V1::LiveTelemetryControllerTest < ActionDispatch::IntegrationTest
 
     def initialize = @records = []
     def enqueue(record) = @records << record
+    def pending = 0
   end
 
   setup do
@@ -62,6 +63,26 @@ class Api::V1::LiveTelemetryControllerTest < ActionDispatch::IntegrationTest
     assert_response :accepted
     assert_equal({ "accepted" => 1, "filtered" => 1, "telemetry" => "info" }, response.parsed_body)
     assert_equal [ "call.connected" ], @exporter.records.map { |r| r[:attributes]["event"] }
+  end
+
+  test "a malformed batch is answered, never a 500, and keeps what it can" do
+    headers = bearer(app_token(privilege: OauthServer::ACT_AS_HUMAN))
+    [ { client: "x", events: [ "x", 1 ], dropped: {} },
+      { events: { "0" => { name: "call.connected" } } },
+      { events: [ { name: "call.connected", level: "info", seq: 2**70, mono_ms: "x", at: "0001-01-01T00:00:00Z", fields: [ 1, 2 ] } ] } ].each do |batch|
+      post "/api/v1/live/telemetry", params: batch, headers: headers, as: :json
+      assert_response :accepted, batch.inspect
+    end
+    record = @exporter.records.sole
+    assert_equal 0, record[:attributes]["seq"], "out of int64: not shipped as a number OTLP would refuse"
+    assert_in_delta Time.now.to_f, record[:timestamp], 60, "a clock a millennium off is not believed"
+  end
+
+  test "without a sign-in nothing is accepted" do
+    post "/api/v1/live/telemetry", params: BATCH, as: :json
+
+    assert_response :unauthorized
+    assert_empty @exporter.records
   end
 
   test "an API key cannot put lines on the stream" do

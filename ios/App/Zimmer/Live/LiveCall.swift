@@ -56,10 +56,36 @@ final class LiveCall: ObservableObject {
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
+    private var thinkingSince: TimeInterval?
+
     init() {
-        // Whatever the call log holds goes before iOS suspends the app.
+        // Whatever the call log holds goes before iOS suspends the app, in a background task so
+        // the send is given the time to finish.
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
-            LiveTelemetry.shared.flush()
+            MainActor.assumeIsolated { Self.flushInBackground() }
+        }
+    }
+
+    private static func flushInBackground() {
+        let background = BackgroundTask()
+        background.id = UIApplication.shared.beginBackgroundTask(withName: "live-telemetry") {
+            MainActor.assumeIsolated { background.end() }
+        }
+        Task { @MainActor in
+            await LiveTelemetry.shared.send()
+            background.end()
+        }
+    }
+
+    /// One `beginBackgroundTask`, ended once: when the send finishes or iOS runs out of time.
+    @MainActor
+    private final class BackgroundTask {
+        var id: UIBackgroundTaskIdentifier = .invalid
+
+        func end() {
+            guard id != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(id)
+            id = .invalid
         }
     }
 
@@ -107,7 +133,7 @@ final class LiveCall: ObservableObject {
         muted = false
         telemetry.beginCall(conversation: conversation)
         telemetry.updateClient { $0.surface = surface.rawValue }
-        telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil, listening: nil))
+        telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil))
         state = .connecting
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
@@ -259,9 +285,6 @@ final class LiveCall: ObservableObject {
 
     private func sendAudio(_ pcm: Data, generation: Int) {
         guard generation == self.generation, !pcm.isEmpty else { return }
-        if case let .resumed(stalled, silence)? = watchdog.frame(at: Self.now) {
-            telemetry.track(.micResumed(stalledMs: stalled, silenceSentMs: silence))
-        }
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
 
@@ -276,6 +299,17 @@ final class LiveCall: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self, generation == self.generation, !Task.isCancelled else { return }
+                // The audio thread's clock, not the main actor's: buffers still queued for this
+                // actor were captured on time and are no stall.
+                if let heard = self.audio.lastMicAudio, heard > (self.watchdog.lastFrame ?? 0),
+                   case let .resumed(stalled, silence)? = self.watchdog.frame(at: heard) {
+                    self.telemetry.track(.micResumed(stalledMs: stalled, silenceSentMs: silence))
+                }
+                if let since = self.thinkingSince, Self.now - since > LiveCue.thinkingCeiling {
+                    self.thinkingSince = nil
+                    self.telemetry.track(.thinkingTimedOut(after: Self.now - since))
+                    for action in self.cues.thinkingTimedOut() { self.perform(action) }
+                }
                 let (silence, change) = self.watchdog.tick(at: Self.now)
                 if case let .stalled(after)? = change {
                     self.log.error("microphone stalled for \(after) ms; sending silence")
@@ -299,9 +333,11 @@ final class LiveCall: ObservableObject {
             audio.play(cue)
             telemetry.track(.cue(cue))
         case .startThinking:
+            thinkingSince = Self.now
             audio.startThinking()
             telemetry.track(.thinkingCue(true))
         case .stopThinking:
+            thinkingSince = nil
             audio.stopThinking()
             telemetry.track(.thinkingCue(false))
         }

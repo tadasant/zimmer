@@ -438,7 +438,8 @@ final class RealtimeConductorTests: XCTestCase {
         let truncate = RealtimeConductor.truncate(itemID: "r1", audioEndMs: 1_250)
         XCTAssertEqual(truncate["type"]?.string, "conversation.item.truncate")
         XCTAssertEqual(truncate["audio_end_ms"], .number(1_250))
-        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad")])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad"), .state(.listening)],
+                       "nothing running: the call says it is listening")
     }
 
     func testMicrophoneAudioIsResampledTo24kPCM16() {
