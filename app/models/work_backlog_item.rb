@@ -174,11 +174,26 @@ class WorkBacklogItem < ApplicationRecord
   # is active, and a lapsed one cannot be renewed until that page has gone out:
   # WorkBacklog::Hold refuses a row still carrying a spent hold.
   #
-  # And it is VOID the moment the evidence it was recorded against changes. A
-  # hold says "given THIS, a person has to decide"; once the issue closes, a PR
-  # opens, or a PR merges, that sentence is about a row that no longer exists.
-  # See `record_liveness!`.
+  # And it is VOID once the evidence it was recorded against has changed. A hold
+  # says "given THIS, a person has to decide"; once the issue closes, the row is
+  # superseded, or the row lands on a different verdict, that sentence is about a
+  # row that no longer exists. See `record_liveness!`.
+  #
+  # An OPEN pull request is not a change of evidence yet, only the promise of
+  # one (#1420). `pr_open` and `pr_stalled` say an open PR references the issue,
+  # and that hides whatever the row reads underneath it. A PR that merely
+  # mentions the issue ("Related to #141 … It closes neither") reads `pr_open`
+  # while it is open and nothing once it has merged, and voiding on the first
+  # wiped human-decision holds for good, re-paging their rows at their full age
+  # the moment the PR landed. So the hold is suspended rather than voided while
+  # an open PR stands, and judged on what the row reads once the PR has merged
+  # or closed. The hold still lapses on its own clock throughout: a lapse during
+  # `pr_open` is paged the first pass the row is stranded again.
   HOLD_DURATION = 14.days
+
+  # Verdicts that say nothing about the evidence a hold stands on. `unknown` is
+  # a read that failed; the other two are an open PR that has not landed.
+  HOLD_SUSPENDING_LIVENESS_STATES = [ LIVENESS_UNKNOWN, LIVENESS_PR_OPEN, LIVENESS_PR_STALLED ].freeze
   HOLD_REASON_MAX = 2000
 
   # What a voided or spent hold is reset to.
@@ -503,9 +518,11 @@ class WorkBacklogItem < ApplicationRecord
   # the whole point of looking.
   #
   # A hold recorded against different evidence is voided here, in the same
-  # write, so no reader can see the new evidence beside the old hold. `unknown`
-  # is the exception: a read that failed says nothing about the row, and
-  # voiding on it would let a GitHub blip re-page every held row at once.
+  # write, so no reader can see the new evidence beside the old hold. The
+  # HOLD_SUSPENDING_LIVENESS_STATES are the exception. A read that failed says
+  # nothing about the row, and voiding on it would let a GitHub blip re-page
+  # every held row at once. An open PR says nothing YET, and voiding on it let a
+  # PR that only mentioned the issue wipe the hold for good (#1420).
   #
   # Under the row lock, which reloads the row first: the sweep holds this object
   # from before its GitHub probe, and a hold recorded in the meantime must be
@@ -535,7 +552,7 @@ class WorkBacklogItem < ApplicationRecord
 
   # Would recording `state` void the hold on this row?
   def hold_voided_by?(state)
-    held_at.present? && state != LIVENESS_UNKNOWN && state != held_liveness_state
+    held_at.present? && HOLD_SUSPENDING_LIVENESS_STATES.exclude?(state) && state != held_liveness_state
   end
 
   # A human's hand-placement: the item goes exactly where they put it and stays

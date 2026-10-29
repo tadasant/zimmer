@@ -5582,11 +5582,16 @@ evidence; a human or an agent decides.
 ### A hold for a decision is voided by a change of verdict, not by every change
 
 A [hold](/operate/work-backlog/#held-for-a-human-decision) records the row's `liveness_state` and
-is void when the sweep records a different one. The verdict is coarse, so some changes a human
-would call new evidence leave it the same. A second PR that merges on a `pr_merged_issue_open` row
-is still `pr_merged_issue_open`. So is a new comment on the issue, or a label change. None of them
-voids the hold. The hold still lapses after 14 days, so the most such a change can go unflagged is
-the rest of that window. Voiding on anything finer would mean storing each PR's identity on the row.
+is void when the sweep records a different settled one. An open PR (`pr_open`, `pr_stalled`) only
+suspends it. The verdict is coarse, so some changes a human would call new evidence leave it the
+same. A second PR that merges on a `pr_merged_issue_open` row is still `pr_merged_issue_open`. So is
+a new comment on the issue, or a label change. None of them voids the hold. The hold still lapses
+after 14 days, so the most such a change can go unflagged is the rest of that window.
+
+Pinning the hold to the set of PRs that reference the issue would catch the second merge, but it
+would also void on a PR that only mentions the issue, which is the false re-page
+[#1420](https://github.com/tadasant/zimmer/issues/1420) was. GitHub's cross-reference events cannot
+tell the two apart.
 
 The hold's author is only as good as the connection. Over MCP it is stamped from the session on the
 connection. Over REST, `acting_session_id` is self-declared, as it is everywhere on that surface.
