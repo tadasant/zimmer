@@ -56,8 +56,8 @@ final class CarPlayDrillUITests: XCTestCase {
         // Talk, mute, unmute, end.
         tapTile("Talk to Zimmer")
         XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 10), "the call screen is up, connecting; the car showed:\n\(car.debugDescription)")
-        let mute = callButton("Mute", symbol: "mic.slash")
-        let end = callButton("End", symbol: "phone.down")
+        let mute = callButton("Mute", or: "microphone")
+        let end = callButton("End", or: "hang up")
         XCTAssertTrue(mute.waitForExistence(timeout: 5), "the call screen has Mute; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(end.exists, "and End")
         mute.tap()
@@ -86,7 +86,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // A tap after giving up is a fresh set of retries.
         tapTile("Retry", or: "Live Mode unavailable. Tap to retry")
         XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 10), "a tap tries again")
-        callButton("End", symbol: "phone.down").tap()
+        callButton("End", or: "hang up").tap()
         XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 10), "and End stops it")
         assertNoCallScreen("after the last End")
         assertAlive("at the end of the drill")
@@ -108,9 +108,11 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
     }
 
-    /// One of the call screen's two buttons, by its words or its symbol's.
-    private func callButton(_ title: String, symbol: String) -> XCUIElement {
-        car.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label CONTAINS[c] %@", title, symbol)).firstMatch
+    /// One of the call screen's two buttons. CarPlay labels an action button by its symbol, not
+    /// its title: Mute (`mic.slash.fill`) reads "microphone off" and End (`phone.down.fill`)
+    /// "hang up". Either is accepted, so a title CarPlay starts reading out still matches.
+    private func callButton(_ title: String, or symbolLabel: String) -> XCUIElement {
+        car.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label CONTAINS[c] %@", title, symbolLabel)).firstMatch
     }
 
     private func waitForGone(_ label: String, seconds: Int) -> Bool {
