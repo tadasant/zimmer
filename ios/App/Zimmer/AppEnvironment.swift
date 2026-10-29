@@ -53,10 +53,7 @@ final class AppEnvironment {
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
-                                                                                         web: origins.web,
-                                                                                         // `-ZimmerFixtureSlowLive`: a Live call stays connecting for 15 s,
-                                                                                         // then fails: time for the CarPlay drill to mute and end it.
-                                                                                         liveSecretDelay: arguments.contains("-ZimmerFixtureSlowLive") ? .seconds(15) : nil), edge: nil)
+                                                                                         web: origins.web), edge: nil)
             isFixture = true
             return
         }

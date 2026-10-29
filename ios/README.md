@@ -108,7 +108,7 @@ result bundle, and the app's crash reports in `crashes/`, whose crashed thread i
 the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
 `ios_carplay` (`macos-latest`, in parallel with `ios`) runs `ui-test --carplay --only
 CarPlayDrillUITests`: Zimmer in the Simulator's CarPlay window, through a Live call that cannot
-connect, its retries and giving up, and a call muted and ended, failing on any crash. It keeps the
+connect, its retries and giving up, and a tap that tries again, failing on any crash. It keeps the
 `ios-carplay-drill` artifact. `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All four
 carry the fork-PR guard and are in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, as
 five shards on five simulators (`--only` a share of the classes each, the `photos` shard taking
