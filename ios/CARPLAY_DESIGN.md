@@ -271,12 +271,15 @@ it to show the same strip.
   Each of those guards fails against the scene as it was before #1410.
 - The Rails route and the id reading have controller and model tests.
 - The CarPlay scene compiles in CI's Xcode job and is built into every TestFlight build, which
-  signs in the entitlement. It has run in a car, where the first builds crashed (#1410). **No CI
-  run drives the real CarPlay screen:** XCUITest cannot reach the CarPlay window, the simulator's
-  CarPlay display has no command-line control, and Apple's CarPlay Simulator needs a physical
-  iPhone. The template tree as a car draws it, the action and bar buttons on iOS 26.4, the rebuild
-  on a new subject or on Mute, and the audio route moving to the car are confirmed only by
-  driving.
+  signs in the entitlement. It has run in a car, where the first builds crashed (#1410).
+- **The CarPlay drill** (`App/ZimmerUITests/CarPlayDrillUITests.swift`, run by
+  `ios/bin/ui-test --carplay` in CI's `ios_carplay` job on every iOS pull request) opens Zimmer in
+  the iOS Simulator's CarPlay window, which the script switches on from the Simulator's I/O menu,
+  and drives the real templates through XCUITest (`CarPlayTemplateUIHost`): the home grid, a Live
+  call that cannot connect and its retries, giving up on the tile, a tap after that, hanging up
+  mid-connect, a Needs you row. Any crash fails it. Not driven: the audio route moving to a car
+  (the Simulator has none), and a call that connects (CI has no microphone or OpenAI key), so the
+  listening, speaking and working states and a subject rebuild are confirmed only by driving.
 
 ## Follow-ups
 
