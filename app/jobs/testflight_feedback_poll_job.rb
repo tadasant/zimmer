@@ -19,8 +19,8 @@ class TestflightFeedbackPollJob < ApplicationJob
     attr_accessor :warned_unconfigured
   end
 
-  def perform(client: nil)
-    client ||= build_client
+  def perform
+    client = build_client
     return unless client
 
     result = TestflightFeedbackPoller.new(client: client).run
@@ -30,7 +30,7 @@ class TestflightFeedbackPollJob < ApplicationJob
       "[testflight] #{result.created} new submission(s), #{result.crash_logs_fetched} crash log(s) fetched, " \
       "#{result.crash_logs_pending} still pending"
     )
-  rescue AppStoreConnect::Client::Error, ParameterStore::AuthError, ParameterStore::StoreError, Net::OpenTimeout, Net::ReadTimeout, SocketError, SystemCallError, OpenSSL::PKey::PKeyError, JWT::EncodeError => e
+  rescue AppStoreConnect::Client::Error, ParameterStore::AuthError, ParameterStore::StoreError, OpenSSL::PKey::PKeyError, JWT::EncodeError => e
     Rails.logger.warn("[testflight] feedback poll failed: #{e.class}: #{e.message}")
   end
 

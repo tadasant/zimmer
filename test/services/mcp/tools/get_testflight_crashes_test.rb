@@ -57,6 +57,7 @@ class Mcp::Tools::GetTestflightCrashesTest < ActiveSupport::TestCase
     assert_match(/"batteryPercentage": 81/, output)
     assert_match(/### Comment\n\nit died/, output)
     refute_match(/Truncated/, output)
+    refute_match(/t@example\.com/, output, "a tester's email is not handed to every session carrying the tool")
   end
 
   test "a long crash log pages, and says which call returns the rest" do
@@ -71,6 +72,12 @@ class Mcp::Tools::GetTestflightCrashesTest < ActiveSupport::TestCase
     rest = call(id: "c1", offset: 1_500, max_chars: 1_500)
     assert_includes rest, "B" * 1_500
     refute_match(/Truncated/, rest)
+  end
+
+  test "an offset past the end of the log is a tool error" do
+    TestflightFeedback.create!(asc_id: "c1", kind: "crash", crash_log: "short")
+
+    assert_raises(Mcp::ToolError) { call(id: "c1", offset: 5) }
   end
 
   test "an unknown id is a tool error" do

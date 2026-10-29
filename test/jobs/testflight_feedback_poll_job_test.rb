@@ -39,7 +39,9 @@ class TestflightFeedbackPollJobTest < ActiveSupport::TestCase
     client = FakeClient.new("/v1/apps" => AppStoreConnect::Client::Error.new("App Store Connect answered 500 for /v1/apps", status: 500))
     Rails.logger.expects(:warn).with(regexp_matches(/feedback poll failed: AppStoreConnect::Client::Error/)).once
 
-    assert_nothing_raised { TestflightFeedbackPollJob.new.perform(client: client) }
+    TestflightFeedbackPollJob.any_instance.stubs(:build_client).returns(client)
+
+    assert_nothing_raised { TestflightFeedbackPollJob.new.perform }
   end
 
   test "is a singleton sweep on the pollers queue" do

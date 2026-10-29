@@ -4,31 +4,37 @@
 # into `testflight_feedbacks`: crash submissions with their crash logs, and
 # screenshot submissions.
 #
-# One pass, newest first:
+# One pass:
 #
 # 1. Find the app by bundle id.
-# 2. For each kind, page through the app's submissions sorted by
-#    `-createdDate`, inserting the ones not already stored, and stop at the
-#    first page holding nothing new — everything older was stored by an
-#    earlier pass. MAX_PAGES bounds a first run against a long history.
-# 3. Fetch the crash log of every stored crash that does not have one yet and
-#    is recent enough to keep asking about (CRASH_LOG_RETRY_WINDOW). A crash
-#    log can lag its submission, so a 404 leaves the row for the next pass.
+# 2. For each kind, walk the app's submissions newest first, PAGE_SIZE at a
+#    time, inserting the ones not already stored. Every pass walks every page
+#    (up to MAX_PAGES) rather than stopping at the first page with nothing new:
+#    a pass that failed halfway would otherwise leave older submissions behind
+#    a page the next pass reads as already done. One app's TestFlight feedback
+#    is a few pages at most, so this costs a handful of reads. Submissions
+#    beyond MAX_PAGES × PAGE_SIZE are never imported.
+# 3. Fetch the crash log of up to CRASH_LOGS_PER_PASS stored crashes that do
+#    not have one yet and were submitted within CRASH_LOG_RETRY_WINDOW. A log
+#    can lag its submission, so one App Store Connect has not produced yet is
+#    left for a later pass, and a request for one row failing does not stop
+#    the others.
 #
 # Idempotent by construction: the unique index on `asc_id` is the dedupe, an
 # insert that loses a race is a no-op, and a crash log is only ever written
 # into a row that has none.
 #
-# Each newly stored crash also goes on the shipped log stream as one WARN
-# record under scope `ios.crash` — beside the `ios.live` call telemetry — so a
-# crash reads in time order with what the app reported around it. The record
-# is a pointer and a headline, never the log or the tester's comment; the full
-# text is in the table, read with the `get_testflight_crashes` MCP tool.
+# Each crash, once its log is fetched, also goes on the shipped log stream as
+# one WARN record under scope `ios.crash` — beside the `ios.live` call
+# telemetry. The record is a pointer and a headline, never the log or the
+# tester's comment; the full text is in the table, read with the
+# `get_testflight_crashes` MCP tool.
 class TestflightFeedbackPoller
   DEFAULT_BUNDLE_ID = "com.tadasant.zimmer"
-  PAGE_SIZE = 50
-  MAX_PAGES = 10
+  PAGE_SIZE = 200 # App Store Connect's maximum
+  MAX_PAGES = 5
   CRASH_LOG_RETRY_WINDOW = 7.days
+  CRASH_LOGS_PER_PASS = 25
   LOG_SCOPE = "ios.crash"
 
   # kind → the App Store Connect relationship listing it.
@@ -86,7 +92,7 @@ class TestflightFeedbackPoller
       fresh.each { |submission| created += 1 if store(kind, submission, builds) }
 
       next_url = document.dig("links", "next")
-      break if fresh.empty? || next_url.blank?
+      break if next_url.blank?
     end
 
     created
@@ -115,7 +121,8 @@ class TestflightFeedbackPoller
     )
     @logger.info("[testflight] stored #{kind} submission #{row.asc_id} (build #{row.build_number || '?'})")
     true
-  rescue ActiveRecord::RecordNotUnique
+  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
+    # Another pass stored it first: the uniqueness validation or the index says so.
     false
   end
 
@@ -123,7 +130,7 @@ class TestflightFeedbackPoller
     fetched = 0
     pending = 0
 
-    TestflightFeedback.awaiting_crash_log(since: CRASH_LOG_RETRY_WINDOW.ago).find_each do |row|
+    TestflightFeedback.awaiting_crash_log(since: CRASH_LOG_RETRY_WINDOW.ago).newest_first.limit(CRASH_LOGS_PER_PASS).each do |row|
       document = @client.get("/v1/betaFeedbackCrashSubmissions/#{row.asc_id}/crashLog", { "fields[betaCrashLogs]" => "logText" })
       text = document.dig("data", "attributes", "logText")
       if text.blank?
@@ -136,7 +143,11 @@ class TestflightFeedbackPoller
 
       fetched += 1
       ship(row.reload)
-    rescue AppStoreConnect::Client::NotFound
+    rescue AppStoreConnect::Client::Error => e
+      # A key App Store Connect refuses is refused for every row; say so once, for the whole pass.
+      raise if [ 401, 403 ].include?(e.status)
+
+      @logger.warn("[testflight] crash log for #{row.asc_id} not fetched: #{e.message}") unless e.is_a?(AppStoreConnect::Client::NotFound)
       pending += 1
     end
 
@@ -146,8 +157,10 @@ class TestflightFeedbackPoller
   def ship(row)
     return unless @exporter
 
+    # Stamped with when the log arrived, not when the tester submitted it, so a
+    # crash whose log lagged still shows up in a "last hour" view.
     @exporter.enqueue(
-      timestamp: (row.submitted_at || row.created_at).to_f,
+      timestamp: Time.current.to_f,
       severity: "WARN",
       scope: LOG_SCOPE,
       body: "[ios.crash] TestFlight crash #{row.asc_id} build=#{row.build_number || '?'} device=#{row.device_model || '?'} " \
@@ -155,6 +168,7 @@ class TestflightFeedbackPoller
       attributes: {
         "event" => "testflight.crash",
         "asc_id" => row.asc_id,
+        "submitted_at" => row.submitted_at&.iso8601,
         "build_number" => row.build_number,
         "device_model" => row.device_model,
         "os_version" => row.os_version,
@@ -162,9 +176,6 @@ class TestflightFeedbackPoller
         "crash_log_chars" => row.crash_log.length
       }.compact
     )
-  rescue ThreadError
-    # The exporter's queue is full; the row is the record, the log line is a convenience.
-    nil
   end
 
   def parse_time(value)
