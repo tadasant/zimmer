@@ -1654,7 +1654,7 @@ mirrors `hold_work_backlog_item_for_decision` through `WorkBacklog::Hold`.
 | `PATCH /work_backlog_items/:id/pin` | Body: `precedence`. Hand-place the item and pin it there |
 | `PATCH /work_backlog_items/:id/unpin` | Release the pin; the item is re-ranked into its cost band |
 | `POST /work_backlog_items/:id/remove` | Body: `reason` (free text), optional `removed_by` (default `human`). Off the queue; the row stays as history |
-| `POST /work_backlog_items/:id/hold` | Body: `reason` (required), `acting_session_id` (self-declared). Hold a stranded row for a human decision, as `hold_work_backlog_item_for_decision` does: out of `stranded` and the alert until the hold lapses (14 days) or its evidence changes. `422` for a row that is not stranded, has no liveness evidence yet, or is already held |
+| `POST /work_backlog_items/:id/hold` | Body: `reason` (required), `acting_session_id` (self-declared). Hold a stranded row for a human decision, as `hold_work_backlog_item_for_decision` does: out of `stranded` and the alert until the hold lapses (14 days) or its evidence changes. A moving open PR suspends the hold rather than voiding it. `422` for a row that is not stranded, has no liveness evidence yet, or is already held |
 
 A filter or an enum outside the vocabulary is a `422` rather than an empty result — an empty queue
 must never be a typo. `pin`, `unpin`, `remove` and `start_now` are `422` on an item that is not
