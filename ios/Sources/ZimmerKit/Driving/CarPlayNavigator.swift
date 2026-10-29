@@ -22,9 +22,8 @@ public protocol CarPlayModalHost: AnyObject {
 
 /// Every modal change the car makes, one at a time.
 ///
-/// The CarPlay scene changes its modal from several places that do not wait on each other: a
-/// call starting, the call's state going idle, a new subject rebuilding the call screen, the
-/// scene disconnecting. Made directly, two of those inside one animation collide — a present
+/// The CarPlay scene changes its modal from places that do not wait on each other: a call
+/// starting, the call's state going idle, a retry starting the next, the scene disconnecting. Made directly, two of those inside one animation collide — a present
 /// while another is still going up, a dismiss of a modal that is already on its way down — and
 /// CarPlay refuses the second. So every change goes through here: each waits for the one before
 /// it to finish, looks at what is on screen *then*, and does only what still needs doing. A
@@ -81,26 +80,6 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
             guard host.presentedTemplate != nil else { return }
             do { try await host.dismissPresented(animated: true) } catch { self.report("dismiss", error) }
         } otherwise: { () }
-    }
-
-    /// Swap `old` for `new` if `old` is on screen: the call screen rebuilt for a new subject or
-    /// for Mute, without animation, so it is a blink rather than a slide down and up. With `old`
-    /// gone already, nothing is presented: whatever took it down meant it.
-    @discardableResult
-    public func replace(_ old: Template, with new: Template) async -> Bool {
-        await serially { host in
-            guard self.shown === old, host.presentedTemplate != nil else { return false }
-            self.shown = nil
-            do {
-                try await host.dismissPresented(animated: false)
-                try await host.present(new, animated: false)
-                self.shown = new
-                return true
-            } catch {
-                self.report("replace", error)
-                return false
-            }
-        } otherwise: { false }
     }
 
     /// Wait for every change queued so far.

@@ -8186,15 +8186,16 @@ five; template changes made without a completion handler, which CarPlay turns in
 when it refuses them; and the call's audio engine restarted on a notification thread while a
 hang-up stopped it on the main one. Each now has a Linux test or a source guard, and every iOS
 pull request also runs the CarPlay drill: Zimmer in the iOS Simulator's CarPlay window, driven
-through a Live call that cannot connect, its retries, hanging up and a Needs you row, failing on any
-crash.
+through the whole car app (one button; a call that cannot connect, its retries and giving up; a
+call muted and ended), failing on any crash. The car app itself was cut to that flow (open, talk,
+mute, end) so there is little left to drive.
 
 The Simulator is not a car. Its CarPlay window has no audio route of a car's own, so the call's
 microphone and speaker moving to the car, and the audio engine's restart when they do, are
 confirmed only by driving, or by Apple's CarPlay Simulator app with a physical iPhone over USB,
 which no CI runner has. The drill's call never connects (CI has no microphone and no OpenAI key),
-so a conversation's own states (listening, speaking, working, a new subject) are not driven
-either. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
+so a conversation's own states (listening, speaking, working) and the line's activity are not
+driven either. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
 GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails the drill rather
 than skipping it. The app ships no crash reporter, so a crash in the car reaches nobody unless
 TestFlight's crash feedback is read in App Store Connect.

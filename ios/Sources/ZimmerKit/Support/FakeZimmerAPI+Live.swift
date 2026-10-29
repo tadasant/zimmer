@@ -135,6 +135,7 @@ extension FakeZimmerAPI {
 
     public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
         guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 409, message: "Voice is off for this conversation. Turn it on first.") }
+        if let liveSecretDelay { try await Task.sleep(for: liveSecretDelay) }
         return LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }

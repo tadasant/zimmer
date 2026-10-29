@@ -1,11 +1,12 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the flows that crashed it in a car (#1410). Talk to Zimmer with a call that cannot
-/// connect, so it fails, retries and puts the call screen up and down again and again, then
-/// gives up and says so on the tile. A tap after that is a fresh set of retries. Hang-up
-/// happens mid-connect, and a Needs you row opens the same call. After every step Zimmer
-/// must still be running: those are the changes CarPlay turns into an exception, and a crash.
+/// the whole of the car's app, which is one flow: open, Talk to Zimmer, Mute, End. A call that
+/// cannot connect fails, retries and puts the call screen up and down again and again, then
+/// gives up and says so on the button, and a tap after that tries again. A call held
+/// connecting is muted and ended. After every step Zimmer must still be running, and no call
+/// screen may be left over a car with no call: those are the changes CarPlay turns into an
+/// exception, and a crash, as it did in a car (#1410).
 ///
 /// The CarPlay window is a second display that only the Simulator app's menu can switch on,
 /// so `ios/bin/ui-test --carplay` opens it and sets `ZIMMER_UI_TEST_CARPLAY`. Without that
@@ -31,26 +32,26 @@ final class CarPlayDrillUITests: XCTestCase {
     }
 
     /// Zimmer launched on the fixture and opened in the car: the first line of every test.
-    private func start() {
+    /// `slowLive`: the call stays connecting for a minute (`-ZimmerFixtureSlowLive`).
+    private func start(slowLive: Bool = false) {
         XCTAssertGreaterThanOrEqual(XCUIScreen.screens.count, 2, "the CarPlay window is a second screen, and there is none")
         zimmer = XCUIApplication()
-        zimmer.launchArguments = ["-ZimmerFixture"]
+        zimmer.launchArguments = ["-ZimmerFixture"] + (slowLive ? ["-ZimmerFixtureSlowLive"] : [])
         zimmer.launch()
         openInTheCar()
     }
 
     // MARK: - The drill
 
-    func test_the_car_opens_on_talk_and_the_two_counts() {
+    func test_the_car_opens_on_one_button_and_nothing_else() {
         start()
-        XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "the first tile is Talk to Zimmer")
-        XCTAssertTrue(text("Needs you · 4").exists, "the fixture has four sessions that need you")
-        XCTAssertTrue(text("Running · 2").exists, "and two at work")
-        for tab in ["Zimmer", "Needs you", "Running"] {
-            XCTAssertTrue(car.buttons[tab].exists, "the \(tab) tab")
+        XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "the one button is Talk to Zimmer")
+        for gone in ["Needs you", "Running"] {
+            XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is one button")
         }
+        XCTAssertEqual(car.cells.count, 1, "one button on the screen; the car showed:\n\(car.debugDescription)")
         photograph("carplay-home")
-        assertAlive("on the home tab")
+        assertAlive("on the home screen")
     }
 
     func test_a_call_that_cannot_connect_retries_quietly_gives_up_on_the_tile_and_never_crashes() {
@@ -71,32 +72,26 @@ final class CarPlayDrillUITests: XCTestCase {
         assertAlive("after trying again")
     }
 
-    func test_hanging_up_while_it_connects_leaves_the_car_on_the_board() {
-        start()
+    func test_a_call_is_muted_and_ended_and_the_car_is_back_on_its_button() {
+        start(slowLive: true)
         tapTile("Talk to Zimmer")
-        let hangUp = car.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'hang' OR label CONTAINS[c] 'phone.down' OR label CONTAINS[c] 'end'")).firstMatch
-        guard hangUp.waitForExistence(timeout: 30) else {
-            return XCTFail("no Hang up button on the call screen; the car showed:\n\(car.debugDescription)")
-        }
-        photograph("carplay-call")
-        hangUp.tap()
-        XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 20), "hanging up goes back to Talk to Zimmer, with no retry")
-        assertNoCallScreen("after hanging up")
-        assertAlive("after hanging up")
-    }
-
-    func test_a_needs_you_row_opens_the_one_call() {
-        start()
-        car.buttons["Needs you"].tap()
-        let row = car.cells.firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: timeout), "the Needs you list has the fixture's sessions")
-        photograph("carplay-needs-you")
-        row.tap()
-        // The same call as Talk to Zimmer: the call screen, or its failure on the home tile.
-        let call = car.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'hang' OR label CONTAINS[c] 'phone.down' OR label CONTAINS[c] 'end'")).firstMatch
-        let reached = call.waitForExistence(timeout: 30) || waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 5)
-        XCTAssertTrue(reached, "a row starts the Live Mode call; the car showed:\n\(car.debugDescription)")
-        assertAlive("after a row started the call")
+        XCTAssertTrue(waitFor(anyOf: ["Connecting…"], seconds: 20), "the call screen is up, connecting")
+        let mute = callButton("Mute", symbol: "mic.slash")
+        let end = callButton("End", symbol: "phone.down")
+        XCTAssertTrue(mute.waitForExistence(timeout: timeout), "the call screen has Mute; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(end.exists, "and End")
+        mute.tap()
+        XCTAssertTrue(waitFor(anyOf: ["Muted"], seconds: 10), "the line says Muted; the car showed:\n\(car.debugDescription)")
+        photograph("carplay-call-muted")
+        mute.tap()
+        XCTAssertTrue(waitForGone("Muted", seconds: 10), "Mute again unmutes")
+        end.tap()
+        XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 20), "End goes back to Talk to Zimmer")
+        assertNoCallScreen("after End")
+        // Nothing is retried after the driver ended it.
+        Thread.sleep(forTimeInterval: 5)
+        XCTAssertTrue(text("Talk to Zimmer").exists, "and stays there: an ended call is not retried")
+        assertAlive("after End")
     }
 
     // MARK: - Getting there
@@ -123,8 +118,22 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(second, "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
     }
 
+    /// One of the call screen's two buttons, by its words or its symbol's.
+    private func callButton(_ title: String, symbol: String) -> XCUIElement {
+        car.buttons.matching(NSPredicate(format: "label ==[c] %@ OR label CONTAINS[c] %@", title, symbol)).firstMatch
+    }
+
+    private func waitForGone(_ label: String, seconds: Int) -> Bool {
+        for _ in 0..<seconds {
+            if !text(label).exists { return true }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        return !text(label).exists
+    }
+
+    /// Any element with these words: a tile's text, the call screen's title, the bar's line.
     private func text(_ label: String) -> XCUIElement {
-        car.staticTexts[label]
+        car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
     private func tapTile(_ label: String, or other: String? = nil) {
@@ -160,7 +169,7 @@ final class CarPlayDrillUITests: XCTestCase {
     /// drill first caught (CarPlay hands back a stand-in for the template it presented, so a
     /// dismissal that compared by identity never happened).
     private func assertNoCallScreen(_ when: String) {
-        let title = car.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Connecting' OR label BEGINSWITH 'Listening' OR label BEGINSWITH 'Speaking' OR label BEGINSWITH 'Thinking'")).firstMatch
+        let title = car.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH 'Connecting' OR label BEGINSWITH 'Listening' OR label BEGINSWITH 'Speaking' OR label BEGINSWITH 'Thinking'")).firstMatch
         let gone = NSPredicate(format: "exists == false")
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
         XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,

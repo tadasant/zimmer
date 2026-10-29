@@ -32,13 +32,16 @@ public enum LiveActivity {
     }
 }
 
-/// The car's call screen, a voice control template: one state per call state.
+/// The car's call screen, a voice control template: one state per call state, built once per
+/// call and never rebuilt. It goes up when the call starts and down when it ends, and nothing
+/// else: no rebuild for a new subject or for Mute, because every template change is one more
+/// CarPlay can refuse.
 ///
 /// CarPlay keeps the first five states a voice control template is given and ignores the rest
 /// (`CPVoiceControlTemplate.init(voiceControlStates:)`), so the five call states are the five
-/// states, and muted is not a state of its own: it is part of the title, and the screen is
-/// rebuilt when it changes (`LiveContext.differs`). A screen built with a muted twin of every
-/// state had ten, and CarPlay dropped *speaking* and *working*.
+/// states. A screen built with a muted twin of every state had ten, and CarPlay dropped
+/// *speaking* and *working*. Muted, like what the call is doing, is said on the one line that
+/// changes in place (`line`).
 public enum LiveCallScreen {
     /// What CarPlay keeps.
     public static let maximumStates = 5
@@ -51,53 +54,18 @@ public enum LiveCallScreen {
     public static func identifier(for state: LiveVoiceState) -> String {
         states.contains(state) ? state.rawValue : LiveVoiceState.connecting.rawValue
     }
-}
 
-/// What the call screen in the car carries beside the call's state: the session the
-/// conversation is about, the work it has in flight, how many sessions need the driver, and
-/// whether the microphone is muted. The voice control template has one line of text, so this
-/// chooses the line.
-public struct LiveContext: Hashable, Sendable {
-    /// The sessions the conversation has touched, newest first (`GET
-    /// /live_conversations/:id/sessions`).
-    public var sessions: [SessionSummary]
-    /// The function call in flight, described (`LiveActivity`); nil between calls.
-    public var activity: String?
-    public var needsYou: Int
-    /// Said in every title; a change rebuilds the screen.
-    public var muted: Bool
-
-    public init(sessions: [SessionSummary] = [], activity: String? = nil, needsYou: Int = 0, muted: Bool = false) {
-        self.sessions = sessions
-        self.activity = activity
-        self.needsYou = needsYou
-        self.muted = muted
+    /// A state's title: the call's state, in a word.
+    public static func title(for state: LiveVoiceState) -> String {
+        state.label
     }
 
-    /// The session the conversation is about right now: the one it touched last.
-    public var subject: SessionSummary? { sessions.first }
-
-    /// The template's title, longest variant first, as CarPlay chooses among them. The short
-    /// one is always the state's own word, so a narrow screen still says what the call is doing.
-    /// The activity is not in it: a title is fixed when the template is built, and the activity
-    /// changes with every function call, so the screen carries that in a bar button instead.
-    public func titleVariants(for state: LiveVoiceState) -> [String] {
-        let short = state.label(muted: muted)
-        var long = short
-        if let subject {
-            let title = DrivingWords.firstSentence(subject.displayTitle, limit: 48)
-            long += " · \(title): \(subject.status.label.lowercased())"
-        } else if needsYou > 0 {
-            long += " · \(needsYou) need you"
-        }
-        return long == short ? [short] : [long, short]
-    }
-
-    /// A different line than `other` drew: the template needs rebuilding. The subject and
-    /// muted change the line, so only those rebuild it.
-    public func differs(from other: LiveContext) -> Bool {
-        muted != other.muted || subject?.id != other.subject?.id || subject?.status != other.subject?.status || subject?.title != other.subject?.title
-            || (subject == nil && needsYou != other.needsYou)
+    /// The one line beside the title, a label in the bar that changes in place: an error if the
+    /// call has one, else Muted and what the call is doing, else nothing.
+    public static func line(error: String?, working: String?, muted: Bool) -> String? {
+        if let error { return error }
+        let parts = [muted ? "Muted" : nil, working].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
