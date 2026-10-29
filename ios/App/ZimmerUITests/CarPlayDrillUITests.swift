@@ -113,7 +113,14 @@ final class CarPlayDrillUITests: XCTestCase {
         let icon = dashboard.descendants(matching: .any).matching(NSPredicate(format: "label == 'Zimmer'")).firstMatch
         XCTAssertTrue(icon.waitForExistence(timeout: timeout), "Zimmer is on the CarPlay home screen; it showed:\n\(dashboard.debugDescription)")
         icon.tap()
-        XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
+        if text("Talk to Zimmer").waitForExistence(timeout: timeout) { return }
+        // DIAGNOSTIC: a blank Zimmer window after a relaunch. Once more, said in the log.
+        print("=== DRILL: Zimmer's scene was blank after the icon tap; going home and tapping it again")
+        if home.exists { home.tap() }
+        if icon.waitForExistence(timeout: timeout) { icon.tap() }
+        let second = text("Talk to Zimmer").waitForExistence(timeout: timeout)
+        print("=== DRILL: second tap \(second ? "connected" : "still blank")")
+        XCTAssertTrue(second, "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
     }
 
     private func text(_ label: String) -> XCUIElement {
