@@ -1193,8 +1193,9 @@ while voice is on.
 Voice — the relay a client holding the audio connection makes:
 
 - `POST /live_conversations/:id/client_secret` → `{client_secret, expires_at, model, calls_url,
-  websocket_url, tools}`, plus `settings_warning` when OpenAI refused the Live settings and the call
-  runs on the defaults. A ten-minute OpenAI Realtime secret whose session config (instructions for
+  websocket_url, tools, telemetry}`, plus `settings_warning` when OpenAI refused the Live settings and the call
+  runs on the defaults. `telemetry` is the Live setting `voice_telemetry`: how much the app reports
+  about the call. A ten-minute OpenAI Realtime secret whose session config (instructions for
   the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
   Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
   with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
@@ -1239,6 +1240,16 @@ changes them through MCP (`action_live_settings`), where the change is recorded 
 - `POST /live/settings/reset` → every setting back to its default; the guidance is kept.
 - `POST /live/settings/changes/:id/restore_guidance` → the guidance as it was before that change.
   422 when the change did not touch the guidance.
+
+### Live call telemetry
+
+- `POST /live/telemetry` (`client: {surface, app_version, app_build, os, device}`, `dropped`,
+  `events: [{seq, name, level (debug|info|warn|error), at (ISO 8601), mono_ms, call_id,
+  conversation_id, fields: {…}}]`) → 202 `{accepted, filtered, telemetry}`. The iOS app's log of
+  its voice calls. Each event kept by the [Call telemetry](/sessions/live/#call-telemetry) setting
+  becomes one `ios.live` record on the shipped logs. `telemetry` is the level in force, for the app
+  to adopt. Only the app's sign-in may send, on any grant; an API key is refused with 403. At most
+  100 events a batch and 40 fields an event; values are squished and truncated to 300 characters.
 
 ## Notifications
 

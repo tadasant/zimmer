@@ -228,6 +228,15 @@ call is in follows from what OpenAI applied: `client_secret` answers `listening`
 client reads `create_response` from each `session.created` and `session.updated`. A refused
 `session.update` does not leave the client thinking the call is gated when it isn't.
 
+**The car always answers.** A call whose requests say `carplay` is built as Always, whatever
+Listening says (`LiveConversations::Actions`). The car is one driver in a private space. A gated
+mode there drops lines without a sound, and the call sits on Listening as though it never heard.
+A call handed from the phone to the car mid-call becomes Always with the `session_update` the
+hand-over sends. On the phone, a dropped line puts the call back to Listening, and the call log
+records it (`listening.heard`, `dropped=true`). Every change to a Live setting, including one the
+live model makes itself, is logged at WARN as `[LiveSettings]`, so it is in the shipped logs
+beside the calls it changed.
+
 The call is owned by a dock in the layout (`shared/_live_voice_dock`, `data-turbo-permanent`), not by
 the conversation page. A Turbo navigation replaces the page body, and a peer connection living in it
 would drop on every click. The dock keeps the call, its mute and hang-up buttons, and a link back to
@@ -262,6 +271,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Threshold, prefix padding, silence duration (silence) | voice | 0.5, 300 ms, 500 ms | 0.1–0.95, 0–1,000 ms, 200–3,000 ms | mid-call |
 | Noise reduction | voice | off | `near_field`, `far_field` | mid-call |
 | Transcription model | voice | `gpt-4o-mini-transcribe` | that, `gpt-4o-transcribe` | mid-call |
+| Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
 tools, and OpenAI accepts those from the GPT-6 family only from `gpt-6-luna` and `gpt-6-sol`, only
@@ -331,6 +341,27 @@ makes it reachable.
 The gear on the app's Live screens opens the same [Live settings](#live-settings) over
 `/api/v1/live/settings`, guidance and history included. A save there sends an open phone call a
 fresh `session.update`.
+
+### Call telemetry
+
+The app logs every step of its voice calls, and the setting **Call telemetry** decides how much
+of that reaches the shipped logs. It is a threshold, and each level keeps everything above it:
+
+| Level | Keeps |
+| --- | --- |
+| `debug` (the default) | every step: speech starting and stopping, each response, each cue, each state change |
+| `info` | milestones (a call starting, connecting and ending; the audio session, route and turn detection in use; the timings) plus warnings and errors |
+| `warn` | problems only: interruptions, microphone stalls, retries, and errors |
+| `off` | nothing |
+
+An error is kept at every level but `off`. Shipped verbose for now, while the CarPlay app is being
+stabilised. **To turn it down**, open Live settings (Settings → Live settings, or the gear on a
+Live conversation) and set **Call telemetry**. It applies from the app's next batch, because
+Zimmer filters every batch against the setting and answers with the level, which the app adopts.
+The app also reads the level from each call's client secret and keeps it across launches. The REST
+route is `PATCH /api/v1/live/settings {"voice_telemetry": "info"}`, and the MCP tool is
+`action_live_settings`. What is logged, and how to read it, is under
+[CarPlay](/extend/ios-app/#carplay) and [observability](/operate/observability/#the-ios-apps-call-log).
 
 ## The OpenAI key
 

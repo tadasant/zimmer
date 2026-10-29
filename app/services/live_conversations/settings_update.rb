@@ -114,6 +114,13 @@ module LiveConversations
             changeset: changeset, actor_kind: @actor.kind, actor: @actor.label.to_s.truncate(200),
             live_conversation: @actor.live_conversation
           )
+          # Shipped, so a setting the live model moved on its own (Listening,
+          # turn detection) is in the same logs as the call it changed.
+          Rails.logger.warn(
+            "[LiveSettings] #{actor_label.squish} changed " +
+            changeset.except("guidance").map { |key, (before, after)| "#{key}: #{before.inspect} → #{after.inspect}" }
+              .push(*("guidance" if changeset.key?("guidance"))).join(", ")
+          )
         end
       end
 

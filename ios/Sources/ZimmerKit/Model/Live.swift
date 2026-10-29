@@ -221,16 +221,20 @@ public struct LiveClientSecret: Decodable, Sendable, Equatable {
     /// Which lines the call answers: `always`, `wake_word` or `dynamic`. Absent from a server
     /// from before Listening, whose calls answer everything.
     public let listening: String?
+    /// How much the app reports about the call (`LiveTelemetryLevel`, or `off`): the Live setting
+    /// `voice_telemetry`. Absent from a server from before it.
+    public let telemetry: String?
 
-    public init(clientSecret: String, model: String, websocketURL: URL, listening: String? = nil) {
+    public init(clientSecret: String, model: String, websocketURL: URL, listening: String? = nil, telemetry: String? = nil) {
         self.clientSecret = clientSecret
         self.model = model
         self.websocketURL = websocketURL
         self.listening = listening
+        self.telemetry = telemetry
     }
 
     enum CodingKeys: String, CodingKey {
-        case model, listening
+        case model, listening, telemetry
         case clientSecret = "client_secret"
         case websocketURL = "websocket_url"
     }

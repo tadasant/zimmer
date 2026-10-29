@@ -706,12 +706,56 @@ cards or per-session buttons.
 conversation, over the OpenAI Realtime call. Live Mode delegates to sessions itself: it checks on
 them, passes your answers on, merges, restarts, archives, starts work and follows up through
 Zimmer's MCP surface, confirming anything consequential first. The car has no other voice: no
-system speech, no read-aloud, no spoken confirmations.
+system speech, no read-aloud, no spoken confirmations. The car answers every line: a call from
+CarPlay is built as [Listening](/sessions/live/#listening-which-lines-get-an-answer) Always,
+whatever the setting says, so nothing you say there is dropped without a sound.
 
 **When Live Mode can't connect, the button says so.** If the call can't start, or drops, the
 button reads *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds,
 silently. Once those three are spent it reads *Live Mode unavailable. Tap to retry*. Ending the
 call ends the retries.
+
+**You can hear what the call is doing.** The call makes three short sounds besides Zimmer's
+voice, on the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit):
+
+- **Connected**: two soft rising notes, once, when the call is up and listening.
+- **Thinking**: one quiet, low tick about once a second, from the moment you stop talking until
+  Zimmer starts to answer, tool calls included. It stops the instant the reply's audio starts, and
+  the first tick waits a third of a second, so a quick answer never gets one.
+- **Disconnected**: the connected notes falling, once, when a call drops. Ending the call yourself
+  makes no sound.
+
+The cues play through the same voice-processing engine as the reply, so the echo canceller hears
+them as the phone's own output. While one sounds, the microphone is sent to OpenAI as silence
+(`LiveCueGate`), so turn detection never takes a cue for speech. Between ticks the microphone is
+open, so you can still talk over a slow answer.
+
+**A turn always ends.** OpenAI's turn detection measures silence in the audio it is sent, not in
+wall-clock time. A microphone that stops delivering mid-sentence (an interruption that never says
+it ended, a route the engine did not come back from) would leave the turn open forever, and the
+call would sit on Listening and never answer. The call watches for that (`MicWatchdog`). After
+300 ms with no microphone audio it sends silence in its place, so the turn ends, and it asks the
+audio engine to restart. Each stall is logged.
+
+**Every call is logged, for triage afterwards.** The app records each step of a Live voice call,
+from the phone or the car, and sends the log to Zimmer in batches (`LiveTelemetry`,
+`POST /api/v1/live/telemetry`). Zimmer puts each event on the shipped log stream as an `ios.live`
+record ([observability](/operate/observability/#the-ios-apps-call-log)). The log covers:
+
+- the call starting, its secret, connecting, hand-overs between phone and car, and ending, with
+  the reason and how long it ran;
+- the microphone permission, the audio session (category, mode, options, rate, route), route
+  changes, interruptions, and the engine starting, restarting or failing;
+- turn detection as OpenAI applied it, speech starting and stopping, and the time from the end of
+  speech to the reply and to its first audio;
+- each response's outcome, each tool call's name and time, Listening's verdict on a line, and every
+  error;
+- every state change, mute, cue, microphone stall and CarPlay screen change.
+
+It never carries what was said: a transcript line is logged by its length. How much is logged is
+the [Live setting](/sessions/live/#live-settings) **Call telemetry**, `debug` (everything) until the
+CarPlay app is stable. The batches leave off the main thread, at most every 15 seconds, at once
+when a call ends or the app goes to the background, and never per audio buffer.
 
 A call from the car is tagged `carplay` ([turn sources](/sessions/turn-sources/)). The car's Live
 call is the phone's `LiveCall`, but every request it makes from the car says `carplay`

@@ -22,11 +22,16 @@ module LiveConversations
     #   tagged with where the person actually is. nil leaves it alone.
     # @param listening_modes [Boolean] whether the client asks for each reply
     #   itself when the Listening setting is gated (Listening). One that does
-    #   not is always answered as `always`.
+    #   not is always answered as `always`. Neither is the car: a call from
+    #   CarPlay answers every line, whatever Listening says. The car is one
+    #   driver in a private space, a gate there drops lines without a sound,
+    #   and the call sits on Listening as though it never heard. A call handed
+    #   to the car mid-call is brought up to `always` by its next
+    #   `session_update`, which the hand-over sends.
     def initialize(conversation, client_surface: nil, listening_modes: false)
       @conversation = conversation
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
-      @listening_modes = listening_modes
+      @listening_modes = listening_modes && @client_surface != "carplay"
     end
 
     # A typed message. Answered by LiveConversationReplyJob — or, when it

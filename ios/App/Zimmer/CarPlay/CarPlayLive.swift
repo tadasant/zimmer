@@ -44,6 +44,7 @@ final class CarPlayLive {
     private(set) var retry = LiveRetry()
     private var retryWait: Task<Void, Never>?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay-live")
+    private let telemetry = LiveTelemetry.shared
 
     init(interfaceController: CPInterfaceController) {
         let navigator = CarPlayNavigator(host: interfaceController)
@@ -78,6 +79,7 @@ final class CarPlayLive {
 
     /// Talk to Zimmer: the open conversation with voice on, or a new one.
     func start() {
+        telemetry.track(.carPlay("talk_tapped", ["call_active": .bool(call.isActive)]))
         retryWait?.cancel()
         retry.asked()
         attempt()
@@ -108,6 +110,7 @@ final class CarPlayLive {
 
     /// The driver ended the call: nothing is retried after it.
     func hangUp() {
+        telemetry.track(.carPlay("end_tapped"))
         retryWait?.cancel()
         retry.stopped()
         call.hangUp()
@@ -137,9 +140,11 @@ final class CarPlayLive {
         log.error("live call from the car failed: \(reason, privacy: .public)")
         if !retryable { retry.gaveUp() }
         guard retryable, let wait = retry.failed() else {
+            telemetry.track(.carPlay("retry_gave_up", level: .warn, ["reason": .string(reason), "retryable": .bool(retryable)]))
             onChange?()
             return
         }
+        telemetry.track(.carPlay("retry_scheduled", level: .warn, ["reason": .string(reason), "wait_ms": .int(Int(wait.components.seconds * 1_000))]))
         onChange?()
         retryWait?.cancel()
         retryWait = Task { [weak self] in
@@ -178,6 +183,7 @@ final class CarPlayLive {
         template = screen
         Task {
             let shown = await navigator.present(screen)
+            self.telemetry.track(.carPlay(shown ? "call_screen_presented" : "call_screen_refused", level: shown ? .debug : .warn))
             guard self.template === screen else { return }
             if shown {
                 self.activate()
@@ -192,6 +198,7 @@ final class CarPlayLive {
     private func dismiss() {
         guard let navigator, let template else { return }
         self.template = nil
+        telemetry.track(.carPlay("call_screen_dismissed", level: .debug))
         Task { await navigator.dismiss(template) }
     }
 

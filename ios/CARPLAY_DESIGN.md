@@ -46,6 +46,27 @@ read-aloud, no spoken confirmation, no spoken error. Tadas: *"I should never hea
 that just reads stuff. It should always be real-time."* A source guard (`CarPlayTests`) fails the
 build on any `AVSpeechSynthesizer` in the app.
 
+**Hear the call, don't watch it.** A driver should never have to look to know whether Zimmer is
+listening or working. The call has three short synthesized cues, which are tones, not a voice
+(`LiveCue`): two soft rising notes when the call is up, a quiet low tick about once a second from
+the end of speech until Zimmer's voice starts, and the notes falling when a call drops. Rising is
+*on*, falling is *off*, and the tick shares neither pitch nor shape with the notes. The tick waits
+a third of a second, so a quick answer never gets one, and it stops the instant the reply's audio
+starts. The cues play through the call's voice-processing engine, so the echo canceller has them as
+reference, and while one sounds the microphone is sent as silence (`LiveCueGate`), so turn
+detection never takes a cue for speech.
+
+**A turn always ends.** OpenAI's turn detection over a WebSocket measures silence in the audio it
+receives. A microphone that stops delivering mid-sentence leaves the turn open, and the call sits
+on Listening for ever. After 300 ms without microphone audio the call sends silence in its place
+and asks the engine to restart (`MicWatchdog`). It is the same rule as a muted call's silence
+(#1372), applied to a microphone that went quiet on its own.
+
+**Every call leaves a trace.** The car cannot be tested from CI, so each call logs every step to
+Zimmer's shipped logs (`LiveTelemetry` → `POST /api/v1/live/telemetry` → `ios.live` records in
+VictoriaLogs). The Live setting *Call telemetry* turns it down or off without a build. See
+[docs: observability](https://docs.zimmer.tadasant.com/operate/observability/#the-ios-apps-call-log).
+
 **One thread.** Everything the driver says goes to the one Live Mode conversation: Talk to Zimmer
 resumes the open conversation with voice on, or starts one. Live Mode acts on sessions itself, with
 its own guardrails (it confirms before a merge or anything that cannot be undone). The car has no

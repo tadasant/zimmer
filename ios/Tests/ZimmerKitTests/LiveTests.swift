@@ -480,7 +480,9 @@ final class RealtimeConductorTests: XCTestCase {
 
     func testAGatedLineNobodyCouldReadIsDropped() {
         var conductor = RealtimeConductor(listening: "dynamic")
-        let delete = { (id: String) in [RealtimeConductor.Effect.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(id)]))] }
+        let delete = { (id: String) in
+            [RealtimeConductor.Effect.send(.object(["type": .string("conversation.item.delete"), "item_id": .string(id)])), .state(.listening)]
+        }
         XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"  "}"#)), delete("u1"))
         XCTAssertEqual(conductor.handle(event(#"{"type":"conversation.item.input_audio_transcription.failed","item_id":"u2"}"#)), delete("u2"))
         var always = RealtimeConductor()
