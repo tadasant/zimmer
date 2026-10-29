@@ -34,6 +34,13 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     public typealias Template = Host.Template
 
     private weak var host: Host?
+    /// The modal this navigator put up and has not taken down. Compared by this rather than by
+    /// `host.presentedTemplate === template`, because CarPlay's `presentedTemplate` is not the
+    /// object that was presented: compared by identity, every dismissal of the call screen was
+    /// skipped and it stayed up — "Connecting…" over a car that had given up — which the
+    /// CarPlay drill caught in the Simulator's CarPlay window. The host is asked only whether
+    /// anything is up, which also covers a modal the driver closed with CarPlay's own button.
+    private var shown: Template?
     /// The last change queued; the next one waits for it.
     private var tail: Task<Void, Never>?
     /// A change CarPlay refused, in words, for the log.
@@ -47,15 +54,17 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     @discardableResult
     public func present(_ template: Template) async -> Bool {
         await serially { host in
-            if host.presentedTemplate === template { return true }
+            if self.shown === template, host.presentedTemplate != nil { return true }
             if host.presentedTemplate != nil {
                 do { try await host.dismissPresented(animated: false) } catch {
                     self.report("dismiss before present", error)
                     return false
                 }
             }
+            self.shown = nil
             do {
                 try await host.present(template, animated: true)
+                self.shown = template
                 return true
             } catch {
                 self.report("present", error)
@@ -67,7 +76,9 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     /// Take `template` down if it is the modal on screen. Anything else on screen stays.
     public func dismiss(_ template: Template) async {
         await serially { host in
-            guard host.presentedTemplate === template else { return }
+            guard self.shown === template else { return }
+            self.shown = nil
+            guard host.presentedTemplate != nil else { return }
             do { try await host.dismissPresented(animated: true) } catch { self.report("dismiss", error) }
         } otherwise: { () }
     }
@@ -78,10 +89,12 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     @discardableResult
     public func replace(_ old: Template, with new: Template) async -> Bool {
         await serially { host in
-            guard host.presentedTemplate === old else { return false }
+            guard self.shown === old, host.presentedTemplate != nil else { return false }
+            self.shown = nil
             do {
                 try await host.dismissPresented(animated: false)
                 try await host.present(new, animated: false)
+                self.shown = new
                 return true
             } catch {
                 self.report("replace", error)

@@ -61,6 +61,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a failed call says it is retrying, on the tile")
         photograph("carplay-retrying")
         XCTAssertTrue(waitFor(anyOf: ["Retry", "Live Mode unavailable. Tap to retry"], seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
+        assertNoCallScreen("once the car has given up")
         photograph("carplay-unavailable")
         assertAlive("after three retries")
 
@@ -80,6 +81,7 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-call")
         hangUp.tap()
         XCTAssertTrue(waitFor(anyOf: ["Talk to Zimmer"], seconds: 20), "hanging up goes back to Talk to Zimmer, with no retry")
+        assertNoCallScreen("after hanging up")
         assertAlive("after hanging up")
     }
 
@@ -144,6 +146,18 @@ final class CarPlayDrillUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 1)
         }
         return labels.contains(where: { text($0).exists })
+    }
+
+    /// The call screen's title begins with the call's state ("Connecting… · 4 need you"). With
+    /// no call it must be gone: a call screen left up over a car that gave up is the bug this
+    /// drill first caught (CarPlay hands back a stand-in for the template it presented, so a
+    /// dismissal that compared by identity never happened).
+    private func assertNoCallScreen(_ when: String) {
+        let title = car.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Connecting' OR label BEGINSWITH 'Listening' OR label BEGINSWITH 'Speaking' OR label BEGINSWITH 'Thinking'")).firstMatch
+        let gone = NSPredicate(format: "exists == false")
+        let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
+        XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,
+                       "the call screen is still up \(when); the car showed:\n\(car.debugDescription)")
     }
 
     private func assertAlive(_ when: String) {

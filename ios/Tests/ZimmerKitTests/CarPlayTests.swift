@@ -26,7 +26,14 @@ final class CarPlayTests: XCTestCase {
             let description: String
         }
 
-        private(set) var presentedTemplate: Template?
+        /// What is on screen. `presentedTemplate` is what CarPlay hands back for it: with
+        /// `proxies` on, a stand-in object rather than the one presented, as CarPlay's is.
+        private var onScreen: Template?
+        var proxies = false
+        var presentedTemplate: Template? {
+            guard let onScreen else { return nil }
+            return proxies ? Template(onScreen.name + " (proxy)") : onScreen
+        }
         private(set) var violations: [String] = []
         private(set) var history: [String] = []
         private var animating = false
@@ -35,16 +42,16 @@ final class CarPlayTests: XCTestCase {
 
         func present(_ template: Template, animated: Bool) async throws {
             try refuseIf(animating, "present \(template.name) during an animation")
-            try refuseIf(presentedTemplate != nil, "present \(template.name) over \(presentedTemplate?.name ?? "")")
-            try await animate { self.presentedTemplate = template }
+            try refuseIf(onScreen != nil, "present \(template.name) over \(onScreen?.name ?? "")")
+            try await animate { self.onScreen = template }
             history.append("present \(template.name)")
         }
 
         func dismissPresented(animated: Bool) async throws {
             try refuseIf(animating, "dismiss during an animation")
-            try refuseIf(presentedTemplate == nil, "dismiss with nothing presented")
-            let name = presentedTemplate?.name ?? ""
-            try await animate { self.presentedTemplate = nil }
+            try refuseIf(onScreen == nil, "dismiss with nothing presented")
+            let name = onScreen?.name ?? ""
+            try await animate { self.onScreen = nil }
             history.append("dismiss \(name)")
         }
 
@@ -135,6 +142,42 @@ final class CarPlayTests: XCTestCase {
         XCTAssertTrue(host.presentedTemplate === call)
         XCTAssertEqual(host.history, ["present other", "dismiss other", "present call"])
         XCTAssertEqual(host.violations, [])
+    }
+
+    /// The bug the CarPlay drill found in the Simulator's CarPlay window: CarPlay's
+    /// `presentedTemplate` is not the object presented, so a navigator that compared by
+    /// identity never took the call screen down, and "Connecting…" stayed over a car that had
+    /// given up.
+    func testTheCallScreenComesDownWhenCarPlayHandsBackAStandInForIt() async {
+        let host = StrictHost()
+        host.proxies = true
+        let navigator = CarPlayNavigator(host: host)
+        let call = Template("call")
+        await navigator.present(call)
+        XCTAssertNotNil(host.presentedTemplate)
+        await navigator.present(call)
+        XCTAssertEqual(host.history, ["present call"], "presenting the same screen twice is once, stand-in or not")
+        let rebuilt = Template("call, muted")
+        let replaced = await navigator.replace(call, with: rebuilt)
+        XCTAssertTrue(replaced, "a rebuild finds the screen it is replacing")
+        await navigator.dismiss(call)
+        XCTAssertNotNil(host.presentedTemplate, "a stale dismissal leaves the rebuilt screen")
+        await navigator.dismiss(rebuilt)
+        XCTAssertNil(host.presentedTemplate, "the call screen comes down")
+        XCTAssertEqual(host.violations, [])
+    }
+
+    func testAScreenTheDriverClosedIsNotDismissedAgain() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        let call = Template("call")
+        await navigator.present(call)
+        try? await host.dismissPresented(animated: true)
+        await navigator.dismiss(call)
+        XCTAssertEqual(host.violations, [], "no dismissal with nothing presented")
+        let again = await navigator.present(call)
+        XCTAssertTrue(again, "and the next call puts it up again")
+        XCTAssertEqual(host.history, ["present call", "dismiss call", "present call"])
     }
 
     func testDismissTakesDownOnlyItsOwnTemplate() async {
