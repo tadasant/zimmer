@@ -8177,16 +8177,24 @@ The route trusts the JWKS it fetches from the team domain over HTTPS. A team dom
 host someone else controls would let that host mint handoffs. The default is Tadas's team, and the
 value is read only from the secret chain.
 
-## The CarPlay scene has never connected to a car
+## CarPlay has no automated run against a real CarPlay screen
 
-The CarPlay scene is built, its rules (`DrivingBoard`, `LiveContext`) are unit-tested, and every
-TestFlight build signs in the granted entitlement. But no head unit or CarPlay Simulator has shown
-it yet. The template tree, the voice control template's action buttons and bar buttons (iOS 26.4),
-the rebuild of the call screen when the conversation's subject changes, whether the car's audio
-ducks under a tapped briefing, and whether a scene that opens quietly — the default button is the
-voice conversation, but nothing is spoken until it is tapped — is what App Review expects of a
-category whose "primary modality of voice upon launch" could be read either way, are all unobserved.
-XCUITest cannot reach the CarPlay window, so there are no screenshots of it either.
+The CarPlay scene has run in a car: TestFlight builds crashed there, repeatedly, and sometimes spoke
+with the system voice ([#1410](https://github.com/tadasant/zimmer/issues/1410)). The causes found
+were all ones CarPlay documents: a voice control template with ten states, of which CarPlay keeps
+five; template changes made without a completion handler, which CarPlay turns into an exception
+when it refuses them; and the call's audio engine restarted on a notification thread while a
+hang-up stopped it on the main one. Each now has a Linux test or a source guard. What they test is
+Zimmer's code against a fake that refuses what Apple's documentation says CarPlay refuses. They don't
+test CarPlay itself.
+
+Nothing automated drives the real CarPlay screen. XCUITest can't reach the CarPlay window, the
+simulator's CarPlay display is a menu item with no command-line control, and Apple's CarPlay
+Simulator needs a physical iPhone over USB. So the template tree as a car draws it, the voice
+control template's action and bar buttons (iOS 26.4), the call screen's rebuild on a new subject
+or on Mute, and the audio route moving to the car are confirmed only by driving. The app ships no
+crash reporter, so a crash in the car reaches nobody unless TestFlight's crash feedback is read in
+App Store Connect.
 
 Nothing in the car tells you a session started needing you while you drive, beyond the badge and
 the counts changing on the next minute's read: there are no CarPlay notifications for this category,

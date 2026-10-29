@@ -1,7 +1,7 @@
 import Foundation
 
-/// What the car shows and says, worked out from the board: the sessions that need the driver,
-/// the ones at work, and the words for each row, card and briefing. It touches no network,
+/// What the car shows, worked out from the board: the sessions that need the driver, the ones
+/// at work, and the words for each row. It touches no network,
 /// audio or CarPlay API, so every rule is tested on Linux; the CarPlay scene renders it.
 ///
 /// Two lists, because a driver has two questions: *does anything need me?* and *what is going
@@ -11,7 +11,7 @@ public struct DrivingBoard: Hashable, Sendable {
     /// Some cars cap a list at 12 rows; Apple's guide says to be ready for that.
     public static let listLimit = 12
 
-    /// Needs input and failed: each a decision the driver can take with one or two taps.
+    /// Needs input and failed: each something to talk through with Live Mode.
     public var needsYou: [DrivingCard]
     /// Running and waiting: at work, nothing to decide.
     public var working: [DrivingCard]
@@ -52,8 +52,8 @@ public struct DrivingBoard: Hashable, Sendable {
     }
 }
 
-/// One session as the car presents it: a row's two lines, a card's labels and buttons, and
-/// the sentence the car says for it.
+/// One session as the car presents it: a row's two lines, and the opening line Live Mode is
+/// given when the driver taps it.
 public struct DrivingCard: Hashable, Sendable, Identifiable {
     public enum Kind: Hashable, Sendable {
         case needsInput, failed, running, waiting
@@ -66,8 +66,6 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
     public let headline: String
     /// "Needs input · 12m".
     public let statusLine: String
-    /// "#1261 · open · CI green", for the newest pull request.
-    public let pullRequestLine: String?
 
     public var id: Int { session.id }
     public var title: String { session.displayTitle }
@@ -86,12 +84,6 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
         var status = session.status.label
         if let at = session.updatedAt { status += " · \(Format.age(at, now: now))" }
         statusLine = status
-        pullRequestLine = session.pullRequests.last.map { pr in
-            var line = pr.label
-            if let state = pr.state { line += " · \(state)" }
-            if let ci = pr.ci { line += ci == "pass" ? " · CI green" : " · CI \(ci)" }
-            return line
-        }
     }
 
     static func fallbackHeadline(_ kind: Kind) -> String {
@@ -103,35 +95,12 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
         }
     }
 
-    /// The card's footer buttons, the obvious one first. A green PR's decision is the merge, so
-    /// that leads; otherwise the common answer, go ahead, does.
-    public var actions: [DrivingAction] {
-        switch kind {
-        case .needsInput:
-            if let pr = session.mergeablePullRequest { return [.merge(pr), .talkAboutIt] }
-            return [.goAhead, .talkAboutIt]
-        case .failed:
-            return [.restart, .talkAboutIt]
-        case .running, .waiting:
-            return [.talkAboutIt, .readAloud]
-        }
-    }
-
-    /// Behind the card's More button: the rest, with the destructive one last.
-    public var more: [DrivingAction] {
-        switch kind {
-        case .needsInput:
-            return (session.mergeablePullRequest != nil ? [.goAhead] : []) + [.readAloud, .archive]
-        case .failed:
-            return [.readAloud, .archive]
-        case .running, .waiting:
-            return []
-        }
-    }
-
-    /// What the car says when the card opens, and in the briefing: the title, then the line.
-    public var spoken: String {
-        DrivingWords.sentence(title) + " " + DrivingWords.sentence(headline)
+    /// The line the car gives Live Mode when the driver taps this session's row: the session,
+    /// in words the model can find it by, and what to do first. The row is a way into the one
+    /// conversation, not a conversation of its own.
+    public var opening: String {
+        "Let's talk about session \(id), \"\(title)\". It is \(session.status.label.lowercased()). " +
+            "Tell me where it stands in a sentence, then ask me what I want to do."
     }
 
     /// The row's second line: what it needs, or for a session at work with nothing to say
@@ -144,111 +113,8 @@ public struct DrivingCard: Hashable, Sendable, Identifiable {
     }
 }
 
-/// What a card's button does. Each names its words, whether it is confirmed first, and what
-/// the car says when it has worked. Merge and archive confirm: a merge ships, and an archive
-/// takes a session off the board. Go ahead and restart act at once: a tap is deliberate, and
-/// both only tell the agent to carry on. Trash is not here at all: it is for a desk.
-public enum DrivingAction: Hashable, Sendable {
-    /// Send *Yes, go ahead.*, the usual answer to a session waiting on a person.
-    case goAhead
-    /// The person's sign-off on the session's green PR (`authorize_merge`).
-    case merge(PullRequestLink)
-    /// Start, or come back to, Live Mode with this session as the subject.
-    case talkAboutIt
-    case restart
-    case archive
-    /// Say the card again.
-    case readAloud
-
-    public static let goAheadText = "Yes, go ahead."
-
-    public var title: String {
-        switch self {
-        case .goAhead: return "Go ahead"
-        case let .merge(pr): return "Merge \(pr.label)"
-        case .talkAboutIt: return "Talk about it"
-        case .restart: return "Restart"
-        case .archive: return "Archive"
-        case .readAloud: return "Read aloud"
-        }
-    }
-
-    public var isDestructive: Bool { self == .archive }
-
-    /// The question asked before acting, or nil to act on the tap.
-    public func confirmation(for card: DrivingCard) -> String? {
-        switch self {
-        case let .merge(pr): return "Merge \(pr.label)? The session merges it and archives itself."
-        case .archive: return "Archive \(card.title)?"
-        default: return nil
-        }
-    }
-
-    /// Spoken once the action has worked. nil for the ones that do not touch Zimmer.
-    public var spokenDone: String? {
-        switch self {
-        case .goAhead: return "Told it to go ahead."
-        case .merge: return "Merge authorized."
-        case .restart: return "Restarting."
-        case .archive: return "Archived."
-        case .talkAboutIt, .readAloud: return nil
-        }
-    }
-
-    /// The line the car gives Live Mode for Talk about it: the session, in words the model can
-    /// find it by, and what to do first.
-    public static func opening(for card: DrivingCard) -> String {
-        "Let's talk about session \(card.id), \"\(card.title)\". It is \(card.session.status.label.lowercased()). " +
-            "Tell me where it stands in a sentence, then ask me what I want to do."
-    }
-}
-
-/// The briefing the driver asks for with the Briefing tile: what needs them, what is running.
-/// The car never says it unasked.
-public enum Briefing {
-    /// Up to this many sessions are read in full; the rest are counted.
-    public static let spokenLimit = 3
-
-    public static func text(for board: DrivingBoard) -> String {
-        var lines: [String] = []
-        // The totals, not the capped list: twenty sessions are twenty, however many a car shows.
-        let total = board.needsYouTotal + board.failedTotal
-        switch total {
-        case 0: lines.append("Nothing needs you.")
-        case 1: lines.append("One session needs you.")
-        default: lines.append("\(total) sessions need you.")
-        }
-        for (index, card) in board.needsYou.prefix(spokenLimit).enumerated() {
-            let ordinal = total == 1 ? "" : "\(Self.ordinal(index + 1)): "
-            lines.append(ordinal + card.spoken)
-        }
-        if total > spokenLimit {
-            lines.append("And \(total - spokenLimit) more.")
-        }
-        var working: [String] = []
-        if board.runningTotal > 0 { working.append(board.runningTotal == 1 ? "One running" : "\(board.runningTotal) running") }
-        if board.waitingTotal > 0 { working.append(board.waitingTotal == 1 ? "one waiting" : "\(board.waitingTotal) waiting") }
-        if !working.isEmpty { lines.append(working.joined(separator: ", ") + ".") }
-        return lines.joined(separator: " ")
-    }
-
-    /// Spoken when the board could not be read: never "nothing needs you" for a network error.
-    public static func failure(_ reason: String) -> String {
-        "I couldn't check your sessions. \(DrivingWords.sentence(reason))"
-    }
-
-    static func ordinal(_ n: Int) -> String {
-        switch n {
-        case 1: return "First"
-        case 2: return "Second"
-        case 3: return "Third"
-        default: return "Number \(n)"
-        }
-    }
-}
-
-/// Markdown into words a list row holds and a voice reads: a status summary is markdown with
-/// links and emphasis, and neither a CarPlay row nor a speech synthesizer wants the marks.
+/// Markdown into words a list row holds: a status summary is markdown with links and emphasis,
+/// and a CarPlay row wants neither.
 public enum DrivingWords {
     public static func plain(_ markdown: String) -> String {
         var text = markdown
@@ -266,7 +132,7 @@ public enum DrivingWords {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The first sentence, capped: a row has one line and a voice has a breath.
+    /// The first sentence, capped: a row has one line.
     public static func firstSentence(_ text: String, limit: Int = 140) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -278,13 +144,6 @@ public enum DrivingWords {
             sentence = String(atWord).trimmingCharacters(in: .punctuationCharacters) + "…"
         }
         return sentence
-    }
-
-    /// `text` ending in a full stop, so sentences read with a pause between them.
-    public static func sentence(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let last = trimmed.last else { return "" }
-        return ".!?…".contains(last) ? trimmed : trimmed + "."
     }
 
     /// The index just past the first sentence's end mark: a `.`, `!` or `?` followed by a
