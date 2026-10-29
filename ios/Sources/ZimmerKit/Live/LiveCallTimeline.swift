@@ -125,8 +125,8 @@ public struct LiveCallTimeline: Sendable {
 public extension LiveEvent {
     // The call
 
-    static func callStarting(surface: String, opening: Bool, listening: String?) -> LiveEvent {
-        LiveEvent(.info, "call.starting") { ["surface": .string(surface), "opening": .bool(opening), "listening": .text(listening)] }
+    static func callStarting(surface: String, opening: Bool) -> LiveEvent {
+        LiveEvent(.info, "call.starting") { ["surface": .string(surface), "opening": .bool(opening)] }
     }
 
     static func secretMinted(ms: TimeInterval, model: String, listening: String?, telemetry: String?) -> LiveEvent {
@@ -189,5 +189,9 @@ public extension LiveEvent {
 
     static func thinkingCue(_ on: Bool) -> LiveEvent {
         LiveEvent(.debug, on ? "cue.thinking_started" : "cue.thinking_stopped")
+    }
+
+    static func thinkingTimedOut(after: TimeInterval) -> LiveEvent {
+        LiveEvent(.warn, "cue.thinking_timeout") { ["after_ms": .ms(after)] }
     }
 }

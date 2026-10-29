@@ -8,7 +8,7 @@ import Foundation
 /// - **thinking**: one quiet, low, rounded tick (a 520 Hz tap, 45 ms) about once a second, from
 ///   the moment the person stops talking until Zimmer's voice starts, through tool calls too —
 ///   so there is no dead air between *I heard you* and the answer. The first tick waits
-///   `thinkingLead`, so a quick answer never gets one;
+///   `thinkingLead`, so an answer that starts within it gets none;
 /// - **disconnected**: the connected notes falling (B5 then E5), once, when a call drops.
 ///
 /// Rising means *on*, falling means *off*, and the tick shares neither pitch nor shape with the
@@ -32,9 +32,22 @@ public enum LiveCue: String, Sendable, CaseIterable {
         }
     }
 
-    public func duration(sampleRate: Double = RealtimeAudio.sampleRate) -> TimeInterval {
-        Double(samples(sampleRate: sampleRate).count) / sampleRate
+    /// How long it sounds. Worked out once: the gate reads it for every microphone buffer.
+    public var duration: TimeInterval {
+        switch self {
+        case .connected: return Self.connectedDuration
+        case .disconnected: return Self.disconnectedDuration
+        case .thinking: return Self.tickDuration
+        }
     }
+
+    private static let connectedDuration = Double(LiveCue.connected.samples().count) / RealtimeAudio.sampleRate
+    private static let disconnectedDuration = Double(LiveCue.disconnected.samples().count) / RealtimeAudio.sampleRate
+    private static let tickDuration = Double(LiveCue.thinking.samples().count) / RealtimeAudio.sampleRate
+
+    /// How long the tick may run with no answer before it gives up: a reply that never comes
+    /// (a refused request, a transcript that never arrives) must not tick for ever.
+    public static let thinkingCeiling: TimeInterval = 45
 
     /// How often the thinking tick repeats.
     public static let thinkingPeriod: TimeInterval = 1.0
@@ -83,12 +96,16 @@ public struct LiveCueGate: Sendable, Equatable {
     public var closedUntil: TimeInterval = 0
     /// The thinking loop: when its first tick sounds; nil when it is not playing.
     public var loopStart: TimeInterval?
+    /// From scheduling a sound to the microphone delivering it: the route's output and input
+    /// latency and one I/O buffer. On Bluetooth or a car it is often 100–250 ms, so each window
+    /// is held open that much longer.
+    public var latency: TimeInterval = 0
 
     public init() {}
 
     /// A one-shot cue starting at `now`.
     public mutating func oneShot(_ cue: LiveCue, at now: TimeInterval) {
-        closedUntil = max(closedUntil, now + cue.duration() + Self.tail)
+        closedUntil = max(closedUntil, now + cue.duration + Self.tail + latency)
     }
 
     public mutating func startLoop(at now: TimeInterval) {
@@ -104,7 +121,7 @@ public struct LiveCueGate: Sendable, Equatable {
         let end = start + length
         if start < closedUntil { return true }
         guard let loopStart, end > loopStart else { return false }
-        let window = LiveCue.thinking.duration() + Self.tail
+        let window = LiveCue.thinking.duration + Self.tail + latency
         let period = LiveCue.thinkingPeriod
         // The tick that began at or before this buffer's start, and the one after it.
         let index = floor((start - loopStart) / period)
@@ -143,6 +160,13 @@ public struct LiveCueDirector: Sendable, Equatable {
             if thinking { thinking = false; actions.append(.stopThinking) }
         }
         return actions
+    }
+
+    /// The tick ran `LiveCue.thinkingCeiling` with no answer: stop it.
+    public mutating func thinkingTimedOut() -> [Action] {
+        guard thinking else { return [] }
+        thinking = false
+        return [.stopThinking]
     }
 
     /// The call dropped (not hung up): the falling notes.

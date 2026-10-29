@@ -184,8 +184,8 @@ class LiveSetting < ApplicationRecord
     when :voice_vad_prefix_padding_ms then 300
     when :voice_vad_silence_duration_ms then 500
     when :voice_transcription_model then "gpt-4o-mini-transcribe"
-    # Verbose while the CarPlay app is being stabilised; turn it down on the
-    # Live settings page, no deploy needed.
+    # Verbose: everything a call does is reported. Turned down on the Live
+    # settings page, without a deploy.
     when :voice_telemetry then "debug"
     end
   end

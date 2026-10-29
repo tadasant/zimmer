@@ -174,6 +174,57 @@ final class LiveDiagnosticsTests: XCTestCase {
                        "a line not meant for Zimmer puts the call back to listening, not stuck working on it")
     }
 
+    func testNoAnswerComingPutsTheCallBackToListeningSoTheTickNeverRunsOn() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"input_audio_buffer.speech_stopped"}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"Refused"}}"#)),
+                       [.failure("Refused"), .state(.listening)], "an error with nothing running: no answer is coming")
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"Bad truncate"}}"#)), [.failure("Bad truncate")],
+                       "an error beside a running response leaves it be")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"cancelled","output":[]}}"#)), [.state(.listening)])
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","status_details":{"error":{"message":"x"}}}}"#)),
+                       [.failure("x"), .state(.listening)], "said once")
+
+        var director = LiveCueDirector()
+        _ = director.transition(to: .listening)
+        _ = director.transition(to: .thinking)
+        XCTAssertEqual(director.thinkingTimedOut(), [.stopThinking])
+        XCTAssertEqual(director.thinkingTimedOut(), [])
+        XCTAssertEqual(director.transition(to: .speaking), [], "already stopped")
+    }
+
+    func testTheGateStaysClosedForTheRoutesLatency() {
+        var gate = LiveCueGate()
+        gate.latency = 0.2
+        gate.oneShot(.connected, at: 10)
+        let end = 10 + LiveCue.connected.duration + LiveCueGate.tail
+        XCTAssertTrue(gate.closes(end + 0.1, length: 0.02), "a car's 200 ms latency: the ding is still coming back through the mic")
+        XCTAssertFalse(gate.closes(end + 0.25, length: 0.02))
+    }
+
+    func testAFlushDuringASendIsSentRightAfterIt() async {
+        let sent = Box<[Int]>([])
+        let log = telemetry()
+        let release = Box(false)
+        log.setSink { batch in
+            sent.update { $0.append(batch.events.count) }
+            while !release.current { try await Task.sleep(for: .milliseconds(5)) }
+            return LiveTelemetryAnswer(accepted: batch.events.count, telemetry: nil)
+        }
+        log.track(LiveEvent(.info, "call.connected"))
+        let first = Task { await log.send() }
+        while sent.current.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
+        log.track(LiveEvent(.info, "call.ended"))
+        await log.send()
+        XCTAssertEqual(log.pending, 1, "a batch is out: this one waits")
+        release.update { $0 = true }
+        await first.value
+        XCTAssertEqual(sent.current, [1, 1], "and goes as soon as the first is answered")
+        XCTAssertEqual(log.pending, 0)
+    }
+
     func testAStalledMicrophoneIsCoveredWithSilenceSoTheTurnStillEnds() {
         var watchdog = MicWatchdog()
         watchdog.arm(at: 0)
@@ -199,9 +250,9 @@ final class LiveDiagnosticsTests: XCTestCase {
         let connected = LiveCue.connected.samples()
         let disconnected = LiveCue.disconnected.samples()
         let tick = LiveCue.thinking.samples()
-        XCTAssertLessThan(LiveCue.connected.duration(), 0.35)
-        XCTAssertLessThan(LiveCue.disconnected.duration(), 0.35)
-        XCTAssertLessThan(LiveCue.thinking.duration(), 0.06)
+        XCTAssertLessThan(LiveCue.connected.duration, 0.35)
+        XCTAssertLessThan(LiveCue.disconnected.duration, 0.35)
+        XCTAssertLessThan(LiveCue.thinking.duration, 0.06)
         XCTAssertLessThanOrEqual(connected.map(abs).max()!, 0.25, "well under full scale: a cue, not an alarm")
         XCTAssertLessThanOrEqual(tick.map(abs).max()!, 0.08, "the tick is quieter still: it repeats")
         XCTAssertEqual(tick.first!, 0, accuracy: 0.001, "no click at the start")
@@ -221,7 +272,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         var gate = LiveCueGate()
         gate.oneShot(.connected, at: 10)
         XCTAssertTrue(gate.closes(10.1, length: 0.02))
-        XCTAssertFalse(gate.closes(10 + LiveCue.connected.duration() + LiveCueGate.tail + 0.01, length: 0.02))
+        XCTAssertFalse(gate.closes(10 + LiveCue.connected.duration + LiveCueGate.tail + 0.01, length: 0.02))
 
         gate.startLoop(at: 20)
         let first = 20 + LiveCue.thinkingLead

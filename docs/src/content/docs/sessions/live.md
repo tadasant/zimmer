@@ -354,13 +354,13 @@ of that reaches the shipped logs. It is a threshold, and each level keeps everyt
 | `warn` | problems only: interruptions, microphone stalls, retries, and errors |
 | `off` | nothing |
 
-An error is kept at every level but `off`. Shipped verbose for now, while the CarPlay app is being
-stabilised. **To turn it down**, open Live settings (Settings → Live settings, or the gear on a
+An error is kept at every level but `off`. The default is verbose. **To turn it down**, open Live settings (Settings → Live settings, or the gear on a
 Live conversation) and set **Call telemetry**. It applies from the app's next batch, because
 Zimmer filters every batch against the setting and answers with the level, which the app adopts.
 The app also reads the level from each call's client secret and keeps it across launches. The REST
 route is `PATCH /api/v1/live/settings {"voice_telemetry": "info"}`, and the MCP tool is
-`action_live_settings`. What is logged, and how to read it, is under
+`action_live_settings`. The live model cannot change it from a call: `update_live_settings` refuses
+it, and a reset from the call leaves it as it was. What is logged, and how to read it, is under
 [CarPlay](/extend/ios-app/#carplay) and [observability](/operate/observability/#the-ios-apps-call-log).
 
 ## The OpenAI key

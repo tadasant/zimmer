@@ -1,11 +1,11 @@
 import Foundation
 
 /// How much a Live voice call reports, and the order it is reported in: a threshold over four
-/// levels. Zimmer's Live setting `voice_telemetry` picks it (`debug` until the CarPlay app is
-/// stable), each client secret and each batch's answer carries it, and the app keeps the last one
-/// it was told for the calls after.
+/// levels. Zimmer's Live setting `voice_telemetry` picks it, each client secret and each batch's
+/// answer carries it, and the app keeps the last one it was told for the calls after.
 public enum LiveTelemetryLevel: String, Codable, Sendable, CaseIterable, Comparable {
     /// Every step: speech starting and stopping, each response, each cue, each state change.
+    /// The shipped default.
     case debug
     /// Milestones: a call starting, connecting and ending, the audio session and route, turn
     /// detection as OpenAI applied it, the timings.
@@ -119,11 +119,12 @@ public struct LiveTelemetryAnswer: Decodable, Sendable, Equatable {
 /// VictoriaLogs under `scope.name:="ios.live"`).
 ///
 /// Cheap by construction: `track` checks the level, then takes a lock to append one small value;
-/// it never does I/O. Sending is a detached task, never on the caller's thread: every 15 seconds
-/// while events wait, at once when 40 are waiting, and on `flush()` (a call ending, the app
-/// going to the background). The buffer holds at most 500; past that the oldest are dropped and
-/// counted, and the count rides on the next batch. A batch that fails to send goes back in the
-/// buffer for the next try.
+/// it never does I/O. Sending is a detached task, never on the caller's thread: within 15 seconds
+/// of an event, at once when 40 are waiting, and on `flush()` (a call ending, the app going to
+/// the background); a flush during a send is sent right after it. The buffer holds at most 500,
+/// in memory only; past that the oldest are dropped and counted, and the count rides on the
+/// next batch. A batch that fails to send goes back in the buffer for the next try. What is
+/// waiting when the app is terminated is lost.
 public final class LiveTelemetry: @unchecked Sendable {
     public typealias Sink = @Sendable (LiveTelemetryBatch) async throws -> LiveTelemetryAnswer
 
@@ -137,6 +138,8 @@ public final class LiveTelemetry: @unchecked Sendable {
     private var dropped = 0
     private var seq = 0
     private var sending = false
+    /// A flush came while a batch was out: send again as soon as it is answered.
+    private var again = false
     private var timer: Task<Void, Never>?
     private var minimum: LiveTelemetryLevel?
     private var call: (id: String, conversation: Int?)?
@@ -199,10 +202,6 @@ public final class LiveTelemetry: @unchecked Sendable {
         return id
     }
 
-    public func setConversation(_ conversation: Int?) {
-        lock.withLock { if let current = call { call = (current.id, conversation) } }
-    }
-
     public func endCall() {
         lock.withLock { call = nil }
     }
@@ -239,10 +238,14 @@ public final class LiveTelemetry: @unchecked Sendable {
         guard let (batch, sink) = takeBatch() else { return }
         do {
             let answer = try await sink(batch)
-            lock.withLock { sending = false }
+            let followUp = lock.withLock {
+                sending = false
+                defer { again = false }
+                return again || buffer.count >= Self.batchSize
+            }
             adopt(answer.telemetry)
-            // More came in while this one was out.
-            if pending >= Self.batchSize { await send() }
+            // A flush, or a batch's worth, came in while this one was out.
+            if followUp { await send() }
         } catch {
             lock.withLock {
                 sending = false
@@ -265,6 +268,7 @@ public final class LiveTelemetry: @unchecked Sendable {
 
     private func takeBatch() -> (LiveTelemetryBatch, Sink)? {
         lock.withLock {
+            if sending { again = true }
             guard !sending, !buffer.isEmpty, let sink else { return nil }
             sending = true
             let events = Array(buffer.prefix(100))

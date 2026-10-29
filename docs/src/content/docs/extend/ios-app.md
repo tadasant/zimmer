@@ -721,13 +721,15 @@ voice, on the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit):
 - **Connected**: two soft rising notes, once, when the call is up and listening.
 - **Thinking**: one quiet, low tick about once a second, from the moment you stop talking until
   Zimmer starts to answer, tool calls included. It stops the instant the reply's audio starts, and
-  the first tick waits a third of a second, so a quick answer never gets one.
+  the first tick waits a third of a second, so an answer that starts sooner gets none. After 45
+  seconds with no answer the tick gives up (`cue.thinking_timeout`).
 - **Disconnected**: the connected notes falling, once, when a call drops. Ending the call yourself
   makes no sound.
 
 The cues play through the same voice-processing engine as the reply, so the echo canceller hears
 them as the phone's own output. While one sounds, the microphone is sent to OpenAI as silence
-(`LiveCueGate`), so turn detection never takes a cue for speech. Between ticks the microphone is
+(`LiveCueGate`), held open for the route's latency as well, so turn detection never takes a cue
+for speech. Between ticks the microphone is
 open, so you can still talk over a slow answer.
 
 **A turn always ends.** OpenAI's turn detection measures silence in the audio it is sent, not in
@@ -735,7 +737,8 @@ wall-clock time. A microphone that stops delivering mid-sentence (an interruptio
 it ended, a route the engine did not come back from) would leave the turn open forever, and the
 call would sit on Listening and never answer. The call watches for that (`MicWatchdog`). After
 300 ms with no microphone audio it sends silence in its place, so the turn ends, and it asks the
-audio engine to restart. Each stall is logged.
+audio engine to restart, unless an interruption (a phone call, Siri) is still under way, in which
+case the call waits for it to end. Each stall is logged.
 
 **Every call is logged, for triage afterwards.** The app records each step of a Live voice call,
 from the phone or the car, and sends the log to Zimmer in batches (`LiveTelemetry`,
@@ -753,9 +756,11 @@ record ([observability](/operate/observability/#the-ios-apps-call-log)). The log
 - every state change, mute, cue, microphone stall and CarPlay screen change.
 
 It never carries what was said: a transcript line is logged by its length. How much is logged is
-the [Live setting](/sessions/live/#live-settings) **Call telemetry**, `debug` (everything) until the
-CarPlay app is stable. The batches leave off the main thread, at most every 15 seconds, at once
-when a call ends or the app goes to the background, and never per audio buffer.
+the [Live setting](/sessions/live/#live-settings) **Call telemetry**, `debug` (everything) by default.
+The batches leave off the main thread: within 15 seconds of an event, at
+once when 40 are waiting, when a call ends, and when the app goes to the background. Nothing is
+logged per audio buffer. CarPlay's taps and retries outside a call carry no `call_id`; read them
+by time beside the call.
 
 A call from the car is tagged `carplay` ([turn sources](/sessions/turn-sources/)). The car's Live
 call is the phone's `LiveCall`, but every request it makes from the car says `carplay`

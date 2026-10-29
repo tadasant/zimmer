@@ -31,6 +31,14 @@ module LiveConversations
     SEVERITY = { "debug" => "DEBUG", "info" => "INFO", "warn" => "WARN", "error" => "WARN" }.freeze
 
     MAX_EVENTS = 100
+    # The exporter's queue is shared with Zimmer's own WARN/ERROR records, which
+    # page. The app's events take at most this share of it; past that they are
+    # dropped and counted, never the records that page.
+    MAX_QUEUE_SHARE = OtelLogsExporter::MAX_QUEUE_SIZE / 2
+    # OTLP intValue is an int64; one out of range fails the whole export batch.
+    INT64 = (-(2**63))..(2**63 - 1)
+    # A phone clock further off than this is not believed.
+    CLOCK_SKEW = 24.hours
     MAX_FIELDS = 40
     MAX_VALUE_CHARS = 300
     NAME = /\A[a-z][a-z0-9_.]{0,63}\z/
@@ -39,7 +47,7 @@ module LiveConversations
     # name is dropped rather than allowed to overwrite one.
     RESERVED = %w[event level seq call_id conversation_id mono_ms surface app_version app_build os device dropped].freeze
 
-    Result = Data.define(:accepted, :filtered, :threshold)
+    Result = Data.define(:accepted, :filtered, :threshold, :shed)
 
     # The lowest level kept, or nil when telemetry is off.
     def self.threshold(setting = LiveSetting.current)
@@ -55,9 +63,9 @@ module LiveConversations
     # `batch`: { "client" => {app_version, app_build, os, device, surface}, "dropped" => n,
     # "events" => [{seq, name, level, at, mono_ms, call_id, conversation_id, fields}] }
     def ingest(batch)
-      batch = batch.to_h
-      client = (batch["client"] || {}).to_h
-      events = Array(batch["events"]).first(MAX_EVENTS)
+      batch = hash(batch)
+      client = hash(batch["client"])
+      events = batch["events"].is_a?(Array) ? batch["events"].first(MAX_EVENTS) : []
       envelope = {
         "surface" => text(client["surface"], 20),
         "app_version" => text(client["app_version"], 40),
@@ -65,16 +73,26 @@ module LiveConversations
         "os" => text(client["os"], 60),
         "device" => text(client["device"], 60)
       }
-      dropped = batch["dropped"].to_i
+      dropped = integer(batch["dropped"]) || 0
       envelope["dropped"] = dropped if dropped.positive?
 
-      kept = events.filter_map { |event| record(event.to_h, envelope) }
-      kept.each { |record| @exporter&.enqueue(record) }
+      kept = events.filter_map { |event| event.is_a?(Hash) ? record(event, envelope) : nil }
+      shed = 0
+      kept.each do |record|
+        next unless @exporter
+
+        if @exporter.pending >= MAX_QUEUE_SHARE
+          shed += 1
+        else
+          @exporter.enqueue(record)
+        end
+      end
       Rails.logger.info(
         "[ios.live] #{kept.size} of #{events.size} call events kept (threshold #{@threshold || 'off'})" \
-        "#{" — the app dropped #{dropped} before sending" if dropped.positive?}"
+        "#{" — the app dropped #{dropped} before sending" if dropped.positive?}" \
+        "#{" — #{shed} shed, the export queue is busy" if shed.positive?}"
       )
-      Result.new(accepted: kept.size, filtered: events.size - kept.size, threshold: @threshold || "off")
+      Result.new(accepted: kept.size - shed, filtered: events.size - kept.size, threshold: @threshold || "off", shed: shed)
     end
 
     private
@@ -85,20 +103,20 @@ module LiveConversations
       return nil unless name.match?(NAME) && LEVELS.include?(level) && kept?(level)
 
       call_id = text(event["call_id"], 64)
-      seq = event["seq"].to_i
+      seq = integer(event["seq"]) || 0
       attributes = envelope.merge(
         "event" => name, "level" => level, "seq" => seq, "call_id" => call_id,
-        "conversation_id" => (event["conversation_id"].to_i if event["conversation_id"].present?),
-        "mono_ms" => (event["mono_ms"].to_i if event["mono_ms"].present?)
+        "conversation_id" => integer(event["conversation_id"]), "mono_ms" => integer(event["mono_ms"])
       )
       extra = fields(event["fields"])
       attributes.merge!(extra)
       summary = extra.sort.map { |key, value| "#{key}=#{value}" }.join(" ")
+      body = "[ios.live] #{name}#{" call=#{call_id}" if call_id} seq=#{seq}#{" #{summary}" if summary.present?}"
       {
         timestamp: timestamp(event["at"]),
         severity: SEVERITY.fetch(level),
         scope: SCOPE,
-        body: "[ios.live] #{name}#{" call=#{call_id}" if call_id} seq=#{seq}#{" #{summary}" if summary.present?}",
+        body: body.truncate(OtelLogsExporter::MAX_BODY_CHARS),
         attributes: attributes.compact
       }
     end
@@ -108,14 +126,16 @@ module LiveConversations
     end
 
     def fields(raw)
-      return {} unless raw.respond_to?(:to_h)
+      return {} unless raw.is_a?(Hash)
 
-      raw.to_h.first(MAX_FIELDS).each_with_object({}) do |(key, value), kept|
+      raw.first(MAX_FIELDS).each_with_object({}) do |(key, value), kept|
         key = key.to_s
         next unless key.match?(KEY) && !RESERVED.include?(key)
 
         kept[key] = case value
-        when Integer, Float, TrueClass, FalseClass then value
+        when Integer then INT64.cover?(value) ? value : value.to_s
+        when Float then value.finite? ? value : value.to_s
+        when TrueClass, FalseClass then value
         when nil then nil
         when Hash, Array then text(value.to_json, MAX_VALUE_CHARS)
         else text(value, MAX_VALUE_CHARS)
@@ -126,9 +146,20 @@ module LiveConversations
     # The phone's wall clock, so a trace reads in the order it happened there;
     # the server's when the phone sent none or nonsense.
     def timestamp(value)
-      Time.iso8601(value.to_s).to_f
+      now = Time.now
+      at = Time.iso8601(value.to_s)
+      (at - now).abs > CLOCK_SKEW ? now.to_f : at.to_f
     rescue ArgumentError
-      Time.now.to_f
+      now.to_f
+    end
+
+    def hash(value) = value.is_a?(Hash) ? value : {}
+
+    # An integer the client sent (a JSON number or a numeric string) within
+    # int64, or nil.
+    def integer(value)
+      number = value.is_a?(Integer) ? value : Integer(value.to_s, 10, exception: false)
+      number if number && INT64.cover?(number)
     end
 
     # Squished, so a newline in a client-sent value cannot forge a second line.

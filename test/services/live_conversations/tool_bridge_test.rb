@@ -221,6 +221,27 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_equal @conversation, change.live_conversation
   end
 
+  test "the live model cannot change how much the app reports about its calls, nor reset it" do
+    LiveConversations::SettingsUpdate.call({ "voice_telemetry" => "warn" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    schema = @bridge.realtime_tools.find { |t| t[:name] == "update_live_settings" }
+    assert_not schema.dig(:parameters, :properties).key?("voice_telemetry"), "not offered"
+
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_telemetry: "off"), call_id: "t1")
+    assert result.error
+    assert_match(/a person's to change/, result.output)
+
+    @bridge.execute("update_live_settings", JSON.generate(reset_to_defaults: true), call_id: "t2")
+    assert_equal "warn", LiveSetting.current.voice_telemetry, "a reset from the call keeps it"
+  end
+
+  test "every settings change is shipped as a [LiveSettings] line naming who made it" do
+    lines = []
+    Rails.logger.stubs(:warn).with { |message| lines << message; true }
+    @bridge.execute("update_live_settings", JSON.generate(voice_listening: "wake_word"), call_id: "t3")
+
+    assert_includes lines, "[LiveSettings] agent: live conversation ##{@conversation.id} changed voice_listening: nil → \"wake_word\""
+  end
+
   test "a bad settings write is refused as a tool error and changes nothing" do
     result = @bridge.execute("update_live_settings", JSON.generate(voice_model: "gpt-9", voice_speed: 1.2), call_id: "c3")
 
