@@ -62,6 +62,9 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.goal"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["detail.pr.#1261"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["detail.metadata"].label.contains("effort high"))
+        // The agent root is a chip beside the status, not a word in the metadata line.
+        XCTAssertEqual(app.descendants(matching: .any)["detail.agentRoot"].label, "Agent root zimmer")
+        XCTAssertFalse(app.descendants(matching: .any)["detail.metadata"].label.contains("zimmer"))
         attachScreenshot(app, named: "detail")
 
         // Notes, in a sheet.

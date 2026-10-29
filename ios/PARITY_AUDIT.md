@@ -320,7 +320,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
 | `:7` | Created N ago | SDV :748, 765-768 age (updatedAt ?? createdAt) | present |  |
-| `:23-45` `clipboard` | Root key + copy working directory path | SDV :771-792 agentRoot; `clone_path` decoded (ZK Session.swift) but not shown | partial | No copy of the clone path |
+| `:23-45` `clipboard` | Root key + copy working directory path | SDV header chip `detail.agentRoot`, beside the status, so the root reads without opening anything; `clone_path` decoded (ZK Session.swift) but not shown | partial | No copy of the clone path |
 | `:46-64` `clipboard` | Scratch directory path + copy | — | missing | needs API: scratch path not in `session_json` (derivable from id, but the app should not hard-code server paths) |
 | `:79-185` `catalog-multiselect` MCP (PATCH `update_mcp_servers`, turbo_stream re-render incl. `session_X_mobile_mcp_servers`) | MCP chips with connected/failed/pending dot, injected marker, plugin-derived read-only chips, `error-popover` on failed, inline editor with search | SP :269-355 chips, tally, tap-failed-for-error, Add/Edit → `CatalogEditorSheet` → `PATCH mcp_servers` | present | Plugin attribution shown by subtraction; no field names the plugin (#1320) |
 | `:161-162` `_inherited_defaults` | "agent root default" chips when the session captured none | SP :269-355 / :377-428 root defaults | present |  |
