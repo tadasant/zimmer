@@ -62,7 +62,15 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["detail.goal"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["detail.pr.#1261"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["detail.metadata"].label.contains("effort high"))
+        // The agent root is a chip beside the status, not a word in the metadata line.
+        XCTAssertEqual(app.descendants(matching: .any)["detail.agentRoot"].label, "Agent root zimmer")
+        XCTAssertFalse(app.descendants(matching: .any)["detail.metadata"].label.contains("zimmer"))
         attachScreenshot(app, named: "detail")
+        // The page opens on the conversation; Top brings the header, and the chip, on screen.
+        app.buttons["detail.sections.overview"].tap()
+        let root = app.descendants(matching: .any)["detail.agentRoot"]
+        XCTAssertTrue(waitForHittable(root), "the root chip is on screen at the top of the page")
+        attachScreenshot(app, named: "detail-header")
 
         // Notes, in a sheet.
         openMenu(app, "Edit Notes")
@@ -142,11 +150,21 @@ final class SessionParityUITests: XCTestCase {
         return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
     }
 
+    private func waitForHittable(_ element: XCUIElement) -> Bool {
+        let hittable = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [hittable], timeout: timeout) == .completed
+    }
+
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }
 

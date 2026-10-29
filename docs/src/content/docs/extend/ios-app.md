@@ -105,8 +105,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   conversation it read, and the board, which cannot tell, never says the setup never finished
   from a blank id alone.
 - **Opens a session**, laid out the way the web UI's phone page is: the title, then one line of
-  chips (status, priority class, `#id` and age, each PR coloured by state with its CI dot, board
-  visibility) and one line of what runs it (agent root, runtime, model, effort). Then *Where
+  chips (status, priority class, the agent root, `#id` and age, each PR coloured by state with its
+  CI dot, board visibility) and one line of what runs it (runtime, model, effort). The root
+  sits beside the status, so which root a session runs under reads without opening anything. Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
   generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
   the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
