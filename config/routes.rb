@@ -221,6 +221,8 @@ Rails.application.routes.draw do
       patch "live/settings", to: "live_settings#update"
       post "live/settings/reset", to: "live_settings#reset"
       post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
+      # What the iOS app's voice calls did, onto the shipped logs (Telemetry).
+      post "live/telemetry", to: "live_telemetry#create"
       resources :live_conversations, only: [ :index, :show, :create ] do
         member do
           get :sessions

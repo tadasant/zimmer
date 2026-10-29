@@ -543,6 +543,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_29_150000) do
     t.string "voice_noise_reduction"
     t.string "voice_reasoning_effort"
     t.float "voice_speed"
+    t.string "voice_telemetry"
     t.string "voice_transcription_model"
     t.string "voice_turn_detection"
     t.string "voice_vad_eagerness"
