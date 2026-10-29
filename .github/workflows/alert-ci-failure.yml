@@ -43,9 +43,9 @@ jobs:
     # self-hosted runners are what broke.
     runs-on: ubuntu-latest
 
-    # Long enough for the runner-loss re-run below to finish (it waits at most 110 minutes),
-    # short of the 6-hour default. The Slack step carries its own 5-minute limit, so a
-    # stalled connection to Slack still dies quickly.
+    # Room for the runner-loss re-run below (its step stops at 110 minutes) and then the
+    # alert, short of the 6-hour default. The Slack step carries its own 5-minute limit, so
+    # a stalled connection to Slack still dies quickly.
     timeout-minutes: 125
 
     # Alert on genuine main-branch CI failures, and nothing else:
@@ -107,11 +107,16 @@ jobs:
         # re-run, and a failure here falls through to the alert.
         id: retry
         if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
+        # A step timeout fails the step and lets the job carry on to the alert; a job
+        # timeout would not. The script's own wait (WAIT_MINUTES) ends well inside this.
+        timeout-minutes: 110
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: bash .github/scripts/rerun-unacquired-jobs.sh
 
       - name: Post the failure to Slack

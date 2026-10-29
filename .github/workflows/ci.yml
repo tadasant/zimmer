@@ -558,6 +558,11 @@ jobs:
           printf '  %s\n' "${files[@]}"
           shellcheck --severity=info --color=always "${files[@]}"
 
+      - name: Test the CI failure alert's runner-loss re-run
+        # alert-ci-failure.yml only runs from main, after a real runner loss, so its re-run
+        # and paging decisions are exercised here against a stub `gh` instead.
+        run: bash .github/scripts/rerun-unacquired-jobs_test.sh
+
   ios-changes:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
