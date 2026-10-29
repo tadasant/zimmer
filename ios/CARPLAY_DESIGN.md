@@ -23,8 +23,8 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 | "Primary modality of voice upon launch" | The one button is the voice conversation; the car stays silent until the driver taps it (see Decisions) |
 | "Only hold an audio session open when voice features are actively being used" | The audio session is held only while a call runs, never idle |
 | Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the call |
-| "Don't show text or imagery in response to queries" | Answers are spoken; the call screen shows a state word and one line, never a transcript |
-| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and End; the one line is a trailing bar button |
+| "Don't show text or imagery in response to queries" | Answers are spoken; the call screen shows a state word, never a transcript |
+| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and End. A trailing bar button as a status line did not render in the Simulator's CarPlay window, so there is none |
 | Voice control template: up to 5 states (`init(voiceControlStates:)`) | Exactly five, one per call state (`LiveCallScreen`) |
 | Notifications: communication, EV charging, parking, public safety and driving task apps only | **This category cannot show notifications in CarPlay**, and Zimmer does not try to be proactive in the car |
 
@@ -65,7 +65,7 @@ budget, a call that comes up earns it back, and ending the call stops the retrie
 ```mermaid
 flowchart TD
   connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Talk to Zimmer]"]
-  home -- Talk to Zimmer --> call["Live Mode call (voice control template, modal)\nstate picture + title\none line: Muted · what it is doing, or the error\n[Mute] [End]"]
+  home -- Talk to Zimmer --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Speaking / Working on it… / Muted\n[Mute] [End]"]
   call -- End --> home
   call -- cannot connect, or drops --> retry["button: Live Mode unavailable, retrying…\n(2 s, 5 s, 15 s, silently)"]
   retry -- a retry connects --> call
@@ -84,14 +84,15 @@ rebuilt.
 
 ### The call screen
 
-- **The call's state**, as the picture and the title: Connecting…, Listening, Thinking…, Speaking,
-  Working on it…. Five states, one per call state (`LiveCallScreen`), because CarPlay keeps the
-  first five a voice control template is given. A state change is one
-  `activateVoiceControlState`.
-- **One line**, a trailing bar button used as a label, because it is the one text on this template
-  that changes in place: the call's error if it has one, else *Muted* and what the call is doing
-  ("Starting work…", "Checking on a session…"), else nothing.
+- **The call's state**, as the picture and the title: Connecting…, Listening, Speaking, Working on
+  it… (thinking included), or **Muted** while the microphone is off. Five states, because CarPlay
+  keeps the first five a voice control template is given (`LiveCallScreen`). A state change, Mute
+  included, is one `activateVoiceControlState`; the template is never rebuilt.
 - **Mute** and **End**, the two action buttons.
+
+The first version of this screen also had a status line (a trailing bar button: *Muted*, what the
+call was doing, or an error). It never rendered in the Simulator's CarPlay window, so it is gone;
+an error that ends the call shows on the Talk button instead.
 
 The call is the phone's `LiveCall`, so a call started at the desk carries on in the car and the
 other way round; ending it in the car ends it everywhere. A call already running when the car
@@ -105,7 +106,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | --- | --- | --- |
 | Template changes made with `completion: nil`. CarPlay throws an exception when it refuses one and has no completion to report to, and it refuses a present over another modal or a change mid-animation | Every modal change goes through `CarPlayNavigator`, one at a time; `CarPlayInterface.swift` calls the interface controller only through its async forms, which always give CarPlay a completion | `CarPlayTests` (the navigator against a strict fake; a source guard on every interface-controller call); the CarPlay drill |
 | CarPlay's `presentedTemplate` is a stand-in, not the object presented, so a dismissal that compared by identity never happened and the call screen stayed up, "Connecting…", over a car that had given up | The navigator tracks the modal it put up itself and asks CarPlay only whether anything is up | `CarPlayTests.testTheCallScreenComesDownWhenCarPlayHandsBackAStandInForIt`; the drill's no-call-screen check |
-| A voice control template built with ten states; CarPlay keeps five | Five states; muted on the line, not in the title | `LiveCallScreenTests`, and a source guard on how `CarPlayLive` builds them |
+| A voice control template built with ten states; CarPlay keeps five | Five states, Muted one of them | `LiveCallScreenTests`, and a source guard on how `CarPlayLive` builds them |
 | `@Published` publishes in `willSet`, so the screen read the state the call was leaving | Every sink on the call is received on the main queue's next turn | A source guard |
 | The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` is main-actor only; its observers run on the main queue; a media-services reset ends the call | Review; no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
@@ -125,7 +126,7 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
   tries again;
 - a call held connecting (`-ZimmerFixtureSlowLive`: fifteen seconds, then it fails) is muted (the
-  line says Muted), unmuted, and ended, back on the button, with no retry.
+  title says Muted), unmuted, and ended, back on the button, with no retry.
 
 It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
 the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`
@@ -140,7 +141,7 @@ running after every step, and any crash report fails the job.
 | Voice is the primary modality at launch | The one button is the voice conversation; nothing is heard until it is tapped |
 | Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call |
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template |
-| No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word and one line |
+| No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
 | Depth of 3 | One root; nothing is pushed; the call screen is modal |
 | Few, large targets | One grid button; two call buttons |
 | Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud |
@@ -153,12 +154,12 @@ running after every step, and any crash report fails the job.
 - `CarPlayTests` also reads the scene's source: no interface-controller call outside
   `CarPlayInterface.swift` or without a completion, no system speech anywhere in the app, no direct
   session action, no template but the grid and the call screen, every sink on the call deferred,
-  and the call screen built from `LiveCallScreen.states`.
+  and the call screen built from `LiveCallScreen.identifiers`.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
   pull request.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
-  and the line's activity are confirmed only by driving. Nor is a relaunch: in the Simulator a
+  are confirmed only by driving. Nor is a relaunch: in the Simulator a
   relaunched Zimmer never gets its CarPlay scene back (the window stays blank), and whether a car
   behaves the same after Zimmer crashes or is killed is untested.
 

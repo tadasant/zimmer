@@ -1,7 +1,7 @@
 import XCTest
 @testable import ZimmerKit
 
-/// The car's call screen: its five states, its one line, and the words for what the call is doing.
+/// The car's call screen: its five states, and the words for what the call is doing.
 final class LiveCallScreenTests: XCTestCase {
     func testActivityNamesWhatTheCallIsDoingNotTheFunction() {
         XCTAssertEqual(LiveActivity.describe(name: "zimmer", arguments: #"{"tool":"quick_router","arguments":{"prompt":"x"}}"#), "Starting work…")
@@ -17,27 +17,28 @@ final class LiveCallScreenTests: XCTestCase {
         XCTAssertEqual(LiveActivity.describe(name: "something", arguments: "{}"), "Working on it…")
     }
 
-    func testTheCallScreensOneLineSaysTheErrorOrMutedAndWhatTheCallIsDoing() {
-        XCTAssertNil(LiveCallScreen.line(error: nil, working: nil, muted: false), "nothing to say, no line")
-        XCTAssertEqual(LiveCallScreen.line(error: nil, working: nil, muted: true), "Muted")
-        XCTAssertEqual(LiveCallScreen.line(error: nil, working: "Starting work…", muted: false), "Starting work…")
-        XCTAssertEqual(LiveCallScreen.line(error: nil, working: "Starting work…", muted: true), "Muted · Starting work…")
-        XCTAssertEqual(LiveCallScreen.line(error: "The call dropped.", working: "Starting work…", muted: true), "The call dropped.", "an error is the line")
-        XCTAssertEqual(LiveCallScreen.title(for: .listening), "Listening")
-        XCTAssertEqual(LiveCallScreen.title(for: .connecting), "Connecting…")
-    }
-
     /// The regression test for the call screen CarPlay could not show: ten states, a muted twin
     /// of each, of which CarPlay keeps five — so *speaking* and *working* were never there to
     /// activate.
     func testTheCallScreenFitsTheFiveStatesCarPlayKeepsAndNamesOneForEveryCallState() {
-        XCTAssertLessThanOrEqual(LiveCallScreen.states.count, LiveCallScreen.maximumStates)
-        XCTAssertEqual(Set(LiveCallScreen.states.map(\.rawValue)).count, LiveCallScreen.states.count, "no two states share an identifier")
-        let built = Set(LiveCallScreen.states.map(\.rawValue))
+        XCTAssertEqual(LiveCallScreen.identifiers.count, LiveCallScreen.maximumStates)
+        XCTAssertEqual(Set(LiveCallScreen.identifiers).count, LiveCallScreen.identifiers.count, "no two states share an identifier")
+        let built = Set(LiveCallScreen.identifiers)
         for state in [LiveVoiceState.idle, .connecting, .listening, .thinking, .speaking, .working] {
-            XCTAssertTrue(built.contains(LiveCallScreen.identifier(for: state)), "\(state) activates a state the screen has")
+            for muted in [false, true] {
+                XCTAssertTrue(built.contains(LiveCallScreen.identifier(for: state, muted: muted)), "\(state), muted \(muted), activates a state the screen has")
+            }
         }
-        XCTAssertEqual(LiveCallScreen.states.first, .connecting, "the screen opens on connecting")
+        XCTAssertEqual(LiveCallScreen.identifiers.first, "connecting", "the screen opens on connecting")
+    }
+
+    func testMutedShowsWhateverTheCallIsDoingAndEachStateHasItsWord() {
+        for state in [LiveVoiceState.connecting, .listening, .thinking, .speaking, .working] {
+            XCTAssertEqual(LiveCallScreen.identifier(for: state, muted: true), "muted")
+        }
+        XCTAssertEqual(LiveCallScreen.identifier(for: .thinking, muted: false), "working", "thinking is working, to a driver")
+        XCTAssertEqual(LiveCallScreen.identifier(for: .idle, muted: false), "connecting")
+        XCTAssertEqual(LiveCallScreen.identifiers.map(LiveCallScreen.title(for:)), ["Connecting…", "Listening", "Speaking", "Working on it…", "Muted"])
     }
 
     func testReferencedSessionIDsAreReadTheWayZimmersToolsWriteThem() {

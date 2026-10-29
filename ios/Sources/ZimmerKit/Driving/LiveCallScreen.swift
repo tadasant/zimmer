@@ -32,40 +32,46 @@ public enum LiveActivity {
     }
 }
 
-/// The car's call screen, a voice control template: one state per call state, built once per
-/// call and never rebuilt. It goes up when the call starts and down when it ends, and nothing
-/// else: no rebuild for a new subject or for Mute, because every template change is one more
-/// CarPlay can refuse.
+/// The car's call screen, a voice control template: five states, built once per call and never
+/// rebuilt. It goes up when the call starts and down when it ends, and a change of state, Mute
+/// included, is one `activateVoiceControlState`: every template change is one more CarPlay can
+/// refuse.
 ///
 /// CarPlay keeps the first five states a voice control template is given and ignores the rest
-/// (`CPVoiceControlTemplate.init(voiceControlStates:)`), so the five call states are the five
-/// states. A screen built with a muted twin of every state had ten, and CarPlay dropped
-/// *speaking* and *working*. Muted, like what the call is doing, is said on the one line that
-/// changes in place (`line`).
+/// (`CPVoiceControlTemplate.init(voiceControlStates:)`). A screen built with a muted twin of every
+/// call state had ten, and CarPlay dropped *speaking* and *working*. So the five are the four a
+/// driver needs to tell apart — connecting, listening, speaking, working (thinking is working) —
+/// and *Muted*, which shows whatever the call is doing while the microphone is off. The title is
+/// the only text the template is sure to draw: a trailing bar button as a status line did not
+/// render in the Simulator's CarPlay window, so there is none.
 public enum LiveCallScreen {
     /// What CarPlay keeps.
     public static let maximumStates = 5
 
     /// Every state the screen is built with, in order: the first is the one it opens on.
-    public static let states: [LiveVoiceState] = [.connecting, .listening, .thinking, .speaking, .working]
+    public static let identifiers = ["connecting", "listening", "speaking", "working", "muted"]
 
-    /// The state to show for `state`. A call going idle is about to be taken down; until it is,
-    /// it reads as connecting rather than naming a state the screen does not have.
-    public static func identifier(for state: LiveVoiceState) -> String {
-        states.contains(state) ? state.rawValue : LiveVoiceState.connecting.rawValue
+    /// The state to show for the call: Muted while the microphone is off, else the call's state.
+    /// A call going idle is about to be taken down; until it is, it reads as connecting.
+    public static func identifier(for state: LiveVoiceState, muted: Bool) -> String {
+        if muted { return "muted" }
+        switch state {
+        case .idle, .connecting: return "connecting"
+        case .listening: return "listening"
+        case .speaking: return "speaking"
+        case .thinking, .working: return "working"
+        }
     }
 
-    /// A state's title: the call's state, in a word.
-    public static func title(for state: LiveVoiceState) -> String {
-        state.label
-    }
-
-    /// The one line beside the title, a label in the bar that changes in place: an error if the
-    /// call has one, else Muted and what the call is doing, else nothing.
-    public static func line(error: String?, working: String?, muted: Bool) -> String? {
-        if let error { return error }
-        let parts = [muted ? "Muted" : nil, working].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    /// A state's title.
+    public static func title(for identifier: String) -> String {
+        switch identifier {
+        case "listening": return LiveVoiceState.listening.label
+        case "speaking": return LiveVoiceState.speaking.label
+        case "working": return LiveVoiceState.working.label
+        case "muted": return "Muted"
+        default: return LiveVoiceState.connecting.label
+        }
     }
 }
 

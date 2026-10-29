@@ -207,7 +207,7 @@ decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
 - The car is radically simple: one **Talk to Zimmer** button, and the Live Mode call screen with
   Mute and End. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
-  call screen's five states, its one line, and the words for what the call is doing),
+  call screen's five states, Muted one of them, and the words for what the call is doing),
   `LiveRetry.swift` (what the button says, and the quiet retries when Live Mode can't connect),
   and `CarPlayNavigator.swift` (every modal change, one at a time, tracking what it presented).
   `Tests/ZimmerKitTests/CarPlayTests.swift` drives the navigator against a strict fake that refuses
