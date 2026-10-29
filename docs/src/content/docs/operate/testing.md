@@ -21,14 +21,20 @@ sidebar:
 | `docs_site` | Builds this documentation site |
 | `image_excludes_docs` | Asserts `docs/` is absent from the image build context — see [Deploying](/operate/deploying/#the-docs-never-ship-in-the-image) |
 | `shellcheck` | ShellCheck at `--severity=info` over every tracked `*.sh` file |
-| `all-checks-pass` | Aggregate gate — `needs:` every job above and fails if any failed or was cancelled |
+| `all-checks-pass` | Aggregate gate — `needs:` every job above and fails unless each one succeeded or was skipped |
 
 ## The single branch-protection gate
 
 `all-checks-pass` is the one status check to require under **Settings → Branches → main**, instead
-of enumerating every job. It runs with `if: ${{ !cancelled() }}`, fails if any dependency reported
-`failure` or `cancelled`, and treats a `skipped` dependency — the fork-guarded jobs skip on fork
-PRs — as neither a pass nor a failure.
+of enumerating every job. It runs with `if: ${{ !cancelled() }}`, passes only when every dependency
+reported `success` or `skipped`, and fails on anything else. A `skipped` dependency — the
+fork-guarded jobs skip on fork PRs — counts as neither a pass nor a failure.
+
+It checks against an allowlist, because GitHub reports results it does not document. A hosted job that no
+runner ever picks up ends as `abandoned`, with the annotation "The job was not acquired by Runner of
+type hosted even after multiple attempts". That is what a short supply of hosted macOS arm64 runners does to the `ios`
+job. A gate that looked only for `failure` and `cancelled` passed such a run on `main` with an iOS
+build that never happened.
 
 `!cancelled()` rather than `always()`, and rather than a bare `needs:`. A bare `needs:` job is
 skipped when any dependency fails, which would leave the required check perpetually "skipped" and
