@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_29_150000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1036,6 +1036,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_190000) do
     t.index ["session_id", "agent_id"], name: "index_subagent_transcripts_on_session_id_and_agent_id", unique: true
     t.index ["session_id"], name: "index_subagent_transcripts_on_session_id"
     t.index ["tool_use_id"], name: "index_subagent_transcripts_on_tool_use_id"
+  end
+
+  create_table "testflight_feedbacks", force: :cascade do |t|
+    t.string "asc_id", null: false
+    t.string "build_number"
+    t.text "comment"
+    t.text "crash_log"
+    t.datetime "crash_log_fetched_at"
+    t.datetime "created_at", null: false
+    t.string "device_model"
+    t.string "kind", null: false
+    t.string "os_version"
+    t.jsonb "raw_attributes", default: {}, null: false
+    t.datetime "submitted_at"
+    t.string "tester_email"
+    t.datetime "updated_at", null: false
+    t.index ["asc_id"], name: "index_testflight_feedbacks_on_asc_id", unique: true
+    t.index ["kind", "submitted_at"], name: "index_testflight_feedbacks_on_kind_and_submitted_at"
   end
 
   create_table "token_usage_backfills", force: :cascade do |t|

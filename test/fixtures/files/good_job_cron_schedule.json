@@ -280,6 +280,11 @@
       "class": "ZombieReaperJob",
       "description": "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
     },
+    "testflight_feedback_poll": {
+      "cron": "*/15 * * * *",
+      "class": "TestflightFeedbackPollJob",
+      "description": "Pull new TestFlight crash (with crash logs) and screenshot feedback for the iOS app from App Store Connect"
+    },
     "cert_expiry_monitor": {
       "cron": "0 7 * * *",
       "class": "CertExpiryMonitorJob",
@@ -586,6 +591,11 @@
       "cron": "*/5 * * * *",
       "class": "ZombieReaperJob",
       "description": "Reap zombie subprocesses left by agent sessions (defense in depth alongside tini init shim)"
+    },
+    "testflight_feedback_poll": {
+      "cron": "*/15 * * * *",
+      "class": "TestflightFeedbackPollJob",
+      "description": "Pull new TestFlight crash (with crash logs) and screenshot feedback for the iOS app from App Store Connect"
     },
     "cert_expiry_monitor": {
       "cron": "0 7 * * *",

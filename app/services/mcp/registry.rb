@@ -136,6 +136,10 @@ module Mcp
       # Health
       Definition.new(klass: "Mcp::Tools::GetSystemHealth", group: "health", write: false),
       Definition.new(klass: "Mcp::Tools::ActionHealth", group: "health", write: true),
+      # TestFlight crash and screenshot feedback for the iOS app, crash logs in
+      # full. A diagnostic read about the deployment's own app, so it sits beside
+      # get_system_health — and `health_readonly` carries it onto `zimmer-fleet`.
+      Definition.new(klass: "Mcp::Tools::GetTestflightCrashes", group: "health", write: false),
 
       # Spot / priority scheduling. In `health` rather than `sessions` because
       # both tools are about the deployment's quota posture, not about one
