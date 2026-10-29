@@ -746,8 +746,9 @@ it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScre
 - The scene calls `CPInterfaceController` only from `CarPlayInterface.swift`, and only through the
   async forms, which always give CarPlay a completion. A source guard fails the build on any other
   call.
-- The call screen has five states, one per call state (`LiveCallScreen`), because CarPlay keeps
-  the first five a voice control template is given.
+- The call screen has five states (`LiveCallScreen`), because CarPlay keeps the first five a voice
+  control template is given: four for the call (connecting, listening, speaking, working) and
+  Muted.
 - Source guards fail the build on:
   - any system speech (`AVSpeechSynthesizer`) anywhere in the app;
   - any direct follow-up, merge, restart or archive from the CarPlay scene;

@@ -8202,9 +8202,9 @@ GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails t
 than skipping it. The app ships no crash reporter, so a crash in the car reaches nobody unless
 TestFlight's crash feedback is read in App Store Connect.
 
-Nothing in the car tells you a session started needing you while you drive, beyond the badge and
-the counts changing on the next minute's read: there are no CarPlay notifications for this category,
-and the car does not speak unasked. A Live call from the car is tagged `carplay`, and Zimmer adds a
+Nothing in the car tells you a session started needing you while you drive: there are no CarPlay
+notifications for this category, the car shows no board, and it does not speak unasked. Ask Live
+Mode. A Live call from the car is tagged `carplay`, and Zimmer adds a
 CarPlay line to the live model's instructions; both are tested against a recorded transport, not
 observed in a car.
 

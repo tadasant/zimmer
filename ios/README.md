@@ -95,7 +95,7 @@ nothing is impossible.
 | `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
 | `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
 | `ios/bin/ui-test --only A,B [--no-photos]` | One shard of the suite: the named `ZimmerUITests` classes only, each checked against the sources before the build; `--no-photos` skips the photograph pass. `ios-ui-tests.yml` runs five of these at once | Xcode + simulator |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos` | The CarPlay drill: builds signed ad hoc with the CarPlay entitlement, opens the Simulator's CarPlay window from its I/O menu (System Events), and drives Zimmer in it; any crash report fails the run, and the CarPlay window is kept as `carplay-window.png` | Xcode + simulator + the Simulator app's GUI |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos` | The CarPlay drill: builds signed ad hoc with the CarPlay entitlement, opens the Simulator's CarPlay window from its I/O menu (System Events), and drives Zimmer in it; any crash report fails the run, and the Mac's screen, with the CarPlay window on it, is kept as `mac-screen.png` | Xcode + simulator + the Simulator app's GUI |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 

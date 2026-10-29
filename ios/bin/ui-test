@@ -33,7 +33,7 @@
 # and photographs every key screen in both appearances: some 110 tests driven one at a time
 # and some 90 screenshots with a settle wait each, which outgrew a single hosted runner's
 # job. So `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**` and on demand,
-# runs it as four shards on four simulators at once: each `--only` a comma-separated list
+# runs it as five shards on five simulators at once: each `--only` a comma-separated list
 # of `ZimmerUITests` classes, and all but one `--no-photos`, so the `simctl` photograph pass
 # that follows the tests runs once. test/config/ios_ui_test_shards_test.rb holds every class
 # to exactly one shard, and every class named is checked against the sources before the
@@ -316,12 +316,27 @@ export TEST_RUNNER_ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
 if [ -n "$carplay" ]; then
   printf '==> opening the Simulator'"'"'s CarPlay window\n'
   open -a Simulator --args -CurrentDeviceUDID "$udid"
-  /bin/sleep 10
-  osascript -e 'tell application "Simulator" to activate' -e 'delay 1' \
-    -e 'tell application "System Events" to tell process "Simulator" to click menu item "CarPlay" of menu 1 of menu item "External Displays" of menu 1 of menu bar item "I/O" of menu bar 1' \
-    >/dev/null || fail "could not open the CarPlay window from the Simulator's I/O menu"
-  /bin/sleep 15
-  windows="$(osascript -e 'tell application "System Events" to tell process "Simulator" to get name of every window' 2>/dev/null || true)"
+  simulator_windows() {
+    osascript -e 'tell application "System Events" to tell process "Simulator" to get name of every window' 2>/dev/null || true
+  }
+  # Polled rather than slept: a loaded runner takes longer to draw the device, and longer
+  # again to draw the car. A minute for each, then a failure that says which.
+  for _ in $(seq 1 60); do [ -n "$(simulator_windows)" ] && break; /bin/sleep 1; done
+  [ -n "$(simulator_windows)" ] || fail "the Simulator app opened no window for $udid"
+  clicked=""
+  for _ in 1 2 3; do
+    if osascript -e 'tell application "Simulator" to activate' -e 'delay 1' \
+      -e 'tell application "System Events" to tell process "Simulator" to click menu item "CarPlay" of menu 1 of menu item "External Displays" of menu 1 of menu bar item "I/O" of menu bar 1' \
+      >/dev/null; then clicked=1; break; fi
+    /bin/sleep 5
+  done
+  [ -n "$clicked" ] || fail "could not open the CarPlay window from the Simulator's I/O menu"
+  windows=""
+  for _ in $(seq 1 60); do
+    windows="$(simulator_windows)"
+    case "$windows" in *CarPlay*) break ;; esac
+    /bin/sleep 1
+  done
   printf '    Simulator windows: %s\n' "$windows"
   case "$windows" in
     *CarPlay*) ;;
@@ -362,7 +377,8 @@ xcodebuild test-without-building \
 # launch argument that opens it.
 xcrun simctl io "$udid" screenshot "$artifacts/last-screen.png" 2>/dev/null || true
 # The phone's screen is all `simctl` can photograph; the CarPlay window is the Mac's.
-[ -z "$carplay" ] || screencapture -x "$artifacts/carplay-window.png" 2>/dev/null || true
+# The Mac's whole screen, the Simulator's CarPlay window on it.
+[ -z "$carplay" ] || screencapture -x "$artifacts/mac-screen.png" 2>/dev/null || true
 
 app="$derived/Build/Products/$configuration-iphonesimulator/Zimmer.app"
 shoot() {
