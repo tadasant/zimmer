@@ -29,7 +29,12 @@ class TriggerEventClaim < ApplicationRecord
   # `mcp_event` is McpEventTriggerPollerJob's claim on an event an MCP server published. It is the
   # only path that fires an `mcp_event` condition, so its claim decides nothing against another
   # path; it is what makes a replayed `events/poll` page fire nothing twice.
-  VIA = %w[webhook poll mcp_event].freeze
+  #
+  # `poll_record` is the Slack poller's record of a message it fired while Slack is on `poll`: no
+  # webhook runs, so nothing is decided by it. It is its own value so the webhook health counts
+  # (Webhooks::IngestSummary), which read a `poll` claim as a message the webhook missed, never
+  # count one — not even in the day after the webhook is switched on.
+  VIA = %w[webhook poll poll_record mcp_event].freeze
 
   # How long a claim must outlive the message it covers. In webhook_with_poll_fallback mode the
   # poller sees a message within a poll or two — a few minutes across Slack deferrals, about

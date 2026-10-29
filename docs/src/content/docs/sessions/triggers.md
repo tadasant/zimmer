@@ -502,7 +502,8 @@ either fires a condition for a message, it claims `slack:<channel>:<ts>` for tha
 same transaction that creates the session. The first path to claim fires; the other finds the claim
 and fires nothing. A fire that raises rolls its claim back, so the other path can still fire the
 message. On `poll`, the poller takes no lock and no claim decides anything, but it still records a
-claim, with its session, for every message it fired, in the transaction that spawned the session.
+`poll_record` claim, with its session, for every message it fired, in the transaction that spawned
+the session.
 That record is how [`compare_trigger_fires`](#parity-comparing-two-triggers-fires) lines a Slack
 trigger's fires up against another path's.
 
@@ -555,9 +556,9 @@ For each source it gives the ingest mode, the time of the last delivery, and, ov
 the number of deliveries and the number of trigger events claimed by the webhook and by the poller. A
 claim is one message for one trigger condition, so a coalesced burst counts once per message.
 
-While the webhook is switched on, a poll claim on a condition the webhook serves is a message the
-webhook did not deliver first. On `poll` every fired message is a poll claim, which is only a
-record, and the panel does not warn on it. Passive listening is left out of the counts:
+A poll claim on a condition the webhook serves is a message the webhook did not deliver first. On
+`poll` the poller records what it fired as `poll_record` claims instead, which the panel never
+counts. Passive listening is left out of the counts:
 the webhook never serves it, so the poller claims every one of those messages by design.
 
 The panel reads *warning* in three cases: a switched-on source has poll claims in the window, a
@@ -828,11 +829,13 @@ reports.
 3. **One session per event.** Each event that passes `payload_filters` is claimed in
    `trigger_event_claims` as `mcp:<server>:<eventId>`, and the trigger fires, in one transaction. A
    claim the condition already holds fires nothing, so a page polled twice fires each event once.
-4. **The cursor moves only when the whole page settled.** If an event's fire raised, was held, or
-   fell past ten fires a tick, the cursor stays put. The next tick polls the same page and the claims
-   skip what already fired. A held event is one that `skip_if_pending_session`, a reused session that
-   would not take it, or burst control stopped. Unlike Slack, **burst control defers an event rather
-   than dropping it**: the server keeps the event, so waiting loses nothing.
+4. **The cursor moves only when the whole page settled.** If an event's fire raised or was held, the
+   rest of the page waits behind it, and the cursor stays put. The same happens past ten fires a tick,
+   counted across pages. The next tick polls the same page and the claims skip what already fired. A
+   held event is one that `skip_if_pending_session`, a reused session that would not take it, or burst
+   control stopped. Unlike Slack, **burst control defers an event rather than dropping it**: the
+   server keeps the event, so waiting loses nothing. While the trigger's burst is open the condition
+   is not polled at all, so a backlog cannot hold the burst open by retrying into it.
 
 A server's `nextPollMs` is honoured, clamped to between 15 seconds and 15 minutes. The cron's
 minute is the floor in practice.
@@ -863,8 +866,11 @@ Only the trigger row does that. No payload value reaches a log line.
 
 #### When the server refuses
 
-A server that refuses a poll or cannot be reached is logged at WARN. The condition's `failures`
-counts how many polls in a row have failed, and the fifth is reported. When no condition has polled
+A server that refuses a poll or cannot be reached is logged at WARN and backed off: the condition
+waits one minute after the first failure, doubling up to 15 minutes, so one unreachable server does
+not hold the single `pollers` thread every tick. The condition's `failures` counts how many polls in
+a row have failed, and the fifth is reported. A condition that is backing off still counts as not
+polling cleanly for the heartbeat. When no condition has polled
 cleanly for 30 minutes, `TriggerPollerLivenessCheckJob` pages *MCP event trigger polling stalled*.
 A `truncated: true` answer means the server says it skipped events, for example because the cursor
 was older than its retention. That is reported at most once an hour per condition and stamped as

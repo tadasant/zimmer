@@ -160,16 +160,62 @@ class McpEventTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal 6, spawned_sessions.count, "only what the server still held fires"
   end
 
-  test "a server that refuses counts failures and leaves the heartbeat unstamped" do
+  test "a server that refuses counts failures, backs off, and leaves the heartbeat unstamped" do
     baseline!
     PollerHeartbeat.stubs(:stamp)
     PollerHeartbeat.expects(:stamp).with(:mcp_event).never
     @server.refuse = [ -32024, "Forbidden" ]
 
     McpEventTriggerPollerJob.perform_now
-    McpEventTriggerPollerJob.perform_now
+    assert_equal 1, @condition.reload.configuration["failures"]
+    polls = @server.polls.size
 
+    McpEventTriggerPollerJob.perform_now
+    assert_equal polls, @server.polls.size, "backed off for a minute after the first failure"
+
+    travel 61.seconds do
+      McpEventTriggerPollerJob.perform_now
+    end
     assert_equal 2, @condition.reload.configuration["failures"]
+    assert_operator Time.zone.parse(@condition.configuration["next_poll_at"]), :>, Time.current + 61.seconds, "the backoff doubles"
+  end
+
+  test "the fire cap is per tick, across the pages hasMore follows" do
+    @server.page_size = 4
+    baseline!
+    12.times { |i| @server.publish(channel_id: "C1", ts: "9.0000#{i.to_s.rjust(2, '0')}", mentions_bot: true) }
+
+    McpEventTriggerPollerJob.perform_now
+    assert_equal McpEventTriggerPollerJob::MAX_FIRES_PER_TICK, spawned_sessions.count
+    assert_equal "seq:8", @condition.reload.mcp_event_cursor, "two whole pages settled; the third stopped at the cap"
+
+    McpEventTriggerPollerJob.perform_now
+    assert_equal 12, spawned_sessions.count
+    assert_equal "seq:12", @condition.reload.mcp_event_cursor
+  end
+
+  test "burst control defers events instead of dropping them, and the burst can close" do
+    @trigger.update!(max_sessions_per_minute: 1)
+    baseline!
+    3.times { |i| @server.publish(channel_id: "C1", ts: "10.00000#{i}", mentions_bot: true) }
+
+    McpEventTriggerPollerJob.perform_now
+    fired = spawned_sessions.reject { |session| session.metadata["burst_notice"] }
+    assert_equal [ "slack:C1:10.000000" ], fired.map { |session| session.metadata["mcp_event_id"] }
+    assert_equal 1, TriggerEventClaim.count, "the event that opened the burst got its claim back"
+
+    polls = @server.polls.size
+    McpEventTriggerPollerJob.perform_now
+    assert_equal polls, @server.polls.size, "nothing is polled while the burst is open"
+
+    # One event a window: each later window lets the next one through and holds the one after.
+    3.times do
+      travel 1.hour
+      McpEventTriggerPollerJob.perform_now
+    end
+    travel_back
+    fired = spawned_sessions.reject { |session| session.metadata["burst_notice"] }
+    assert_equal %w[slack:C1:10.000000 slack:C1:10.000001 slack:C1:10.000002], fired.map { |session| session.metadata["mcp_event_id"] }.sort
   end
 
   test "a clean poll stamps the heartbeat" do

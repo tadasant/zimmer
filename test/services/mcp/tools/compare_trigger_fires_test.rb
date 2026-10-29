@@ -45,6 +45,12 @@ class Mcp::Tools::CompareTriggerFiresTest < ActiveSupport::TestCase
     assert_equal 0, result[:counts].values.sum
   end
 
+  test "a restricted connection cannot compare a trigger on a root it may not use" do
+    tool = Mcp::Tools::CompareTriggerFires.new(context: Mcp::Context.new(allowed_agent_roots: [ "some-other-root" ]))
+    error = assert_raises(Mcp::ToolError) { tool.call("trigger_a_id" => @original.id, "trigger_b_id" => @shadow.id) }
+    assert_match(/not found/, error.message)
+  end
+
   test "an unknown trigger is a tool error" do
     assert_raises(Mcp::ToolError) { @tool.call("trigger_a_id" => 0, "trigger_b_id" => @shadow.id) }
   end

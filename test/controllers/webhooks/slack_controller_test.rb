@@ -369,7 +369,7 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # --- poll mode is unchanged ----------------------------------------------------------
+  # --- poll mode fires as before, and only records ---------------------------------------
 
   # On poll a claim is only a record of what fired — compare_trigger_fires reads it — so the poller
   # fires exactly as before and leaves one claim per fired message, pointing at its session.
@@ -381,7 +381,7 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
     end
 
     claim = TriggerEventClaim.sole
-    assert_equal "poll", claim.claimed_via
+    assert_equal "poll_record", claim.claimed_via
     assert_equal Session.order(:id).last.id, claim.session_id
   end
 end

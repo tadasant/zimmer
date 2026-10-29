@@ -32,8 +32,9 @@ module McpEvents
     # One `events/poll` result.
     PollResult = Data.define(:events, :cursor, :truncated, :has_more, :next_poll_ms)
 
-    # The longest event id kept. An id is a dedupe key stored per fire, not a document.
-    MAX_EVENT_ID_LENGTH = 512
+    # What an event id may look like: a dedupe key stored per fire, never prose. The same shape
+    # Trigger::TRUSTED_IDENTIFIER_FORMATS lets {{event_id}} render.
+    EVENT_ID_FORMAT = /\A[A-Za-z0-9._:\/-]{1,512}\z/
 
     # The most events one poll asks for. The server may return fewer; `hasMore` says there is more.
     MAX_EVENTS_PER_POLL = 50
@@ -117,8 +118,10 @@ module McpEvents
     def occurrence_from(raw)
       return nil unless raw.is_a?(Hash)
 
+      # The id is the dedupe key, goes into log lines and session metadata, and renders bare as
+      # {{event_id}}, so it must have an identifier's shape; an event without one is dropped.
       event_id = raw["eventId"]
-      return nil unless event_id.is_a?(String) && event_id.present? && event_id.length <= MAX_EVENT_ID_LENGTH
+      return nil unless event_id.is_a?(String) && event_id.match?(EVENT_ID_FORMAT)
       return nil unless raw["data"].is_a?(Hash)
 
       Occurrence.new(

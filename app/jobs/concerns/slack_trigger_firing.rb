@@ -257,11 +257,11 @@ module SlackTriggerFiring
   # happens in the same transaction as the spawn, so a message the other path already fired is not
   # fired again, and a fire that raises releases its claim with its rollback.
   #
-  # On `poll` the poller still RECORDS a claim for every message a session was spawned for, after
-  # the spawn and in the same transaction, with the session on it. Nothing reads it to decide
-  # anything there; it is the record of which messages this condition fired on, which is what
-  # compare_trigger_fires lines up against another path's fires — an `mcp_event` trigger shadowing
-  # this one, say.
+  # On `poll` the poller still RECORDS a claim (`poll_record`) for every message a session was
+  # spawned for, after the spawn and in the same transaction, with the session on it. Nothing reads
+  # it to decide anything there; it is the record of which messages this condition fired on, which
+  # is what compare_trigger_fires lines up against another path's fires — an `mcp_event` trigger
+  # shadowing this one, say.
   #
   # +rendered+ is a fire the caller already rendered (SlackEventJob does, before opening its own
   # transaction). Without one it is rendered here, still before the transaction.
@@ -354,7 +354,7 @@ module SlackTriggerFiring
           else
             TriggerEventClaim.claim!(
               condition, fired_keys,
-              via: via, group_key: coalescing_group_key(message, channel_id), anchor_ts: message.ts, session_id: session.id
+              via: "poll_record", group_key: coalescing_group_key(message, channel_id), anchor_ts: message.ts, session_id: session.id
             )
           end
         end

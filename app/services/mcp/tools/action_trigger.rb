@@ -924,6 +924,13 @@ module Mcp
       # `payload_filters` is who may fire an `mcp_event` trigger. A configuration that leaves it out
       # replaces the condition's keys without it, so every event the server sends would fire.
       def reject_widening_mcp_event_configuration!(target, incoming, field)
+        if target.mcp_event_arguments.any? && !incoming.key?("arguments")
+          raise ToolError, "#{field} omits \"arguments\" from the configuration of condition #{target.id}, " \
+                           "whose arguments (#{target.mcp_event_arguments.keys.join(', ')}) narrow what the server " \
+                           "sends. configuration replaces the condition's user-facing keys, so this would subscribe " \
+                           "to every event of that type. Send arguments to keep them (or an empty object to drop " \
+                           "them on purpose), or omit configuration to leave the condition as it is."
+        end
         return if target.mcp_event_payload_filters.empty?
         return if incoming.key?("payload_filters")
 

@@ -646,7 +646,7 @@ class Trigger < ApplicationRecord
     "thread_id" => EmailService::ID_FORMAT,
     # MCP event conditions: the event's `eventId`, as the server sent it — the key the fire is
     # deduplicated on. A strad Slack event's is `slack:<channel>:<ts>`.
-    "event_id" => /\A[A-Za-z0-9._:\/-]{1,512}\z/
+    "event_id" => McpEvents::Client::EVENT_ID_FORMAT
   }.freeze
 
   # One field of an MCP event's payload in a template: `{{event.<field>|untrusted}}`, fenced like
@@ -754,16 +754,19 @@ class Trigger < ApplicationRecord
       value = value.to_s.strip
       values[name] = value.match?(TRUSTED_IDENTIFIER_FORMATS.fetch(name)) ? value : ""
     end
-    event_values = (event_data.is_a?(Hash) ? event_data : {}).to_h do |field, value|
-      [ field.to_s, value.is_a?(String) ? value : JSON.generate(value) ]
-    end
+    event_data = event_data.is_a?(Hash) ? event_data.to_h { |field, value| [ field.to_s, value ] } : {}
+    event_values = event_data.transform_values { |value| value.is_a?(String) ? value : JSON.generate(value) }
 
     boundary = nil
     prompt_template.gsub(TEMPLATE_PATTERN) do
       name, untrusted, field, filter = Regexp.last_match.captures
       if field
         value = event_values.fetch(field, "")
-        next value.strip.match?(MCP_EVENT_ID_FIELD_FORMAT) ? value.strip : "" unless filter == "|untrusted"
+        unless filter == "|untrusted"
+          # Only a string or a number can be an identifier; `true` or `null` is not one.
+          raw = event_data[field]
+          next (raw.is_a?(String) || raw.is_a?(Numeric)) && value.strip.match?(MCP_EVENT_ID_FIELD_FORMAT) ? value.strip : ""
+        end
 
         boundary ||= untrusted_boundary(values.values + event_values.values)
         next fence_untrusted("event.#{field}", value, boundary)
@@ -1614,8 +1617,14 @@ class Trigger < ApplicationRecord
   # typed into Slack. A trigger with an `mcp_event` condition must therefore fence every payload
   # field it names, or ask for it as an identifier; a bare one is refused at save.
   def validate_mcp_event_template_fences_payload
-    return if workflow_backed?
     return unless trigger_conditions.any? { |condition| condition.condition_type == "mcp_event" && !condition.marked_for_destruction? }
+
+    if workflow_backed?
+      # McpEventTriggerPollerJob fires a rendered template only; a workflow trigger would be polled
+      # and refused every minute.
+      errors.add(:workflow_id, "cannot be combined with an MCP event condition, which fires a prompt template")
+      return
+    end
 
     bare = unfenced_mcp_event_fields
     return if bare.empty?

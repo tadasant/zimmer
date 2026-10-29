@@ -29,6 +29,9 @@ class FakeEventsMcpServer
   attr_accessor :next_poll_ms
   # The oldest seq still held; a cursor before it is answered with truncated: true.
   attr_accessor :retention_floor
+  # The most events one poll answer carries, whatever maxEvents asks for — so a test can make
+  # the poller follow hasMore.
+  attr_accessor :page_size
 
   def self.start
     new.tap(&:start)
@@ -138,7 +141,7 @@ class FakeEventsMcpServer
       from = cursor.to_s.delete_prefix("seq:").to_i
       truncated = from < retention_floor
       from = retention_floor if truncated
-      max = (params["maxEvents"] || 50).to_i
+      max = [ (params["maxEvents"] || 50).to_i, page_size || 1_000 ].min
       window = @events[from, max] || []
       addressed = params.dig("arguments", "addressed_to_bot") == true
       matching = window.select { |event| !addressed || event["data"]["mentions_bot"] || event["data"]["is_dm"] }
