@@ -558,6 +558,11 @@ jobs:
           printf '  %s\n' "${files[@]}"
           shellcheck --severity=info --color=always "${files[@]}"
 
+      - name: Test the CI failure alert's runner-loss re-run
+        # alert-ci-failure.yml only runs from main, after a real runner loss, so its re-run
+        # and paging decisions are exercised here against a stub `gh` instead.
+        run: bash .github/scripts/rerun-unacquired-jobs_test.sh
+
   ios-changes:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
@@ -797,7 +802,14 @@ jobs:
   #      every superseded run would execute this job, see `cancelled` in needs.*.result, and
   #      exit 1 — converting a cancelled run into a *failed* one and tripping the CI-failure
   #      alert, which deliberately stays quiet on `cancelled`. It carries no fork-guard `if:`.
-  #   2. It fails on any dependency that reported `failure` or `cancelled`.
+  #   2. It passes on an allowlist, never a denylist: every dependency must report
+  #      `success` or `skipped`, and anything else fails it. GitHub reports more results
+  #      than it documents: a hosted job that no runner ever picks up comes through as
+  #      `abandoned` in needs.*.result ("The job was not acquired by Runner of type hosted
+  #      even after multiple attempts", which a macOS arm64 capacity shortage causes; the
+  #      UI and jobs API show it as `cancelled`). A gate that
+  #      looked only for `failure` and `cancelled` passed run 40899943842 with an `ios`
+  #      job that never ran.
   #   3. `skipped` dependencies do NOT fail it and are NOT counted as passes: the several
   #      jobs above carry fork-guard `if:` conditions and report `skipped` on fork PRs.
   #      A fork PR therefore sees every job skip and this gate go green — the same
@@ -825,12 +837,24 @@ jobs:
       - ios_carplay
       - ios_swift_linux
     steps:
-      - name: Verify no required check failed or was cancelled
+      - name: Verify every required check succeeded or was skipped
+        shell: bash
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
-            echo "::error::One or more required CI checks failed or were cancelled."
-            echo "Results: ${{ join(needs.*.result, ', ') }}"
+          set -euo pipefail
+          echo "Results: ${RESULTS}"
+          # An empty list would loop zero times and pass; it can only mean the expression broke.
+          if [ -z "${RESULTS// /}" ]; then
+            echo "::error::No dependency results to check."
             exit 1
           fi
-          echo "All required CI checks passed (skipped fork-guarded jobs are allowed)."
-          echo "Results: ${{ join(needs.*.result, ', ') }}"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "::error::A required CI check reported '${result}', not success or skipped. Results: ${RESULTS}"
+                exit 1 ;;
+            esac
+          done
+          echo "All required CI checks passed (skipped jobs are allowed: fork guards, the iOS path filter)."
