@@ -30,8 +30,9 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(waitForValue(toggle, "1"), "the slack trigger is on")
 
         let nightly = app.descendants(matching: .any)["trigger.5"].firstMatch
-        nightly.swipeLeft()
-        app.buttons["Invoke"].firstMatch.tap()
+        let invoke = swipeAction(app, nightly, titled: "Invoke")
+        XCTAssertTrue(invoke.exists, "a swipe on the nightly trigger offers Invoke")
+        invoke.tap()
         let confirm = app.sheets.buttons["Invoke Nightly dependency sweep"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
@@ -107,8 +108,9 @@ final class OperationsUITests: XCTestCase {
 
         let session = app.buttons["costs.session.1042"]
         XCTAssertTrue(reach(app, "costs.session.1042", whole: true), "the sessions are far down the page")
-        session.swipeLeft()
-        app.buttons["Only This"].firstMatch.tap()
+        let only = swipeAction(app, session, titled: "Only This")
+        XCTAssertTrue(only.exists, "a swipe on the session offers Only This")
+        only.tap()
         // The other session goes where the page is; the banner heads the page, laid out once
         // scrolled back up to.
         XCTAssertTrue(waitForDisappearance(app.buttons["costs.session.1038"]), "narrowed to the one session")
@@ -302,6 +304,23 @@ final class OperationsUITests: XCTestCase {
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
         }
         return laidOut().map(onScreen) ?? false
+    }
+
+    /// Swipe `row` left until its trailing action titled `title` exists, three swipes at most.
+    /// One swipe is not always enough: on a loaded simulator a main-branch run swiped the nightly
+    /// trigger while the list was still redrawing the switch tapped a moment before, the row
+    /// never opened, and the tap on Invoke found nothing. Each retry first swipes the row closed:
+    /// a row that opened too slowly to be seen would take a second left swipe as a full swipe,
+    /// which runs the action itself and takes its button away. Neither row has a leading action,
+    /// so a right swipe only closes.
+    private func swipeAction(_ app: XCUIApplication, _ row: XCUIElement, titled title: String) -> XCUIElement {
+        let action = app.buttons[title].firstMatch
+        for attempt in 0..<3 {
+            if attempt > 0 { row.swipeRight() }
+            row.swipeLeft()
+            if action.waitForExistence(timeout: 5) { break }
+        }
+        return action
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
