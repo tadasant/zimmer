@@ -639,7 +639,7 @@ jobs:
     # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
     # run. The headroom is for a pull request that touches several UI test files, whose
     # classes the smoke run adds at roughly 35 seconds a test, and for a loaded runner. The
-    # full UI suite, four shards of up to 45 minutes each, is `ios-ui-tests.yml`.
+    # full UI suite, five shards of up to 45 minutes each, is `ios-ui-tests.yml`.
     timeout-minutes: 45
 
     steps:
@@ -692,7 +692,7 @@ jobs:
         #
         # The other UI tests and the photographs of every key screen are
         # `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**`: some 110 tests
-        # driven one at a time, as four shards of up to 45 minutes — too long to gate every
+        # driven one at a time, as five shards of up to 45 minutes — too long to gate every
         # pull request on.
         # To get them for a branch before it merges:
         #   gh workflow run ios-ui-tests.yml --ref <branch>
@@ -731,6 +731,40 @@ jobs:
   # Motet's `bin/ci` does it. It proves the package stays free of Apple-only imports, so its
   # rules are testable without a Mac, and it is the cheap half: the macOS `ios` job runs the
   # same tests against Xcode's toolchain. Gated on `ios-changes` like `ios`.
+  # The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
+  # the flows that crashed it in a car (#1410) — a Live call that cannot connect, its retries
+  # putting the call screen up and down, giving up on the tile, hanging up mid-connect, a
+  # Needs you row — failing on any crash. XCUITest cannot reach a real head unit, but it can
+  # reach the Simulator's CarPlay window, which `ios/bin/ui-test --carplay` opens from the
+  # Simulator's own menu. A job of its own rather than a step in `ios`, because the drill's
+  # build is signed ad hoc with the CarPlay entitlement (the CarPlay window lists no app
+  # without one) and so cannot share the smoke run's unsigned build; in parallel, it costs
+  # no wall-clock. Gated, fork-guarded and path-filtered exactly like `ios`.
+  ios_carplay:
+    if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
+    needs: ios-changes
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drive Zimmer in the Simulator's CarPlay window
+        run: |
+          ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos \
+            --configuration Staging \
+            --api-base-url https://ui-test.invalid \
+            --artifacts "$RUNNER_TEMP/carplay-drill"
+
+      - name: Keep what the run produced
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-carplay-drill
+          path: ${{ runner.temp }}/carplay-drill
+          retention-days: 14
+          if-no-files-found: warn
+
   ios_swift_linux:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
@@ -788,6 +822,7 @@ jobs:
       # not a pass, which is the property described above.
       - ios-changes
       - ios
+      - ios_carplay
       - ios_swift_linux
     steps:
       - name: Verify no required check failed or was cancelled
