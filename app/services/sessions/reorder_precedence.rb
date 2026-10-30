@@ -66,6 +66,7 @@ module Sessions
     def call
       raise Error, "A session cannot be dropped next to itself" if neighbour_is_self?
 
+      label = ACTOR_LABELS.fetch(@actor)
       changes = {}
 
       Session.transaction do
@@ -77,7 +78,7 @@ module Sessions
           @session.update!(precedence: target)
           changes[@session.id] = target
           @session.logs.create!(
-            content: "Precedence set to #{target} (was #{previous}) #{ACTOR_LABELS.fetch(@actor)}",
+            content: "Precedence set to #{target} (was #{previous}) #{label}",
             level: "info"
           )
         end
