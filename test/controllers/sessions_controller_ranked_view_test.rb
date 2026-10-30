@@ -492,6 +492,17 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
     assert_equal 75, response.parsed_body["precedence"]
   end
 
+  test "reorder_precedence logs the drag on the dragged session" do
+    moved = spot(1)
+
+    patch reorder_precedence_session_url(moved),
+      params: { above_id: spot(100).id, below_id: spot(50).id }, as: :json
+
+    assert_response :success
+    assert_equal [ "Precedence set to 75 (was 1) by drag-and-drop in the Ranked view" ],
+      moved.logs.where("content LIKE ?", "Precedence set%").pluck(:content)
+  end
+
   test "reorder_precedence nudges adjacent neighbours apart and reports every change" do
     above = spot(21)
     below = spot(20)
