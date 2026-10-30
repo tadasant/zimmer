@@ -179,7 +179,8 @@ notification — `SystemHealthMonitorJob` does this for a critical queue backlog
 to WARN takes that alert to zero. Or it can throttle itself and give every page its own GlitchTip
 fingerprint, so each page is a new issue that notifies once — `WorkBacklog::LivenessSweep` does this
 for [stranded backlog rows](/operate/work-backlog/#the-alert-has-to-reach-a-human-more-than-once).
-Do not do both: a report that is an ERROR record *and* a GlitchTip event pages `#alerts` twice.
+Do not give a per-page fingerprint an ERROR line as well: each is a page, so the report reaches
+`#alerts` twice.
 
 Be precise about what this buys, because it is easy to over-claim. The rule counts *records*, not
 conditions, so a caller that throttles itself to one record per page gets a notification that fires

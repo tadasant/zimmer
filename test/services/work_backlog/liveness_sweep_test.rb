@@ -316,6 +316,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_equal 2, alerts.pages.size
       assert_equal [ [ "weeks-1", "rows-1" ] ] * 2, alerts.pages.map { |page| page[:fingerprint][1..2] }
       assert_equal 2, alerts.pages.map { |page| page[:fingerprint] }.uniq.size
+      assert(alerts.pages.all? { |page| page[:fingerprint].last.match?(/\Apaged-\d{4}-\d{2}-\d{2}T/) })
       assert_empty alerts.error_records
     end
   end
@@ -501,6 +502,8 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
         sweep(probes: probes)
         assert_equal 2, alerts.pages.size, "the lapse pages although the band is no worse"
+        assert_equal 2, alerts.pages.map { |page| page[:fingerprint] }.uniq.size,
+                     "on an issue of its own, so GlitchTip notifies it"
         assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.records.last)
         assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
         assert_nil held.reload.held_at, "the spent hold is cleared once paged"
