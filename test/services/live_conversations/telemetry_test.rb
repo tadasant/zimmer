@@ -23,7 +23,12 @@ class LiveConversations::TelemetryTest < ActiveSupport::TestCase
       "call_id" => "C-1", "conversation_id" => 42, "fields" => fields }
   end
 
-  setup { @exporter = FakeExporter.new }
+  # The events carry a fixed phone clock, and Telemetry ignores one more than
+  # CLOCK_SKEW from the server's, so the server's clock is pinned beside it.
+  setup do
+    travel_to Time.iso8601("2026-10-29T14:00:30Z")
+    @exporter = FakeExporter.new
+  end
 
   def ingest(events, setting: LiveSetting.new, **batch)
     LiveConversations::Telemetry.new(exporter: @exporter, setting: setting).ingest({ "client" => CLIENT, "events" => events }.merge(batch.stringify_keys))
