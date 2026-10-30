@@ -1499,7 +1499,7 @@ the spot queue is listed under them highest-precedence first, and both halves ar
 | Do this | And | Which means |
 | --- | --- | --- |
 | Type a number in a row's precedence field and press **Enter** | the row moves to its new position immediately, with no page load | `PATCH /sessions/:id/update_precedence` |
-| **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value |
+| **Drag** a row between two others | it takes the **midpoint** of the two values it was dropped between | `PATCH /sessions/:id/reorder_precedence`, which is handed the two neighbours and derives the value. The session's log gets "Precedence set to … (was …) by drag-and-drop in the Ranked view", written in the same transaction, when its value moved |
 | Drag between two **adjacent** values, where no midpoint exists | the neighbours are nudged one apart each, and the dropped row takes the middle of the gap that opens | the same request — 21 and 20 become 22 and 19 |
 | Open a row's **⋮** menu and press **Demote to spot** on a priority row | it lands `SLOT_GAP` (5) above the current top of the spot queue, or keeps its rank if that is already higher | `PATCH /sessions/:id/update_scheduling_class` with `place=top_of_spot` |
 | Open a row's **⋮** menu and press **Promote to priority** on a spot row | it moves up to the priority section, keeping its rank for a later demotion, **and starts** | the same endpoint, plus `Sessions::StartNow` |
