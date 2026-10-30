@@ -390,18 +390,20 @@ first hour paged and every hour after it was silent, while the population it exi
 unwatched. That is the same invisible growth the sweep was written to end, so it must not be how the
 detector itself fails.
 
-Two surfaces now, each doing a different half.
+So **every page is its own GlitchTip issue**. The event's fingerprint carries a severity band, so a
+reader can see what got worse, and then the time of the pass that paged. A reminder at a band
+already paged for — the weekly one after `ALERT_BAND_TTL`, or a lapsed hold inside the remembered
+band — is then a new issue with its own one-time notification, not another occurrence of an issue
+whose notification is spent. The sweep decides when to page, and each page notifies `#alerts` once.
 
-**The page is an ERROR log record.** A non-staging Zimmer ERROR trips the
-`zimmer_backend_log_errors` Grafana rule, and that rule [fires again every time it goes from normal
-to alerting](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice), where a
-GlitchTip issue notifies once and is then spent for good. It is a *notification*, not a standing
-alert: one record per page means the rule resolves by itself minutes later, and the standing count
-stays where it already lives — the Stranded section of the Issues view, and `get_work_backlog`.
+**The page is not also an ERROR log record.** The line is logged at WARN, so it is still in
+VictoriaLogs, but it does not trip the `zimmer_backend_log_errors` Grafana rule. When it was logged
+at ERROR, one report paged `#alerts` twice — once through GlitchTip, titled with the band, and four
+minutes later through Grafana as a generic ERROR record that named nothing — and each page started
+its own triage router. A sweep that crashes still reaches the Grafana rule, through the job's own
+ERROR record.
 
-**The GlitchTip event's fingerprint carries a severity band**, so a *worse* population is a
-genuinely new issue with its own one-time notification, and a steady one keeps the issue it already
-has. The band is two coarse numbers:
+The band is two coarse numbers:
 
 | Dimension | Moves when |
 | --- | --- |

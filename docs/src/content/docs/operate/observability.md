@@ -173,11 +173,13 @@ For an exception that either happens or does not, once is the right number. For 
 **persists and gets worse** — a queue that is still backed up, a population of stranded rows that is
 still growing — once is silence, and the thing being watched grows behind it.
 
-So a standing condition pages with a deliberate `Rails.logger.error`, and the GlitchTip event beside
-it carries the detail rather than the notification. `SystemHealthMonitorJob` does this for a critical
-queue backlog, and `WorkBacklog::LivenessSweep` for [stranded backlog
-rows](/operate/work-backlog/#the-alert-has-to-reach-a-human-more-than-once). Demoting either of those
-lines to WARN takes the alert to zero.
+So a standing condition has two ways to page more than once. It can log a deliberate
+`Rails.logger.error`, with the GlitchTip event beside it carrying the detail rather than the
+notification — `SystemHealthMonitorJob` does this for a critical queue backlog, and demoting its line
+to WARN takes that alert to zero. Or it can throttle itself and give every page its own GlitchTip
+fingerprint, so each page is a new issue that notifies once — `WorkBacklog::LivenessSweep` does this
+for [stranded backlog rows](/operate/work-backlog/#the-alert-has-to-reach-a-human-more-than-once).
+Do not do both: a report that is an ERROR record *and* a GlitchTip event pages `#alerts` twice.
 
 Be precise about what this buys, because it is easy to over-claim. The rule counts *records*, not
 conditions, so a caller that throttles itself to one record per page gets a notification that fires

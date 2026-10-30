@@ -277,22 +277,46 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
   # --- what it says ----------------------------------------------------------
 
-  test "alerts when the oldest stranded row is past the threshold, on both surfaces" do
+  test "alerts when the oldest stranded row is past the threshold, through GlitchTip alone" do
     started_row(started_at: (WorkBacklog::LivenessSweep::ALERT_AFTER + 2.days).ago)
 
     with_alerts do |alerts|
       sweep(probes: { 1 => probe(references: []) })
 
-      # The ERROR log record is the page: it is what trips the
-      # `zimmer_backend_log_errors` Grafana rule, the surface that re-fires and
-      # then resolves. Without it this alert reaches a human once and never again.
+      # The GlitchTip event is the page: its title names the band and the problem.
       assert_equal 1, alerts.pages.size
-      assert_match(/9\.0 days/, alerts.pages.first)
-
-      assert_equal 1, alerts.events.size
-      assert_match(/stranded for over 1 week\z/, alerts.events.first[:message])
+      assert_match(/stranded for over 1 week\z/, alerts.pages.first[:message])
+      assert_equal :warning, alerts.pages.first[:level]
       assert_equal [ WorkBacklog::LivenessSweep::ALERT_FINGERPRINT, "weeks-1", "rows-1" ],
-                   alerts.events.first[:fingerprint]
+                   alerts.pages.first[:fingerprint].first(3)
+
+      # The line is still logged, at WARN, so it is queryable but cannot trip the
+      # `zimmer_backend_log_errors` Grafana rule and page `#alerts` a second time.
+      assert_equal 1, alerts.records.size
+      assert_match(/\AW, .* WARN -- : .*9\.0 days/, alerts.records.first)
+      assert_empty alerts.error_records
+    end
+  end
+
+  # GlitchTip notifies an issue at most once, ever, so a page that reused an
+  # issue would reach nobody. Every page — a new band, the weekly reminder at an
+  # unchanged one, a lapse inside the remembered band — opens its own.
+  test "every page opens its own GlitchTip issue, so each one notifies" do
+    started_row(started_at: 8.days.ago)
+    cache = ActiveSupport::Cache::MemoryStore.new
+
+    with_alerts(cache: cache) do |alerts|
+      sweep
+      # The remembered band has gone — the shape ALERT_BAND_TTL's expiry leaves
+      # for a population whose band dropped — so the next pass pages again at the
+      # band it is in, which is the band it last paged for.
+      cache.clear
+      travel(1.hour) { sweep }
+
+      assert_equal 2, alerts.pages.size
+      assert_equal [ [ "weeks-1", "rows-1" ] ] * 2, alerts.pages.map { |page| page[:fingerprint][1..2] }
+      assert_equal 2, alerts.pages.map { |page| page[:fingerprint] }.uniq.size
+      assert_empty alerts.error_records
     end
   end
 
@@ -420,9 +444,9 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       result = sweep(probes: no_pr)
 
       assert_in_delta 9.days.to_i, result.oldest_stranded_age, 5
-      assert_equal [ "weeks-1", "rows-1" ], alerts.events.last[:fingerprint].drop(1)
+      assert_equal [ "weeks-1", "rows-1" ], alerts.events.last[:fingerprint][1..2]
       assert_equal 1, alerts.events.last.dig(:context, :awaiting_decision_rows)
-      assert_match(/1 more held for a human decision, not counted/, alerts.pages.last)
+      assert_match(/1 more held for a human decision, not counted/, alerts.records.last)
       assert held.reload.hold_active?, "the same evidence keeps the hold across passes"
     end
   end
@@ -477,7 +501,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
         sweep(probes: probes)
         assert_equal 2, alerts.pages.size, "the lapse pages although the band is no worse"
-        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.pages.last)
+        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.records.last)
         assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
         assert_nil held.reload.held_at, "the spent hold is cleared once paged"
 
@@ -534,7 +558,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     with_alerts do |alerts|
       sweep(probes: { 141 => probe(number: 141, references: [ earlier_merge ]), 2 => probe(number: 2) })
       assert_equal 1, alerts.pages.size, "the unheld 7-day row pages band 1w"
-      assert_match(/1 more held for a human decision, not counted/, alerts.pages.last)
+      assert_match(/1 more held for a human decision, not counted/, alerts.records.last)
 
       mention_open = reference(state: "OPEN", updated_at: Time.current, number: 1418)
       sweep(probes: { 141 => probe(number: 141, references: [ earlier_merge, mention_open ]), 2 => probe(number: 2) })
@@ -572,7 +596,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
         sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: Time.current) ]) })
         assert_equal 1, alerts.pages.size
-        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.pages.last)
+        assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.records.last)
         assert_equal "weeks-4", alerts.events.last[:fingerprint][1]
         assert_nil held.reload.held_at, "the spent hold is cleared once paged"
       end
@@ -629,9 +653,9 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
-  # The resolve half. Nothing closes a GlitchTip issue, but the Grafana rule
-  # resolves once the ERROR records stop — and the band has to be forgotten with
-  # it, or the NEXT population is weighed against one that no longer exists.
+  # The resolve half. Nothing closes a GlitchTip issue, but the condition is
+  # over — and the band has to be forgotten with it, or the NEXT population is
+  # weighed against one that no longer exists.
   test "a cleared population forgets its band, so the next one pages from its first week" do
     item = started_row(started_at: 9.days.ago)
 
@@ -662,8 +686,8 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     with_alerts(cache: ActiveSupport::Cache::NullStore.new) do |alerts|
       2.times { sweep(probes: { 1 => probe(references: []) }) }
 
-      assert_empty alerts.pages, "the ERROR record IS the page, so it is the one that must not repeat"
-      assert_empty alerts.events
+      assert_empty alerts.pages
+      assert_empty alerts.records
     end
   end
 
@@ -716,11 +740,14 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     Github::IssueLinkProbe::Reference.new(number: number, state: state, updated_at: updated_at)
   end
 
-  # What one or more passes said, on both surfaces. `pages` are the ERROR log
-  # records — the Grafana rule fires on those, and they are the half that can
-  # reach a human more than once; `events` are the GlitchTip reports.
+  # What one or more passes said. `pages` are the GlitchTip reports — each opens
+  # its own issue, and a new issue is what notifies `#alerts`. `records` are the
+  # log lines the same pages left, and `error_records` anything logged at ERROR,
+  # which the `zimmer_backend_log_errors` Grafana rule would page on a second time.
   Alerts = Struct.new(:log, :events) do
-    def pages = log.string.lines.grep(/ERROR/).grep(/stranded, oldest/)
+    def pages = events
+    def records = log.string.lines.grep(/stranded, oldest/)
+    def error_records = log.string.lines.grep(/ERROR/)
   end
 
   # Runs a block against a cache that can actually remember. The test env's

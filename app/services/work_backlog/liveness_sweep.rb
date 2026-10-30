@@ -108,10 +108,9 @@ module WorkBacklog
     # told", and 21 rows against 23 is not.
     ALERT_ROW_BANDS = [ 1, 10, 25, 50, 100, 250, 500, 1000 ].freeze
 
-    # The fingerprint every occurrence of this alert shares, so the obs pipeline
-    # groups them into one issue rather than one per pass. The severity band is
-    # appended to it, which is what keeps a WORSE population from being folded
-    # into the issue a milder one already used up — see `alert_if_overdue`.
+    # The prefix every page's fingerprint starts with. The severity band and the
+    # time of the paging pass are appended to it, so each page opens its own
+    # GlitchTip issue and notifies once — see `alert_if_overdue`.
     ALERT_FINGERPRINT = "work-backlog-stranded-rows"
 
     # Where the band the last page was sent for is remembered, so a steady
@@ -316,20 +315,20 @@ module WorkBacklog
       # while the population it bounds sat at 21 rows. That is the invisible growth
       # #1127 was written to end, so it must not be how the detector itself fails.
       #
-      # Two surfaces now, each doing a different half:
+      # So EVERY PAGE IS ITS OWN GLITCHTIP ISSUE. The fingerprint carries the
+      # severity band, so a GlitchTip reader sees what got worse, and then the time
+      # of the pass that paged, so a reminder at a band already paged for — the
+      # weekly one after ALERT_BAND_TTL, or a lapse inside the remembered band — is
+      # a new issue with its own one-time notification rather than an occurrence of
+      # an issue whose notification is spent. GlitchTip's at-most-once rule is then
+      # exactly the right number: the sweep decides when to page, and each page
+      # notifies once.
       #
-      #   * THE PAGE IS AN ERROR LOG RECORD. A non-staging Zimmer ERROR record
-      #     trips the `zimmer_backend_log_errors` Grafana rule, and that rule fires
-      #     again every time it goes from normal to alerting, where a GlitchTip
-      #     issue notifies once and is then spent for good. It is a NOTIFICATION,
-      #     not a standing alert: one record per page means the rule resolves by
-      #     itself minutes later, and the standing count lives on the Issues page
-      #     and in `get_work_backlog` rather than in Grafana.
-      #     SystemHealthMonitorJob pages the same way, for the same reason, and its
-      #     comment says so in as many words.
-      #   * THE GLITCHTIP EVENT CARRIES THE BAND in its fingerprint, so a worse
-      #     population is a genuinely new issue with its own one-time notification
-      #     while a steady one keeps the issue it already has.
+      # The page is NOT also an ERROR log record. A non-staging ERROR trips the
+      # `zimmer_backend_log_errors` Grafana rule, so one report would page `#alerts`
+      # twice — the second time as a generic "ERROR log record" naming neither the
+      # band nor the problem — and start a second triage router for it. A sweep
+      # that crashes still reaches that rule, through the job's own ERROR record.
       #
       # What bounds the noise is that a page costs a real step change — a week of
       # further ageing, or a climb through ALERT_ROW_BANDS — and that the band it
@@ -372,7 +371,7 @@ module WorkBacklog
         return unless worse || lapsed.any?
 
         Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL) if worse
-        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count, lapsed.size)
+        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count, lapsed.size, now)
         announce_lapsed_holds(lapsed, now)
       end
 
@@ -429,30 +428,29 @@ module WorkBacklog
         Rails.cache.read("#{ALERT_BAND_CACHE_KEY}:probe") == token
       end
 
-      def page_stranded_rows(band, age, rows, awaiting_decision, lapsed = 0)
+      def page_stranded_rows(band, age, rows, awaiting_decision, lapsed, now)
         days = (age / 86_400.0).round(1)
         held = awaiting_decision.positive? ? " (#{awaiting_decision} more held for a human decision, not counted)" : ""
         held += "; #{lapsed} hold(s) for a human decision lapsed with the decision still owed" if lapsed.positive?
 
-        # `.error`, because THIS LINE is the page. It is what trips the
-        # `zimmer_backend_log_errors` Grafana rule — the only surface here that can
-        # notify a second time — so demoting it to `.warn` takes this alert back to
-        # reaching a human once and never again.
+        # WARN, not ERROR: the GlitchTip event below is the page, and an ERROR here
+        # would trip the `zimmer_backend_log_errors` Grafana rule and page `#alerts`
+        # a second time for the same report. WARN still exports, so the line stays
+        # queryable beside the sweep's other records.
         #
-        # Rails.logger rather than the sweep's injected logger: the job hands the
-        # sweep a StructuredLogger, whose #error reports to GlitchTip itself, and
-        # that would file a second issue keyed on this line's text beside the
-        # banded one below.
-        Rails.logger.error(
+        # Rails.logger rather than the sweep's injected logger, so that this line is
+        # only ever a log record: the job hands the sweep a StructuredLogger, whose
+        # #error reports to GlitchTip itself, and nothing here should reach GlitchTip
+        # except the banded event below.
+        Rails.logger.warn(
           "[WorkBacklog::LivenessSweep] #{rows} work backlog row(s) stranded, oldest #{days} days " \
           "(band: #{band[:weeks]}w/#{band[:rows]}+ rows)#{held} — nothing re-queues these automatically. " \
           "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"; " \
           "one whose remainder is a human's call is held with hold_work_backlog_item_for_decision."
         )
 
-        # Level stays :warning: this is a triage queue, not a fault, and the
-        # matching Grafana rule is a warning too. The ERROR above is the paging
-        # MECHANISM, not a claim about severity.
+        # Level :warning: this is a triage queue, not a fault. The new issue its
+        # fingerprint opens is what notifies `#alerts`, not the level.
         ErrorReporter.report_message(
           "Work backlog rows have been stranded for over #{band[:weeks]} #{"week".pluralize(band[:weeks])}",
           context: {
@@ -469,7 +467,8 @@ module WorkBacklog
                         "ones whose remainder is a human's call with hold_work_backlog_item_for_decision."
           },
           level: :warning,
-          fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}" ]
+          fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}",
+                         "paged-#{now.utc.iso8601}" ]
         )
       end
     end
