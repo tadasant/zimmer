@@ -174,27 +174,36 @@ class Sessions::ReorderPrecedenceTest < ActiveSupport::TestCase
     assert_equal 20, below.reload.precedence
   end
 
-  # And the other way round: a rank write that fails leaves no log row.
-  test "a failed rank write leaves no log row" do
+  # A dragged-row write that fails after a neighbour was nudged leaves no log
+  # row and takes the nudge back with it.
+  test "a failed rank write leaves no log row and no nudge" do
+    above = spot(21)
+    below = spot(20)
     moved = spot(1)
     moved.define_singleton_method(:update!) { |*| raise ActiveRecord::RecordInvalid }
 
     assert_no_difference -> { Log.count } do
       assert_raises(ActiveRecord::RecordInvalid) do
-        Sessions::ReorderPrecedence.call(session: moved, actor: :web, above: spot(100), below: spot(50))
+        Sessions::ReorderPrecedence.call(session: moved, actor: :web, above: above, below: below)
       end
     end
     assert_equal 1, moved.reload.precedence
+    assert_equal 21, above.reload.precedence
+    assert_equal 20, below.reload.precedence
   end
 
-  test "an unknown actor writes nothing" do
+  test "an unknown actor is refused before anything is written" do
+    above = spot(21)
+    below = spot(20)
     moved = spot(1)
 
     assert_no_difference -> { Log.count } do
       assert_raises(KeyError) do
-        Sessions::ReorderPrecedence.call(session: moved, actor: :mcp, above: spot(100), below: spot(50))
+        Sessions::ReorderPrecedence.call(session: moved, actor: :mcp, above: above, below: below)
       end
     end
     assert_equal 1, moved.reload.precedence
+    assert_equal 21, above.reload.precedence
+    assert_equal 20, below.reload.precedence
   end
 end
