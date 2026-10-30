@@ -52,7 +52,9 @@ module ErrorReporter
   # the message is a standing condition whose SEVERITY changes, because a
   # GlitchTip issue notifies Slack at most once ever: a fingerprint that varies
   # with the severity is what lets a worsening condition reach a human a second
-  # time. WorkBacklog::LivenessSweep is the worked case (#1175).
+  # time, and one that also varies per page lets a caller that throttles itself
+  # re-notify at an unchanged severity. WorkBacklog::LivenessSweep is the worked
+  # case (#1175).
   def report_message(message, context: {}, level: :error, fingerprint: nil)
     return unless reporting_enabled?
 
