@@ -982,20 +982,14 @@ class Api::V1::SessionsController < Api::BaseController
   # dropped the session between (`above_id`, `below_id`; either may be omitted at
   # an end) and Sessions::ReorderPrecedence derives the value, nudging a
   # neighbour aside when there is no gap — the same service the dashboard's drag
-  # calls. A neighbour that is no longer in the spot queue counts as omitted.
-  # Answers with the session and every row whose precedence moved.
+  # calls, which also writes the log row when the session's own value moved. A
+  # neighbour that is no longer in the spot queue counts as omitted. Answers with
+  # the session and every row whose precedence moved.
   def reorder_precedence
     above = spot_queue_neighbour(params[:above_id])
     below = spot_queue_neighbour(params[:below_id])
 
-    result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
-
-    if result.changes.key?(@session.id)
-      @session.logs.create!(
-        content: "Precedence set to #{result.precedence} by a reorder through the REST API",
-        level: "info"
-      )
-    end
+    result = Sessions::ReorderPrecedence.call(session: @session, actor: :rest, above: above, below: below)
 
     render json: {
       session: session_json(@session.reload),

@@ -139,6 +139,30 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_equal [ top.id, moved.id, bottom.id ], ids_for("ranked")
   end
 
+  test "reorder_precedence logs the move once, labelled as the REST API" do
+    top = make("top", created: 3.hours.ago, precedence: 30)
+    bottom = make("bottom", created: 2.hours.ago, precedence: 10)
+    moved = make("moved", created: 1.hour.ago, precedence: 0)
+
+    patch "/api/v1/sessions/#{moved.id}/reorder_precedence", params: { above_id: top.id, below_id: bottom.id }, headers: @headers
+
+    assert_response :success, response.body
+    assert_equal [ "Precedence set to 20 (was 0) by a reorder through the REST API" ],
+      moved.logs.where("content LIKE ?", "Precedence set%").pluck(:content)
+  end
+
+  test "reorder_precedence onto the value the session already holds logs nothing" do
+    top = make("top", created: 3.hours.ago, precedence: 30)
+    bottom = make("bottom", created: 2.hours.ago, precedence: 10)
+    moved = make("moved", created: 1.hour.ago, precedence: 20)
+
+    assert_no_difference -> { moved.logs.count } do
+      patch "/api/v1/sessions/#{moved.id}/reorder_precedence", params: { above_id: top.id, below_id: bottom.id }, headers: @headers
+    end
+    assert_response :success, response.body
+    assert_empty JSON.parse(response.body)["changes"]
+  end
+
   test "reorder_precedence ignores a neighbour that is not in the spot queue" do
     priority = make("priority", created: 3.hours.ago, scheduling_class: "priority", precedence: 50)
     below = make("below", created: 2.hours.ago, precedence: 10)

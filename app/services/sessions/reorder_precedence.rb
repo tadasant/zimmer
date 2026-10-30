@@ -23,6 +23,15 @@ module Sessions
   #
   # Every write happens in one transaction with the rows locked in id order, so
   # two drags landing at once cannot interleave into a half-applied reorder.
+  #
+  # Both surfaces that drag route through here: the web Ranked view
+  # (`PATCH /sessions/:id/reorder_precedence`) and REST
+  # (`PATCH /api/v1/sessions/:id/reorder_precedence`). The dragged session's
+  # log row is written in the same transaction as the ranks, and only when the
+  # dragged session's own value moved. `changes` also carries any neighbour
+  # nudged aside, so keying off it would log a move on a session dropped back
+  # onto the value it already had, and a line per grab would bury its history.
+  # A nudged neighbour gets no log row.
   class ReorderPrecedence
     # What the reorder did, for the JSON the ranked view applies optimistically.
     # `changes` carries every row whose value moved — the dragged session and any
@@ -31,17 +40,25 @@ module Sessions
 
     class Error < StandardError; end
 
+    # Named in the dragged session's log row.
+    ACTOR_LABELS = {
+      web: "by drag-and-drop in the Ranked view",
+      rest: "by a reorder through the REST API"
+    }.freeze
+
     # @param session [Session] the dragged session
     # @param above [Session, nil] the session immediately ABOVE the drop position
     #   (higher precedence), nil when dropped at the top
     # @param below [Session, nil] the session immediately BELOW the drop position
     #   (lower precedence), nil when dropped at the bottom
-    def self.call(session:, above: nil, below: nil)
-      new(session: session, above: above, below: below).call
+    # @param actor [Symbol] :web or :rest — named in the log row
+    def self.call(session:, actor:, above: nil, below: nil)
+      new(session: session, actor: actor, above: above, below: below).call
     end
 
-    def initialize(session:, above: nil, below: nil)
+    def initialize(session:, actor:, above: nil, below: nil)
       @session = session
+      @actor = actor
       @above = above
       @below = below
     end
@@ -54,10 +71,15 @@ module Sessions
       Session.transaction do
         lock_rows!
 
+        previous = @session.precedence
         target = compute(changes)
-        if @session.precedence != target
+        if previous != target
           @session.update!(precedence: target)
           changes[@session.id] = target
+          @session.logs.create!(
+            content: "Precedence set to #{target} (was #{previous}) #{ACTOR_LABELS.fetch(@actor)}",
+            level: "info"
+          )
         end
       end
 
