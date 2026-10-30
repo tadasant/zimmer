@@ -2425,18 +2425,9 @@ class SessionsController < ApplicationController
     above = neighbour_session(params[:above_id])
     below = neighbour_session(params[:below_id])
 
-    result = Sessions::ReorderPrecedence.call(session: @session, above: above, below: below)
-
-    # Only when THIS session's own value moved. `changes` also carries any
-    # neighbour nudged aside, so keying off it would log a move on a session that
-    # was dropped back onto the value it already had — and a log line per grab
-    # would bury the session's real history.
-    if result.changes.key?(@session.id)
-      @session.logs.create!(
-        content: "Precedence set to #{result.precedence} by drag-and-drop in the Ranked view",
-        level: "info"
-      )
-    end
+    # The ranks and the log row are Sessions::ReorderPrecedence, shared with
+    # `PATCH /api/v1/sessions/:id/reorder_precedence`.
+    result = Sessions::ReorderPrecedence.call(session: @session, actor: :web, above: above, below: below)
 
     render json: precedence_payload(@session).merge(
       # Every row whose value moved, including a neighbour nudged aside to make

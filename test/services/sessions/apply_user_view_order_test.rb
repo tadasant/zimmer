@@ -37,7 +37,7 @@ class Sessions::ApplyUserViewOrderTest < ActiveSupport::TestCase
     mover = spot(0)
     Sessions::ApplyUserViewOrder.call(session_ids: [ a.id, b.id ])
 
-    result = Sessions::ReorderPrecedence.call(session: mover, above: a.reload, below: b.reload)
+    result = Sessions::ReorderPrecedence.call(session: mover, actor: :web, above: a.reload, below: b.reload)
 
     assert_equal 1, result.changes.size, "only the dragged row should have been written"
     assert_equal [ a.id, mover.id, b.id ],
