@@ -903,6 +903,18 @@ cache flush into a false page, and a liveness alarm nobody trusts is worse than 
 hole. It fails quiet, not loud. The same Redis dependency already underlies
 `SystemHealthMonitorJob`'s streak, so a Redis outage degrades that whole family together.
 
+### The stranded-rows page has one path, and the sweep cannot tell it was dropped
+
+`WorkBacklog::LivenessSweep` pages `#alerts` through GlitchTip and nothing else. Every page opens
+its own issue, and the report line is logged at WARN, so the
+[log-errors Grafana rule](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice)
+does not page a second time. The cost is that nothing else carries the page. If Sentry is not
+initialized, or GlitchTip drops the event (the SDK sends in the background and does not report
+failure), no page goes out. The sweep still records the band as paged, so it says nothing for that
+band until `ALERT_BAND_TTL` (7 days) passes or the population gets worse. The standing count stays
+readable on the Issues view and in `get_work_backlog`, and a GlitchTip outage is visible in its own
+right. But this alert does not page it.
+
 ### A cron manager that stops inside a live worker is not paged on
 
 The "Cron schedule stale" page comes from `SystemHealthMonitorJob`, which is itself a cron job. If
