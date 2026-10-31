@@ -18,6 +18,14 @@
 # where the request may already have been processed), logging at .info during
 # intermediate attempts. Only after all retries are exhausted is the failure
 # logged at .error, so a genuinely persistent outage stays alertable.
+#
+# A 429/5xx *answer* from the token endpoint gets the same treatment: the job asks
+# #refresh! to raise McpOauthCredential::TransientRefreshFailure instead of
+# logging it. A 429 or 503 (the provider did not process the request) climbs the
+# retry ladder like a connection that never opened. Any other 5xx is handled like
+# a lost response — no in-band re-send — and stays at .info only while the access
+# token is still valid; once it has lapsed the failure is logged at .error on every
+# run, so a provider that stays down still pages.
 class RefreshMcpOauthTokensJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
@@ -110,12 +118,20 @@ class RefreshMcpOauthTokensJob < ApplicationJob
         next unless credential.expiring_soon?(REFRESH_WINDOW)
         next unless credential.can_refresh?
 
-        if credential.refresh!
+        if credential.refresh!(raise_on_transient: true)
           refreshed += 1
         else
           failed += 1
           Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to refresh token for #{credential.server_name} (#{credential.credential_key})"
         end
+      end
+    rescue McpOauthCredential::TransientRefreshFailure => e
+      failed += 1
+      if e.unprocessed?
+        retry_ids << credential.id
+        Rails.logger.info "[RefreshMcpOauthTokensJob] Transient token endpoint response refreshing #{credential.server_name}: #{e.message} (will retry)"
+      else
+        log_ambiguous_response(credential, e, "will re-attempt on the next scheduled run")
       end
     rescue *RETRYABLE_REFRESH_ERRORS => e
       failed += 1
@@ -151,11 +167,20 @@ class RefreshMcpOauthTokensJob < ApplicationJob
         next unless credential.expiring_soon?(REFRESH_WINDOW)
         next unless credential.can_refresh?
 
-        if credential.refresh!
+        if credential.refresh!(raise_on_transient: true)
           refreshed += 1
         else
           Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to refresh token for #{credential.server_name} (#{credential.credential_key}) on retry #{attempt}"
         end
+      end
+    rescue McpOauthCredential::TransientRefreshFailure => e
+      if !e.unprocessed?
+        log_ambiguous_response(credential, e, "deferring to the next scheduled run")
+      elsif attempt < MAX_RETRIES
+        still_failing_ids << credential.id
+        Rails.logger.info "[RefreshMcpOauthTokensJob] Transient token endpoint response refreshing #{credential.server_name} on retry #{attempt}: #{e.message} (will retry)"
+      else
+        Rails.logger.error "[RefreshMcpOauthTokensJob] Token refresh for #{credential.server_name} failed after #{MAX_RETRIES} retries: #{e.message}"
       end
     rescue *RETRYABLE_REFRESH_ERRORS => e
       still_failing_ids << credential.id
@@ -173,6 +198,21 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     schedule_retry(still_failing_ids, attempt + 1) if still_failing_ids.any? && attempt < MAX_RETRIES
 
     Rails.logger.info "[RefreshMcpOauthTokensJob] Retry #{attempt}/#{MAX_RETRIES}: #{refreshed} refreshed, #{still_failing_ids.size} still failing"
+  end
+
+  # A 500/502/504 is not re-sent in-band (see TransientRefreshFailure#unprocessed?),
+  # so the only retry is the next scheduled run, and the access token is what
+  # decides how loud to be. While it is still valid nothing is broken yet and a
+  # one-off blip should not page. Once it has lapsed, sessions can no longer use
+  # this server, and every run that still gets a 5xx logs at .error — the cron
+  # keeps selecting the credential for MAX_EXPIRED_AGE, so a persistent outage
+  # pages within about an hour of it starting.
+  def log_ambiguous_response(credential, error, deferral)
+    if credential.active?
+      Rails.logger.info "[RefreshMcpOauthTokensJob] Ambiguous token endpoint response refreshing #{credential.server_name}: #{error.message} — not retrying in-band to avoid refresh-token reuse-detection; #{deferral}"
+    else
+      Rails.logger.error "[RefreshMcpOauthTokensJob] Token refresh for #{credential.server_name} still failing after its access token expired: #{error.message}"
+    end
   end
 
   def schedule_retry(credential_ids, attempt)

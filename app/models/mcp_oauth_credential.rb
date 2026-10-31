@@ -20,6 +20,33 @@ class McpOauthCredential < ApplicationRecord
     unauthorized_client
   ].freeze
 
+  # A 429 or 5xx answer from the token endpoint, raised by #refresh! only when the
+  # caller opts in with `raise_on_transient: true` (RefreshMcpOauthTokensJob, which
+  # owns a retry ladder and decides when the failure is loud enough to log at
+  # .error). Every other caller keeps the boolean contract and the ERROR log.
+  #
+  # #unprocessed? separates the two kinds for rotating-refresh-token providers
+  # (e.g. Notion). A 429 or 503 is the server declining to do the work, so the
+  # refresh token was not consumed and re-sending it is safe. Any other 5xx
+  # (500/502/504) may have come back after the provider minted a new token and
+  # revoked ours — a gateway timing out on a backend that finished, a crash after
+  # the commit — so re-sending the old token in-band risks reuse-detection
+  # revoking the whole chain, exactly like a lost response.
+  class TransientRefreshFailure < StandardError
+    UNPROCESSED_STATUSES = [ 429, 503 ].freeze
+
+    attr_reader :status
+
+    def initialize(message, status:)
+      super(message)
+      @status = status
+    end
+
+    def unprocessed?
+      UNPROCESSED_STATUSES.include?(status)
+    end
+  end
+
   validates :server_name, presence: true
   validates :server_url, presence: true
   validates :credential_key, presence: true, uniqueness: true
@@ -160,10 +187,14 @@ class McpOauthCredential < ApplicationRecord
   # Makes a POST request to the token_endpoint with the refresh_token grant.
   # Updates access_token, and optionally refresh_token and expires_at.
   #
+  # @param raise_on_transient [Boolean] raise TransientRefreshFailure on a 429/5xx
+  #   answer instead of logging it at .error and returning false. For a caller that
+  #   retries and owns the decision to log at .error once retrying is exhausted.
   # @return [Boolean] true if refresh succeeded, false otherwise
   # @raise [RuntimeError] if refresh_token or token_endpoint is missing
   # @raise [McpOauthService::InsecureEndpoint] if token_endpoint is not https
-  def refresh!
+  # @raise [TransientRefreshFailure] on a 429/5xx, only with raise_on_transient
+  def refresh!(raise_on_transient: false)
     raise "Cannot refresh: missing refresh_token" unless refresh_token.present?
     raise "Cannot refresh: missing token_endpoint" unless token_endpoint.present?
     # Stated here as well as in #can_refresh? because this method is the one that
@@ -221,10 +252,13 @@ class McpOauthCredential < ApplicationRecord
       Rails.logger.info "[McpOauthCredential] Token refresh succeeded for #{server_name}"
       true
     else
+      message = "Token refresh failed for #{server_name} (#{credential_key}): #{response.code} - #{response.body}"
       if permanent_refresh_failure?(response)
         invalidate_refresh_token!(response)
+      elsif raise_on_transient && transient_refresh_failure?(response)
+        raise TransientRefreshFailure.new(message, status: response.code.to_i)
       else
-        Rails.logger.error "[McpOauthCredential] Token refresh failed for #{server_name} (#{credential_key}): #{response.code} - #{response.body}"
+        Rails.logger.error "[McpOauthCredential] #{message}"
       end
       false
     end
@@ -241,9 +275,10 @@ class McpOauthCredential < ApplicationRecord
   # more-specific classifier layered on top (it also covers the rare provider
   # that returns one of these errors with a non-4xx status).
   #
-  # Transient failures (429 rate-limit, 5xx outage) are excluded first: they
-  # stay on the loud ERROR path with the refresh token intact so the next cron
-  # run retries, matching XOauthCredential's transient/permanent split.
+  # Transient failures (429 rate-limit, 5xx outage) are excluded first: they keep
+  # the refresh token intact, matching XOauthCredential's transient/permanent
+  # split, and either log at .error or — for a caller that passed
+  # raise_on_transient — raise TransientRefreshFailure for it to retry.
   def permanent_refresh_failure?(response)
     return false if transient_refresh_failure?(response)
 
