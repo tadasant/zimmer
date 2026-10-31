@@ -26,8 +26,10 @@ class McpOauthCredential < ApplicationRecord
   # .error). Every other caller keeps the boolean contract and the ERROR log.
   #
   # #unprocessed? separates the two kinds for rotating-refresh-token providers
-  # (e.g. Notion). A 429 or 503 is the server declining to do the work, so the
-  # refresh token was not consumed and re-sending it is safe. Any other 5xx
+  # (e.g. Notion). A 429 or 503 is normally the server declining to do the work,
+  # so the refresh token was not consumed and re-sending it is safe. (A proxy can
+  # answer 503 after the backend finished; that rare case risks the same reuse
+  # detection the next scheduled run would.) Any other 5xx
   # (500/502/504) may have come back after the provider minted a new token and
   # revoked ours — a gateway timing out on a backend that finished, a crash after
   # the commit — so re-sending the old token in-band risks reuse-detection
