@@ -50,14 +50,16 @@ class ScheduleTriggerJob < ApplicationJob
   private
 
   def process_condition(condition)
+    return unless condition.schedule_due?
+
     # A gated sibling that fired earlier in this pass may have covered this condition too
     # (#coalesce_gated_siblings!), and the batch loaded it before that write.
-    condition.reload if condition.reachability_gated?
-    return unless condition.schedule_due?
+    return if condition.reachability_gated? && !condition.reload.schedule_due?
 
     trigger = condition.trigger
 
-    # A gated schedule stays due, and spawns nothing, until the servers it needs answer. See
+    # A gated schedule stays due, and spawns nothing, until the servers it needs answer. The
+    # gate reads what ScheduleReachabilityProbeJob last saw; it does not probe. See
     # ScheduleReachabilityGate.
     if condition.reachability_gated?
       gate = ScheduleReachabilityGate.check(condition)
@@ -238,7 +240,7 @@ class ScheduleTriggerJob < ApplicationJob
     condition.trigger.trigger_conditions.schedule.where.not(id: condition.id).find_each do |sibling|
       next unless sibling.reachability_gated? && sibling.schedule_due?
 
-      sibling.update!(last_triggered_at: Time.current)
+      sibling.update_column(:last_triggered_at, Time.current)
       Rails.logger.info "[ScheduleTriggerJob] Condition #{sibling.id} on trigger #{condition.trigger_id} was also due; covered by condition #{condition.id}'s fire"
     end
   end

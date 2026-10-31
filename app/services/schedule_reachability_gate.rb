@@ -5,15 +5,21 @@
 # an MCP server through strad — fires when that machine is up instead of spawning a session to
 # discover that it is not.
 #
-# ScheduleTriggerJob asks #check only for a condition that is already due. A closed gate leaves
-# the condition due and spawns nothing, so a slot the machine slept through is not lost: it
-# fires the first time the gate opens, and a second slot arriving in the meantime is the same one
-# pending fire, not two (ScheduleTriggerJob coalesces gated siblings when one of them fires).
+# The work is split in two so that a slow or hung host can never delay anything else:
 #
-# The check is deterministic and needs no session: one `tools/list` per server through the same
-# endpoint and credentials a session gets. That is deliberately the cheapest call there is — it
-# runs no tool, so a server behind a consent gate (strad-hostd's `request_control`) shows nothing
-# on the machine it probes.
+# - #observe! is called by ScheduleReachabilityProbeJob, once a minute, for every gated condition
+#   on an enabled trigger. It probes the servers and records what it saw under
+#   `configuration["reachability"]`.
+# - #check is called by ScheduleTriggerJob for a condition that is due. It only reads that record
+#   — no network — so the job that also delivers session wakes never waits on a probe.
+#
+# A closed gate leaves the condition due and spawns nothing. TriggerCondition#schedule_due? keeps a
+# gated daily or weekly slot due until it is fired for, so a slot the machine slept through fires
+# the first time the gate opens; ScheduleTriggerJob coalesces gated siblings due at the same time.
+#
+# The probe is deterministic and needs no session: one `tools/list` per server through the same
+# endpoint and credentials a session gets. It runs no tool, so a server behind a consent gate
+# (strad-hostd's `request_control`) shows nothing on the machine it probes.
 #
 # A server counts as reachable when it lists a real tool. Strad answers `tools/list` for a slug
 # whose host is offline with a single placeholder, `<slug>__troubleshoot_host`, instead of an
@@ -29,65 +35,73 @@ class ScheduleReachabilityGate
   # strad's stand-in tool for a slug whose host it cannot reach.
   PLACEHOLDER_TOOL = "troubleshoot_host"
 
-  # One probe per server serves every gated condition in a tick. Shorter than the job's
-  # one-minute cadence, so each tick sees a fresh answer.
+  # One probe per server serves every gated condition naming it in a pass. Shorter than the probe
+  # job's one-minute cadence, so each pass sees a fresh answer.
   PROBE_CACHE_TTL = 50.seconds
 
-  # ScheduleTriggerJob fires every schedule in the deployment, wakes included, one condition at a
-  # time. A probe is bounded well under the client's defaults so an unreachable host cannot hold
-  # the rest of the tick for long.
   OPEN_TIMEOUT_SECONDS = 3
   READ_TIMEOUT_SECONDS = 8
 
-  # The gate only looks while a condition is due. A record older than this was written during an
-  # earlier due period, and says nothing about whether the server has been up since.
+  # A record older than this means the probe job has not been running, and says nothing about the
+  # server since. #check treats it as closed; #observe! restarts the dwell from it.
   STALE_AFTER = 3.minutes
 
   MAX_REASON_CHARS = 300
 
   class << self
-    # @param condition [TriggerCondition] a due, gated schedule condition
+    # Read-only: whether a due, gated condition may fire now, from the last observation.
+    #
+    # @param condition [TriggerCondition]
     # @return [Result]
     def check(condition, now: Time.current)
-      servers = condition.schedule_require_reachable
-      return Result.new(open: true, reason: nil) if servers.empty?
+      return Result.new(open: true, reason: nil) unless condition.reachability_gated?
 
-      unreachable = servers.filter_map do |name|
+      state = condition.schedule_reachability_state
+      checked = parse_time(state["last_checked_at"])
+      return Result.new(open: false, reason: "not probed yet") if checked.nil?
+      return Result.new(open: false, reason: "last probed at #{checked.iso8601}, which is stale") if now - checked > STALE_AFTER
+
+      since = parse_time(state["reachable_since"])
+      return Result.new(open: false, reason: "unreachable since #{state['unreachable_since']} — #{state['last_error']}") if since.nil?
+
+      dwell = condition.schedule_reachable_dwell_minutes
+      return Result.new(open: true, reason: nil) if now - since >= dwell.minutes
+
+      Result.new(open: false, reason: "reachable since #{since.iso8601}; waiting out the #{dwell} min dwell")
+    end
+
+    # Probe the condition's servers and record what was seen.
+    #
+    # @param condition [TriggerCondition] a gated schedule condition
+    # @return [Hash] the record written
+    def observe!(condition, now: Time.current)
+      unreachable = condition.schedule_require_reachable.filter_map do |name|
         probe = probe(name)
         "#{name}: #{probe['reason']}" unless probe["reachable"]
       end
 
       previous = condition.schedule_reachability_state
-      fresh = fresh?(previous, now)
+      checked = parse_time(previous["last_checked_at"])
+      fresh = checked.present? && now - checked <= STALE_AFTER
 
-      result, state = if unreachable.any?
-        reason = unreachable.join("; ").truncate(MAX_REASON_CHARS)
-        [
-          Result.new(open: false, reason: "unreachable — #{reason}"),
-          {
-            "reachable_since" => nil,
-            "unreachable_since" => (fresh && previous["unreachable_since"]) || now.iso8601,
-            "last_checked_at" => now.iso8601,
-            "last_error" => reason
-          }
-        ]
+      state = if unreachable.any?
+        {
+          "reachable_since" => nil,
+          "unreachable_since" => (fresh && previous["unreachable_since"]) || now.iso8601,
+          "last_checked_at" => now.iso8601,
+          "last_error" => unreachable.join("; ").truncate(MAX_REASON_CHARS)
+        }
       else
-        since = (fresh && parse_time(previous["reachable_since"])) || now
-        dwell = condition.schedule_reachable_dwell_minutes.minutes
-        open = now - since >= dwell
-        [
-          Result.new(open: open, reason: open ? nil : "reachable since #{since.iso8601}; waiting out the #{condition.schedule_reachable_dwell_minutes} min dwell"),
-          {
-            "reachable_since" => since.iso8601,
-            "unreachable_since" => nil,
-            "last_checked_at" => now.iso8601,
-            "last_error" => nil
-          }
-        ]
+        {
+          "reachable_since" => ((fresh && parse_time(previous["reachable_since"])) || now).iso8601,
+          "unreachable_since" => nil,
+          "last_checked_at" => now.iso8601,
+          "last_error" => nil
+        }
       end
 
       record!(condition, state)
-      result
+      state
     end
 
     # @return [Hash] `{"reachable" => Boolean, "reason" => String or nil}`
@@ -121,22 +135,20 @@ class ScheduleReachabilityGate
       { "reachable" => false, "reason" => reason }
     end
 
-    def fresh?(state, now)
-      checked = parse_time(state["last_checked_at"])
-      checked.present? && now - checked <= STALE_AFTER
-    end
-
     def parse_time(value)
       value.present? ? Time.zone.parse(value.to_s) : nil
     rescue ArgumentError
       nil
     end
 
-    # Written without validations or callbacks: this is the gate's own bookkeeping, it runs every
-    # minute while a slot is pending, and the user-facing keys beside it are untouched.
+    # Only the gate's own key is written, in place, so an edit to the condition that lands while
+    # a probe is in flight is not reverted. No validations or callbacks: this is bookkeeping.
     def record!(condition, state)
-      configuration = condition.configuration.merge("reachability" => state)
-      condition.update_column(:configuration, configuration)
+      TriggerCondition.where(id: condition.id).update_all(
+        [ "configuration = jsonb_set(configuration, '{reachability}', ?::jsonb)", state.to_json ]
+      )
+      condition.configuration = condition.configuration.merge("reachability" => state)
+      condition.clear_changes_information
     end
 
     def cache_key(name)

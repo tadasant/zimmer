@@ -85,6 +85,11 @@
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
     },
+    "schedule_reachability_probe": {
+      "cron": "* * * * *",
+      "class": "ScheduleReachabilityProbeJob",
+      "description": "Probe the MCP servers reachability-gated schedules wait for, and record what was seen"
+    },
     "mcp_event_trigger_poller": {
       "cron": "* * * * *",
       "class": "McpEventTriggerPollerJob",
@@ -407,6 +412,11 @@
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
     },
+    "schedule_reachability_probe": {
+      "cron": "* * * * *",
+      "class": "ScheduleReachabilityProbeJob",
+      "description": "Probe the MCP servers reachability-gated schedules wait for, and record what was seen"
+    },
     "mcp_event_trigger_poller": {
       "cron": "* * * * *",
       "class": "McpEventTriggerPollerJob",
@@ -713,6 +723,11 @@
       "cron": "* * * * *",
       "class": "EmailTriggerPollerJob",
       "description": "Poll the mailbox for new mail and create a session per new thread"
+    },
+    "schedule_reachability_probe": {
+      "cron": "* * * * *",
+      "class": "ScheduleReachabilityProbeJob",
+      "description": "Probe the MCP servers reachability-gated schedules wait for, and record what was seen"
     },
     "mcp_event_trigger_poller": {
       "cron": "* * * * *",
