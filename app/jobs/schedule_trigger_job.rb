@@ -50,9 +50,22 @@ class ScheduleTriggerJob < ApplicationJob
   private
 
   def process_condition(condition)
+    # A gated sibling that fired earlier in this pass may have covered this condition too
+    # (#coalesce_gated_siblings!), and the batch loaded it before that write.
+    condition.reload if condition.reachability_gated?
     return unless condition.schedule_due?
 
     trigger = condition.trigger
+
+    # A gated schedule stays due, and spawns nothing, until the servers it needs answer. See
+    # ScheduleReachabilityGate.
+    if condition.reachability_gated?
+      gate = ScheduleReachabilityGate.check(condition)
+      unless gate.open
+        Rails.logger.info "[ScheduleTriggerJob] Condition #{condition.id} on trigger #{trigger.id} (#{trigger.name}) is due but held: #{gate.reason}"
+        return
+      end
+    end
 
     Rails.logger.info "[ScheduleTriggerJob] Schedule condition #{condition.id} on trigger #{trigger.id} (#{trigger.name}) is due, creating session"
 
@@ -84,6 +97,7 @@ class ScheduleTriggerJob < ApplicationJob
 
     # Update condition's last_triggered_at
     condition.update!(last_triggered_at: Time.current)
+    coalesce_gated_siblings!(condition) if condition.reachability_gated?
 
     trigger_id = trigger.id
     trigger_name = trigger.name
@@ -215,5 +229,17 @@ class ScheduleTriggerJob < ApplicationJob
         trigger_id: trigger_id
       }
     )
+  end
+
+  # Two gated slots on one trigger — 03:30 and 15:30, say — that both came due while the machine
+  # was off are one catch-up run, not two back to back: the run that just fired covers the
+  # other's window too. Ungated siblings are left alone; they were never held back.
+  def coalesce_gated_siblings!(condition)
+    condition.trigger.trigger_conditions.schedule.where.not(id: condition.id).find_each do |sibling|
+      next unless sibling.reachability_gated? && sibling.schedule_due?
+
+      sibling.update!(last_triggered_at: Time.current)
+      Rails.logger.info "[ScheduleTriggerJob] Condition #{sibling.id} on trigger #{condition.trigger_id} was also due; covered by condition #{condition.id}'s fire"
+    end
   end
 end

@@ -4742,6 +4742,18 @@ without a usable note. Rotating `secret_key_base` has the same effect.
 
 ## Triggers
 
+### A reachability-gated schedule checks at fire time, not when the session starts
+
+[`require_reachable`](/sessions/triggers/#holding-a-schedule-until-a-server-is-reachable) holds a
+schedule until its servers answer. It decides when it fires, and a session can start later than
+that: a spot session waits for quota headroom, which can take longer than a laptop stays open. The
+session then finds the server offline. Make a gated trigger `priority` when its work needs the
+machine at start, and have the session's own first step tolerate an offline server.
+
+A server that never comes back holds the slot indefinitely and quietly. The trigger raises no
+alert; the only sign is `reachability.unreachable_since` on the condition, on the trigger's edit
+form and in `search_triggers`.
+
 ### Workflow triggers exist, and nothing fires one
 
 [Workflows](/sessions/workflows/) are Phase 0 of [#18](https://github.com/tadasant/zimmer/issues/18):

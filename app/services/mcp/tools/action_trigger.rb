@@ -214,6 +214,13 @@ module Mcp
           firing at 15:00. Nothing else re-arms: a no-op update, or an `interval` change, leaves a
           pending first fire where it is.
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
+        - **Reachability gate** (recurring only): add `"require_reachable": ["imessage-tadas-mbp"]` to hold
+          the schedule until those catalog MCP servers answer `tools/list` with a real tool (strad's
+          `troubleshoot_host` placeholder for an offline host does not count), and
+          `"reachable_dwell_minutes": 10` (default 10, 0–240) for how long they must stay reachable first.
+          While held the schedule stays due and spawns nothing; a slot slept through fires once, on the
+          first open gate, and gated sibling slots on the same trigger that were also due are covered by
+          that one fire. The gate's last observation is kept under `reachability` in the configuration.
 
         **Zimmer event configuration:**
         - `{"event_name": "session_needs_input"}` — also `session_failed`, `session_archived`. These are

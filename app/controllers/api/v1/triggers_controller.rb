@@ -348,7 +348,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, :require_reachable, :reachable_dwell_minutes, require_reachable: [], allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
       ]
     )
     permitted[:mcp_servers] ||= []
