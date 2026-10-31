@@ -587,6 +587,18 @@ class TriggerCondition < ApplicationRecord
     configuration["timezone"] || DEFAULT_SCHEDULE_TIMEZONE
   end
 
+  # The trigger form's timezone select lists Rails zone names ("Pacific Time (US & Canada)"), but
+  # the REST API and MCP accept IANA identifiers ("America/Los_Angeles") too. Without this, a
+  # condition stored with an IANA name matches no option, the browser shows the first one, and a
+  # plain save moves the schedule to that zone.
+  def schedule_timezone_option
+    stored = schedule_timezone
+    zones = ActiveSupport::TimeZone.us_zones + ActiveSupport::TimeZone.all
+    return stored if zones.any? { |zone| zone.name == stored }
+
+    zones.find { |zone| zone.tzinfo.identifier == stored }&.name || stored
+  end
+
   # The catalog MCP servers this schedule must reach before it fires. Empty for an ungated one.
   #
   # @return [Array<String>]
@@ -988,11 +1000,15 @@ class TriggerCondition < ApplicationRecord
     when "hours"
       last.nil? || now - last >= schedule_interval.hours
     when "days"
+      return gated_slot_due?(latest_daily_slot(now), last) if reachability_gated?
+
       target = parse_schedule_time(now)
       return false unless now >= target
       return armed_before?(target) if last.nil?
       (now.to_date - last.to_date).to_i >= schedule_interval
     when "weeks"
+      return gated_slot_due?(latest_weekly_slot(now), last) if reachability_gated?
+
       target_day = DAYS_OF_WEEK.index(schedule_day_of_week) # 0=monday
       current_day = (now.wday - 1) % 7 # Convert Sunday=0 to Monday=0
       target = parse_schedule_time(now)
@@ -1095,9 +1111,6 @@ class TriggerCondition < ApplicationRecord
   # instead re-baselines the condition on the next tick, which keeps the guarantee that
   # matters: an item labelled before you asked to watch it does not fire retroactively.
 
-  # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
-  # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
-  # the new chat is baselined rather than replayed.
   # `require_reachable` arrives as a JSON array from the REST API and MCP, and as one text field
   # (comma- or line-separated) from the trigger form. Store one shape; drop the key when empty so
   # an ungated schedule's configuration stays exactly what it was.
@@ -1122,7 +1135,7 @@ class TriggerCondition < ApplicationRecord
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
     return unless configuration_changed?
 
-    if Array(configuration["require_reachable"]) != Array(configuration_was["require_reachable"])
+    if Array(configuration["require_reachable"]).sort != Array(configuration_was["require_reachable"]).sort
       SCHEDULE_GATE_STATE_KEYS.each { |key| configuration.delete(key) }
       return
     end
@@ -1133,6 +1146,9 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
+  # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
+  # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
+  # the new chat is baselined rather than replayed.
   def preserve_whatsapp_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
@@ -1410,6 +1426,29 @@ class TriggerCondition < ApplicationRecord
   # somehow missed by the backfill: it is exactly what this read before `armed_at`,
   # so it degrades to the old behaviour rather than to "armed". An unpersisted
   # condition has neither and is treated as armed.
+  # A gated slot can be held past its own day for as long as the server is down, so a gated daily
+  # or weekly schedule is due whenever its most recent slot has not been fired for — not only on
+  # the slot's own day, after which an ungated one would let it go. Gating is limited to an
+  # interval of 1 for these units (see #validate_schedule_gate_configuration), which is what makes
+  # "the most recent slot" a single, well-defined instant.
+  def gated_slot_due?(slot, last)
+    return armed_before?(slot) if last.nil?
+
+    last < slot
+  end
+
+  def latest_daily_slot(now)
+    today = parse_schedule_time(now)
+    today <= now ? today : parse_schedule_time(now - 1.day)
+  end
+
+  def latest_weekly_slot(now)
+    target_day = DAYS_OF_WEEK.index(schedule_day_of_week) # 0=monday
+    current_day = (now.wday - 1) % 7
+    candidate = parse_schedule_time(now - ((current_day - target_day) % 7).days)
+    candidate <= now ? candidate : parse_schedule_time(candidate - 7.days)
+  end
+
   def armed_before?(target)
     anchor = armed_at || created_at
     return true if anchor.nil?
@@ -1676,6 +1715,15 @@ class TriggerCondition < ApplicationRecord
     # A one-time schedule is a wake: holding it back until a laptop answers would hold back the
     # session waiting on it.
     errors.add(:configuration, "require_reachable applies to recurring schedules only") if one_time_schedule?
+
+    if %w[days weeks].include?(schedule_unit) && schedule_interval != 1
+      errors.add(:configuration, "require_reachable on a #{schedule_unit} schedule needs an interval of 1; add more slots as separate conditions instead")
+    end
+
+    # Checked when the list is set, not on every save: the job that fires the schedule saves the
+    # condition too, and a server leaving the catalog later must not make that write raise after
+    # the session has spawned. The gate reports such a server as unreachable instead.
+    return unless new_record? || schedule_require_reachable != Array(configuration_was.is_a?(Hash) ? configuration_was["require_reachable"] : nil)
 
     schedule_require_reachable.each do |name|
       catalog = ServersConfig.find(name)

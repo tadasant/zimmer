@@ -2069,4 +2069,76 @@ class TriggerConditionTest < ActiveSupport::TestCase
 
     assert_match(/, once zimmer has been reachable for 10 min\z/, condition.schedule_description)
   end
+
+  test "gating a daily or weekly schedule needs an interval of 1" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.configuration = condition.configuration.merge("require_reachable" => [ "zimmer" ], "interval" => 2)
+
+    assert_not condition.valid?
+    assert_match(/interval of 1/, condition.errors.full_messages.join)
+  end
+
+  test "a server leaving the catalog does not make a later save of the condition fail" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ]))
+    ServersConfig.stubs(:find).returns(nil)
+
+    assert condition.update(last_triggered_at: Time.current), condition.errors.full_messages.join
+  end
+
+  test "a gated daily slot held past midnight is still due the next morning" do
+    condition = gated_schedule("unit" => "days", "time" => "03:30")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-30 03:00") do
+      condition.update!(last_triggered_at: Time.current - 1.day) # fired for the 10-29 slot
+    end
+
+    # The 10-30 03:30 slot came while the laptop was off. Next morning, before 10-31 03:30:
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-31 02:00") do
+      assert condition.schedule_due?, "the 10-30 slot was never fired for"
+    end
+  end
+
+  test "a gated daily slot already fired for is not due until the next slot" do
+    condition = gated_schedule("unit" => "days", "time" => "03:30")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-31 09:00") do
+      condition.update!(last_triggered_at: Time.current - 1.hour) # caught up at 08:00
+      assert_not condition.schedule_due?
+    end
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-11-01 03:31") do
+      assert condition.schedule_due?
+    end
+  end
+
+  test "a gated weekly slot held past its day is still due later in the week" do
+    condition = gated_schedule("unit" => "weeks", "time" => "03:30", "day_of_week" => "monday")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-26 04:00") do # a Monday
+      condition.update!(last_triggered_at: Time.current - 7.days)
+    end
+
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-29 10:00") do # Thursday
+      assert condition.schedule_due?
+    end
+  end
+
+  test "an IANA timezone maps to the form option for the same zone" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+
+    condition.configuration = condition.configuration.merge("timezone" => "America/Los_Angeles")
+    assert_equal "America/Los_Angeles", ActiveSupport::TimeZone[condition.schedule_timezone_option].tzinfo.identifier
+    assert_includes ActiveSupport::TimeZone.all.map(&:name), condition.schedule_timezone_option
+
+    condition.configuration = condition.configuration.merge("timezone" => "Eastern Time (US & Canada)")
+    assert_equal "Eastern Time (US & Canada)", condition.schedule_timezone_option
+  end
+
+  private
+
+  def gated_schedule(config)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(
+      configuration: { "interval" => 1, "timezone" => "America/Los_Angeles", "require_reachable" => [ "zimmer" ] }.merge(config),
+      armed_at: Time.utc(2026, 1, 1), created_at: Time.utc(2026, 1, 1)
+    )
+    condition
+  end
 end

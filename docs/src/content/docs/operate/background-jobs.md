@@ -56,6 +56,7 @@ From `config.good_job.cron`:
 | 1m | `WhatsappTriggerPollerJob` | Poll the WhatsApp bridge for new messages in watched chats ([`whatsapp` triggers](/sessions/triggers/#whatsapp)) |
 | 1m | `EmailTriggerPollerJob` | Poll the mailbox for new mail, one session per thread ([`email` triggers](/sessions/triggers/#email)) |
 | 1m | `McpEventTriggerPollerJob` | `events/poll` each `mcp_event` condition's server for new events, one session per event, with the credentials a session would get for that server ([`mcp_event` triggers](/sessions/triggers/#mcp_event)). A server's `nextPollMs` can stretch one condition's interval to 15 minutes. Stamps `PollerHeartbeat(:mcp_event)`, which `TriggerPollerLivenessCheckJob` pages on after 30 minutes |
+| 1m | `ScheduleReachabilityProbeJob` | `tools/list` each MCP server a reachability-gated schedule names, and record on each condition whether it is reachable and since when. `ScheduleTriggerJob` reads that record and never probes, so a slow host cannot delay a wake ([holding a schedule until a server is reachable](/sessions/triggers/#holding-a-schedule-until-a-server-is-reachable)) |
 | 1m | `SlackOutageMarkerJob` | Put :hourglass_flowing_sand: on the Slack message behind a Slack-spawned session that has hit API errors and not reached the model for five minutes, and take it off when the agent's first turn lands or the session is archived or fails. One query a minute, plus a read of the stored transcript for each unsettled candidate. A candidate settles on its first model turn, so on an ordinary day that is a handful of short transcripts. Slack is called only during an outage. See [the outage marker](/sessions/triggers/#when-the-model-is-unreachable-the-outage-marker) |
 | 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
@@ -1430,7 +1431,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   (101 ready, head of line 75m, both threads held by `SessionProvenanceBroadcastJob` for 43m). The
   four threads are the four `agents` gave up, so the scheduler total is still 25 and the connection
   budget is unchanged.
-- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob`, `WhatsappTriggerPollerJob`, `EmailTriggerPollerJob` and `McpEventTriggerPollerJob`, and
+- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob`, `WhatsappTriggerPollerJob`, `EmailTriggerPollerJob`, `McpEventTriggerPollerJob` and `ScheduleReachabilityProbeJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubPrPollPassJob`, `GithubOrphanedPrConflictSweepJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,

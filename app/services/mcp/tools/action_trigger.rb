@@ -220,7 +220,8 @@ module Mcp
           `"reachable_dwell_minutes": 10` (default 10, 0–240) for how long they must stay reachable first.
           While held the schedule stays due and spawns nothing; a slot slept through fires once, on the
           first open gate, and gated sibling slots on the same trigger that were also due are covered by
-          that one fire. The gate's last observation is kept under `reachability` in the configuration.
+          that one fire. A gated `days`/`weeks` schedule needs `interval: 1`; for two slots a day, add two
+          conditions. The probe job's last observation is kept under `reachability` in the configuration.
 
         **Zimmer event configuration:**
         - `{"event_name": "session_needs_input"}` — also `session_failed`, `session_archived`. These are

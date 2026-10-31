@@ -315,11 +315,11 @@
         <select name="<%= cf.object_name %>[configuration][timezone]"
                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
           <% ActiveSupport::TimeZone.us_zones.each do |tz| %>
-            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone_option == tz.name %>><%= tz.to_s %></option>
           <% end %>
           <option disabled>──────────</option>
           <% (ActiveSupport::TimeZone.all - ActiveSupport::TimeZone.us_zones).each do |tz| %>
-            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone_option == tz.name %>><%= tz.to_s %></option>
           <% end %>
         </select>
       </div>
@@ -334,8 +334,11 @@
         <p class="mt-1 text-xs text-gray-500">Catalog MCP servers, comma-separated. While any is unreachable the schedule stays due and starts nothing; it fires once they have all answered for the dwell below.</p>
         <% if condition.reachability_gated? && (state = condition.schedule_reachability_state).present? %>
           <p class="mt-1 text-xs text-gray-600 break-words">
-            Last checked <%= state["last_checked_at"] %>:
-            <%= state["reachable_since"].present? ? "reachable since #{state['reachable_since']}" : "unreachable since #{state['unreachable_since']} (#{state['last_error']})" %>
+            <% if state["reachable_since"].present? %>
+              Reachable since <%= Time.zone.parse(state["reachable_since"]).to_fs(:short) rescue state["reachable_since"] %>.
+            <% else %>
+              Unreachable since <%= Time.zone.parse(state["unreachable_since"].to_s).to_fs(:short) rescue state["unreachable_since"] %><%= ": #{state['last_error']}" if state["last_error"].present? %>.
+            <% end %>
           </p>
         <% end %>
       </div>
@@ -367,11 +370,11 @@
         <select name="<%= cf.object_name %>[configuration][timezone]"
                 class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
           <% ActiveSupport::TimeZone.us_zones.each do |tz| %>
-            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone_option == tz.name %>><%= tz.to_s %></option>
           <% end %>
           <option disabled>──────────</option>
           <% (ActiveSupport::TimeZone.all - ActiveSupport::TimeZone.us_zones).each do |tz| %>
-            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone == tz.name %>><%= tz.to_s %></option>
+            <option value="<%= tz.name %>" <%= "selected" if condition.schedule_timezone_option == tz.name %>><%= tz.to_s %></option>
           <% end %>
         </select>
       </div>
