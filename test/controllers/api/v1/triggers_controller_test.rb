@@ -127,6 +127,39 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert json["trigger"]["conditions"].any? { |c| c["condition_type"] == "slack" }
   end
 
+  test "should create a reachability-gated schedule with a tool rule" do
+    post api_v1_triggers_path, params: {
+      name: "API Gated Trigger", agent_root_name: "zimmer", prompt_template: "Sweep",
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { unit: "days", interval: 1, time: "03:30", timezone: "UTC", require_reachable: [ "zimmer" ],
+                           reachable_tools_include: [ "send_message", "read_*" ], reachable_tools_include_mode: "all",
+                           reachable_tools_exclude: [ "troubleshoot_host", "maintenance_*" ] } }
+      ]
+    }, headers: @headers, as: :json
+
+    assert_response :created
+    config = Trigger.find_by!(name: "API Gated Trigger").trigger_conditions.sole.configuration
+    assert_equal %w[send_message read_*], config["reachable_tools_include"]
+    assert_equal "all", config["reachable_tools_include_mode"]
+    assert_equal %w[troubleshoot_host maintenance_*], config["reachable_tools_exclude"]
+  end
+
+  test "an empty JSON exclusion reaches the model as exclude-nothing" do
+    post api_v1_triggers_path, params: {
+      name: "API Exclude Nothing", agent_root_name: "zimmer", prompt_template: "Sweep",
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { unit: "hours", interval: 1, require_reachable: [ "zimmer" ], reachable_tools_exclude: [] } }
+      ]
+    }, headers: @headers, as: :json
+
+    assert_response :created
+    condition = Trigger.find_by!(name: "API Exclude Nothing").trigger_conditions.sole
+    assert_equal [], condition.configuration["reachable_tools_exclude"]
+    assert_equal [], condition.schedule_reachable_tool_rule.exclude
+  end
+
   test "should create a trigger with a burst cap and expose it in the payload" do
     post api_v1_triggers_path, params: {
       name: "Capped Alerts Trigger",

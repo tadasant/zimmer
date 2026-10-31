@@ -356,6 +356,23 @@ class Mcp::Tools::ActionTriggerTest < ActiveSupport::TestCase
     assert condition.one_time_schedule?
   end
 
+  test "creates a reachability-gated schedule with a tool rule" do
+    @tool.call(
+      "action" => "create",
+      "name" => "Gated With Rule",
+      "trigger_type" => "schedule",
+      "agent_root_name" => "zimmer",
+      "prompt_template" => "Do the thing",
+      "configuration" => { "interval" => 1, "unit" => "days", "time" => "03:30", "timezone" => "UTC",
+                           "require_reachable" => [ "zimmer" ], "reachable_tools_include" => [ "send_message" ],
+                           "reachable_tools_exclude" => [] }
+    )
+
+    rule = Trigger.find_by!(name: "Gated With Rule").trigger_conditions.sole.schedule_reachable_tool_rule
+    assert_equal %w[send_message], rule.include
+    assert_equal [], rule.exclude
+  end
+
   test "create requires the core fields" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "create", "name" => "Incomplete")

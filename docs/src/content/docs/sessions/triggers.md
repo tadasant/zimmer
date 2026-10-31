@@ -1012,9 +1012,9 @@ Two jobs share the work, so a slow or hung host can never delay anything else:
 
 What counts:
 
-- **Reachable means a real tool is listed.** Strad answers `tools/list` for an offline
-  local-tunnel host with one placeholder, `<slug>__troubleshoot_host`, not an error. A list
-  holding only that, an empty list, or any transport error counts as unreachable.
+- **Reachable means `tools/list` succeeds and its tools pass the tool rule** (below). A transport
+  error, a server that leaves the catalog, or an empty list counts as unreachable whatever the
+  rule says.
 - **Closed gate:** the schedule stays due and nothing spawns. A record more than 3 minutes old
   means the probe job has not been running, and closes the gate too.
 - **Dwell:** the gate opens only once every server has been reachable for
@@ -1033,10 +1033,56 @@ What counts:
   `ScheduleTriggerJob` advances every gated sibling that was also due. Ungated siblings are left
   alone.
 
+##### What the server must list
+
+Strad answers `tools/list` for an offline local-tunnel host with one placeholder,
+`<slug>__troubleshoot_host`, not an error, so "the list came back" is not enough. Which tools make
+a server count as reachable is configured on the condition, and checked against each named
+server's list separately:
+
+```json
+{ "require_reachable": ["imessage-tadas-mbp"],
+  "reachable_tools_include": ["send_message"], "reachable_tools_include_mode": "any",
+  "reachable_tools_exclude": ["troubleshoot_host"] }
+```
+
+| Key | Means | Default |
+| --- | --- | --- |
+| `reachable_tools_include` | Tools that must be listed. | Empty: any tool not excluded will do. |
+| `reachable_tools_include_mode` | `any`: at least one of the include list. `all`: every one of them. | `any` |
+| `reachable_tools_exclude` | Tools none of which may be listed. | `["troubleshoot_host"]` when the key is absent or `null`. `[]` excludes nothing. |
+
+- **Names match with or without strad's namespace.** Strad lists every tool as
+  `<slug>__<tool>`. An entry matches a listed tool by its full name or by its bare name, which is
+  everything after the first `__`. So `troubleshoot_host` matches
+  `imessage-tadas-mbp__troubleshoot_host`, and `imessage-tadas-mbp__send_message` pins one slug.
+- **Entries can be patterns.** `*` matches any run of characters and `?` one: `read_*`. Matching
+  is case-sensitive.
+- **The exclusion is checked first, and one excluded tool fails the server**, even listed beside
+  real ones. Strad lists its placeholder only while that slug's host is offline, and each catalog
+  server is one slug, so for strad this is the same as "only the placeholder is listed". With the
+  include list empty, the server must still list at least one tool.
+- **Emptying both lists stops the rule from gating.** With nothing excluded and nothing required,
+  any answer to `tools/list` counts, and strad answers for an offline host. That is only useful
+  for a server that errors when it is down.
+- **With several servers, use `any`.** The rule applies to each server on its own, so `all` asks
+  every server to list every tool. `any` with one real tool from each server's list works.
+- **`reachability.last_error` names the rule that failed**, per server:
+  `imessage-tadas-mbp: exclude rule failed: lists imessage-tadas-mbp__troubleshoot_host`, or
+  `include rule failed: lists none of send_message`.
+- **The keys only mean something on a gated schedule**, and are dropped from one without
+  `require_reachable`. `reachable_tools_include_mode` is likewise dropped when there is no include
+  list. The trigger form shows the exclusion prefilled with `troubleshoot_host`;
+  clearing the field saves `[]`.
+
+A condition saved before the rule existed carries none of these keys, and behaves as the defaults
+say: strad's placeholder means offline.
+
 The gate's last observation is kept in the condition's `configuration` under `reachability`
 (`reachable_since`, `unreachable_since`, `last_checked_at`, `last_error`). It is visible on the
 trigger's edit form, in `search_triggers` and in `GET /api/v1/triggers/:id`, and it survives a
-form save the way a poller's cursor does. Changing `require_reachable` drops it.
+form save the way a poller's cursor does. Changing `require_reachable` or the tool rule drops it.
+Writing out the defaults, as a form save of an older condition does, is not a change.
 
 `require_reachable` must name remote catalog servers when it is set, and is refused on a one-time
 schedule: a one-time schedule is usually a wake, and holding a wake until a laptop answers would
