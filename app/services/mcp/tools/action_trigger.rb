@@ -215,9 +215,16 @@ module Mcp
           pending first fire where it is.
         - **One-time**: `{"scheduled_at": "2026-04-15T14:30:00", "timezone": "America/New_York"}` — fires once at the specified datetime (ISO 8601), then auto-disables
         - **Reachability gate** (recurring only): add `"require_reachable": ["imessage-tadas-mbp"]` to hold
-          the schedule until those catalog MCP servers answer `tools/list` with a real tool (strad's
-          `troubleshoot_host` placeholder for an offline host does not count), and
-          `"reachable_dwell_minutes": 10` (default 10, 0–240) for how long they must stay reachable first.
+          the schedule until those catalog MCP servers answer `tools/list` with tools that pass its tool
+          rule, and `"reachable_dwell_minutes": 10` (default 10, 0–240) for how long they must stay
+          reachable first. The tool rule, checked against each named server's list:
+          `"reachable_tools_include": ["send_message"]` — at least one must be listed
+          (`"reachable_tools_include_mode": "all"` for every one; default `"any"`; omit the list to accept
+          any tool not excluded); `"reachable_tools_exclude": ["troubleshoot_host"]` — none may be listed.
+          Omitting `reachable_tools_exclude` means `["troubleshoot_host"]`, strad's placeholder for an
+          offline host; send `[]` to exclude nothing. Entries are tool names or `*`/`?` patterns and match
+          a listed tool by its bare name too, so `troubleshoot_host` matches `<slug>__troubleshoot_host`.
+          The rule keys are dropped from an ungated schedule.
           While held the schedule stays due and spawns nothing; a slot slept through fires once, on the
           first open gate, and gated sibling slots on the same trigger that were also due are covered by
           that one fire. A gated `days`/`weeks` schedule needs `interval: 1`; for two slots a day, add two

@@ -559,6 +559,35 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name$='[configuration][require_reachable]'][value='zimmer']"
   end
 
+  test "the form saves a reachability tool rule and renders it back, with the default exclusion visible" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Tool Rule Trigger", status: "enabled", agent_root_name: "zimmer", prompt_template: "Sweep", mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "schedule",
+            configuration: { unit: "days", interval: "1", time: "03:30", timezone: "Pacific Time (US & Canada)",
+                             require_reachable: "zimmer", reachable_tools_include: "send_message, read_*",
+                             reachable_tools_include_mode: "all", reachable_tools_exclude: "troubleshoot_host" } }
+        ]
+      }
+    }
+
+    condition = Trigger.find_by!(name: "Tool Rule Trigger").trigger_conditions.first
+    assert_equal %w[send_message read_*], condition.configuration["reachable_tools_include"]
+    assert_equal "all", condition.configuration["reachable_tools_include_mode"]
+    assert_equal %w[troubleshoot_host], condition.configuration["reachable_tools_exclude"]
+
+    get edit_trigger_path(condition.trigger)
+    assert_select "input[name$='[configuration][reachable_tools_include]'][value='send_message, read_*']"
+    assert_select "select[name$='[configuration][reachable_tools_include_mode]'] option[selected][value='all']"
+    assert_select "input[name$='[configuration][reachable_tools_exclude]'][value='troubleshoot_host']"
+
+    condition.update!(configuration: condition.configuration.except(*TriggerCondition::SCHEDULE_TOOL_RULE_KEYS))
+    get edit_trigger_path(condition.trigger)
+    assert_select "input[name$='[configuration][reachable_tools_exclude]'][value='troubleshoot_host']", 1,
+                  "a condition without the key shows the default exclusion"
+  end
+
   test "the form saves a coalescing window, and blanking it returns the trigger to the default" do
     post triggers_path, params: {
       trigger: {

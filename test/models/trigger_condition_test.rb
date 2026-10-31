@@ -2131,6 +2131,55 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_equal "Eastern Time (US & Canada)", condition.schedule_timezone_option
   end
 
+  test "the tool rule is stored as lists, keeps an explicit empty exclusion, and is validated" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "require_reachable" => "zimmer", "reachable_tools_include" => "send_message, read_*",
+      "reachable_tools_include_mode" => "all", "reachable_tools_exclude" => ""
+    ))
+
+    config = condition.reload.configuration
+    assert_equal %w[send_message read_*], config["reachable_tools_include"]
+    assert_equal "all", config["reachable_tools_include_mode"]
+    assert_equal [], config["reachable_tools_exclude"]
+    assert_equal [], condition.schedule_reachable_tool_rule.exclude
+
+    condition.configuration = config.merge("reachable_tools_include_mode" => "most")
+    assert_not condition.valid?
+    assert_match(/reachable_tools_include_mode must be one of any, all/, condition.errors.full_messages.join)
+  end
+
+  test "the tool rule is dropped from an ungated schedule" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "require_reachable" => "", "reachable_tools_include" => "", "reachable_tools_include_mode" => "any",
+      "reachable_tools_exclude" => "troubleshoot_host"
+    ))
+
+    assert_empty condition.reload.configuration.slice(*TriggerCondition::SCHEDULE_TOOL_RULE_KEYS)
+  end
+
+  test "writing out the default rule keeps the gate's record; changing the rule drops it" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ]))
+    condition.update_column(:configuration, condition.configuration.merge("reachability" => { "reachable_since" => "2026-10-31T10:00:00Z" }))
+
+    condition.update!(configuration: condition.configuration.except("reachability").merge(
+      "reachable_tools_exclude" => "troubleshoot_host", "reachable_tools_include" => "", "reachable_tools_include_mode" => "any"
+    ))
+    assert_equal "2026-10-31T10:00:00Z", condition.reload.schedule_reachability_state["reachable_since"]
+
+    condition.update!(configuration: condition.configuration.except("reachability").merge("reachable_tools_include" => [ "send_message" ]))
+    assert_equal({}, condition.reload.schedule_reachability_state)
+  end
+
+  test "a gated schedule with a non-default tool rule says so" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ], "reachable_tools_include" => [ "send_message" ]))
+
+    assert_match(/, once zimmer has been reachable \(listing send_message, not troubleshoot_host\) for 10 min\z/, condition.schedule_description)
+  end
+
   private
 
   def gated_schedule(config)
