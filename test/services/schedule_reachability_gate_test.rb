@@ -26,7 +26,47 @@ class ScheduleReachabilityGateTest < ActiveSupport::TestCase
 
     probe = ScheduleReachabilityGate.probe("zimmer")
     assert_not probe["reachable"]
-    assert_match(/troubleshoot_host/, probe["reason"])
+    assert_equal "exclude rule failed: lists zimmer__troubleshoot_host", probe["reason"]
+  end
+
+  test "one tools/list per server serves conditions with different rules" do
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    McpApps::Client.any_instance.expects(:tools_list).once.returns([ { "name" => "zimmer__get_session" } ])
+
+    assert ScheduleReachabilityGate.probe("zimmer")["reachable"]
+    picky = ScheduleReachabilityToolRule.new(include: %w[send_message])
+    assert_equal "include rule failed: lists none of send_message", ScheduleReachabilityGate.probe("zimmer", picky)["reason"]
+  end
+
+  # -- observe! with the tool rule --
+
+  test "a condition saved with only require_reachable still treats the placeholder as offline" do
+    assert_equal({ "require_reachable" => [ "zimmer" ] }, @condition.configuration.slice(*%w[require_reachable] + TriggerCondition::SCHEDULE_TOOL_RULE_KEYS))
+    McpApps::Client.any_instance.stubs(:tools_list).returns([ { "name" => "zimmer__troubleshoot_host" } ])
+
+    ScheduleReachabilityGate.observe!(@condition, now: @start)
+
+    assert_equal "zimmer: exclude rule failed: lists zimmer__troubleshoot_host", @condition.reload.schedule_reachability_state["last_error"]
+  end
+
+  test "last_error names the include rule that failed" do
+    @condition.update!(configuration: @condition.configuration.merge("reachable_tools_include" => [ "send_message" ]))
+    McpApps::Client.any_instance.stubs(:tools_list).returns([ { "name" => "zimmer__get_session" } ])
+
+    ScheduleReachabilityGate.observe!(@condition, now: @start)
+
+    state = @condition.reload.schedule_reachability_state
+    assert_nil state["reachable_since"]
+    assert_equal "zimmer: include rule failed: lists none of send_message", state["last_error"]
+  end
+
+  test "a condition that excludes nothing counts the placeholder as reachable" do
+    @condition.update!(configuration: @condition.configuration.merge("reachable_tools_exclude" => []))
+    McpApps::Client.any_instance.stubs(:tools_list).returns([ { "name" => "zimmer__troubleshoot_host" } ])
+
+    ScheduleReachabilityGate.observe!(@condition, now: @start)
+
+    assert_equal @start.iso8601, @condition.reload.schedule_reachability_state["reachable_since"]
   end
 
   test "a transport error is unreachable, not a raise" do

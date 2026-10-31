@@ -842,6 +842,24 @@ export default class extends Controller {
               <label class="block text-sm font-medium text-gray-700 mb-1">Reachable for (minutes)</label>
               <input type="number" name="${name}[configuration][reachable_dwell_minutes]" min="0" max="240" placeholder="10" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 w-24 sm:text-sm border-gray-300 rounded-md px-3 py-2">
             </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Reachable only if it lists</label>
+              <div class="flex flex-wrap gap-2">
+                <select name="${name}[configuration][reachable_tools_include_mode]" aria-label="How many of the listed tools must be present" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border-gray-300 rounded-md px-3 py-2 pr-8">
+                  <option value="any" selected>any of</option>
+                  <option value="all">all of</option>
+                </select>
+                <input type="text" name="${name}[configuration][reachable_tools_include]" placeholder="e.g. send_message" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block min-w-0 flex-1 sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              </div>
+              <p class="mt-1 text-xs text-gray-500">Tool names or patterns (<code>*</code>, <code>?</code>), comma-separated. Leave blank to accept any tool not excluded below.</p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Unreachable if it lists</label>
+              <input type="text" name="${name}[configuration][reachable_tools_exclude]" value="troubleshoot_host" placeholder="nothing excluded" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              <p class="mt-1 text-xs text-gray-500">Defaults to <code>troubleshoot_host</code>, the one tool strad lists for a host that is offline. Names match with or without strad's <code>&lt;slug&gt;__</code> prefix.</p>
+            </div>
           </div>
 
           <div data-trigger-form-target="oneTimeFields" class="hidden space-y-3">
