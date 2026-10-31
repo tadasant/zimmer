@@ -2000,4 +2000,145 @@ class TriggerConditionTest < ActiveSupport::TestCase
       ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"] = previous
     end
   end
+
+  # Reachability gate on recurring schedules (ScheduleReachabilityGate)
+
+  test "require_reachable from the form's text field is stored as an array" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => "zimmer, zimmer\n"))
+
+    assert_equal [ "zimmer" ], condition.reload.configuration["require_reachable"]
+    assert condition.reachability_gated?
+  end
+
+  test "a blank require_reachable leaves the schedule ungated" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => "", "reachable_dwell_minutes" => ""))
+
+    assert_not condition.reload.configuration.key?("require_reachable")
+    assert_not condition.configuration.key?("reachable_dwell_minutes")
+    assert_not condition.reachability_gated?
+  end
+
+  test "require_reachable must name remote catalog servers" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+
+    condition.configuration = condition.configuration.merge("require_reachable" => [ "no-such-server" ])
+    assert_not condition.valid?
+    assert_match(/not in the MCP server catalog/, condition.errors.full_messages.join)
+
+    condition.configuration = condition.configuration.merge("require_reachable" => [ "playwright-custom" ])
+    assert_not condition.valid?
+    assert_match(/only a remote one can be probed/, condition.errors.full_messages.join)
+  end
+
+  test "require_reachable is refused on a one-time schedule" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.configuration = { "scheduled_at" => "2026-11-01T10:00:00", "require_reachable" => [ "zimmer" ] }
+
+    assert_not condition.valid?
+    assert_match(/recurring schedules only/, condition.errors.full_messages.join)
+  end
+
+  test "reachable_dwell_minutes is bounded" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+
+    condition.configuration = condition.configuration.merge("require_reachable" => [ "zimmer" ], "reachable_dwell_minutes" => 241)
+    assert_not condition.valid?
+
+    condition.configuration = condition.configuration.merge("reachable_dwell_minutes" => "15")
+    assert condition.valid?, condition.errors.full_messages.join
+    assert_equal 15, condition.schedule_reachable_dwell_minutes
+  end
+
+  test "the gate's record survives a save that omits it, and is dropped when the servers change" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ]))
+    condition.update_column(:configuration, condition.configuration.merge("reachability" => { "reachable_since" => "2026-10-31T10:00:00Z" }))
+
+    condition.update!(configuration: condition.configuration.except("reachability").merge("time" => "15:30"))
+    assert_equal "2026-10-31T10:00:00Z", condition.reload.schedule_reachability_state["reachable_since"]
+
+    condition.update!(configuration: condition.configuration.except("require_reachable", "reachability"))
+    assert_equal({}, condition.reload.schedule_reachability_state)
+  end
+
+  test "a gated schedule says what it waits for" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ]))
+
+    assert_match(/, once zimmer has been reachable for 10 min\z/, condition.schedule_description)
+  end
+
+  test "gating a daily or weekly schedule needs an interval of 1" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.configuration = condition.configuration.merge("require_reachable" => [ "zimmer" ], "interval" => 2)
+
+    assert_not condition.valid?
+    assert_match(/interval of 1/, condition.errors.full_messages.join)
+  end
+
+  test "a server leaving the catalog does not make a later save of the condition fail" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ]))
+    ServersConfig.stubs(:find).returns(nil)
+
+    assert condition.update(last_triggered_at: Time.current), condition.errors.full_messages.join
+  end
+
+  test "a gated daily slot held past midnight is still due the next morning" do
+    condition = gated_schedule("unit" => "days", "time" => "03:30")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-30 03:00") do
+      condition.update!(last_triggered_at: Time.current - 1.day) # fired for the 10-29 slot
+    end
+
+    # The 10-30 03:30 slot came while the laptop was off. Next morning, before 10-31 03:30:
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-31 02:00") do
+      assert condition.schedule_due?, "the 10-30 slot was never fired for"
+    end
+  end
+
+  test "a gated daily slot already fired for is not due until the next slot" do
+    condition = gated_schedule("unit" => "days", "time" => "03:30")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-31 09:00") do
+      condition.update!(last_triggered_at: Time.current - 1.hour) # caught up at 08:00
+      assert_not condition.schedule_due?
+    end
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-11-01 03:31") do
+      assert condition.schedule_due?
+    end
+  end
+
+  test "a gated weekly slot held past its day is still due later in the week" do
+    condition = gated_schedule("unit" => "weeks", "time" => "03:30", "day_of_week" => "monday")
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-26 04:00") do # a Monday
+      condition.update!(last_triggered_at: Time.current - 7.days)
+    end
+
+    travel_to Time.find_zone("America/Los_Angeles").parse("2026-10-29 10:00") do # Thursday
+      assert condition.schedule_due?
+    end
+  end
+
+  test "an IANA timezone maps to the form option for the same zone" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+
+    condition.configuration = condition.configuration.merge("timezone" => "America/Los_Angeles")
+    assert_equal "America/Los_Angeles", ActiveSupport::TimeZone[condition.schedule_timezone_option].tzinfo.identifier
+    assert_includes ActiveSupport::TimeZone.all.map(&:name), condition.schedule_timezone_option
+
+    condition.configuration = condition.configuration.merge("timezone" => "Eastern Time (US & Canada)")
+    assert_equal "Eastern Time (US & Canada)", condition.schedule_timezone_option
+  end
+
+  private
+
+  def gated_schedule(config)
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(
+      configuration: { "interval" => 1, "timezone" => "America/Los_Angeles", "require_reachable" => [ "zimmer" ] }.merge(config),
+      armed_at: Time.utc(2026, 1, 1), created_at: Time.utc(2026, 1, 1)
+    )
+    condition
+  end
 end

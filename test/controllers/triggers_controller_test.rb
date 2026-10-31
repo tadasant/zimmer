@@ -534,6 +534,31 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_nil trigger.reload.max_sessions_per_minute
   end
 
+  test "the form saves a schedule's reachability gate from its text field and renders it back" do
+    post triggers_path, params: {
+      trigger: {
+        name: "Laptop Gated Trigger",
+        status: "enabled",
+        agent_root_name: "zimmer",
+        prompt_template: "Sweep",
+        mcp_servers: [],
+        trigger_conditions_attributes: [
+          { condition_type: "schedule",
+            configuration: { unit: "days", interval: "1", time: "03:30", timezone: "Pacific Time (US & Canada)",
+                             require_reachable: "zimmer", reachable_dwell_minutes: "15" } }
+        ]
+      }
+    }
+
+    condition = Trigger.find_by!(name: "Laptop Gated Trigger").trigger_conditions.first
+    assert_equal [ "zimmer" ], condition.configuration["require_reachable"]
+    assert_equal 15, condition.schedule_reachable_dwell_minutes
+
+    get edit_trigger_path(condition.trigger)
+    assert_response :success
+    assert_select "input[name$='[configuration][require_reachable]'][value='zimmer']"
+  end
+
   test "the form saves a coalescing window, and blanking it returns the trigger to the default" do
     post triggers_path, params: {
       trigger: {

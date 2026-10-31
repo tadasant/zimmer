@@ -987,6 +987,62 @@ accumulate, so a systemic fault leaves a list to clear by hand
 A recurring schedule behaves differently on a bad tick: it advances `last_triggered_at`, stays
 enabled, and tries again on its next interval.
 
+#### Holding a schedule until a server is reachable
+
+Some scheduled work needs a machine that is often off: a laptop serving an MCP server through
+strad, like `imessage-tadas-mbp`. A plain schedule would start a session at 03:30 only for it to
+find the laptop asleep. A recurring schedule can instead name the servers it needs:
+
+```json
+{ "unit": "days", "interval": 1, "time": "03:30", "timezone": "America/Los_Angeles",
+  "require_reachable": ["imessage-tadas-mbp"], "reachable_dwell_minutes": 10 }
+```
+
+Two jobs share the work, so a slow or hung host can never delay anything else:
+
+- **`ScheduleReachabilityProbeJob` probes, once a minute, without a session.** For every gated
+  condition on an enabled trigger, due or not, Rails sends one `tools/list` to each named server
+  through the same endpoint and credentials a session gets. It runs no tool, so a server behind
+  a consent gate (strad-hostd's `request_control`) puts nothing on the machine's screen. Probes
+  are cached for 50 seconds per server and time out after 3s to connect and 8s to answer. The job
+  runs on the `pollers` queue beside the other trigger pollers. Strad answers for an offline
+  laptop in well under a second (Cloudflare's 530, or its own 5s connect timeout).
+- **`ScheduleTriggerJob` only reads what the probe job recorded.** It never probes, so the session
+  wakes it also delivers are not held behind a laptop.
+
+What counts:
+
+- **Reachable means a real tool is listed.** Strad answers `tools/list` for an offline
+  local-tunnel host with one placeholder, `<slug>__troubleshoot_host`, not an error. A list
+  holding only that, an empty list, or any transport error counts as unreachable.
+- **Closed gate:** the schedule stays due and nothing spawns. A record more than 3 minutes old
+  means the probe job has not been running, and closes the gate too.
+- **Dwell:** the gate opens only once every server has been reachable for
+  `reachable_dwell_minutes` in a row (default 10, 0–240). The probe job runs whether or not a
+  slot is due, so the dwell is the server's real uptime: a laptop that has been on all morning
+  fires the moment its slot comes, and one opened just now waits out the dwell. A lid opened for a
+  minute does not start a session that finds the laptop asleep again.
+- **A slot slept through is not lost.** A gated `days` or `weeks` schedule is due whenever its
+  most recent slot has not been fired for, not only on the slot's own day, so a 03:30 slot held
+  past midnight still fires the next time the gate opens. Gating those two units needs
+  `interval: 1`, which is what makes "the most recent slot" one instant. For two slots a day, add
+  two conditions. `minutes` and `hours` schedules are measured from their last fire anyway, and
+  take any interval.
+- **Slots that came due together are one fire.** If a trigger carries several gated slots
+  (03:30 and 15:30, say) and both came due while the laptop was off, the one fire covers both:
+  `ScheduleTriggerJob` advances every gated sibling that was also due. Ungated siblings are left
+  alone.
+
+The gate's last observation is kept in the condition's `configuration` under `reachability`
+(`reachable_since`, `unreachable_since`, `last_checked_at`, `last_error`). It is visible on the
+trigger's edit form, in `search_triggers` and in `GET /api/v1/triggers/:id`, and it survives a
+form save the way a poller's cursor does. Changing `require_reachable` drops it.
+
+`require_reachable` must name remote catalog servers when it is set, and is refused on a one-time
+schedule: a one-time schedule is usually a wake, and holding a wake until a laptop answers would
+hold the session waiting on it. A server that leaves the catalog later does not break the
+condition's saves; the probe reports it unreachable, and the slot holds.
+
 ### `ao_event`
 
 Fires on an internal Zimmer event. The events divide by their **subject** — what the event is about —
