@@ -882,6 +882,46 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     end
   end
 
+  # Reachability gate (ScheduleReachabilityGate)
+
+  test "a gated schedule whose server is unreachable spawns nothing and stays due" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    make_due!
+    @condition.update!(configuration: @condition.configuration.merge("require_reachable" => [ "zimmer" ], "reachable_dwell_minutes" => 0))
+    ScheduleReachabilityGate.stubs(:probe).returns({ "reachable" => false, "reason" => "offline" })
+
+    assert_no_difference("Session.count") { ScheduleTriggerJob.perform_now }
+
+    assert_nil @condition.reload.last_triggered_at
+    assert @condition.schedule_due?
+  end
+
+  test "a gated schedule fires once its server is reachable past the dwell" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    make_due!
+    @condition.update!(configuration: @condition.configuration.merge("require_reachable" => [ "zimmer" ], "reachable_dwell_minutes" => 0))
+    ScheduleReachabilityGate.stubs(:probe).returns({ "reachable" => true, "reason" => nil })
+
+    assert_difference("Session.count", 1) { ScheduleTriggerJob.perform_now }
+    assert_not @condition.reload.schedule_due?
+  end
+
+  test "two gated slots due at once on one trigger are one catch-up fire" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    gate = { "require_reachable" => [ "zimmer" ], "reachable_dwell_minutes" => 0 }
+    make_due!
+    @condition.update!(configuration: @condition.configuration.merge(gate))
+    sibling = @trigger.trigger_conditions.create!(condition_type: "schedule", configuration: @condition.configuration.except("reachability"))
+    make_due!(sibling)
+    ScheduleReachabilityGate.stubs(:probe).returns({ "reachable" => true, "reason" => nil })
+
+    assert_difference("Session.count", 1) { ScheduleTriggerJob.perform_now }
+    assert_not @condition.reload.schedule_due?
+    assert_not sibling.reload.schedule_due?
+  end
+
   private
 
   # Make a recurring schedule condition due on this tick, whatever wall-clock time the

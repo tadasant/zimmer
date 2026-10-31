@@ -831,6 +831,17 @@ export default class extends Controller {
                 <option value="Pacific Time (US & Canada)">(GMT-08:00) Pacific Time (US & Canada)</option>
               </select>
             </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Only when reachable</label>
+              <input type="text" name="${name}[configuration][require_reachable]" placeholder="e.g. imessage-tadas-mbp" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
+              <p class="mt-1 text-xs text-gray-500">Catalog MCP servers, comma-separated. While any is unreachable the schedule stays due and starts nothing; it fires once they have all answered for the dwell below.</p>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Reachable for (minutes)</label>
+              <input type="number" name="${name}[configuration][reachable_dwell_minutes]" min="0" max="240" placeholder="10" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 w-24 sm:text-sm border-gray-300 rounded-md px-3 py-2">
+            </div>
           </div>
 
           <div data-trigger-form-target="oneTimeFields" class="hidden space-y-3">
