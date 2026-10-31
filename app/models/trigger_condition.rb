@@ -200,13 +200,17 @@ class TriggerCondition < ApplicationRecord
   # A recurring schedule may name catalog MCP servers it must be able to reach before it fires
   # (`require_reachable`) — a laptop-hosted server behind strad, typically. While any of them is
   # unreachable the schedule stays due and nothing fires; once all of them have answered for
-  # `reachable_dwell_minutes` in a row it fires once. See ScheduleReachabilityGate.
+  # `reachable_dwell_minutes` in a row it fires once. What "reachable" means — which tools must and
+  # must not be listed — is `reachable_tools_include` / `reachable_tools_include_mode` /
+  # `reachable_tools_exclude` (ScheduleReachabilityToolRule); the probing is ScheduleReachabilityGate.
   DEFAULT_REACHABLE_DWELL_MINUTES = 10
   MAX_REACHABLE_DWELL_MINUTES = 240
 
   # The gate's own record inside a schedule condition's configuration, merged back across an edit
   # like the pollers' cursors so a UI save does not reset a dwell already under way.
   SCHEDULE_GATE_STATE_KEYS = %w[reachability].freeze
+
+  SCHEDULE_TOOL_RULE_KEYS = %w[reachable_tools_include reachable_tools_include_mode reachable_tools_exclude].freeze
 
   # A payload field a filter or a template may name: a top-level key of an event's `data`.
   MCP_EVENT_FIELD_FORMAT = /\A[A-Za-z_][A-Za-z0-9_]{0,63}\z/
@@ -612,6 +616,13 @@ class TriggerCondition < ApplicationRecord
     schedule_require_reachable.any?
   end
 
+  # What each named server's `tools/list` must hold to count as reachable.
+  #
+  # @return [ScheduleReachabilityToolRule]
+  def schedule_reachable_tool_rule
+    ScheduleReachabilityToolRule.from_configuration(configuration)
+  end
+
   def schedule_reachable_dwell_minutes
     value = configuration["reachable_dwell_minutes"]
     value.blank? ? DEFAULT_REACHABLE_DWELL_MINUTES : value.to_i
@@ -875,8 +886,10 @@ class TriggerCondition < ApplicationRecord
 
       return described unless reachability_gated?
 
+      rule = schedule_reachable_tool_rule
+      qualifier = rule.default? || rule.describe.empty? ? "" : "(#{rule.describe}) "
       "#{described}, once #{schedule_require_reachable.join(' and ')} " \
-        "#{schedule_require_reachable.one? ? 'has' : 'have'} been reachable for #{schedule_reachable_dwell_minutes} min"
+        "#{schedule_require_reachable.one? ? 'has' : 'have'} been reachable #{qualifier}for #{schedule_reachable_dwell_minutes} min"
     end
   end
 
@@ -1126,16 +1139,49 @@ class TriggerCondition < ApplicationRecord
     end
 
     configuration.delete("reachable_dwell_minutes") if configuration["reachable_dwell_minutes"].to_s.strip.empty?
+
+    normalize_schedule_tool_rule_configuration
+  end
+
+  # The tool rule only means something on a gated schedule, so it is dropped from an ungated one —
+  # the form submits its fields, prefilled with the default, whether or not a server is named.
+  # On a gated one an absent (or null) `reachable_tools_exclude` is the default exclusion and a blank
+  # one is "exclude nothing", so a present, non-null key is kept even when empty. The include mode
+  # only means something beside an include list, so it is dropped without one.
+  def normalize_schedule_tool_rule_configuration
+    unless configuration.key?("require_reachable")
+      SCHEDULE_TOOL_RULE_KEYS.each { |key| configuration.delete(key) }
+      return
+    end
+
+    if configuration["reachable_tools_exclude"].nil?
+      configuration.delete("reachable_tools_exclude")
+    else
+      configuration["reachable_tools_exclude"] = ScheduleReachabilityToolRule.parse_list(configuration["reachable_tools_exclude"])
+    end
+
+    include = ScheduleReachabilityToolRule.parse_list(configuration["reachable_tools_include"])
+    mode = configuration["reachable_tools_include_mode"].to_s.strip.downcase
+    if include.empty?
+      configuration.delete("reachable_tools_include")
+      configuration.delete("reachable_tools_include_mode")
+    else
+      configuration["reachable_tools_include"] = include
+      mode.empty? ? configuration.delete("reachable_tools_include_mode") : configuration["reachable_tools_include_mode"] = mode
+    end
   end
 
   # The gate's record survives a UI save the way a poller's cursor does. Changing which servers
-  # the schedule waits for drops it: a dwell measured against other servers is not this one's.
+  # the schedule waits for, or what their tools must look like, drops it: a dwell measured against
+  # other servers or another rule is not this one's. Writing out the default rule is not a change.
   def preserve_schedule_gate_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
     return unless configuration_changed?
 
-    if Array(configuration["require_reachable"]).sort != Array(configuration_was["require_reachable"]).sort
+    servers_changed = Array(configuration["require_reachable"]).sort != Array(configuration_was["require_reachable"]).sort
+    rule_changed = schedule_reachable_tool_rule.signature != ScheduleReachabilityToolRule.from_configuration(configuration_was).signature
+    if servers_changed || rule_changed
       SCHEDULE_GATE_STATE_KEYS.each { |key| configuration.delete(key) }
       return
     end
@@ -1719,6 +1765,8 @@ class TriggerCondition < ApplicationRecord
     if %w[days weeks].include?(schedule_unit) && schedule_interval != 1
       errors.add(:configuration, "require_reachable on a #{schedule_unit} schedule needs an interval of 1; add more slots as separate conditions instead")
     end
+
+    schedule_reachable_tool_rule.errors.each { |message| errors.add(:configuration, message) }
 
     # Checked when the list is set, not on every save: the job that fires the schedule saves the
     # condition too, and a server leaving the catalog later must not make that write raise after

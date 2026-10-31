@@ -21,19 +21,17 @@
 # endpoint and credentials a session gets. It runs no tool, so a server behind a consent gate
 # (strad-hostd's `request_control`) shows nothing on the machine it probes.
 #
-# A server counts as reachable when it lists a real tool. Strad answers `tools/list` for a slug
-# whose host is offline with a single placeholder, `<slug>__troubleshoot_host`, instead of an
-# error — so "the list came back" is not the test, "the list holds something other than that
-# placeholder" is.
+# A server counts as reachable when `tools/list` succeeds and the tools it lists pass the
+# condition's ScheduleReachabilityToolRule: optional tools that must be listed, and tools that must
+# not be. Strad answers `tools/list` for a slug whose host is offline with a single placeholder,
+# `<slug>__troubleshoot_host`, instead of an error — so "the list came back" is not the test. The
+# rule excludes that placeholder by default, where the condition can see and override it.
 #
 # The gate opens only after every server has been reachable for the condition's
 # `reachable_dwell_minutes` in a row. A lid opened for a minute, or a brief dark wake, should not
 # start a session that finds the machine asleep again by the time it runs.
 class ScheduleReachabilityGate
   Result = Data.define(:open, :reason)
-
-  # strad's stand-in tool for a slug whose host it cannot reach.
-  PLACEHOLDER_TOOL = "troubleshoot_host"
 
   # One probe per server serves every gated condition naming it in a pass. Shorter than the probe
   # job's one-minute cadence, so each pass sees a fresh answer.
@@ -75,8 +73,9 @@ class ScheduleReachabilityGate
     # @param condition [TriggerCondition] a gated schedule condition
     # @return [Hash] the record written
     def observe!(condition, now: Time.current)
+      rule = condition.schedule_reachable_tool_rule
       unreachable = condition.schedule_require_reachable.filter_map do |name|
-        probe = probe(name)
+        probe = probe(name, rule)
         "#{name}: #{probe['reason']}" unless probe["reachable"]
       end
 
@@ -104,31 +103,39 @@ class ScheduleReachabilityGate
       state
     end
 
+    # @param rule [ScheduleReachabilityToolRule] what the listed tools must satisfy
     # @return [Hash] `{"reachable" => Boolean, "reason" => String or nil}`
-    def probe(name)
-      Rails.cache.fetch(cache_key(name), expires_in: PROBE_CACHE_TTL) { probe_now(name) }
+    def probe(name, rule)
+      listing = list_tools(name)
+      return unreachable(listing["error"]) if listing["error"]
+
+      failure = rule.failure(listing["tools"])
+      failure ? unreachable(failure) : { "reachable" => true, "reason" => nil }
+    end
+
+    # The server's tool names, or why they could not be listed. Cached per server so every
+    # condition naming it in a pass, whatever its rule, shares one `tools/list`.
+    #
+    # @return [Hash] `{"tools" => [String]}` or `{"error" => String}`
+    def list_tools(name)
+      Rails.cache.fetch(cache_key(name), expires_in: PROBE_CACHE_TTL) { list_tools_now(name) }
     end
 
     private
 
-    def probe_now(name)
+    def list_tools_now(name)
       server = ServersConfig.find(name.to_s)
-      return unreachable("not in the MCP server catalog") if server.nil?
-      return unreachable("a #{server.type} server cannot be probed") unless server.remote?
+      return { "error" => "not in the MCP server catalog" } if server.nil?
+      return { "error" => "a #{server.type} server cannot be probed" } unless server.remote?
 
       endpoint = McpServerEndpoint.new(server)
       client = McpApps::Client.new(
         url: endpoint.url, headers: endpoint.headers,
         open_timeout: OPEN_TIMEOUT_SECONDS, read_timeout: READ_TIMEOUT_SECONDS
       )
-      names = client.tools_list.filter_map { |tool| tool["name"].to_s if tool.is_a?(Hash) }
-      real = names.reject { |tool| tool == PLACEHOLDER_TOOL || tool.end_with?("__#{PLACEHOLDER_TOOL}") }
-
-      return { "reachable" => true, "reason" => nil } if real.any?
-
-      unreachable(names.any? ? "only strad's #{PLACEHOLDER_TOOL} is listed, so its host is offline" : "it lists no tools")
+      { "tools" => client.tools_list.filter_map { |tool| tool["name"].to_s.presence if tool.is_a?(Hash) } }
     rescue McpApps::Client::Error, McpServerEndpoint::UnresolvableError => e
-      unreachable(e.message)
+      { "error" => e.message }
     end
 
     def unreachable(reason)
@@ -152,7 +159,7 @@ class ScheduleReachabilityGate
     end
 
     def cache_key(name)
-      "schedule_reachability_gate:probe:#{name}"
+      "schedule_reachability_gate:tools:#{name}"
     end
   end
 end
