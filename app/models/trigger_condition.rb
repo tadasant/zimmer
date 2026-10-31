@@ -202,7 +202,7 @@ class TriggerCondition < ApplicationRecord
   # unreachable the schedule stays due and nothing fires; once all of them have answered for
   # `reachable_dwell_minutes` in a row it fires once. What "reachable" means — which tools must and
   # must not be listed — is `reachable_tools_include` / `reachable_tools_include_mode` /
-  # `reachable_tools_exclude`; see ScheduleReachabilityToolRule. See ScheduleReachabilityGate.
+  # `reachable_tools_exclude` (ScheduleReachabilityToolRule); the probing is ScheduleReachabilityGate.
   DEFAULT_REACHABLE_DWELL_MINUTES = 10
   MAX_REACHABLE_DWELL_MINUTES = 240
 
@@ -887,9 +887,9 @@ class TriggerCondition < ApplicationRecord
       return described unless reachability_gated?
 
       rule = schedule_reachable_tool_rule
+      qualifier = rule.default? || rule.describe.empty? ? "" : "(#{rule.describe}) "
       "#{described}, once #{schedule_require_reachable.join(' and ')} " \
-        "#{schedule_require_reachable.one? ? 'has' : 'have'} been reachable " \
-        "#{"(#{rule.describe}) " unless rule.default? || rule.describe.empty?}for #{schedule_reachable_dwell_minutes} min"
+        "#{schedule_require_reachable.one? ? 'has' : 'have'} been reachable #{qualifier}for #{schedule_reachable_dwell_minutes} min"
     end
   end
 
@@ -1145,21 +1145,30 @@ class TriggerCondition < ApplicationRecord
 
   # The tool rule only means something on a gated schedule, so it is dropped from an ungated one —
   # the form submits its fields, prefilled with the default, whether or not a server is named.
-  # On a gated one an absent `reachable_tools_exclude` is the default exclusion and a blank one is
-  # "exclude nothing", so a present key is kept even when empty.
+  # On a gated one an absent (or null) `reachable_tools_exclude` is the default exclusion and a blank
+  # one is "exclude nothing", so a present, non-null key is kept even when empty. The include mode
+  # only means something beside an include list, so it is dropped without one.
   def normalize_schedule_tool_rule_configuration
     unless configuration.key?("require_reachable")
       SCHEDULE_TOOL_RULE_KEYS.each { |key| configuration.delete(key) }
       return
     end
 
-    configuration["reachable_tools_exclude"] = ScheduleReachabilityToolRule.parse_list(configuration["reachable_tools_exclude"]) if configuration.key?("reachable_tools_exclude")
+    if configuration["reachable_tools_exclude"].nil?
+      configuration.delete("reachable_tools_exclude")
+    else
+      configuration["reachable_tools_exclude"] = ScheduleReachabilityToolRule.parse_list(configuration["reachable_tools_exclude"])
+    end
 
     include = ScheduleReachabilityToolRule.parse_list(configuration["reachable_tools_include"])
-    include.empty? ? configuration.delete("reachable_tools_include") : configuration["reachable_tools_include"] = include
-
-    mode = configuration["reachable_tools_include_mode"].to_s.strip
-    mode.empty? ? configuration.delete("reachable_tools_include_mode") : configuration["reachable_tools_include_mode"] = mode
+    mode = configuration["reachable_tools_include_mode"].to_s.strip.downcase
+    if include.empty?
+      configuration.delete("reachable_tools_include")
+      configuration.delete("reachable_tools_include_mode")
+    else
+      configuration["reachable_tools_include"] = include
+      mode.empty? ? configuration.delete("reachable_tools_include_mode") : configuration["reachable_tools_include_mode"] = mode
+    end
   end
 
   # The gate's record survives a UI save the way a poller's cursor does. Changing which servers

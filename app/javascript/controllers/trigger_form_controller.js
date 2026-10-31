@@ -858,7 +858,7 @@ export default class extends Controller {
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">Unreachable if it lists</label>
               <input type="text" name="${name}[configuration][reachable_tools_exclude]" value="troubleshoot_host" placeholder="nothing excluded" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-              <p class="mt-1 text-xs text-gray-500">Defaults to <code>troubleshoot_host</code>, the one tool strad lists for a host that is offline. Names match with or without strad's <code>&lt;slug&gt;__</code> prefix.</p>
+              <p class="mt-1 text-xs text-gray-500">Defaults to <code>troubleshoot_host</code>, the one tool strad lists for a host that is offline. Names match with or without strad's <code>&lt;slug&gt;__</code> prefix. Cleared, with nothing to include either, any answer to <code>tools/list</code> counts as reachable.</p>
             </div>
           </div>
 

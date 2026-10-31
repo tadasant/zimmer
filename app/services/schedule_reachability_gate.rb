@@ -105,7 +105,7 @@ class ScheduleReachabilityGate
 
     # @param rule [ScheduleReachabilityToolRule] what the listed tools must satisfy
     # @return [Hash] `{"reachable" => Boolean, "reason" => String or nil}`
-    def probe(name, rule = ScheduleReachabilityToolRule.new)
+    def probe(name, rule)
       listing = list_tools(name)
       return unreachable(listing["error"]) if listing["error"]
 

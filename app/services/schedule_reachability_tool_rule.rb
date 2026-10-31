@@ -9,8 +9,8 @@
 #   one of them (`reachable_tools_include_mode: "any"`, the default) or every one of them
 #   (`"all"`). When empty, any tool not excluded will do.
 # - `reachable_tools_exclude` — tool names or patterns none of which may be listed. When the key
-#   is absent it defaults to DEFAULT_EXCLUDE, strad's placeholder for an offline host; an explicit
-#   empty list excludes nothing.
+#   is absent or null it defaults to DEFAULT_EXCLUDE, strad's placeholder for an offline host; an
+#   explicit empty list excludes nothing. Matching is case-sensitive, as MCP tool names are.
 #
 # Whatever the include list says, a server must list at least one tool that is not excluded: an
 # empty list is never reachable.
@@ -32,8 +32,8 @@ class ScheduleReachabilityToolRule
   # @param configuration [Hash] a schedule condition's configuration
   def self.from_configuration(configuration)
     configuration = {} unless configuration.is_a?(Hash)
-    exclude = configuration.key?("reachable_tools_exclude") ? parse_list(configuration["reachable_tools_exclude"]) : DEFAULT_EXCLUDE
-    mode = configuration["reachable_tools_include_mode"].to_s.strip.presence || DEFAULT_INCLUDE_MODE
+    exclude = configuration["reachable_tools_exclude"].nil? ? DEFAULT_EXCLUDE : parse_list(configuration["reachable_tools_exclude"])
+    mode = configuration["reachable_tools_include_mode"].to_s.strip.downcase.presence || DEFAULT_INCLUDE_MODE
 
     new(include: parse_list(configuration["reachable_tools_include"]), include_mode: mode, exclude: exclude)
   end
@@ -92,9 +92,10 @@ class ScheduleReachabilityToolRule
     include.empty? && include_mode == DEFAULT_INCLUDE_MODE && exclude == DEFAULT_EXCLUDE
   end
 
-  # Two rules with the same signature pass and fail the same lists.
+  # Two rules with the same signature pass and fail the same lists. The mode is moot without an
+  # include list, so it is left out then.
   def signature
-    [ include.sort, include_mode, exclude.sort ]
+    [ include.sort, include.any? ? include_mode : nil, exclude.sort ]
   end
 
   # Read back in a schedule's description, e.g. "listing send_message, not troubleshoot_host".

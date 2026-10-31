@@ -18,13 +18,13 @@ class ScheduleReachabilityGateTest < ActiveSupport::TestCase
   test "a server listing real tools is reachable" do
     McpApps::Client.any_instance.stubs(:tools_list).returns([ { "name" => "zimmer__get_session" } ])
 
-    assert ScheduleReachabilityGate.probe("zimmer")["reachable"]
+    assert ScheduleReachabilityGate.probe("zimmer", default_rule)["reachable"]
   end
 
   test "strad's troubleshoot_host placeholder alone means the host is offline" do
     McpApps::Client.any_instance.stubs(:tools_list).returns([ { "name" => "zimmer__troubleshoot_host" } ])
 
-    probe = ScheduleReachabilityGate.probe("zimmer")
+    probe = ScheduleReachabilityGate.probe("zimmer", default_rule)
     assert_not probe["reachable"]
     assert_equal "exclude rule failed: lists zimmer__troubleshoot_host", probe["reason"]
   end
@@ -33,7 +33,7 @@ class ScheduleReachabilityGateTest < ActiveSupport::TestCase
     Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
     McpApps::Client.any_instance.expects(:tools_list).once.returns([ { "name" => "zimmer__get_session" } ])
 
-    assert ScheduleReachabilityGate.probe("zimmer")["reachable"]
+    assert ScheduleReachabilityGate.probe("zimmer", default_rule)["reachable"]
     picky = ScheduleReachabilityToolRule.new(include: %w[send_message])
     assert_equal "include rule failed: lists none of send_message", ScheduleReachabilityGate.probe("zimmer", picky)["reason"]
   end
@@ -72,13 +72,13 @@ class ScheduleReachabilityGateTest < ActiveSupport::TestCase
   test "a transport error is unreachable, not a raise" do
     McpApps::Client.any_instance.stubs(:tools_list).raises(McpApps::Client::Error, "MCP server returned HTTP 530")
 
-    probe = ScheduleReachabilityGate.probe("zimmer")
+    probe = ScheduleReachabilityGate.probe("zimmer", default_rule)
     assert_not probe["reachable"]
     assert_match(/530/, probe["reason"])
   end
 
   test "a server the catalog does not carry is unreachable" do
-    assert_not ScheduleReachabilityGate.probe("no-such-server")["reachable"]
+    assert_not ScheduleReachabilityGate.probe("no-such-server", default_rule)["reachable"]
   end
 
   # -- observe! --
@@ -191,6 +191,10 @@ class ScheduleReachabilityGateTest < ActiveSupport::TestCase
   end
 
   private
+
+  def default_rule
+    ScheduleReachabilityToolRule.new
+  end
 
   def stub_reachable(reachable)
     ScheduleReachabilityGate.stubs(:probe).returns({ "reachable" => reachable, "reason" => reachable ? nil : "offline" })

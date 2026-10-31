@@ -378,7 +378,7 @@
                value="<%= tool_rule.exclude.join(", ") %>"
                placeholder="nothing excluded"
                class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2">
-        <p class="mt-1 text-xs text-gray-500">Defaults to <code><%= ScheduleReachabilityToolRule::DEFAULT_EXCLUDE.join(", ") %></code>, the one tool strad lists for a host that is offline. Names match with or without strad's <code>&lt;slug&gt;__</code> prefix.</p>
+        <p class="mt-1 text-xs text-gray-500">Defaults to <code><%= ScheduleReachabilityToolRule::DEFAULT_EXCLUDE.join(", ") %></code>, the one tool strad lists for a host that is offline. Names match with or without strad's <code>&lt;slug&gt;__</code> prefix. Cleared, with nothing to include either, any answer to <code>tools/list</code> counts as reachable.</p>
       </div>
     </div>
 
