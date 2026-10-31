@@ -490,6 +490,49 @@ class McpOauthCredentialTest < ActiveSupport::TestCase
     assert credential.can_refresh?
   end
 
+  test "refresh! with raise_on_transient raises a TransientRefreshFailure on a 5xx instead of logging at error" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    original_refresh_token = credential.refresh_token
+
+    error = nil
+    logged = capture_logger_levels do
+      stub_token_post(build_raw_response(502, "Bad Gateway")) do
+        error = assert_raises(McpOauthCredential::TransientRefreshFailure) do
+          credential.refresh!(raise_on_transient: true)
+        end
+      end
+    end
+
+    assert_equal 502, error.status
+    assert_not error.unprocessed?, "a 502 may have been processed upstream"
+    assert_includes error.message, "502 - Bad Gateway"
+    assert_not_includes logged, :error, "the caller owns the decision to log at error"
+    assert_equal original_refresh_token, credential.reload.refresh_token
+  end
+
+  test "refresh! with raise_on_transient marks a 429 and a 503 as unprocessed" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+
+    [ 429, 503 ].each do |status|
+      stub_token_post(build_raw_response(status, "nope")) do
+        error = assert_raises(McpOauthCredential::TransientRefreshFailure) do
+          credential.refresh!(raise_on_transient: true)
+        end
+        assert error.unprocessed?, "#{status} means the provider did not consume the refresh token"
+      end
+    end
+  end
+
+  test "refresh! with raise_on_transient leaves a 4xx on the permanent path" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+
+    stub_token_post(build_raw_response(400, "<html>400 Bad Request</html>")) do
+      assert_not credential.refresh!(raise_on_transient: true)
+    end
+
+    assert_nil credential.reload.refresh_token
+  end
+
   # Every other refresh! test stubs the post itself, so nothing there would notice a
   # refresh posting through `Net::HTTP.post_form`, which cannot be given timeouts and
   # falls back to Net::HTTP's per-read 60s defaults. This one exercises the real

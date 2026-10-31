@@ -16,8 +16,16 @@
 # self-resolving condition — the job either retries (for errors where the request
 # never reached the endpoint) or defers to the next scheduled run (for errors
 # where the request may already have been processed), logging at .info during
-# intermediate attempts. Only after all retries are exhausted is the failure
-# logged at .error, so a genuinely persistent outage stays alertable.
+# intermediate attempts. A retried failure is logged at .error once all retries
+# are exhausted; a deferred one once it fails again on the next scheduled run
+# (AMBIGUOUS_FAILURE_STREAK_TO_ALERT). Either way a genuinely persistent outage
+# stays alertable.
+#
+# A 429/5xx *answer* from the token endpoint gets the same treatment: the job asks
+# #refresh! to raise McpOauthCredential::TransientRefreshFailure instead of
+# logging it. A 429 or 503 (normally the provider declining the work) climbs the
+# retry ladder like a connection that never opened. Any other 5xx is handled like
+# a lost response: no in-band re-send, deferred to the next scheduled run.
 class RefreshMcpOauthTokensJob < ApplicationJob
   include DatabaseRetry
   queue_as :default
@@ -75,6 +83,27 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     Timeout::Error
   ].freeze
 
+  # Consecutive ambiguous failures of one credential — a lost response or a
+  # 500/502/504 — before the next one logs at .error. Ambiguous failures are never
+  # re-sent in-band, so consecutive means consecutive *runs*: one is a blip and
+  # logs at .info, a second, 30 minutes later on the next cron run, is an outage
+  # that is not clearing. The cron keeps selecting a failing credential (its
+  # updated_at is untouched) until MAX_EXPIRED_AGE, so every run after that
+  # logs at .error too.
+  AMBIGUOUS_FAILURE_STREAK_TO_ALERT = 2
+
+  # Rails cache (Redis) key prefix for that streak, per credential. A successful
+  # refresh clears it. Same shape as GithubTriggerPollerJob's streaks.
+  AMBIGUOUS_FAILURE_STREAK_KEY_PREFIX = "refresh_mcp_oauth_tokens:ambiguous_failure_streak:"
+
+  # Comfortably beyond the 30-minute cron so one late tick can't reset a streak,
+  # short enough that a blip from yesterday doesn't count toward today's.
+  AMBIGUOUS_FAILURE_STREAK_TTL = 2.hours
+
+  def self.ambiguous_failure_streak_key(credential_id)
+    "#{AMBIGUOUS_FAILURE_STREAK_KEY_PREFIX}#{credential_id}"
+  end
+
   # Retry configuration for transient failures (exponential backoff: 2, 4, 8 min)
   MAX_RETRIES = 3
   RETRY_BACKOFF = 2.minutes
@@ -110,12 +139,21 @@ class RefreshMcpOauthTokensJob < ApplicationJob
         next unless credential.expiring_soon?(REFRESH_WINDOW)
         next unless credential.can_refresh?
 
-        if credential.refresh!
+        if credential.refresh!(raise_on_transient: true)
           refreshed += 1
+          clear_ambiguous_failure_streak(credential)
         else
           failed += 1
           Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to refresh token for #{credential.server_name} (#{credential.credential_key})"
         end
+      end
+    rescue McpOauthCredential::TransientRefreshFailure => e
+      failed += 1
+      if e.unprocessed?
+        retry_ids << credential.id
+        Rails.logger.info "[RefreshMcpOauthTokensJob] Transient token endpoint response refreshing #{credential.server_name}: #{e.message} (will retry)"
+      else
+        log_ambiguous_failure(credential, "token endpoint response", e.message, "will re-attempt on the next scheduled run")
       end
     rescue *RETRYABLE_REFRESH_ERRORS => e
       failed += 1
@@ -123,7 +161,7 @@ class RefreshMcpOauthTokensJob < ApplicationJob
       Rails.logger.info "[RefreshMcpOauthTokensJob] Transient error refreshing #{credential.server_name}: #{e.class}: #{e.message} (will retry)"
     rescue *AMBIGUOUS_REFRESH_ERRORS => e
       failed += 1
-      Rails.logger.info "[RefreshMcpOauthTokensJob] Ambiguous network failure refreshing #{credential.server_name}: #{e.class}: #{e.message} — not retrying to avoid refresh-token reuse-detection; will re-attempt on the next scheduled run"
+      log_ambiguous_failure(credential, "network failure", "#{e.class}: #{e.message}", "will re-attempt on the next scheduled run")
     rescue StandardError => e
       failed += 1
       Rails.logger.error "[RefreshMcpOauthTokensJob] Error refreshing #{credential.server_name}: #{e.message}"
@@ -151,11 +189,22 @@ class RefreshMcpOauthTokensJob < ApplicationJob
         next unless credential.expiring_soon?(REFRESH_WINDOW)
         next unless credential.can_refresh?
 
-        if credential.refresh!
+        if credential.refresh!(raise_on_transient: true)
           refreshed += 1
+          clear_ambiguous_failure_streak(credential)
         else
           Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to refresh token for #{credential.server_name} (#{credential.credential_key}) on retry #{attempt}"
         end
+      end
+    rescue McpOauthCredential::TransientRefreshFailure => e
+      if !e.unprocessed?
+        log_ambiguous_failure(credential, "token endpoint response", "on retry #{attempt}: #{e.message}", "deferring to the next scheduled run")
+      elsif attempt < MAX_RETRIES
+        still_failing_ids << credential.id
+        Rails.logger.info "[RefreshMcpOauthTokensJob] Transient token endpoint response refreshing #{credential.server_name} on retry #{attempt}: #{e.message} (will retry)"
+      else
+        still_failing_ids << credential.id
+        Rails.logger.error "[RefreshMcpOauthTokensJob] Token refresh for #{credential.server_name} failed after #{MAX_RETRIES} retries: #{e.message}"
       end
     rescue *RETRYABLE_REFRESH_ERRORS => e
       still_failing_ids << credential.id
@@ -165,7 +214,7 @@ class RefreshMcpOauthTokensJob < ApplicationJob
         Rails.logger.error "[RefreshMcpOauthTokensJob] Token refresh for #{credential.server_name} failed after #{MAX_RETRIES} retries: #{e.class}: #{e.message}"
       end
     rescue *AMBIGUOUS_REFRESH_ERRORS => e
-      Rails.logger.info "[RefreshMcpOauthTokensJob] Ambiguous network failure refreshing #{credential.server_name} on retry #{attempt}: #{e.class}: #{e.message} — not retrying; deferring to the next scheduled run"
+      log_ambiguous_failure(credential, "network failure", "on retry #{attempt}: #{e.class}: #{e.message}", "deferring to the next scheduled run")
     rescue StandardError => e
       Rails.logger.error "[RefreshMcpOauthTokensJob] Error refreshing #{credential.server_name} on retry #{attempt}: #{e.message}"
     end
@@ -173,6 +222,38 @@ class RefreshMcpOauthTokensJob < ApplicationJob
     schedule_retry(still_failing_ids, attempt + 1) if still_failing_ids.any? && attempt < MAX_RETRIES
 
     Rails.logger.info "[RefreshMcpOauthTokensJob] Retry #{attempt}/#{MAX_RETRIES}: #{refreshed} refreshed, #{still_failing_ids.size} still failing"
+  end
+
+  # An ambiguous failure is never re-sent in-band, so the next scheduled run is the
+  # only retry, and the streak of consecutive failures decides how loud to be: the
+  # first logs at .info, every one from AMBIGUOUS_FAILURE_STREAK_TO_ALERT on at
+  # .error. When the cache can't count, it logs at .error — a lost streak must
+  # fail loud, never silent.
+  def log_ambiguous_failure(credential, kind, detail, deferral)
+    streak = bump_ambiguous_failure_streak(credential)
+    if streak && streak < AMBIGUOUS_FAILURE_STREAK_TO_ALERT
+      Rails.logger.info "[RefreshMcpOauthTokensJob] Ambiguous #{kind} refreshing #{credential.server_name} (#{detail}) — not retrying in-band to avoid refresh-token reuse-detection; #{deferral}"
+    else
+      Rails.logger.error "[RefreshMcpOauthTokensJob] Token refresh for #{credential.server_name} still failing (ambiguous #{kind}, #{streak ? "#{streak} consecutive runs" : "streak uncounted"}): #{detail}"
+    end
+  end
+
+  # The new streak length, or nil when the cache could not be reached.
+  def bump_ambiguous_failure_streak(credential)
+    key = self.class.ambiguous_failure_streak_key(credential.id)
+    streak = Rails.cache.read(key).to_i + 1
+    Rails.cache.write(key, streak, expires_in: AMBIGUOUS_FAILURE_STREAK_TTL)
+    streak
+  rescue StandardError => e
+    Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to track ambiguous-failure streak for #{credential.server_name}: #{e.message}"
+    nil
+  end
+
+  # Rescued so a cache hiccup never turns a refresh that worked into an error.
+  def clear_ambiguous_failure_streak(credential)
+    Rails.cache.delete(self.class.ambiguous_failure_streak_key(credential.id))
+  rescue StandardError => e
+    Rails.logger.warn "[RefreshMcpOauthTokensJob] Failed to clear ambiguous-failure streak for #{credential.server_name}: #{e.message}"
   end
 
   def schedule_retry(credential_ids, attempt)
