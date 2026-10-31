@@ -145,6 +145,21 @@ class Api::V1::TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal %w[troubleshoot_host maintenance_*], config["reachable_tools_exclude"]
   end
 
+  test "an empty JSON exclusion reaches the model as exclude-nothing" do
+    post api_v1_triggers_path, params: {
+      name: "API Exclude Nothing", agent_root_name: "zimmer", prompt_template: "Sweep",
+      trigger_conditions_attributes: [
+        { condition_type: "schedule",
+          configuration: { unit: "hours", interval: 1, require_reachable: [ "zimmer" ], reachable_tools_exclude: [] } }
+      ]
+    }, headers: @headers, as: :json
+
+    assert_response :created
+    condition = Trigger.find_by!(name: "API Exclude Nothing").trigger_conditions.sole
+    assert_equal [], condition.configuration["reachable_tools_exclude"]
+    assert_equal [], condition.schedule_reachable_tool_rule.exclude
+  end
+
   test "should create a trigger with a burst cap and expose it in the payload" do
     post api_v1_triggers_path, params: {
       name: "Capped Alerts Trigger",

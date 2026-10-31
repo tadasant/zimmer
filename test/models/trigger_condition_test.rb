@@ -2149,6 +2149,21 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_match(/reachable_tools_include_mode must be one of any, all/, condition.errors.full_messages.join)
   end
 
+  test "a null exclusion means the default, and a mode without an include list is dropped" do
+    condition = trigger_conditions(:enabled_schedule_condition)
+    condition.update!(configuration: condition.configuration.merge(
+      "require_reachable" => [ "zimmer" ], "reachable_tools_exclude" => nil, "reachable_tools_include_mode" => "ALL"
+    ))
+
+    config = condition.reload.configuration
+    assert_not config.key?("reachable_tools_exclude")
+    assert_not config.key?("reachable_tools_include_mode")
+    assert condition.schedule_reachable_tool_rule.default?
+
+    condition.update!(configuration: config.merge("reachable_tools_include" => [ "send_message" ], "reachable_tools_include_mode" => "ALL"))
+    assert_equal "all", condition.reload.configuration["reachable_tools_include_mode"]
+  end
+
   test "the tool rule is dropped from an ungated schedule" do
     condition = trigger_conditions(:enabled_schedule_condition)
     condition.update!(configuration: condition.configuration.merge(

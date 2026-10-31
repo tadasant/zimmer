@@ -221,7 +221,7 @@ module Mcp
           `"reachable_tools_include": ["send_message"]` — at least one must be listed
           (`"reachable_tools_include_mode": "all"` for every one; default `"any"`; omit the list to accept
           any tool not excluded); `"reachable_tools_exclude": ["troubleshoot_host"]` — none may be listed.
-          Omitting `reachable_tools_exclude` means `["troubleshoot_host"]`, strad's placeholder for an
+          Omitting `reachable_tools_exclude` (or sending null) means `["troubleshoot_host"]`, strad's placeholder for an
           offline host; send `[]` to exclude nothing. Entries are tool names or `*`/`?` patterns and match
           a listed tool by its bare name too, so `troubleshoot_host` matches `<slug>__troubleshoot_host`.
           The rule keys are dropped from an ungated schedule.
