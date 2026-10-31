@@ -882,6 +882,70 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
     end
   end
 
+  # Reachability gate (ScheduleReachabilityGate)
+
+  test "a gated schedule whose server is unreachable spawns nothing and stays due" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    gate!(@condition, reachable: false)
+
+    assert_no_difference("Session.count") { ScheduleTriggerJob.perform_now }
+
+    assert_nil @condition.reload.last_triggered_at
+    assert @condition.schedule_due?
+  end
+
+  test "a gated schedule fires once its server is reachable past the dwell, and the job never probes" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    gate!(@condition, reachable: true)
+    ScheduleReachabilityGate.expects(:probe).never
+
+    assert_difference("Session.count", 1) { ScheduleTriggerJob.perform_now }
+    assert_not @condition.reload.schedule_due?
+  end
+
+  test "two gated slots due at once on one trigger are one catch-up fire" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    gate!(@condition, reachable: true)
+    sibling = @trigger.trigger_conditions.create!(condition_type: "schedule", configuration: @condition.configuration.except("reachability"))
+    gate!(sibling, reachable: true)
+
+    assert_difference("Session.count", 1) { ScheduleTriggerJob.perform_now }
+    assert_not @condition.reload.schedule_due?
+    assert_not sibling.reload.schedule_due?
+  end
+
+  test "an ungated sibling is not covered by a gated fire" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    @trigger.update!(skip_if_pending_session: true)
+    gate!(@condition, reachable: true)
+    sibling = @trigger.trigger_conditions.create!(condition_type: "schedule",
+                                                  configuration: @condition.configuration.except("require_reachable", "reachability"))
+    make_due!(sibling)
+
+    ScheduleTriggerJob.perform_now
+
+    assert_not @condition.reload.schedule_due?
+    assert sibling.reload.schedule_due?, "the ungated sibling was held by skip-if-pending, not consumed by the gated fire"
+  end
+
+  test "a gated slot held by skip-if-pending stays due and fires on a later tick" do
+    AgentRootsConfig.stubs(:find!).returns(@mock_agent_root)
+    AgentSessionJob.stubs(:enqueue_new_session)
+    gate!(@condition, reachable: true)
+    pending = Session.new
+    @trigger.stubs(:last_fire_skipped_for_pending_session?).returns(true)
+    @trigger.stubs(:last_fire_pending_session).returns(pending)
+    TriggerCondition.any_instance.stubs(:trigger).returns(@trigger)
+    @trigger.stubs(:create_session!).returns(nil)
+
+    ScheduleTriggerJob.perform_now
+
+    assert @condition.reload.schedule_due?
+  end
+
   private
 
   # Make a recurring schedule condition due on this tick, whatever wall-clock time the
@@ -892,6 +956,18 @@ class ScheduleTriggerJobTest < ActiveJob::TestCase
   # passed (#447). So the slot moves to midnight — past on every tick — a weekly condition's
   # day_of_week moves to today, and the condition is dated back behind both. last_triggered_at
   # stays nil, so tests that assert it advances from nil keep asserting exactly that.
+  # A due, gated condition whose probe job has just recorded +reachable+ (with a zero dwell).
+  def gate!(condition, reachable:)
+    make_due!(condition)
+    condition.update!(configuration: condition.configuration.merge("require_reachable" => [ "zimmer" ], "reachable_dwell_minutes" => 0))
+    now = Time.current.iso8601
+    condition.update_column(:configuration, condition.configuration.merge(
+      "reachability" => { "reachable_since" => (now if reachable), "unreachable_since" => (now unless reachable),
+                          "last_checked_at" => now, "last_error" => (reachable ? nil : "offline") }
+    ))
+    condition
+  end
+
   def make_due!(condition = @condition)
     slot = { "time" => "00:00" }
     if condition.schedule_unit == "weeks"

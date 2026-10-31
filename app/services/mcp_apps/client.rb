@@ -70,8 +70,12 @@ module McpApps
 
     # @param url [String] the server's Streamable HTTP endpoint
     # @param headers [Hash] fully resolved request headers (auth included)
-    def initialize(url:, headers: {})
+    # @param open_timeout [Numeric] seconds to wait for the connection
+    # @param read_timeout [Numeric] seconds to wait for each answer
+    def initialize(url:, headers: {}, open_timeout: OPEN_TIMEOUT_SECONDS, read_timeout: READ_TIMEOUT_SECONDS)
       @uri = URI.parse(url.to_s)
+      @open_timeout = open_timeout
+      @read_timeout = read_timeout
       raise Error, "MCP server url must be http(s): #{url}" unless @uri.is_a?(URI::HTTP)
 
       @headers = headers.to_h { |key, value| [ key.to_s, value.to_s ] }
@@ -181,8 +185,8 @@ module McpApps
     def post(body, headers: {})
       http = Net::HTTP.new(@uri.host, @uri.port)
       http.use_ssl = @uri.scheme == "https"
-      http.open_timeout = OPEN_TIMEOUT_SECONDS
-      http.read_timeout = READ_TIMEOUT_SECONDS
+      http.open_timeout = @open_timeout
+      http.read_timeout = @read_timeout
 
       post = Net::HTTP::Post.new(@uri.request_uri)
       @headers.merge(headers).each { |key, value| post[key] = value }
@@ -220,7 +224,7 @@ module McpApps
 
       Response.new(body: body, content_type: result["Content-Type"].to_s)
     rescue Net::OpenTimeout, Net::ReadTimeout
-      raise Error, "MCP server did not answer within #{READ_TIMEOUT_SECONDS}s"
+      raise Error, "MCP server did not answer within #{@read_timeout}s"
     rescue SystemCallError, SocketError, OpenSSL::SSL::SSLError, IOError => e
       raise Error, "could not reach MCP server: #{e.class}"
     end

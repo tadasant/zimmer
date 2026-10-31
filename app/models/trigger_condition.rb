@@ -197,6 +197,17 @@ class TriggerCondition < ApplicationRecord
   # events, so the cursor is dropped and the new one baselined rather than replayed.
   MCP_EVENT_SUBSCRIPTION_KEYS = %w[server event_name arguments].freeze
 
+  # A recurring schedule may name catalog MCP servers it must be able to reach before it fires
+  # (`require_reachable`) — a laptop-hosted server behind strad, typically. While any of them is
+  # unreachable the schedule stays due and nothing fires; once all of them have answered for
+  # `reachable_dwell_minutes` in a row it fires once. See ScheduleReachabilityGate.
+  DEFAULT_REACHABLE_DWELL_MINUTES = 10
+  MAX_REACHABLE_DWELL_MINUTES = 240
+
+  # The gate's own record inside a schedule condition's configuration, merged back across an edit
+  # like the pollers' cursors so a UI save does not reset a dwell already under way.
+  SCHEDULE_GATE_STATE_KEYS = %w[reachability].freeze
+
   # A payload field a filter or a template may name: a top-level key of an event's `data`.
   MCP_EVENT_FIELD_FORMAT = /\A[A-Za-z_][A-Za-z0-9_]{0,63}\z/
 
@@ -219,6 +230,8 @@ class TriggerCondition < ApplicationRecord
   before_validation :preserve_email_poll_state, if: -> { condition_type == "email" }
   before_validation :normalize_mcp_event_configuration, if: -> { condition_type == "mcp_event" }
   before_validation :preserve_mcp_event_poll_state, if: -> { condition_type == "mcp_event" }
+  before_validation :normalize_schedule_gate_configuration, if: -> { condition_type == "schedule" }
+  before_validation :preserve_schedule_gate_state, if: -> { condition_type == "schedule" }
 
   # Arming is what a never-fired `days`/`weeks` schedule measures its first fire
   # from (see #armed_before?). Stamped on create for every condition type, so the
@@ -574,6 +587,44 @@ class TriggerCondition < ApplicationRecord
     configuration["timezone"] || DEFAULT_SCHEDULE_TIMEZONE
   end
 
+  # The trigger form's timezone select lists Rails zone names ("Pacific Time (US & Canada)"), but
+  # the REST API and MCP accept IANA identifiers ("America/Los_Angeles") too. Without this, a
+  # condition stored with an IANA name matches no option, the browser shows the first one, and a
+  # plain save moves the schedule to that zone.
+  def schedule_timezone_option
+    stored = schedule_timezone
+    zones = ActiveSupport::TimeZone.us_zones + ActiveSupport::TimeZone.all
+    return stored if zones.any? { |zone| zone.name == stored }
+
+    zones.find { |zone| zone.tzinfo.identifier == stored }&.name || stored
+  end
+
+  # The catalog MCP servers this schedule must reach before it fires. Empty for an ungated one.
+  #
+  # @return [Array<String>]
+  def schedule_require_reachable
+    return [] unless condition_type == "schedule"
+
+    Array(configuration["require_reachable"]).filter_map { |name| name.to_s.strip.presence }.uniq
+  end
+
+  def reachability_gated?
+    schedule_require_reachable.any?
+  end
+
+  def schedule_reachable_dwell_minutes
+    value = configuration["reachable_dwell_minutes"]
+    value.blank? ? DEFAULT_REACHABLE_DWELL_MINUTES : value.to_i
+  end
+
+  # What the gate last saw, as ScheduleReachabilityGate wrote it. Empty until it first checks.
+  #
+  # @return [Hash]
+  def schedule_reachability_state
+    state = configuration["reachability"]
+    state.is_a?(Hash) ? state : {}
+  end
+
   # Zimmer event configuration accessors
   def ao_event_name
     configuration["event_name"]
@@ -805,7 +856,7 @@ class TriggerCondition < ApplicationRecord
 
       base = interval == 1 ? "Every #{unit&.singularize}" : "Every #{interval} #{unit}"
 
-      case unit
+      described = case unit
       when "minutes"
         base
       when "hours"
@@ -821,6 +872,11 @@ class TriggerCondition < ApplicationRecord
       else
         "Custom schedule"
       end
+
+      return described unless reachability_gated?
+
+      "#{described}, once #{schedule_require_reachable.join(' and ')} " \
+        "#{schedule_require_reachable.one? ? 'has' : 'have'} been reachable for #{schedule_reachable_dwell_minutes} min"
     end
   end
 
@@ -944,11 +1000,15 @@ class TriggerCondition < ApplicationRecord
     when "hours"
       last.nil? || now - last >= schedule_interval.hours
     when "days"
+      return gated_slot_due?(latest_daily_slot(now), last) if reachability_gated?
+
       target = parse_schedule_time(now)
       return false unless now >= target
       return armed_before?(target) if last.nil?
       (now.to_date - last.to_date).to_i >= schedule_interval
     when "weeks"
+      return gated_slot_due?(latest_weekly_slot(now), last) if reachability_gated?
+
       target_day = DAYS_OF_WEEK.index(schedule_day_of_week) # 0=monday
       current_day = (now.wday - 1) % 7 # Convert Sunday=0 to Monday=0
       target = parse_schedule_time(now)
@@ -1050,6 +1110,41 @@ class TriggerCondition < ApplicationRecord
   # scope would look new against the old seen-set and fire at once. Dropping the state
   # instead re-baselines the condition on the next tick, which keeps the guarantee that
   # matters: an item labelled before you asked to watch it does not fire retroactively.
+
+  # `require_reachable` arrives as a JSON array from the REST API and MCP, and as one text field
+  # (comma- or line-separated) from the trigger form. Store one shape; drop the key when empty so
+  # an ungated schedule's configuration stays exactly what it was.
+  def normalize_schedule_gate_configuration
+    return unless configuration.is_a?(Hash)
+
+    if configuration.key?("require_reachable")
+      names = Array(configuration["require_reachable"])
+        .flat_map { |entry| entry.to_s.split(/[,\r\n]+/) }
+        .filter_map { |entry| entry.strip.presence }
+        .uniq
+      names.empty? ? configuration.delete("require_reachable") : configuration["require_reachable"] = names
+    end
+
+    configuration.delete("reachable_dwell_minutes") if configuration["reachable_dwell_minutes"].to_s.strip.empty?
+  end
+
+  # The gate's record survives a UI save the way a poller's cursor does. Changing which servers
+  # the schedule waits for drops it: a dwell measured against other servers is not this one's.
+  def preserve_schedule_gate_state
+    return if new_record?
+    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
+    return unless configuration_changed?
+
+    if Array(configuration["require_reachable"]).sort != Array(configuration_was["require_reachable"]).sort
+      SCHEDULE_GATE_STATE_KEYS.each { |key| configuration.delete(key) }
+      return
+    end
+
+    SCHEDULE_GATE_STATE_KEYS.each do |key|
+      next if configuration.key?(key)
+      configuration[key] = configuration_was[key] if configuration_was.key?(key)
+    end
+  end
 
   # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
   # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
@@ -1331,6 +1426,29 @@ class TriggerCondition < ApplicationRecord
   # somehow missed by the backfill: it is exactly what this read before `armed_at`,
   # so it degrades to the old behaviour rather than to "armed". An unpersisted
   # condition has neither and is treated as armed.
+  # A gated slot can be held past its own day for as long as the server is down, so a gated daily
+  # or weekly schedule is due whenever its most recent slot has not been fired for — not only on
+  # the slot's own day, after which an ungated one would let it go. Gating is limited to an
+  # interval of 1 for these units (see #validate_schedule_gate_configuration), which is what makes
+  # "the most recent slot" a single, well-defined instant.
+  def gated_slot_due?(slot, last)
+    return armed_before?(slot) if last.nil?
+
+    last < slot
+  end
+
+  def latest_daily_slot(now)
+    today = parse_schedule_time(now)
+    today <= now ? today : parse_schedule_time(now - 1.day)
+  end
+
+  def latest_weekly_slot(now)
+    target_day = DAYS_OF_WEEK.index(schedule_day_of_week) # 0=monday
+    current_day = (now.wday - 1) % 7
+    candidate = parse_schedule_time(now - ((current_day - target_day) % 7).days)
+    candidate <= now ? candidate : parse_schedule_time(candidate - 7.days)
+  end
+
   def armed_before?(target)
     anchor = armed_at || created_at
     return true if anchor.nil?
@@ -1579,6 +1697,41 @@ class TriggerCondition < ApplicationRecord
 
     if configuration["timezone"].present? && !ActiveSupport::TimeZone[configuration["timezone"]]
       errors.add(:configuration, "timezone is not a recognized timezone")
+    end
+
+    validate_schedule_gate_configuration
+  end
+
+  def validate_schedule_gate_configuration
+    if configuration.key?("reachable_dwell_minutes")
+      dwell = configuration["reachable_dwell_minutes"]
+      unless dwell.to_s.match?(/\A\d+\z/) && dwell.to_i.between?(0, MAX_REACHABLE_DWELL_MINUTES)
+        errors.add(:configuration, "reachable_dwell_minutes must be a whole number from 0 to #{MAX_REACHABLE_DWELL_MINUTES}")
+      end
+    end
+
+    return unless reachability_gated?
+
+    # A one-time schedule is a wake: holding it back until a laptop answers would hold back the
+    # session waiting on it.
+    errors.add(:configuration, "require_reachable applies to recurring schedules only") if one_time_schedule?
+
+    if %w[days weeks].include?(schedule_unit) && schedule_interval != 1
+      errors.add(:configuration, "require_reachable on a #{schedule_unit} schedule needs an interval of 1; add more slots as separate conditions instead")
+    end
+
+    # Checked when the list is set, not on every save: the job that fires the schedule saves the
+    # condition too, and a server leaving the catalog later must not make that write raise after
+    # the session has spawned. The gate reports such a server as unreachable instead.
+    return unless new_record? || schedule_require_reachable != Array(configuration_was.is_a?(Hash) ? configuration_was["require_reachable"] : nil)
+
+    schedule_require_reachable.each do |name|
+      catalog = ServersConfig.find(name)
+      if catalog.nil?
+        errors.add(:configuration, "require_reachable names #{name}, which is not in the MCP server catalog")
+      elsif !catalog.remote?
+        errors.add(:configuration, "require_reachable names #{name}, a #{catalog.type} server; only a remote one can be probed")
+      end
     end
   end
 

@@ -201,6 +201,12 @@ module CronSchedule
       description: "Poll the mailbox for new mail and create a session per new thread",
       environments: %i[production staging development]
     },
+    schedule_reachability_probe: {
+      cron: "* * * * *", # Every minute — one tools/list per server a reachability-gated schedule names
+      class: "ScheduleReachabilityProbeJob",
+      description: "Probe the MCP servers reachability-gated schedules wait for, and record what was seen",
+      environments: %i[production staging development]
+    },
     mcp_event_trigger_poller: {
       cron: "* * * * *", # Every minute — one events/poll per mcp_event condition (fewer when a server asks for nextPollMs)
       class: "McpEventTriggerPollerJob",
