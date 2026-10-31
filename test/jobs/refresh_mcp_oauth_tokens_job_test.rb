@@ -4,6 +4,17 @@ require "test_helper"
 require "mocha/minitest"
 
 class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
+  # The ambiguous-failure streak lives in Rails.cache, which is a null_store in
+  # test; a real store per test keeps one test's streak out of the next.
+  setup do
+    @original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+  end
+
+  teardown do
+    Rails.cache = @original_cache
+  end
+
   test "refreshes tokens expiring within 1 hour" do
     credential = mcp_oauth_credentials(:expiring_soon)
     original_token = credential.access_token
@@ -107,30 +118,217 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     RefreshMcpOauthTokensJob.perform_now
   end
 
-  test "transient refresh failure remains alertable and refreshable" do
+  # zimmer#1427: a one-off 503 from Granola's token endpoint paged #alerts because
+  # an HTTP 5xx answer skipped the retry ladder and logged at .error on attempt one.
+  test "transient 503 response logs at info and schedules a retry, keeping the credential refreshable" do
     credential = mcp_oauth_credentials(:expiring_soon)
     disable_other_refreshable_credentials!(credential)
     original_token = credential.access_token
     original_refresh_token = credential.refresh_token
 
-    failed_response = Net::HTTPServiceUnavailable.new("1.1", "503", "Service Unavailable")
-    failed_response.stubs(:code).returns("503")
-    failed_response.stubs(:body).returns({ error: "temporarily_unavailable" }.to_json)
-
     log_output = capture_rails_logs do
-      stub_token_post(failed_response) do
-        # Should not raise
-        RefreshMcpOauthTokensJob.perform_now
+      assert_enqueued_with(job: RefreshMcpOauthTokensJob, args: [ { retry_credential_ids: [ credential.id ], attempt: 1 } ]) do
+        stub_token_post(token_endpoint_response(503, { message: "Service Unavailable", code: "503" }.to_json)) do
+          RefreshMcpOauthTokensJob.perform_now
+        end
       end
     end
+
+    assert_includes log_output, "Transient token endpoint response refreshing"
+    assert_includes log_output, "(will retry)"
+    assert_includes log_output, "scheduling retry 1/#{RefreshMcpOauthTokensJob::MAX_RETRIES}"
+    assert_not_includes log_output, "ERROR"
 
     credential.reload
     assert_equal original_token, credential.access_token
     assert_equal original_refresh_token, credential.refresh_token
     assert credential.can_refresh?
-    assert_not credential.requires_reauth?
+  end
+
+  test "429 response on an intermediate retry schedules the next retry at info" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    log_output = capture_rails_logs do
+      assert_enqueued_with(job: RefreshMcpOauthTokensJob, args: [ { retry_credential_ids: [ credential.id ], attempt: 2 } ]) do
+        stub_token_post(token_endpoint_response(429, "Too Many Requests")) do
+          RefreshMcpOauthTokensJob.perform_now(retry_credential_ids: [ credential.id ], attempt: 1)
+        end
+      end
+    end
+
+    assert_includes log_output, "scheduling retry 2/#{RefreshMcpOauthTokensJob::MAX_RETRIES}"
+    assert_not_includes log_output, "ERROR"
+  end
+
+  test "503 response persisting past MAX_RETRIES escalates to error and stops retrying" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    log_output = capture_rails_logs do
+      assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
+        stub_token_post(token_endpoint_response(503, "Service Unavailable")) do
+          RefreshMcpOauthTokensJob.perform_now(
+            retry_credential_ids: [ credential.id ],
+            attempt: RefreshMcpOauthTokensJob::MAX_RETRIES
+          )
+        end
+      end
+    end
+
     assert_includes log_output, "ERROR"
-    assert_includes log_output, "[McpOauthCredential] Token refresh failed for #{credential.server_name} (#{credential.credential_key}): 503"
+    assert_includes log_output, "failed after #{RefreshMcpOauthTokensJob::MAX_RETRIES} retries"
+    assert_includes log_output, "503 - Service Unavailable"
+    assert credential.reload.can_refresh?
+  end
+
+  test "ambiguous 5xx response with a still-valid access token is not re-sent in-band and stays at info" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+    original_refresh_token = credential.refresh_token
+    assert credential.active?
+
+    [ 500, 502, 504 ].each do |status|
+      Rails.cache.clear
+      log_output = capture_rails_logs do
+        assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
+          stub_token_post(token_endpoint_response(status, "upstream broke")) do
+            RefreshMcpOauthTokensJob.perform_now
+          end
+        end
+      end
+
+      assert_includes log_output, "Ambiguous token endpoint response refreshing"
+      assert_includes log_output, "will re-attempt on the next scheduled run"
+      assert_not_includes log_output, "ERROR", "a #{status} with a live access token should not page"
+    end
+
+    credential.reload
+    assert_equal original_refresh_token, credential.refresh_token
+    assert credential.can_refresh?
+  end
+
+  # The cron selects a credential about 3h after a ~1h access token lapsed (the 4h
+  # PROACTIVE_REFRESH_MIN_INTERVAL throttle), so escalation keys on consecutive
+  # failed runs, not on whether the access token is still valid.
+  test "ambiguous 5xx response failing on consecutive scheduled runs logs at error from the second run on" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+    credential.update_columns(expires_at: 3.hours.ago, updated_at: 5.hours.ago)
+
+    logs = 3.times.map do
+      capture_rails_logs do
+        assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
+          stub_token_post(token_endpoint_response(502, "Bad Gateway")) do
+            RefreshMcpOauthTokensJob.perform_now
+          end
+        end
+      end
+    end
+
+    assert_not_includes logs[0], "ERROR", "a first 502 is a blip, even with a lapsed access token"
+    assert_includes logs[0], "Ambiguous token endpoint response refreshing"
+    logs[1..].each do |log_output|
+      assert_includes log_output, "ERROR"
+      assert_includes log_output, "still failing (ambiguous token endpoint response"
+      assert_includes log_output, "502 - Bad Gateway"
+    end
+    assert credential.reload.can_refresh?, "the next run must still be able to try"
+  end
+
+  test "ambiguous network error failing on consecutive scheduled runs logs at error on the second run" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    logs = 2.times.map do
+      capture_rails_logs do
+        stub_token_post(->(*) { raise Net::ReadTimeout, "Connection timed out" }) do
+          RefreshMcpOauthTokensJob.perform_now
+        end
+      end
+    end
+
+    assert_not_includes logs[0], "ERROR"
+    assert_includes logs[1], "ERROR"
+    assert_includes logs[1], "still failing (ambiguous network failure"
+  end
+
+  test "a successful refresh resets the ambiguous-failure streak" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    stub_token_post(token_endpoint_response(502, "Bad Gateway")) { RefreshMcpOauthTokensJob.perform_now }
+    stub_token_post(token_endpoint_response(200, { access_token: "fresh", expires_in: 1 }.to_json)) do
+      RefreshMcpOauthTokensJob.perform_now
+    end
+    assert_nil Rails.cache.read(RefreshMcpOauthTokensJob.ambiguous_failure_streak_key(credential.id))
+
+    credential.update_columns(updated_at: 5.hours.ago)
+    log_output = capture_rails_logs do
+      stub_token_post(token_endpoint_response(502, "Bad Gateway")) { RefreshMcpOauthTokensJob.perform_now }
+    end
+    assert_not_includes log_output, "ERROR", "the streak restarts after a success"
+  end
+
+  test "ambiguous failure logs at error when the streak cannot be counted" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+    Rails.cache.stubs(:read).raises(Redis::CannotConnectError, "redis down")
+
+    log_output = capture_rails_logs do
+      stub_token_post(token_endpoint_response(504, "Gateway Timeout")) { RefreshMcpOauthTokensJob.perform_now }
+    end
+
+    assert_includes log_output, "ERROR"
+    assert_includes log_output, "streak uncounted"
+  end
+
+  test "ambiguous 5xx response on a retry defers to the next scheduled run" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    log_output = capture_rails_logs do
+      assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
+        stub_token_post(token_endpoint_response(504, "Gateway Timeout")) do
+          RefreshMcpOauthTokensJob.perform_now(retry_credential_ids: [ credential.id ], attempt: 1)
+        end
+      end
+    end
+
+    assert_includes log_output, "deferring to the next scheduled run"
+    assert_not_includes log_output, "ERROR"
+  end
+
+  test "503 on the scheduled run that succeeds on retry clears without an error" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    log_output = capture_rails_logs do
+      stub_token_post(token_endpoint_response(503, "Service Unavailable")) { RefreshMcpOauthTokensJob.perform_now }
+      stub_token_post(token_endpoint_response(200, { access_token: "after-retry", expires_in: 3600 }.to_json)) do
+        RefreshMcpOauthTokensJob.perform_now(retry_credential_ids: [ credential.id ], attempt: 1)
+      end
+    end
+
+    assert_not_includes log_output, "ERROR"
+    assert_equal "after-retry", credential.reload.access_token
+  end
+
+  test "4xx response stays on the permanent path: no retry, refresh token dropped" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    log_output = capture_rails_logs do
+      assert_no_enqueued_jobs(only: RefreshMcpOauthTokensJob) do
+        stub_token_post(token_endpoint_response(400, "<html>400 Bad Request</html>")) do
+          RefreshMcpOauthTokensJob.perform_now
+        end
+      end
+    end
+
+    assert_includes log_output, "Token refresh permanently invalid"
+    assert_not_includes log_output, "Transient token endpoint response"
+    assert_nil credential.reload.refresh_token
   end
 
   test "invalid_client refresh failure is treated as permanent (refresh token dropped, valid access token kept)" do
@@ -326,6 +524,14 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
 
   def disable_other_refreshable_credentials!(credential)
     McpOauthCredential.where.not(id: credential.id).update_all(refresh_token: nil)
+  end
+
+  def token_endpoint_response(status, body)
+    klass = Net::HTTPResponse::CODE_TO_OBJ[status.to_s] || Net::HTTPResponse
+    response = klass.new("1.1", status.to_s, "")
+    response.define_singleton_method(:code) { status.to_s }
+    response.define_singleton_method(:body) { body }
+    response
   end
 
   def capture_rails_logs

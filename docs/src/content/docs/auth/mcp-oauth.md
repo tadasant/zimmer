@@ -463,7 +463,10 @@ It splits network errors carefully:
 - **Retryable** — the connection was never established, so the server never saw the request. Safe to
   retry in-band.
 - **Ambiguous** — the request went out and the response was lost. Never retried in-band; deferred
-  to the next cron run. Retrying could burn a single-use refresh token.
+  to the next cron run. Retrying could burn a single-use refresh token. The first such failure logs
+  at `INFO`; a second on the next run, and every run after it, logs at `ERROR`. Consecutive failures
+  are counted per credential in the Rails cache, a success resets the count, and if the cache can't
+  be read the failure logs at `ERROR`.
 
 That distinction is the kind of care that's easy to skip and expensive to skip.
 
@@ -473,9 +476,22 @@ spec-compliant JSON body (`{"error": "invalid_grant" | "invalid_client" | "unaut
 but some return a bare HTML `400 Bad Request`, so the `4xx` status code — not the body — is what
 classifies it. On a permanent failure it nulls the refresh token but keeps a still-valid access token
 instead of force-expiring it. **Transient** failures — `429` rate-limits and `5xx` outages — are
-excluded first: the refresh token itself is not implicated, so it is left intact and the failure stays
-on the loud `ERROR` log path (which pages `#alerts`) to retry on the next cron run. This transient /
+excluded first: the refresh token itself is not implicated, so it is left intact. This transient /
 permanent split matches `XOauthCredential`.
+
+The cron gives a transient answer the same two treatments it gives network errors, so a one-off
+upstream blip does not page `#alerts` (zimmer#1427):
+
+- **`429` and `503`** — normally the provider declining the work, so the refresh token was not
+  consumed. Retried in-band on the same ladder as a connection that never opened (2, 4, 8 minutes),
+  logged at `INFO` until the last retry fails, then at `ERROR`.
+- **Any other `5xx`** (`500`, `502`, `504`) — the provider may have minted a new token and revoked
+  ours before the error came back, so it is ambiguous, like a lost response: never re-sent in-band,
+  `INFO` the first time, `ERROR` from the second consecutive run on. A provider that stays down still
+  pages, about 30 minutes in.
+
+A refresh from anywhere else — the injector at spawn, the MCP endpoint proxy — has no retry ladder,
+so a `429` or `5xx` there still logs at `ERROR` on the first attempt.
 
 ## Capturing the token the runtime rotates (write-back)
 
