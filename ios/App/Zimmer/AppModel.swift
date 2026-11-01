@@ -637,9 +637,7 @@ final class AppModel: ObservableObject {
                     if let before { restore(before) } else { sessions.removeAll { $0.id == id } }
                 }
             }
-            if notice == done { notice = nil }
-            handle(error)
-            Haptics.failure()
+            refused(error, undoing: done)
             return nil
         }
     }
@@ -724,10 +722,19 @@ final class AppModel: ObservableObject {
             }
         } catch {
             putBack(ticket, before)
-            handle(error)
-            Haptics.failure()
+            refused(error, undoing: "Moved to trash")
             return false
         }
+    }
+
+    /// An action shown at the tap that the server refused: the banner over the list says
+    /// why, and a toast says it at the foot of the screen, where the eye is — the banner is
+    /// the list's first row, which a list scrolled down keeps out of sight.
+    private func refused(_ error: Error, undoing done: String) {
+        handle(error)
+        let zimmerError = error as? ZimmerError ?? .transport(error)
+        notice = "Not \(done.prefix(1).lowercased() + done.dropFirst()): \(zimmerError.userMessage)"
+        Haptics.failure()
     }
 
     /// A trash the server did not take: the row as it was, no Undo for it.
@@ -791,9 +798,7 @@ final class AppModel: ObservableObject {
             for ticket in tickets.values { pending.end(ticket) }
             freshness.noteLocalChange()
             withAnimation { for before in befores.values { restore(before) } }
-            notice = nil
-            handle(error)
-            Haptics.failure()
+            refused(error, undoing: "Moved to trash")
         }
     }
 
