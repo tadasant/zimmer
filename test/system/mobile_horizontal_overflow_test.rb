@@ -2031,7 +2031,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         failures: BroadcastService.circuit_breaker_failures,
         opened_at: BroadcastService.circuit_breaker_opened_at,
         adapter: ActionCable.server.config.cable["adapter"],
-        ranked_messages: (defined?(SolidCable::Message) ? SolidCable::Message.where("channel LIKE ?", "%ranked%").count : "n/a"),
+        top_status: Session.find_by(id: arrival.id - 1)&.status,
         connected_sources: page.evaluate_script("Array.from(document.querySelectorAll('turbo-cable-stream-source')).map(e => [e.getAttribute('channel'), e.getAttribute('signed-stream-name')?.slice(0, 12), e.hasAttribute('connected')])")
       }
       flunk "arrival #{arrival.id} (#{arrival.reload.status}/#{arrival.scheduling_class}) never landed.\nSTATE: #{state}\nSERVER: #{server}\nLOGS:\n#{logs.join("\n")}"
