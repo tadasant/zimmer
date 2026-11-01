@@ -1915,18 +1915,20 @@ struct PendingStartHeader: View {
                     Text(error.userMessage)
                         .font(.subheadline)
                         .foregroundStyle(Theme.ink)
-                    HStack(spacing: 12) {
+                    // Plain buttons, as the toasts' Undo is: a styled button inside this card
+                    // is not reachable by identifier from a UI test.
+                    HStack(spacing: 18) {
                         Button("Try again", action: retry)
-                            .buttonStyle(.borderedProminent)
-                            .tint(Theme.accent)
+                            .foregroundStyle(Theme.accent)
                             .accessibilityIdentifier("start.retry")
                         if let edit {
                             Button("Edit", action: edit)
-                                .buttonStyle(.bordered)
+                                .foregroundStyle(Theme.accent)
                                 .accessibilityIdentifier("start.edit")
                         }
                     }
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, 2)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
