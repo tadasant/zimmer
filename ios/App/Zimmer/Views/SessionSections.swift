@@ -27,13 +27,15 @@ extension SessionPageSection {
 }
 
 /// The session page's sub-navigation, pinned under the navigation bar: one chip per section,
-/// the one being read filled, and the full-screen transcript at its end. The chips never
-/// scroll sideways — every one is in sight — so their words shorten to fit, then give way to
-/// symbols.
+/// the one being read filled, then the jump to the newest message and the full-screen
+/// transcript at its end. The chips never scroll sideways — every one is in sight — so their
+/// words shorten to fit, then give way to symbols.
 struct SectionStrip: View {
     let sections: [SessionPageSection]
     let current: SessionPageSection
     let jump: (SessionPageSection) -> Void
+    /// Nil when there is no transcript to jump to the end of.
+    let latest: (() -> Void)?
     /// Nil when there is no transcript to read full screen.
     let fullScreen: (() -> Void)?
 
@@ -48,8 +50,23 @@ struct SectionStrip: View {
             }
             .padding(.leading, 12)
             Spacer(minLength: 4)
-            if let fullScreen {
+            if latest != nil || fullScreen != nil {
                 Theme.rule.frame(width: 1, height: 20)
+            }
+            // The newest message, from anywhere on the page: the same landing as the
+            // transcript's chip, under the arrow a chat app puts on it.
+            if let latest {
+                Button(action: latest) {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .frame(width: 40, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Jump to the newest message")
+                .accessibilityIdentifier("detail.latest")
+            }
+            if let fullScreen {
                 Button(action: fullScreen) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 14, weight: .semibold))

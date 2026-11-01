@@ -31,6 +31,36 @@ final class SessionSectionsUITests: XCTestCase {
         attachScreenshot(app, named: "transcript-newest")
     }
 
+    /// The strip's down arrow: from the top of the page, and from a section far above the end,
+    /// one tap lands on the newest message.
+    func test_the_strips_arrow_jumps_to_the_newest_message_from_anywhere_on_the_page() throws {
+        let app = launch()
+        let latest = app.buttons["detail.latest"]
+        XCTAssertTrue(latest.waitForExistence(timeout: timeout))
+        XCTAssertEqual(latest.label, "Jump to the newest message")
+        let newest = app.descendants(matching: .any)["detail.message.98"]
+        XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.summary"]), "the page opens on its summary")
+        XCTAssertFalse(isInView(app, newest), "a hundred messages down, the newest is out of sight")
+        XCTAssertTrue(latest.isHittable, "the arrow is at the top of the page, in the pinned strip")
+        attachScreenshot(app, named: "latest-arrow")
+
+        latest.tap()
+        XCTAssertTrue(waitForFootInView(app, newest), "the arrow lands on the newest message")
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.transcript"]), "at the newest message, the transcript's chip is lit")
+        attachScreenshot(app, named: "latest-arrow-landed")
+
+        // Away to the hierarchy, and back down in one tap: the strip stays pinned.
+        app.buttons["detail.sections.hierarchy"].tap()
+        let origin = app.descendants(matching: .any)["hierarchy.node.1040"]
+        XCTAssertTrue(origin.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForVisible(app, origin))
+        XCTAssertFalse(isInView(app, newest), "the hierarchy is far above the newest message")
+        XCTAssertTrue(latest.isHittable)
+        latest.tap()
+        XCTAssertTrue(waitForFootInView(app, newest), "and again from the hierarchy")
+    }
+
     func test_the_summarys_newest_message_button_opens_the_transcript_at_its_end() throws {
         let app = launch()
         let button = app.buttons["detail.summary.transcript"]
