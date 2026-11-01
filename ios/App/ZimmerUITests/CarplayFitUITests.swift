@@ -90,13 +90,16 @@ final class CarplayFitUITests: XCTestCase {
     /// On screen and below the sheet's navigation bar, read from the element's frame. Not
     /// `isHittable`: for a Form row that has entered the accessibility tree but not been laid
     /// out yet, it fails the test outright ("Activation point invalid") rather than answering
-    /// no — a board-shard run on main died that way on the first check after a swipe.
+    /// no, and a board-shard run on main died that way.
     private func belowTheBar(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
         guard element.exists, !element.frame.isEmpty else { return false }
         return element.frame.minY >= barBottom(app) && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.maxY))
     }
 
+    /// The bottom of the Filters sheet's own bar, not the board's behind it, when it can be told apart.
     private func barBottom(_ app: XCUIApplication) -> CGFloat {
+        let sheetBar = app.navigationBars["Filters"]
+        if sheetBar.exists { return sheetBar.frame.maxY }
         let bar = app.navigationBars.firstMatch
         return bar.exists ? bar.frame.maxY : 0
     }
