@@ -248,16 +248,19 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   relaunching, as the web UI keeps a composer's draft.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
-  and never for a session in the trash); the board reads again every thirty seconds while it is
+  and never for a session in the trash); the board reads again every fifteen seconds while it is
   the screen in front and you are not selecting or reordering (ten seconds after a read that
-  failed). Both read at once when the app comes back to the front, and the board tries again two
-  seconds later if that read fails. The board also reads whenever you close a session's page, and
+  failed). Both read at once when the app comes back to the front — opening it, unlocking the
+  phone, switching back from another app — and the board tries again two seconds later if that
+  read fails. The board's own clock holds while the app is in the background and starts again
+  from that read, so a tick that comes due as the phone wakes the app, before its network is
+  back, never takes the place of the read on opening it. The board also reads whenever you close a session's page, and
   when you choose the Sessions tab again (unless it was read in the last five seconds), so a
   session trashed on the web, by a router or by its own agent leaves the board as you return to
   it. A read never replaces the board once a later read has, nor when it was asked before a row
   action on the phone, so a slow answer never puts a trashed row back.
   The web UI streams these changes; the app asks, so a change on a board you are looking at can
-  take up to thirty seconds to show. A session
+  take up to fifteen seconds to show. A session
   opens on its status summary. Its transcript opens at the newest message, as the web UI's
   transcript does, however you get there: the *Transcript* chip, *Newest message* in the summary
   card, or full screen. It keeps scrolling until the end of the conversation is in view, so a

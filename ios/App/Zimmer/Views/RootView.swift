@@ -23,10 +23,9 @@ struct RootView: View {
         }
         // Behind the status bar, where the build strip's gold does not reach.
         .background(Theme.ground.ignoresSafeArea())
-        // Signed out at the front: read the Keychain again. A sign-in that a launch in the
-        // background could not read comes back here; a real sign-out reads back nothing.
+        // Here, at the scene's root, rather than on the board: heard whatever is on screen.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, model.isSignedIn == false { Task { await model.start() } }
+            Task { await model.sceneEntered(phase) }
         }
     }
 }
@@ -94,34 +93,27 @@ struct BuildBadge: View {
     }
 }
 
-/// The board reads itself again every half minute while it is the screen in front (ten seconds
-/// after a read that failed), and at once when the app comes back to the front, trying again
-/// shortly if that read fails. The web UI's board streams its rows, and a list on a phone that
-/// only changes when pulled reads as broken.
+/// The board reads itself again every fifteen seconds while it is the screen in front (ten
+/// seconds after a read that failed). The web UI's board streams its rows, and a list on a phone
+/// that only changes when pulled reads as broken.
 ///
-/// The clock starts again each time the board is shown, so coming back to the board must read
-/// it, or a session trashed meanwhile stays until the half minute is up: closing a session's
+/// Coming back to the front reads the board at once (`AppModel.sceneEntered`, at the scene's
+/// root), and this restarts on that return (`returnsToFront`): a read the phone suspended
+/// mid-flight is cancelled rather than waited out, and the clock starts from the fresh read.
+///
+/// The clock also starts again each time the board is shown, so coming back to the board must
+/// read it, or a session trashed meanwhile stays until the interval is up: closing a session's
 /// page reads it (`SessionDetailView`'s `sessionChanged`), and choosing the Sessions tab again
 /// does (`RootView.tabs`).
 private struct BoardPoller: View {
     @EnvironmentObject private var model: AppModel
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Color.clear
-            .task {
+            .task(id: model.returnsToFront) {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: model.freshness.nextPoll)
                     guard !Task.isCancelled else { return }
-                    await model.pollBoard()
-                }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                guard phase == .active else { return }
-                Task {
-                    await model.pollBoard()
-                    guard model.freshness.lastReadFailed else { return }
-                    try? await Task.sleep(for: BoardFreshness.foregroundRetry)
                     await model.pollBoard()
                 }
             }
