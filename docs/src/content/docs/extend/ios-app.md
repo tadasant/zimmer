@@ -111,8 +111,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
   generated"), *Regenerate*, and *Newest message*, which scrolls to the end of the transcript. The
   page opens here, on the summary, not on the transcript. A session with no summary yet says so in
-  the same card ("Zimmer writes one when the session stops"), with *Generate* and *Newest message*
-  in the same places. The summary is drawn by the transcript's markdown renderer, as
+  the same card, and why: one is written when a running session stops, a session at rest can
+  *Generate* one, and the last attempt's failure is shown when there was one. *Newest message* is
+  in the same place. The summary is drawn by the transcript's markdown renderer, as
   the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
   (a [link to a message does not scroll to it](/limitations/#a-link-to-a-transcript-message-in-the-ios-app-does-not-scroll-to-it)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal

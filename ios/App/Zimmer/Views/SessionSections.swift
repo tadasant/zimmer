@@ -120,10 +120,11 @@ final class ReadingPosition {
 /// Scrolls to `anchor`, the foot of a conversation, and keeps at it until `reached` says the end
 /// is in view. A long conversation can measure taller after the first scroll than before it (a
 /// hundred messages laid out, an image drawn), so one scroll can land where the end was, not
-/// where it is: after each scroll the end is checked, not assumed. Bounded to about a second, so
-/// a reader who scrolls away at once is let go.
+/// where it is. So after each scroll the end's position is read: settled is the end in view and
+/// no longer moving, and until then it scrolls again. Bounded to about a second, so a page that
+/// never settles is let go.
 @MainActor
-func settleAtEnd(_ proxy: ScrollViewProxy, anchor: String, animated: Bool = true, reached: @escaping @MainActor () -> Bool) async {
+func settleAtEnd(_ proxy: ScrollViewProxy, anchor: String, animated: Bool = true, endY: @MainActor () -> CGFloat, reached: @MainActor () -> Bool) async {
     if animated {
         withAnimation(.snappy(duration: 0.35)) { proxy.scrollTo(anchor, anchor: .bottom) }
         try? await Task.sleep(for: .milliseconds(400))
@@ -131,9 +132,12 @@ func settleAtEnd(_ proxy: ScrollViewProxy, anchor: String, animated: Bool = true
         proxy.scrollTo(anchor, anchor: .bottom)
         try? await Task.sleep(for: .milliseconds(100))
     }
-    for _ in 0..<8 where !reached() {
+    for _ in 0..<8 {
+        guard !Task.isCancelled else { return }
+        let before = endY()
         proxy.scrollTo(anchor, anchor: .bottom)
         try? await Task.sleep(for: .milliseconds(100))
+        if reached(), abs(endY() - before) < 1 { return }
     }
 }
 
@@ -214,7 +218,7 @@ struct FullScreenTranscript<Conversation: View>: View {
                         if let target {
                             proxy.scrollTo(ReadingPosition.anchor(target), anchor: .top)
                         } else {
-                            await settleAtEnd(proxy, anchor: Self.endAnchor, animated: false) { atEnd }
+                            await settleAtEnd(proxy, anchor: Self.endAnchor, animated: false, endY: { endY }, reached: { atEnd })
                         }
                         opened = true
                     }
