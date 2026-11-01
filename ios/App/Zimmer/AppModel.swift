@@ -383,11 +383,13 @@ final class AppModel: ObservableObject {
     }
 
     /// The pending page's *Edit*: the words back in the Quick Router, the start forgotten.
+    /// The sheet is presented once the page has popped, as a sheet asked for during a pop can
+    /// be refused and leave its flag set with nothing shown.
     func editStart(_ placeholder: Int) {
         guard let start = pendingStarts[placeholder], start.editable else { return }
         forgetStart(placeholder)
         if path.last == placeholder { path.removeLast() }
-        openQuickRouter(draft: start.prompt ?? "")
+        presentAfterCover { $0.openQuickRouter(draft: start.prompt ?? "") }
     }
 
     /// A start's page left, or its session opened: the placeholder has nothing more to say.
