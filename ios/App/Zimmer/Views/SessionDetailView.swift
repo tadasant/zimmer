@@ -660,6 +660,7 @@ struct SessionDetailView: View {
                         sections: sections,
                         current: jumpedTo ?? SessionPageSection.current(reached: reachedSections, in: sections),
                         jump: { jump(to: $0, proxy) },
+                        latest: model.shownConversation == nil ? nil : { jump(to: .transcript, proxy) },
                         fullScreen: model.shownConversation == nil ? nil : { openFullScreen() }
                     )
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { stripBottom = $0 }

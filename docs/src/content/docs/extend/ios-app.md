@@ -262,8 +262,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   The web UI streams these changes; the app asks, so a change on a board you are looking at can
   take up to fifteen seconds to show. A session
   opens on its status summary. Its transcript opens at the newest message, as the web UI's
-  transcript does, however you get there: the *Transcript* chip, *Newest message* in the summary
-  card, or full screen. It keeps scrolling until the end of the conversation is in view, so a
+  transcript does, however you get there: the *Transcript* chip, the down arrow beside it,
+  *Newest message* in the summary card, or full screen. It keeps scrolling until the end of the conversation is in view, so a
   long one that is still laying out does not stop partway. It follows new messages while you
   are at the end; scrolled back, it stays where you are.
 - **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
@@ -272,7 +272,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   there and opens the row if it is folded, so on a long transcript the hierarchy and the human
   messages do not sit a hundred messages up. The chip for the part being read is filled. On a
   phone's width the words shorten (*Top*, *Humans*), and at the largest text sizes they become
-  symbols. The web UI's session page has no such strip.
+  symbols. After the chips, a down arrow (*Jump to the newest message*) scrolls to the end of the
+  transcript from wherever you are on the page, the way a chat app's does. The web UI's session
+  page has no such strip.
 - **Reads a transcript full screen.** The button at the end of the strip covers the page with the
   conversation alone, without the header, the cards or the composer. It opens at the message you
   were reading on the page, or at the newest if you had not scrolled into the transcript. *Done*
