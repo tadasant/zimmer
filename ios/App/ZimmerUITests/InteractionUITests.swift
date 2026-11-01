@@ -79,9 +79,9 @@ final class InteractionUITests: XCTestCase {
 
     /// The prompt's sheet, opened from its card, until `control` in it is on screen.
     ///
-    /// The card sits between the session's panels and the conversation, and the page opens at
-    /// the newest message on a later turn than the one that lays the conversation out. A tap that
-    /// lands as that scroll moves the page opens nothing — run 39091739178's recording shows the
+    /// The card sits between the session's panels and the conversation, which lays out on a later
+    /// turn than the panels and moves the card as it does. A tap that lands as the page moves
+    /// opens nothing — run 39091739178's recording shows the
     /// page jumping to the transcript under the tap and no sheet. So the conversation is waited
     /// for (the scroll follows on the next turn), the card is dragged into the open part of the
     /// page before each tap (that run's log shows XCUITest tapping where the card was, without

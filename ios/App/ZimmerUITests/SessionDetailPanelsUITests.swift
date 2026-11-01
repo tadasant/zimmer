@@ -220,7 +220,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         button.tap()
     }
 
-    /// The page opens at its newest message, so what is asked for may be above or below.
+    /// What is asked for may be above or below where the page is.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
         // Ask for hittability only of an element on the page with a frame: asking it of one the
         // lazy list has not laid out throws rather than answering no.
@@ -237,7 +237,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
                 && element.frame.maxY <= bottom
         }
         for _ in 0..<8 where !inView() {
-            // Not laid out yet means above: the page opens at its newest message, under the panels.
+            // Not laid out yet: try above first, then below.
             if !element.exists || element.frame.isEmpty || element.frame.midY < app.frame.midY {
                 app.swipeDown(velocity: .slow)
             } else {

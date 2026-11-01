@@ -117,6 +117,26 @@ final class ReadingPosition {
     }
 }
 
+/// Scrolls to `anchor`, the foot of a conversation, and keeps at it until `reached` says the end
+/// is in view. A long conversation can measure taller after the first scroll than before it (a
+/// hundred messages laid out, an image drawn), so one scroll can land where the end was, not
+/// where it is: after each scroll the end is checked, not assumed. Bounded to about a second, so
+/// a reader who scrolls away at once is let go.
+@MainActor
+func settleAtEnd(_ proxy: ScrollViewProxy, anchor: String, animated: Bool = true, reached: @escaping @MainActor () -> Bool) async {
+    if animated {
+        withAnimation(.snappy(duration: 0.35)) { proxy.scrollTo(anchor, anchor: .bottom) }
+        try? await Task.sleep(for: .milliseconds(400))
+    } else {
+        proxy.scrollTo(anchor, anchor: .bottom)
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+    for _ in 0..<8 where !reached() {
+        proxy.scrollTo(anchor, anchor: .bottom)
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+}
+
 extension View {
     /// Tells `position` when this message's top crosses `edge`, the top of what is in view, in
     /// global coordinates. Only on the crossing, so scrolling between messages costs nothing.
@@ -194,7 +214,7 @@ struct FullScreenTranscript<Conversation: View>: View {
                         if let target {
                             proxy.scrollTo(ReadingPosition.anchor(target), anchor: .top)
                         } else {
-                            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                            await settleAtEnd(proxy, anchor: Self.endAnchor, animated: false) { atEnd }
                         }
                         opened = true
                     }
