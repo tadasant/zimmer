@@ -764,7 +764,6 @@ struct GoalPickerSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .disabled(saving)
                             .accessibilityIdentifier("goal.option.\(goal.id)")
                         }
                     }
@@ -774,10 +773,10 @@ struct GoalPickerSheet: View {
                         .lineLimit(2...6)
                         .font(.subheadline)
                         .accessibilityIdentifier("goal.custom.field")
-                    Button(saving ? "Saving…" : "Use these words") {
+                    Button("Use these words") {
                         choose(custom.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
-                    .disabled(saving || custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("goal.custom.save")
                 } header: {
                     Text("In your own words")
@@ -785,7 +784,6 @@ struct GoalPickerSheet: View {
                 if !(current ?? "").isEmpty {
                     Section {
                         Button("Clear the goal", role: .destructive) { choose("") }
-                            .disabled(saving)
                             .accessibilityIdentifier("goal.clear")
                     }
                 }
