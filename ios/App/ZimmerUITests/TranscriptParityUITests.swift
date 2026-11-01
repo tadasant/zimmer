@@ -102,7 +102,7 @@ final class TranscriptParityUITests: XCTestCase {
         for marks in ["](", "**", "`"] {
             XCTAssertFalse(paragraph.label.contains(marks), "no \"\(marks)\" left as typed: \(paragraph.label)")
         }
-        // The page opens on its summary, at the top.
+        // The page opens at the newest message; the summary is at the top.
         scrollUntilHittable(app, paragraph)
         attachScreenshot(app, named: "status-summary")
         paragraph.press(forDuration: 1.5)
@@ -189,7 +189,7 @@ final class TranscriptParityUITests: XCTestCase {
         return app
     }
 
-    /// Swipe toward `element`, above or below, until it can be tapped.
+    /// The page opens at its newest message; swipe toward `element` until it can be tapped.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
         // Below the navigation bar and the section strip pinned under it too: isHittable says
         // yes under them, where a tap lands on them.

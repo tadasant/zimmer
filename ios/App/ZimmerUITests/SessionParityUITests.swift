@@ -66,7 +66,7 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertEqual(app.descendants(matching: .any)["detail.agentRoot"].label, "Agent root zimmer")
         XCTAssertFalse(app.descendants(matching: .any)["detail.metadata"].label.contains("zimmer"))
         attachScreenshot(app, named: "detail")
-        // Top brings the header, and the chip, on screen wherever the page has been scrolled.
+        // The page opens on the conversation; Top brings the header, and the chip, on screen.
         app.buttons["detail.sections.overview"].tap()
         let root = app.descendants(matching: .any)["detail.agentRoot"]
         XCTAssertTrue(waitForHittable(root), "the root chip is on screen at the top of the page")
@@ -257,7 +257,7 @@ final class BoardViewUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1038"])
         let child = app.descendants(matching: .any)["hierarchy.node.1042"]
         XCTAssertTrue(child.waitForExistence(timeout: timeout))
-        // The hierarchy may be above or below what is in view: swipe toward it.
+        // The page opens at its newest message, so the hierarchy may be above: swipe toward it.
         for _ in 0..<6 where !child.isHittable {
             if child.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
         }
