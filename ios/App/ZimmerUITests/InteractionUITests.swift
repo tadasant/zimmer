@@ -48,13 +48,17 @@ final class InteractionUITests: XCTestCase {
         let message = app.descendants(matching: .any)["detail.message.0"]
         XCTAssertTrue(message.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.2"].exists)
-        // Below the session's cards the conversation starts under the composer, where an
-        // element still reads as hittable: scroll until it is clear of the message field.
-        let field = app.descendants(matching: .any)["followup.field"]
-        for _ in 0..<6 where message.frame.maxY > field.frame.minY - 24 { app.swipeUp(velocity: .slow) }
-        message.press(forDuration: 1.0)
+        // The page opens on its summary, with the conversation under the composer, where an
+        // element still reads as hittable. A person goes to it by the transcript's chip, which
+        // lands at the newest message. The chip lights as it is tapped, before the page has
+        // scrolled, so the press waits for the message to stop moving.
+        let transcript = app.buttons["detail.sections.transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: timeout))
+        transcript.tap()
+        XCTAssertTrue(waitForSelected(transcript), "the transcript's chip is lit")
+        XCTAssertTrue(waitForStill(message), "the jump to the transcript has landed")
         let fork = app.buttons["Fork from Here"].firstMatch
-        XCTAssertTrue(fork.waitForExistence(timeout: timeout))
+        XCTAssertTrue(openMenu(app, on: message, showing: fork))
         fork.tap()
         let confirm = app.buttons["Fork"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
@@ -101,6 +105,43 @@ final class InteractionUITests: XCTestCase {
             if control.waitForExistence(timeout: attempt == attempts - 1 ? timeout : 5) { return true }
         }
         return false
+    }
+
+    /// The message's context menu, opened by a long press, until `item` in it is on screen.
+    ///
+    /// A press on a bubble flush against the quick replies' top edge can bring no menu: run
+    /// 41290627582 held the first message's middle for a second there, and its recording shows
+    /// no lift. So the message is dragged into the open part of the page before each press, and
+    /// a press that brought no menu presses again; never while the menu is up.
+    private func openMenu(_ app: XCUIApplication, on message: XCUIElement, showing item: XCUIElement) -> Bool {
+        let attempts = 3
+        for attempt in 0..<attempts {
+            if !item.exists {
+                bringIntoOpen(app, message)
+                message.press(forDuration: 1.0)
+            }
+            if item.waitForExistence(timeout: attempt == attempts - 1 ? timeout : 5) { return true }
+        }
+        return false
+    }
+
+    /// `element`'s frame unchanged across two reads a moment apart: a scroll still settling is
+    /// waited for rather than timed.
+    private func waitForStill(_ element: XCUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = CGRect.null
+        while Date() < deadline {
+            let frame = element.exists ? element.frame : .null
+            if !frame.isEmpty, frame == last { return true }
+            last = frame
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        }
+        return false
+    }
+
+    private func waitForSelected(_ element: XCUIElement) -> Bool {
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: element)
+        return XCTWaiter().wait(for: [selected], timeout: timeout) == .completed
     }
 
     /// Drags the page until `element` sits in the middle of what is open: below the bar and the
