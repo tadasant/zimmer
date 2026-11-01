@@ -67,7 +67,7 @@ struct QueueCard: View {
         }
         .sheet(item: $editing) { message in
             QueuedMessageEditor(message: message) { text in
-                await model.editQueued(message, content: text) ? nil : model.error
+                Task { await model.editQueued(message, content: text) }
             }
         }
         .sheet(isPresented: $managing) { QueueManager(model: model) }
@@ -121,20 +121,19 @@ private struct QueueManager: View {
     }
 }
 
-/// Rewrite one queued message before it is delivered. `save` answers the server's refusal,
-/// or nil when it took the edit.
+/// One queued message's words, for editing. Save closes the editor at once; the queue behind
+/// shows the new words, and a refusal over the page with the old ones back.
 private struct QueuedMessageEditor: View {
     let message: QueuedMessage
-    let save: (String) async -> ZimmerError?
+    /// Saves the text. The editor closes at once; the queue behind shows the new words, and a
+    /// refusal over the page with the old ones back.
+    let save: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var saving = false
-    @State private var error: ZimmerError?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let error { ErrorBanner(error: error).padding([.horizontal, .top]) }
                 TextEditor(text: $text)
                     .scrollContentBackground(.hidden)
                     .padding(12)
@@ -149,15 +148,11 @@ private struct QueuedMessageEditor: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button(saving ? "Saving…" : "Save") {
-                            Task {
-                                saving = true
-                                error = await save(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                                saving = false
-                                if error == nil { dismiss() }
-                            }
+                        Button("Save") {
+                            save(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                            dismiss()
                         }
-                        .disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("queue.edit.save")
                     }
                 }
@@ -170,24 +165,29 @@ private struct QueuedMessageEditor: View {
 // MARK: - The queue's calls
 
 extension SessionDetailModel {
+    /// The row leaves the queue at the tap; the page is read again once the server has taken
+    /// the message, and only then — a reload would clear a refusal from view.
     func sendQueuedNow(_ message: QueuedMessage) async {
-        // The page reloads only on success: a reload would clear the refusal from view.
-        if await changeQueue("Sent now — the current turn ends.", { try await $0.sendQueuedNow(self.id, message: message.id) }) {
+        if await changeQueue("Sent now — the current turn ends.", removing: message, { try await $0.sendQueuedNow(self.id, message: message.id) }) {
             await load()
         }
     }
 
     func deleteQueued(_ message: QueuedMessage) async {
-        await changeQueue("Removed from the queue") { try await $0.deleteQueued(self.id, message: message.id) }
+        await changeQueue("Removed from the queue", removing: message) { try await $0.deleteQueued(self.id, message: message.id) }
     }
 
+    /// The caller has already moved the row; the server is told where.
     func moveQueued(_ message: QueuedMessage, to position: Int) async {
         await changeQueue("Moved to \(position)") { _ = try await $0.moveQueued(self.id, message: message.id, to: position) }
     }
 
-    /// Whether the server took the edit; the editor stays open with the text when it did not.
+    /// The row reads the new words at the tap. Whether the server took the edit.
+    @discardableResult
     func editQueued(_ message: QueuedMessage, content: String) async -> Bool {
-        await changeQueue("Queued message updated") { _ = try await $0.editQueued(self.id, message: message.id, content: content) }
+        var edited = message
+        edited.content = content
+        return await changeQueue("Queued message updated", replacing: edited) { _ = try await $0.editQueued(self.id, message: message.id, content: content) }
     }
 
     /// Remove an "also senior" edge from the hierarchy, then show the hierarchy as it now is.
@@ -202,17 +202,27 @@ extension SessionDetailModel {
         }
     }
 
-    /// One change, then the queue as the server now has it.
+    /// One change, shown at the tap — a row taken out (`removing`) or rewritten (`replacing`) —
+    /// then the queue as the server now has it. A refusal puts the queue back as it was, and
+    /// shows over the page.
     @discardableResult
-    private func changeQueue(_ done: String, _ change: (ZimmerAPI) async throws -> Void) async -> Bool {
+    private func changeQueue(_ done: String, removing: QueuedMessage? = nil, replacing: QueuedMessage? = nil,
+                             _ change: (ZimmerAPI) async throws -> Void) async -> Bool {
+        let before = queue
+        if let removing { queue.removeAll { $0.id == removing.id } }
+        if let replacing, let index = queue.firstIndex(where: { $0.id == replacing.id }) { queue[index] = replacing }
+        notice = done
+        error = nil
+        Haptics.success()
+        actionsInFlight += 1
+        defer { actionsInFlight -= 1 }
         do {
             try await change(api)
             queue = try await api.queue(id)
-            notice = done
-            error = nil
-            Haptics.success()
             return true
         } catch {
+            queue = before
+            if notice == done { notice = nil }
             fail(error)
             if let fresh = try? await api.queue(id) { queue = fresh }
             return false

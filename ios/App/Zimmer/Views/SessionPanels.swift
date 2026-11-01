@@ -728,13 +728,13 @@ private struct HumanMessagesRow: View {
 struct GoalPickerSheet: View {
     let goals: [GoalOption]
     let current: String?
-    let save: (String) async -> Bool
+    /// Saves the goal. The sheet closes at once; the page behind shows the goal, and a refusal.
+    let save: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var custom = ""
-    @State private var saving = false
 
     // Spelled out: the private state makes the memberwise one private to this file.
-    init(goals: [GoalOption], current: String?, save: @escaping (String) async -> Bool) {
+    init(goals: [GoalOption], current: String?, save: @escaping (String) -> Void) {
         self.goals = goals
         self.current = current
         self.save = save
@@ -764,7 +764,6 @@ struct GoalPickerSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .disabled(saving)
                             .accessibilityIdentifier("goal.option.\(goal.id)")
                         }
                     }
@@ -774,10 +773,10 @@ struct GoalPickerSheet: View {
                         .lineLimit(2...6)
                         .font(.subheadline)
                         .accessibilityIdentifier("goal.custom.field")
-                    Button(saving ? "Saving…" : "Use these words") {
+                    Button("Use these words") {
                         choose(custom.trimmingCharacters(in: .whitespacesAndNewlines))
                     }
-                    .disabled(saving || custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("goal.custom.save")
                 } header: {
                     Text("In your own words")
@@ -785,7 +784,6 @@ struct GoalPickerSheet: View {
                 if !(current ?? "").isEmpty {
                     Section {
                         Button("Clear the goal", role: .destructive) { choose("") }
-                            .disabled(saving)
                             .accessibilityIdentifier("goal.clear")
                     }
                 }
@@ -811,12 +809,7 @@ struct GoalPickerSheet: View {
     }
 
     private func choose(_ value: String) {
-        guard !saving else { return }
-        Task {
-            saving = true
-            let saved = await save(value)
-            saving = false
-            if saved { dismiss() }
-        }
+        save(value)
+        dismiss()
     }
 }

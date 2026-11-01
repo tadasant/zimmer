@@ -246,6 +246,31 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   It is recorded as your message if the app's connection acts on your behalf (below).
   What you type and do not send is kept per session for seven days, across leaving the screen and
   relaunching, as the web UI keeps a composer's draft.
+- **Shows every action at the tap.** Nothing you do waits for the server before the screen
+  shows it. A row swiped to the trash leaves the board as your finger lifts, with *Undo* offered.
+  A snooze, a hide, a restore, a rename, a restart, a pause, a heartbeat switch or a promotion
+  changes the row as it is tapped, and a dragged row stays where it was dropped. A follow-up
+  leaves the composer and sits under the conversation marked *Sending…*, then *Sent* or *Queued*.
+  A prompt's card goes as it is answered; a queued message leaves the queue as it is deleted or
+  sent now; a notification reads as read, or goes, as it is swiped; a trigger's switch moves as
+  it is flipped. The Quick Router, the new-session form and *Fork from Here* open the session's
+  page as the start is asked for, titled *Starting…*, with the words on their way, and the
+  session fills the page in once it exists. Each of these asks the server after showing, and the
+  server's own answer replaces the guess.
+- **Puts an action back when the server refuses it.** When the server refuses, or cannot be
+  reached, the screen shows what it showed before: the row returns, the switch moves back, the
+  card comes back, and the refusal shows over the screen. A message that was not sent stays under
+  the conversation marked *Not sent*, with *Try again* and *Edit*, which puts the words (and the
+  photos and files) back in the composer. A session that did not start says so on its page, with
+  *Try again*, and for a Quick Router start *Edit*, which puts the words back in the Quick Router.
+  Nothing typed is lost to a refusal. A refusal the server has to make before anything goes, a
+  trash over queued messages, asks first: the session's page asks before it closes, and a row
+  trashed from the board comes back for the question.
+- **Never lets a read undo an action.** A read of the board or the page that lands while an
+  action is out keeps what the action showed. The actions in flight are laid over every read
+  until each is answered, so a slow answer never puts a trashed row back, and *Undo* tapped
+  before the trash has been answered waits for that answer rather than asking the server to
+  restore a session it has not archived yet.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
   and never for a session in the trash); the board reads again every fifteen seconds while it is
@@ -293,10 +318,12 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   form, one control per field in the banner's order: a switch, a menu of choices, a number or a
   text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
   before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server
-  nobody decided. Only a connection that acts on your behalf may answer. A relay-only one shows
-  the server's refusal in the form.
+  nobody decided; the sheet closes and the card goes as the answer is given. Only a connection
+  that acts on your behalf may answer. A relay-only one gets the server's refusal over the page,
+  with the card back.
 - **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
-  confirmation, the fork, a new session holding the conversation up to that message, opens on top.
+  confirmation, the fork's page opens on top at once, on the message it forks from; the fork, a
+  new session holding the conversation up to that message, fills it in once the server has made it.
 - **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
   a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
   confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
@@ -306,13 +333,15 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
 - **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
   the deployment's reprioritizing session re-ranks it and writes the order back.
 - **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
-  shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session.
+  shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session
+  — the row back as it read before the trash, at once. From the session's own page, the page
+  closes as the trash is tapped, as the web page leaves for the board.
   A session with a turn in flight goes outright, ending the turn
   (`POST /api/v1/sessions/:id/archive` with `end_turn`). A session with messages queued for it is
   asked about first, naming the discard: the web UI's *Archive anyway* (`force`). Undo does not
   bring back discarded messages or resume an ended turn.
   Restores one from the trash.
-- **Starts a session from a sentence** through the Quick Router, then opens it. The Quick Router is
+- **Starts a session from a sentence** through the Quick Router, and opens it at once. The Quick Router is
   where the web UI puts it: a field pinned to the foot of the Sessions screen ("What do you want
   to do?", the web board's prompt box), and a button in the bottom-right corner of every other
   screen (the web's bubble), which opens the sheet. The sheet is the web bubble's panel: the

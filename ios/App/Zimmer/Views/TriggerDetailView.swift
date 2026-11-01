@@ -460,16 +460,24 @@ struct TriggerDetailView: View {
         }
     }
 
+    /// The switch moves at the tap; the server is asked after, and a refusal moves it back.
     private func toggle() async {
-        guard !toggling, detail != nil else { return }
+        guard !toggling, let before = detail?.trigger else { return }
         toggling = true
         defer { toggling = false }
+        var guess = before
+        guess.status = before.isEnabled ? "disabled" : "enabled"
+        detail?.trigger = guess
+        notice = guess.isEnabled ? "\(guess.name) on" : "\(guess.name) off"
+        error = nil
+        Haptics.success()
         do {
             let updated = try await app.api.toggleTrigger(id)
             detail?.trigger = updated
             notice = updated.isEnabled ? "\(updated.name) on" : "\(updated.name) off"
-            Haptics.success()
         } catch {
+            detail?.trigger = before
+            notice = nil
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()
         }

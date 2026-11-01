@@ -143,3 +143,37 @@ final class BoardViewTests: XCTestCase {
         XCTAssertEqual(result.errors.map(\.id), [1042], "a session mid-turn is refused, the rest go")
     }
 }
+
+/// A drag shows where it left the rows before the server has worked out the precedence.
+final class BoardViewLocalOrderTests: XCTestCase {
+    private let rows = [
+        SessionSummary(id: 1, status: .waiting, priorityClass: "spot", precedence: 9),
+        SessionSummary(id: 2, status: .waiting, priorityClass: "spot", precedence: 5),
+        SessionSummary(id: 3, status: .waiting, priorityClass: "spot", precedence: 1),
+        SessionSummary(id: 4, status: .running, priorityClass: "priority", precedence: 0),
+    ]
+
+    func testWithoutAnOrderTheServersPrecedenceRules() {
+        XCTAssertEqual(BoardView.yourBoard.sections(rows).first?.sessions.map(\.id), [4, 1, 2, 3])
+    }
+
+    func testADroppedOrderIsShownUntilTheNextRead() {
+        let sections = BoardView.yourBoard.sections(rows, order: [4, 3, 1, 2])
+        XCTAssertEqual(sections.first?.sessions.map(\.id), [4, 3, 1, 2])
+    }
+
+    func testRankedHalvesEachFollowTheOrderTheyAreNamedIn() {
+        let sections = BoardView.ranked.sections(rows, order: [3, 1, 2])
+        XCTAssertEqual(sections.map { $0.sessions.map(\.id) }, [[4], [3, 1, 2]])
+    }
+
+    func testRowsTheOrderDoesNotNameFollowInTheirOwnOrder() {
+        let sections = BoardView.yourBoard.sections(rows, order: [3])
+        XCTAssertEqual(sections.first?.sessions.map(\.id), [3, 4, 1, 2], "a row that arrived since the drag keeps its rank, after the dragged ones")
+    }
+
+    func testTheDatedViewsIgnoreAnOrder() {
+        let dated = BoardView.created.sections(rows, order: [3, 2, 1, 4]).first?.sessions.map(\.id)
+        XCTAssertEqual(dated, BoardView.created.sections(rows).first?.sessions.map(\.id))
+    }
+}
