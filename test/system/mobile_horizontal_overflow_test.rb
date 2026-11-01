@@ -2335,4 +2335,21 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "a[data-live-settings-link]"
     assert_no_horizontal_overflow("live overview")
   end
+  # The page a Quick Router start opens on (app/javascript/lib/session_starts.js),
+  # with the longest state it draws: a refusal, with its two buttons.
+  test "the starting page does not overflow horizontally on a phone" do
+    visit starting_sessions_path
+    assert_selector "[data-controller='session-start']"
+    page.execute_script(<<~JS)
+      const page = document.querySelector("[data-controller='session-start']")
+      page.querySelector("[data-session-start-target='nothing']").classList.add("hidden")
+      page.querySelector("[data-session-start-target='prompt']").textContent = "Investigate the flaky test_session_state_machine_transitions_from_waiting_to_running and land a fix"
+      page.querySelector("[data-session-start-target='failed']").classList.remove("hidden")
+      page.querySelector("[data-session-start-target='error']").textContent = "The server answered 503. Router agent root not configured: zimmer-orchestrator-with-a-long-name"
+    JS
+    assert_text "The session did not start."
+
+    assert_no_horizontal_overflow("starting page")
+    page.save_screenshot(Rails.root.join("tmp", "capybara", "proof-starting-page-375.png"))
+  end
 end

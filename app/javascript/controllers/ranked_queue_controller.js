@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
+import { isPendingRemoval } from "lib/optimistic_actions"
 import Sortable from "sortablejs"
 
 // The Ranked view: managing the spot queue in place.
@@ -158,6 +159,10 @@ export default class extends Controller {
     }
 
     if (!admitted || !this.liveInsertValue || !envelope.row) return
+    // A row this page took to the trash at the click, whose archive the server has
+    // not yet answered: a status that was queued before the archive committed must
+    // not put it back.
+    if (isPendingRemoval("session", envelope.id)) return
     this.insertRow(envelope)
   }
 
@@ -295,9 +300,14 @@ export default class extends Controller {
 
   // ---- Promote / demote -----------------------------------------------------
 
+  // The row crosses to the other section at the click; the server is asked after,
+  // and its precedence lands when it answers. A refusal is the usual rollback.
   demote(event) {
     const row = this.rowFor(event.currentTarget.dataset.sessionId)
     this.clearError()
+    const origin = { list: row.parentElement, next: row.nextElementSibling, spot: false }
+    this.moveToSpot(row)
+    this.sortSpotRows()
 
     this.patch(`/sessions/${row.dataset.sessionId}/update_scheduling_class`, {
       scheduling_class: "spot",
@@ -305,29 +315,29 @@ export default class extends Controller {
     })
       .then((payload) => {
         this.applyServerValues(payload)
-        this.moveToSpot(row)
         this.sortSpotRows()
       })
-      .catch((error) => this.rollback(error, row))
+      .catch((error) => this.rollback(error, row, origin))
   }
 
   promote(event) {
     const row = this.rowFor(event.currentTarget.dataset.sessionId)
     this.clearError()
+    const origin = { list: row.parentElement, next: row.nextElementSibling, spot: true }
+    this.moveToPriority(row)
 
     this.patch(`/sessions/${row.dataset.sessionId}/update_scheduling_class`, {
       scheduling_class: "priority"
     })
       .then((payload) => {
         this.applyServerValues(payload)
-        this.moveToPriority(row)
         // Promoting a held session starts it. The row's status pill flips to
         // Running over the ranked stream, so a start that worked needs no
         // message here — but one the server refused (a session paused until a
         // chosen time, say) would otherwise look like it had started.
         if (payload && payload.start_outcome === "refused") this.showError(payload.start_message)
       })
-      .catch((error) => this.rollback(error, row))
+      .catch((error) => this.rollback(error, row, origin))
   }
 
   // ---- DOM plumbing ---------------------------------------------------------
@@ -499,7 +509,16 @@ export default class extends Controller {
   // A write that did not land must not leave the page claiming it did. Reloading
   // is the honest rollback: the server's order is the only one that matters, and
   // a failed reorder may have moved several rows.
-  rollback(error, row) {
+  //
+  // `origin` is where a promoted or demoted row sat before it crossed at the
+  // click: it goes straight back there, rather than sitting in the wrong section
+  // until the reload.
+  rollback(error, row, origin) {
+    if (row && origin && origin.list) {
+      origin.list.insertBefore(row, origin.next && origin.next.parentElement === origin.list ? origin.next : null)
+      this.setRowMode(row, origin.spot)
+      this.refreshCounts()
+    }
     if (row) this.revertRow(row)
     this.showError(`${error.message}. Reloading to show the saved order.`)
     setTimeout(() => window.location.reload(), 2500)

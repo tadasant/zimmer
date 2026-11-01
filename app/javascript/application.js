@@ -6,6 +6,9 @@
 import "lib/frame_missing_recovery"
 import "@hotwired/turbo-rails"
 import "controllers"
+// Shows a mutating Turbo submission's outcome at the click and puts it back on a
+// refusal; see the module for which submissions and why.
+import "lib/optimistic_actions"
 
 // Prevent Turbo Stream updates from replacing elements that are being edited.
 // When a turbo-frame has data-editing="true" (set by editable-title controller),

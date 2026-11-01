@@ -27,7 +27,7 @@ lifecycle state and CI colour — and three buttons that act without leaving the
 | **Merge** | Offered only on an open, CI-green PR. See below. |
 | **Snooze** | The [board-visibility](/sessions/board-visibility/) control. Presentation only — it does not pause, start or stop anything. |
 | **CarPlay fit** | A chip, when the session has been judged, saying whether the next thing it needs from you can be done by voice from a car (`CarPlay-ok` or `Laptop only`, with the reason), struck through once the session has moved past that judgement; and a car icon beside Snooze that toggles CarPlay-ok by hand, with a chevron for laptop-only, a reason or Clear. See [CarPlay fit](/sessions/carplay-fit/). Presentation and triage only — it never reorders the board. The Filters form's **CarPlay fit** radios narrow the board on it; the default is every row. |
-| **Trash** | Archives the session. The same `POST /sessions/:id/archive` every other Trash affordance posts to, so the queued-message speed bump and the Undo toast come with it. |
+| **Trash** | Archives the session. The same `POST /sessions/:id/archive` every other Trash affordance posts to, so the queued-message speed bump and the Undo toast come with it. The row leaves at the click and comes back if the server refuses. |
 
 ## The order, and dragging it
 

@@ -6,6 +6,8 @@
 # this controller resolves the elicitation and broadcasts the removal of the
 # elicitation banner via Turbo Streams.
 class ElicitationsController < ApplicationController
+  include TurboFlash
+
   # What the flash says for each resolution. "cancel" is the banner's Dismiss
   # button: the request is answered with the protocol's cancel action rather than
   # left pending until it expires.
@@ -20,14 +22,22 @@ class ElicitationsController < ApplicationController
     @elicitation = Elicitation.find(params[:id])
     @session = @elicitation.session
 
+    # Answered elsewhere, or expired: the banner is gone either way, and the page
+    # the click came from is told so in place. A stream, not a redirect: the
+    # banner's fetch would follow a redirect to an HTML page that renders nothing
+    # as a stream, and the banner would sit with its buttons disabled.
     unless @elicitation.pending?
-      redirect_to @session, alert: "This elicitation has already been resolved."
+      respond_with_flash(
+        alert: "This elicitation has already been resolved.",
+        location: @session,
+        streams: [ turbo_stream.remove("elicitation_#{@elicitation.id}") ]
+      )
       return
     end
 
     action_type = params[:action_type]
     unless Elicitation::RESOLVE_ACTIONS.include?(action_type)
-      redirect_to @session, alert: "Invalid action."
+      respond_with_flash(alert: "Invalid action.", location: @session, status: :unprocessable_entity)
       return
     end
 

@@ -1,5 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 import { partitionMedia } from "lib/media_kinds"
+import { csrfToken } from "lib/csrf"
+import { startSession, DRAFT_KEY } from "lib/session_starts"
 
 // Handles the dashboard quick prompt:
 //
@@ -21,6 +23,13 @@ import { partitionMedia } from "lib/media_kinds"
 // Client-side guards reject oversize files and excess counts before the form
 // posts so the user gets immediate feedback instead of a server-side redirect
 // with a flash. Values are sourced from server-side constants via data attrs.
+//
+// A submit does not wait for the server. The form's fields and files go out as a
+// JSON request (lib/session_starts.js) and the browser visits the starting page
+// at once, with the words on it; the session's page replaces it when the id
+// comes, and a refusal shows there with the words kept for Edit, which puts them
+// back in this box. The forms stay `data-turbo="false"` native forms, so a
+// browser that cannot run this still posts and follows the redirect.
 //
 // The photo input accepts everything a phone's library holds, which is wider than
 // the four types ImageStorageService can store. A selection is re-routed before it
@@ -56,6 +65,46 @@ export default class extends Controller {
 
   connect() {
     this.submitting = false
+    this.restoreDraft()
+  }
+
+  // The words a refused start handed back from the starting page's Edit. Not on
+  // Turbo's cached preview of the board, which the fresh page replaces a moment
+  // later — a draft taken there would be gone before the real box could show it.
+  restoreDraft() {
+    if (document.documentElement.hasAttribute("data-turbo-preview")) return
+    let draft = null
+    try {
+      draft = sessionStorage.getItem(DRAFT_KEY)
+      if (draft) sessionStorage.removeItem(DRAFT_KEY)
+    } catch (error) {
+      return
+    }
+    if (!draft) return
+    if (this.hasTextareaTarget && !this.textareaTarget.value) this.textareaTarget.value = draft
+    if (this.hasMobileTextareaTarget && !this.mobileTextareaTarget.value) this.mobileTextareaTarget.value = draft
+  }
+
+  // Ask for the session and open its page now. The FormData is read before the
+  // visit tears the form down; the prompt rides along for the starting page.
+  start(form, textarea) {
+    const prompt = textarea.value.trim()
+    if (!prompt) {
+      textarea.focus()
+      return false
+    }
+    const body = new FormData(form)
+    const url = form.action
+    startSession({
+      prompt,
+      title: "Quick Router",
+      request: () => fetch(url, {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken(), "Accept": "application/json" },
+        body
+      })
+    })
+    return true
   }
 
   disconnect() {
@@ -74,8 +123,14 @@ export default class extends Controller {
   submitDesktop() {
     if (this.submitting) return
     this.submitting = true
-    this.textareaTarget.readOnly = true
-    this.desktopFormTarget.requestSubmit()
+    if (!this.start(this.desktopFormTarget, this.textareaTarget)) this.submitting = false
+  }
+
+  // The desktop form's own submit (a click on a submit button, or Enter in a
+  // browser that submits on it): the same start, instead of the native post.
+  submitDesktopForm(event) {
+    event.preventDefault()
+    this.submitDesktop()
   }
 
   openDesktopImage() {
@@ -133,13 +188,10 @@ export default class extends Controller {
   }
 
   submitMobile(event) {
-    if (this.submitting) {
-      event.preventDefault()
-      return
-    }
+    event.preventDefault()
+    if (this.submitting) return
     this.submitting = true
-    this.mobileSubmitTarget.disabled = true
-    this.mobileSubmitTarget.textContent = "Submitting…"
+    if (!this.start(this.mobileFormTarget, this.mobileTextareaTarget)) this.submitting = false
   }
 
   openMobileImage() {

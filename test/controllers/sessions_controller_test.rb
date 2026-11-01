@@ -1460,7 +1460,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
       as: :turbo_stream,
       headers: { "HTTP_REFERER" => session_url(session) }
 
-    assert_response :success
+    # A stream, not a redirect — with the 422 a page that showed the trash at the
+    # click reads as "put it back".
+    assert_response :unprocessable_entity
     assert_not session.reload.archived?
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/>Archive anyway</, response.body)
@@ -1498,7 +1500,10 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post archive_session_url(session), as: :turbo_stream
 
-    assert_response :success
+    # 422, not 200: the dashboard takes the card away at the click and reads a
+    # non-2xx answer as "put it back" (optimistic_actions.js). Turbo renders the
+    # alert stream whatever the status.
+    assert_response :unprocessable_entity
     assert_not session.reload.archived?, "the first click must not archive"
     assert_equal "pending", session.enqueued_messages.sole.status
     assert_match(/1 queued message that has not been delivered/, response.body)
@@ -1774,7 +1779,9 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post pause_session_url(session), as: :turbo_stream
 
-    assert_response :success
+    # A stream with the 422 a page that said "Pausing…" at the click reads as
+    # "put the button back".
+    assert_response :unprocessable_entity
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/Cannot pause session that is not running/, response.body)
   end
@@ -3886,8 +3893,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post restart_session_url(session), as: :turbo_stream
 
-    assert_response :success
+    # A stream, not a redirect, carrying the refusal in #flash with the 422 a page
+    # that said "Restarting…" at the click reads as "put the button back".
+    assert_response :unprocessable_entity
     assert_equal "text/vnd.turbo-stream.html; charset=utf-8", response.content_type
+    assert_match(/target="flash"/, response.body)
+    assert_match(/Cannot restart a session that is running/, response.body)
     assert_equal "running", session.reload.status
   end
 

@@ -164,10 +164,9 @@
 
       <%# Trash. Posts to the same #archive action every other Trash affordance in
           the app posts to, so the queued-message speed bump and the Undo toast come
-          with it — and the row leaves over the turbo stream that action already
-          answers with, rather than being taken away optimistically on click. That
-          matters here: the first click over a non-empty queue does NOT archive, and
-          a row the browser had already removed would claim otherwise. %>
+          with it. The row leaves at the click (app/javascript/lib/optimistic_actions.js)
+          and comes back on the 422 the first click over a non-empty queue answers
+          with, so a refused trash never reads as a trashed session. %>
       <%= button_to archive_session_path(agent_session),
             method: :post,
             form: { data: { turbo: true }, class: "shrink-0" },

@@ -5,6 +5,7 @@
 # If this application is deployed in a multi-user environment, authentication and
 # authorization must be added via before_action callbacks.
 class EnqueuedMessagesController < ApplicationController
+  include TurboFlash
   include PendingMessageDelivery
   include ActionView::RecordIdentifier
   include WebUiHumanMessageCapture
@@ -384,7 +385,9 @@ class EnqueuedMessagesController < ApplicationController
         end
       end
     else
-      redirect_to @session, alert: result.error || "Failed to send interrupt"
+      # A 422 stream rather than a redirect: the page takes the message out of the
+      # queue at the click and reads a non-2xx answer as "put it back".
+      respond_with_flash(alert: result.error || "Failed to send interrupt", location: @session, status: :unprocessable_entity)
     end
   end
 
