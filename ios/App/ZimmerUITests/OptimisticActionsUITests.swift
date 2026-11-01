@@ -32,14 +32,14 @@ final class OptimisticActionsUITests: XCTestCase {
         assertBeforeTheAnswer(tapped)
         attachScreenshot(app, named: "trash-at-the-tap")
 
-        // The refusal: the row is back, the Undo gone, the refusal over the board.
+        // The refusal: a toast says the row was not moved, the row is back, the Undo gone. The
+        // refusal's banner is the list's first row too, which a list the press and the menu
+        // scrolled may hold off screen; the toast at the foot is what this looks for.
+        let toast = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'toast' AND label CONTAINS 'Not moved to trash'")).firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: timeout), "the refusal shows over the board")
+        attachScreenshot(app, named: "trash-put-back")
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "the refused trash put the row back")
         XCTAssertTrue(waitForDisappearance(undo, within: timeout), "nothing to undo")
-        // The banner is the list's first row, which a list scrolled by the press and the menu
-        // may hold off screen, where the accessibility tree does not reach it.
-        app.swipeDown()
-        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout), "the refusal shows over the board")
-        attachScreenshot(app, named: "trash-put-back")
     }
 
     func test_a_follow_up_shows_at_the_tap_and_keeps_its_words_when_the_server_refuses() throws {
