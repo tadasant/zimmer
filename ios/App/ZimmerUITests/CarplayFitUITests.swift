@@ -20,17 +20,20 @@ final class CarplayFitUITests: XCTestCase {
         // The section sits below the fold, and a Form builds its rows as they scroll into view.
         XCTAssertTrue(app.buttons["filters.apply"].waitForExistence(timeout: timeout))
         let shown = scrollPickerBelowTheBar(app)
+        XCTAssertTrue(app.buttons["filters.apply"].exists, "the Filters sheet is still up after scrolling it")
         XCTAssertNotNil(shown, "the Filters sheet offers CarPlay fit, on screen and clear of the bar")
         guard let shown else { return }
         app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: shown.midX, dy: shown.midY)).tap()
-        let picker = app.descendants(matching: .any)["filters.carplayFit"].firstMatch
         let notLaptop = menuItem(app, titled: "Not laptop-only")
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-filter-choices")
         notLaptop.tap()
         // A menu picker shows its choice as its value on some iOS releases, in its label on others.
-        let chosen = expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Not laptop-only", "Not laptop-only"), evaluatedWith: picker)
-        XCTAssertEqual(XCTWaiter().wait(for: [chosen], timeout: timeout), .completed, "the picker shows the choice")
+        // The condition sits in the query, so no element is held across reads (see `pickerFrame`).
+        let chosen = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
+            "filters.carplayFit", "Not laptop-only", "Not laptop-only")).firstMatch
+        XCTAssertTrue(chosen.waitForExistence(timeout: timeout), "the picker shows the choice")
         attachScreenshot(app, named: "carplay-fit-filter")
         app.buttons["filters.apply"].tap()
 
@@ -91,15 +94,16 @@ final class CarplayFitUITests: XCTestCase {
 
     /// The CarPlay fit picker's frame, read in one snapshot of a fresh query, or nil while it is
     /// not in the tree. A fresh query each time because an `XCUIElement` pins the type it first
-    /// resolved to, and this menu-style Picker reads as a Button on one query and a PopUpButton
-    /// on the next (see `menuItem`): a held element then answers `exists` and fails its next
-    /// lookup with "No matches found". One snapshot because `exists` then `.frame` is two
-    /// lookups the Form can rebuild the row between. And not `isHittable`, which for a row in
-    /// the tree but not laid out fails the test ("Activation point invalid") instead of
-    /// answering no. A board-shard run on main died of the first and last of these.
+    /// resolved to (here Button), and this menu-style Picker can read as another type on a later
+    /// query, as its menu rows do (see `menuItem`): a held element then answers `exists` and
+    /// fails its next lookup with "No matches found". One snapshot because `exists` then
+    /// `.frame` is two lookups the Form can rebuild the row between. And not `isHittable`, which
+    /// for a row in the tree but not laid out fails the test ("Activation point invalid") instead
+    /// of answering no. A board-shard run on main died of `isHittable`; a held element died of
+    /// the type it had pinned.
     private func pickerFrame(_ app: XCUIApplication) -> CGRect? {
-        let query = app.descendants(matching: .any).matching(identifier: "filters.carplayFit").firstMatch
-        guard let frame = try? query.snapshot().frame, !frame.isEmpty else { return nil }
+        let picker = app.descendants(matching: .any).matching(identifier: "filters.carplayFit").firstMatch
+        guard let frame = try? picker.snapshot().frame, !frame.isEmpty else { return nil }
         return frame
     }
 
