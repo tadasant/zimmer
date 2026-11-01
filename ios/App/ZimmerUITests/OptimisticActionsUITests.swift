@@ -2,12 +2,14 @@ import XCTest
 
 /// An action shows at the tap, before the server has answered, and is put back when the server
 /// refuses it — against the `-ZimmerFixture` in-memory Zimmer, whose writes can be made slow
-/// (`-ZimmerFixtureSlowWrites`, three seconds) and refused (`-ZimmerFixtureRefuse <names>`).
+/// (`-ZimmerFixtureSlowWrites`, six seconds) and refused (`-ZimmerFixtureRefuse <names>`).
 @MainActor
 final class OptimisticActionsUITests: XCTestCase {
     private let timeout: TimeInterval = 20
-    /// Well inside the fixture's three-second write delay: what shows this soon showed at the tap.
+    /// Each wait for something that should show at the tap. Two in a row stay well inside the
+    /// fixture's six-second write delay, and `assertBeforeTheAnswer` checks that they did.
     private let atTheTap: TimeInterval = 2
+    private let writeDelay: TimeInterval = 6
 
     override func setUp() {
         continueAfterFailure = false
@@ -21,11 +23,13 @@ final class OptimisticActionsUITests: XCTestCase {
         let trash = pressForMenu(app, row, offering: "Trash")
         XCTAssertTrue(trash.exists, "the row's menu offers Trash")
         trash.tap()
+        let tapped = Date()
 
         // At the tap: the row is gone and Undo is offered, before the fixture has answered.
         let undo = app.buttons["toast.undo"]
         XCTAssertTrue(undo.waitForExistence(timeout: atTheTap), "Undo is offered before the server answers")
         XCTAssertTrue(waitForDisappearance(row, within: atTheTap), "the row left the board before the server answered")
+        assertBeforeTheAnswer(tapped)
         attachScreenshot(app, named: "trash-at-the-tap")
 
         // The refusal: the row is back, the Undo gone, the refusal over the board.
@@ -42,11 +46,13 @@ final class OptimisticActionsUITests: XCTestCase {
         field.tap()
         field.typeText("Yes, merge it.")
         app.buttons["followup.send"].tap()
+        let tapped = Date()
 
         // At the tap: the composer is empty and the message is under the conversation.
         let sending = app.descendants(matching: .any)["outgoing.sending"]
         XCTAssertTrue(sending.waitForExistence(timeout: atTheTap), "the message shows before the server answers")
         XCTAssertNotEqual(field.value as? String, "Yes, merge it.", "the composer let the words go")
+        assertBeforeTheAnswer(tapped)
         attachScreenshot(app, named: "follow-up-at-the-tap")
 
         // The refusal: the message stays, marked not sent, with its words kept.
@@ -66,10 +72,12 @@ final class OptimisticActionsUITests: XCTestCase {
         field.tap()
         field.typeText("Rotate the staging deploy key")
         app.buttons["quickrouter.bar.start"].tap()
+        let tapped = Date()
 
         // At the tap: the page is open, with the words on their way.
         XCTAssertTrue(app.descendants(matching: .any)["start.pending"].waitForExistence(timeout: atTheTap), "the page opened before the server answered")
         XCTAssertTrue(app.descendants(matching: .any)["outgoing.sending"].exists, "with the words on it")
+        assertBeforeTheAnswer(tapped)
         attachScreenshot(app, named: "quick-router-at-the-tap")
 
         // The answer: the session fills the page in.
@@ -104,6 +112,12 @@ final class OptimisticActionsUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture"] + extra
         app.launch()
         return app
+    }
+
+    /// What was just asserted showed before the fixture could have answered: otherwise the
+    /// test proved nothing about the tap, only about the answer.
+    private func assertBeforeTheAnswer(_ tapped: Date) {
+        XCTAssertLessThan(Date().timeIntervalSince(tapped), writeDelay, "asserted before the fixture's write delay had passed")
     }
 
     private func waitForDisappearance(_ element: XCUIElement, within limit: TimeInterval) -> Bool {

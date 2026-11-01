@@ -74,6 +74,18 @@ final class OutgoingMessagesTests: XCTestCase {
         XCTAssertNil(outgoing.take(id), "taken once")
     }
 
+    func testTwoSendsOfTheSameWordsComeDownOneAtATime() {
+        var outgoing = OutgoingMessages()
+        let first = outgoing.add(OutgoingMessage(content: "Yes.", sentAt: sentAt, conversationTotal: 1))
+        let second = outgoing.add(OutgoingMessage(content: "Yes.", sentAt: sentAt, conversationTotal: 1))
+        outgoing.delivered(first, queued: false)
+        outgoing.delivered(second, queued: false)
+        outgoing.reconcile(conversation: conversation([(.assistant, "Ready?"), (.user, "Yes.")]), queue: [], now: sentAt)
+        XCTAssertEqual(outgoing.messages.count, 1, "one transcript message takes down one of them")
+        outgoing.reconcile(conversation: conversation([(.assistant, "Ready?"), (.user, "Yes."), (.user, "Yes.")]), queue: [], now: sentAt)
+        XCTAssertTrue(outgoing.isEmpty)
+    }
+
     func testAnAnswerForAnUnknownMessageIsIgnored() {
         var outgoing = OutgoingMessages()
         outgoing.delivered(UUID(), queued: false)

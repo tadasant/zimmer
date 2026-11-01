@@ -56,6 +56,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// The names `refuses` takes.
     public static let refusableWrites: Set<String> = [
         "follow_up", "trash", "unarchive", "visibility", "quick_router", "create_session", "elicitation", "notification", "trigger", "fork",
+        "restart", "pause", "notes", "rename", "goal", "effort", "scheduling_class", "precedence", "heartbeat", "bulk_archive", "reorder",
+        "queue", "model", "catalog",
     ]
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
@@ -664,13 +666,15 @@ extension FakeZimmerAPI {
 
     public func restart(_ id: Int) async throws -> SessionSummary {
         // The server resumes into `waiting`: the turn is handed over, not yet started.
-        try change(id, refusal: "Session cannot be restarted from current status", when: { ![SessionStatus.failed, .needsInput].contains($0.status) }) {
+        try await write("restart")
+        return try change(id, refusal: "Session cannot be restarted from current status", when: { ![SessionStatus.failed, .needsInput].contains($0.status) }) {
             $0.status = .waiting
         }
     }
 
     public func pause(_ id: Int) async throws -> SessionSummary {
-        try change(id, refusal: "Session is not running", when: { $0.status != .running }) {
+        try await write("pause")
+        return try change(id, refusal: "Session is not running", when: { $0.status != .running }) {
             $0.status = .needsInput
         }
     }
@@ -721,10 +725,12 @@ extension FakeZimmerAPI {
     }
 
     public func updateNotes(_ id: Int, notes: String) async throws -> SessionSummary {
-        try change(id) { $0.notes = notes.isEmpty ? nil : notes }
+        try await write("notes")
+        return try change(id) { $0.notes = notes.isEmpty ? nil : notes }
     }
 
     public func rename(_ id: Int, title: String) async throws -> SessionSummary {
+        try await write("rename")
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ZimmerError.http(status: 422, message: "Title cannot be empty")
         }
@@ -732,10 +738,12 @@ extension FakeZimmerAPI {
     }
 
     public func updateGoal(_ id: Int, goal: String) async throws -> SessionSummary {
-        try change(id) { $0.goal = goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : goal }
+        try await write("goal")
+        return try change(id) { $0.goal = goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : goal }
     }
 
     public func updateEffort(_ id: Int, effort: String?) async throws -> SessionSummary {
+        try await write("effort")
         let session = try find(id)
         let levels = session.effort?.levels ?? []
         if let effort, !levels.contains(effort) {
@@ -748,6 +756,7 @@ extension FakeZimmerAPI {
     }
 
     public func setSchedulingClass(_ id: Int, priority: Bool) async throws -> SchedulingChange {
+        try await write("scheduling_class")
         let current = try find(id)
         let starts = priority && current.status == .waiting && !current.isPriority
         let session = try change(id) { session in
@@ -763,6 +772,7 @@ extension FakeZimmerAPI {
     /// *Derive it* goes back to the genesis's class; a waiting session the change makes
     /// priority starts, as the server's PATCH starts one on any change into priority.
     public func setSchedulingClass(_ id: Int, to choice: SchedulingClassChoice) async throws -> SchedulingChange {
+        try await write("scheduling_class")
         let current = try find(id)
         let chosen = choice == .derive ? nil : choice.rawValue
         let effective = chosen ?? derivedClasses[id] ?? "priority"
@@ -778,6 +788,7 @@ extension FakeZimmerAPI {
 
     /// As `SessionPrecedence`: an integer within a billion either way.
     public func setPrecedence(_ id: Int, _ precedence: Int) async throws -> SessionSummary {
+        try await write("precedence")
         guard (-1_000_000_000...1_000_000_000).contains(precedence) else {
             let bound = precedence > 0 ? "less than or equal to 1000000000" : "greater than or equal to -1000000000"
             throw ZimmerError.http(status: 422, message: "Precedence must be \(bound)")
@@ -786,11 +797,13 @@ extension FakeZimmerAPI {
     }
 
     public func setHeartbeat(_ id: Int, enabled: Bool) async throws -> SessionSummary {
-        try change(id) { $0.heartbeatEnabled = enabled }
+        try await write("heartbeat")
+        return try change(id) { $0.heartbeatEnabled = enabled }
     }
 
     /// As `Sessions::UpdateHeartbeat`: 30 seconds to a day, and on or off is left as it is.
     public func setHeartbeatInterval(_ id: Int, seconds: Int) async throws -> SessionSummary {
+        try await write("heartbeat")
         guard (30...86_400).contains(seconds) else {
             throw ZimmerError.http(status: 422, message: "Heartbeat interval seconds must be between 30 and 86400")
         }
@@ -805,6 +818,7 @@ extension FakeZimmerAPI {
     }
 
     public func bulkArchive(_ ids: [Int]) async throws -> BulkArchiveResult {
+        try await write("bulk_archive")
         var archived = 0
         var errors: [BulkArchiveResult.Refusal] = []
         // As the server with `end_turn`: a turn in flight goes, a queue is reported.
@@ -915,6 +929,7 @@ extension FakeZimmerAPI {
     }
 
     public func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary {
+        try await write("reorder")
         guard above != id, below != id else { throw ZimmerError.http(status: 422, message: "A session cannot be dropped next to itself") }
         // As the server: only a live spot session counts as a neighbour.
         func neighbour(_ id: Int?) -> Int? {
@@ -951,6 +966,7 @@ extension FakeZimmerAPI {
     }
 
     public func editQueued(_ id: Int, message: Int, content: String) async throws -> QueuedMessage {
+        try await write("queue")
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw ZimmerError.http(status: 422, message: "Content can't be blank") }
         var list = try queued(id)
@@ -961,6 +977,7 @@ extension FakeZimmerAPI {
     }
 
     public func deleteQueued(_ id: Int, message: Int) async throws {
+        try await write("queue")
         var list = try queued(id)
         guard list.contains(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         list.removeAll { $0.id == message }
@@ -968,6 +985,7 @@ extension FakeZimmerAPI {
     }
 
     public func moveQueued(_ id: Int, message: Int, to position: Int) async throws -> QueuedMessage {
+        try await write("queue")
         guard position >= 1 else { throw ZimmerError.http(status: 422, message: "Position must be >= 1") }
         var list = try queued(id)
         guard let index = list.firstIndex(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
@@ -979,6 +997,7 @@ extension FakeZimmerAPI {
     }
 
     public func sendQueuedNow(_ id: Int, message: Int) async throws {
+        try await write("queue")
         var list = try queued(id)
         guard let index = list.firstIndex(where: { $0.id == message }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         let sent = list.remove(at: index)
@@ -1104,6 +1123,7 @@ extension FakeZimmerAPI {
     }
 
     public func updateModel(_ id: Int, model: String) async throws -> SessionSummary {
+        try await write("model")
         let session = try find(id)
         let runtime = session.agentRuntime ?? "claude_code"
         guard Self.sampleConfigs.models(for: runtime).contains(where: { $0.id == model }) else {
@@ -1113,6 +1133,7 @@ extension FakeZimmerAPI {
     }
 
     public func updateSelection(_ id: Int, _ kind: CatalogKind, to values: [String]) async throws -> SelectionChange {
+        try await write("catalog")
         let known = Set((Self.sampleCatalogs[kind] ?? []).map(\.id))
         if let unknown = values.first(where: { !known.contains($0) }) {
             throw ZimmerError.http(status: 422, message: "\(unknown) is not in the \(kind.label.lowercased()) catalog")

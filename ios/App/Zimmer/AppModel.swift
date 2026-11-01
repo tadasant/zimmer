@@ -37,8 +37,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var listIncomplete = false
     /// A one-line confirmation of the last row action ("Snoozed until …").
     @Published var notice: String?
-    /// The session just trashed, while *Undo* is offered for it.
-    @Published var undoable: SessionSummary?
+    /// The session just trashed, while *Undo* is offered for it. When the offer ends — taken,
+    /// expired, or a refusal — the rows kept for it go too, except one whose trash is still out.
+    @Published var undoable: SessionSummary? {
+        didSet {
+            if undoable == nil {
+                for id in trashedRows.keys where trashesInFlight[id] == nil { trashedRows[id] = nil }
+            }
+        }
+    }
     /// A trash refused because messages are queued for the session: asked again, naming the
     /// discard, before it goes.
     @Published var queuedTrash: SessionSummary?
@@ -52,13 +59,16 @@ final class AppModel: ObservableObject {
     private var reordersInFlight = 0
     /// Each trashed session as it read before the trash, for *Undo* to put back at once.
     private var trashedRows: [Int: SessionSummary] = [:]
+    /// The trashes out to the server, by session: an Undo tapped before the answer waits on it.
+    private var trashesInFlight: [Int: Task<Bool, Never>] = [:]
     /// Sessions asked for and not yet answered with an id, by the placeholder their page opens
     /// on. Placeholders are negative, so they never name a session.
     @Published private(set) var pendingStarts: [Int: PendingStart] = [:]
     private var startWork: [Int: @MainActor (ZimmerAPI) async throws -> Int] = [:]
     /// The session each placeholder became, for the pages that keep the placeholder as their
-    /// path element after adopting the session's id.
-    private var startedSessions: [Int: Int] = [:]
+    /// path element after adopting the session's id — and for a page remade on the placeholder
+    /// after the start was forgotten, which adopts from here.
+    private(set) var startedSessions: [Int: Int] = [:]
     private var nextPlaceholder = 0
     @Published private(set) var isLoading = false
     @Published var error: ZimmerError?
@@ -337,22 +347,27 @@ final class AppModel: ObservableObject {
         await refresh(silently: true)
     }
 
-    /// Start a session from the full form, and open its page at once.
+    /// Start a session from the full form, and open its page at once. The form's choices —
+    /// root, runtime, catalog — are not the Quick Router's to take back, so a failed start
+    /// offers *Try again* alone; a clone starts from no words at all.
     func createSession(_ request: NewSessionRequest) {
-        let words = request.cloneOnly ? "Clone of \(request.agentRoot), without a prompt." : request.prompt
-        startSession(prompt: words, title: request.title ?? request.agentRoot) { try await $0.createSession(request).id }
+        startSession(prompt: request.cloneOnly ? nil : request.prompt, title: request.title ?? request.agentRoot, editable: false) {
+            try await $0.createSession(request).id
+        }
     }
 
     /// Start a session and, with `open`, show its page before the server has answered with its
-    /// id: the page opens on a placeholder, with the words on their way, and fills in as the
-    /// session once it exists. A start that fails shows on that page with the words kept and
-    /// *Try again* offered; one asked for in the background puts them back in the Quick Router.
-    /// Returns the placeholder, which `pendingStarts` is keyed by.
+    /// id: the page opens on a placeholder, with the words (`prompt`, when the start has any)
+    /// on their way, and fills in as the session once it exists. A start that fails shows on
+    /// that page with *Try again* and — for a Quick Router start, `editable` — *Edit*, the
+    /// words back in the Quick Router; one asked for in the background puts them back there
+    /// at once. Returns the placeholder, which `pendingStarts` is keyed by.
     @discardableResult
-    func startSession(prompt: String, title: String, open: Bool = true, start: @escaping @MainActor (ZimmerAPI) async throws -> Int) -> Int {
+    func startSession(prompt: String?, title: String, open: Bool = true, editable: Bool = true,
+                      start: @escaping @MainActor (ZimmerAPI) async throws -> Int) -> Int {
         nextPlaceholder -= 1
         let placeholder = nextPlaceholder
-        pendingStarts[placeholder] = PendingStart(prompt: prompt, title: title, opens: open)
+        pendingStarts[placeholder] = PendingStart(prompt: prompt, title: title, opens: open, editable: editable)
         startWork[placeholder] = start
         if open { path.append(placeholder) }
         Haptics.success()
@@ -369,10 +384,10 @@ final class AppModel: ObservableObject {
 
     /// The pending page's *Edit*: the words back in the Quick Router, the start forgotten.
     func editStart(_ placeholder: Int) {
-        guard let start = pendingStarts[placeholder] else { return }
+        guard let start = pendingStarts[placeholder], start.editable else { return }
         forgetStart(placeholder)
         if path.last == placeholder { path.removeLast() }
-        openQuickRouter(draft: start.prompt)
+        openQuickRouter(draft: start.prompt ?? "")
     }
 
     /// A start's page left, or its session opened: the placeholder has nothing more to say.
@@ -405,11 +420,11 @@ final class AppModel: ObservableObject {
                 pendingStarts[placeholder]?.state = .failed(zimmerError)
             } else {
                 // Asked for in the background, or its page already left: there is no page to
-                // say so, so the words go back to the Quick Router, with the refusal over the
-                // screen in front.
+                // say so. The refusal shows over the screen in front, and Quick Router words go
+                // back to the Quick Router.
                 forgetStart(placeholder)
                 handle(error)
-                openQuickRouter(draft: start.prompt)
+                if start.editable, let prompt = start.prompt { openQuickRouter(draft: prompt) }
             }
         }
     }
@@ -442,7 +457,7 @@ final class AppModel: ObservableObject {
         quickRouterParent = nil
         quickRouterPage = nil
         if !open { notice = "Starting a session in the background…" }
-        startSession(prompt: request.prompt, title: "Quick Router", open: open) { try await $0.startQuickRouter(request) }
+        startSession(prompt: request.prompt, title: "Quick Router", open: open, editable: true) { try await $0.startQuickRouter(request) }
     }
 
     /// `silently`: a read the board makes on its own — no loading state, and a failure other
@@ -666,10 +681,20 @@ final class AppModel: ObservableObject {
     @discardableResult
     func trash(_ session: SessionSummary, force: Bool = false) async -> Bool {
         let id = session.id
+        // Held while out, so an Undo tapped before the answer waits for it rather than
+        // asking the server to restore a session it has not archived yet.
+        let task = Task { await performTrash(session, force: force) }
+        trashesInFlight[id] = task
+        let trashed = await task.value
+        if trashesInFlight[id] == task { trashesInFlight[id] = nil }
+        return trashed
+    }
+
+    private func performTrash(_ session: SessionSummary, force: Bool) async -> Bool {
+        let id = session.id
         let before = sessions.first { $0.id == id } ?? session
         var guess = before
-        guess.status = .archived
-        guess.archivedAt = Date()
+        guess.expectTrashed()
         let ticket = pending.begin(id, belongsOnList(guess) ? .replaced(guess) : .removed)
         freshness.noteLocalChange()
         trashedRows[id] = before
@@ -718,10 +743,14 @@ final class AppModel: ObservableObject {
     /// trash, at once; the server's row replaces it when the restore is answered.
     func undoTrash() async {
         guard let session = undoable else { return }
+        let id = session.id
+        let original = trashedRows[id] ?? session
         withAnimation { undoable = nil }
-        let original = trashedRows[session.id] ?? session
-        trashedRows[session.id] = nil
-        await perform("Restored from trash", on: session.id, optimistic: { $0 = original }, seed: original) { try await $0.unarchive(session.id) }
+        // A trash still out is answered first: the server refuses to restore a session it has
+        // not yet archived. One it refused has put the row back already — nothing to undo.
+        if let inFlight = trashesInFlight[id], await inFlight.value == false { return }
+        trashedRows[id] = nil
+        await perform("Restored from trash", on: id, optimistic: { $0 = original }, seed: original) { try await $0.unarchive(id) }
     }
 
     /// Trash the selected sessions: gone at the tap, asked after. Each refusal comes back with
@@ -733,8 +762,7 @@ final class AppModel: ObservableObject {
         for row in sessions where ids.contains(row.id) {
             befores[row.id] = row
             var guess = row
-            guess.status = .archived
-            guess.archivedAt = Date()
+            guess.expectTrashed()
             tickets[row.id] = pending.begin(row.id, belongsOnList(guess) ? .replaced(guess) : .removed)
         }
         freshness.noteLocalChange()
@@ -822,10 +850,8 @@ final class AppModel: ObservableObject {
     /// waiting session, and one that could not says why once the server has answered.
     func reschedule(_ id: Int, priority: Bool) async {
         let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
-        let change = await performRow(done, on: id, optimistic: { row in
-            row.priorityClass = priority ? "priority" : "spot"
-            row.schedulingClass = row.priorityClass
-        }, seed: nil, { try await $0.setSchedulingClass(id, priority: priority) }, row: \.session)
+        let change = await performRow(done, on: id, optimistic: { $0.expectPriority(priority) }, seed: nil,
+                                      { try await $0.setSchedulingClass(id, priority: priority) }, row: \.session)
         guard let change else { return }
         notice = change.startMessage.map { "\(done). \($0)" } ?? done
         if change.startOutcome == "refused" { Haptics.failure() }
@@ -1024,8 +1050,7 @@ final class AppModel: ObservableObject {
         await connection.auth.signOut()
         await connection.edge?.forget()
         freshness.noteLocalChange()
-        pending = PendingBoardChanges()
-        localOrder = nil
+        forgetEverythingInFlight()
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
@@ -1033,6 +1058,18 @@ final class AppModel: ObservableObject {
         systemBanners = SystemBanners()
         bannersCheckedAt = nil
         isSignedIn = false
+    }
+
+    /// The sign-in ended: nothing shown ahead of an answer is this account's any more.
+    private func forgetEverythingInFlight() {
+        pending = PendingBoardChanges()
+        localOrder = nil
+        undoable = nil
+        trashedRows = [:]
+        trashesInFlight = [:]
+        pendingStarts = [:]
+        startWork = [:]
+        startedSessions = [:]
     }
 
     private func refreshEdgeExpiry() async {
@@ -1047,8 +1084,7 @@ final class AppModel: ObservableObject {
         if zimmerError == .unauthorized {
             isSignedIn = false
             freshness.noteLocalChange()
-            pending = PendingBoardChanges()
-            localOrder = nil
+            forgetEverythingInFlight()
             sessions = []
         }
         self.error = zimmerError
@@ -1071,12 +1107,16 @@ struct PendingStart: Equatable {
         }
     }
 
-    /// The words the session starts from — the first message its page shows, on its way.
-    var prompt: String
+    /// The words the session starts from — the first message its page shows, on its way. Nil
+    /// for a start without any: a fork, a clone.
+    var prompt: String?
     /// What the page is titled until the session has one: "Quick Router", the agent root.
     var title: String
     /// Whether a page opened on it. Without one, the start's outcome is a toast or a refusal
     /// over the screen it was asked from.
     var opens: Bool
+    /// Whether the words can go back to the Quick Router for another go: true for a Quick
+    /// Router start, false for the form's (its choices are not the router's) and a fork's.
+    var editable: Bool
     var state: State = .starting
 }

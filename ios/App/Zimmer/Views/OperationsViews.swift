@@ -95,9 +95,10 @@ struct InboxView: View {
     private func open(_ notification: InboxNotification) async {
         if let id = notification.session?.id { app.path = [id] }
         guard !notification.read else { return }
+        let before = notifications
         notifications = Self.read(notifications ?? [], id: notification.id)
         app.unreadCount = max(app.unreadCount - 1, 0)
-        _ = try? await app.api.markNotificationRead(notification.id)
+        if (try? await app.api.markNotificationRead(notification.id)) == nil { notifications = before }
         await app.refreshUnreadCount()
     }
 

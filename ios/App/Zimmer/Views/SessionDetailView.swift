@@ -31,6 +31,9 @@ final class SessionDetailModel: ObservableObject {
     /// Messages sent from here that the server has not yet shown back, drawn after the
     /// conversation from the moment each is sent.
     @Published private(set) var outgoing = OutgoingMessages()
+    /// The photos and files each outgoing message went with, until the server took it: what
+    /// *Try again* sends again and *Edit* puts back on the composer.
+    private var outgoingAttachments: [UUID: [MessageAttachment]] = [:]
     /// Actions shown at the tap whose answer is still out: a poll landing meanwhile would put
     /// the server's older state over them, so polls stand aside until they are answered.
     var actionsInFlight = 0
@@ -255,26 +258,30 @@ final class SessionDetailModel: ObservableObject {
         attachments.removeAll { attached in sending.contains { $0.id == attached.id } }
         let message = OutgoingMessage(content: prompt, attachmentCount: sending.count, now: now, conversationTotal: shownConversation?.total ?? 0)
         outgoing.add(message)
+        if !sending.isEmpty { outgoingAttachments[message.id] = sending }
         error = nil
         Haptics.success()
         await deliver(message, attachments: sending)
     }
 
-    /// A message that was not sent, sent again.
+    /// A message that was not sent, sent again — with the photos and files that went with it.
     func retrySend(_ id: UUID) async {
         guard var message = outgoing.take(id) else { return }
         message.state = .sending
         message.sentAt = Date()
         message.conversationTotal = shownConversation?.total ?? 0
         outgoing.add(message)
-        await deliver(message, attachments: [])
+        await deliver(message, attachments: outgoingAttachments[id] ?? [])
     }
 
-    /// A message that was not sent, back in the composer to be changed. Its photos and files
-    /// are not kept: the composer had already let them go.
+    /// A message that was not sent, back in the composer to be changed, its photos and files
+    /// back on the composer with it.
     func editFailedSend(_ id: UUID) {
         guard let message = outgoing.take(id) else { return }
         draft = draft.isEmpty ? message.content : draft + "\n" + message.content
+        for attachment in outgoingAttachments.removeValue(forKey: id) ?? [] where !attachments.contains(where: { $0.id == attachment.id }) {
+            attachments.append(attachment)
+        }
     }
 
     private func deliver(_ message: OutgoingMessage, attachments sending: [MessageAttachment]) async {
@@ -288,6 +295,7 @@ final class SessionDetailModel: ObservableObject {
                 result = try await api.followUp(id, prompt: message.content)
             }
             outgoing.delivered(message.id, queued: result.queued)
+            outgoingAttachments[message.id] = nil
             notice = result.queued ? "Queued — it goes in when the current turn ends." : (message.now ? "Sent now." : "Sent.")
             // The transcript and the queue as they now stand are what take the bubble down — a
             // poll that read while the send was out may already have the message.
@@ -444,10 +452,10 @@ final class SessionDetailModel: ObservableObject {
                 if !prompts.contains(where: { $0.id == prompt.id }) { prompts.append(prompt) }
                 self.error = failure
             // Answered elsewhere, or expired: the card stays gone, and the page says where
-            // things stand now.
+            // things stand now — the refusal after the read, which would clear it.
             default:
-                self.error = failure
                 await load()
+                self.error = failure
             }
             Haptics.failure()
         } catch {
@@ -650,7 +658,7 @@ struct SessionDetailView: View {
                 // fills it in when the server has made it.
                 if let index = message.transcriptIndex {
                     let id = model.id
-                    app.startSession(prompt: message.content, title: "Fork of #\(id)") { try await $0.fork(id, at: index).id }
+                    app.startSession(prompt: nil, title: "Fork of #\(id)", editable: false) { try await $0.fork(id, at: index).id }
                 }
             }
             .accessibilityIdentifier("fork.confirm")
@@ -672,7 +680,7 @@ struct SessionDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if model.isPlaceholder, let start = app.pendingStarts[openedAs] {
-                    PendingStartHeader(start: start, retry: { app.retryStart(openedAs) }, edit: { app.editStart(openedAs) })
+                    PendingStartHeader(start: start, retry: { app.retryStart(openedAs) }, edit: start.editable ? { app.editStart(openedAs) } : nil)
                 }
                 if let detail = model.detail {
                     header(detail)
@@ -717,8 +725,8 @@ struct SessionDetailView: View {
                 // What was sent from here and the server has not shown back yet, after the
                 // conversation, as the web composer's bubble shows a message before the
                 // transcript has it. The words a start opened on are the first of them.
-                if model.isPlaceholder, let start = app.pendingStarts[openedAs] {
-                    OutgoingBubble(message: OutgoingMessage(content: start.prompt, state: start.state.isFailed ? .failed("") : .sending, conversationTotal: 0), retry: nil, edit: nil)
+                if model.isPlaceholder, let start = app.pendingStarts[openedAs], let prompt = start.prompt {
+                    OutgoingBubble(message: OutgoingMessage(content: prompt, state: start.state.isFailed ? .failed("") : .sending, conversationTotal: 0), retry: nil, edit: nil)
                 }
                 ForEach(model.outgoing.messages) { message in
                     OutgoingBubble(message: message, retry: { Task { await model.retrySend(message.id) } }, edit: { model.editFailedSend(message.id) })
@@ -773,6 +781,11 @@ struct SessionDetailView: View {
             guard case let .started(id)? = state else { return }
             app.forgetStart(openedAs)
             Task { await model.adopt(id) }
+        }
+        // A page remade on its placeholder after the start was forgotten (the view torn down and
+        // back) takes the session the placeholder became.
+        .task {
+            if model.isPlaceholder, let id = app.startedSessions[openedAs] { await model.adopt(id) }
         }
     }
 
@@ -1877,7 +1890,8 @@ struct MessageBubble: View {
 struct PendingStartHeader: View {
     let start: PendingStart
     let retry: () -> Void
-    let edit: () -> Void
+    /// Nil for a start whose words are not the Quick Router's to take back.
+    let edit: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1906,9 +1920,11 @@ struct PendingStartHeader: View {
                             .buttonStyle(.borderedProminent)
                             .tint(Theme.accent)
                             .accessibilityIdentifier("start.retry")
-                        Button("Edit", action: edit)
-                            .buttonStyle(.bordered)
-                            .accessibilityIdentifier("start.edit")
+                        if let edit {
+                            Button("Edit", action: edit)
+                                .buttonStyle(.bordered)
+                                .accessibilityIdentifier("start.edit")
+                        }
                     }
                     .font(.subheadline.weight(.medium))
                 }

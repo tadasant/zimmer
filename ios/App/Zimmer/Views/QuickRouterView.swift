@@ -265,7 +265,6 @@ struct QuickRouterBar: View {
     @Environment(\.isSearching) private var isSearching
     var editing = false
     @State private var prompt = ""
-    @State private var isStarting = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -305,7 +304,6 @@ struct QuickRouterBar: View {
                         .foregroundStyle(Theme.accent)
                         .padding(.top, 2)
                 }
-                .disabled(isStarting)
                 .accessibilityLabel("More options")
                 .accessibilityIdentifier("quickrouter.bar.more")
                 TextField("What do you want to do?", text: $prompt, axis: .vertical)
@@ -323,9 +321,9 @@ struct QuickRouterBar: View {
             )
             .animation(.easeOut(duration: 0.15), value: focused)
             Button {
-                Task { await start() }
+                start()
             } label: {
-                Image(systemName: isStarting ? "hourglass" : "arrow.up")
+                Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(canSend ? Color.white : Theme.inkMute)
                     .frame(width: 38, height: 38)
@@ -363,7 +361,7 @@ struct QuickRouterBar: View {
     }
 
     private var canSend: Bool {
-        !isStarting && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Back out without sending: the bar returns to rest, empty and without the keyboard.
@@ -375,9 +373,7 @@ struct QuickRouterBar: View {
 
     /// The keyboard goes as the words are sent: the session's page is pushed over the board at
     /// once, with the words on it, and a failed start keeps them there for another try.
-    private func start() async {
-        isStarting = true
-        defer { isStarting = false }
+    private func start() {
         focused = false
         dismissKeyboard()
         app.startQuickRouter(prompt)
