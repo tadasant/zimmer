@@ -25,6 +25,11 @@ final class LiveUpdatesUITests: XCTestCase {
         // From the newest message, reading back up.
         let chip = app.buttons["detail.sections.transcript"]
         if chip.waitForExistence(timeout: timeout) { chip.tap() }
+        // Swiping only once the chip's scroll has landed on the newest message, or the two fight.
+        let messages = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.message.'"))
+        let newest = messages.element(boundBy: messages.count - 1)
+        let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: newest)
+        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: timeout), .completed, "the chip lands on the newest message")
         for _ in 0..<8 where !first.isHittable { app.swipeDown(velocity: .fast) }
         XCTAssertTrue(first.isHittable, "scrolled back to the start")
         // Two polls' worth of new lines arrive while reading back.
