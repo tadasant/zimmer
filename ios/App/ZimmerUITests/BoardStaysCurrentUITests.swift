@@ -1,7 +1,7 @@
 import XCTest
 
-/// The board reads again when you come back to its tab, so a session trashed somewhere else
-/// leaves it without a pull — against the `-ZimmerFixture` in-memory Zimmer.
+/// The board reads again when you come back to its tab or to the app, so a session trashed
+/// somewhere else leaves it without a pull — against the `-ZimmerFixture` in-memory Zimmer.
 @MainActor
 final class BoardStaysCurrentUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -22,9 +22,29 @@ final class BoardStaysCurrentUITests: XCTestCase {
         app.tabBars.buttons["Sessions"].tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
-        // Well inside the half-minute poll: the board read on coming back, not on its clock.
+        // Well inside the fifteen-second poll, whose clock started at launch: the board read on
+        // coming back, not on its clock.
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 10), .completed, "the trashed session left without a pull")
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the trashed session left without a pull")
+    }
+
+    func test_opening_the_app_again_shows_the_board_as_it_now_stands_without_a_pull() throws {
+        // -ZimmerFixtureTrashedWhileAway: 1035 goes to the trash as the app goes to the background.
+        let app = launch(["-ZimmerFixtureTrashedWhileAway", "1035"])
+        let trashed = app.descendants(matching: .any)["session.row.1035"]
+        XCTAssertTrue(trashed.waitForExistence(timeout: timeout), "on the board at launch")
+
+        XCUIDevice.shared.press(.home)
+        // Away for longer than the board's poll interval, so the poller's sleep is overdue when
+        // the phone resumes the app, before the scene is in front.
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "away from the app")], timeout: 20)
+        app.activate()
+
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
+        // Well inside the poll interval, whose clock starts again on the return: the board read
+        // because the app came back to the front, not on its clock, and nothing was pulled.
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the session trashed while away left without a pull")
     }
 
     // MARK: - Helpers

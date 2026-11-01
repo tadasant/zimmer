@@ -177,9 +177,11 @@ extension View {
 /// here, and to the composer. Nothing about it is kept: the page opens without it every time.
 struct FullScreenTranscript<Conversation: View>: View {
     @ObservedObject var model: SessionDetailModel
-    @EnvironmentObject private var app: AppModel
     /// Where this opens, and where it leaves the reader for the page.
     let position: ReadingPosition
+    /// Whether the page under this cover is the screen in front: the page's own test, since
+    /// its path element may be the placeholder its start opened on rather than the session's id.
+    let isFront: () -> Bool
     /// The page's conversation section, each message reporting against the given top edge.
     @ViewBuilder let conversation: (_ edge: CGFloat, _ position: ReadingPosition) -> Conversation
     @Environment(\.dismiss) private var dismiss
@@ -237,7 +239,7 @@ struct FullScreenTranscript<Conversation: View>: View {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: model.pollInterval)
                     guard !Task.isCancelled else { return }
-                    guard app.path.last == model.id, app.tab == .sessions else { continue }
+                    guard isFront() else { continue }
                     await model.poll()
                 }
             }

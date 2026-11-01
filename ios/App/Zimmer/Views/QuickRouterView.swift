@@ -243,11 +243,11 @@ struct QuickRouterView: View {
             // The screen, not the thread: it goes whether or not the start threads under the session.
             page: app.quickRouterPage
         )
-        // Read before the await: a start closes the sheet before it returns.
-        let fromBar = openedFromBar
-        guard await app.startQuickRouter(request, open: opensSession) else { return }
         started = true
-        if fromBar { app.quickRouterBarHandback = "" }
+        if openedFromBar { app.quickRouterBarHandback = "" }
+        // Closes the sheet and opens the session's page at once; the page shows the start on
+        // its way, and a failed one with the words kept.
+        app.startQuickRouter(request, open: opensSession)
     }
 }
 
@@ -265,7 +265,6 @@ struct QuickRouterBar: View {
     @Environment(\.isSearching) private var isSearching
     var editing = false
     @State private var prompt = ""
-    @State private var isStarting = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -305,7 +304,6 @@ struct QuickRouterBar: View {
                         .foregroundStyle(Theme.accent)
                         .padding(.top, 2)
                 }
-                .disabled(isStarting)
                 .accessibilityLabel("More options")
                 .accessibilityIdentifier("quickrouter.bar.more")
                 TextField("What do you want to do?", text: $prompt, axis: .vertical)
@@ -323,9 +321,9 @@ struct QuickRouterBar: View {
             )
             .animation(.easeOut(duration: 0.15), value: focused)
             Button {
-                Task { await start() }
+                start()
             } label: {
-                Image(systemName: isStarting ? "hourglass" : "arrow.up")
+                Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(canSend ? Color.white : Theme.inkMute)
                     .frame(width: 38, height: 38)
@@ -363,7 +361,7 @@ struct QuickRouterBar: View {
     }
 
     private var canSend: Bool {
-        !isStarting && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Back out without sending: the bar returns to rest, empty and without the keyboard.
@@ -373,15 +371,13 @@ struct QuickRouterBar: View {
         dismissKeyboard()
     }
 
-    /// The keyboard goes as the words are sent, not after the answer: by the time the start
-    /// returns, the session's page is pushed over the board and the bar is off screen, and a
-    /// failed start keeps its words in the bar for another try without holding the keyboard.
-    private func start() async {
-        isStarting = true
-        defer { isStarting = false }
+    /// The keyboard goes as the words are sent: the session's page is pushed over the board at
+    /// once, with the words on it, and a failed start keeps them there for another try.
+    private func start() {
         focused = false
         dismissKeyboard()
-        if await app.startQuickRouter(prompt) { prompt = "" }
+        app.startQuickRouter(prompt)
+        prompt = ""
     }
 }
 

@@ -44,16 +44,17 @@ struct PromptCard: View {
 }
 
 /// The prompt's form, with the protocol's three answers. Accept sends the fields; Decline
-/// and Dismiss send none. A refusal stays on screen with the form intact.
+/// and Dismiss send none. An answer closes the sheet at once; the page behind shows the card
+/// gone, and a refusal over it with the card back. A form that cannot be read stays open and
+/// says what is missing.
 struct ElicitationSheet: View {
     let prompt: PendingElicitation
-    /// Sends the answer; returns why it was refused, or nil when it went through.
-    let send: (ElicitationAnswer, String?) async -> String?
+    /// Sends the answer. The page it is on shows the outcome.
+    let send: (ElicitationAnswer, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var entries: [String: String] = [:]
     @State private var toggles: [String: Bool] = [:]
-    @State private var sending: ElicitationAnswer?
     @State private var refusal: String?
 
     var body: some View {
@@ -85,13 +86,13 @@ struct ElicitationSheet: View {
                 }
                 Section {
                     Button {
-                        Task { await submit(.decline) }
+                        submit(.decline)
                     } label: {
                         Label("Decline", systemImage: "xmark")
                     }
                     .accessibilityIdentifier("prompt.decline")
                     Button {
-                        Task { await submit(.cancel) }
+                        submit(.cancel)
                     } label: {
                         Label("Dismiss Without Answering", systemImage: "hand.raised")
                     }
@@ -100,7 +101,6 @@ struct ElicitationSheet: View {
                     Text("Dismiss tells the MCP server nobody decided, instead of leaving it waiting until the prompt expires.")
                 }
             }
-            .disabled(sending != nil)
             .navigationTitle("Approval Needed")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -109,11 +109,10 @@ struct ElicitationSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
-                        Task { await submit(.accept) }
+                        submit(.accept)
                     } label: {
-                        if sending == .accept { ProgressView() } else { Text("Accept").bold() }
+                        Text("Accept").bold()
                     }
-                    .disabled(sending != nil)
                     .accessibilityIdentifier("prompt.accept")
                 }
             }
@@ -148,7 +147,7 @@ struct ElicitationSheet: View {
         Binding(get: { entries[key] ?? "" }, set: { entries[key] = $0 })
     }
 
-    private func submit(_ answer: ElicitationAnswer) async {
+    private func submit(_ answer: ElicitationAnswer) {
         var content: String?
         if answer == .accept {
             do {
@@ -161,12 +160,7 @@ struct ElicitationSheet: View {
                 return
             }
         }
-        sending = answer
-        defer { sending = nil }
-        if let reason = await send(answer, content) {
-            refusal = reason
-        } else {
-            dismiss()
-        }
+        send(answer, content)
+        dismiss()
     }
 }
