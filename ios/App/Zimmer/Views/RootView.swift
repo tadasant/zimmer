@@ -24,7 +24,9 @@ struct RootView: View {
         // Behind the status bar, where the build strip's gold does not reach.
         .background(Theme.ground.ignoresSafeArea())
         // Here, at the scene's root, rather than on the board: heard whatever is on screen.
+        // The poller's state changes here, before the app can be suspended; the reads follow.
         .onChange(of: scenePhase) { _, phase in
+            model.sceneChanged(to: phase)
             Task { await model.sceneEntered(phase) }
         }
     }

@@ -22,9 +22,10 @@ final class BoardStaysCurrentUITests: XCTestCase {
         app.tabBars.buttons["Sessions"].tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
-        // Well inside the half-minute poll: the board read on coming back, not on its clock.
+        // Well inside the fifteen-second poll, whose clock started at launch: the board read on
+        // coming back, not on its clock.
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 10), .completed, "the trashed session left without a pull")
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the trashed session left without a pull")
     }
 
     func test_opening_the_app_again_shows_the_board_as_it_now_stands_without_a_pull() throws {
@@ -35,7 +36,7 @@ final class BoardStaysCurrentUITests: XCTestCase {
 
         XCUIDevice.shared.press(.home)
         // Away for longer than the board's poll interval, so the poller's sleep is overdue when
-        // the phone resumes the app — the moment its tick used to take the read the return makes.
+        // the phone resumes the app, before the scene is in front.
         _ = XCTWaiter().wait(for: [XCTestExpectation(description: "away from the app")], timeout: 20)
         app.activate()
 
