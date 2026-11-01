@@ -5,7 +5,9 @@ import ZimmerKit
 /// followed up or archived is `SessionDetail`'s, what happens is the server's.
 @MainActor
 final class SessionDetailModel: ObservableObject {
-    let id: Int
+    /// The session's id — or, below zero, the placeholder a page opened on while the server
+    /// was still being asked to start the session (`AppModel.startSession`), until `adopt`.
+    @Published private(set) var id: Int
     let api: ZimmerAPI
     /// Hands an error the whole app cares about (a sign-in that ended) to `AppModel`.
     var report: (ZimmerError) -> Void = { _ in }
@@ -26,7 +28,12 @@ final class SessionDetailModel: ObservableObject {
     /// Called once the open has marked the session's notifications read, for the badge.
     var onOpened: () -> Void = {}
     @Published private(set) var isLoading = false
-    @Published private(set) var isSending = false
+    /// Messages sent from here that the server has not yet shown back, drawn after the
+    /// conversation from the moment each is sent.
+    @Published private(set) var outgoing = OutgoingMessages()
+    /// Actions shown at the tap whose answer is still out: a poll landing meanwhile would put
+    /// the server's older state over them, so polls stand aside until they are answered.
+    var actionsInFlight = 0
     @Published var error: ZimmerError?
     @Published var notice: String?
     /// What is typed and not yet sent, kept per session across leaving and relaunching.
@@ -66,7 +73,21 @@ final class SessionDetailModel: ObservableObject {
         self.draft = DraftStore().draft(for: id)
     }
 
+    /// The page opened on a placeholder: nothing to read until the server has answered with
+    /// the session's id.
+    var isPlaceholder: Bool { id < 0 }
+
+    /// The server answered the start this page opened on: the page is session `realID`'s from
+    /// here, read at once. The draft is the real session's own.
+    func adopt(_ realID: Int) async {
+        guard isPlaceholder else { return }
+        id = realID
+        draft = drafts.draft(for: realID)
+        await load()
+    }
+
     func load() async {
+        guard !isPlaceholder else { return }
         // Beside the page's own reads, not before them: the catalog only names the goal and
         // fills the composer's "/".
         if configs == nil || skills == nil, !loadingConfigs {
@@ -135,7 +156,7 @@ final class SessionDetailModel: ObservableObject {
     /// moves, and this is that, by asking. A failed read leaves what is on screen, except a
     /// sign-in that ended.
     func poll() async {
-        guard !isLoading, !isSending, !isLoadingEarlier, !pollPaused, detail?.session.status != .archived else { return }
+        guard !isPlaceholder, !isLoading, actionsInFlight == 0, !isLoadingEarlier, !pollPaused, detail?.session.status != .archived else { return }
         let started = revision
         let limit = conversationLimit
         do {
@@ -151,8 +172,9 @@ final class SessionDetailModel: ObservableObject {
             // A message that left the queue was delivered or retired as stale; only then is
             // there anything new to read about what was never delivered.
             let retired: [QueuedMessage]? = queued != nil && queued != queue ? try? await api.undeliveredMessages(id) : nil
-            // An edit, a send or *Show earlier* landed while this was reading: its answer wins.
-            guard started == revision, limit == conversationLimit, !pollPaused else { return }
+            // An edit, a send or *Show earlier* landed while this was reading, or an action is
+            // out whose answer the page is showing ahead of: its answer wins.
+            guard started == revision, limit == conversationLimit, !pollPaused, actionsInFlight == 0 else { return }
             applyingPoll = true
             defer { applyingPoll = false }
             if latest != detail { detail = latest }
@@ -168,6 +190,8 @@ final class SessionDetailModel: ObservableObject {
 
     private func noteChange() {
         if !applyingPoll { revision += 1 }
+        // What the server now shows itself comes off the page's own list of what it sent.
+        outgoing.reconcile(conversation: shownConversation, queue: queue)
     }
 
     /// How often to read again: often while a turn is running or about to, rarely otherwise.
@@ -219,31 +243,61 @@ final class SessionDetailModel: ObservableObject {
     }
 
     /// Send the draft: delivered now, or queued behind a turn in flight. `now` ends that
-    /// turn instead — the web UI's "Send Now".
+    /// turn instead — the web UI's "Send Now". The composer empties and the message shows under
+    /// the conversation at the tap; the server is asked after. One it refuses stays there as
+    /// *Not sent*, with the words kept for *Try again* or *Edit*.
     func send(now: Bool = false) async {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        isSending = true
-        defer { isSending = false }
+        let sending = attachments
+        draft = ""
+        // Only what went: anything added while it was sending stays for the next message.
+        attachments.removeAll { attached in sending.contains { $0.id == attached.id } }
+        let message = OutgoingMessage(content: prompt, attachmentCount: sending.count, now: now, conversationTotal: shownConversation?.total ?? 0)
+        outgoing.add(message)
+        error = nil
+        Haptics.success()
+        await deliver(message, attachments: sending)
+    }
+
+    /// A message that was not sent, sent again.
+    func retrySend(_ id: UUID) async {
+        guard var message = outgoing.take(id) else { return }
+        message.state = .sending
+        message.sentAt = Date()
+        message.conversationTotal = shownConversation?.total ?? 0
+        outgoing.add(message)
+        await deliver(message, attachments: [])
+    }
+
+    /// A message that was not sent, back in the composer to be changed. Its photos and files
+    /// are not kept: the composer had already let them go.
+    func editFailedSend(_ id: UUID) {
+        guard let message = outgoing.take(id) else { return }
+        draft = draft.isEmpty ? message.content : draft + "\n" + message.content
+    }
+
+    private func deliver(_ message: OutgoingMessage, attachments sending: [MessageAttachment]) async {
         do {
             let result: FollowUpResult
-            let sending = attachments
             if !sending.isEmpty {
-                result = try await api.followUp(id, prompt: prompt, attachments: sending, now: now)
-            } else if now {
-                result = try await api.sendNow(id, prompt: prompt)
+                result = try await api.followUp(id, prompt: message.content, attachments: sending, now: message.now)
+            } else if message.now {
+                result = try await api.sendNow(id, prompt: message.content)
             } else {
-                result = try await api.followUp(id, prompt: prompt)
+                result = try await api.followUp(id, prompt: message.content)
             }
-            draft = ""
-            // Only what went: anything added while it was sending stays for the next message.
-            attachments.removeAll { attached in sending.contains { $0.id == attached.id } }
-            notice = result.queued ? "Queued — it goes in when the current turn ends." : (now ? "Sent now." : "Sent.")
-            error = nil
-            Haptics.success()
-            await load()
+            outgoing.delivered(message.id, queued: result.queued)
+            notice = result.queued ? "Queued — it goes in when the current turn ends." : (message.now ? "Sent now." : "Sent.")
+            // The transcript and the queue as they now stand are what take the bubble down — a
+            // poll that read while the send was out may already have the message.
+            outgoing.reconcile(conversation: shownConversation, queue: queue)
+            await poll()
         } catch {
-            fail(error)
+            let zimmerError = error as? ZimmerError ?? .transport(error)
+            outgoing.failed(message.id, zimmerError.userMessage)
+            report(zimmerError)
+            Haptics.failure()
         }
     }
 
@@ -264,17 +318,30 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    /// One action from the session's menu; the server's answer replaces what is shown.
+    /// One action from the session's menu. With `optimistic`, the page shows the session as
+    /// the action is expected to leave it at the tap — `optimistic` writes that onto a copy —
+    /// and the server's answer replaces it; a refusal puts the session back as it was, with the
+    /// refusal over the page. Without `optimistic`, the toast shows at the tap and the page
+    /// changes on the answer.
     @discardableResult
-    func apply(_ done: String, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
+    func apply(_ done: String, optimistic: ((inout SessionSummary) -> Void)? = nil, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
+        let before = detail?.session
+        if let optimistic, var guess = before {
+            optimistic(&guess)
+            detail?.session = guess
+        }
+        notice = done
+        error = nil
+        Haptics.success()
+        actionsInFlight += 1
+        defer { actionsInFlight -= 1 }
         do {
             let session = try await action(api)
             detail?.session = session
-            notice = done
-            error = nil
-            Haptics.success()
             return true
         } catch {
+            if optimistic != nil, let before { detail?.session = before }
+            if notice == done { notice = nil }
             fail(error)
             return false
         }
@@ -283,6 +350,8 @@ final class SessionDetailModel: ObservableObject {
     /// Mark the CarPlay fit by hand, or clear it. A standing mark that outranks this one is
     /// kept, and the notice says why rather than claiming it changed.
     func setCarplayFit(_ change: CarplayFitChange) async {
+        actionsInFlight += 1
+        defer { actionsInFlight -= 1 }
         do {
             let result = try await api.setCarplayFit(id, change)
             detail?.session = result.session
@@ -294,27 +363,30 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    /// Promote or demote. A promotion that tried to start the session and could not says why,
-    /// rather than claiming it worked.
+    /// Promote or demote: the class changes at the tap. A promotion that tried to start the
+    /// session and could not says why once the server has answered, rather than claiming it
+    /// worked.
     func reschedule(priority: Bool) async {
-        do {
-            let change = try await api.setSchedulingClass(id, priority: priority)
-            detail?.session = change.session
-            let done = priority ? "Promoted to priority." : "Demoted to spot, top of the queue."
-            notice = change.startMessage.map { "\(done) \($0)" } ?? done
-            error = nil
-            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
-            // Why it was waiting has changed with it: the banners are read again.
-            await load()
-        } catch {
-            fail(error)
+        let done = priority ? "Promoted to priority." : "Demoted to spot, top of the queue."
+        var change: SchedulingChange?
+        let applied = await apply(done, optimistic: { $0.expectPriority(priority) }) { api in
+            let answer = try await api.setSchedulingClass(self.id, priority: priority)
+            change = answer
+            return answer.session
         }
+        guard applied, let change else { return }
+        notice = change.startMessage.map { "\(done) \($0)" } ?? done
+        if change.startOutcome == "refused" { Haptics.failure() }
+        // Why it was waiting has changed with it: the banners are read again.
+        await load()
     }
 
     /// The web page's class select, in its words: *Derive it* lets the genesis decide again.
     /// Like a promotion, a change that makes a waiting session priority starts it, and one
     /// that could not says why.
     func setSchedulingClass(_ choice: SchedulingClassChoice) async {
+        actionsInFlight += 1
+        defer { actionsInFlight -= 1 }
         do {
             let change = try await api.setSchedulingClass(id, to: choice)
             detail?.session = change.session
@@ -346,45 +418,43 @@ final class SessionDetailModel: ObservableObject {
         }
     }
 
-    /// Answer a prompt. A refusal (a relay-only sign-in, a prompt already answered) is shown
-    /// in the sheet, which stays open; nil means it went through.
-    func answer(_ prompt: PendingElicitation, _ answer: ElicitationAnswer, content: String?) async -> String? {
+    /// Answer a prompt. Its card goes at the tap and the server is asked after; a refusal (a
+    /// relay-only sign-in) brings the card back with the refusal over the page, and a prompt
+    /// answered elsewhere or expired stays gone, the page read again to say so.
+    func answer(_ prompt: PendingElicitation, _ answer: ElicitationAnswer, content: String?) async {
+        prompts.removeAll { $0.id == prompt.id }
+        switch answer {
+        case .accept: notice = "Accepted"
+        case .decline: notice = "Declined"
+        case .cancel: notice = "Dismissed — the MCP server was told nobody decided."
+        }
+        error = nil
+        Haptics.success()
+        actionsInFlight += 1
+        defer { actionsInFlight -= 1 }
         do {
             try await api.answerElicitation(prompt.id, answer: answer, content: content)
-            switch answer {
-            case .accept: notice = "Accepted"
-            case .decline: notice = "Declined"
-            case .cancel: notice = "Dismissed — the MCP server was told nobody decided."
-            }
-            Haptics.success()
             await load()
-            return nil
         } catch let failure as ZimmerError {
+            notice = nil
             switch failure {
-            case .unauthorized: report(failure)
-            case .http(status: 403, _): break
-            // Answered elsewhere, or expired: the card goes when the list is read again.
-            default: await load()
+            case .unauthorized:
+                report(failure)
+            case .http(status: 403, _):
+                if !prompts.contains(where: { $0.id == prompt.id }) { prompts.append(prompt) }
+                self.error = failure
+            // Answered elsewhere, or expired: the card stays gone, and the page says where
+            // things stand now.
+            default:
+                self.error = failure
+                await load()
             }
             Haptics.failure()
-            return failure.userMessage
         } catch {
+            notice = nil
+            if !prompts.contains(where: { $0.id == prompt.id }) { prompts.append(prompt) }
+            self.error = .transport(error)
             Haptics.failure()
-            return ZimmerError.transport(error).userMessage
-        }
-    }
-
-    /// Fork at a message: a new session holding the conversation up to it. Returns its id.
-    func fork(at message: ConversationMessage) async -> Int? {
-        guard let index = message.transcriptIndex else { return nil }
-        do {
-            let forked = try await api.fork(id, at: index)
-            notice = "Forked to #\(forked.id)"
-            Haptics.success()
-            return forked.id
-        } catch {
-            fail(error)
-            return nil
         }
     }
 
@@ -484,9 +554,17 @@ struct SessionDetailView: View {
         var id: String { rawValue }
     }
 
+    /// The id this page was pushed with: the session's, or the placeholder a start opened on
+    /// (`AppModel.startSession`), which stays in the navigation path after the model has
+    /// adopted the session's own id. What "this page is the one in front" compares against.
+    private let openedAs: Int
+
     init(id: Int, api: ZimmerAPI) {
+        openedAs = id
         _model = StateObject(wrappedValue: SessionDetailModel(id: id, api: api))
     }
+
+    private var isFront: Bool { app.path.last == openedAs && app.tab == .sessions }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -532,7 +610,7 @@ struct SessionDetailView: View {
                 try? await Task.sleep(for: model.pollInterval)
                 guard !Task.isCancelled else { return }
                 // Only while this session is the screen in front, whatever SwiftUI keeps alive.
-                guard app.path.last == model.id, app.tab == .sessions else { continue }
+                guard isFront else { continue }
                 // The full-screen transcript reads for itself while it covers the page.
                 guard !readingFullScreen else { continue }
                 await model.poll()
@@ -545,7 +623,7 @@ struct SessionDetailView: View {
             CustomSnoozeSheet { until in
                 let label = until.formatted(date: .abbreviated, time: .shortened)
                 let id = model.id
-                return await model.apply("Snoozed until \(label)") { try await $0.setVisibility(id, .snoozed(until: until)) }
+                Task { await model.apply("Snoozed until \(label)", optimistic: { $0.expect(.snoozed(until: until)) }) { try await $0.setVisibility(id, .snoozed(until: until)) } }
             }
         }
         .confirmationDialog(
@@ -555,7 +633,7 @@ struct SessionDetailView: View {
         ) {
             Button("Restart") {
                 let id = model.id
-                Task { await model.apply("Restarted") { try await $0.restart(id) } }
+                Task { await model.apply("Restarted", optimistic: { $0.expectRestarted() }) { try await $0.restart(id) } }
             }
         } message: {
             // The web page's own confirm text for this session's restart.
@@ -563,13 +641,16 @@ struct SessionDetailView: View {
         }
         .sheet(item: $answering) { prompt in
             ElicitationSheet(prompt: prompt) { answer, content in
-                await model.answer(prompt, answer, content: content)
+                Task { await model.answer(prompt, answer, content: content) }
             }
         }
         .confirmationDialog("Fork from this message?", isPresented: Binding(get: { forking != nil }, set: { if !$0 { forking = nil } }), titleVisibility: .visible, presenting: forking) { message in
             Button("Fork") {
-                Task {
-                    if let id = await model.fork(at: message) { app.path.append(id) }
+                // The fork's page opens at once, on the message it forks from; the session
+                // fills it in when the server has made it.
+                if let index = message.transcriptIndex {
+                    let id = model.id
+                    app.startSession(prompt: message.content, title: "Fork of #\(id)") { try await $0.fork(id, at: index).id }
                 }
             }
             .accessibilityIdentifier("fork.confirm")
@@ -590,6 +671,9 @@ struct SessionDetailView: View {
     private func scrollPage(_ proxy: ScrollViewProxy) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                if model.isPlaceholder, let start = app.pendingStarts[openedAs] {
+                    PendingStartHeader(start: start, retry: { app.retryStart(openedAs) }, edit: { app.editStart(openedAs) })
+                }
                 if let detail = model.detail {
                     header(detail)
                         .pageSection(.overview, edge: stripBottom, reached: $reachedSections)
@@ -629,6 +713,16 @@ struct SessionDetailView: View {
                 if let conversation = model.shownConversation {
                     conversationSection(conversation, edge: stripBottom, reading: pageReading)
                         .pageSection(.transcript, edge: stripBottom, reached: $reachedSections)
+                }
+                // What was sent from here and the server has not shown back yet, after the
+                // conversation, as the web composer's bubble shows a message before the
+                // transcript has it. The words a start opened on are the first of them.
+                if model.isPlaceholder, let start = app.pendingStarts[openedAs] {
+                    OutgoingBubble(message: OutgoingMessage(content: start.prompt, state: start.state.isFailed ? .failed("") : .sending, conversationTotal: 0), retry: nil, edit: nil)
+                }
+                ForEach(model.outgoing.messages) { message in
+                    OutgoingBubble(message: message, retry: { Task { await model.retrySend(message.id) } }, edit: { model.editFailedSend(message.id) })
+                        .id("outgoing.\(message.id)")
                 }
                 // Under the conversation and above the composer, where the web UI puts them.
                 if !model.undelivered.isEmpty {
@@ -671,9 +765,15 @@ struct SessionDetailView: View {
             if !jumping { jumpedTo = nil }
         }
         .background(Theme.ground)
-        .navigationTitle(Text(verbatim: "#\(model.id)"))
+        .navigationTitle(model.isPlaceholder ? Text("Starting…") : Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+        // The start this page opened on was answered: the page is that session's from here.
+        .onChange(of: app.pendingStarts[openedAs]?.state, initial: true) { _, state in
+            guard case let .started(id)? = state else { return }
+            app.forgetStart(openedAs)
+            Task { await model.adopt(id) }
+        }
     }
 
     /// What the page opens on. A session without a summary yet says so, with the transcript a
@@ -707,7 +807,7 @@ struct SessionDetailView: View {
             } message: {
                 Text("The session is told to check for conflicts, merge, and archive itself. Your tap is the sign-off.")
             }
-            .modifier(QueuedTrashQuestion { $0.id == model.id && app.path.last == model.id })
+            .modifier(QueuedTrashQuestion { $0.id == model.id && isFront })
             // Trashed — here, or after *Trash anyway* — the page goes and the board offers Undo.
             .onChange(of: app.undoable?.id) { _, trashed in
                 if trashed == model.id { dismiss() }
@@ -734,7 +834,7 @@ struct SessionDetailView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
                     let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task { await model.apply("Renamed") { try await $0.rename(model.id, title: title) } }
+                    Task { await model.apply("Renamed", optimistic: { $0.expectTitle(title) }) { try await $0.rename(model.id, title: title) } }
                 }
                 .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -746,7 +846,7 @@ struct SessionDetailView: View {
                 Button("Set") {
                     guard let value = Precedence.parse(newPrecedence) else { return }
                     let id = model.id
-                    Task { await model.apply("Precedence is now \(value).") { try await $0.setPrecedence(id, value) } }
+                    Task { await model.apply("Precedence is now \(value).", optimistic: { $0.expectPrecedence(value) }) { try await $0.setPrecedence(id, value) } }
                 }
                 .disabled(Precedence.parse(newPrecedence) == nil)
             } message: {
@@ -775,25 +875,26 @@ struct SessionDetailView: View {
                 switch field {
                 case .notes:
                     TextEditSheet(title: "Edit Notes", placeholder: "Notes for this session", initial: model.detail?.session.notes ?? "") { text in
-                        await model.apply("Notes saved") { try await $0.updateNotes(model.id, notes: text) }
+                        Task { await model.apply("Notes saved", optimistic: { $0.expectNotes(text) }) { try await $0.updateNotes(model.id, notes: text) } }
                     }
                 case .goal:
                     // The web page's goal picker: the catalog's goals by name, or your own words.
                     GoalPickerSheet(goals: model.configs?.goals ?? [], current: model.detail?.session.goal) { text in
                         let name = model.configs?.goal(matching: text)?.title
                         let done: String = text.isEmpty ? "Goal cleared" : name.map { "Goal: \($0)" } ?? "Goal updated"
-                        let saved = await model.apply(done) { try await $0.updateGoal(model.id, goal: text) }
-                        // The goal check rides on the session's page, not the PATCH's answer: read
-                        // it again so it follows the goal, without holding the sheet open for it.
-                        if saved { Task { await model.load() } }
-                        return saved
+                        Task {
+                            let saved = await model.apply(done, optimistic: { $0.expectGoal(text) }) { try await $0.updateGoal(model.id, goal: text) }
+                            // The goal check rides on the session's page, not the PATCH's answer:
+                            // read it again so it follows the goal.
+                            if saved { await model.load() }
+                        }
                     }
                 }
             }
             .sheet(isPresented: $showingLogs) { SessionLogsView(id: model.id, api: model.api) }
             .sheet(isPresented: $showingSubagents) { SubagentsView(id: model.id, api: model.api) }
             .fullScreenCover(isPresented: $readingFullScreen) {
-                FullScreenTranscript(model: model, position: fullScreenReading) { edge, reading in
+                FullScreenTranscript(model: model, position: fullScreenReading, isFront: { isFront }) { edge, reading in
                     if let conversation = model.shownConversation {
                         conversationSection(conversation, edge: edge, reading: reading)
                     }
@@ -814,7 +915,7 @@ struct SessionDetailView: View {
             // The web UI's bubble, above the composer as its joystick is. A session started
             // from here threads under this one, as the bubble's `parent_session_id` does, and
             // carries this page, as the bubble carries the page it was typed on.
-            .quickRouterCorner(parent: model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
+            .quickRouterCorner(parent: model.isPlaceholder ? nil : model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
             .safeAreaInset(edge: .bottom) {
                 if model.detail?.acceptsFollowUp ?? false { composer }
             }
@@ -872,14 +973,20 @@ struct SessionDetailView: View {
                 actionsMenu(session)
                 if session.status == .archived {
                     Button {
-                        Task { await model.apply("Restored from trash") { try await $0.unarchive(session.id) } }
+                        Task { await model.apply("Restored from trash", optimistic: { $0.expectRestored() }) { try await $0.unarchive(session.id) } }
                     } label: {
                         Image(systemName: "arrow.uturn.backward")
                     }
                     .accessibilityLabel("Restore from Trash")
                     .accessibilityIdentifier("detail.restore")
                 } else {
-                    Button(role: .destructive) { Task { await app.trash(session) { model.fail($0) } } } label: {
+                    // The page closes at the tap (`undoable` is set at once, and the board behind
+                    // offers Undo); a refusal shows over the board, which is then in front. The
+                    // page knows what is queued, so one with messages waiting asks here first,
+                    // as the web UI's *Archive anyway* does, rather than leaving and coming back.
+                    Button(role: .destructive) {
+                        if model.queue.isEmpty { Task { await app.trash(session) } } else { app.queuedTrash = session }
+                    } label: {
                         Image(systemName: "trash")
                     }
                     .accessibilityLabel("Move to trash")
@@ -971,7 +1078,7 @@ struct SessionDetailView: View {
     private var modelSheet: some View {
         if let session = model.detail?.session {
             ModelPickerSheet(session: session) { id in
-                await model.apply("Model: \(id)") { try await $0.updateModel(session.id, model: id) }
+                Task { await model.apply("Model: \(id)", optimistic: { $0.expectModel(id) }) { try await $0.updateModel(session.id, model: id) } }
             }
         }
     }
@@ -1137,7 +1244,7 @@ struct SessionDetailView: View {
                         ForEach(VisibilityChange.snoozePresets()) { preset in
                             Button(preset.label) {
                                 let until = preset.until.formatted(date: .abbreviated, time: .shortened)
-                                Task { await model.apply("Snoozed until \(until)") { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
+                                Task { await model.apply("Snoozed until \(until)", optimistic: { $0.expect(.snoozed(until: preset.until)) }) { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
                             }
                         }
                         Button("Custom…") { customSnoozing = true }
@@ -1145,13 +1252,13 @@ struct SessionDetailView: View {
                         Label("Snooze until…", systemImage: "moon.zzz")
                     }
                     Button {
-                        Task { await model.apply("Hidden") { try await $0.setVisibility(session.id, .hidden) } }
+                        Task { await model.apply("Hidden", optimistic: { $0.expect(.hidden) }) { try await $0.setVisibility(session.id, .hidden) } }
                     } label: {
                         Label("Hide", systemImage: "eye.slash")
                     }
                 } else {
                     Button {
-                        Task { await model.apply("Back on the board") { try await $0.setVisibility(session.id, .visible) } }
+                        Task { await model.apply("Back on the board", optimistic: { $0.expect(.visible) }) { try await $0.setVisibility(session.id, .visible) } }
                     } label: {
                         Label("Put back on the board", systemImage: "eye")
                     }
@@ -1169,7 +1276,7 @@ struct SessionDetailView: View {
                 }
                 if session.status == .running {
                     Button {
-                        Task { await model.apply("Paused") { try await $0.pause(session.id) } }
+                        Task { await model.apply("Paused", optimistic: { $0.expectPaused() }) { try await $0.pause(session.id) } }
                     } label: {
                         Label("Pause Session", systemImage: "pause.circle")
                     }
@@ -1188,7 +1295,7 @@ struct SessionDetailView: View {
                         if let confirmation = session.restartConfirmation(transcriptPresent: model.conversation.map { $0.total > 0 }) {
                             confirmingRestart = confirmation
                         } else {
-                            Task { await model.apply("Restarted") { try await $0.restart(session.id) } }
+                            Task { await model.apply("Restarted", optimistic: { $0.expectRestarted() }) { try await $0.restart(session.id) } }
                         }
                     } label: {
                         Label("Restart Session", systemImage: "arrow.clockwise.circle")
@@ -1221,13 +1328,13 @@ struct SessionDetailView: View {
                     let modelDefault = effort.default.map { "Model default (\($0))" } ?? "Model default"
                     Menu {
                         Button {
-                            Task { await model.apply("Effort: model default") { try await $0.updateEffort(session.id, effort: nil) } }
+                            Task { await model.apply("Effort: model default", optimistic: { $0.expectEffort(nil) }) { try await $0.updateEffort(session.id, effort: nil) } }
                         } label: {
                             choiceLabel(modelDefault, selected: !effort.isExplicit)
                         }
                         ForEach(effort.levels, id: \.self) { level in
                             Button {
-                                Task { await model.apply("Effort: \(level)") { try await $0.updateEffort(session.id, effort: level) } }
+                                Task { await model.apply("Effort: \(level)", optimistic: { $0.expectEffort(level) }) { try await $0.updateEffort(session.id, effort: level) } }
                             } label: {
                                 choiceLabel(level, selected: effort.isExplicit && effort.level == level)
                             }
@@ -1313,13 +1420,13 @@ struct SessionDetailView: View {
             get: { session.heartbeatInterval },
             set: { seconds in
                 Task {
-                    await model.apply("Heartbeat every \(HeartbeatInterval.label(for: seconds))") { try await $0.setHeartbeatInterval(session.id, seconds: seconds) }
+                    await model.apply("Heartbeat every \(HeartbeatInterval.label(for: seconds))", optimistic: { $0.expectHeartbeat(everySeconds: seconds) }) { try await $0.setHeartbeatInterval(session.id, seconds: seconds) }
                 }
             }
         )
         return Menu {
             Button {
-                Task { await model.apply(enabled ? "Heartbeat off" : "Heartbeat on") { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+                Task { await model.apply(enabled ? "Heartbeat off" : "Heartbeat on", optimistic: { $0.expectHeartbeat(enabled: !enabled) }) { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
             } label: {
                 Label(enabled ? "Turn Off" : "Turn On", systemImage: enabled ? "heart.slash" : "heart")
             }
@@ -1463,7 +1570,7 @@ struct SessionDetailView: View {
                 Button {
                     Task { await model.send() }
                 } label: {
-                    Image(systemName: model.isSending ? "hourglass" : (running ? "text.badge.plus" : "arrow.up"))
+                    Image(systemName: running ? "text.badge.plus" : "arrow.up")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(canSend ? Color.white : Theme.inkMute)
                         .frame(width: 34, height: 34)
@@ -1504,7 +1611,7 @@ struct SessionDetailView: View {
     }
 
     private var canSend: Bool {
-        !model.isSending && !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -1653,16 +1760,15 @@ private struct FailureCard: View {
     }
 }
 
-/// A sheet with one text editor: the notes. `save` reports whether the server took it; the
-/// sheet stays open with the text when it did not.
+/// A sheet with one text editor: the notes. Save closes it at once; the page behind shows the
+/// text saved, and a refusal over it with the text as it was.
 private struct TextEditSheet: View {
     let title: String
     let placeholder: String
     let initial: String
-    let save: (String) async -> Bool
+    let save: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var saving = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -1686,15 +1792,10 @@ private struct TextEditSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Saving…" : "Save") {
-                        Task {
-                            saving = true
-                            let saved = await save(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                            saving = false
-                            if saved { dismiss() }
-                        }
+                    Button("Save") {
+                        save(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                        dismiss()
                     }
-                    .disabled(saving)
                     .accessibilityIdentifier("edit.save")
                 }
             }
@@ -1767,5 +1868,100 @@ struct MessageBubble: View {
         } else {
             shape.fill(Theme.accent.opacity(0.14))
         }
+    }
+}
+
+/// What a session's page shows while the server is still being asked to start it: the title
+/// the start was given and where it stands. A start that failed says why, with *Try again*
+/// and *Edit* (the words back in the Quick Router).
+struct PendingStartHeader: View {
+    let start: PendingStart
+    let retry: () -> Void
+    let edit: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(start.title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Theme.ink)
+            switch start.state {
+            case .starting, .started:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Starting the session…")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.inkSoft)
+                }
+                .accessibilityIdentifier("start.pending")
+            case let .failed(error):
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("The session did not start.")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.danger)
+                    Text(error.userMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.ink)
+                    HStack(spacing: 12) {
+                        Button("Try again", action: retry)
+                            .buttonStyle(.borderedProminent)
+                            .tint(Theme.accent)
+                            .accessibilityIdentifier("start.retry")
+                        Button("Edit", action: edit)
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("start.edit")
+                    }
+                    .font(.subheadline.weight(.medium))
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous).strokeBorder(Theme.danger.opacity(0.4)))
+                .accessibilityIdentifier("start.failed")
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
+/// A message of yours on its way: drawn as your bubbles are, with where it stands under it.
+/// One that was not sent keeps its words and offers *Try again* and *Edit*.
+struct OutgoingBubble: View {
+    let message: OutgoingMessage
+    let retry: (() -> Void)?
+    let edit: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text("You").themeLabel(size: 10, color: Theme.inkMute)
+            MarkdownText(blocks: MarkdownBlock.blocks(of: message.content))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous).fill(Theme.accent.opacity(message.isFailed ? 0.06 : 0.14)))
+                .opacity(message.state == .sending ? 0.75 : 1)
+            HStack(spacing: 10) {
+                switch message.state {
+                case .sending:
+                    Text(message.attachmentCount > 0 ? "Sending with \(message.attachmentCount) attached…" : "Sending…")
+                case .delivered:
+                    Text(message.now ? "Sent now" : "Sent")
+                case .queued:
+                    Text("Queued behind the current turn")
+                case let .failed(reason):
+                    Text(reason.isEmpty ? "Not sent" : "Not sent — \(reason)")
+                        .foregroundStyle(Theme.danger)
+                        .lineLimit(3)
+                    if let retry { Button("Try again", action: retry).accessibilityIdentifier("outgoing.retry") }
+                    if let edit { Button("Edit", action: edit).accessibilityIdentifier("outgoing.edit") }
+                }
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Theme.inkMute)
+        }
+        .padding(.leading, 36)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(message.isFailed ? "outgoing.failed" : "outgoing.\(message.state == .sending ? "sending" : "sent")")
     }
 }

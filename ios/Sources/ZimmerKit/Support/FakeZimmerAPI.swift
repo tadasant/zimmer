@@ -48,6 +48,15 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// A session trashed somewhere else — the web, a router, its own agent — as soon as the
     /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
     private let trashedElsewhere: Int?
+    /// Writes the fake refuses, by name (`refusableWrites`), so a screen can be seen putting
+    /// back what it showed at the tap. And how long every write waits before answering, so a
+    /// screen can be photographed showing a change the server has not yet taken.
+    public let refuses: Set<String>
+    public let writeDelay: Duration?
+    /// The names `refuses` takes.
+    public static let refusableWrites: Set<String> = [
+        "follow_up", "trash", "unarchive", "visibility", "quick_router", "create_session", "elicitation", "notification", "trigger", "fork",
+    ]
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
     /// as on the server, so a page that reads again sees nothing to redraw.
@@ -90,9 +99,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
+                refuses: Set<String> = [], writeDelay: Duration? = nil,
                 web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
         self.trashedElsewhere = trashedElsewhere
+        self.refuses = refuses
+        self.writeDelay = writeDelay
         self.degraded = degraded
         self.relayOnly = relayOnly
         self.inference = FakeInference(now: now)
@@ -205,6 +217,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     public func followUp(_ id: Int, prompt: String) async throws -> FollowUpResult {
+        try await write("follow_up")
         var session = try find(id)
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw ZimmerError.http(status: 422, message: "prompt is required") }
@@ -247,6 +260,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// harness does not offer, or a parent that is not there is refused; spot lands at the
     /// top of the spot queue; the new session threads under its parent.
     public func startQuickRouter(_ request: QuickRouterRequest) async throws -> Int {
+        try await write("quick_router")
         let text = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw ZimmerError.http(status: 422, message: "prompt can't be blank") }
         let runtime = request.runtime ?? "claude_code"
@@ -607,6 +621,7 @@ extension FakeZimmerAPI {
     }
 
     public func sendNow(_ id: Int, prompt: String) async throws -> FollowUpResult {
+        try await write("follow_up")
         var session = try find(id)
         guard [SessionStatus.running, .waiting, .needsInput].contains(session.status) else {
             throw ZimmerError.http(status: 422, message: "Session is \(session.status.rawValue). Follow-up prompts can only be sent to running, waiting, or needs_input sessions.")
@@ -624,6 +639,7 @@ extension FakeZimmerAPI {
 
     /// As the server answers the app: a turn in flight ends, a queue waits for `force`.
     public func trash(_ id: Int, force: Bool) async throws -> TrashOutcome {
+        try await write("trash")
         var session = try find(id)
         guard session.status != .archived else {
             throw ZimmerError.http(status: 422, message: "Session cannot be trashed from current status: archived")
@@ -638,7 +654,8 @@ extension FakeZimmerAPI {
     }
 
     public func unarchive(_ id: Int) async throws -> SessionSummary {
-        try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
+        try await write("unarchive")
+        return try change(id, refusal: "Session is not in trash", when: { $0.status != .archived }) {
             $0.status = .needsInput
             $0.archivedAt = nil
             $0.trashAfter = nil
@@ -659,6 +676,7 @@ extension FakeZimmerAPI {
     }
 
     public func setVisibility(_ id: Int, _ change: VisibilityChange) async throws -> SessionSummary {
+        try await write("visibility")
         if case let .snoozed(until) = change, until <= Date() {
             throw ZimmerError.http(status: 422, message: "snoozed_until must be in the future")
         }
@@ -1053,6 +1071,7 @@ extension FakeZimmerAPI {
     }
 
     public func createSession(_ request: NewSessionRequest) async throws -> SessionSummary {
+        try await write("create_session")
         guard let root = Self.sampleConfigs.agentRoots.first(where: { $0.name == request.agentRoot }) else {
             throw ZimmerError.http(status: 422, message: "Agent root '\(request.agentRoot)' not found in catalog")
         }
@@ -1189,23 +1208,36 @@ extension FakeZimmerAPI {
     }
 
     public func markNotificationRead(_ id: Int) async throws -> InboxNotification {
+        try await write("notification")
         guard let index = inbox.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         inbox[index].read = true
         return inbox[index]
     }
 
     public func markAllNotificationsRead() async throws {
+        try await write("notification")
         for index in inbox.indices { inbox[index].read = true }
     }
 
     public func dismissNotification(_ id: Int) async throws {
+        try await write("notification")
         guard let notification = inbox.first(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         guard notification.read else { throw ZimmerError.http(status: 422, message: "Cannot dismiss unread notification") }
         inbox.removeAll { $0.id == id }
     }
 
     public func dismissAllReadNotifications() async throws {
+        try await write("notification")
         inbox.removeAll(where: \.read)
+    }
+
+    /// Every write of the fixture goes through here: it waits `writeDelay`, and a write named
+    /// in `refuses` is refused as a server that could not take it would refuse it.
+    func write(_ name: String) async throws {
+        if let writeDelay { try? await Task.sleep(for: writeDelay) }
+        if refuses.contains(name) {
+            throw ZimmerError.http(status: 503, message: "The fixture refused this \(name.replacingOccurrences(of: "_", with: " ")), to show it being put back.")
+        }
     }
 
     public func triggers() async throws -> [TriggerSummary] { triggerList }
@@ -1219,6 +1251,7 @@ extension FakeZimmerAPI {
     }
 
     public func toggleTrigger(_ id: Int) async throws -> TriggerSummary {
+        try await write("trigger")
         guard let index = triggerList.firstIndex(where: { $0.id == id }) else { throw ZimmerError.http(status: 404, message: "The requested resource was not found") }
         triggerList[index].status = triggerList[index].isEnabled ? "disabled" : "enabled"
         return triggerList[index]
@@ -1587,6 +1620,7 @@ extension FakeZimmerAPI {
     }
 
     public func answerElicitation(_ elicitation: Int, answer: ElicitationAnswer, content: String?) async throws {
+        try await write("elicitation")
         guard let owner = prompts.first(where: { $0.value.contains { $0.id == elicitation } })?.key else {
             throw ZimmerError.http(status: 404, message: "Elicitation not found for: \(elicitation)")
         }
@@ -1597,6 +1631,7 @@ extension FakeZimmerAPI {
     }
 
     public func fork(_ id: Int, at transcriptIndex: Int) async throws -> SessionSummary {
+        try await write("fork")
         let source = try find(id)
         let history = try await conversation(id).messages
         guard history.contains(where: { $0.transcriptIndex == transcriptIndex }) else {

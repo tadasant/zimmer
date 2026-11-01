@@ -334,13 +334,10 @@ struct NewSessionView: View {
             request.idempotencyKey = idempotencyKey
         }
         lastAttempt = attempt
-        if let session = await app.createSession(request) {
-            dismiss()
-            app.path.append(session.id)
-        } else {
-            // Shown here, over the list the error also reached.
-            error = app.error
-        }
+        // The sheet closes and the session's page opens at the tap; the page shows the start
+        // on its way, and a refusal with the words kept.
+        dismiss()
+        app.createSession(request)
     }
 }
 
@@ -455,7 +452,8 @@ struct ModelPickerSheet: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
     let session: SessionSummary
-    let choose: (String) async -> Bool
+    /// Chooses the model. The sheet closes at once; the page behind shows the choice, and a refusal.
+    let choose: (String) -> Void
     @State private var models: [ModelOption]?
     @State private var error: ZimmerError?
 
@@ -465,7 +463,8 @@ struct ModelPickerSheet: View {
                 if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(models ?? []) { model in
                     Button {
-                        Task { if await choose(model.id) { dismiss() } }
+                        choose(model.id)
+                        dismiss()
                     } label: {
                         HStack {
                             Text(model.title).foregroundStyle(Theme.ink)

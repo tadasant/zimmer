@@ -728,13 +728,13 @@ private struct HumanMessagesRow: View {
 struct GoalPickerSheet: View {
     let goals: [GoalOption]
     let current: String?
-    let save: (String) async -> Bool
+    /// Saves the goal. The sheet closes at once; the page behind shows the goal, and a refusal.
+    let save: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var custom = ""
-    @State private var saving = false
 
     // Spelled out: the private state makes the memberwise one private to this file.
-    init(goals: [GoalOption], current: String?, save: @escaping (String) async -> Bool) {
+    init(goals: [GoalOption], current: String?, save: @escaping (String) -> Void) {
         self.goals = goals
         self.current = current
         self.save = save
@@ -811,12 +811,7 @@ struct GoalPickerSheet: View {
     }
 
     private func choose(_ value: String) {
-        guard !saving else { return }
-        Task {
-            saving = true
-            let saved = await save(value)
-            saving = false
-            if saved { dismiss() }
-        }
+        save(value)
+        dismiss()
     }
 }

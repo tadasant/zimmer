@@ -27,13 +27,13 @@ struct InboxView: View {
                 .swipeActions(edge: .trailing) {
                     if notification.read {
                         Button(role: .destructive) {
-                            Task { await act("Dismissed") { try await $0.dismissNotification(notification.id) } }
+                            Task { await act("Dismissed", expecting: { $0.filter { $0.id != notification.id } }) { try await $0.dismissNotification(notification.id) } }
                         } label: {
                             Label("Dismiss", systemImage: "xmark")
                         }
                     } else {
                         Button {
-                            Task { await act("Marked read") { _ = try await $0.markNotificationRead(notification.id) } }
+                            Task { await act("Marked read", expecting: { Self.read($0, id: notification.id) }) { _ = try await $0.markNotificationRead(notification.id) } }
                         } label: {
                             Label("Mark Read", systemImage: "envelope.open")
                         }
@@ -60,12 +60,12 @@ struct InboxView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        Task { await act("All marked read") { try await $0.markAllNotificationsRead() } }
+                        Task { await act("All marked read", expecting: { Self.read($0, id: nil) }) { try await $0.markAllNotificationsRead() } }
                     } label: {
                         Label("Mark All Read", systemImage: "envelope.open")
                     }
                     Button(role: .destructive) {
-                        Task { await act("Read notifications dismissed") { try await $0.dismissAllReadNotifications() } }
+                        Task { await act("Read notifications dismissed", expecting: { $0.filter { !$0.read } }) { try await $0.dismissAllReadNotifications() } }
                     } label: {
                         Label("Dismiss All Read", systemImage: "xmark")
                     }
@@ -90,24 +90,46 @@ struct InboxView: View {
         await app.refreshUnreadCount()
     }
 
-    /// Open the session it is about, marking it read on the way, as the web UI's click does.
+    /// Open the session it is about at the tap, marking it read on the way, as the web UI's
+    /// click does. The row reads as read at once; the server is told after.
     private func open(_ notification: InboxNotification) async {
-        if !notification.read { _ = try? await app.api.markNotificationRead(notification.id) }
-        await app.refreshUnreadCount()
         if let id = notification.session?.id { app.path = [id] }
-        await load()
+        guard !notification.read else { return }
+        notifications = Self.read(notifications ?? [], id: notification.id)
+        app.unreadCount = max(app.unreadCount - 1, 0)
+        _ = try? await app.api.markNotificationRead(notification.id)
+        await app.refreshUnreadCount()
     }
 
-    private func act(_ done: String, _ action: (ZimmerAPI) async throws -> Void) async {
+    /// `rows` with the notification `id` read — or all of them, with no id.
+    private static func read(_ rows: [InboxNotification], id: Int?) -> [InboxNotification] {
+        rows.map { row in
+            var row = row
+            if id == nil || row.id == id { row.read = true }
+            return row
+        }
+    }
+
+    /// One action on the list: shown at the tap, as `expecting` says the list will read once
+    /// the server agrees, and asked after; the list is read again when it does. A refusal puts
+    /// the list back as it was, with the refusal over it.
+    private func act(_ done: String, expecting: ([InboxNotification]) -> [InboxNotification], _ action: (ZimmerAPI) async throws -> Void) async {
+        let before = notifications
+        withAnimation { notifications = expecting(notifications ?? []) }
+        app.unreadCount = (notifications ?? []).filter { !$0.read }.count
+        notice = done
+        error = nil
+        Haptics.success()
         do {
             try await action(app.api)
-            notice = done
-            Haptics.success()
             await load()
         } catch {
+            withAnimation { notifications = before }
+            if notice == done { notice = nil }
             // Not followed by a reload, which would clear the refusal before anyone read it.
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()
+            await app.refreshUnreadCount()
         }
     }
 }
@@ -271,15 +293,23 @@ struct TriggersView: View {
         }
     }
 
+    /// The switch moves at the tap; the server is asked after, and a refusal moves it back.
     private func toggle(_ trigger: TriggerSummary) async {
         guard toggling.insert(trigger.id).inserted else { return }
         defer { toggling.remove(trigger.id) }
+        var guess = trigger
+        guess.status = trigger.isEnabled ? "disabled" : "enabled"
+        if let index = triggers?.firstIndex(where: { $0.id == trigger.id }) { triggers?[index] = guess }
+        notice = guess.isEnabled ? "\(guess.name) on" : "\(guess.name) off"
+        error = nil
+        Haptics.success()
         do {
             let updated = try await app.api.toggleTrigger(trigger.id)
             if let index = triggers?.firstIndex(where: { $0.id == trigger.id }) { triggers?[index] = updated }
             notice = updated.isEnabled ? "\(updated.name) on" : "\(updated.name) off"
-            Haptics.success()
         } catch {
+            if let index = triggers?.firstIndex(where: { $0.id == trigger.id }) { triggers?[index] = trigger }
+            notice = nil
             self.error = error as? ZimmerError ?? .transport(error)
             Haptics.failure()
         }
