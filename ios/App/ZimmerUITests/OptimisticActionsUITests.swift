@@ -97,11 +97,14 @@ final class OptimisticActionsUITests: XCTestCase {
         app.buttons["quickrouter.bar.start"].tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["start.failed"].waitForExistence(timeout: timeout), "the page says the start failed")
-        XCTAssertTrue(app.buttons["start.retry"].exists)
+        // The header's buttons are styled; found by identifier whatever element type they read as.
+        XCTAssertTrue(app.descendants(matching: .any)["start.retry"].waitForExistence(timeout: timeout), "Try again is offered")
+        let edit = app.descendants(matching: .any)["start.edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: timeout), "Edit is offered")
         attachScreenshot(app, named: "quick-router-refused")
 
         // Edit: the words back in the Quick Router, for another go.
-        app.buttons["start.edit"].tap()
+        edit.tap()
         let sheet = app.descendants(matching: .any)["quickrouter.field"]
         XCTAssertTrue(sheet.waitForExistence(timeout: timeout))
         XCTAssertEqual(sheet.value as? String, "Rotate the staging deploy key")
