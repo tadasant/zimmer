@@ -33,9 +33,12 @@ final class OptimisticActionsUITests: XCTestCase {
         attachScreenshot(app, named: "trash-at-the-tap")
 
         // The refusal: the row is back, the Undo gone, the refusal over the board.
-        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout), "the refusal shows over the board")
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "the refused trash put the row back")
         XCTAssertTrue(waitForDisappearance(undo, within: timeout), "nothing to undo")
+        // The banner is the list's first row, which a list scrolled by the press and the menu
+        // may hold off screen, where the accessibility tree does not reach it.
+        app.swipeDown()
+        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout), "the refusal shows over the board")
         attachScreenshot(app, named: "trash-put-back")
     }
 
