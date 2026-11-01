@@ -453,20 +453,32 @@ final class AppModel: ObservableObject {
     }
 
     /// The scene's phase changed (`RootView`, the scene's root, so it is heard whatever screen
-    /// is showing).
-    ///
-    /// Back in front, signed out: read the Keychain again — a sign-in that a launch in the
-    /// background could not read comes back here; a real sign-out reads back nothing. Back in
-    /// front, signed in: read the board at once (`readBoardOnReturn`). A cold launch is not a
-    /// change of phase; `start()` reads the board then.
-    func sceneEntered(_ phase: ScenePhase) async {
+    /// is showing). Synchronous, so the poller is held before the app can be suspended, and
+    /// `BoardPoller` restarts (`returnsToFront`) as the app comes back.
+    func sceneChanged(to phase: ScenePhase) {
         switch phase {
         case .background:
             polling.wentToBackground()
-            await trashFixtureSessionWhileAway()
         case .active:
             polling.cameToFront()
             returnsToFront = polling.returns
+        default:
+            break
+        }
+    }
+
+    /// The reads a change of phase calls for, after `sceneChanged(to:)`.
+    ///
+    /// Back in front, signed out: read the Keychain again — a sign-in that a launch in the
+    /// background could not read comes back here; a real sign-out reads back nothing. Back in
+    /// front, signed in: read the board at once (`readBoardOnReturn`). A cold launch reads the
+    /// board in `start()`; a `.active` heard during the launch is at most a second read, which
+    /// the tickets resolve.
+    func sceneEntered(_ phase: ScenePhase) async {
+        switch phase {
+        case .background:
+            await trashFixtureSessionWhileAway()
+        case .active:
             switch isSignedIn {
             case .some(false): await start()
             case .some(true): await readBoardOnReturn()

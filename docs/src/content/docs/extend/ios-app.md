@@ -252,10 +252,10 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   the screen in front and you are not selecting or reordering (ten seconds after a read that
   failed). Both read at once when the app comes back to the front — opening it, unlocking the
   phone, switching back from another app — and the board tries again two seconds later if that
-  read fails. The board's own clock holds while the app is in the background and starts again
-  from that read, so a tick that comes due as the phone wakes the app, before its network is
-  back, never takes the place of the read on opening it. The board also reads whenever you close a session's page, and
-  when you choose the Sessions tab again (unless it was read in the last five seconds), so a
+  read fails. The board's own clock skips its reads while the app is in the background and
+  starts again from the read on return, so a tick that comes due as the phone wakes the app,
+  before its network is back, never takes the place of the read on opening it. The board also
+  reads whenever you close a session's page, and when you choose the Sessions tab again (unless it was read in the last five seconds), so a
   session trashed on the web, by a router or by its own agent leaves the board as you return to
   it. A read never replaces the board once a later read has, nor when it was asked before a row
   action on the phone, so a slow answer never puts a trashed row back.
