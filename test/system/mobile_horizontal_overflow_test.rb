@@ -2003,6 +2003,13 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # rendered — it is built from the same partial, but it is inserted by
     # JavaScript into a list the server never sized for it, and the operator
     # reading this screen on a phone is the person who would find out otherwise.
+    # TEMPORARY DIAGNOSTICS (session 26556): record every node appended under the ranked section.
+    page.execute_script(<<~JS)
+      window.__rankedAppends = []
+      new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
+        window.__rankedAppends.push([n.nodeName, n.id || "", n.dataset ? (n.dataset.sessionId || "") : "", n.dataset ? (n.dataset.rankedQueueTarget || "") : ""].join(":"))
+      }))).observe(document.querySelector("#ranked_sessions"), { childList: true, subtree: true })
+    JS
     find("body").click # close the menu without navigating
     arrival = Session.create!(
       title: LONG_TOKEN_TITLE, prompt: "x", status: :running,
@@ -2032,6 +2039,8 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         opened_at: BroadcastService.circuit_breaker_opened_at,
         adapter: ActionCable.server.config.cable["adapter"],
         top_status: Session.find_by(id: arrival.id - 1)&.status,
+        ranked_broadcasts: (ActionCable.server.pubsub.respond_to?(:broadcasts) ? ActionCable.server.pubsub.broadcasts(Session::RANKED_STREAM).map { |b| b.to_s[/session-id="(\d+)"/, 1] || b.to_s[/data-session-id="(\d+)"/, 1] || "?" } : "n/a"),
+        appends: page.evaluate_script("JSON.stringify(window.__rankedAppends)"),
         connected_sources: page.evaluate_script("Array.from(document.querySelectorAll('turbo-cable-stream-source')).map(e => [e.getAttribute('channel'), e.getAttribute('signed-stream-name')?.slice(0, 12), e.hasAttribute('connected')])")
       }
       flunk "arrival #{arrival.id} (#{arrival.reload.status}/#{arrival.scheduling_class}) never landed.\nSTATE: #{state}\nSERVER: #{server}\nLOGS:\n#{logs.join("\n")}"
