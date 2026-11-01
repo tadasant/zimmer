@@ -1,9 +1,9 @@
 import XCTest
 
 /// The session page's pinned section strip and its full-screen transcript, against the
-/// `-ZimmerFixture` in-memory Zimmer with 1044's conversation run long: the page opens at the
-/// newest message, a hundred messages under the details card, and the hierarchy and the human
-/// messages are still one tap away.
+/// `-ZimmerFixture` in-memory Zimmer with 1044's conversation run long: the page opens on its
+/// status summary, the transcript's chip lands on the newest message a hundred messages down,
+/// and from there the hierarchy and the human messages are still one tap away.
 @MainActor
 final class SessionSectionsUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -12,13 +12,58 @@ final class SessionSectionsUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func test_a_session_opens_on_its_summary_and_the_transcript_opens_at_the_newest_message() throws {
+        let app = launch()
+        let summary = app.descendants(matching: .any)["detail.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: timeout))
+        // The whole conversation is read before the page can be said to have opened on top of it.
+        let newest = app.descendants(matching: .any)["detail.message.98"]
+        XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForVisible(app, summary), "the page opens on where things stand")
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.overview"]), "at the top, the overview's chip is lit")
+        XCTAssertFalse(isInView(app, newest), "a hundred messages down, the newest is out of sight")
+        attachScreenshot(app, named: "summary-default")
+
+        // One tap on the transcript's chip: its newest message, at the foot of what is in view.
+        app.buttons["detail.sections.transcript"].tap()
+        XCTAssertTrue(waitForFootInView(app, newest), "the transcript opens at its newest message")
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.transcript"]))
+        attachScreenshot(app, named: "transcript-newest")
+    }
+
+    func test_the_summarys_newest_message_button_opens_the_transcript_at_its_end() throws {
+        let app = launch()
+        let button = app.buttons["detail.summary.transcript"]
+        XCTAssertTrue(button.waitForExistence(timeout: timeout))
+        let newest = app.descendants(matching: .any)["detail.message.98"]
+        XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        button.tap()
+        XCTAssertTrue(waitForFootInView(app, newest), "the button lands on the newest message")
+    }
+
+    /// 1048 has no summary yet: the card says so, rather than the page opening on the details,
+    /// and its button reads the transcript from its newest message.
+    func test_a_session_without_a_summary_says_so_and_offers_the_transcript() throws {
+        let app = launch(["-ZimmerFixtureOpenSession", "1048"])
+        let empty = app.descendants(matching: .any)["detail.summary.empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForVisible(app, empty), "the page opens on the summary's place")
+        attachScreenshot(app, named: "summary-none")
+        let button = app.buttons["detail.summary.transcript"]
+        XCTAssertTrue(button.waitForExistence(timeout: timeout))
+        button.tap()
+        XCTAssertTrue(waitForFootInView(app, app.descendants(matching: .any)["detail.message.1"]), "the newest message, its end in view")
+    }
+
     func test_the_strip_reaches_the_human_messages_and_the_hierarchy_from_the_end_of_a_long_transcript() throws {
         let app = launch()
         let strip = app.descendants(matching: .any)["detail.sections"]
         XCTAssertTrue(strip.waitForExistence(timeout: timeout))
         let newest = app.descendants(matching: .any)["detail.message.98"]
         XCTAssertTrue(newest.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.transcript"]), "opened at the newest message, the transcript's chip is lit")
+        app.buttons["detail.sections.transcript"].tap()
+        XCTAssertTrue(waitForFootInView(app, newest))
+        XCTAssertTrue(waitForSelected(app.buttons["detail.sections.transcript"]), "at the newest message, the transcript's chip is lit")
         let summary = labelled(app, "1 message in this session · 1 elsewhere")
         XCTAssertFalse(summary.exists && summary.isHittable, "a hundred messages down, the human messages are out of sight")
         attachScreenshot(app, named: "sections-long-transcript")
@@ -42,7 +87,7 @@ final class SessionSectionsUITests: XCTestCase {
 
         // And back to the newest message.
         app.buttons["detail.sections.transcript"].tap()
-        XCTAssertTrue(waitForVisible(app, newest))
+        XCTAssertTrue(waitForFootInView(app, newest))
     }
 
     func test_the_transcript_reads_full_screen_and_goes_back_to_the_page() throws {
@@ -50,6 +95,9 @@ final class SessionSectionsUITests: XCTestCase {
         let enter = app.buttons["detail.fullscreen"]
         XCTAssertTrue(enter.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.98"].waitForExistence(timeout: timeout))
+        // From the top of the page, on the summary: the cover opens at the newest message all
+        // the same, not at the first of a hundred.
+        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.summary"]))
         enter.tap()
 
         let exit = app.buttons["transcript.fullscreen.exit"]
@@ -59,7 +107,7 @@ final class SessionSectionsUITests: XCTestCase {
         let cover = app.descendants(matching: .any)["transcript.fullscreen.messages"]
         XCTAssertTrue(cover.waitForExistence(timeout: timeout))
         XCTAssertTrue(waitForNotHittable(app.buttons["detail.sections.overview"]), "the page's chrome is covered")
-        XCTAssertTrue(waitForVisible(app, cover.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
+        XCTAssertTrue(waitForFootInView(app, cover.descendants(matching: .any)["detail.message.98"]), "opened at the newest message")
         attachScreenshot(app, named: "fullscreen-transcript")
 
         exit.tap()
@@ -67,7 +115,7 @@ final class SessionSectionsUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(app.navigationBars["#1044 · Transcript"]))
         XCTAssertTrue(app.descendants(matching: .any)["detail.sections"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.navigationBars["#1044"].exists, "back on the page")
-        XCTAssertTrue(waitForVisible(app, app.descendants(matching: .any)["detail.message.98"]), "where it was left")
+        XCTAssertTrue(waitForFootInView(app, app.descendants(matching: .any)["detail.message.98"]), "where it was left: the newest")
         attachScreenshot(app, named: "fullscreen-exited")
     }
 
@@ -114,6 +162,42 @@ final class SessionSectionsUITests: XCTestCase {
         return false
     }
 
+    /// The top of what is open: under the navigation bar and the strip.
+    private func openTop(_ app: XCUIApplication) -> CGFloat {
+        let bar = app.navigationBars.firstMatch
+        let strip = app.descendants(matching: .any)["detail.sections"]
+        var top = bar.exists ? bar.frame.maxY : 0
+        if strip.exists { top = max(top, strip.frame.maxY) }
+        return top
+    }
+
+    /// The foot of what is open: above the composer when there is one.
+    private func openBottom(_ app: XCUIApplication) -> CGFloat {
+        let field = app.descendants(matching: .any)["followup.field"]
+        return field.exists && !field.frame.isEmpty ? min(app.frame.maxY, field.frame.minY) : app.frame.maxY
+    }
+
+    /// Any of `element` in the open part of the screen, now.
+    private func isInView(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists, !element.frame.isEmpty else { return false }
+        return element.frame.maxY > openTop(app) && element.frame.minY < openBottom(app)
+    }
+
+    /// The end of `element` — the newest message, however tall — inside the open part of the
+    /// screen: scrolled to the bottom, not to the top of a message whose end is out of sight.
+    /// Polled until it holds, so a scroll still settling is waited for rather than timed.
+    private func waitForFootInView(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, !element.frame.isEmpty {
+                let foot = element.frame.maxY
+                if foot > openTop(app), foot <= openBottom(app) + 1 { return true }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        return false
+    }
+
     private func waitForNotHittable(_ element: XCUIElement) -> Bool {
         let covered = expectation(for: NSPredicate(format: "hittable == false"), evaluatedWith: element)
         return XCTWaiter().wait(for: [covered], timeout: timeout) == .completed
@@ -130,9 +214,14 @@ final class SessionSectionsUITests: XCTestCase {
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }

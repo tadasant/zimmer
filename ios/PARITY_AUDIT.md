@@ -369,7 +369,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| `_detail.html.erb:280-291` `transcript-panel` | Transcript disclosure, collapsed by default, opens scrolled to bottom | SDV conversation inline, opens at newest (:388-408) | present |  |
+| `_detail.html.erb:280-291` `transcript-panel` | Transcript disclosure, collapsed by default, opens scrolled to bottom | SDV conversation inline under the summary; the page opens on the summary, and the Transcript chip, the summary's *Newest message* and full screen open the transcript at its newest message | present | The web page opens on its Status panel with the transcript collapsed; the app does the same with the transcript inline below |
 | `_transcript_body.html.erb:32-44` | "Showing latest N items / N items" + "<Level> view" | SDV :1031-1047 "The last N of M" | present |  |
 | `_transcript_body.html.erb:48-69` `infinite-scroll` (GET `timeline_items`, prefetch) | Load earlier messages (tail 10, pages of 100) | SDV :164-190 Show earlier (`before=`) | present |  |
 | `_transcript_body.html.erb:86-104` | Empty state ("Agent is running…" / "No activity yet") | SDV :1049 "No transcript yet." | present |  |

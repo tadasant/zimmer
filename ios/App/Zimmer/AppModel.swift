@@ -114,7 +114,7 @@ final class AppModel: ObservableObject {
     /// `ios/bin/ui-test` can photograph the skills it offers.
     var fixtureTypesSlash = false
     /// `-ZimmerFixtureSection <section>`: the opened session's page jumps to that section of
-    /// its strip (`hierarchy`, `humanMessages`), as a tap on its chip does.
+    /// its strip (`hierarchy`, `humanMessages`, `transcript`), as a tap on its chip does.
     var fixtureSection: SessionPageSection?
     /// `-ZimmerFixtureFullScreen`: the opened session's transcript opens full screen.
     var fixtureOpensFullScreen = false

@@ -68,6 +68,9 @@ final class SessionExtrasUITests: XCTestCase {
         let app = launch()
         let chip = app.buttons["hierarchy.uncle.1031.1035"]
         XCTAssertTrue(chip.waitForExistence(timeout: timeout))
+        // The page opens on its summary, with the hierarchy's rows low on the screen, under the
+        // composer, where a tap lands on the composer: bring the chip into the open part first.
+        bringIntoOpen(app, chip)
         chip.tap()
         let remove = app.buttons["Remove"].firstMatch
         XCTAssertTrue(remove.waitForExistence(timeout: timeout))
@@ -82,6 +85,31 @@ final class SessionExtrasUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureOpenSession", "1042"]
         app.launch()
         return app
+    }
+
+    /// Swipes until `element` sits below the bar and the section strip and above the composer
+    /// and its quick replies, either way, since it can start under either.
+    private func bringIntoOpen(_ app: XCUIApplication, _ element: XCUIElement) {
+        func edges() -> (top: CGFloat, bottom: CGFloat) {
+            let bar = app.navigationBars.firstMatch
+            let strip = app.descendants(matching: .any)["detail.sections"]
+            var top = bar.exists ? bar.frame.maxY : 0
+            if strip.exists { top = max(top, strip.frame.maxY) }
+            var bottom = app.frame.maxY
+            let field = app.descendants(matching: .any)["followup.field"]
+            if field.exists { bottom = min(bottom, field.frame.minY) }
+            let reply = app.buttons["Yes, go ahead."].firstMatch
+            if reply.exists { bottom = min(bottom, reply.frame.minY) }
+            return (top, bottom)
+        }
+        for _ in 0..<6 {
+            let (top, bottom) = edges()
+            let frame = element.frame
+            if frame.minY >= top, frame.maxY <= bottom { return }
+            if frame.maxY > bottom { app.swipeUp(velocity: .slow) } else { app.swipeDown(velocity: .slow) }
+        }
+        let (top, bottom) = edges()
+        XCTAssertTrue(element.frame.minY >= top && element.frame.maxY <= bottom, "\(element) is in the open part of the page")
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
