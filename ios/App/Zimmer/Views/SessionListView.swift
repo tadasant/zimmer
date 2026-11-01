@@ -82,7 +82,7 @@ struct SessionListView: View {
             .sheet(item: $customSnoozing) { session in
                 CustomSnoozeSheet { until in
                     let label = until.formatted(date: .abbreviated, time: .shortened)
-                    return await model.perform("Snoozed until \(label)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: until)) }
+                    Task { await model.perform("Snoozed until \(label)", on: session.id, optimistic: { $0.expect(.snoozed(until: until)) }) { try await $0.setVisibility(session.id, .snoozed(until: until)) } }
                 }
             }
             .alert("Rename session", isPresented: isRenaming, presenting: renaming) { session in
@@ -91,7 +91,7 @@ struct SessionListView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Save") {
                     let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task { await model.perform("Renamed", on: session.id) { try await $0.rename(session.id, title: title) } }
+                    Task { await model.perform("Renamed", on: session.id, optimistic: { $0.expectTitle(title) }) { try await $0.rename(session.id, title: title) } }
                 }
                 .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -100,7 +100,7 @@ struct SessionListView: View {
                 titleVisibility: .visible, presenting: restarting
             ) { session in
                 Button("Restart") {
-                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                    Task { await model.perform("Restarted", on: session.id, optimistic: { $0.expectRestarted() }) { try await $0.restart(session.id) } }
                 }
             } message: { session in
                 // The web UI's own confirm text for this session's restart.
@@ -202,14 +202,15 @@ struct SessionListView: View {
         return { source, destination in drop(section.sessions, from: source, to: destination) }
     }
 
-    /// A drop: the server is told the rows of the same class it landed between and works out
-    /// the precedence, as the web UI's Your board and Ranked views do.
+    /// A drop: the rows stay where it left them while the server is told the rows of the same
+    /// class it landed between and works out the precedence, as the web UI's Your board and
+    /// Ranked views do.
     private func drop(_ rows: [SessionSummary], from source: IndexSet, to destination: Int) {
         var moved = rows
         moved.move(fromOffsets: source, toOffset: destination)
         guard let from = source.first, let index = moved.firstIndex(where: { $0.id == rows[from].id }) else { return }
         let (above, below) = BoardView.dropNeighbours(moved, at: index)
-        Task { await model.reorder(moved[index].id, above: above, below: below) }
+        Task { await model.reorder(moved, id: moved[index].id, above: above, below: below) }
     }
 
     private var incompleteNotice: String {
@@ -398,7 +399,7 @@ struct SessionListView: View {
                 if session.restartConfirmation(transcriptPresent: nil) != nil {
                     restarting = session
                 } else {
-                    Task { await model.perform("Restarted", on: session.id) { try await $0.restart(session.id) } }
+                    Task { await model.perform("Restarted", on: session.id, optimistic: { $0.expectRestarted() }) { try await $0.restart(session.id) } }
                 }
             }
         )
@@ -447,14 +448,15 @@ private struct SwipeableSessionRow: View {
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             if session.status == .archived {
                 Button {
-                    Task { await model.perform("Restored from trash", on: session.id) { try await $0.unarchive(session.id) } }
+                    Task { await model.perform("Restored from trash", on: session.id, optimistic: { $0.expectRestored() }) { try await $0.unarchive(session.id) } }
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
                 .tint(Theme.Swipe.restore)
             } else {
-                // Not `role: .destructive`: that animates the row away on the tap, before
-                // the server has answered (and it may ask about queued messages first).
+                // Not `role: .destructive`: the model takes the row off the list itself, at
+                // the tap, and puts it back if the server refuses or asks about queued
+                // messages first; the role's own removal would fight that animation.
                 Button { Task { await model.trash(session) } } label: {
                     Label("Trash", systemImage: "trash")
                 }
@@ -467,7 +469,7 @@ private struct SwipeableSessionRow: View {
                 .tint(Theme.Swipe.snooze)
             } else {
                 Button {
-                    Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
+                    Task { await model.perform("Back on the board", on: session.id, optimistic: { $0.expect(.visible) }) { try await $0.setVisibility(session.id, .visible) } }
                 } label: {
                     Label("Put back", systemImage: "eye")
                 }
@@ -494,12 +496,12 @@ struct SnoozeButtons: View {
         ForEach(VisibilityChange.snoozePresets()) { preset in
             Button(preset.label) {
                 let until = preset.until.formatted(date: .abbreviated, time: .shortened)
-                Task { await model.perform("Snoozed until \(until)", on: session.id) { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
+                Task { await model.perform("Snoozed until \(until)", on: session.id, optimistic: { $0.expect(.snoozed(until: preset.until)) }) { try await $0.setVisibility(session.id, .snoozed(until: preset.until)) } }
             }
         }
         Button("Custom…", action: custom)
         Button("Hide") {
-            Task { await model.perform("Hidden", on: session.id) { try await $0.setVisibility(session.id, .hidden) } }
+            Task { await model.perform("Hidden", on: session.id, optimistic: { $0.expect(.hidden) }) { try await $0.setVisibility(session.id, .hidden) } }
         }
     }
 }
@@ -526,7 +528,7 @@ private struct SessionContextMenu: View {
             }
         } else {
             Button {
-                Task { await model.perform("Back on the board", on: session.id) { try await $0.setVisibility(session.id, .visible) } }
+                Task { await model.perform("Back on the board", on: session.id, optimistic: { $0.expect(.visible) }) { try await $0.setVisibility(session.id, .visible) } }
             } label: {
                 Label("Put back on the board", systemImage: "eye")
             }
@@ -547,7 +549,7 @@ private struct SessionContextMenu: View {
         if model.view == .lastTouched || model.view == .created, session.status != .archived {
             let enabled = session.heartbeatEnabled ?? false
             Button {
-                Task { await model.perform(enabled ? "Heartbeat off" : "Heartbeat on", on: session.id) { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
+                Task { await model.perform(enabled ? "Heartbeat off" : "Heartbeat on", on: session.id, optimistic: { $0.expectHeartbeat(enabled: !enabled) }) { try await $0.setHeartbeat(session.id, enabled: !enabled) } }
             } label: {
                 Label(enabled ? "Turn Heartbeat Off" : "Turn Heartbeat On", systemImage: enabled ? "heart.slash" : "heart")
             }
@@ -577,7 +579,7 @@ private struct SessionContextMenu: View {
         }
         if session.status == .running {
             Button {
-                Task { await model.perform("Paused", on: session.id) { try await $0.pause(session.id) } }
+                Task { await model.perform("Paused", on: session.id, optimistic: { $0.expectPaused() }) { try await $0.pause(session.id) } }
             } label: {
                 Label("Pause Session", systemImage: "pause.circle")
             }
@@ -596,7 +598,7 @@ private struct SessionContextMenu: View {
         }
         if session.status == .archived {
             Button {
-                Task { await model.perform("Restored from trash", on: session.id) { try await $0.unarchive(session.id) } }
+                Task { await model.perform("Restored from trash", on: session.id, optimistic: { $0.expectRestored() }) { try await $0.unarchive(session.id) } }
             } label: {
                 Label("Restore from Trash", systemImage: "arrow.uturn.backward")
             }

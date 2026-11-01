@@ -79,6 +79,39 @@ ages are compact (`Format.age`: "41m", "3h"), so a screen shows roughly half aga
 sessions as a card per row did.
 `ui-test` photographs the main screens in both appearances.
 
+## Actions show at the tap
+
+Every write a person makes shows on the screen before the server has answered, and the server's
+own answer replaces the guess — or, on a refusal, the screen puts back what it showed and says
+why. The rules live in ZimmerKit, where they are tested on Linux; the screens only apply them:
+
+- **`SessionSummary.expect…`** (`Model/ExpectedChanges.swift`) is the row as each action is
+  expected to leave it: snoozed, trashed, restored, restarted, paused, renamed, promoted. The
+  board's `AppModel.perform(_:on:optimistic:)` and the page's `SessionDetailModel.apply(_:optimistic:)`
+  show that copy at the tap and keep the row as it was for the rollback.
+- **`PendingBoardChanges`** is the set of row actions still out. `AppModel.refresh` lays it over
+  every read of the list, so a read that was answered from before the action cannot put a
+  trashed row back; `BoardFreshness.noteLocalChange()` is called at the tap and again at the
+  answer. A newer action on the same row takes over from an older one.
+- **`BoardView.sections(_:order:)`** shows a drag where it left the rows (`AppModel.localOrder`)
+  until the read after the server has worked out the precedence.
+- **`OutgoingMessages`** is what the composer sent and the server has not shown back: drawn
+  under the conversation as *Sending…*, *Sent* or *Queued*, taken down once the transcript or the
+  queue has the message (by position and words; a delivered message the transcript never shows
+  settles after two minutes). A refused one stays as *Not sent* with *Try again* and *Edit*.
+- **`AppModel.startSession`** opens a session's page before the server has answered with its id:
+  the navigation path holds a negative placeholder, `pendingStarts` holds the words and the
+  state, and `SessionDetailModel.adopt` takes the real id when it comes. The Quick Router, the
+  new-session form and *Fork from Here* all go through it. The page keeps the placeholder as its
+  path element (`openedAs`) after adopting, so "the page in front" compares against that.
+- The page's polls stand aside while an action is out (`actionsInFlight`), as they already did
+  behind a local edit (`revision`).
+
+The fixture has two knobs for seeing this: `-ZimmerFixtureSlowWrites` holds every write for six
+seconds, and `-ZimmerFixtureRefuse trash,follow_up,…` (the names in
+`FakeZimmerAPI.refusableWrites`, every write the fixture takes) refuses those writes.
+`OptimisticActionsUITests` drives both.
+
 ## Running the checks
 
 Every check is a script; every CI step is one line that calls it. Each script **skips** on a

@@ -395,16 +395,18 @@ struct LiveConversationView: View {
         }
     }
 
+    /// The composer lets the words go at the tap; a send the server refuses puts them back.
     private func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        draft = ""
         sending = true
         defer { sending = false }
         do {
             _ = try await api.sendLiveMessage(id, content: text)
-            draft = ""
             await readNew()
         } catch {
+            draft = draft.isEmpty ? text : text + "\n" + draft
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't send that."
         }
     }
