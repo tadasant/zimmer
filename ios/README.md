@@ -107,9 +107,10 @@ why. The rules live in ZimmerKit, where they are tested on Linux; the screens on
 - The page's polls stand aside while an action is out (`actionsInFlight`), as they already did
   behind a local edit (`revision`).
 
-The fixture has two knobs for seeing this: `-ZimmerFixtureSlowWrites` holds every write for three
+The fixture has two knobs for seeing this: `-ZimmerFixtureSlowWrites` holds every write for six
 seconds, and `-ZimmerFixtureRefuse trash,follow_up,…` (the names in
-`FakeZimmerAPI.refusableWrites`) refuses those writes. `OptimisticActionsUITests` drives both.
+`FakeZimmerAPI.refusableWrites`, every write the fixture takes) refuses those writes.
+`OptimisticActionsUITests` drives both.
 
 ## Running the checks
 

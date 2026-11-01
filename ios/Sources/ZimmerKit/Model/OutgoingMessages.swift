@@ -94,20 +94,28 @@ public struct OutgoingMessages: Hashable, Sendable {
     /// has it at a position past where the conversation stood when it was sent, a queued one
     /// once the queue has it, and a delivered one the transcript never showed once
     /// `settleAfter` has passed. A failed message stays until a person decides about it, and
-    /// one still sending stays until the server answers.
+    /// one still sending stays until the server answers. One transcript message, or one
+    /// queued one, takes down one outgoing message: two sends of the same words come down one
+    /// at a time, as the server shows each.
     public mutating func reconcile(conversation: Conversation?, queue: [QueuedMessage], now: Date = Date()) {
+        var claimedShown: Set<Int> = []
+        var claimedQueued: Set<Int> = []
         messages.removeAll { message in
             switch message.state {
             case .sending, .failed:
                 return false
             case .queued:
-                return queue.contains { Self.sameWords($0.content, message.content) }
+                guard let match = queue.first(where: { !claimedQueued.contains($0.id) && Self.sameWords($0.content, message.content) }) else { return false }
+                claimedQueued.insert(match.id)
+                return true
             case .delivered:
                 if now.timeIntervalSince(message.sentAt) >= Self.settleAfter { return true }
                 guard let conversation else { return false }
-                return conversation.messages.contains { shown in
-                    shown.role == .user && shown.id >= message.conversationTotal && Self.sameWords(shown.content, message.content)
-                }
+                guard let match = conversation.messages.first(where: { shown in
+                    shown.role == .user && shown.id >= message.conversationTotal && !claimedShown.contains(shown.id) && Self.sameWords(shown.content, message.content)
+                }) else { return false }
+                claimedShown.insert(match.id)
+                return true
             }
         }
     }

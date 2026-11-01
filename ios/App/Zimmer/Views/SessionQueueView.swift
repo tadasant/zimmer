@@ -121,8 +121,8 @@ private struct QueueManager: View {
     }
 }
 
-/// Rewrite one queued message before it is delivered. `save` answers the server's refusal,
-/// or nil when it took the edit.
+/// One queued message's words, for editing. Save closes the editor at once; the queue behind
+/// shows the new words, and a refusal over the page with the old ones back.
 private struct QueuedMessageEditor: View {
     let message: QueuedMessage
     /// Saves the text. The editor closes at once; the queue behind shows the new words, and a

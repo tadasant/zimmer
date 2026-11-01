@@ -247,25 +247,30 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   What you type and do not send is kept per session for seven days, across leaving the screen and
   relaunching, as the web UI keeps a composer's draft.
 - **Shows every action at the tap.** Nothing you do waits for the server before the screen
-  shows it. A row swiped to the trash leaves the board as your finger lifts, with *Undo* offered;
-  a snooze, a hide, a restore, a rename, a restart, a pause, a heartbeat switch, a promotion
-  changes the row as it is tapped; a dragged row stays where it was dropped; a follow-up leaves the
-  composer and sits under the conversation marked *Sending…*, then *Sent* or *Queued*; a prompt's
-  card goes as it is answered; a queued message leaves the queue as it is deleted or sent now; a
-  notification reads as read, or goes, as it is swiped; a trigger's switch moves as it is flipped;
-  the Quick Router, the new-session form and *Fork from Here* open the session's page as the
-  start is asked for, titled *Starting…*, with the words on their way, and the session fills the
-  page in once it exists. Each of these asks the server after showing, and the server's own
-  answer replaces the guess. When the server refuses — or cannot be reached — the screen puts
-  back what it showed: the row returns, the switch moves back, the card comes back, the
-  refusal shows over the screen, and a message that was not sent stays under the conversation
-  marked *Not sent*, with *Try again* and *Edit*, which puts the words back in the composer. A
-  session that did not start says so on its page, with *Try again* and *Edit*, which puts the
-  words back in the Quick Router; nothing typed is lost to a refusal. A refusal the server has
-  to make before anything goes — a trash over queued messages, which asks first — brings the
-  row back for the question. A read of the board or the page that lands while an action is out
-  keeps what the action showed: the actions in flight are laid over every read until each is
-  answered, so a slow answer never puts a trashed row back.
+  shows it. A row swiped to the trash leaves the board as your finger lifts, with *Undo* offered.
+  A snooze, a hide, a restore, a rename, a restart, a pause, a heartbeat switch or a promotion
+  changes the row as it is tapped, and a dragged row stays where it was dropped. A follow-up
+  leaves the composer and sits under the conversation marked *Sending…*, then *Sent* or *Queued*.
+  A prompt's card goes as it is answered; a queued message leaves the queue as it is deleted or
+  sent now; a notification reads as read, or goes, as it is swiped; a trigger's switch moves as
+  it is flipped. The Quick Router, the new-session form and *Fork from Here* open the session's
+  page as the start is asked for, titled *Starting…*, with the words on their way, and the
+  session fills the page in once it exists. Each of these asks the server after showing, and the
+  server's own answer replaces the guess.
+- **Puts an action back when the server refuses it.** When the server refuses, or cannot be
+  reached, the screen shows what it showed before: the row returns, the switch moves back, the
+  card comes back, and the refusal shows over the screen. A message that was not sent stays under
+  the conversation marked *Not sent*, with *Try again* and *Edit*, which puts the words (and the
+  photos and files) back in the composer. A session that did not start says so on its page, with
+  *Try again*, and for a Quick Router start *Edit*, which puts the words back in the Quick Router.
+  Nothing typed is lost to a refusal. A refusal the server has to make before anything goes, a
+  trash over queued messages, asks first: the session's page asks before it closes, and a row
+  trashed from the board comes back for the question.
+- **Never lets a read undo an action.** A read of the board or the page that lands while an
+  action is out keeps what the action showed. The actions in flight are laid over every read
+  until each is answered, so a slow answer never puts a trashed row back, and *Undo* tapped
+  before the trash has been answered waits for that answer rather than asking the server to
+  restore a session it has not archived yet.
 - **Keeps itself current.** A session's page reads again every five seconds while a turn is
   running or about to start, and every twenty otherwise (not while the queue's manager is open,
   and never for a session in the trash); the board reads again every thirty seconds while it is
