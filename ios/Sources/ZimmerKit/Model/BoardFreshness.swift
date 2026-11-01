@@ -9,7 +9,7 @@ import Foundation
 /// would put a trashed row back. A newer read that fails does not stop an older one landing.
 public struct BoardFreshness: Sendable {
     /// Between reads while the board is in front.
-    public static let interval: Duration = .seconds(30)
+    public static let interval: Duration = .seconds(15)
     /// Between reads after one that failed.
     public static let retryInterval: Duration = .seconds(10)
     /// Before reading again when the read on coming back to the front failed: a phone just

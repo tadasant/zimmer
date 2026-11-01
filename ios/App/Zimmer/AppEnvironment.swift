@@ -48,11 +48,19 @@ final class AppEnvironment {
             let auth = AuthSession(store: tokenStore, transport: transport)
             let trashedElsewhere = arguments.firstIndex(of: "-ZimmerFixtureTrashedElsewhere")
                 .flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil }
+            // `-ZimmerFixtureRefuse trash,follow_up`: those writes are refused, so a screen can
+            // be seen putting back what it showed at the tap. `-ZimmerFixtureSlowWrites`: every
+            // write takes six seconds, so a screen can be photographed ahead of the answer.
+            let refuses = arguments.firstIndex(of: "-ZimmerFixtureRefuse")
+                .flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+                .map { Set($0.split(separator: ",").map(String.init)) } ?? []
+            let writeDelay: Duration? = arguments.contains("-ZimmerFixtureSlowWrites") ? .seconds(6) : nil
             // `-ZimmerFixtureRelayOnly`: the sign-in may not act as you, so the Inference
             // page's writes are refused with the server's 403.
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
+                                                                                         refuses: refuses, writeDelay: writeDelay,
                                                                                          web: origins.web), edge: nil)
             isFixture = true
             return

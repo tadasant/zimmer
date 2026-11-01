@@ -8684,6 +8684,16 @@ keeps alive and a reload does not. Reload that page, or open it by URL, and it h
 it says so and points at the board, where the session is listed if the server took the start. The
 state is not kept in storage because the request's promise cannot be; a reload mid-start would
 need a server-side record of the start to resume from.
+## A Quick Router start retried from the iOS app can start twice
+
+The iOS app opens a session's page the moment the Quick Router is asked to start it, and offers
+*Try again* when the start fails. The new-session form sends an idempotency key with every attempt,
+so a retry of a request the server had in fact taken is answered with the session it made. The
+Quick Router endpoint (`POST /api/v1/quick_router`) takes no such key, so *Try again* after a
+failure the server had already acted on — an answer lost on the way back, say — starts a second
+session. The same was true of a second tap before the page opened at the tap; the window is the
+same, only now there is a button in it. The fix is a key on the Quick Router endpoint, which the
+app would then send.
 
 ## Open questions
 

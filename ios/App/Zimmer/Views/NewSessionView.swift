@@ -27,11 +27,10 @@ struct NewSessionView: View {
     @State private var error: ZimmerError?
     /// A field the form refuses before sending, as the web's number inputs refuse it.
     @State private var validation: String?
-    /// One attempt's key, kept across retries of the same request so a lost response cannot
-    /// start a second session — and replaced the moment the request changes, so an edited
-    /// retry is never answered with the session the first one made.
+    /// One attempt's key: the sheet closes as the request goes, and the pending page's *Try
+    /// again* sends the same request with the same key, so a lost answer cannot start a
+    /// second session. The sheet opens with a fresh one each time.
     @State private var idempotencyKey = UUID().uuidString
-    @State private var lastAttempt: String?
     /// What `apply(root:)` filled in, so only a runtime or model the person chose, or the root
     /// names, is sent; otherwise the server's own defaults (Settings) apply.
     @State private var appliedRuntime = ""
@@ -319,7 +318,7 @@ struct NewSessionView: View {
         let goalText = configs?.goals.first { $0.id == trimmedGoal }?.description ?? trimmedGoal
         let sendRuntime = rootDeclares.runtime || runtime != appliedRuntime
         let sendModel = !modelID.isEmpty && (rootDeclares.model || modelID != appliedModel || sendRuntime)
-        var request = NewSessionRequest(
+        let request = NewSessionRequest(
             agentRoot: root, prompt: cloneOnly ? "" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
             runtime: sendRuntime ? runtime : nil, model: sendModel ? modelID : nil, effort: effort.isEmpty ? nil : effort,
             title: trimmedTitle.isEmpty ? nil : trimmedTitle, goal: goalText.isEmpty ? nil : goalText,
@@ -328,19 +327,10 @@ struct NewSessionView: View {
             autoCompactWindow: runtime == "claude_code" ? window : nil, cloneOnly: cloneOnly,
             selections: selections, idempotencyKey: idempotencyKey
         )
-        let attempt = request.fingerprint
-        if let lastAttempt, lastAttempt != attempt {
-            idempotencyKey = UUID().uuidString
-            request.idempotencyKey = idempotencyKey
-        }
-        lastAttempt = attempt
-        if let session = await app.createSession(request) {
-            dismiss()
-            app.path.append(session.id)
-        } else {
-            // Shown here, over the list the error also reached.
-            error = app.error
-        }
+        // The sheet closes and the session's page opens at the tap; the page shows the start
+        // on its way, and a refusal with the words kept.
+        dismiss()
+        app.createSession(request)
     }
 }
 
@@ -455,7 +445,8 @@ struct ModelPickerSheet: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
     let session: SessionSummary
-    let choose: (String) async -> Bool
+    /// Chooses the model. The sheet closes at once; the page behind shows the choice, and a refusal.
+    let choose: (String) -> Void
     @State private var models: [ModelOption]?
     @State private var error: ZimmerError?
 
@@ -465,7 +456,8 @@ struct ModelPickerSheet: View {
                 if let error { ErrorBanner(error: error).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                 ForEach(models ?? []) { model in
                     Button {
-                        Task { if await choose(model.id) { dismiss() } }
+                        choose(model.id)
+                        dismiss()
                     } label: {
                         HStack {
                             Text(model.title).foregroundStyle(Theme.ink)

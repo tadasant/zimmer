@@ -140,7 +140,7 @@ jobs:
             classes: SessionDetailPanelsUITests,SettingsUITests,BoardReadParityUITests,SessionControlsUITests,TranscriptParityUITests
             photos: false
           - name: board
-            classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests,CarplayFitUITests
+            classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests,CarplayFitUITests,OptimisticActionsUITests
             photos: false
           - name: photos
             classes: AccountUITests,WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests
