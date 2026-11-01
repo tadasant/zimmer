@@ -109,7 +109,10 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   CI dot, board visibility) and one line of what runs it (runtime, model, effort). The root
   sits beside the status, so which root a session runs under reads without opening anything. Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
-  generated") and *Regenerate*. The summary is drawn by the transcript's markdown renderer, as
+  generated"), *Regenerate*, and *Newest message*, which scrolls to the end of the transcript. The
+  page opens here, on the summary, not on the transcript. A session with no summary yet says so in
+  the same card ("Zimmer writes one when the session stops"), with *Generate* and *Newest message*
+  in the same places. The summary is drawn by the transcript's markdown renderer, as
   the web's Status panel draws it, so its links open on a tap and offer Copy Link on a long press
   (a [link to a message does not scroll to it](/limitations/#a-link-to-a-transcript-message-in-the-ios-app-does-not-scroll-to-it)); for a failed session, why it failed (`metadata.failure_reason`,
   the exception and exit status, the web's failure details); then one divided card: the **Goal
@@ -254,8 +257,11 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   action on the phone, so a slow answer never puts a trashed row back.
   The web UI streams these changes; the app asks, so a change on a board you are looking at can
   take up to thirty seconds to show. A session
-  opens at its newest message, as the web UI's transcript does, and follows new ones while you are
-  at the end; scrolled back, it stays where you are.
+  opens on its status summary. Its transcript opens at the newest message, as the web UI's
+  transcript does, however you get there: the *Transcript* chip, *Newest message* in the summary
+  card, or full screen. It keeps scrolling until the end of the conversation is in view, so a
+  long one that is still laying out does not stop partway. It follows new messages while you
+  are at the end; scrolled back, it stays where you are.
 - **Keeps every part of a session's page a tap away.** A strip pinned under the navigation bar
   has a chip for each part the page draws: *Overview* (the top), *Hierarchy* and *Human messages*
   (when the details card has those rows) and *Transcript* (the newest message). A chip scrolls
@@ -264,8 +270,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   phone's width the words shorten (*Top*, *Humans*), and at the largest text sizes they become
   symbols. The web UI's session page has no such strip.
 - **Reads a transcript full screen.** The button at the end of the strip covers the page with the
-  conversation alone, without the header, the cards or the composer; *Done* goes back to the page
-  at the message you reached.
+  conversation alone, without the header, the cards or the composer. It opens at the message you
+  were reading on the page, or at the newest if you had not scrolled into the transcript. *Done*
+  goes back to the page at the message you reached.
   Full screen is never remembered: a session always opens on its page.
 - **Attaches photos and files** to a message with the paperclip beside the box: *Photo Library*,
   *Choose Files*, or *Paste Image* when the clipboard holds one (the

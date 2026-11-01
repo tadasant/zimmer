@@ -405,7 +405,11 @@ elif [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot board-filters -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureFilterSheet -ZimmerFixtureStatuses needs_input,failed
   shoot board-filtered -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureStatuses needs_input,failed -ZimmerFixtureClass priority
   shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
+  # A session opens on where things stand, its status summary; the transcript chip lands on
+  # the newest message of a hundred. Then a session with no summary yet.
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038
+  shoot session-detail-transcript -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection transcript
+  shoot session-detail-no-summary -ZimmerFixture -ZimmerFixtureOpenSession 1048
   shoot session-detail-hierarchy -ZimmerFixture -ZimmerFixtureOpenSession 1042
   # The richest session (a long title, four PRs, a long goal, notes, a wide hierarchy) and a
   # failed one with its failure details: what the page has to stay legible on.
@@ -424,23 +428,23 @@ elif [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot catalog-mcp -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCatalog mcpServers
   # A hundred messages under the details card: the section strip pinned under the bar, a chip's
   # jump to the human messages and to the hierarchy (each opened), and the transcript full screen.
-  shoot session-detail-sections -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044
+  shoot session-detail-sections -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection transcript
   shoot session-detail-sections-human -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection humanMessages
   shoot session-detail-sections-hierarchy -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureSection hierarchy
   shoot session-detail-fullscreen -ZimmerFixture -ZimmerFixtureLongTranscript -ZimmerFixtureOpenSession 1044 -ZimmerFixtureFullScreen
   # Why a session is waiting: the spot gate's hold with "Make this session priority", a turn
   # queued for a worker with Force, and a renewed MCP grant beside a message never delivered.
   shoot session-detail-waiting -ZimmerFixture -ZimmerFixtureOpenSession 1031
-  shoot session-detail-queued -ZimmerFixture -ZimmerFixtureOpenSession 1029
-  shoot session-detail-reconnect -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot session-detail-queued -ZimmerFixture -ZimmerFixtureOpenSession 1029 -ZimmerFixtureSection transcript
+  shoot session-detail-reconnect -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSection transcript
   shoot composer-attachment -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureAttachment
   # A snooze to a time of your own, and when a trashed session is deleted, on its row and page.
   shoot session-detail-custom-snooze -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureCustomSnooze
   # A code block with its Copy button, and the composer's "/" offering the session's skills.
-  shoot session-detail-code -ZimmerFixture -ZimmerFixtureOpenSession 1035
+  shoot session-detail-code -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSection transcript
   shoot composer-slash -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureSlash
   # Block markdown in a transcript: headings, a code block, a nested list, a table, a quote.
-  shoot session-detail-markdown -ZimmerFixture -ZimmerFixtureOpenSession 1048
+  shoot session-detail-markdown -ZimmerFixture -ZimmerFixtureOpenSession 1048 -ZimmerFixtureSection transcript
   shoot sessions-trash -ZimmerFixture -ZimmerFixtureFilter archived
   shoot session-detail-trashed -ZimmerFixture -ZimmerFixtureOpenSession 1019
   shoot session-prompt -ZimmerFixture -ZimmerFixtureOpenSession 1035

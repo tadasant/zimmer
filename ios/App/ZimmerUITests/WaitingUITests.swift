@@ -57,7 +57,7 @@ final class WaitingUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["undelivered.list"].waitForExistence(timeout: timeout), "read-only, as on the web")
         XCTAssertTrue(app.descendants(matching: .any)["undelivered.message.497"].exists)
 
-        // The page opens at the newest message; the banner is at the top.
+        // The banner is at the top, where the page opens.
         let reconnect = app.buttons["waiting.action.mcp_oauth_reconnect"]
         // isHittable says yes while the button is still under the navigation bar, where a tap
         // lands on the bar (a CI recording shows it): scroll until it is below the bar, and below
