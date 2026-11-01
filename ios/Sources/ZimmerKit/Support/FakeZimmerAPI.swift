@@ -1173,13 +1173,18 @@ extension SessionSummary {
 // trigger is refused.
 extension FakeZimmerAPI {
     public func notifications() async throws -> [InboxNotification] {
-        if let id = trashedElsewhere, var trashed = all.first(where: { $0.id == id }), trashed.status != .archived {
-            trashed.status = .archived
-            trashed.archivedAt = Date()
-            trashed.updatedAt = Date()
-            replace(trashed)
-        }
+        if let id = trashedElsewhere { trashElsewhere(id) }
         return inbox
+    }
+
+    /// Session `id` goes to the trash as if from the web UI, a router or its own agent: nothing
+    /// on the phone hears of it until the board is read again.
+    public func trashElsewhere(_ id: Int) {
+        guard var trashed = all.first(where: { $0.id == id }), trashed.status != .archived else { return }
+        trashed.status = .archived
+        trashed.archivedAt = Date()
+        trashed.updatedAt = Date()
+        replace(trashed)
     }
 
     public func unreadNotificationCount() async throws -> Int { inbox.filter { !$0.read }.count }
