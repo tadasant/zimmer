@@ -66,8 +66,10 @@ final class AppModel: ObservableObject {
     var isEditingBoard = false
     /// Which reads may replace the list, and when the board reads again.
     private(set) var freshness = BoardFreshness()
-    /// The board's own read is out: a second would ask the same question.
-    private var isPolling = false
+    /// Whether the app is in front and whether the poller's read is out.
+    private var polling = BoardPolling()
+    /// How many times the app has come back to the front: `BoardPoller` restarts on the count.
+    @Published private(set) var returnsToFront = 0
     /// The session the Quick Router was opened from, so the new one threads under it, as
     /// the web bubble on a session page sends `parent_session_id`.
     var quickRouterParent: Int?
@@ -437,14 +439,66 @@ final class AppModel: ObservableObject {
         if let report = try? await connection.api.cliStatus() { cliIssues = report.unauthenticatedCount }
     }
 
-    /// The board's read of its own (`BoardPoller`): silent, one at a time, and only of the
-    /// board in front — not one under an open session or another tab, and not while a selection
-    /// or a drag is in hand. With `ifStale`, only when the list was not read moments ago.
+    /// The board is the screen in front: not under an open session or another tab, and not
+    /// while a selection or a drag is in hand.
+    private var boardIsInFront: Bool { tab == .sessions && path.isEmpty && !isEditingBoard }
+
+    /// The board's read of its own (`BoardPoller`): silent, one at a time, only while the app is
+    /// in front, and only of the board in front. With `ifStale`, only when the list was not read
+    /// moments ago.
     func pollBoard(ifStale: Bool = false) async {
-        guard tab == .sessions, path.isEmpty, !isEditingBoard, !isPolling,
-              !ifStale || freshness.isStale() else { return }
-        isPolling = true
-        defer { isPolling = false }
+        guard boardIsInFront, !ifStale || freshness.isStale(), polling.beginPoll() else { return }
+        defer { polling.endPoll() }
+        await refresh(silently: true)
+    }
+
+    /// The scene's phase changed (`RootView`, the scene's root, so it is heard whatever screen
+    /// is showing).
+    ///
+    /// Back in front, signed out: read the Keychain again — a sign-in that a launch in the
+    /// background could not read comes back here; a real sign-out reads back nothing. Back in
+    /// front, signed in: read the board at once (`readBoardOnReturn`). A cold launch is not a
+    /// change of phase; `start()` reads the board then.
+    func sceneEntered(_ phase: ScenePhase) async {
+        switch phase {
+        case .background:
+            polling.wentToBackground()
+            await trashFixtureSessionWhileAway()
+        case .active:
+            polling.cameToFront()
+            returnsToFront = polling.returns
+            switch isSignedIn {
+            case .some(false): await start()
+            case .some(true): await readBoardOnReturn()
+            case .none: break
+            }
+        default:
+            break
+        }
+    }
+
+    /// `-ZimmerFixtureTrashedWhileAway <id>`: session `id` goes to the trash elsewhere as the
+    /// app goes to the background, so a UI test can see the board catch up on its return.
+    private func trashFixtureSessionWhileAway() async {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        guard environment.isFixture, let fake = connection.api as? FakeZimmerAPI,
+              let flag = arguments.firstIndex(of: "-ZimmerFixtureTrashedWhileAway"),
+              arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) else { return }
+        await fake.trashElsewhere(id)
+        #endif
+    }
+
+    /// The read on coming back to the front. It does not wait on the poller's read, which the
+    /// phone may have suspended mid-flight (`BoardPolling`); a newer ticket wins. A phone just
+    /// back from the background often has no network for its first request, so a failed read is
+    /// tried once more shortly after.
+    private func readBoardOnReturn() async {
+        guard boardIsInFront else { return }
+        await refresh(silently: true)
+        guard freshness.lastReadFailed else { return }
+        try? await Task.sleep(for: BoardFreshness.foregroundRetry)
+        guard boardIsInFront, polling.inFront else { return }
         await refresh(silently: true)
     }
 
