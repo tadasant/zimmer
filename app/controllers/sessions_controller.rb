@@ -295,30 +295,31 @@ class SessionsController < ApplicationController
     end
   end
 
+  # The page a Quick Router start opens on before the session has an id: the
+  # client visits it as it asks for the start (app/javascript/lib/session_starts.js)
+  # and its controller fills it in from the module's state. The server renders only
+  # the frame — the prompt, the state and the answer are the client's.
+  def starting
+  end
+
+  # The board's prompt box. Posted by `quick_prompt_controller` as JSON, so the
+  # client can open the session's page at the click and fill it in with the id
+  # (`url`), or keep the words on a refusal (`error`); a browser without the
+  # script posts the form natively and gets the redirects.
   def quick_prompt
     prompt = params[:prompt].to_s.strip
 
-    if prompt.blank?
-      redirect_to root_path, alert: "Prompt cannot be empty."
-      return
-    end
+    return quick_prompt_refused("Prompt cannot be empty.") if prompt.blank?
 
     if prompt.length > Session::PROMPT_MAX_LENGTH
-      redirect_to root_path, alert: "Prompt is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)."
-      return
+      return quick_prompt_refused("Prompt is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters).")
     end
 
     incoming_images = Array(params[:images]).reject { |f| f.is_a?(String) && f.empty? }
     incoming_files = Array(params[:files]).reject { |f| f.is_a?(String) && f.empty? }
 
-    if incoming_images.size > MAX_IMAGES_PER_REQUEST
-      redirect_to root_path, alert: "Maximum #{MAX_IMAGES_PER_REQUEST} images allowed."
-      return
-    end
-    if incoming_files.size > MAX_FILES_PER_REQUEST
-      redirect_to root_path, alert: "Maximum #{MAX_FILES_PER_REQUEST} files allowed."
-      return
-    end
+    return quick_prompt_refused("Maximum #{MAX_IMAGES_PER_REQUEST} images allowed.") if incoming_images.size > MAX_IMAGES_PER_REQUEST
+    return quick_prompt_refused("Maximum #{MAX_FILES_PER_REQUEST} files allowed.") if incoming_files.size > MAX_FILES_PER_REQUEST
 
     # Stage attachments under a temp session ID; copy into the real session
     # storage once the row is created and we know its ID. Same pattern used by
@@ -365,8 +366,7 @@ class SessionsController < ApplicationController
     rescue ImageStorageService::ImageStorageError, FileStorageService::FileStorageError => e
       cleanup_temp_session_images(temp_session_id)
       cleanup_temp_session_files(temp_session_id)
-      redirect_to root_path, alert: "Failed to upload attachment: #{e.message}"
-      return
+      return quick_prompt_refused("Failed to upload attachment: #{e.message}")
     rescue
       cleanup_temp_session_images(temp_session_id)
       cleanup_temp_session_files(temp_session_id)
@@ -387,12 +387,26 @@ class SessionsController < ApplicationController
     if model_ignored
       notice += " The model you picked is not available for this harness, so the default applied."
     end
-    redirect_to session, notice: notice
+    respond_to do |format|
+      format.json { render json: { session_id: session.id, url: session_path(session), session_url: session_path(session), notice: notice } }
+      format.html { redirect_to session, notice: notice }
+    end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
-    redirect_to root_path, alert: "Router agent root not configured: #{e.message}"
+    quick_prompt_refused("Router agent root not configured: #{e.message}")
   rescue ActiveRecord::RecordInvalid => e
-    redirect_to root_path, alert: "Failed to create session: #{e.message}"
+    quick_prompt_refused("Failed to create session: #{e.message}")
   end
+
+  # A Quick Router start the server did not take: the reason as JSON with a 422
+  # for the client that opened the page at the click, a redirect with the alert
+  # for a native post.
+  def quick_prompt_refused(message)
+    respond_to do |format|
+      format.json { render json: { error: message }, status: :unprocessable_entity }
+      format.html { redirect_to root_path, alert: message }
+    end
+  end
+  private :quick_prompt_refused
 
   # JSON endpoint for the global chat bubble.
   # Creates a router session with optional page context injected into the prompt.
@@ -753,9 +767,13 @@ class SessionsController < ApplicationController
     return if result == false
 
     if refused
+      # 422 rather than 200: the dashboard takes the card away at the click and puts
+      # it back on a non-2xx answer, which is exactly right for a refusal that did
+      # not archive. Turbo renders the alert stream whatever the status.
       respond_with_flash(
         alert: "#{Sessions::ArchiveGuard.summary(refused)}|force_archive|#{@session.id}",
-        location: @session
+        location: @session,
+        status: :unprocessable_entity
       )
       return
     end
@@ -809,6 +827,9 @@ class SessionsController < ApplicationController
   # both answer with a stream into #flash, which leaves the user on the page they
   # clicked from — an error must not navigate away as though it had worked.
   def archived_from_its_own_page?(session)
+    # The page's own Trash has already left for the board (archive_countdown_controller)
+    # and wants the streams, not the redirect that would take the board away again.
+    return false if request.headers["X-Zimmer-Optimistic"].present?
     return false if request.referer.blank?
 
     referer = URI.parse(request.referer)
@@ -838,11 +859,13 @@ class SessionsController < ApplicationController
   # request and the server does not know which of the two it is looking at; a
   # `remove` for an id that is not in the DOM is a silent no-op.
   #
-  # Server-driven rather than optimistic on the client, and that is the point:
-  # #archive refuses the first click when the session still has queued messages,
-  # and answers with the "Archive anyway" speed bump instead of these streams. A
-  # row the browser had already taken away on click would leave the operator
-  # believing a session was trashed that was not.
+  # The dashboard takes the card away at the click (optimistic_actions.js) and
+  # these streams land on a page that already looks right; they are what a page
+  # without that script, or one the broadcast reaches, needs. A refusal — the
+  # first click when the session still has queued messages, which answers with the
+  # "Archive anyway" speed bump instead — goes out as a 422, and the page puts the
+  # card back, so the operator is never left believing a session was trashed
+  # that was not.
   def archive_remove_streams(session, notice:)
     [
       turbo_stream.remove(dom_id(session)),
@@ -1494,7 +1517,7 @@ class SessionsController < ApplicationController
 
     # Only allow pausing sessions that are currently running
     unless @session.running?
-      respond_with_flash(alert: "Cannot pause session that is not running (status: #{@session.status})", location: @session)
+      respond_with_flash(alert: "Cannot pause session that is not running (status: #{@session.status})", location: @session, status: :unprocessable_entity)
       return
     end
 
@@ -1502,7 +1525,7 @@ class SessionsController < ApplicationController
     process_pid = @session.metadata&.dig("process_pid")
 
     unless process_pid
-      respond_with_flash(alert: "Cannot pause session: no process found", location: @session)
+      respond_with_flash(alert: "Cannot pause session: no process found", location: @session, status: :unprocessable_entity)
       return
     end
 
@@ -1619,9 +1642,10 @@ class SessionsController < ApplicationController
     # derived from the `may_resume?` that MCP and the REST API gate on, so this
     # door cannot drift wider than those two (zimmer#830).
     unless @session.restartable_by_hand?
+      refusal = "Cannot restart a session that is #{@session.status} — Restart applies to failed sessions and ones paused awaiting input"
       respond_to do |format|
-        format.html { redirect_to @session, alert: "Cannot restart a session that is #{@session.status} — Restart applies to failed sessions and ones paused awaiting input" }
-        format.turbo_stream { render_restart_turbo_stream }
+        format.html { redirect_to @session, alert: refusal }
+        format.turbo_stream { render_restart_turbo_stream(alert: refusal, status: :unprocessable_entity) }
       end
       return
     end
@@ -1698,7 +1722,7 @@ class SessionsController < ApplicationController
         format.html { redirect_to session_path(@session), alert: "Cannot restart session: #{error_message}" }
         format.turbo_stream do
           @session.reload
-          render_restart_turbo_stream
+          render_restart_turbo_stream(alert: "Cannot restart session: #{error_message}", status: :unprocessable_entity)
         end
       end
     end
@@ -3460,8 +3484,12 @@ class SessionsController < ApplicationController
     Rails.logger.info("[reset_poll_backoff] failed to reset poll backoff for session #{session.id}: #{e.class}: #{e.message}")
   end
 
-  def render_restart_turbo_stream
-    render turbo_stream: [
+  # The card and the header as the server has them, and — for a restart that was
+  # refused — the refusal in #flash with a status the page reads as "put the
+  # button back". The two replacements alone redraw what is already on screen and
+  # say nothing about why the restart did not happen; the alert does.
+  def render_restart_turbo_stream(alert: nil, status: :ok)
+    streams = [
       turbo_stream.replace(
         "session_#{@session.id}",
         partial: "sessions/session_card_frame",
@@ -3473,6 +3501,8 @@ class SessionsController < ApplicationController
         locals: { agent_session: @session }
       )
     ]
+    streams << flash_stream(alert: alert) if alert
+    render turbo_stream: streams, status: status
   end
 
   # Where a single-session #refresh should land. The per-card refresh icon on the

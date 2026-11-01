@@ -95,8 +95,9 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
 
     # The dead end is gone...
     assert_current_path root_path
-    # ...and the toast survived the navigation, because the notice rides the
-    # flash through the redirect rather than a stream into a page being left.
+    # ...and the toast arrived with it: the page left for the board at the click
+    # and the archive's streams were rendered into the board once it had loaded
+    # (archive_countdown_controller#archiveAndGoHome).
     assert_selector "#flash", text: "Session moved to trash."
     assert_selector "#flash", text: "Undo"
     assert session.reload.archived?

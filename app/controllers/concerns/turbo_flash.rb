@@ -31,10 +31,14 @@ module TurboFlash
   # every card they touch already re-renders itself over the
   # `sessions_index_individual` and `session_<id>_status` broadcast channels, so
   # the round trip through a full page render was the only reason the UI blinked.
-  def respond_with_flash(location:, notice: nil, alert: nil, streams: [])
+  # `status` is for a refusal: a client that showed the action at the click
+  # (app/javascript/lib/optimistic_actions.js) reads a non-2xx answer as "put it
+  # back", and Turbo still renders the stream — and the alert in it — whatever
+  # the status. The HTML half redirects either way; a redirect carries no status.
+  def respond_with_flash(location:, notice: nil, alert: nil, streams: [], status: :ok)
     respond_to do |format|
       format.turbo_stream do
-        render turbo_stream: streams + [ flash_stream(notice: notice, alert: alert) ]
+        render turbo_stream: streams + [ flash_stream(notice: notice, alert: alert) ], status: status
       end
       format.html do
         redirect_to location, notice: notice, alert: alert

@@ -35,6 +35,8 @@
 // A region holding an edit in progress is left alone, whatever the server says.
 // Losing an update is recoverable — the next broadcast carries it, and the user
 // can pull to refresh. Losing half-typed text is not.
+import { isPendingRemoval } from "lib/optimistic_actions"
+
 function inUse(element) {
   if (element.contains(document.activeElement)) return true
 
@@ -76,6 +78,13 @@ function liveChildById(parent, id) {
 
 // Take the node if it already exists somewhere in the document — a card that
 // moved between grids — rather than importing a second copy under the same id.
+// Whether `id` names a session element this page has taken away ahead of the
+// server's answer (see lib/optimistic_actions.js).
+function pendingRemoval(id) {
+  const match = /^(?:session|user_view_row|ranked_row)_(\d+)$/.exec(id || "")
+  return match ? isPendingRemoval("session", match[1]) : false
+}
+
 function adopt(sourceChild) {
   const existing = document.getElementById(sourceChild.id)
   if (existing) existing.remove()
@@ -159,6 +168,10 @@ function syncChildren(live, source) {
     let node = existing
 
     if (!existing) {
+      // A card or row this page took to the trash at the click, whose archive the
+      // server has not yet answered: the server's copy still lists it, and must not
+      // put it back.
+      if (pendingRemoval(sourceChild.id)) continue
       node = adopt(sourceChild)
       changed += 1
     } else {

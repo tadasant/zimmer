@@ -1,5 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
+import { Turbo } from "@hotwired/turbo-rails"
 import { csrfToken } from "lib/csrf"
+import { showAlert } from "lib/toast"
 
 // Handles elicitation form interactions (Accept/Decline/Dismiss with dynamic form fields).
 //
@@ -54,9 +56,15 @@ export default class extends Controller {
     return content
   }
 
+  // The banner goes at the click; the server is asked after. A refusal brings it
+  // back, with the refusal as a toast — or as the server's own alert, when it
+  // answered with a stream (an answer already given elsewhere removes the banner
+  // for good and says so).
   async submitResponse(actionType, content) {
-    // Disable buttons to prevent double-submit
     this.disableButtons()
+    const banner = this.element
+    const place = { parent: banner.parentNode, next: banner.nextSibling }
+    banner.remove()
 
     const body = new FormData()
     body.append("action_type", actionType)
@@ -73,18 +81,23 @@ export default class extends Controller {
         },
         body: body
       })
-
-      if (response.ok) {
-        const html = await response.text()
-        Turbo.renderStreamMessage(html)
-      } else {
-        console.error("Elicitation response failed:", response.status)
-        this.enableButtons()
+      const spoke = (response.headers.get("content-type") || "").includes("turbo-stream")
+      if (!response.ok) {
+        this.putBack(banner, place)
+        if (!spoke) showAlert(`The answer could not be sent. The server answered ${response.status}.`)
       }
+      if (spoke) Turbo.renderStreamMessage(await response.text())
     } catch (error) {
-      console.error("Elicitation response error:", error)
-      this.enableButtons()
+      this.putBack(banner, place)
+      showAlert("The answer could not be sent: the server could not be reached.")
     }
+  }
+
+  putBack(banner, place) {
+    this.enableButtons()
+    if (!place.parent || !place.parent.isConnected) return
+    const next = place.next && place.next.parentNode === place.parent ? place.next : null
+    place.parent.insertBefore(banner, next)
   }
 
   disableButtons() {
