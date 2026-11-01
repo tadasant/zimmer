@@ -3,13 +3,12 @@ import ZimmerKit
 
 /// The web UI's snooze menu's last row, "Custom — pick a date and time", as a sheet: any time
 /// from the next whole minute on, which is the `min` the web's picker sets so a time in the
-/// past cannot be chosen. It starts at the *Tomorrow* preset, 9 AM. `snooze` reports whether
-/// the server took it; the sheet stays open with the time when it did not.
+/// past cannot be chosen. It starts at the *Tomorrow* preset, 9 AM. Snooze closes the sheet
+/// at once; the screen behind shows the snooze, and a refusal over it with the row as it was.
 struct CustomSnoozeSheet: View {
-    let snooze: (Date) async -> Bool
+    let snooze: (Date) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var until = VisibilityChange.snoozePresets().first { $0.id == "tomorrow" }?.until ?? Date().addingTimeInterval(86_400)
-    @State private var saving = false
 
     var body: some View {
         NavigationStack {
@@ -34,18 +33,12 @@ struct CustomSnoozeSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Snoozing…" : "Snooze") {
-                        Task {
-                            saving = true
-                            // A sheet left open past the minute it was opened in could hold a
-                            // time that has since passed, which the server refuses.
-                            let chosen = max(until, VisibilityChange.earliestCustomSnooze())
-                            let saved = await snooze(chosen)
-                            saving = false
-                            if saved { dismiss() }
-                        }
+                    Button("Snooze") {
+                        // A sheet left open past the minute it was opened in could hold a
+                        // time that has since passed, which the server refuses.
+                        snooze(max(until, VisibilityChange.earliestCustomSnooze()))
+                        dismiss()
                     }
-                    .disabled(saving)
                     .accessibilityIdentifier("snooze.custom.save")
                 }
             }

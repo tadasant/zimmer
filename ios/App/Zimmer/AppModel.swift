@@ -43,6 +43,23 @@ final class AppModel: ObservableObject {
     /// discard, before it goes.
     @Published var queuedTrash: SessionSummary?
     @Published private(set) var sessions: [SessionSummary] = []
+    /// The row actions out to the server, laid over every read of the list until each is
+    /// answered, so a read from before the action cannot put a trashed row back.
+    private var pending = PendingBoardChanges()
+    /// The rows a drag just left, in the reorderable views, until the list is read again with
+    /// the precedence the server worked out from the drop.
+    @Published private(set) var localOrder: [Int]?
+    private var reordersInFlight = 0
+    /// Each trashed session as it read before the trash, for *Undo* to put back at once.
+    private var trashedRows: [Int: SessionSummary] = [:]
+    /// Sessions asked for and not yet answered with an id, by the placeholder their page opens
+    /// on. Placeholders are negative, so they never name a session.
+    @Published private(set) var pendingStarts: [Int: PendingStart] = [:]
+    private var startWork: [Int: @MainActor (ZimmerAPI) async throws -> Int] = [:]
+    /// The session each placeholder became, for the pages that keep the placeholder as their
+    /// path element after adopting the session's id.
+    private var startedSessions: [Int: Int] = [:]
+    private var nextPlaceholder = 0
     @Published private(set) var isLoading = false
     @Published var error: ZimmerError?
     @Published private(set) var signedInOrigins: ServerOrigins?
@@ -314,22 +331,86 @@ final class AppModel: ObservableObject {
         if error == .unauthorized { handle(error) }
     }
 
-    /// A session left the list's filter (archived) or joined it (started).
+    /// A session left the list's filter (archived) or joined it (started). Read quietly: the
+    /// list already shows what changed here, and a spinner over it would say otherwise.
     func sessionChanged() async {
-        await refresh()
+        await refresh(silently: true)
     }
 
-    /// Start a session from the full form. The caller opens it.
-    func createSession(_ request: NewSessionRequest) async -> SessionSummary? {
+    /// Start a session from the full form, and open its page at once.
+    func createSession(_ request: NewSessionRequest) {
+        let words = request.cloneOnly ? "Clone of \(request.agentRoot), without a prompt." : request.prompt
+        startSession(prompt: words, title: request.title ?? request.agentRoot) { try await $0.createSession(request).id }
+    }
+
+    /// Start a session and, with `open`, show its page before the server has answered with its
+    /// id: the page opens on a placeholder, with the words on their way, and fills in as the
+    /// session once it exists. A start that fails shows on that page with the words kept and
+    /// *Try again* offered; one asked for in the background puts them back in the Quick Router.
+    /// Returns the placeholder, which `pendingStarts` is keyed by.
+    @discardableResult
+    func startSession(prompt: String, title: String, open: Bool = true, start: @escaping @MainActor (ZimmerAPI) async throws -> Int) -> Int {
+        nextPlaceholder -= 1
+        let placeholder = nextPlaceholder
+        pendingStarts[placeholder] = PendingStart(prompt: prompt, title: title, opens: open)
+        startWork[placeholder] = start
+        if open { path.append(placeholder) }
+        Haptics.success()
+        Task { await runStart(placeholder) }
+        return placeholder
+    }
+
+    /// The pending page's *Try again*: the same start, asked once more.
+    func retryStart(_ placeholder: Int) {
+        guard pendingStarts[placeholder]?.state.isFailed == true else { return }
+        pendingStarts[placeholder]?.state = .starting
+        Task { await runStart(placeholder) }
+    }
+
+    /// The pending page's *Edit*: the words back in the Quick Router, the start forgotten.
+    func editStart(_ placeholder: Int) {
+        guard let start = pendingStarts[placeholder] else { return }
+        forgetStart(placeholder)
+        if path.last == placeholder { path.removeLast() }
+        openQuickRouter(draft: start.prompt)
+    }
+
+    /// A start's page left, or its session opened: the placeholder has nothing more to say.
+    func forgetStart(_ placeholder: Int) {
+        pendingStarts[placeholder] = nil
+        startWork[placeholder] = nil
+    }
+
+    private func runStart(_ placeholder: Int) async {
+        guard let work = startWork[placeholder] else { return }
         do {
-            let session = try await connection.api.createSession(request)
-            Haptics.success()
-            await refresh()
-            return session
+            let id = try await work(connection.api)
+            startWork[placeholder] = nil
+            startedSessions[placeholder] = id
+            pendingStarts[placeholder]?.state = .started(id)
+            // Asked for in the background, or its page left before the answer: no page will
+            // take the id, so the toast says where the session is.
+            if pendingStarts[placeholder]?.opens == false || !path.contains(placeholder) {
+                notice = "Started session #\(id)"
+                forgetStart(placeholder)
+            }
+            await refresh(silently: true)
         } catch {
-            handle(error)
+            let zimmerError = error as? ZimmerError ?? .transport(error)
+            log.error("start failed: \(String(describing: zimmerError), privacy: .public)")
             Haptics.failure()
-            return nil
+            if zimmerError == .unauthorized { handle(error) }
+            guard let start = pendingStarts[placeholder] else { return }
+            if start.opens, path.contains(placeholder) {
+                pendingStarts[placeholder]?.state = .failed(zimmerError)
+            } else {
+                // Asked for in the background, or its page already left: there is no page to
+                // say so, so the words go back to the Quick Router, with the refusal over the
+                // screen in front.
+                forgetStart(placeholder)
+                handle(error)
+                openQuickRouter(draft: start.prompt)
+            }
         }
     }
 
@@ -348,31 +429,20 @@ final class AppModel: ObservableObject {
         openQuickRouter(parent: session.id, page: QuickRouterPage.session(session, url: webURL(for: session.id)))
     }
 
-    /// Start a Quick Router session and open it.
-    func startQuickRouter(_ prompt: String) async -> Bool {
-        await startQuickRouter(QuickRouterRequest(prompt: prompt))
+    /// Start a Quick Router session and open it, at once.
+    func startQuickRouter(_ prompt: String) {
+        startQuickRouter(QuickRouterRequest(prompt: prompt))
     }
 
-    /// Start a Quick Router session with the sheet's choices and open it — or, with `open`
-    /// off, the web bubble's plain *Submit*: the session starts and this screen stays.
-    func startQuickRouter(_ request: QuickRouterRequest, open: Bool = true) async -> Bool {
-        do {
-            let id = try await connection.api.startQuickRouter(request)
-            showingQuickRouter = false
-            quickRouterParent = nil
-            quickRouterPage = nil
-            if open {
-                path.append(id)
-            } else {
-                notice = "Started session #\(id) in the background"
-                Haptics.success()
-            }
-            await refresh()
-            return true
-        } catch {
-            handle(error)
-            return false
-        }
+    /// Start a Quick Router session with the sheet's choices and open its page at once — or,
+    /// with `open` off, the web bubble's plain *Submit*: the session starts and this screen
+    /// stays, with a toast once it has. Either way the sheet closes on the tap, not the answer.
+    func startQuickRouter(_ request: QuickRouterRequest, open: Bool = true) {
+        showingQuickRouter = false
+        quickRouterParent = nil
+        quickRouterPage = nil
+        if !open { notice = "Starting a session in the background…" }
+        startSession(prompt: request.prompt, title: "Quick Router", open: open) { try await $0.startQuickRouter(request) }
     }
 
     /// `silently`: a read the board makes on its own — no loading state, and a failure other
@@ -398,7 +468,9 @@ final class AppModel: ObservableObject {
             guard requested == effectiveFilters, board == self.board, view == self.view,
                   query == searchText.trimmingCharacters(in: .whitespacesAndNewlines),
                   freshness.finish(ticket) else { return }
-            sessions = result.sessions
+            // The actions still out keep what they changed; the server's list is the rest.
+            sessions = pending.overlay(result.sessions, admits: belongsOnList)
+            if reordersInFlight == 0 { localOrder = nil }
             listIncomplete = !result.complete
             error = nil
         } catch {
@@ -501,29 +573,81 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
-    /// One action on one session from the list (a swipe or a long press): the server's answer
-    /// replaces the row, and a row that no longer belongs on this list leaves it.
+    /// One action on one session from the list (a swipe or a long press). With `optimistic`,
+    /// the row changes at the tap — `optimistic` writes what the server is expected to answer
+    /// onto a copy of it — and the server is asked after; its answer replaces the row, and a
+    /// refusal puts the row back as it was, with the refusal over the list. Without
+    /// `optimistic`, the toast still shows at the tap and the row changes on the answer. A row
+    /// that no longer belongs on this list leaves it; one that now does joins it. `seed` is the
+    /// row to start from when the list does not have it (one just trashed, being restored).
     @discardableResult
-    func perform(_ done: String, on id: Int, _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
-        do {
-            var updated = try await action(connection.api)
+    func perform(_ done: String, on id: Int, optimistic: ((inout SessionSummary) -> Void)? = nil, seed: SessionSummary? = nil,
+                 _ action: (ZimmerAPI) async throws -> SessionSummary) async -> Bool {
+        await performRow(done, on: id, optimistic: optimistic, seed: seed, action) { $0 } != nil
+    }
+
+    /// `perform`, for an action the server answers with more than the session (`row` picks it
+    /// out). Nil when it failed.
+    private func performRow<Answer>(_ done: String, on id: Int, optimistic: ((inout SessionSummary) -> Void)?, seed: SessionSummary?,
+                                    _ action: (ZimmerAPI) async throws -> Answer, row: (Answer) -> SessionSummary) async -> Answer? {
+        let before = sessions.first { $0.id == id }
+        var ticket: PendingBoardChanges.Ticket?
+        if let optimistic, var guess = before ?? seed {
+            optimistic(&guess)
+            ticket = pending.begin(id, belongsOnList(guess) ? .replaced(guess) : .removed)
             freshness.noteLocalChange()
-            withAnimation {
-                if let index = sessions.firstIndex(where: { $0.id == id }) {
-                    // An action answers with the session alone: the row's summary stays until
-                    // the next read of the list.
-                    if updated.boardRow == nil { updated.boardRow = sessions[index].boardRow }
-                    if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
+            withAnimation { sessions = pending.overlay(sessions, admits: belongsOnList) }
+        }
+        // At the tap, as the web UI's toast is: the server is expected to agree.
+        notice = done
+        error = nil
+        Haptics.success()
+        do {
+            let answer = try await action(connection.api)
+            // Ended only when it still stood in for the row: a newer action on the same row,
+            // asked meanwhile, is what the list shows until its own answer.
+            let stands = ticket.map { pending.end($0) } ?? true
+            freshness.noteLocalChange()
+            if stands { withAnimation { place(row(answer), keeping: before?.boardRow) } }
+            return answer
+        } catch {
+            let stands = ticket.map { pending.end($0) } ?? false
+            freshness.noteLocalChange()
+            if stands {
+                withAnimation {
+                    // A row that was on the list goes back as it was; one the action brought
+                    // onto the list (a restore from the trash) leaves it again.
+                    if let before { restore(before) } else { sessions.removeAll { $0.id == id } }
                 }
             }
-            notice = done
-            error = nil
-            Haptics.success()
-            return true
-        } catch {
+            if notice == done { notice = nil }
             handle(error)
             Haptics.failure()
-            return false
+            return nil
+        }
+    }
+
+    /// The server's row takes its place: over the row it had, on the list when it has none and
+    /// belongs, off it when it no longer does. An action answers with the session alone, so
+    /// the row's board summary stays until the next read of the list.
+    private func place(_ updated: SessionSummary, keeping boardRow: BoardRow?) {
+        var updated = updated
+        if let index = sessions.firstIndex(where: { $0.id == updated.id }) {
+            if updated.boardRow == nil { updated.boardRow = sessions[index].boardRow ?? boardRow }
+            if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
+        } else if belongsOnList(updated) {
+            if updated.boardRow == nil { updated.boardRow = boardRow }
+            sessions.append(updated)
+        }
+    }
+
+    /// A row as it read before an action the server refused, back on the list. Where in the
+    /// array does not matter: `sections` orders every view.
+    private func restore(_ row: SessionSummary) {
+        if let index = sessions.firstIndex(where: { $0.id == row.id }) {
+            sessions[index] = row
+        } else if belongsOnList(row) {
+            sessions.append(row)
         }
     }
 
@@ -531,58 +655,113 @@ final class AppModel: ObservableObject {
         effectiveFilters.admits(session) && board.admits(session)
     }
 
-    /// The rows in the current view's order and sections.
-    var sections: [BoardSection] { view.sections(sessions) }
+    /// The rows in the current view's order and sections — a drag's order first, until the
+    /// server's read replaces it.
+    var sections: [BoardSection] { view.sections(sessions, order: localOrder) }
 
-    /// Trash one session as the web UI's Trash does: no question first, *Undo* after. One with
-    /// messages queued for it is asked about (`queuedTrash`) unless `force`. A refusal goes to
-    /// `onError` when the caller shows its own errors (the session's page), else to the board.
+    /// Trash one session as the web UI's Trash does: no question first, *Undo* after. The row
+    /// goes at the tap, with Undo offered, and the server is asked after; a refusal puts the
+    /// row back, drops the Undo, and shows over the board. One with messages queued for it is
+    /// asked about (`queuedTrash`) unless `force` — its row comes back for the question.
     @discardableResult
-    func trash(_ session: SessionSummary, force: Bool = false, onError: ((Error) -> Void)? = nil) async -> Bool {
+    func trash(_ session: SessionSummary, force: Bool = false) async -> Bool {
+        let id = session.id
+        let before = sessions.first { $0.id == id } ?? session
+        var guess = before
+        guess.status = .archived
+        guess.archivedAt = Date()
+        let ticket = pending.begin(id, belongsOnList(guess) ? .replaced(guess) : .removed)
+        freshness.noteLocalChange()
+        trashedRows[id] = before
+        withAnimation {
+            sessions = pending.overlay(sessions, admits: belongsOnList)
+            notice = nil
+            undoable = guess
+        }
+        error = nil
+        Haptics.success()
         do {
-            switch try await connection.api.trash(session.id, force: force) {
+            switch try await connection.api.trash(id, force: force) {
             case let .trashed(updated):
+                let stands = pending.end(ticket)
                 freshness.noteLocalChange()
-                withAnimation {
-                    if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-                        if belongsOnList(updated) { sessions[index] = updated } else { sessions.remove(at: index) }
-                    }
-                    notice = nil
-                    undoable = updated
+                if stands {
+                    withAnimation { place(updated, keeping: before.boardRow) }
+                    if undoable?.id == id { undoable = updated }
                 }
-                error = nil
-                Haptics.success()
                 return true
             case .queued:
+                putBack(ticket, before)
                 queuedTrash = session
                 return false
             }
         } catch {
-            if let onError { onError(error) } else { handle(error); Haptics.failure() }
+            putBack(ticket, before)
+            handle(error)
+            Haptics.failure()
             return false
         }
     }
 
-    /// The Undo toast's button: restore what was just trashed.
-    func undoTrash() async {
-        guard let session = undoable else { return }
-        withAnimation { undoable = nil }
-        if await perform("Restored from trash", on: session.id, { try await $0.unarchive(session.id) }) {
-            await refresh()
+    /// A trash the server did not take: the row as it was, no Undo for it.
+    private func putBack(_ ticket: PendingBoardChanges.Ticket, _ before: SessionSummary) {
+        let stands = pending.end(ticket)
+        freshness.noteLocalChange()
+        trashedRows[ticket.id] = nil
+        withAnimation {
+            if stands { restore(before) }
+            if undoable?.id == ticket.id { undoable = nil }
         }
     }
 
-    /// Trash the selected sessions. Each refusal is shown with the server's reason; the rest go.
+    /// The Undo toast's button: what was just trashed, back on the list as it read before the
+    /// trash, at once; the server's row replaces it when the restore is answered.
+    func undoTrash() async {
+        guard let session = undoable else { return }
+        withAnimation { undoable = nil }
+        let original = trashedRows[session.id] ?? session
+        trashedRows[session.id] = nil
+        await perform("Restored from trash", on: session.id, optimistic: { $0 = original }, seed: original) { try await $0.unarchive(session.id) }
+    }
+
+    /// Trash the selected sessions: gone at the tap, asked after. Each refusal comes back with
+    /// the server's reason; the rest go.
     func trash(_ ids: Set<Int>) async {
+        let ordered = Array(ids).sorted()
+        var tickets: [Int: PendingBoardChanges.Ticket] = [:]
+        var befores: [Int: SessionSummary] = [:]
+        for row in sessions where ids.contains(row.id) {
+            befores[row.id] = row
+            var guess = row
+            guess.status = .archived
+            guess.archivedAt = Date()
+            tickets[row.id] = pending.begin(row.id, belongsOnList(guess) ? .replaced(guess) : .removed)
+        }
+        freshness.noteLocalChange()
+        withAnimation { sessions = pending.overlay(sessions, admits: belongsOnList) }
+        notice = "Moved \(ids.count) to trash"
+        error = nil
+        Haptics.success()
         do {
-            let result = try await connection.api.bulkArchive(Array(ids).sorted())
-            await refresh()
-            // After the refresh, which clears the banner: the refusals are what it is for.
+            let result = try await connection.api.bulkArchive(ordered)
+            for ticket in tickets.values { pending.end(ticket) }
+            freshness.noteLocalChange()
             let refused = result.errors.map { "#\($0.id): \($0.message)" }
+            withAnimation {
+                for refusal in result.errors { if let before = befores[refusal.id] { restore(before) } }
+            }
+            await refresh(silently: true)
+            // After the refresh, which clears the banner: the refusals are what it is for.
             notice = "Moved \(result.archivedCount) to trash" + (refused.isEmpty ? "" : "; \(refused.count) refused")
-            if !refused.isEmpty { error = .http(status: 422, message: refused.joined(separator: "\n")) }
-            if refused.isEmpty { Haptics.success() } else { Haptics.failure() }
+            if !refused.isEmpty {
+                error = .http(status: 422, message: refused.joined(separator: "\n"))
+                Haptics.failure()
+            }
         } catch {
+            for ticket in tickets.values { pending.end(ticket) }
+            freshness.noteLocalChange()
+            withAnimation { for before in befores.values { restore(before) } }
+            notice = nil
             handle(error)
             Haptics.failure()
         }
@@ -591,9 +770,9 @@ final class AppModel: ObservableObject {
     func refreshAll() async {
         do {
             let summary = try await connection.api.refreshAll()
-            await refresh()
             notice = summary
             Haptics.success()
+            await refresh(silently: true)
         } catch {
             handle(error)
             Haptics.failure()
@@ -605,7 +784,7 @@ final class AppModel: ObservableObject {
         do {
             notice = try await connection.api.authorizeMerge(id).message
             Haptics.success()
-            await refresh()
+            await refresh(silently: true)
         } catch {
             handle(error)
             Haptics.failure()
@@ -625,13 +804,13 @@ final class AppModel: ObservableObject {
     }
 
     /// An action the server answers with a sentence rather than the session — a row's
-    /// *Refresh Transcript* — then the list as it now stands, and the sentence as the toast.
+    /// *Refresh Transcript* — the sentence as the toast, then the list as it now stands.
     func run(_ action: (ZimmerAPI) async throws -> String) async {
         do {
             let message = try await action(connection.api)
-            await refresh()
             notice = message
             Haptics.success()
+            await refresh(silently: true)
         } catch {
             handle(error)
             Haptics.failure()
@@ -639,20 +818,19 @@ final class AppModel: ObservableObject {
     }
 
     /// The Ranked row's *Promote to priority* and *Demote to spot* (which lands at the head of
-    /// the spot queue). A promotion starts a waiting session; one that could not says why.
+    /// the spot queue). The row crosses to the other half at the tap; a promotion starts a
+    /// waiting session, and one that could not says why once the server has answered.
     func reschedule(_ id: Int, priority: Bool) async {
-        do {
-            let change = try await connection.api.setSchedulingClass(id, priority: priority)
-            let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
-            notice = change.startMessage.map { "\(done). \($0)" } ?? done
-            error = nil
-            if change.startOutcome == "refused" { Haptics.failure() } else { Haptics.success() }
-            // The list is the server's order: a row that changed class belongs in the other half.
-            await refresh()
-        } catch {
-            handle(error)
-            Haptics.failure()
-        }
+        let done = priority ? "Promoted to priority" : "Demoted to spot, top of the queue"
+        let change = await performRow(done, on: id, optimistic: { row in
+            row.priorityClass = priority ? "priority" : "spot"
+            row.schedulingClass = row.priorityClass
+        }, seed: nil, { try await $0.setSchedulingClass(id, priority: priority) }, row: \.session)
+        guard let change else { return }
+        notice = change.startMessage.map { "\(done). \($0)" } ?? done
+        if change.startOutcome == "refused" { Haptics.failure() }
+        // The list is the server's order: where in the other half the row lands is its say.
+        await refresh(silently: true)
     }
 
     /// The Ranked view's *Start now*.
@@ -660,25 +838,37 @@ final class AppModel: ObservableObject {
         do {
             notice = try await connection.api.startNow(id)
             Haptics.success()
-            await refresh()
+            await refresh(silently: true)
         } catch {
             handle(error)
             Haptics.failure()
         }
     }
 
-    /// Your board's and Ranked's drag-and-drop, then the list as the server now orders it.
-    func reorder(_ id: Int, above: Int?, below: Int?) async {
+    /// Your board's and Ranked's drag-and-drop: the rows stay where the drag left them
+    /// (`moved`, which `sections` shows) while the server is told what the dropped row landed
+    /// between and works out its precedence; the list is then read as the server orders it. A
+    /// refused drop snaps the rows back, with the refusal over the list.
+    func reorder(_ moved: [SessionSummary], id: Int, above: Int?, below: Int?) async {
+        localOrder = moved.map(\.id)
+        reordersInFlight += 1
+        freshness.noteLocalChange()
+        notice = view == .ranked ? "Moved in the spot queue" : "Moved on your board"
+        error = nil
+        Haptics.success()
         do {
             _ = try await connection.api.reorder(id, above: above, below: below)
-            // After the reload, so the toast never shows over the row in its old place.
-            await refresh()
-            notice = view == .ranked ? "Moved in the spot queue" : "Moved on your board"
-            Haptics.success()
+            // Only the read after the last drop in flight may put the server's order up.
+            reordersInFlight -= 1
+            freshness.noteLocalChange()
+            await refresh(silently: true)
         } catch {
+            reordersInFlight -= 1
+            if reordersInFlight == 0 { localOrder = nil }
+            notice = nil
             handle(error)
             Haptics.failure()
-            await refresh()
+            await refresh(silently: true)
         }
     }
 
@@ -699,7 +889,7 @@ final class AppModel: ObservableObject {
     /// for — and the caller opens it as any link.
     func openInApp(_ url: URL) -> Bool {
         guard let origins = signedInOrigins, let link = ZimmerLink(url: url, origins: origins) else { return false }
-        if case let .session(id) = link, path.last == id {
+        if case let .session(id) = link, isInFront(id) {
             // A link to a message of the session already open: the web page scrolls to it, and
             // this one cannot yet, so it opens there. Without one there is nothing to do.
             return url.fragment?.isEmpty ?? true
@@ -707,6 +897,13 @@ final class AppModel: ObservableObject {
         log.info("opening \(url.path, privacy: .public) in the app")
         open(link)
         return true
+    }
+
+    /// Whether the page in front is session `id`'s — pushed as its id, or as the placeholder of
+    /// the start that became it.
+    func isInFront(_ id: Int) -> Bool {
+        guard let last = path.last else { return false }
+        return last == id || startedSessions[last] == id
     }
 
     /// What `MarkdownText` opens links with, made once: a fresh closure on every render of the
@@ -827,6 +1024,8 @@ final class AppModel: ObservableObject {
         await connection.auth.signOut()
         await connection.edge?.forget()
         freshness.noteLocalChange()
+        pending = PendingBoardChanges()
+        localOrder = nil
         sessions = []
         signedInOrigins = nil
         edgeExpiry = nil
@@ -848,8 +1047,36 @@ final class AppModel: ObservableObject {
         if zimmerError == .unauthorized {
             isSignedIn = false
             freshness.noteLocalChange()
+            pending = PendingBoardChanges()
+            localOrder = nil
             sessions = []
         }
         self.error = zimmerError
     }
+}
+
+/// A session asked for and not yet answered with its id: what its page shows meanwhile.
+struct PendingStart: Equatable {
+    enum State: Equatable {
+        /// Asked of the server; no answer yet.
+        case starting
+        /// The server answered with the session's id: the page is that session's from here on.
+        case started(Int)
+        /// The server refused the start, or was never reached. The words are kept.
+        case failed(ZimmerError)
+
+        var isFailed: Bool {
+            if case .failed = self { return true }
+            return false
+        }
+    }
+
+    /// The words the session starts from — the first message its page shows, on its way.
+    var prompt: String
+    /// What the page is titled until the session has one: "Quick Router", the agent root.
+    var title: String
+    /// Whether a page opened on it. Without one, the start's outcome is a toast or a refusal
+    /// over the screen it was asked from.
+    var opens: Bool
+    var state: State = .starting
 }

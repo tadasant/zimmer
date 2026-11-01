@@ -29,7 +29,12 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
 
     /// The rows in this view's order, in sections. Only Ranked has more than one; the
     /// others are a single untitled section.
-    public func sections(_ sessions: [SessionSummary]) -> [BoardSection] {
+    ///
+    /// `order` is where a drag just left the rows, by id, before the server has answered with
+    /// the precedence it worked out: the reorderable views show that order until the list is
+    /// read again, so a dropped row does not snap back while the server is asked. Rows it does
+    /// not name keep their place behind the ones it does.
+    public func sections(_ sessions: [SessionSummary], order: [Int]? = nil) -> [BoardSection] {
         switch self {
         case .lastTouched:
             return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) })]
@@ -37,11 +42,19 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
             return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) })]
         case .yourBoard:
             let (priority, spot) = Self.halves(sessions)
-            return [BoardSection(title: nil, sessions: priority + spot)]
+            return [BoardSection(title: nil, sessions: Self.arranged(priority + spot, by: order))]
         case .ranked:
             let (priority, spot) = Self.halves(sessions)
-            return [BoardSection(title: "Priority", sessions: priority), BoardSection(title: "Spot queue", sessions: spot)]
+            return [BoardSection(title: "Priority", sessions: Self.arranged(priority, by: order)), BoardSection(title: "Spot queue", sessions: Self.arranged(spot, by: order))]
         }
+    }
+
+    /// `rows` in the order `order` names them, the rows it does not name after, as they were.
+    static func arranged(_ rows: [SessionSummary], by order: [Int]?) -> [SessionSummary] {
+        guard let order, !order.isEmpty else { return rows }
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        let named = rows.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }
+        return named + rows.filter { rank[$0.id] == nil }
     }
 
     /// The rows a drop landed between, as the web UI's boards name them: the nearest of the
