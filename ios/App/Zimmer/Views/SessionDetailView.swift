@@ -1906,6 +1906,7 @@ struct PendingStartHeader: View {
                         .font(.subheadline)
                         .foregroundStyle(Theme.inkSoft)
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("start.pending")
             case let .failed(error):
                 VStack(alignment: .leading, spacing: 8) {
@@ -1934,6 +1935,9 @@ struct PendingStartHeader: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Theme.danger.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Theme.smallRadius, style: .continuous).strokeBorder(Theme.danger.opacity(0.4)))
+                // The card contains its buttons, as the toasts contain theirs: each stays
+                // reachable by its own identifier.
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("start.failed")
             }
         }
