@@ -20,8 +20,7 @@ final class CarplayFitUITests: XCTestCase {
         // The section sits below the fold, and a Form builds its rows as they scroll into view.
         XCTAssertTrue(app.buttons["filters.apply"].waitForExistence(timeout: timeout))
         let picker = app.descendants(matching: .any)["filters.carplayFit"].firstMatch
-        for _ in 0..<6 where !(picker.exists && picker.isHittable) { app.swipeUp() }
-        XCTAssertTrue(picker.waitForExistence(timeout: timeout), "the Filters sheet offers CarPlay fit")
+        scrollUntilBelowTheBar(app, picker)
         picker.tap()
         let notLaptop = menuItem(app, titled: "Not laptop-only")
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
@@ -86,6 +85,33 @@ final class CarplayFitUITests: XCTestCase {
 
     private func row(_ app: XCUIApplication, _ id: Int) -> XCUIElement {
         app.descendants(matching: .any)["session.row.\(id)"]
+    }
+
+    /// On screen and below the sheet's navigation bar, read from the element's frame. Not
+    /// `isHittable`: for a Form row that has entered the accessibility tree but not been laid
+    /// out yet, it fails the test outright ("Activation point invalid") rather than answering
+    /// no — a board-shard run on main died that way on the first check after a swipe.
+    private func belowTheBar(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists, !element.frame.isEmpty else { return false }
+        return element.frame.minY >= barBottom(app) && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.maxY))
+    }
+
+    private func barBottom(_ app: XCUIApplication) -> CGFloat {
+        let bar = app.navigationBars.firstMatch
+        return bar.exists ? bar.frame.maxY : 0
+    }
+
+    /// A Form builds its rows as they scroll into view: swipe up until the row is on screen,
+    /// and back down if a swipe carried it under the bar.
+    private func scrollUntilBelowTheBar(_ app: XCUIApplication, _ element: XCUIElement) {
+        for _ in 0..<10 where !belowTheBar(app, element) {
+            if element.exists, !element.frame.isEmpty, element.frame.minY < barBottom(app) {
+                app.swipeDown(velocity: .slow)
+            } else {
+                app.swipeUp(velocity: .slow)
+            }
+        }
+        XCTAssertTrue(belowTheBar(app, element), "the Filters sheet offers CarPlay fit, on screen and clear of the bar")
     }
 
     /// A menu item by its title, whatever element type it reads as. A row of a menu-style
