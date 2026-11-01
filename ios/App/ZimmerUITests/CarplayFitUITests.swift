@@ -19,9 +19,11 @@ final class CarplayFitUITests: XCTestCase {
         more.tap()
         // The section sits below the fold, and a Form builds its rows as they scroll into view.
         XCTAssertTrue(app.buttons["filters.apply"].waitForExistence(timeout: timeout))
+        let shown = scrollPickerBelowTheBar(app)
+        XCTAssertNotNil(shown, "the Filters sheet offers CarPlay fit, on screen and clear of the bar")
+        guard let shown else { return }
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: shown.midX, dy: shown.midY)).tap()
         let picker = app.descendants(matching: .any)["filters.carplayFit"].firstMatch
-        scrollUntilBelowTheBar(app, picker)
-        picker.tap()
         let notLaptop = menuItem(app, titled: "Not laptop-only")
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-filter-choices")
@@ -87,34 +89,39 @@ final class CarplayFitUITests: XCTestCase {
         app.descendants(matching: .any)["session.row.\(id)"]
     }
 
-    /// On screen and below the sheet's navigation bar, read from the element's frame. Not
-    /// `isHittable`: for a Form row that has entered the accessibility tree but not been laid
-    /// out yet, it fails the test outright ("Activation point invalid") rather than answering
-    /// no, and a board-shard run on main died that way.
-    private func belowTheBar(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
-        guard element.exists, !element.frame.isEmpty else { return false }
-        return element.frame.minY >= barBottom(app) && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.maxY))
+    /// The CarPlay fit picker's frame, read in one snapshot of a fresh query, or nil while it is
+    /// not in the tree. A fresh query each time because an `XCUIElement` pins the type it first
+    /// resolved to, and this menu-style Picker reads as a Button on one query and a PopUpButton
+    /// on the next (see `menuItem`): a held element then answers `exists` and fails its next
+    /// lookup with "No matches found". One snapshot because `exists` then `.frame` is two
+    /// lookups the Form can rebuild the row between. And not `isHittable`, which for a row in
+    /// the tree but not laid out fails the test ("Activation point invalid") instead of
+    /// answering no. A board-shard run on main died of the first and last of these.
+    private func pickerFrame(_ app: XCUIApplication) -> CGRect? {
+        let query = app.descendants(matching: .any).matching(identifier: "filters.carplayFit").firstMatch
+        guard let frame = try? query.snapshot().frame, !frame.isEmpty else { return nil }
+        return frame
     }
 
     /// The bottom of the Filters sheet's own bar, not the board's behind it, when it can be told apart.
     private func barBottom(_ app: XCUIApplication) -> CGFloat {
-        let sheetBar = app.navigationBars["Filters"]
-        if sheetBar.exists { return sheetBar.frame.maxY }
-        let bar = app.navigationBars.firstMatch
-        return bar.exists ? bar.frame.maxY : 0
+        if let sheetBar = try? app.navigationBars["Filters"].snapshot() { return sheetBar.frame.maxY }
+        return (try? app.navigationBars.firstMatch.snapshot())?.frame.maxY ?? 0
     }
 
-    /// A Form builds its rows as they scroll into view: swipe up until the row is on screen,
-    /// and back down if a swipe carried it under the bar.
-    private func scrollUntilBelowTheBar(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<10 where !belowTheBar(app, element) {
-            if element.exists, !element.frame.isEmpty, element.frame.minY < barBottom(app) {
-                app.swipeDown(velocity: .slow)
-            } else {
-                app.swipeUp(velocity: .slow)
+    /// A Form builds its rows as they scroll into view: swipe up until the picker is on screen
+    /// and clear of the bar, back down if a swipe carried it under the bar. Its frame, or nil.
+    private func scrollPickerBelowTheBar(_ app: XCUIApplication) -> CGRect? {
+        let screen = app.frame
+        for _ in 0..<10 {
+            let top = barBottom(app)
+            if let frame = pickerFrame(app) {
+                if frame.minY >= top && screen.contains(CGPoint(x: frame.midX, y: frame.maxY)) { return frame }
+                if frame.minY < top { app.swipeDown(velocity: .slow); continue }
             }
+            app.swipeUp(velocity: .slow)
         }
-        XCTAssertTrue(belowTheBar(app, element), "the Filters sheet offers CarPlay fit, on screen and clear of the bar")
+        return nil
     }
 
     /// A menu item by its title, whatever element type it reads as. A row of a menu-style
