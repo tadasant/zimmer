@@ -30,9 +30,10 @@ final class CarplayFitUITests: XCTestCase {
         notLaptop.tap()
         // A menu picker shows its choice as its value on some iOS releases, in its label on others.
         // The condition sits in the query, so no element is held across reads (see `pickerFrame`).
-        let chosen = app.descendants(matching: .any).matching(NSPredicate(
-            format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
-            "filters.carplayFit", "Not laptop-only", "Not laptop-only")).firstMatch
+        // Narrowed to the picker first: `value CONTAINS` run over every element meets the
+        // toggles, whose value is a number, and the query then matches nothing at all.
+        let chosen = app.descendants(matching: .any).matching(identifier: "filters.carplayFit")
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Not laptop-only", "Not laptop-only")).firstMatch
         XCTAssertTrue(chosen.waitForExistence(timeout: timeout), "the picker shows the choice")
         attachScreenshot(app, named: "carplay-fit-filter")
         app.buttons["filters.apply"].tap()
