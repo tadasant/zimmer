@@ -2009,7 +2009,25 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       git_root: "https://github.com/test/repo.git",
       scheduling_class: SessionGenesis::SPOT, precedence: 654_321
     )
-    assert_selector "#ranked_row_#{arrival.id}", wait: 5
+    unless page.has_selector?("#ranked_row_#{arrival.id}", wait: 5)
+      # TEMPORARY DIAGNOSTICS (session 26556): what the page looks like when the arrival never lands.
+      logs = (page.driver.browser.logs.get(:browser).map(&:message) rescue [ "logs unavailable" ])
+      state = page.evaluate_script(<<~JS)
+        JSON.stringify({
+          path: location.pathname,
+          flash: (document.querySelector("#flash") || {}).textContent?.trim().slice(0, 120),
+          spot: Array.from(document.querySelectorAll("#ranked_spot_list > *")).map(e => e.id),
+          priority: Array.from(document.querySelectorAll("#ranked_priority_list > *")).map(e => e.id),
+          deliveries: document.querySelectorAll("[data-ranked-queue-target=delivery]").length,
+          cable: Array.from(document.querySelectorAll("turbo-cable-stream-source")).map(e => e.getAttribute("connected")),
+          ranked: !!document.querySelector("[data-controller~=ranked-queue]"),
+          filter: document.querySelector("[data-controller~=ranked-queue]")?.dataset.rankedQueueStatusFilterValue,
+          liveInsert: document.querySelector("[data-controller~=ranked-queue]")?.dataset.rankedQueueLiveInsertValue,
+          active: document.activeElement?.tagName + "#" + document.activeElement?.id
+        })
+      JS
+      flunk "arrival #{arrival.id} (#{arrival.reload.status}/#{arrival.scheduling_class}) never landed.\nSTATE: #{state}\nLOGS:\n#{logs.join("\n")}"
+    end
     page.save_screenshot("tmp/screenshots/proof-ranked-live-insert-375.png")
 
     assert_no_horizontal_overflow("ranked queue after a row arrived over the stream")
