@@ -1,7 +1,7 @@
 import XCTest
 
-/// The session page reads again on its own, opens at the newest message, and keeps what you
-/// typed — against the `-ZimmerFixture` in-memory Zimmer.
+/// The session page reads again on its own, opens on its summary with the transcript's newest
+/// message a tap away, and keeps what you typed — against the `-ZimmerFixture` in-memory Zimmer.
 @MainActor
 final class LiveUpdatesUITests: XCTestCase {
     private let timeout: TimeInterval = 20
@@ -22,6 +22,14 @@ final class LiveUpdatesUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureLive", "-ZimmerFixtureOpenSession", "1042"])
         let first = app.descendants(matching: .any)["detail.message.0"]
         XCTAssertTrue(first.waitForExistence(timeout: timeout))
+        // From the newest message, reading back up.
+        let chip = app.buttons["detail.sections.transcript"]
+        if chip.waitForExistence(timeout: timeout) { chip.tap() }
+        // Swiping only once the chip's scroll has landed on the newest message, or the two fight.
+        let messages = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.message.'"))
+        let newest = messages.element(boundBy: messages.count - 1)
+        let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: newest)
+        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: timeout), .completed, "the chip lands on the newest message")
         for _ in 0..<8 where !first.isHittable { app.swipeDown(velocity: .fast) }
         XCTAssertTrue(first.isHittable, "scrolled back to the start")
         // Two polls' worth of new lines arrive while reading back.
@@ -30,14 +38,25 @@ final class LiveUpdatesUITests: XCTestCase {
         XCTAssertTrue(first.isHittable, "still where the reader left it")
     }
 
-    func test_a_session_opens_at_its_newest_message() throws {
+    func test_the_transcript_opens_at_its_newest_message() throws {
         let app = launch(["-ZimmerFixtureOpenSession", "1044"])
+        let summary = app.descendants(matching: .any)["detail.summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: timeout), "the page opens on its summary")
         let newest = app.descendants(matching: .any)["detail.message.6"]
         XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        let chip = app.buttons["detail.sections.transcript"]
+        XCTAssertTrue(chip.waitForExistence(timeout: timeout))
+        chip.tap()
         let field = app.descendants(matching: .any)["followup.field"]
-        let onScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: newest)
-        XCTAssertEqual(XCTWaiter().wait(for: [onScreen], timeout: timeout), .completed, "the newest message is in view")
-        XCTAssertLessThan(newest.frame.maxY, field.frame.minY + 1, "above the composer, not under it")
+        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        // Its end above the composer, not under it: polled, as the scroll settles.
+        let deadline = Date().addingTimeInterval(timeout)
+        var landed = false
+        while !landed, Date() < deadline {
+            landed = newest.exists && newest.isHittable && newest.frame.maxY <= field.frame.minY + 1
+            if !landed { RunLoop.current.run(until: Date().addingTimeInterval(0.25)) }
+        }
+        XCTAssertTrue(landed, "the newest message is in view, above the composer")
     }
 
     func test_a_draft_survives_leaving_the_session() throws {

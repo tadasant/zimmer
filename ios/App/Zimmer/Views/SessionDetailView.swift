@@ -443,8 +443,12 @@ struct SessionDetailView: View {
     @State private var endY: CGFloat = 0
     @State private var viewportHeight: CGFloat = 0
     private var atEnd: Bool { endY <= viewportHeight + 80 }
-    /// Scrolled to the newest message once, on the first load.
-    @State private var openedAtNewest = false
+    /// The conversation has been read once: what follows is new messages arriving.
+    @State private var conversationArrived = false
+    /// The reader went to the transcript (its chip, *Newest message*, back from full screen):
+    /// new messages are followed from then on while the end is in view. A page sitting on its
+    /// summary is not pulled down to a new message, however short the conversation.
+    @State private var readingTranscript = false
     /// `-ZimmerFixtureOpenPanels`: the page opens at the details card with its folded rows
     /// open, so `ios/bin/ui-test` can photograph them.
     @State private var fixtureOpensPanels = false
@@ -489,27 +493,21 @@ struct SessionDetailView: View {
             page(proxy)
                 .onChange(of: model.conversation?.messages.last?.id) { _, _ in
                     guard model.conversation != nil else { return }
-                    // Open at the newest message, as the web UI's transcript does; afterwards
-                    // follow new ones only while the end is in view.
-                    if !openedAtNewest {
-                        openedAtNewest = true
+                    // The page opens at its top, on the status summary: where things stand is
+                    // what a person opening a session wants first. The transcript is a chip
+                    // away, at its newest message. Afterwards new messages are followed only
+                    // while the end is in view.
+                    if !conversationArrived {
+                        conversationArrived = true
                         let panels = fixtureOpensPanels
                         let section = fixtureSection
                         // After the layout that adds the messages, or the scroll can miss.
                         Task { @MainActor in
-                            if panels {
-                                proxy.scrollTo(Self.panelsAnchor, anchor: .top)
-                            } else {
-                                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-                            }
+                            if panels { proxy.scrollTo(Self.panelsAnchor, anchor: .top) }
                             if let section { jump(to: section, proxy) }
-                            if fixtureFullScreen {
-                                // Once the page has settled at the end, so the cover opens there.
-                                try? await Task.sleep(for: .milliseconds(500))
-                                openFullScreen()
-                            }
+                            if fixtureFullScreen { openFullScreen() }
                         }
-                    } else if atEnd {
+                    } else if atEnd, readingTranscript || reachedSections.contains(.transcript) {
                         withAnimation { proxy.scrollTo(Self.endAnchor, anchor: .bottom) }
                     }
                 }
@@ -517,11 +515,12 @@ struct SessionDetailView: View {
                     guard !fullScreen else { return }
                     // Back at the message reached full screen, or at the newest.
                     let target = fullScreenReading.target(in: shownMessages)
+                    readingTranscript = true
                     Task { @MainActor in
                         if let target {
                             proxy.scrollTo(ReadingPosition.anchor(target), anchor: .top)
                         } else {
-                            proxy.scrollTo(Self.endAnchor, anchor: .bottom)
+                            await settleAtEnd(proxy, anchor: Self.endAnchor, animated: false, endY: { endY }, reached: { atEnd })
                         }
                     }
                 }
@@ -597,11 +596,7 @@ struct SessionDetailView: View {
                     // Why it is waiting and what to do about it: under the header, as the web
                     // page's header stacks them, above everything else.
                     WaitingBanners(banners: detail.waiting.banners, busy: acting) { perform($0) }
-                    if let status = detail.statusSummary, status.summary != nil || status.generating == true || status.error != nil {
-                        SummaryCard(status: status) {
-                            Task { await model.run { try await $0.regenerateStatusSummary(model.id) } }
-                        }
-                    }
+                    summaryCard(detail, proxy)
                     if detail.session.status == .failed, let failure = detail.session.metadata, failure.hasFailureDetails {
                         FailureCard(failure: failure)
                     }
@@ -679,6 +674,16 @@ struct SessionDetailView: View {
         .navigationTitle(Text(verbatim: "#\(model.id)"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
+    }
+
+    /// What the page opens on. A session without a summary yet says so, with the transcript a
+    /// tap away, rather than opening on the details card.
+    private func summaryCard(_ detail: SessionDetail, _ proxy: ScrollViewProxy) -> some View {
+        let id = model.id
+        let readTranscript: (() -> Void)? = model.shownConversation == nil ? nil : { jump(to: .transcript, proxy) }
+        return SummaryCard(status: detail.statusSummary, sessionStatus: detail.session.status, conversationIsEmpty: model.shownConversation?.messages.isEmpty == true, readTranscript: readTranscript) {
+            Task { await model.run { try await $0.regenerateStatusSummary(id) } }
+        }
     }
 
     // The two strings the dialogs interpolate, built here: an interpolation with `??` inside a
@@ -898,23 +903,31 @@ struct SessionDetailView: View {
         case .humanMessages: opensHumanMessages += 1
         case .overview, .transcript: break
         }
-        withAnimation(.snappy(duration: 0.35)) {
-            if section == .transcript {
-                proxy.scrollTo(Self.endAnchor, anchor: .bottom)
-            } else {
+        readingTranscript = section == .transcript
+        if section == .transcript {
+            // The newest message, as the web UI's transcript opens: not the first of a hundred.
+            Task { @MainActor in
+                await settleAtEnd(proxy, anchor: Self.endAnchor, endY: { endY }, reached: { atEnd })
+                if jumps == jump { jumping = false }
+            }
+        } else {
+            withAnimation(.snappy(duration: 0.35)) {
                 proxy.scrollTo(section.anchor, anchor: .top)
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700))
+                if jumps == jump { jumping = false }
             }
         }
         Haptics.selection()
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(700))
-            if jumps == jump { jumping = false }
-        }
     }
 
-    /// The transcript over everything else, opened at the message being read on the page.
+    /// The transcript over everything else, opened at the message being read on the page, or at
+    /// the newest when the page has not been scrolled down to the transcript (it opens on the
+    /// summary): the first of a hundred messages is nobody's place in it.
     private func openFullScreen() {
-        fullScreenReading = ReadingPosition(start: pageReading.target(in: shownMessages))
+        let inTranscript = reachedSections.contains(.transcript) || !pageReading.above.isEmpty
+        fullScreenReading = ReadingPosition(start: inTranscript ? pageReading.target(in: shownMessages) : nil)
         readingFullScreen = true
     }
 
@@ -1499,15 +1512,29 @@ struct SessionDetailView: View {
 /// Under the text, how fresh it is — the web UI's "up to date as of …" or "3 messages
 /// since summary generated" — and Regenerate as a glyph.
 private struct SummaryCard: View {
-    let status: StatusSummary
+    /// Nil, or without a summary, when none has been written: the card says so.
+    let status: StatusSummary?
+    /// What the session is doing: what the card says when there is no summary turns on it.
+    let sessionStatus: SessionStatus
+    /// The conversation has been read and holds nothing: there is nothing to summarize.
+    let conversationIsEmpty: Bool
+    /// Nil while there is no conversation to read.
+    let readTranscript: (() -> Void)?
     let regenerate: () -> Void
+
+    private var summary: String? {
+        guard let text = status?.summary, !text.isEmpty else { return nil }
+        return text
+    }
+
+    private var generating: Bool { status?.generating == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Where things stand").themeLabel()
                 Spacer()
-                if status.generating == true {
+                if generating {
                     ProgressView().controlSize(.mini)
                 } else {
                     Button(action: regenerate) {
@@ -1515,25 +1542,46 @@ private struct SummaryCard: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Theme.accent)
                     }
-                    .accessibilityLabel("Regenerate")
+                    .accessibilityLabel(summary == nil ? "Generate" : "Regenerate")
                     .accessibilityIdentifier("detail.summary.regenerate")
                 }
             }
-            if let text = status.summary, !text.isEmpty {
+            if let summary {
                 // Markdown, drawn as the transcript draws it, as the web's Status panel does:
                 // its links open on a tap and offer Copy Link on a long press.
-                MarkdownText(blocks: MarkdownBlock.blocks(of: text))
+                MarkdownText(blocks: MarkdownBlock.blocks(of: summary))
                     .fixedSize(horizontal: false, vertical: true)
-            } else if status.generating == true {
+            } else if generating {
                 Text("Writing a status summary…").font(.callout).foregroundStyle(Theme.inkSoft)
+            } else {
+                // Written automatically when the session comes to rest (needs input, failed);
+                // until then the transcript, a tap below, is where things stand.
+                Text(emptyText)
+                    .font(.callout)
+                    .foregroundStyle(Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("detail.summary.empty")
             }
-            if let error = status.error, status.generating != true {
+            if let error = status?.error, !generating {
                 Text("The last attempt failed: \(error)").font(.caption).foregroundStyle(Theme.warning)
             }
-            if status.summary != nil, let freshness {
-                Text(freshness)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(status.isCurrent ? Theme.inkMute : Theme.warning)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if summary != nil, let freshness {
+                    Text(freshness)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(status?.isCurrent ?? true ? Theme.inkMute : Theme.warning)
+                }
+                Spacer(minLength: 0)
+                if let readTranscript {
+                    Button(action: readTranscript) {
+                        Label("Newest message", systemImage: "arrow.down.to.line")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Reads the transcript from its newest message")
+                    .accessibilityIdentifier("detail.summary.transcript")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1548,9 +1596,21 @@ private struct SummaryCard: View {
         .accessibilityIdentifier("detail.summary")
     }
 
+    /// Why there is no summary, in the web Status panel's terms: an attempt that failed (its
+    /// reason is the line below), a session still going (one is written when it stops), or one at
+    /// rest that has none — *Generate* writes it.
+    private var emptyText: String {
+        if status?.error != nil { return "No summary yet." }
+        if conversationIsEmpty { return "Nothing to summarize yet." }
+        switch sessionStatus {
+        case .running, .waiting: return "No summary yet. Zimmer writes one when the session stops."
+        default: return "No summary yet. Generate one with the button above."
+        }
+    }
+
     private var freshness: String? {
-        let since = status.messagesSinceGenerated ?? 0
-        let age = status.generatedAt.map { "as of \(Format.age($0))" }
+        let since = status?.messagesSinceGenerated ?? 0
+        let age = status?.generatedAt.map { "as of \(Format.age($0))" }
         switch (since, age) {
         case (0, let age?): return age
         case (0, nil): return nil
