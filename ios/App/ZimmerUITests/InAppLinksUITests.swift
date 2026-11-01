@@ -46,7 +46,7 @@ final class InAppLinksUITests: XCTestCase {
         return app
     }
 
-    /// Swipe toward `element` until it can be tapped,
+    /// The page opens at its newest message; swipe toward `element` until it can be tapped,
     /// below the navigation bar and the section strip pinned under it.
     private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
         func inView() -> Bool {
