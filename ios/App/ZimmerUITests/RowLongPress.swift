@@ -5,10 +5,12 @@ extension XCTestCase {
     /// that opens a row's menu goes through here rather than pressing once.
     ///
     /// Under load a 1.2-second press can land as a tap, which opens the session instead, or
-    /// while the last menu is still closing, which opens nothing. CI recordings show the first.
-    /// So a press that brings no menu comes back to the board if it left it, and presses again;
-    /// the last press waits the whole `timeout` for a menu that is merely slow. `prepare` runs
-    /// before each press: a scroll that keeps the row clear of the navigation bar, say.
+    /// while the last menu is still closing, which opens nothing. CI recordings show the first,
+    /// once with a press that took 11 seconds to deliver and a session page that took longer
+    /// still to offer its back button. So a press that brings no menu comes back to the board
+    /// if it left it, and presses again; a menu that turns up before the next press is taken,
+    /// and the last press waits the whole `timeout` for a menu that is merely slow. `prepare`
+    /// runs before each press: a scroll that keeps the row clear of the navigation bar, say.
     ///
     /// A press whose accessibility query timed out (see `absorbingAXIPCTimeout`) never reached
     /// the row, so it does not count as one of the presses: it is made again, once.
@@ -24,7 +26,15 @@ extension XCTestCase {
         while presses < attempts {
             // Only a session page has a back button called Sessions: the board's own title is not a button.
             let back = app.navigationBars.buttons["Sessions"]
-            if presses > 0 || timedOut, back.exists {
+            if presses > 0 || timedOut {
+                // A menu that came after the last wait gave up is the menu asked for.
+                if button.exists { return button }
+            }
+            // A press that landed as a tap takes the row off the board before the session page it
+            // opens has a back button: the page shows "Loading session…" without one until its
+            // read returns. So a missing row means the page is still coming, and its back button
+            // is waited for rather than looked for once.
+            if presses > 0 || timedOut, back.exists || (!row.exists && back.waitForExistence(timeout: timeout)) {
                 back.tap()
                 // The page has gone, not merely started to: a press during the pop lands on nothing.
                 let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
