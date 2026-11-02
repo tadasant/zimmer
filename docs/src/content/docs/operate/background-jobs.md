@@ -627,6 +627,14 @@ treats a session carrying a fresh stamp as live whatever its status says. The st
 `GIT_CLONE_TIMEOUT_SECONDS` plus retries, an artifact replay and an `air prepare`, and one that
 crashes between the stamp and the clear must not pin a clone on disk forever.
 
+`DeferredCloneCleanupJob` asks the same question itself, through `Session.reap_protected?`, both
+before it starts and again just before it deletes. It has to: it is the one reaper that routinely
+meets an unarchive, because routers unarchive archived sessions to deliver follow-ups while the
+session's cleanup, which waits out the undo window, is still pending. It skips at INFO and leaves the trash deadline
+`archive` set. If the unarchive fails, `EmptyTrashJob` reaps the clone at that deadline. Leaving this
+case to the guard below would still keep the clone, but the guard pages, and this is not the stale
+snapshot it pages for ([#1441](https://github.com/tadasant/zimmer/issues/1441)).
+
 ### The guard
 
 `CloneReaper` is the last guard. It asks the database who owns the directory **at the moment of

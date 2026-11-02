@@ -16,7 +16,9 @@
 # — see DurableSessionStorage for why.
 #
 # The job checks that:
-# 1. The session is still archived (not undone)
+# 1. The session is still archived (not undone), and is not being unarchived
+#    right now (Session::UNARCHIVE_IN_FLIGHT_KEY — the row stays `archived` for
+#    the whole unarchive, so status alone cannot tell)
 # 2. The archived_at timestamp matches what was set when we scheduled the job
 #    (to prevent deleting a clone from a re-archived session that shouldn't be cleaned yet)
 #
@@ -140,6 +142,11 @@ class DeferredCloneCleanupJob < ApplicationJob
       return
     end
 
+    if unarchive_in_flight?(session)
+      Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} is being unarchived right now, skipping cleanup"
+      return
+    end
+
     # Check if the archived_at timestamp matches (to handle re-archive scenarios)
     begin
       original_archived_at = Time.iso8601(archived_at)
@@ -255,6 +262,12 @@ class DeferredCloneCleanupJob < ApplicationJob
       return
     end
 
+    if unarchive_in_flight?(session)
+      Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} started unarchiving while its artifacts " \
+        "were being preserved, leaving the clone in place"
+      return
+    end
+
     # Tear down Docker Compose resources before removing the clone directory.
     # This must happen first because the compose file lives inside the clone.
     docker_cleaned = begin
@@ -302,6 +315,29 @@ class DeferredCloneCleanupJob < ApplicationJob
   end
 
   private
+
+  # Whether an unarchive is in flight for this session right now, asked of the
+  # database rather than read off the row this job loaded.
+  #
+  # UnarchiveSessionService keeps the row `archived` for the whole unarchive and
+  # marks the window with Session::UNARCHIVE_IN_FLIGHT_KEY, so `archived?` and the
+  # `archived_at` match both pass while it runs. Routers unarchive archived
+  # sessions to deliver follow-ups, so this job meeting one is routine, and it is
+  # this job's to skip at INFO. Leaving it to CloneReaper's last-moment guard
+  # works too, but that guard logs at ERROR because it exists for a genuinely
+  # stale reaper snapshot, which pages (zimmer#1441).
+  #
+  # `Session.reap_protected?` is the authoritative answer and owns the
+  # UNARCHIVE_GRACE_PERIOD bound, so a stamp left behind by a crashed unarchive
+  # stops protecting the clone. Callers have just confirmed `archived?`, so a true
+  # here means the stamp, or a status that moved in between; either way skip.
+  #
+  # Skipping leaves `trash_after` as `archive` set it. If the unarchive succeeds
+  # the session is live and owns the clone. If it fails, the session is archived
+  # with that deadline still on the row, and EmptyTrashJob reaps the clone then.
+  def unarchive_in_flight?(session)
+    Session.reap_protected?(session.id)
+  end
 
   # One CloneArtifactService per run. Memoized because two branches need it — the
   # dirty check and preservation, and `finalize_trash_expiry`'s artifact question
