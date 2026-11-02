@@ -19,17 +19,23 @@ final class CarplayFitUITests: XCTestCase {
         more.tap()
         // The section sits below the fold, and a Form builds its rows as they scroll into view.
         XCTAssertTrue(app.buttons["filters.apply"].waitForExistence(timeout: timeout))
-        let picker = app.descendants(matching: .any)["filters.carplayFit"].firstMatch
-        for _ in 0..<6 where !(picker.exists && picker.isHittable) { app.swipeUp() }
-        XCTAssertTrue(picker.waitForExistence(timeout: timeout), "the Filters sheet offers CarPlay fit")
-        picker.tap()
+        let shown = scrollPickerBelowTheBar(app)
+        XCTAssertTrue(app.buttons["filters.apply"].exists, "the Filters sheet is still up after scrolling it")
+        XCTAssertNotNil(shown, "the Filters sheet offers CarPlay fit, on screen and clear of the bar")
+        guard let shown else { return }
+        app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: shown.midX, dy: shown.midY)).tap()
         let notLaptop = menuItem(app, titled: "Not laptop-only")
         XCTAssertTrue(notLaptop.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "carplay-fit-filter-choices")
         notLaptop.tap()
         // A menu picker shows its choice as its value on some iOS releases, in its label on others.
-        let chosen = expectation(for: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Not laptop-only", "Not laptop-only"), evaluatedWith: picker)
-        XCTAssertEqual(XCTWaiter().wait(for: [chosen], timeout: timeout), .completed, "the picker shows the choice")
+        // The condition sits in the query, so no element is held across reads (see `pickerFrame`).
+        // Narrowed to the picker first: run over every element, this query timed out with the
+        // choice made (the sheet's toggles carry a numeric value, which `CONTAINS` cannot test),
+        // and narrowed it found the picker.
+        let chosen = app.descendants(matching: .any).matching(identifier: "filters.carplayFit")
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Not laptop-only", "Not laptop-only")).firstMatch
+        XCTAssertTrue(chosen.waitForExistence(timeout: timeout), "the picker shows the choice")
         attachScreenshot(app, named: "carplay-fit-filter")
         app.buttons["filters.apply"].tap()
 
@@ -86,6 +92,42 @@ final class CarplayFitUITests: XCTestCase {
 
     private func row(_ app: XCUIApplication, _ id: Int) -> XCUIElement {
         app.descendants(matching: .any)["session.row.\(id)"]
+    }
+
+    /// The CarPlay fit picker's frame, read in one snapshot of a fresh query, or nil while it is
+    /// not in the tree. A fresh query each time because an `XCUIElement` pins the type it first
+    /// resolved to (here Button), and this menu-style Picker can read as another type on a later
+    /// query, as its menu rows do (see `menuItem`): a held element then answers `exists` and
+    /// fails its next lookup with "No matches found". One snapshot because `exists` then
+    /// `.frame` is two lookups the Form can rebuild the row between. And not `isHittable`, which
+    /// for a row in the tree but not laid out fails the test ("Activation point invalid") instead
+    /// of answering no. A board-shard run on main died of `isHittable`; a held element died of
+    /// the type it had pinned.
+    private func pickerFrame(_ app: XCUIApplication) -> CGRect? {
+        let picker = app.descendants(matching: .any).matching(identifier: "filters.carplayFit").firstMatch
+        guard let frame = try? picker.snapshot().frame, !frame.isEmpty else { return nil }
+        return frame
+    }
+
+    /// The bottom of the Filters sheet's own bar, not the board's behind it, when it can be told apart.
+    private func barBottom(_ app: XCUIApplication) -> CGFloat {
+        if let sheetBar = try? app.navigationBars["Filters"].snapshot() { return sheetBar.frame.maxY }
+        return (try? app.navigationBars.firstMatch.snapshot())?.frame.maxY ?? 0
+    }
+
+    /// A Form builds its rows as they scroll into view: swipe up until the picker is on screen
+    /// and clear of the bar, back down if a swipe carried it under the bar. Its frame, or nil.
+    private func scrollPickerBelowTheBar(_ app: XCUIApplication) -> CGRect? {
+        let screen = app.frame
+        for _ in 0..<10 {
+            let top = barBottom(app)
+            if let frame = pickerFrame(app) {
+                if frame.minY >= top && screen.contains(CGPoint(x: frame.midX, y: frame.maxY)) { return frame }
+                if frame.minY < top { app.swipeDown(velocity: .slow); continue }
+            }
+            app.swipeUp(velocity: .slow)
+        }
+        return nil
     }
 
     /// A menu item by its title, whatever element type it reads as. A row of a menu-style
