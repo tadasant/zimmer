@@ -425,6 +425,46 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_nil @session.logs.find_by("content LIKE ?", "%Clone deleted%")
   end
 
+  # A clean clone takes its trash decision before the late check, so a skip there
+  # can leave the session with no deadline. That hands a failed unarchive's clone
+  # to StaleCloneCleanupJob rather than EmptyTrashJob, which is safe for a clone
+  # with nothing unpushed on it.
+  test "an unarchive that starts after a clean dirty check still keeps the clone, with no ERROR" do
+    test_case = self
+    artifact_service = CloneArtifactService.new
+    artifact_service.define_singleton_method(:check_dirty_state) do |_path|
+      test_case.send(:stamp_unarchive_in_flight, at: Time.current)
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: false, has_uncommitted?: false, has_unpushed_commits?: false, details: nil
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+    GitCloneService.expects(:cleanup_clone).never
+    Rails.logger.expects(:error).never
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert_nil @session.reload.trash_after, "the clean branch had already cleared the deadline"
+  end
+
+  # Docker teardown is bounded at two minutes per directory, so an unarchive can
+  # start after the archived? re-check and before the delete.
+  test "an unarchive that starts during the Docker teardown keeps the clone, with no ERROR" do
+    test_case = self
+    DockerComposeCleanupService.stubs(:cleanup).with do |_path|
+      test_case.send(:stamp_unarchive_in_flight, at: Time.current)
+      true
+    end.returns(false)
+    GitCloneService.expects(:cleanup_clone).never
+    Rails.logger.expects(:error).never
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert_nil @session.reload.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
   # The stamp is bounded by Session::UNARCHIVE_GRACE_PERIOD so an unarchive that
   # crashed between the stamp and its clear cannot pin a clone forever.
   test "a stamp older than the unarchive grace period does not block cleanup" do

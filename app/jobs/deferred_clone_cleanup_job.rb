@@ -277,6 +277,15 @@ class DeferredCloneCleanupJob < ApplicationJob
       false
     end
 
+    # The Compose teardown above can take up to two minutes, so an unarchive can
+    # start inside it. Asked again here, the last moment this job can still skip
+    # quietly, rather than leaving it to CloneReaper's refusal, which pages.
+    if unarchive_in_flight?(session)
+      Rails.logger.info "[DeferredCloneCleanupJob] Session #{session_id} started unarchiving while its Docker " \
+        "resources were being torn down, leaving the clone in place"
+      return
+    end
+
     # CloneReaper asks who owns this directory one last time, after the Compose
     # teardown above. The `archived?` re-read a few lines up covers this session;
     # the guard covers the case where the path is owned by a *different*, live
@@ -332,9 +341,14 @@ class DeferredCloneCleanupJob < ApplicationJob
   # stops protecting the clone. Callers have just confirmed `archived?`, so a true
   # here means the stamp, or a status that moved in between; either way skip.
   #
-  # Skipping leaves `trash_after` as `archive` set it. If the unarchive succeeds
-  # the session is live and owns the clone. If it fails, the session is archived
-  # with that deadline still on the row, and EmptyTrashJob reaps the clone then.
+  # If the unarchive succeeds the session is live and owns the clone. If it
+  # fails, the session is archived again with the clone on disk, and a periodic
+  # reaper takes it. Which one depends on where this job skipped. The first check
+  # leaves `trash_after` as `archive` set it, so EmptyTrashJob reaps the clone at
+  # that deadline. A later check on the clean path runs after
+  # `finalize_trash_expiry` may have cleared the deadline, which hands the clone
+  # to StaleCloneCleanupJob's archived-and-untrashed sweep within the hour. That
+  # is safe: a clean clone has nothing on it that the remote does not.
   def unarchive_in_flight?(session)
     Session.reap_protected?(session.id)
   end
