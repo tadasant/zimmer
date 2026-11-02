@@ -331,29 +331,64 @@ final class RankedUITests: XCTestCase {
         // Read from the frame: `isHittable` throws, rather than answering no, for an element
         // the list has not laid out.
         // Its top edge below the navigation bar too, so the order read after the drop is real.
-        func onScreen(_ element: XCUIElement) -> Bool {
-            guard element.exists, !element.frame.isEmpty else { return false }
-            let bar = app.navigationBars.firstMatch
-            return element.frame.minY >= (bar.exists ? bar.frame.maxY : 0)
-                && app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.midY))
+        // Every `frame` is a query of its own, and a re-render of the list between two of them
+        // leaves the element the query resolved gone: the read fails with
+        // `kAXErrorInvalidUIElement` and answers `{{inf, inf}, {0, 0}}`, for a handle that is on
+        // screen. The read after a drop lands on one for certain, since the drop reads the
+        // board again. So a frame is read once and used whole, a frame that is not a real rect
+        // is not yet laid out, and what the test waits on it reads again rather than judging
+        // from one read.
+        let bar = app.navigationBars.firstMatch
+        let screen = app.frame
+        func laidOut(_ element: XCUIElement) -> CGRect? {
+            guard element.exists else { return nil }
+            let frame = element.frame
+            guard !frame.isEmpty, !frame.isInfinite, frame.minX.isFinite, frame.minY.isFinite else { return nil }
+            return frame
         }
-        var swipes = 0
+        func onScreen(_ element: XCUIElement) -> Bool {
+            guard let frame = laidOut(element) else { return false }
+            // The bar is read each time: its large title collapses as the list scrolls. A bar
+            // whose read failed answers nothing, rather than letting a row under it through.
+            let barBottom: CGFloat
+            if let barFrame = laidOut(bar) { barBottom = barFrame.maxY } else if bar.exists { return false } else { barBottom = 0 }
+            return frame.minY >= barBottom && screen.contains(CGPoint(x: frame.midX, y: frame.midY))
+        }
+        func eventually(_ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while !condition() {
+                guard Date() < deadline else { return false }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            }
+            return true
+        }
+        var swipes = 0, rereads = 0
         while !(onScreen(last) && onScreen(first)) && swipes < 6 {
-            if last.exists && last.frame.minY > app.frame.midY { app.swipeUp() } else { app.swipeDown() }
+            // A row that is there but whose read failed says nothing about where it is: read
+            // again rather than swipe, a few times. A row the list has not laid out is above.
+            let frame = laidOut(last)
+            if frame == nil && last.exists && rereads < 8 {
+                rereads += 1
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+                continue
+            }
+            if let frame, frame.minY > screen.midY { app.swipeUp() } else { app.swipeDown() }
             swipes += 1
         }
-        XCTAssertTrue(onScreen(last) && onScreen(first), "both rows are on screen")
+        XCTAssertTrue(eventually { onScreen(last) && onScreen(first) }, "both rows are on screen")
         // The handle names its row on current iOS; failing that, it is the Reorder button that
         // sits on the deploy key's row.
         let titled = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Rotate the staging deploy key'")).firstMatch
         var handle = titled
         if !titled.waitForExistence(timeout: 10) {
-            let row = last.frame
+            let row = try XCTUnwrap(laidOut(last), "the deploy key's row is laid out")
             let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).allElementsBoundByIndex
-            handle = try XCTUnwrap(handles.first { $0.exists && row.minY <= $0.frame.midY && $0.frame.midY <= row.maxY },
-                                   "a Reorder handle on the deploy key's row")
+            let onRow = handles.first { candidate in
+                laidOut(candidate).map { row.minY <= $0.midY && $0.midY <= row.maxY } ?? false
+            }
+            handle = try XCTUnwrap(onRow, "a Reorder handle on the deploy key's row")
         }
-        XCTAssertTrue(onScreen(handle), "the handle is on screen")
+        XCTAssertTrue(eventually { onScreen(handle) }, "the handle is on screen")
         // Let go in the upper part of the second row: past its middle, so the drop takes its
         // place, and well inside the section. A drop at the first row's top edge sits a couple
         // of points under the Priority section, and a touch that strays over it cancels the
@@ -362,15 +397,18 @@ final class RankedUITests: XCTestCase {
             .press(forDuration: 0.6, thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
         // Read the order the rows settle in, not the toast: it is up for less time than the
-        // drag's own idle wait can take. A refused move shows an alert instead, and its reload
-        // puts the row back.
-        let deadline = Date().addingTimeInterval(timeout)
-        while last.frame.minY >= second.frame.minY, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        // drag's own idle wait can take. The rows take the dropped order before the server
+        // answers (`AppModel.reorder`), so the order alone does not say the move was taken: a
+        // refused one shows the refusal over the list and its reload puts the row back.
+        func above(_ upper: XCUIElement, _ lower: XCUIElement) -> Bool {
+            guard let a = laidOut(upper), let b = laidOut(lower) else { return false }
+            return a.minY < b.minY
         }
-        XCTAssertLessThan(first.frame.minY, last.frame.minY, "the sweep still heads the spot queue")
-        XCTAssertLessThan(last.frame.minY, second.frame.minY, "the dropped session now sits second")
+        XCTAssertTrue(eventually { above(last, second) }, "the dropped session now sits second")
+        XCTAssertTrue(eventually { above(first, last) }, "the sweep still heads the spot queue")
+        XCTAssertFalse(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: 3), "the server took the move")
         XCTAssertFalse(app.alerts.firstMatch.exists, "the server took the move")
+        XCTAssertTrue(eventually { above(last, second) }, "the move held after the server's answer")
         app.buttons["select.done"].tap()
     }
 
