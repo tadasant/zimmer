@@ -56,16 +56,27 @@ extension XCTestCase {
     /// and the row on screen. The same call returned in 20 ms for the rest of the run
     /// (actions/runs/41371175993, session-page shard). Nothing was pressed. The app did nothing
     /// wrong, and pressing again is the honest answer.
+    ///
+    /// `continueAfterFailure` is held true for the action, so the test goes on past the absorbed
+    /// timeout whatever XCTest does with an expected failure in a test that stops on failures.
+    /// An unmatched issue under it still fails the test, and the test then stops at its next
+    /// assertion rather than at the action. The waits and taps around the press run the same
+    /// check unguarded: this covers the press, where the hang was seen.
     @MainActor
-    func absorbingAXIPCTimeout(_ action: () -> Void) -> Bool {
+    func absorbingAXIPCTimeout(_ action: @MainActor () -> Void) -> Bool {
         let timedOut = Flag()
         let options = XCTExpectedFailure.Options()
         options.isStrict = false
         options.issueMatcher = { issue in
-            let matches = issue.compactDescription.contains("kAXErrorIPCTimeout")
+            let text = [issue.compactDescription, issue.detailedDescription ?? "",
+                        issue.associatedError.map { String(describing: $0) } ?? ""].joined(separator: " ")
+            let matches = text.contains("kAXErrorIPCTimeout")
             if matches { timedOut.raised = true }
             return matches
         }
+        let stopsOnFailure = !continueAfterFailure
+        continueAfterFailure = true
+        defer { continueAfterFailure = !stopsOnFailure }
         XCTExpectFailure("XCUITest's accessibility IPC to the simulator timed out; the action is retried", options: options) {
             action()
         }
