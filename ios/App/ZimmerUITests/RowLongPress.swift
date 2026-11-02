@@ -10,16 +10,21 @@ extension XCTestCase {
     /// the last press waits the whole `timeout` for a menu that is merely slow. `prepare` runs
     /// before each press: a scroll that keeps the row clear of the navigation bar, say.
     ///
+    /// A press whose accessibility query timed out (see `absorbingAXIPCTimeout`) never reached
+    /// the row, so it does not count as one of the presses: it is made again, once.
+    ///
     /// Returns the menu item, which does not exist when every press missed: assert on it.
     @MainActor
     func pressForMenu(_ app: XCUIApplication, _ row: XCUIElement, offering item: String,
                       timeout: TimeInterval = 20, prepare: @MainActor () -> Void = {}) -> XCUIElement {
         let button = app.buttons[item].firstMatch
         let attempts = 3
-        for attempt in 0..<attempts {
+        var presses = 0
+        var timedOut = false
+        while presses < attempts {
             // Only a session page has a back button called Sessions: the board's own title is not a button.
             let back = app.navigationBars.buttons["Sessions"]
-            if attempt > 0, back.exists {
+            if presses > 0 || timedOut, back.exists {
                 back.tap()
                 // The page has gone, not merely started to: a press during the pop lands on nothing.
                 let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
@@ -27,9 +32,82 @@ extension XCTestCase {
                 XCTAssertTrue(row.waitForExistence(timeout: timeout))
             }
             prepare()
-            row.press(forDuration: 1.2)
-            if button.waitForExistence(timeout: attempt == attempts - 1 ? timeout : 5) { return button }
+            if timedOut {
+                row.press(forDuration: 1.2)
+            } else if !absorbingAXIPCTimeout({ row.press(forDuration: 1.2) }) {
+                timedOut = true
+                if button.exists { return button }
+                continue
+            }
+            presses += 1
+            if button.waitForExistence(timeout: presses == attempts ? timeout : 5) { return button }
         }
         return button
+    }
+
+    /// Runs `action`, an XCUIElement action, and returns false when XCUITest's own
+    /// accessibility IPC timed out under it, recording that as an expected failure rather than
+    /// failing the test. Every other issue the action records fails the test as it would have.
+    ///
+    /// Before it synthesises a press, XCUITest checks for interrupting elements, a system alert
+    /// say, by asking SpringBoard which applications are focused. On a loaded CI simulator that
+    /// one call has hung for its whole 60-second IPC timeout and come back
+    /// `kAXErrorIPCTimeout` ("Failed to get list of active applications"), with the app idle
+    /// and the row on screen. The same call returned in 20 ms for the rest of the run
+    /// (actions/runs/41371175993, session-page shard). Nothing was pressed. The app did nothing
+    /// wrong, and pressing again is the honest answer.
+    @MainActor
+    func absorbingAXIPCTimeout(_ action: () -> Void) -> Bool {
+        let timedOut = Flag()
+        let options = XCTExpectedFailure.Options()
+        options.isStrict = false
+        options.issueMatcher = { issue in
+            let matches = issue.compactDescription.contains("kAXErrorIPCTimeout")
+            if matches { timedOut.raised = true }
+            return matches
+        }
+        XCTExpectFailure("XCUITest's accessibility IPC to the simulator timed out; the action is retried", options: options) {
+            action()
+        }
+        return !timedOut.raised
+    }
+}
+
+/// Set from the issue matcher, which XCTest calls on the thread that records the issue: the
+/// test's own, inside `XCTExpectFailure`'s block, so nothing reads it concurrently.
+private final class Flag: @unchecked Sendable {
+    var raised = false
+}
+
+/// `absorbingAXIPCTimeout`, against issues recorded by hand: nothing here launches the app, so
+/// it costs the shard a second. It proves what the press retry relies on and cannot be made to
+/// happen on demand: the timeout is absorbed and the test goes on, and nothing else is.
+@MainActor
+final class RowLongPressUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func test_an_ax_ipc_timeout_is_absorbed_and_reported() {
+        var ran = false
+        let clean = absorbingAXIPCTimeout {
+            XCTFail("Failed to get list of active applications: Accessibility error kAXErrorIPCTimeout from AXUIElementCopyMultipleAttributeValues for 1102")
+            ran = true
+        }
+        XCTAssertTrue(ran, "the test goes on past an absorbed timeout")
+        XCTAssertFalse(clean, "a timed-out action reports itself, so the press is made again")
+    }
+
+    func test_an_action_that_records_nothing_is_clean() {
+        XCTAssertTrue(absorbingAXIPCTimeout {}, "nothing recorded, nothing absorbed")
+    }
+
+    func test_any_other_failure_still_fails() {
+        // The outer, strict expectation is what catches the inner failure, which it can only
+        // do if absorbingAXIPCTimeout let it through. Strict: had nothing reached it, the
+        // test would fail.
+        XCTExpectFailure("an ordinary failure inside the action is not absorbed") {
+            _ = absorbingAXIPCTimeout { XCTFail("the menu offers Promote to Priority") }
+        }
     }
 }
