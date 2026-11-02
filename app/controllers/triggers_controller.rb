@@ -82,13 +82,7 @@ class TriggersController < ApplicationController
 
     respond_to do |format|
       format.html { redirect_to triggers_path, notice: notice }
-      format.turbo_stream do
-        render turbo_stream: turbo_stream.replace(
-          "trigger_#{@trigger.id}",
-          partial: "trigger",
-          locals: { trigger: @trigger }
-        )
-      end
+      format.turbo_stream { replace_row_or_redirect(notice) }
     end
   end
 
@@ -99,15 +93,10 @@ class TriggersController < ApplicationController
       return
     end
 
+    notice = "Enqueue messages #{@trigger.enqueue_messages ? 'enabled' : 'disabled'}."
     respond_to do |format|
-      format.html { redirect_to @trigger, notice: "Enqueue messages #{@trigger.enqueue_messages ? 'enabled' : 'disabled'}." }
-      format.turbo_stream do
-        render turbo_stream: turbo_stream.replace(
-          "trigger_#{@trigger.id}",
-          partial: "trigger",
-          locals: { trigger: @trigger }
-        )
-      end
+      format.html { redirect_to @trigger, notice: notice }
+      format.turbo_stream { replace_row_or_redirect(notice) }
     end
   end
 
@@ -118,15 +107,10 @@ class TriggersController < ApplicationController
       return
     end
 
+    notice = "Resuscitate archived #{@trigger.resuscitate_archived ? 'enabled' : 'disabled'}."
     respond_to do |format|
-      format.html { redirect_to @trigger, notice: "Resuscitate archived #{@trigger.resuscitate_archived ? 'enabled' : 'disabled'}." }
-      format.turbo_stream do
-        render turbo_stream: turbo_stream.replace(
-          "trigger_#{@trigger.id}",
-          partial: "trigger",
-          locals: { trigger: @trigger }
-        )
-      end
+      format.html { redirect_to @trigger, notice: notice }
+      format.turbo_stream { replace_row_or_redirect(notice) }
     end
   end
 
@@ -197,6 +181,33 @@ class TriggersController < ApplicationController
   end
 
   private
+
+  # A toggle answered where it was clicked. The index lists each trigger in a
+  # `trigger_<id>` frame, which the row partial replaces in place; the show page
+  # has no such frame, so a stream aimed at it changed nothing on screen until a
+  # reload — the show page's toggles get the redirect Turbo follows instead.
+  def replace_row_or_redirect(notice)
+    if toggled_from_its_own_page?
+      redirect_to @trigger, notice: notice, status: :see_other
+    else
+      render turbo_stream: turbo_stream.replace(
+        "trigger_#{@trigger.id}",
+        partial: "trigger",
+        locals: { trigger: @trigger }
+      )
+    end
+  end
+
+  def toggled_from_its_own_page?
+    return false if request.referer.blank?
+
+    referer = URI.parse(request.referer)
+    return false unless referer.host.nil? || referer.host == request.host
+
+    referer.path == trigger_path(@trigger)
+  rescue URI::InvalidURIError
+    false
+  end
 
   def whatsapp_chat_json(chat)
     { id: chat["id"].to_s, name: chat["name"].presence || chat["id"].to_s, is_group: chat["is_group"] == true }

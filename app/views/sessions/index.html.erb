@@ -602,7 +602,7 @@
 
         <%# Desktop: inline textarea with resize handle %>
         <%= form_with url: quick_prompt_sessions_path, method: :post, local: true, multipart: true,
-              data: { turbo: false, quick_prompt_target: "desktopForm" },
+              data: { turbo: false, quick_prompt_target: "desktopForm", action: "submit->quick-prompt#submitDesktopForm" },
               class: "relative hidden md:block" do %>
           <%= text_area_tag :prompt, nil,
                 placeholder: "What do you want to do? (Cmd/Ctrl+Enter to submit)",

@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
+import { showAlert } from "lib/toast"
 
 // Connects to data-controller="heartbeat"
 //
@@ -56,13 +57,21 @@ export default class extends Controller {
     this._closePopover()
   }
 
+  // The heart flips at the click; the server is asked after, and a refusal
+  // flips it back with a toast.
   async setEnabled(enabled) {
-    this._setStatus("Saving…")
+    const previous = this.enabledValue
+    this.enabledValue = enabled
+    this._applyEnabledState(enabled)
+    this._setStatus("")
     const data = await this._patch(`/sessions/${this.sessionIdValue}/toggle_heartbeat`, { enabled })
     if (data) {
       this.enabledValue = data.heartbeat_enabled
       this._applyEnabledState(data.heartbeat_enabled)
-      this._setStatus("")
+    } else {
+      this.enabledValue = previous
+      this._applyEnabledState(previous)
+      showAlert(`The heartbeat could not be turned ${enabled ? "on" : "off"}. Nothing changed.`)
     }
   }
 

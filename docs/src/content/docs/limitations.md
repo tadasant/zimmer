@@ -8676,6 +8676,14 @@ real tick:
 The first tick after the key is seeded settles all three: its outcome is in the log stream under
 `[testflight]`, and `get_testflight_crashes` lists what it stored.
 
+## Reloading the web Quick Router's starting page loses the start
+
+The board's prompt box opens `/sessions/starting` at the click and keeps the start's state — the
+words, the request in flight, the answer — in the page's JavaScript module, which a Turbo visit
+keeps alive and a reload does not. Reload that page, or open it by URL, and it has nothing to show:
+it says so and points at the board, where the session is listed if the server took the start. The
+state is not kept in storage because the request's promise cannot be; a reload mid-start would
+need a server-side record of the start to resume from.
 ## A Quick Router start retried from the iOS app can start twice
 
 The iOS app opens a session's page the moment the Quick Router is asked to start it, and offers

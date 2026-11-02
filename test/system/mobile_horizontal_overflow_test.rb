@@ -2003,7 +2003,11 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # rendered — it is built from the same partial, but it is inserted by
     # JavaScript into a list the server never sized for it, and the operator
     # reading this screen on a phone is the person who would find out otherwise.
-    find("body").click # close the menu without navigating
+    # Escape closes the menu through its own keydown handler. A click on the body
+    # lands at the viewport's centre, which on a phone is inside the open menu —
+    # on its Trash, in CI — and a trashed row is not the page this is measuring.
+    find("body").send_keys(:escape)
+    assert_no_button "Demote to spot"
     arrival = Session.create!(
       title: LONG_TOKEN_TITLE, prompt: "x", status: :running,
       git_root: "https://github.com/test/repo.git",
@@ -2334,5 +2338,22 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     visit live_path
     assert_selector "a[data-live-settings-link]"
     assert_no_horizontal_overflow("live overview")
+  end
+  # The page a Quick Router start opens on (app/javascript/lib/session_starts.js),
+  # with the longest state it draws: a refusal, with its two buttons.
+  test "the starting page does not overflow horizontally on a phone" do
+    visit starting_sessions_path
+    assert_selector "[data-controller='session-start']"
+    page.execute_script(<<~JS)
+      const page = document.querySelector("[data-controller='session-start']")
+      page.querySelector("[data-session-start-target='nothing']").classList.add("hidden")
+      page.querySelector("[data-session-start-target='prompt']").textContent = "Investigate the flaky test_session_state_machine_transitions_from_waiting_to_running and land a fix"
+      page.querySelector("[data-session-start-target='failed']").classList.remove("hidden")
+      page.querySelector("[data-session-start-target='error']").textContent = "The server answered 503. Router agent root not configured: zimmer-orchestrator-with-a-long-name"
+    JS
+    assert_text "The session did not start."
+
+    assert_no_horizontal_overflow("starting page")
+    page.save_screenshot(Rails.root.join("tmp", "capybara", "proof-starting-page-375.png"))
   end
 end
