@@ -331,12 +331,13 @@ final class RankedUITests: XCTestCase {
         // Read from the frame: `isHittable` throws, rather than answering no, for an element
         // the list has not laid out.
         // Its top edge below the navigation bar too, so the order read after the drop is real.
-        // Every `frame` is a query of its own, and the board reads itself again every fifteen
-        // seconds (`BoardPoller`), which lays the list out afresh: a read that lands on that
-        // instant finds the element it resolved gone (`kAXErrorInvalidUIElement`) and answers
-        // `{{inf, inf}, {0, 0}}`. So a frame is read once and used whole, a frame that is not a
-        // real rect is not yet laid out, and what the test waits on it reads again rather than
-        // judging from one read.
+        // Every `frame` is a query of its own, and a re-render of the list between two of them
+        // leaves the element the query resolved gone: the read fails with
+        // `kAXErrorInvalidUIElement` and answers `{{inf, inf}, {0, 0}}`, for a handle that is on
+        // screen. The read after a drop lands on one for certain, since the drop reads the
+        // board again. So a frame is read once and used whole, a frame that is not a real rect
+        // is not yet laid out, and what the test waits on it reads again rather than judging
+        // from one read.
         let bar = app.navigationBars.firstMatch
         let screen = app.frame
         func laidOut(_ element: XCUIElement) -> CGRect? {
@@ -347,8 +348,11 @@ final class RankedUITests: XCTestCase {
         }
         func onScreen(_ element: XCUIElement) -> Bool {
             guard let frame = laidOut(element) else { return false }
-            // The bar is read each time: its large title collapses as the list scrolls.
-            return frame.minY >= (laidOut(bar)?.maxY ?? 0) && screen.contains(CGPoint(x: frame.midX, y: frame.midY))
+            // The bar is read each time: its large title collapses as the list scrolls. A bar
+            // whose read failed answers nothing, rather than letting a row under it through.
+            let barBottom: CGFloat
+            if let barFrame = laidOut(bar) { barBottom = barFrame.maxY } else if bar.exists { return false } else { barBottom = 0 }
+            return frame.minY >= barBottom && screen.contains(CGPoint(x: frame.midX, y: frame.midY))
         }
         func eventually(_ condition: () -> Bool) -> Bool {
             let deadline = Date().addingTimeInterval(timeout)
@@ -358,9 +362,17 @@ final class RankedUITests: XCTestCase {
             }
             return true
         }
-        var swipes = 0
+        var swipes = 0, rereads = 0
         while !(onScreen(last) && onScreen(first)) && swipes < 6 {
-            if let frame = laidOut(last), frame.minY > screen.midY { app.swipeUp() } else { app.swipeDown() }
+            // A row that is there but whose read failed says nothing about where it is: read
+            // again rather than swipe, a few times. A row the list has not laid out is above.
+            let frame = laidOut(last)
+            if frame == nil && last.exists && rereads < 8 {
+                rereads += 1
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+                continue
+            }
+            if let frame, frame.minY > screen.midY { app.swipeUp() } else { app.swipeDown() }
             swipes += 1
         }
         XCTAssertTrue(eventually { onScreen(last) && onScreen(first) }, "both rows are on screen")
@@ -385,15 +397,18 @@ final class RankedUITests: XCTestCase {
             .press(forDuration: 0.6, thenDragTo: second.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.25)),
                    withVelocity: .slow, thenHoldForDuration: 0.3)
         // Read the order the rows settle in, not the toast: it is up for less time than the
-        // drag's own idle wait can take. A refused move shows an alert instead, and its reload
-        // puts the row back.
+        // drag's own idle wait can take. The rows take the dropped order before the server
+        // answers (`AppModel.reorder`), so the order alone does not say the move was taken: a
+        // refused one shows the refusal over the list and its reload puts the row back.
         func above(_ upper: XCUIElement, _ lower: XCUIElement) -> Bool {
             guard let a = laidOut(upper), let b = laidOut(lower) else { return false }
             return a.minY < b.minY
         }
         XCTAssertTrue(eventually { above(last, second) }, "the dropped session now sits second")
         XCTAssertTrue(eventually { above(first, last) }, "the sweep still heads the spot queue")
+        XCTAssertFalse(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: 3), "the server took the move")
         XCTAssertFalse(app.alerts.firstMatch.exists, "the server took the move")
+        XCTAssertTrue(eventually { above(last, second) }, "the move held after the server's answer")
         app.buttons["select.done"].tap()
     }
 
