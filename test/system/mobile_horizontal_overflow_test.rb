@@ -2006,9 +2006,23 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # TEMPORARY DIAGNOSTICS (session 26556): record every node appended under the ranked section.
     page.execute_script(<<~JS)
       window.__rankedAppends = []
+      window.__events = []
+      const t0 = Date.now()
+      const stamp = (what) => window.__events.push(((Date.now() - t0) / 1000).toFixed(2) + " " + what)
       new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
         window.__rankedAppends.push([n.nodeName, n.id || "", n.dataset ? (n.dataset.sessionId || "") : "", n.dataset ? (n.dataset.rankedQueueTarget || "") : ""].join(":"))
       }))).observe(document.querySelector("#ranked_sessions"), { childList: true, subtree: true })
+      document.querySelectorAll("turbo-cable-stream-source").forEach((src, i) => {
+        new MutationObserver(() => stamp("source" + i + " connected=" + src.hasAttribute("connected"))).observe(src, { attributes: true, attributeFilter: ["connected"] })
+      })
+      new MutationObserver((ms) => ms.forEach((m) => { m.removedNodes.forEach((n) => { if (n.nodeName === "TURBO-CABLE-STREAM-SOURCE") stamp("source removed") }); m.addedNodes.forEach((n) => { if (n.nodeName === "TURBO-CABLE-STREAM-SOURCE") stamp("source added") }) })).observe(document.body, { childList: true, subtree: true })
+      ;["turbo:before-stream-render", "turbo:submit-start", "turbo:submit-end", "turbo:before-visit", "turbo:visit", "turbo:load", "turbo:before-fetch-response", "turbo:frame-load", "turbo:fetch-request-error"].forEach((name) => {
+        document.addEventListener(name, (e) => {
+          const el = e.target
+          const extra = name === "turbo:before-stream-render" ? (el.getAttribute("action") + " -> " + el.getAttribute("target")) : (el && el.id ? "#" + el.id : (el && el.nodeName) || "")
+          stamp(name + " " + extra)
+        })
+      })
     JS
     find("body").click # close the menu without navigating
     arrival = Session.create!(
@@ -2041,6 +2055,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
         top_status: Session.find_by(id: arrival.id - 1)&.status,
         ranked_broadcasts: (ActionCable.server.pubsub.respond_to?(:broadcasts) ? ActionCable.server.pubsub.broadcasts(Session::RANKED_STREAM).map { |b| b.to_s[/session-id="(\d+)"/, 1] || b.to_s[/data-session-id="(\d+)"/, 1] || "?" } : "n/a"),
         appends: page.evaluate_script("JSON.stringify(window.__rankedAppends)"),
+        events: page.evaluate_script("JSON.stringify(window.__events)"),
         connected_sources: page.evaluate_script("Array.from(document.querySelectorAll('turbo-cable-stream-source')).map(e => [e.getAttribute('channel'), e.getAttribute('signed-stream-name')?.slice(0, 12), e.hasAttribute('connected')])")
       }
       flunk "arrival #{arrival.id} (#{arrival.reload.status}/#{arrival.scheduling_class}) never landed.\nSTATE: #{state}\nSERVER: #{server}\nLOGS:\n#{logs.join("\n")}"
