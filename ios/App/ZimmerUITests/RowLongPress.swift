@@ -29,12 +29,18 @@ extension XCTestCase {
             if presses > 0 || timedOut {
                 // A menu that came after the last wait gave up is the menu asked for.
                 if button.exists { return button }
+                // A press that landed as a tap can still be pushing the session page, with the
+                // row on the board, and the page shows "Loading session…" with no back button
+                // until its read returns. So the row is given a moment to leave, and once it has,
+                // the back button is waited for rather than looked for once.
+                let leaving = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
+                let leftBoard = back.exists || XCTWaiter().wait(for: [leaving], timeout: 3) == .completed
+                if leftBoard, !back.exists, !back.waitForExistence(timeout: timeout) {
+                    XCTAssertFalse(app.staticTexts["Loading session…"].exists,
+                                   "the session a press opened was still loading after \(Int(timeout)) seconds")
+                }
             }
-            // A press that landed as a tap takes the row off the board before the session page it
-            // opens has a back button: the page shows "Loading session…" without one until its
-            // read returns. So a missing row means the page is still coming, and its back button
-            // is waited for rather than looked for once.
-            if presses > 0 || timedOut, back.exists || (!row.exists && back.waitForExistence(timeout: timeout)) {
+            if presses > 0 || timedOut, back.exists {
                 back.tap()
                 // The page has gone, not merely started to: a press during the pop lands on nothing.
                 let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
@@ -46,7 +52,6 @@ extension XCTestCase {
                 row.press(forDuration: 1.2)
             } else if !absorbingAXIPCTimeout({ row.press(forDuration: 1.2) }) {
                 timedOut = true
-                if button.exists { return button }
                 continue
             }
             presses += 1
