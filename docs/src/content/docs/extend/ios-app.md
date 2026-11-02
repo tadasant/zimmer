@@ -265,7 +265,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   *Try again*, and for a Quick Router start *Edit*, which puts the words back in the Quick Router.
   Nothing typed is lost to a refusal. A refusal the server has to make before anything goes, a
   trash over queued messages, asks first: the session's page asks before it closes, and a row
-  trashed from the board comes back for the question.
+  trashed from the board comes back for the question. A refusal stays over the board while the
+  board reads itself in the background; your next action, a pull to refresh, a change of filter
+  or view, or coming back to the app clears it.
 - **Never lets a read undo an action.** A read of the board or the page that lands while an
   action is out keeps what the action showed. The actions in flight are laid over every read
   until each is answered, so a slow answer never puts a trashed row back, and *Undo* tapped

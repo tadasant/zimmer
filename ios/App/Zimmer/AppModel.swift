@@ -74,8 +74,8 @@ final class AppModel: ObservableObject {
     /// The banner over the list: why a read failed, or why the server refused an action.
     @Published var error: ZimmerError? { didSet { errorIsReadFailure = false } }
     /// Whether `error` is a read's failure, which the next read that lands answers. Any other
-    /// is the server's refusal of something done here, which the board reading itself
-    /// (`pollBoard`, the read on coming back to the front) leaves up: a poll can land a moment
+    /// is the server's refusal of something done here, which the board's background reads
+    /// (`pollBoard`, a start finishing in the background) leave up: a poll can land a moment
     /// after the refusal, and would take the reason away before it could be read.
     private var errorIsReadFailure = false
     @Published private(set) var signedInOrigins: ServerOrigins?
@@ -419,7 +419,7 @@ final class AppModel: ObservableObject {
                 notice = "Started session #\(id)"
                 forgetStart(placeholder)
             }
-            await refresh(silently: true)
+            await refresh(silently: true, onItsOwn: true)
         } catch {
             let zimmerError = error as? ZimmerError ?? .transport(error)
             log.error("start failed: \(String(describing: zimmerError), privacy: .public)")
@@ -471,9 +471,9 @@ final class AppModel: ObservableObject {
     }
 
     /// `silently`: no loading state, and a failure other than a sign-in that ended is not
-    /// shown; the next read tries again. `onItsOwn`: a read nothing here asked for (the
-    /// poller's, the one on coming back to the front) — it clears a read's failure from the
-    /// banner but not an action's refusal.
+    /// shown; the next read tries again. `onItsOwn`: the poller's read, or the one after a
+    /// start finished in the background — it clears a read's failure from the banner but not
+    /// an action's refusal. Every other read clears both.
     func refresh(silently: Bool = false, onItsOwn: Bool = false) async {
         if !silently { isLoading = true }
         defer { if !silently { isLoading = false } }
@@ -506,10 +506,7 @@ final class AppModel: ObservableObject {
             // banner over what a newer one brings.
             if !Task.isCancelled {
                 freshness.fail(ticket)
-                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized {
-                    handle(error)
-                    errorIsReadFailure = true
-                }
+                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handleReadFailure(error) }
             }
         }
         await refreshEdgeExpiry()
@@ -607,11 +604,11 @@ final class AppModel: ObservableObject {
     /// tried once more shortly after.
     private func readBoardOnReturn() async {
         guard boardIsInFront else { return }
-        await refresh(silently: true, onItsOwn: true)
+        await refresh(silently: true)
         guard freshness.lastReadFailed else { return }
         try? await Task.sleep(for: BoardFreshness.foregroundRetry)
         guard boardIsInFront, polling.inFront else { return }
-        await refresh(silently: true, onItsOwn: true)
+        await refresh(silently: true)
     }
 
     func refreshUnreadCount() async {
@@ -656,7 +653,7 @@ final class AppModel: ObservableObject {
         do {
             filterOptions = try await connection.api.configs()
         } catch {
-            handle(error)
+            handleReadFailure(error)
         }
     }
 
@@ -976,9 +973,10 @@ final class AppModel: ObservableObject {
             reordersInFlight -= 1
             if reordersInFlight == 0 { localOrder = nil }
             notice = nil
+            await refresh(silently: true)
+            // After the read, which clears the banner: the refusal is what it is for.
             handle(error)
             Haptics.failure()
-            await refresh(silently: true)
         }
     }
 
@@ -1172,6 +1170,12 @@ final class AppModel: ObservableObject {
             sessions = []
         }
         self.error = zimmerError
+    }
+
+    /// A read that failed: shown as `handle` shows it, and answered by the next read that lands.
+    private func handleReadFailure(_ error: Error) {
+        handle(error)
+        errorIsReadFailure = true
     }
 }
 
