@@ -802,6 +802,10 @@ Rails.application.routes.draw do
       post :upload_files
     end
     collection do
+      # The page a Quick Router start opens on before the session has an id
+      # (app/javascript/lib/session_starts.js). A collection route, so it is
+      # matched before `sessions/:id` could take "starting" as a slug.
+      get :starting
       post :bulk_archive
       # The User view's Reprioritize button: hand the board to the deployment's
       # durable reprioritizing session.

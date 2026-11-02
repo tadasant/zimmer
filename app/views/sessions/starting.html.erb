@@ -1,0 +1,58 @@
+<%# The page a Quick Router start opens on before the server has answered with the
+    session's id — see app/javascript/lib/session_starts.js. The words are shown on
+    their way, as the session page shows a message of yours; the controller visits
+    the session when the id comes, and says why when the server refused. Opened by
+    URL or reloaded, it has no start to show and says so. %>
+<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8" data-controller="session-start">
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-6 py-5 border-b border-gray-200">
+      <h1 class="text-lg font-semibold text-gray-900" data-session-start-target="title">Quick Router</h1>
+      <p class="mt-1 text-sm text-gray-500">A new session, from what you just typed.</p>
+    </div>
+
+    <div class="px-6 py-5">
+      <%# Your words, drawn as the session page draws a message of yours. %>
+      <div class="flex items-start space-x-3">
+        <div class="flex-shrink-0">
+          <div class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+            <svg class="h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
+            </svg>
+          </div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs font-medium text-gray-500 uppercase tracking-wide">You</p>
+          <p class="mt-1 text-sm text-gray-900 whitespace-pre-wrap break-words" data-session-start-target="prompt"></p>
+        </div>
+      </div>
+
+      <div class="mt-6 flex items-center gap-3 text-sm text-gray-600" data-session-start-target="pending" data-testid="session-start-pending">
+        <svg class="animate-spin h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span>Starting the session… its page opens as soon as it exists.</span>
+      </div>
+
+      <div class="mt-6 hidden rounded-md border border-red-200 bg-red-50 px-4 py-3" data-session-start-target="failed" data-testid="session-start-failed">
+        <p class="text-sm font-medium text-red-800">The session did not start.</p>
+        <p class="mt-1 text-sm text-red-700" data-session-start-target="error"></p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <button type="button" data-action="session-start#retry"
+                  class="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Try again
+          </button>
+          <button type="button" data-action="session-start#edit"
+                  class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Edit
+          </button>
+        </div>
+      </div>
+
+      <div class="mt-6 hidden text-sm text-gray-600" data-session-start-target="nothing" data-testid="session-start-nothing">
+        <p>Nothing is starting here. If a session was being started when this page was reloaded, it is on the board.</p>
+        <p class="mt-3"><%= link_to "Back to the board", root_path, class: "font-medium text-indigo-600 hover:text-indigo-800" %></p>
+      </div>
+    </div>
+  </div>
+</div>

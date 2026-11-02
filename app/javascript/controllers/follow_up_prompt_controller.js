@@ -89,6 +89,7 @@ export default class extends Controller {
   }
 
   disconnect() {
+    this.dropPendingBubble()
     if (this.boundSaveInput) {
       document.removeEventListener("turbo:before-stream-render", this.boundSaveInput)
     }
@@ -246,7 +247,9 @@ export default class extends Controller {
       this.submittedValue = null
       // Whatever the user typed while the submit was in flight is now the draft.
       this.writeDraft()
+      this.settlePendingBubble()
     } else {
+      this.dropPendingBubble()
       // On error, re-enable the buttons and reset text
       if (this.hasSubmitButtonTarget) {
         this.submitButtonTarget.disabled = false
@@ -623,6 +626,12 @@ export default class extends Controller {
     // before the async network request begins
     this.formTarget.requestSubmit()
 
+    // The message under the conversation at once, as a bubble of yours marked
+    // "Sending…". The server pushes its own copy over the cable before it answers
+    // (BroadcastService#optimistic_user_message) and the transcript's real entry
+    // follows; either one arriving takes this one down.
+    this.showPendingBubble(this.submittedValue)
+
     // Clear all textareas IMMEDIATELY after requestSubmit()
     // This is safe because requestSubmit() has already captured the form data.
     // We clear it here rather than waiting for turbo:submit-end because:
@@ -635,6 +644,96 @@ export default class extends Controller {
     // use Ctrl+Z/Cmd+Z to restore their message from the undo buffer.
     this.clearSubmittedTextareas()
     this.updateDraftIndicator()
+  }
+
+  // --- the pending bubble ---
+
+  // A bubble of yours under the conversation, drawn as the timeline draws a user
+  // message, from the moment the message is sent. `#session_<id>_timeline` is the
+  // server's own append target, so the bubble sits exactly where the server's copy
+  // will land.
+  showPendingBubble(text) {
+    const timeline = document.getElementById(`session_${this.sessionIdValue}_timeline`)
+    if (!timeline || !text) return
+    this.dropPendingBubble()
+    document.getElementById("empty-timeline-message")?.remove()
+
+    const bubble = document.createElement("div")
+    bubble.id = `pending_user_message_${Date.now()}`
+    bubble.dataset.pendingUserMessage = text
+    bubble.dataset.timelineItem = ""
+    bubble.dataset.filterCategory = "message"
+    bubble.className = "px-6 py-4"
+    bubble.innerHTML = `
+      <div class="flex items-start space-x-3">
+        <div class="flex-shrink-0">
+          <div class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center">
+            <svg class="h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
+            </svg>
+          </div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between">
+            <p class="text-sm font-medium text-gray-900">You</p>
+            <p class="text-xs text-gray-400" data-pending-state>Sending…</p>
+          </div>
+          <div class="mt-1 text-sm text-gray-700 whitespace-pre-wrap break-words" data-pending-text></div>
+        </div>
+      </div>`
+    bubble.querySelector("[data-pending-text]").textContent = text
+    timeline.appendChild(bubble)
+    this.pendingBubble = bubble
+    bubble.scrollIntoView({ block: "end" })
+
+    // The server's copy of this message, or the transcript's real entry, takes
+    // the bubble down when it lands in the timeline.
+    this.watchForServerCopy(timeline, text)
+  }
+
+  // The server's copy is a message row (`data-filter-category="message"`) with the
+  // same words in its body; a tool or assistant row that happens to quote a short
+  // follow-up is not it.
+  watchForServerCopy(timeline, text) {
+    this.stopWatchingForServerCopy()
+    const words = text.trim()
+    this.serverCopyObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof HTMLElement) || node === this.pendingBubble) continue
+          if (node.dataset.pendingUserMessage !== undefined) continue
+          if (node.dataset.filterCategory !== "message") continue
+          if (!node.textContent.includes("User")) continue
+          if (node.textContent.includes(words)) {
+            this.dropPendingBubble()
+            return
+          }
+        }
+      }
+    })
+    this.serverCopyObserver.observe(timeline, { childList: true })
+  }
+
+  stopWatchingForServerCopy() {
+    this.serverCopyObserver?.disconnect()
+    this.serverCopyObserver = null
+  }
+
+  // The server took the message: the bubble reads "Sent" until the server's copy
+  // replaces it, and in any case stands down after a while — the transcript is
+  // the record, and a dead cable must not leave a stray bubble for good.
+  settlePendingBubble() {
+    const bubble = this.pendingBubble
+    if (!bubble) return
+    const state = bubble.querySelector("[data-pending-state]")
+    if (state) state.textContent = "Sent"
+    setTimeout(() => { if (this.pendingBubble === bubble) this.dropPendingBubble() }, 120_000)
+  }
+
+  dropPendingBubble() {
+    this.stopWatchingForServerCopy()
+    this.pendingBubble?.remove()
+    this.pendingBubble = null
   }
 
   // Empty the composer after a submit, but only where it still holds the text

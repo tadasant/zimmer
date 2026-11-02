@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfToken } from "lib/csrf"
+import { showAlert } from "lib/toast"
 
 /**
  * EnqueuedMessageEditController - Handles inline editing and copying of enqueued messages
@@ -136,15 +137,22 @@ export default class extends Controller {
         const html = await response.text()
         Turbo.renderStreamMessage(html)
       } else {
-        console.error("Failed to save:", response.statusText)
-        // Re-enable save button on error
+        // A refusal the server wrote as a stream (the form's errors) renders; a
+        // bare status is said as a toast. Either way the editor stays open with
+        // the words, which is the one thing a failed save must not lose.
+        const text = await response.text().catch(() => "")
+        if ((response.headers.get("content-type") || "").includes("turbo-stream")) {
+          Turbo.renderStreamMessage(text)
+        } else {
+          showAlert(`The queued message could not be saved. The server answered ${response.status}.`)
+        }
         if (this.hasSaveButtonTarget) {
           this.saveButtonTarget.disabled = false
           this.saveButtonTarget.textContent = "Save"
         }
       }
     } catch (error) {
-      console.error("Error saving:", error)
+      showAlert("The queued message could not be saved: the server could not be reached.")
       if (this.hasSaveButtonTarget) {
         this.saveButtonTarget.disabled = false
         this.saveButtonTarget.textContent = "Save"

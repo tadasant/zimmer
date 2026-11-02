@@ -1,6 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfToken } from "lib/csrf"
 import { partitionMedia } from "lib/media_kinds"
+import { startSession } from "lib/session_starts"
 
 // Floating chat bubble that appears on every page.
 //
@@ -450,7 +451,7 @@ export default class extends Controller {
       for (const f of this.attachedImages) body.append("images[]", f, f.name)
       for (const f of this.attachedFiles) body.append("files[]", f, f.name)
 
-      const response = await fetch(this.submitUrlValue, {
+      const request = () => fetch(this.submitUrlValue, {
         method: "POST",
         headers: {
           // Do NOT set Content-Type — the browser will set it (with boundary) for FormData.
@@ -459,6 +460,21 @@ export default class extends Controller {
         },
         body: body
       })
+
+      // Submit & Open does not wait: the bubble closes and the session's page opens
+      // at the click, on the starting page, which fills in when the id comes and
+      // keeps the words on a refusal (lib/session_starts.js).
+      if (openSession) {
+        this.textareaTarget.value = ""
+        this.attachedImages = []
+        this.attachedFiles = []
+        this._renderPreview()
+        this.close()
+        startSession({ prompt, title: "Quick Router", request })
+        return
+      }
+
+      const response = await request()
 
       const data = await response.json()
 
@@ -474,12 +490,8 @@ export default class extends Controller {
       this._renderPreview()
       this.close()
 
-      if (openSession && data.session_url) {
-        window.location.href = data.session_url
-      } else {
-        // Flash a brief success indicator on the bubble
-        this._showSuccessBadge()
-      }
+      // Flash a brief success indicator on the bubble
+      this._showSuccessBadge()
     } catch (error) {
       console.error("Chat bubble submission failed:", error)
       this._showError("Something went wrong. Please try again.")

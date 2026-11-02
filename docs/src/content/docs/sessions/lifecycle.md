@@ -2753,10 +2753,12 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   trash." toast carrying the **Undo** button. It sends *two* removals — the card
   (`#session_<id>`) and the [User view](/sessions/user-view/) row (`#user_view_row_<id>`) — because
   the reply goes to whichever page made the request and the server does not know which of the two it
-  is looking at; a `remove` for an id that is not in the DOM is a silent no-op. That it is
-  server-driven rather than optimistic is the point: the first click over a session with queued
-  messages does **not** archive, it offers an "Archive anyway" speed bump, and a row the browser had
-  already taken away would have claimed otherwise.
+  is looking at; a `remove` for an id that is not in the DOM is a silent no-op. The page does not
+  wait for them: `app/javascript/lib/optimistic_actions.js` takes the card, the row and the ranked
+  row away at the click, and the streams land on a page that already looks right. The first click
+  over a session with queued messages does **not** archive — it answers with the "Archive anyway"
+  speed bump as a **422**, and the page reads any non-2xx answer as "put it back", so the card
+  returns with the refusal over it and nobody is left believing a session was trashed that was not.
 - **Undo** puts it back, on both surfaces for the same reason: it prepends the card into
   `#sessions_grid` and a row into `#user_view_list`. Its own restore broadcast is a `replace`, and
   there is nothing left in the DOM to replace. The restored row lands at the top of the list and the
@@ -2785,12 +2787,52 @@ offset the drawer was opened over.
 Every one of these actions keeps its `format.html` branch, which still redirects with a real
 flash. That is what a non-Turbo client — and most of the controller test suite — gets.
 
+### What shows at the click
+
+The dashboard and the session page show a mutation's outcome the moment it is clicked, and ask
+the server after; the server's own answer replaces the guess, and a refusal puts the guess back
+with the refusal as a toast in `#flash` (`app/javascript/lib/toast.js` draws the same card
+`shared/_flash` does). `app/javascript/lib/optimistic_actions.js` does this for every Turbo
+submission it recognises by path: a Trash takes the session's card, User-view row and ranked row
+away; a queued message's Delete and Send Now take its frame out of the queue; a notification's
+Dismiss takes its row, and Mark read dims it; Pause and Restart say *Pausing…* / *Restarting…*; a
+trigger's switch says *Turning on…* / *Turning off…*. The server's refusal, when it streams one
+(`respond_with_flash` with a non-2xx `status`), is the alert the page shows; a server that could
+not be reached gets a client-side one. A row taken away at the click is remembered as pending
+(`isPendingRemoval`), and the ranked view's live inserts and the reopen backfill refuse to put it
+back from a broadcast or a server copy queued before the archive committed.
+
+The controllers with their own requests do the same in their own files: `visibility_controller`
+takes a card off the board at the click and puts it back on a refusal (a change that keeps the
+card refreshes the page through Turbo rather than reloading it); `elicitation_form_controller`
+takes the banner away and brings it back on a refusal; `editable_title_controller` and
+`heartbeat_controller` show the new value and revert it; `ranked_queue_controller` moves a
+promoted or demoted row before the PATCH; `follow_up_prompt_controller` puts a *Sending…* bubble
+of yours under the conversation the moment a follow-up is sent, which the server's own copy
+(`BroadcastService#optimistic_user_message`) or the transcript's entry takes down. A restart or a
+pause the server refuses says so: the stream branches carry the refusal in `#flash` with a 422,
+rather than redrawing the card and header and saying nothing.
+
+The Quick Router does not wait either. `quick_prompt_controller` posts the form's fields and files
+as a JSON request (`#quick_prompt` answers `{ session_id, url }`, or `{ error }` with a 422) and
+visits `/sessions/starting` at once — a page that shows the words on their way and, when the id
+comes, visits the session, replacing itself in history so Back is the board. A refused start says
+why there, with *Try again* and *Edit*, which puts the words back in the board's prompt box
+(`app/javascript/lib/session_starts.js`). The chat bubble's *Submit & Open* goes the same way.
+Reloading the starting page loses the module's state, and the page then says so and points at
+the board. The forms stay native `data-turbo="false"` forms, so a browser without the script
+posts and follows the redirect as before.
+
 ### Trash on a session's own page navigates home
 
 The full detail page is the one exception to all of the above: its Trash answers with a redirect
 rather than a stream. A session you have just trashed is in the bin, so its page is a dead end —
 it shows you something you can no longer act on. That one click lands you back on the dashboard
-instead.
+instead — and `archive_countdown_controller` does not wait for it: it visits the board at the
+click and posts the archive in the background with an `X-Zimmer-Optimistic` header, which tells
+`#archive` to answer with its streams rather than the redirect, so the Undo toast (or the
+"Archive anyway" refusal) renders into the board when the answer comes. The redirect below is what
+a browser without the script gets.
 
 Nothing in the markup can tell the page and the drawer apart. `_session_header_actions` is the
 same partial in both, and `Session#broadcast_status_change` re-renders it from a background job

@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
+import { showAlert } from "lib/toast"
 
 // Connects to data-controller="editable-title"
 export default class extends Controller {
@@ -54,34 +55,38 @@ export default class extends Controller {
       return
     }
 
-    // Make PATCH request to update title
+    // The new title shows at once, here and wherever the page repeats it; the
+    // server is asked after, and a refusal puts the old one back with a toast.
+    const previous = this.titleValue
+    const show = (title) => {
+      this.displayTarget.textContent = title
+      const syncSelector = this.displayTarget.dataset.syncsWith
+      if (syncSelector) {
+        document.querySelectorAll(syncSelector).forEach(el => {
+          el.textContent = title
+        })
+      }
+    }
+    this.titleValue = newTitle
+    show(newTitle)
+    this.finishEditing()
+
     fetch(`/sessions/${this.sessionIdValue}/update_title`, {
       method: "PATCH",
       headers: csrfHeaders(),
       body: JSON.stringify({ title: newTitle })
     })
-    .then(response => {
+    .then(async response => {
       if (!response.ok) {
-        throw new Error("Failed to update title")
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || `The server answered ${response.status}.`)
       }
-      return response.json()
-    })
-    .then(data => {
-      this.titleValue = newTitle
-      this.displayTarget.textContent = newTitle
-      // Sync title to any linked elements (e.g. group row summary title)
-      const syncSelector = this.displayTarget.dataset.syncsWith
-      if (syncSelector) {
-        document.querySelectorAll(syncSelector).forEach(el => {
-          el.textContent = newTitle
-        })
-      }
-      this.finishEditing()
     })
     .catch(error => {
-      console.error("Error updating title:", error)
-      alert("Failed to update title. Please try again.")
-      this.finishEditing()
+      this.titleValue = previous
+      show(previous)
+      const reason = error instanceof TypeError ? "The server could not be reached." : error.message
+      showAlert(`The title could not be changed. ${reason} Nothing changed.`)
     })
   }
 

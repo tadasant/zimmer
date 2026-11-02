@@ -1,5 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
+import { Turbo } from "@hotwired/turbo-rails"
 import { csrfHeaders } from "lib/csrf"
+import { showAlert } from "lib/toast"
 
 // Connects to data-controller="visibility"
 //
@@ -75,7 +77,7 @@ export default class extends Controller {
   hide(event) {
     event.preventDefault()
     event.stopPropagation()
-    this._post({ visibility: "hidden" }, "Hidden from the board.", "Hiding…")
+    this._post({ visibility: "hidden" }, "Hidden from the board.")
   }
 
   // Put a hidden or snoozed session back. Only rendered while the session is
@@ -83,7 +85,7 @@ export default class extends Controller {
   restore(event) {
     event.preventDefault()
     event.stopPropagation()
-    this._post({ visibility: "visible" }, "Back on the board.", "Restoring…")
+    this._post({ visibility: "visible" }, "Back on the board.")
   }
 
   // --- posting ---
@@ -91,13 +93,22 @@ export default class extends Controller {
   _snooze(snoozedUntil) {
     return this._post(
       { visibility: "snoozed", snoozed_until: snoozedUntil, timezone: this._timezone() },
-      `Snoozed until ${this._humanize(snoozedUntil)}.`,
-      "Snoozing…"
+      `Snoozed until ${this._humanize(snoozedUntil)}.`
     )
   }
 
-  async _post(body, confirmation, pending) {
-    this._setStatus(pending)
+  // The change shows at the click and the server is asked after. A card going
+  // off the board leaves the DOM at once — that responsiveness is the whole point
+  // of the feature — and a refusal puts it back, with the refusal as a toast.
+  // Anything else (a card put back, a change on the detail page, a board that is
+  // revealing tucked-away sessions) shows its confirmation at once and, once the
+  // server agrees, refreshes the page through Turbo so the server-rendered badge
+  // and counts catch up through Turbo rather than a full reload.
+  async _post(body, confirmation) {
+    this._setStatus(confirmation)
+    this._close()
+    const leaving = body.visibility !== "visible"
+    const removed = leaving ? this._takeOffBoard() : null
 
     let data
     try {
@@ -106,43 +117,44 @@ export default class extends Controller {
         headers: csrfHeaders({ "Accept": "application/json" }),
         body: JSON.stringify(body)
       })
-      data = await response.json()
+      data = await response.json().catch(() => ({}))
       if (!response.ok) {
-        this._setStatus(data.error || "Could not change visibility.", true)
+        this._putBack(removed, data.error || "Could not change visibility.")
         return
       }
     } catch (error) {
-      this._setStatus("Network error — visibility unchanged.", true)
+      this._putBack(removed, "Network error — visibility unchanged.")
       return
     }
 
-    this._setStatus(confirmation)
     this.dispatch("changed", { detail: data, prefix: "visibility" })
-    setTimeout(() => this._settle(data), 500)
+    if (removed) return
+    // The row stayed: the badge and the counts are the server's to redraw.
+    Turbo.visit(window.location.href, { action: "replace" })
   }
 
-  // What the page does with the answer.
-  //
-  // A session that has just left the board leaves the DOM too, so the board the
-  // operator was tidying is tidy immediately rather than after a reload — that
-  // responsiveness is the whole point of the feature. Everything else (putting a
-  // card back, or any change made while the board is revealing tucked-away
-  // sessions) re-renders the page, because the badge and the counts are
-  // server-rendered and would otherwise disagree with the row.
-  _settle(data) {
-    this._close()
-
+  // The card or row this control sits in, off the board — unless the board is
+  // revealing tucked-away sessions, the one case it still belongs there. Returns
+  // what left and where it was, for `_putBack`; null when nothing left.
+  _takeOffBoard() {
     const unit = this.element.closest("[data-visibility-unit]")
-    if (unit && data.board_visible === false && !this._boardReveals()) {
-      // A card sits inside its own <turbo-frame>; taking the frame with it stops
-      // an empty frame being left behind for a live status broadcast to fill.
-      const parent = unit.parentElement
-      const removable = parent && parent.tagName === "TURBO-FRAME" ? parent : unit
-      removable.remove()
-      return
-    }
+    if (!unit || this._boardReveals()) return null
+    // A card sits inside its own <turbo-frame>; taking the frame with it stops
+    // an empty frame being left behind for a live status broadcast to fill.
+    const parent = unit.parentElement
+    const removable = parent && parent.tagName === "TURBO-FRAME" ? parent : unit
+    const place = { element: removable, parent: removable.parentNode, next: removable.nextSibling }
+    removable.remove()
+    return place
+  }
 
-    window.location.reload()
+  _putBack(removed, message) {
+    if (removed && removed.parent && removed.parent.isConnected) {
+      const next = removed.next && removed.next.parentNode === removed.parent ? removed.next : null
+      removed.parent.insertBefore(removed.element, next)
+    }
+    this._setStatus(message, true)
+    showAlert(`${message} Nothing changed.`)
   }
 
   // Whether the page currently on screen is showing tucked-away sessions. The

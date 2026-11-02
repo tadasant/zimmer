@@ -138,9 +138,10 @@
             class: "block w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50" %>
       <%# Trash posts to the same #archive action every other Trash affordance in
           the app posts to, so the queued-message speed bump and the Undo toast
-          come along with it. The row itself leaves over the ranked stream — as a
-          membership delivery the page judges, so it leaves a queue of live work
-          and stays, reading "Trashed", on one filtered to show the trash. %>
+          come along with it. On a queue of live work the row leaves at the click
+          (app/javascript/lib/optimistic_actions.js); on one filtered to show the
+          trash it stays, reading "Trashed", as the ranked stream's membership
+          delivery judges. %>
       <%= link_to "Trash", archive_session_path(agent_session),
             role: "menuitem",
             data: { turbo_method: :post, action: "overflow-menu#close" },

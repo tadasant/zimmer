@@ -95,8 +95,11 @@ def build_selenium_options
     options.add_argument("--disable-gpu")
   end
 
-  # CI-specific configuration
+  # CI-specific configuration. Outside CI, CHROME_BIN points at a browser that is not
+  # on PATH — an agent session's worker has no Chrome of its own, but Playwright's
+  # Chromium is in its cache.
   options.binary = "/usr/bin/chromium-browser" if ENV["CI"]
+  options.binary = ENV["CHROME_BIN"] if ENV["CHROME_BIN"].present? && !ENV["CI"]
 
   # Chrome's setuid sandbox cannot start in a container that does not grant it
   # the namespaces it wants; Chrome aborts on launch and Selenium reports only
