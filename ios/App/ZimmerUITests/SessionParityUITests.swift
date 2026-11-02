@@ -218,9 +218,16 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
 
-        XCTAssertTrue(app.descendants(matching: .any)["error.banner"].waitForExistence(timeout: timeout), "the refusal is shown")
+        let banner = app.descendants(matching: .any)["error.banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: timeout), "the refusal is shown")
         XCTAssertTrue(waitForDisappearance(failed))
         XCTAssertTrue(running.exists, "the refused session stays")
+
+        // The board reads itself every 15 seconds once the selection is put down, and that
+        // read must not take the server's reason away: past one whole interval, so a poll
+        // has certainly landed, the refusal is still up.
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "a poll of the board")], timeout: 17)
+        XCTAssertTrue(banner.exists, "the board's own read leaves the refusal up")
     }
 
     /// Your board's rows carry "where things stand" and how current it is, as the web UI's do.
