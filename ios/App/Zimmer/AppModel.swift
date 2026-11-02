@@ -71,7 +71,13 @@ final class AppModel: ObservableObject {
     private(set) var startedSessions: [Int: Int] = [:]
     private var nextPlaceholder = 0
     @Published private(set) var isLoading = false
-    @Published var error: ZimmerError?
+    /// The banner over the list: why a read failed, or why the server refused an action.
+    @Published var error: ZimmerError? { didSet { errorIsReadFailure = false } }
+    /// Whether `error` is a read's failure, which the next read that lands answers. Any other
+    /// is the server's refusal of something done here, which the board's background reads
+    /// (`pollBoard`, a start finishing in the background) leave up: a poll can land a moment
+    /// after the refusal, and would take the reason away before it could be read.
+    private var errorIsReadFailure = false
     @Published private(set) var signedInOrigins: ServerOrigins?
     /// When the edge's credential expires, on a deployment that has one.
     @Published private(set) var edgeExpiry: Date?
@@ -413,7 +419,7 @@ final class AppModel: ObservableObject {
                 notice = "Started session #\(id)"
                 forgetStart(placeholder)
             }
-            await refresh(silently: true)
+            await refresh(silently: true, onItsOwn: true)
         } catch {
             let zimmerError = error as? ZimmerError ?? .transport(error)
             log.error("start failed: \(String(describing: zimmerError), privacy: .public)")
@@ -464,9 +470,11 @@ final class AppModel: ObservableObject {
         startSession(prompt: request.prompt, title: "Quick Router", open: open, editable: true) { try await $0.startQuickRouter(request) }
     }
 
-    /// `silently`: a read the board makes on its own — no loading state, and a failure other
-    /// than a sign-in that ended is not shown; the next read tries again.
-    func refresh(silently: Bool = false) async {
+    /// `silently`: no loading state, and a failure other than a sign-in that ended is not
+    /// shown; the next read tries again. `onItsOwn`: the poller's read, or the one after a
+    /// start finished in the background — it clears a read's failure from the banner but not
+    /// an action's refusal. Every other read clears both.
+    func refresh(silently: Bool = false, onItsOwn: Bool = false) async {
         if !silently { isLoading = true }
         defer { if !silently { isLoading = false } }
         let ticket = freshness.begin()
@@ -491,14 +499,14 @@ final class AppModel: ObservableObject {
             sessions = pending.overlay(result.sessions, admits: belongsOnList)
             if reordersInFlight == 0 { localOrder = nil }
             listIncomplete = !result.complete
-            error = nil
+            if !onItsOwn || errorIsReadFailure { error = nil }
         } catch {
             // A read cancelled with the screen that asked (the board pushed under a session,
             // another tab chosen) did not fail, and an older read's failure is not worth a
             // banner over what a newer one brings.
             if !Task.isCancelled {
                 freshness.fail(ticket)
-                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handle(error) }
+                if freshness.isNewest(ticket), !silently || (error as? ZimmerError) == .unauthorized { handleReadFailure(error) }
             }
         }
         await refreshEdgeExpiry()
@@ -538,7 +546,7 @@ final class AppModel: ObservableObject {
     func pollBoard(ifStale: Bool = false) async {
         guard boardIsInFront, !ifStale || freshness.isStale(), polling.beginPoll() else { return }
         defer { polling.endPoll() }
-        await refresh(silently: true)
+        await refresh(silently: true, onItsOwn: true)
     }
 
     /// The scene's phase changed (`RootView`, the scene's root, so it is heard whatever screen
@@ -645,7 +653,7 @@ final class AppModel: ObservableObject {
         do {
             filterOptions = try await connection.api.configs()
         } catch {
-            handle(error)
+            handleReadFailure(error)
         }
     }
 
@@ -965,9 +973,10 @@ final class AppModel: ObservableObject {
             reordersInFlight -= 1
             if reordersInFlight == 0 { localOrder = nil }
             notice = nil
+            await refresh(silently: true)
+            // After the read, which clears the banner: the refusal is what it is for.
             handle(error)
             Haptics.failure()
-            await refresh(silently: true)
         }
     }
 
@@ -1161,6 +1170,12 @@ final class AppModel: ObservableObject {
             sessions = []
         }
         self.error = zimmerError
+    }
+
+    /// A read that failed: shown as `handle` shows it, and answered by the next read that lands.
+    private func handleReadFailure(_ error: Error) {
+        handle(error)
+        errorIsReadFailure = true
     }
 }
 
