@@ -2003,76 +2003,17 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     # rendered — it is built from the same partial, but it is inserted by
     # JavaScript into a list the server never sized for it, and the operator
     # reading this screen on a phone is the person who would find out otherwise.
-    # TEMPORARY DIAGNOSTICS (session 26556): every stream message as it arrives at
-    # the socket, the page's own events, and what the server broadcast after the click.
-    page.execute_script(<<~JS)
-      window.__events = []
-      window.__pings = 0
-      const t0 = Date.now()
-      const stamp = (what) => window.__events.push(((Date.now() - t0) / 1000).toFixed(2) + " " + what)
-      window.__stamp = stamp
-      document.querySelectorAll("turbo-cable-stream-source").forEach((src, i) => {
-        src.addEventListener("message", (e) => stamp("msg" + i + " " + String(e.data).replace(/\s+/g, " ").slice(0, 100)))
-        new MutationObserver(() => stamp("source" + i + " connected=" + src.hasAttribute("connected"))).observe(src, { attributes: true, attributeFilter: ["connected"] })
-        const ws = src.subscription && src.subscription.consumer && src.subscription.consumer.connection && src.subscription.consumer.connection.webSocket
-        if (ws && !ws.__tapped) {
-          ws.__tapped = true
-          stamp("ws tapped readyState=" + ws.readyState)
-          ws.addEventListener("message", (e) => { if (String(e.data).includes('"ping"')) { window.__pings++ } else { stamp("ws " + String(e.data).replace(/\s+/g, " ").slice(0, 140)) } })
-          ws.addEventListener("close", (e) => stamp("ws close " + e.code))
-          ws.addEventListener("error", () => stamp("ws error"))
-        } else if (!ws) {
-          stamp("source" + i + " has no websocket handle")
-        }
-      })
-      ;["turbo:before-stream-render", "turbo:submit-start", "turbo:submit-end", "turbo:before-visit", "turbo:load", "turbo:before-fetch-response", "turbo:fetch-request-error"].forEach((name) => {
-        document.addEventListener(name, (e) => {
-          const el = e.target
-          const extra = name === "turbo:before-stream-render" ? (el.getAttribute("action") + " -> " + el.getAttribute("target")) : (el && el.id ? "#" + el.id : (el && el.nodeName) || "")
-          stamp(name + " " + extra)
-        })
-      })
-      window.addEventListener("error", (e) => stamp("js error " + e.message))
-      window.addEventListener("unhandledrejection", (e) => stamp("js rejection " + (e.reason && e.reason.message)))
-    JS
-    ActionCable.server.pubsub.clear if ActionCable.server.pubsub.respond_to?(:clear)
-    click_on "Trash" # TEMPORARY (session 26556): what the body click lands on in CI
-    page.execute_script("window.__stamp('ruby: trash clicked')")
+    # Escape closes the menu through its own keydown handler. A click on the body
+    # lands at the viewport's centre, which on a phone is inside the open menu —
+    # on its Trash, in CI — and a trashed row is not the page this is measuring.
+    find("body").send_keys(:escape)
+    assert_no_button "Demote to spot"
     arrival = Session.create!(
       title: LONG_TOKEN_TITLE, prompt: "x", status: :running,
       git_root: "https://github.com/test/repo.git",
       scheduling_class: SessionGenesis::SPOT, precedence: 654_321
     )
-    page.execute_script("window.__stamp('ruby: arrival created')")
-    unless page.has_selector?("#ranked_row_#{arrival.id}", wait: 5)
-      # TEMPORARY DIAGNOSTICS (session 26556): where the arrival's message stopped.
-      pubsub = ActionCable.server.pubsub
-      subscribers = pubsub.instance_variable_get(:@subscriber_map)&.instance_variable_get(:@subscribers)
-      worker = ActionCable.server.worker_pool.executor
-      streamer = ActionCable.server.event_loop.instance_variable_get(:@executor)
-      stats = ->(ex) { ex ? { queue: ex.queue_length, threads: ex.length, scheduled: ex.scheduled_task_count, completed: ex.completed_task_count, running: ex.running? } : nil }
-      log_tail = begin
-        File.read(Rails.root.join("log", "test.log")).last(400_000).lines.grep(/#{arrival.id}|Broadcast|broadcast|Error|error|Exception/).last(40).map { |l| l.strip[0, 220] }
-      rescue => e
-        [ "log unavailable: #{e.message}" ]
-      end
-      server = {
-        top_status: Session.find_by(id: arrival.id - 1)&.status,
-        ranked_broadcasts: (pubsub.respond_to?(:broadcasts) ? pubsub.broadcasts(Session::RANKED_STREAM).map { |b| b.to_s.scan(/\d{6,}/).uniq.first(2) } : "n/a"),
-        index_broadcasts: (pubsub.respond_to?(:broadcasts) ? pubsub.broadcasts("sessions_index").map { |b| b.to_s.scan(/\d{6,}/).uniq.first(2) } : "n/a"),
-        subscribers: subscribers&.transform_values(&:size),
-        connections: (ActionCable.server.connections.map { |c| c.subscriptions.identifiers.size rescue "?" }),
-        worker: stats.call(worker),
-        streamer: stats.call(streamer),
-        breaker: [ BroadcastService.circuit_breaker_failures, BroadcastService.circuit_breaker_opened_at ],
-        open_transactions: ActiveRecord::Base.connection.open_transactions,
-        pings: page.evaluate_script("window.__pings"),
-        events: page.evaluate_script("JSON.stringify(window.__events)"),
-        spot: page.evaluate_script("Array.from(document.querySelectorAll('#ranked_spot_list > *')).map(e => e.id)"),
-        path: page.evaluate_script("location.pathname")
-      }
-      flunk "arrival #{arrival.id} (#{arrival.reload.status}/#{arrival.scheduling_class}) never landed.\nSERVER: #{server}\nLOG:\n#{log_tail.join("\n")}"
-    end
+    assert_selector "#ranked_row_#{arrival.id}", wait: 5
     page.save_screenshot("tmp/screenshots/proof-ranked-live-insert-375.png")
 
     assert_no_horizontal_overflow("ranked queue after a row arrived over the stream")
