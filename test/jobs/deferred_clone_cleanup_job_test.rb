@@ -372,6 +372,144 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     assert_nil @session.reload.logs.find_by("content LIKE ?", "%Clone deleted%")
   end
 
+  # zimmer#1441. A router unarchives an archived session to deliver a follow-up
+  # while its deferred cleanup is still pending. UnarchiveSessionService keeps the
+  # row `archived` for the whole unarchive, so the status and `archived_at` checks
+  # both pass; only the in-flight stamp says the clone is spoken for. Skipping
+  # here is routine and must not reach CloneReaper, whose refusal logs at ERROR
+  # and pages.
+  test "skips cleanup while the session is being unarchived, and logs nothing at ERROR" do
+    stamp_unarchive_in_flight(at: Time.current)
+
+    GitCloneService.expects(:cleanup_clone).never
+    DockerComposeCleanupService.expects(:cleanup).never
+    Rails.logger.expects(:error).never
+    ActiveJob::Base.logger.expects(:error).never unless ActiveJob::Base.logger.equal?(Rails.logger)
+    info = []
+    Rails.logger.stubs(:info).with { |*args| info << args.join(" "); true }
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert info.any? { |line| line.include?("is being unarchived right now, skipping cleanup") },
+      "the skip is logged at INFO, like the no-longer-archived branch"
+    @session.reload
+    assert_in_delta 4.days.from_now, @session.trash_after, 5,
+      "the trash deadline archive set is left alone, so a failed unarchive is still EmptyTrashJob's to reap"
+    assert_nil @session.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
+  # The same race, landing after the top-of-job check: preserving artifacts can
+  # take minutes on a large clone, and an unarchive started inside that window
+  # leaves the row `archived`, so the `archived?` re-read alone passes.
+  test "leaves the clone alone when an unarchive starts while artifacts are being preserved" do
+    test_case = self
+    artifact_service = CloneArtifactService.new
+    artifact_service.define_singleton_method(:create_artifacts) do |session_id:, clone_path:|
+      test_case.send(:stamp_unarchive_in_flight, at: Time.current)
+      CloneArtifactService::CreateResult.new(success?: true, artifacts_path: "/tmp/artifacts-#{session_id}")
+    end
+    artifact_service.define_singleton_method(:check_dirty_state) do |_path|
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: true, has_uncommitted?: true, has_unpushed_commits?: false, details: "uncommitted changes"
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+    GitCloneService.expects(:cleanup_clone).never
+    Rails.logger.expects(:error).never
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert @session.reload.archived?, "the row is still archived — only the stamp protects the clone"
+    assert_nil @session.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
+  # A clean clone takes its trash decision before the late check, so a skip there
+  # can leave the session with no deadline. That hands a failed unarchive's clone
+  # to StaleCloneCleanupJob rather than EmptyTrashJob, which is safe for a clone
+  # with nothing unpushed on it.
+  test "an unarchive that starts after a clean dirty check still keeps the clone, with no ERROR" do
+    test_case = self
+    artifact_service = CloneArtifactService.new
+    artifact_service.define_singleton_method(:check_dirty_state) do |_path|
+      test_case.send(:stamp_unarchive_in_flight, at: Time.current)
+      CloneArtifactService::DirtyCheckResult.new(
+        dirty?: false, has_uncommitted?: false, has_unpushed_commits?: false, details: nil
+      )
+    end
+    CloneArtifactService.expects(:new).returns(artifact_service)
+    GitCloneService.expects(:cleanup_clone).never
+    Rails.logger.expects(:error).never
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert_nil @session.reload.trash_after, "the clean branch had already cleared the deadline"
+  end
+
+  # Docker teardown is bounded at two minutes per directory, so an unarchive can
+  # start after the archived? re-check and before the delete.
+  test "an unarchive that starts during the Docker teardown keeps the clone, with no ERROR" do
+    test_case = self
+    DockerComposeCleanupService.stubs(:cleanup).with do |_path|
+      test_case.send(:stamp_unarchive_in_flight, at: Time.current)
+      true
+    end.returns(false)
+    GitCloneService.expects(:cleanup_clone).never
+    Rails.logger.expects(:error).never
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert File.directory?(@clone_path), "the unarchive owns this clone"
+    assert_nil @session.reload.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
+  # The stamp is bounded by Session::UNARCHIVE_GRACE_PERIOD so an unarchive that
+  # crashed between the stamp and its clear cannot pin a clone forever.
+  test "a stamp older than the unarchive grace period does not block cleanup" do
+    stamp_unarchive_in_flight(at: Session::UNARCHIVE_GRACE_PERIOD.ago - 1.minute)
+
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+
+    assert_not File.directory?(@clone_path), "a stale stamp is not an unarchive in flight"
+    assert_not_nil @session.reload.logs.find_by("content LIKE ?", "%Clone deleted%")
+  end
+
+  # The skip must not leak the clone. When the unarchive fails, the service's
+  # `ensure` clears the stamp and the session stays archived with the trash
+  # deadline `archive` gave it — and EmptyTrashJob reaps the clone at that
+  # deadline.
+  test "a clone skipped for an unarchive that then fails is still reaped at its trash deadline" do
+    stamp_unarchive_in_flight(at: Time.current)
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    assert File.directory?(@clone_path)
+
+    # What UnarchiveSessionService's `ensure` runs when the unarchive fails.
+    UnarchiveSessionService.new(session: @session.reload).send(:clear_unarchive_in_flight!)
+    @session.reload
+    assert @session.archived?
+    assert_nil @session.metadata[Session::UNARCHIVE_IN_FLIGHT_KEY]
+    assert_not_nil @session.trash_after
+
+    travel_to(@session.trash_after + 1.minute) { EmptyTrashJob.perform_now }
+
+    assert_not File.directory?(@clone_path), "the clone is reaped at its deadline, not leaked"
+  end
+
+  # Same, for the crash shape: the unarchive dies without clearing its stamp.
+  # The grace period expires long before the trash deadline, so EmptyTrashJob
+  # still reaps it.
+  test "a clone skipped for an unarchive that crashed with its stamp set is still reaped at its trash deadline" do
+    stamp_unarchive_in_flight(at: Time.current)
+    DeferredCloneCleanupJob.perform_now(@session.id, @archived_at.iso8601)
+    assert File.directory?(@clone_path)
+
+    travel_to(@session.reload.trash_after + 1.minute) { EmptyTrashJob.perform_now }
+
+    assert_not File.directory?(@clone_path), "a stamp that was never cleared stops protecting the clone"
+  end
+
   # Regression for #425: the failure branch used to just return, leaving
   # trash_after at whatever `archive` had managed to set. `set_trash_expiry` is
   # best-effort (its rescue is log-only), so a session can reach here with it
@@ -631,6 +769,11 @@ class DeferredCloneCleanupJobTest < ActiveJob::TestCase
     artifact_service.expects(:create_artifacts)
       .with(session_id: @session.id, clone_path: @clone_path).returns(create_result)
     CloneArtifactService.expects(:new).returns(artifact_service)
+  end
+
+  # Mark the session as being unarchived, the way UnarchiveSessionService does.
+  def stamp_unarchive_in_flight(at:)
+    Session.find(@session.id).merge_metadata!(Session::UNARCHIVE_IN_FLIGHT_KEY => at.utc.iso8601)
   end
 
   # Drive the job down its "clone is dirty, artifacts preserved" branch with a
