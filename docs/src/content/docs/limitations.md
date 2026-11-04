@@ -226,6 +226,18 @@ error, still fails the test. Only that helper does this. Every other XCUITest ac
 check unprotected, so the same hang anywhere else in the suite still fails its test, and a failure
 reading "Failed to get list of active applications" means a re-run, not a code change.
 
+### Two rows in the iOS UI tests are tapped again if their page does not open
+
+A tap XCUITest reports as delivered can do nothing. On
+[run 41912420047](https://github.com/tadasant/zimmer/actions/runs/41912420047) (operations shard), it
+landed on a hittable point on a trigger's row, the app went idle at once, and 30 seconds later the
+same row was still on the same list. Nothing in the run says where the tap went, so the cause is not
+known, and nothing rules out the app dropping it. `tapToOpen` in
+`ios/App/ZimmerUITests/OperationsUITests.swift` taps again after 5 seconds, three tries at most, for
+the two rows that open a page in that class: a trigger and an inbox notification. Every other tap in
+the suite has one try, so the same loss elsewhere still fails its test, and a page that never
+appeared behind a tap that succeeded means a re-run first.
+
 Blindness is the deliberate half of that trade — the same throttle has already appeared as a 403 on a
 base blob, a 404 on a base manifest, and a 403 on a push HEAD, so matching error strings would miss
 the fourth shape. What it costs is precision: a build broken for an ordinary reason still burns the
