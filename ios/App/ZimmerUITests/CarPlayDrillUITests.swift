@@ -70,7 +70,7 @@ final class CarPlayDrillUITests: XCTestCase {
         record("the gear", clicked ? "a click in the CarPlay window opened the panel" : "no click reached the gear: the fixture pressed it")
         print("carplay drill: the gear was \(clicked ? "pressed by a click in the CarPlay window" : "pressed by the fixture")")
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
-        assertNoCallScreen("under the voice settings: the microphone is closed with it")
+        assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
 
         // What voice left behind, the reply cap first. Under Semantic the threshold would go
@@ -168,7 +168,7 @@ final class CarPlayDrillUITests: XCTestCase {
     private func click(_ element: XCUIElement) {
         guard element.exists, let artifacts = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] else { return }
         let window = car.windows.firstMatch.frame
-        let spot = "\(element.frame.midX / window.width) \(element.frame.midY / window.height)\n"
+        let spot = "\(element.frame.midX) \(element.frame.midY) \(window.width) \(window.height)\n"
         try? spot.write(toFile: artifacts + "/carplay-click", atomically: true, encoding: .utf8)
     }
 
@@ -212,8 +212,11 @@ final class CarPlayDrillUITests: XCTestCase {
     /// screen left up over a car that gave up is the bug this drill first caught (CarPlay hands
     /// back a stand-in for the template it presented, so a dismissal that compared by identity
     /// never happened).
-    private func assertNoCallScreen(_ when: String) {
-        let titles = ["Connecting…", "Listening", "Speaking", "Working on it…", "Muted"]
+    ///
+    /// With the voice settings up, *Listening* is one of their rows, so it says nothing there.
+    private func assertNoCallScreen(_ when: String, panelUp: Bool = false) {
+        var titles = ["Connecting…", "Speaking", "Working on it…", "Muted"]
+        if !panelUp { titles.append("Listening") }
         let title = car.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", titles)).firstMatch
         let gone = NSPredicate(format: "exists == false")
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
