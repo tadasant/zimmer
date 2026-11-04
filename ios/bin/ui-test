@@ -368,6 +368,14 @@ xcodebuild test-without-building \
   -maximum-test-execution-time-allowance 300 \
   "${signing[@]}" || status=$?
 
+# The drill's photographs of the CarPlay window as plain files, beside the result bundle, so
+# they can be read without a Mac.
+if [ -n "$carplay" ]; then
+  xcrun xcresulttool export attachments --path "$artifacts/ZimmerUITests.xcresult" \
+    --output-path "$artifacts/carplay-photos" >/dev/null 2>&1 \
+    || mkdir -p "$artifacts/carplay-photos"
+fi
+
 # A screenshot whatever happened: on a red run it is the first thing worth looking at.
 #
 # Then the key screens, each from a fresh launch of the fixture. XCUITest terminates the app

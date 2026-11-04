@@ -12,7 +12,9 @@ import os
 /// Radically simple: open the app, talk to Zimmer, mute, end. One root screen with one button,
 /// and one call screen that goes up when the call starts and down when it ends. Everything else
 /// — what needs you, what is running, acting on a session — is the Live Mode conversation's,
-/// over the Realtime call, which is the car's only voice.
+/// over the Realtime call, which is the car's only voice. The one exception is the gear on the
+/// call screen: the voice settings, by touch, because a call that has stopped working cannot be
+/// asked to fix itself (`CarPlayVoiceSettings`).
 ///
 /// Silent until asked. The car opens on the button and says nothing; the call starts only when
 /// the driver taps it.
@@ -21,7 +23,7 @@ import os
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
 /// TestFlight build and `ios/bin/ui-test --carplay` signs into the CarPlay drill's simulator
 /// build. See ios/README.md, "CarPlay".
-final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
+final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPInterfaceControllerDelegate {
     private var home: CarPlayHome?
     private var live: CarPlayLive?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
@@ -34,6 +36,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         tearDown()
         log.notice("carplay scene connected")
         LiveTelemetry.shared.track(.carPlay("scene_connected"))
+
+        interfaceController.delegate = self
 
         let home = CarPlayHome()
         home.onTalk = { [weak self] in self?.live?.start() }
@@ -69,6 +73,11 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         LiveTelemetry.shared.track(.carPlay("scene_disconnected"))
         LiveTelemetry.shared.flush()
         tearDown()
+    }
+
+    /// The driver's own Back leaves the panel without telling it, and this is how the car hears.
+    func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
+        live?.settingsMayHaveClosed()
     }
 
     private func tearDown() {

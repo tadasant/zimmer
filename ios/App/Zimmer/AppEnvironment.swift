@@ -55,12 +55,19 @@ final class AppEnvironment {
                 .flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
                 .map { Set($0.split(separator: ",").map(String.init)) } ?? []
             let writeDelay: Duration? = arguments.contains("-ZimmerFixtureSlowWrites") ? .seconds(6) : nil
+            // `-ZimmerFixtureVoiceTurnedUp`: the CarPlay drill's break-glass. The Live settings are
+            // as voice calls left them on the call that broke (a cap of 180, eagerness low, a
+            // threshold Semantic ignores, plus a gated Listening), and the first call holds on
+            // Connecting… so the call screen stays up to be driven.
+            let voiceTurnedUp = arguments.contains("-ZimmerFixtureVoiceTurnedUp")
             // `-ZimmerFixtureRelayOnly`: the sign-in may not act as you, so the Inference
             // page's writes are refused with the server's 403.
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
                                                                                          refuses: refuses, writeDelay: writeDelay,
+                                                                                         liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
+                                                                                         liveSecretHold: voiceTurnedUp ? .seconds(60) : nil,
                                                                                          web: origins.web), edge: nil)
             isFixture = true
             return

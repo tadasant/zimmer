@@ -1,0 +1,86 @@
+import CarPlay
+import Foundation
+import ZimmerKit
+
+/// The voice settings panel: the break-glass for a call that has stopped working, whose driver
+/// therefore cannot ask it to fix that. The rules are `CarVoiceSettings`; this draws them.
+///
+/// One list template, pushed, and that is the only change it ever makes: a row's choices are the
+/// same list with its sections replaced, so going in and out of them is no template change for
+/// CarPlay to refuse, and nothing here is deeper than the one screen. Every row is one word
+/// and a value, a choice is one tap, and the first row is always the way back to the call.
+@MainActor
+final class CarPlayVoiceSettings {
+    let template = CPListTemplate(title: "Voice settings", sections: [])
+    /// Back to the call.
+    var onClose: (() -> Void)?
+    /// A write landed, naming what it changed.
+    var onWritten: ((String) -> Void)? {
+        didSet { model.onWritten = onWritten }
+    }
+
+    private let model: CarVoiceSettingsModel
+
+    init(api: any LiveAPI) {
+        model = CarVoiceSettingsModel(api: api)
+        model.onChange = { [weak self] in self?.draw() }
+        draw()
+    }
+
+    func load() async {
+        await model.load()
+    }
+
+    /// Every write the driver made has been answered.
+    func settled() async {
+        await model.settled()
+    }
+
+    private func draw() {
+        var top: [CPListItem] = []
+        if let problem = model.problem {
+            top.append(item(problem, detail: model.settings == nil ? "Tap to try again" : nil) { [weak self] in
+                guard let self, self.model.settings == nil else { return }
+                Task { await self.model.load() }
+            })
+        }
+        if let row = model.openRow {
+            top.append(item("Back to settings", detail: row.title) { [weak self] in self?.model.back() })
+            let choices = row.choices.map { choice in
+                item(choice.title, detail: choice.isCurrent ? "In use" : choice.note) { [weak self] in self?.model.choose(choice) }
+            }
+            template.updateSections([CPListSection(items: top + choices)])
+            return
+        }
+        top.insert(item("Back to the call") { [weak self] in self?.onClose?() }, at: 0)
+        guard let settings = model.settings else {
+            if model.problem == nil { top.append(item("Loading…")) }
+            template.updateSections([CPListSection(items: top)])
+            return
+        }
+        // Reset comes straight after the way back: the panel is a break-glass, and neither of the
+        // two things it is for should be down a list a driver has to scroll.
+        let reset = item("Reset to defaults", detail: resetDetail(settings)) { [weak self] in self?.model.reset() }
+        reset.isEnabled = settings.canReset
+        let rows = settings.rows.map { row in
+            let listItem = item(row.title, detail: row.detail) { [weak self] in self?.model.open(row) }
+            listItem.accessoryType = .disclosureIndicator
+            return listItem
+        }
+        template.updateSections([CPListSection(items: top + [reset] + rows)])
+    }
+
+    private func resetDetail(_ settings: CarVoiceSettings) -> String {
+        if model.saving { return "Saving…" }
+        return settings.canReset ? "Takes effect when the call comes back" : "Already on the defaults"
+    }
+
+    private func item(_ text: String, detail: String? = nil, tapped: (@MainActor () -> Void)? = nil) -> CPListItem {
+        let item = CPListItem(text: text, detailText: detail)
+        item.handler = { _, done in
+            MainActor.assumeIsolated { tapped?() }
+            done()
+        }
+        return item
+    }
+}

@@ -11,7 +11,9 @@ import Foundation
 /// driver needs to tell apart — connecting, listening, speaking, working (thinking is working) —
 /// and *Muted*, which shows whatever the call is doing while the microphone is off. The title is
 /// the only text the template is sure to draw: a trailing bar button as a status line did not
-/// render in the Simulator's CarPlay window, so there is none.
+/// render in the Simulator's CarPlay window, so there is none. The leading bar button is the gear
+/// that opens the voice settings (`CarVoiceSettings`); it is set on the template, once, when the
+/// screen is built, so it takes no state and adds none.
 public enum LiveCallScreen {
     /// What CarPlay keeps.
     public static let maximumStates = 5
