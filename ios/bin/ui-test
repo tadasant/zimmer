@@ -349,26 +349,28 @@ if [ -n "$carplay" ]; then
 
   # XCUITest computes no hit point for what a CarPlay template draws in its bars and buttons, so
   # no tap of its own reaches them. A click from the Mac does: the drill writes where it wants
-  # one, as fractions of the CarPlay window, and this clicks there and answers.
+  # one, in the car's own points with the size of its screen, and this clicks there. The screen
+  # sits centred across the window, with a bezel of 18 points under it and the rest above.
   click_request="$artifacts/carplay-click"
   (
     while [ ! -e "$artifacts/.tests-finished" ]; do
       if [ -e "$click_request" ]; then
-        read -r spot_x spot_y <"$click_request" || true
+        read -r spot_x spot_y car_w car_h <"$click_request" || true
         rm -f "$click_request"
-        osascript - "$spot_x" "$spot_y" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
+        osascript - "$spot_x" "$spot_y" "$car_w" "$car_h" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
 on run argv
-  set fracX to (item 1 of argv) as real
-  set fracY to (item 2 of argv) as real
+  set spotX to (item 1 of argv) as real
+  set spotY to (item 2 of argv) as real
+  set carW to (item 3 of argv) as real
+  set carH to (item 4 of argv) as real
   tell application "Simulator" to activate
   delay 0.5
   tell application "System Events" to tell process "Simulator"
     set theWindow to first window whose name contains "CarPlay"
     set {winX, winY} to position of theWindow
     set {winW, winH} to size of theWindow
-    set titleBar to 28
-    set clickX to round (winX + winW * fracX)
-    set clickY to round (winY + titleBar + (winH - titleBar) * fracY)
+    set clickX to round (winX + (winW - carW) / 2 + spotX)
+    set clickY to round (winY + winH - 18 - carH + spotY)
     click at {clickX, clickY}
   end tell
   return "clicked " & clickX & "," & clickY & " in a window " & winW & "x" & winH & " at " & winX & "," & winY
