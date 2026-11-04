@@ -336,7 +336,9 @@ ZimmerKit. Over a WebSocket the phone holds the audio, so talking over a reply i
 OpenAI sends a reply faster than it plays, and the phone keeps track of what is still queued
 (`LiveReplyPlayout`). When you start talking it stops whatever is still sounding, even if OpenAI
 finished generating it seconds ago, and sends `conversation.item.truncate` at the point you cut in.
-In the two gated Listening modes speech does not cut a reply off. In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
+In the two gated Listening modes speech does not cut a reply off.
+
+In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
 or a new one with voice on, on the same call, with Mute and End while it runs. The car has no
 other voice: if the call can't connect, the button says *Live Mode unavailable, retrying…* and the
 car retries silently. `GET /api/v1/live_conversations/:id/sessions` returns the sessions the
