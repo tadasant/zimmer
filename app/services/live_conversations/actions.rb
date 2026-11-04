@@ -27,11 +27,14 @@ module LiveConversations
     #   driver in a private space, a gate there drops lines without a sound,
     #   and the call sits on Listening as though it never heard. A call handed
     #   to the car mid-call is brought up to `always` by its next
-    #   `session_update`, which the hand-over sends.
+    #   `session_update`, which the hand-over sends, and stays there until it
+    #   hangs up, on the phone too (`LiveConversation#car_call`): the person
+    #   carrying on from the car was never told the rules changed, so a gate
+    #   arriving with the hand-over would look like a call that went deaf.
     def initialize(conversation, client_surface: nil, listening_modes: false)
       @conversation = conversation
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
-      @listening_modes = listening_modes && @client_surface != "carplay"
+      @listening_modes = listening_modes
     end
 
     # A typed message. Answered by LiveConversationReplyJob — or, when it
@@ -76,8 +79,8 @@ module LiveConversations
     # first and the instructions minted with the secret name it.
     def client_secret
       require_voice!
-      note_client!
-      RealtimeSession.mint(@conversation, listening_modes: @listening_modes)
+      note_client!(new_call: true)
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
@@ -117,10 +120,10 @@ module LiveConversations
       realtime_session(@conversation).session_update
     end
 
-    # What record_turn answers: the line it kept (nil when it dropped one), and
-    # whether the call should answer it.
-    Heard = Data.define(:turn, :respond) do
-      def as_api_json = (turn ? turn.as_api_json : {}).merge(respond: respond, dropped: turn.nil?)
+    # What record_turn answers: the line it kept (nil when it dropped one),
+    # whether the call should answer it, and the Listening mode that decided.
+    Heard = Data.define(:turn, :respond, :listening) do
+      def as_api_json = (turn ? turn.as_api_json : {}).merge(respond: respond, dropped: turn.nil?, listening: listening)
     end
 
     # Voice: a finished transcript line, so the thread on the page and in the
@@ -134,12 +137,19 @@ module LiveConversations
       content = content.to_s.strip
       raise Refused, "content can't be blank." if content.empty?
 
-      respond = role.to_s != "user" || listening.respond?(content)
-      return Heard.new(turn: nil, respond: false) unless respond
+      # A line from the car proves the call has been there, even when the
+      # hand-over's own `session_update` never landed. The surface is left
+      # alone: a line still in flight after the hand-over must not take it back.
+      @conversation.update_column(:car_call, true) if @client_surface == "carplay" && !@conversation.car_call
+
+      setting = LiveSetting.current
+      mode = Listening.mode(setting, capable: listening_modes?)
+      respond = role.to_s != "user" || Listening.new(@conversation, mode: mode, setting: setting).respond?(content)
+      return Heard.new(turn: nil, respond: false, listening: mode) unless respond
 
       turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH))
       @conversation.touch_activity!
-      Heard.new(turn: turn, respond: true)
+      Heard.new(turn: turn, respond: true, listening: mode)
     end
 
     def finish
@@ -149,19 +159,20 @@ module LiveConversations
 
     private
 
-    def listening
-      setting = LiveSetting.current
-      Listening.new(@conversation, mode: Listening.mode(setting, capable: @listening_modes), setting: setting)
-    end
+    # Whether this request may gate the call: the client can, and neither it nor
+    # anything earlier in this call is the car.
+    def listening_modes? = @listening_modes && @client_surface != "carplay" && !@conversation.car_call
 
-    def realtime_session(conversation) = RealtimeSession.new(conversation, listening_modes: @listening_modes)
+    def realtime_session(conversation) = RealtimeSession.new(conversation, listening_modes: listening_modes?)
 
-    # A single column write, and not through callbacks: which client last spoke is
-    # bookkeeping for the turn-source note, not a change the page re-renders for.
-    def note_client!
-      return if @client_surface.nil? || @conversation.client_surface == @client_surface
-
-      @conversation.update_column(:client_surface, @client_surface)
+    # Column writes, and not through callbacks: which client last spoke is
+    # bookkeeping for the turn-source note and Listening, not a change the page
+    # re-renders for. A secret is a new call, so it alone can clear `car_call`.
+    def note_client!(new_call: false)
+      columns = { car_call: @client_surface == "carplay" || (!new_call && @conversation.car_call) }
+      columns[:client_surface] = @client_surface if @client_surface
+      columns.reject! { |column, value| @conversation[column] == value }
+      @conversation.update_columns(columns) if columns.any?
     end
 
     def require_open!

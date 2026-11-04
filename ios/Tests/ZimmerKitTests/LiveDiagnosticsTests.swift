@@ -186,6 +186,14 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(LiveEvent.lineHeard(respond: true, dropped: false, ms: 0.4, listening: "dynamic").level, .debug)
     }
 
+    func testAChangeOfModeMidCallIsLoggedWithBothSides() {
+        let changed = LiveEvent.listeningChanged(from: "dynamic", to: "always")
+        XCTAssertEqual(changed.name, "listening.changed")
+        XCTAssertEqual(changed.level, .info)
+        XCTAssertEqual(changed.fields()["from"], .string("dynamic"))
+        XCTAssertEqual(changed.fields()["to"], .string("always"))
+    }
+
     func testATranscriptIsReportedByItsLengthNeverItsWords() {
         var timeline = LiveCallTimeline()
         let line = timeline.observe(event(#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"merge the docs fix"}"#), at: 1)

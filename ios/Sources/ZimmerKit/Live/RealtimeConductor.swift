@@ -93,8 +93,13 @@ public struct RealtimeConductor: Sendable {
     private var pendingResponse = false
     /// The call asks for its own replies (Listening is wake word or dynamic).
     public private(set) var gated = false
+    /// The Listening mode in force, for the call log. Follows what OpenAI applied: `always` once
+    /// a session starts its own replies; a call that became gated mid-call reads `gated` here,
+    /// because `session.updated` does not say which gated mode (`LiveHeard.listening` does).
+    public private(set) var listening: String?
 
     public init(listening: String? = nil) {
+        self.listening = listening
         gated = Self.gates(listening)
     }
 
@@ -108,6 +113,11 @@ public struct RealtimeConductor: Sendable {
     /// OpenAI applied, not what was sent, so a refused `session.update` changes nothing.
     mutating func note(session: JSONValue) {
         guard case let .bool(creates)? = session["audio"]?["input"]?["turn_detection"]?["create_response"] else { return }
+        if creates {
+            listening = "always"
+        } else if !gated {
+            listening = "gated"
+        }
         gated = !creates
     }
 
