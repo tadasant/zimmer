@@ -10,6 +10,9 @@ class TestflightFeedbackPollerTest < ActiveSupport::TestCase
   SCREENSHOTS = "/v1/apps/#{APP}/betaFeedbackScreenshotSubmissions".freeze
 
   setup do
+    # The crash fixtures are dated, and the poller only retries logs inside
+    # CRASH_LOG_RETRY_WINDOW of now, so the clock has to stay near those dates.
+    travel_to Time.utc(2026, 10, 29, 12)
     @exporter = RecordingExporter.new
   end
 
