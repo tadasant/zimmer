@@ -499,7 +499,7 @@ final class RealtimeConductorTests: XCTestCase {
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
         _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"incomplete","status_details":{"reason":"max_output_tokens"},"output":[{"type":"message"}]}}"#)),
-                       [.state(.listening)])
+                       [.state(.listening), .signal(.actionFailed)])
     }
 
     func testAToolChangeUpdatesTheSessionsTools() {
