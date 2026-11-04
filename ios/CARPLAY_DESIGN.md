@@ -43,14 +43,15 @@ broke anything. What the post-mortem of a broken call found (session 26864, call
 
 - `voice_max_output_tokens` at 180, set by the live model, truncated 12 of 13 replies and the 4 tool
   calls that failed. It is the panel's first row, and Reset clears it.
-- A gated Listening drops every line once a call moves from the car to the phone, which is what
-  "it can't hear me" looked like: speech transcribed, then `respond=false`. The car itself is always
-  Always, so the row says it is the phone's.
+- A gated Listening dropped every line of a call handed from the car to the phone, which is what
+  "it can't hear me" looked like: speech transcribed, then `respond=false`. A call that has been on
+  the car now stays on Always until it hangs up, so the setting reaches only calls started on the
+  phone. The row says so.
 - Under Semantic turn detection `RealtimeSession` sends eagerness and nothing else, so threshold,
   pause and prefix padding go nowhere. A threshold of 0.92 was inert.
 
-So the panel is built from what the call acts on (`CarVoiceSettings`). **It shows only what the
-current turn detection sends to OpenAI:** under Semantic there is no threshold or pause row, and
+So the panel is built from what a call acts on (`CarVoiceSettings`). **It shows only what the
+current turn detection sends to OpenAI, and Listening, marked Phone only:** under Semantic there is no threshold or pause row, and
 Turn detection says the threshold needs Silence; under Silence there is no eagerness row. Prefix padding has
 no row at all, being fine-tuning with no failure anyone has seen; Reset clears it.
 
@@ -78,8 +79,9 @@ from a row's choices it closes the panel too. The gear does nothing on a call al
 screen stays tappable for a moment after End, and that must not redial it (`CarCallComeback`).
 
 **Every change takes effect on the call that comes back, not before.** Nothing is listening while
-the panel is up, and that call is minted from the row, so a model or anything else OpenAI fixes for
-a call's life would apply too. Closing waits for the driver's last write, showing *Saving…*, so the
+the panel is up, and that call is minted from the row, so anything OpenAI fixes for a call's life
+would apply too. Listening is the exception: the call that comes back is a car call, so a change
+reaches the next call started on the phone. Closing waits for the driver's last write, showing *Saving…*, so the
 call cannot read the row ahead of it. A write that failed keeps the panel up to say *Not saved*, and
 the next Back closes it on what the row holds. With CarPlay's Back there is no panel left to say it
 on, so the call comes back on the old value and the log records `settings_write_lost`. A call that starts on the phone meanwhile is the conversation: the panel goes, and the
@@ -215,7 +217,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
 | The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | A source guard |
 | Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsOneButtonOneCallScreenAndOnePanel` |
-| A list pushed under a modal, or a pop with nothing pushed after the driver's own Back | The navigator takes the modal down first and pops only what it pushed, asking CarPlay how much is pushed rather than comparing templates | `CarPlayTests` (the strict fake models the stack); the drill |
+| A list pushed under a modal, or a pop with nothing pushed after the driver's own Back | The navigator takes the modal down first and pops only what it pushed, asking CarPlay how much is pushed rather than comparing templates | `CarPlayTests` (the strict fake models the stack); the drill for the push and the pop, not for the driver's own Back |
 | The microphone open with no voice control template on screen | The gear hangs up before anything else | `CarPlayTests.testTheGearEndsTheCallBeforeThePanelGoesUp` |
 
 ## The CarPlay drill
@@ -227,10 +229,11 @@ without one — and opens that window from the Simulator's I/O menu through Syst
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
 
 - the car opens on one button and nothing else;
-- the gear on the call screen, on a call the fixture holds on Connecting… (`-ZimmerFixtureVoiceTurnedUp`,
-  with the settings a voice call left): the panel opens with the call screen gone, shows the cap of
-  180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
-  clears the cap, and Back to the call calls again;
+- the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
+  (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
+- the panel, opened by the fixture running the gear's action: the call screen is gone, it shows the
+  cap of 180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
+  clears the cap, and Back to the call calls again, all by ordinary taps;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
   tries again.
@@ -241,9 +244,10 @@ and neither an element tap nor a coordinate tap reaches them. The five states th
 are `LiveCallScreenTests`'; pressing them is confirmed only by driving. The gear is the same: its
 hit point is {-1, -1}, and a click from the Mac at its place in the CarPlay window, tried from
 System Events, did not open the panel. So the fixture runs the gear's own action 15 seconds after
-the call screen goes up, which proves the gear is on the screen and that everything behind it works,
-and pressing the gear itself is confirmed only by driving. List rows take ordinary taps, so the
-panel is driven for real.
+the call screen goes up. The drill proves the gear is on the screen and that the panel behind it
+works. Pressing the gear is unconfirmed until someone does it in a car. List rows take ordinary
+taps, so the panel is driven for real. CarPlay's own Back on the panel is not driven: the fixture
+presses the gear once, and the one visit leaves by Back to the call.
 
 It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
 the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`
@@ -279,6 +283,8 @@ running after every step, and any crash report fails the job.
   the next minted call has no cap.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
   pull request.
+- **Not confirmed anywhere, until someone drives it:** a press of the gear (the fixture runs its
+  action), CarPlay's own Back on the panel, and a muted call coming back muted.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
   are confirmed only by driving. Nor is a relaunch: in the Simulator a

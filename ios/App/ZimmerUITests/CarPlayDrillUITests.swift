@@ -1,7 +1,8 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button; the gear on the call screen opens the voice settings,
+/// the car's app: it opens on one button; the call screen shows the gear, and the gear's action
+/// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
 /// which show what a voice call left behind, change it and reset it, and the call comes back; and
 /// a call that cannot connect fails, retries and puts the call screen up and down again and
 /// again, gives up and says so on the button, and a tap after that tries again. After every step Zimmer must still be running, and no call
@@ -61,7 +62,7 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-home")
         assertAlive("on the home screen")
 
-        // The gear: on the call screen, one touch, in any state of the call.
+        // The gear: on the call screen, on a call held on Connecting….
         tapTile("Talk to Zimmer")
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call screen goes up; the car showed:\n\(car.debugDescription)")
         photograph("carplay-call-screen-gear")
@@ -99,6 +100,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // up, the call fails, and the car retries after 2, 5 and 15 seconds, each retry putting
         // the call screen up and taking it down — the churn that crashed it.
         press("Back to the call", until: car.descendants(matching: .any).matching(NSPredicate(format: "label == 'Connecting…' OR label CONTAINS 'etry'")).firstMatch)
+        XCTAssertFalse(row("Reply length cap").exists, "the panel has left the stack")
         XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a failed call says it is retrying, on the button")
         photograph("carplay-retrying")
         XCTAssertTrue(waitFor(anyOf: ["Retry", "Live Mode unavailable. Tap to retry"], seconds: 90), "and once the retries are spent, that Live Mode is unavailable")

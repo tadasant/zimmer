@@ -8293,10 +8293,18 @@ five; template changes made without a completion handler, which CarPlay turns in
 when it refuses them; and the call's audio engine restarted on a notification thread while a
 hang-up stopped it on the main one. Each now has a Linux test or a source guard, and every iOS
 pull request also runs the CarPlay drill: Zimmer in the iOS Simulator's CarPlay window, driven
-through the car app (one button; a call that cannot connect, its retries and giving up, and a
-tap that tries again), failing on any crash. The car app itself was cut to one flow (open, talk,
-mute, end) so there is little left to drive. The drill cannot press Mute or End: XCUITest finds
-the voice control template's action buttons but no tap, by element or by coordinate, reaches them.
+through the car app (one button; the voice settings panel, its choices and Reset to defaults; a
+call that cannot connect, its retries and giving up, and a tap that tries again), failing on any
+crash. The car app itself was cut to one flow (open, talk,
+mute, end) so there is little left to drive. The drill cannot press Mute, End or the voice settings gear: XCUITest finds
+them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's action
+and a press of the gear is unconfirmed until someone does it in a car. CarPlay's own Back on the
+panel is not driven either.
+
+The gear ends the call, so a reply in progress is cut off, and the call comes back as a new one. A
+write still out when CarPlay's Back leaves the panel, if it then fails, is reported only in the call
+log (`settings_write_lost`): there is no panel left to say so on, and the call comes back on the
+old value.
 
 The Simulator is not a car. Its CarPlay window has no audio route of a car's own, so the call's
 microphone and speaker moving to the car, and the audio engine's restart when they do, are

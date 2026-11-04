@@ -56,18 +56,19 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertEqual(cap.choices.filter(\.isCurrent).map(\.title), ["No cap (default)"])
     }
 
-    /// The server's range decides what is offered, so a raised floor needs no change here.
-    /// CarPlay cuts a detail at about forty characters in the 800-wide window, as the drill's
-    /// photographs showed, and a cut one hid the word Silence.
+    /// CarPlay cuts a detail at about forty characters, as the drill's photographs showed, and a
+    /// cut one hid the word Silence.
     func testEveryDetailFitsOnTheRow() async throws {
         for values in [Self.broken, Self.silence, [:]] {
             let (model, _) = await panel(values)
-            for row in model.settings?.rows ?? [] {
+            let settings = try XCTUnwrap(model.settings)
+            for row in settings.rows {
                 XCTAssertLessThanOrEqual(row.detail.count, 36, "\(row.key): \(row.detail)")
             }
         }
     }
 
+    /// The server's range decides what is offered, so a raised floor needs no change here.
     func testAPresetUnderTheServersFloorIsNotOffered() {
         let field = LiveSettingField(key: "voice_max_output_tokens", path: "voice", type: .integer, label: "Voice max output tokens", min: 800, max: 4_096)
         let settings = CarVoiceSettings(LiveSettings(settings: ["voice_max_output_tokens": .null], fields: [field]))
@@ -118,8 +119,8 @@ final class CarVoiceSettingsTests: XCTestCase {
         }
     }
 
-    /// The car is built as Always whatever Listening says, but a call handed to the phone is not,
-    /// so the row is real and has to say where it applies.
+    /// A car call is built as Always whatever Listening says, and one started on the phone is
+    /// not, so the row is real and has to say where it applies.
     func testListeningIsOfferedAndSaysItIsThePhonesOnly() async throws {
         let (model, _) = await panel(Self.broken)
         let listening = try row(model, "voice_listening")
@@ -188,13 +189,12 @@ final class CarVoiceSettingsTests: XCTestCase {
 
     func testARefusedWriteIsSaidAndTheRowIsLeftAsItWas() async throws {
         let (model, api) = await panel(Self.silence)
-        let threshold = try row(model, "voice_turn_detection")
-        model.open(threshold)
+        let detection = try row(model, "voice_turn_detection")
+        model.open(detection)
         model.choose(CarVoiceSettings.Choice(title: "Nonsense", note: nil, value: .string("nonsense"), isCurrent: false))
         await model.settled()
         XCTAssertTrue(model.problem?.hasPrefix("Not saved:") == true, model.problem ?? "no problem")
-        XCTAssertTrue(model.takeWriteFailure(), "closing the panel is held up once, to say so")
-        XCTAssertFalse(model.takeWriteFailure(), "and the next Back closes it")
+        XCTAssertTrue(model.writeFailed, "closing the panel on a write still out is held up, to say so")
         XCTAssertEqual(model.openRow?.key, "voice_turn_detection", "the choices stay up to try again")
         XCTAssertFalse(model.saving)
         let read = try await api.liveSettings()
@@ -203,6 +203,19 @@ final class CarVoiceSettingsTests: XCTestCase {
 
     /// The call comes back when the panel closes, and is minted from the row: it has to wait for
     /// the write, or a driver who taps and closes at once comes back on the old value.
+    func testAWriteThatLandsClearsTheFailureBeforeIt() async throws {
+        let (model, _) = await panel(Self.silence)
+        let detection = try row(model, "voice_turn_detection")
+        model.open(detection)
+        model.choose(CarVoiceSettings.Choice(title: "Nonsense", note: nil, value: .string("nonsense"), isCurrent: false))
+        await model.settled()
+        XCTAssertTrue(model.writeFailed)
+        model.choose(try choice(detection, "Semantic (default)"))
+        await model.settled()
+        XCTAssertFalse(model.writeFailed, "or Back to the call would wait on a failure that was put right")
+        XCTAssertNil(model.problem)
+    }
+
     func testSettledWaitsForTheWriteAndATapDuringOneIsIgnored() async throws {
         let (model, api) = await panel(Self.silence)
         let threshold = try row(model, "voice_vad_threshold")
@@ -244,6 +257,16 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertFalse(comeback.wantsCall)
         XCTAssertNil(comeback.conversation)
         XCTAssertTrue(comeback.muted)
+    }
+
+    /// The mute that matters is the driver's last, not the one the gear saw. A hang-up resets the
+    /// call's own, and that one does not count.
+    func testAMuteChangedOnTheCallThatCameBackIsTheOneARetryKeeps() async throws {
+        var comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: false))
+        comeback.muteChanged(true, callIsActive: true)
+        XCTAssertTrue(comeback.muted)
+        comeback.muteChanged(false, callIsActive: false)
+        XCTAssertTrue(comeback.muted, "a hang-up is not the driver unmuting")
     }
 
     // MARK: - Reset to defaults
