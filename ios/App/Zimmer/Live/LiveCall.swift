@@ -21,8 +21,8 @@ import os
 /// every server event is `RealtimeConductor`'s call (ZimmerKit, tested on Linux): function calls
 /// are relayed to Zimmer and answered, transcript lines recorded, `response.create` sent once.
 ///
-/// Three things keep a driver from having to look: the cues (`LiveCueDirector`: a ding when the
-/// call is up, a soft tick while Zimmer works on an answer, falling notes when it drops); the
+/// Three things keep a driver from having to look: the cues (`LiveCueDirector` has the whole map:
+/// up, heard, thinking, a tool running, failed, hung up, dropped); the
 /// microphone watchdog (`MicWatchdog`), which sends silence when the microphone stops delivering
 /// so OpenAI's turn detection always gets to the end of a turn; and the call log
 /// (`LiveTelemetry`), which records every step for whoever reads the trace afterwards.
@@ -56,7 +56,8 @@ final class LiveCall: ObservableObject {
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
-    private var thinkingSince: TimeInterval?
+    /// The cue looping now, and since when: what its ceiling is measured from.
+    private var looping: (cue: LiveCue, since: TimeInterval)?
 
     init() {
         // Whatever the call log holds goes before iOS suspends the app, in a background task so
@@ -177,26 +178,24 @@ final class LiveCall: ObservableObject {
     }
 
     func hangUp() {
-        end(reason: "hang_up")
+        end(reason: "hang_up", farewell: cues.hungUp())
     }
 
-    /// End the call: `reason` is for the log; a `farewell` plays the falling notes first.
-    private func end(reason: String, farewell: Bool = false) {
+    /// End the call: `reason` is for the log; the `farewell` cue is the engine's last sound.
+    private func end(reason: String, farewell: [LiveCueDirector.Action]) {
         generation += 1
         watching?.cancel()
         watching = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
-        // The falling notes are the engine's last sound: it stays up just long enough to play them.
+        // The engine stays up just long enough to play the goodbye.
         var goodbye: LiveCue?
-        if farewell {
-            for action in cues.dropped() {
-                if case let .play(cue) = action {
-                    goodbye = cue
-                    telemetry.track(.cue(cue))
-                } else {
-                    perform(action)
-                }
+        for action in farewell {
+            if case let .play(cue, _) = action {
+                goodbye = cue
+                telemetry.track(.cue(cue))
+            } else {
+                perform(action)
             }
         }
         audio.stop(farewell: goodbye)
@@ -305,10 +304,9 @@ final class LiveCall: ObservableObject {
                    case let .resumed(stalled, silence)? = self.watchdog.frame(at: heard) {
                     self.telemetry.track(.micResumed(stalledMs: stalled, silenceSentMs: silence))
                 }
-                if let since = self.thinkingSince, Self.now - since > LiveCue.thinkingCeiling {
-                    self.thinkingSince = nil
-                    self.telemetry.track(.thinkingTimedOut(after: Self.now - since))
-                    for action in self.cues.thinkingTimedOut() { self.perform(action) }
+                if let looping = self.looping, Self.now - looping.since > looping.cue.ceiling {
+                    self.telemetry.track(.loopTimedOut(looping.cue, after: Self.now - looping.since))
+                    for action in self.cues.loopTimedOut() { self.perform(action) }
                 }
                 let (silence, change) = self.watchdog.tick(at: Self.now)
                 if case let .stalled(after)? = change {
@@ -329,18 +327,25 @@ final class LiveCall: ObservableObject {
 
     private func perform(_ action: LiveCueDirector.Action) {
         switch action {
-        case let .play(cue):
-            audio.play(cue)
+        case let .play(cue, delay):
+            audio.play(cue, after: delay)
             telemetry.track(.cue(cue))
-        case .startThinking:
-            thinkingSince = Self.now
-            audio.startThinking()
-            telemetry.track(.thinkingCue(true))
-        case .stopThinking:
-            thinkingSince = nil
-            audio.stopThinking()
-            telemetry.track(.thinkingCue(false))
+        case let .startLoop(cue):
+            looping = (cue, Self.now)
+            audio.startLoop(cue)
+            telemetry.track(.loopCue(cue, on: true))
+        case .stopLoop:
+            audio.stopLoop()
+            loopStopped()
+        case .stopCues:
+            audio.stopCues()
+            loopStopped()
         }
+    }
+
+    private func loopStopped() {
+        if let looping { telemetry.track(.loopCue(looping.cue, on: false)) }
+        looping = nil
     }
 
     private func send(_ event: JSONValue) {
@@ -406,6 +411,8 @@ final class LiveCall: ObservableObject {
             case let .failure(message):
                 log.error("realtime error: \(message, privacy: .public)")
                 lastError = message
+            case let .signal(signal):
+                for action in cues.receive(signal) { perform(action) }
             }
         }
     }
@@ -448,7 +455,7 @@ final class LiveCall: ObservableObject {
         guard generation == self.generation else { return }
         log.error("live call ended: \(message, privacy: .public)")
         telemetry.track(.callFailed(message, state: state))
-        end(reason: "failed", farewell: true)
+        end(reason: "failed", farewell: cues.dropped())
         lastError = message
     }
 

@@ -433,17 +433,17 @@ final class RealtimeConductorTests: XCTestCase {
                        [.replyStarted(itemID: "r1"), .play(Data([0, 0, 1, 0])), .state(.speaking)])
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)),
                        [.play(Data([0, 0])), .state(.speaking)], "the same item keeps counting")
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: "r1"), .state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: "r1"), .signal(.personTalking), .state(.listening)])
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)), [],
                        "audio of the item just cut, still on its way, does not start it again")
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)],
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .signal(.personTalking), .state(.listening)],
                        "a second start has nothing arriving")
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)), [],
                        "and leaves the cut item cut")
         let truncate = RealtimeConductor.truncate(itemID: "r1", audioEndMs: 1_250)
         XCTAssertEqual(truncate["type"]?.string, "conversation.item.truncate")
         XCTAssertEqual(truncate["audio_end_ms"], .number(1_250))
-        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad"), .state(.listening)],
+        XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad"), .signal(.noAnswerComing), .state(.listening)],
                        "nothing running: the call says it is listening")
     }
 
@@ -582,8 +582,8 @@ final class RealtimeConductorTests: XCTestCase {
                        [.hear(itemID: "u1", text: "One Banana Republic.")])
         XCTAssertEqual(conductor.heard(itemID: "u1", respond: false),
                        [.send(.object(["type": .string("conversation.item.delete"), "item_id": .string("u1")]))])
-        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.send(.object(["type": .string("response.create")]))])
-        XCTAssertEqual(conductor.heard(itemID: "u3", respond: true), [], "one already asked for and not yet created: a second would be refused")
+        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.signal(.heardPerson), .send(.object(["type": .string("response.create")]))])
+        XCTAssertEqual(conductor.heard(itemID: "u3", respond: true), [.signal(.heardPerson)], "one already asked for and not yet created: a second would be refused")
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#)),
                        [.send(.object(["type": .string("response.create")])), .state(.listening)], "then the waiting one goes")
@@ -604,13 +604,13 @@ final class RealtimeConductorTests: XCTestCase {
         var conductor = RealtimeConductor(listening: "wake_word")
         _ = conductor.heard(itemID: "u1", respond: true)
         _ = conductor.handle(event(#"{"type":"error","error":{"message":"Conversation already has an active response"}}"#))
-        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.send(.object(["type": .string("response.create")]))])
+        XCTAssertEqual(conductor.heard(itemID: "u2", respond: true), [.signal(.heardPerson), .send(.object(["type": .string("response.create")]))])
     }
 
     func testAGatedReplyWaitsForAResponseAlreadyRunning() {
         var conductor = RealtimeConductor(listening: "dynamic")
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
-        XCTAssertEqual(conductor.heard(itemID: "u1", respond: true), [], "never on top of a running response")
+        XCTAssertEqual(conductor.heard(itemID: "u1", respond: true), [.signal(.heardPerson)], "never on top of a running response")
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#)),
                        [.send(.object(["type": .string("response.create")])), .state(.listening)])
     }
@@ -642,11 +642,11 @@ final class RealtimeConductorTests: XCTestCase {
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
         XCTAssertEqual(
             conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","status_details":{"type":"failed","error":{"type":"invalid_request_error","message":"Invalid turn_detection"}},"output":[]}}"#)),
-            [.failure("Invalid turn_detection"), .state(.listening)]
+            [.failure("Invalid turn_detection"), .state(.listening), .signal(.actionFailed)]
         )
         XCTAssertEqual(
             conductor.handle(event(#"{"type":"response.done","response":{"status":"failed","output":[]}}"#)),
-            [.failure("OpenAI could not answer that."), .state(.listening)]
+            [.failure("OpenAI could not answer that."), .state(.listening), .signal(.actionFailed)]
         )
     }
 }
