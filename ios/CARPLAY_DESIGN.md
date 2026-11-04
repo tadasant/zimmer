@@ -51,7 +51,7 @@ broke anything. What the post-mortem of a broken call found (session 26864, call
 
 So the panel is built from what the call acts on (`CarVoiceSettings`). **It shows only what the
 current turn detection sends to OpenAI:** under Semantic there is no threshold or pause row, and
-Turn detection says they need Silence; under Silence there is no eagerness row. Prefix padding has
+Turn detection says the threshold needs Silence; under Silence there is no eagerness row. Prefix padding has
 no row at all, being fine-tuning with no failure anyone has seen; Reset clears it.
 
 All of it is the one `LiveSetting` row, through `LiveAPI`, into the same
@@ -238,10 +238,12 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 It does not press Mute or End. XCUITest finds the voice control template's two action buttons
 (labelled by their symbols, "microphone off" and "hang up") but computes no hit point for them,
 and neither an element tap nor a coordinate tap reaches them. The five states they switch between
-are `LiveCallScreenTests`'; pressing them is confirmed only by driving. The gear has the same
-{-1, -1} hit point, so `ios/bin/ui-test` tries a click from the Mac at the gear's place in the
-CarPlay window, and in case that does not land the fixture presses the gear's action itself after 15
-seconds. The run's log says which it was (`carplay drill: the gear was …`).
+are `LiveCallScreenTests`'; pressing them is confirmed only by driving. The gear is the same: its
+hit point is {-1, -1}, and a click from the Mac at its place in the CarPlay window, tried from
+System Events, did not open the panel. So the fixture runs the gear's own action 15 seconds after
+the call screen goes up, which proves the gear is on the screen and that everything behind it works,
+and pressing the gear itself is confirmed only by driving. List rows take ordinary taps, so the
+panel is driven for real.
 
 It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
 the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`

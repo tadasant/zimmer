@@ -69,7 +69,7 @@ public struct CarVoiceSettings: Sendable, Equatable {
              presets: [(0.3, "Hears quiet speech"), (0.5, nil), (0.7, nil), (0.9, "Loud speech only")]),
         Knob(key: "voice_vad_silence_duration_ms", title: "Pause that ends a turn", onlyWith: silence,
              presets: [(300, nil), (500, nil), (800, nil), (1_200, nil)], unit: " ms"),
-        Knob(key: "voice_listening", title: "Listening", caveat: "On the phone. The car always answers"),
+        Knob(key: "voice_listening", title: "Listening", caveat: "Phone only"),
         Knob(key: "voice_noise_reduction", title: "Noise reduction"),
         Knob(key: "voice_speed", title: "Speaking speed", presets: [(0.8, nil), (1.0, nil), (1.2, nil)], unit: "×"),
     ]
@@ -95,8 +95,12 @@ public struct CarVoiceSettings: Sendable, Equatable {
                   knob.onlyWith == nil || knob.onlyWith == detection else { return nil }
             let value = settings.value(knob.key)
             var detail = Self.shown(value, field: field, knob: knob)
-            if !settings.isOverridden(knob.key) { detail += " (default)" }
-            if let caveat = Self.caveat(knob, detection: detection) { detail += ". \(caveat)" }
+            // A detail is cut at about forty characters, and the caveat is the half that matters.
+            if let caveat = Self.caveat(knob, detection: detection) {
+                detail += ". \(caveat)"
+            } else if !settings.isOverridden(knob.key) {
+                detail += " (default)"
+            }
             return Row(key: knob.key, title: knob.title, detail: detail,
                        choices: field.type == .choice ? Self.choices(enumOf: field, value: value, knob: knob)
                                                       : Self.choices(numberOf: field, value: value, knob: knob))
@@ -109,8 +113,11 @@ public struct CarVoiceSettings: Sendable, Equatable {
     /// A server label up to its explanation, capitalized: "Semantic — waits until you sound
     /// finished" is "Semantic", "auto (medium)" is "Auto", and that is all a row has room for.
     static func short(_ label: String) -> String {
-        let head = label.components(separatedBy: " — ")[0].components(separatedBy: " (")[0]
-        return head.prefix(1).uppercased() + head.dropFirst()
+        sentence(label.components(separatedBy: " — ")[0].components(separatedBy: " (")[0])
+    }
+
+    private static func sentence(_ text: String) -> String {
+        text.prefix(1).uppercased() + text.dropFirst()
     }
 
     private static func shown(_ value: JSONValue, field: LiveSettingField, knob: Knob) -> String {
@@ -120,7 +127,7 @@ public struct CarVoiceSettings: Sendable, Equatable {
 
     /// Why the threshold is missing is said where the driver would go to bring it back.
     private static func caveat(_ knob: Knob, detection: String) -> String? {
-        if knob.key == turnDetectionKey, detection == semantic { return "Threshold and pause need Silence" }
+        if knob.key == turnDetectionKey, detection == semantic { return "Threshold needs Silence" }
         return knob.caveat
     }
 
@@ -132,7 +139,7 @@ public struct CarVoiceSettings: Sendable, Equatable {
             let isDefault = field.defaultValue?.liveSettingText == option.value
             let parts = option.label.components(separatedBy: " — ")
             let name = short(option.label)
-            return Choice(title: isDefault ? "\(name) (default)" : name, note: parts.count > 1 ? parts[1] : nil,
+            return Choice(title: isDefault ? "\(name) (default)" : name, note: parts.count > 1 ? sentence(parts[1]) : nil,
                           value: isDefault ? .null : .string(option.value), isCurrent: option.value == current)
         }
         // A setting with no default is off when unset, and off is one of its choices.

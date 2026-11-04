@@ -845,8 +845,9 @@ by XCUITest:
 - a call that cannot connect (the fixture's Realtime secret points nowhere) fails, retries, gives
   up on the button, leaves no call screen behind, and is tapped again.
 
-It cannot press Mute or End: XCUITest finds the call screen's two action buttons but no tap
-reaches them, so those are confirmed only by driving.
+It cannot press Mute, End or the gear: XCUITest finds them but no tap reaches them, so pressing
+those is confirmed only by driving. The fixture runs the gear's own action instead, so what is behind
+the gear is driven for real.
 
 Zimmer must still be running after every step, and any crash report fails the job. The rules under
 it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScreenTests`):
@@ -888,7 +889,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: one button; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind, and a tap that tries again (Mute and End cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: one button; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind, and a tap that tries again (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as five shards on five simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `python3 -m unittest discover -s ios/tools` | `ios` | The export retry in `ios/tools/app_store_connect.py`: which failures are retried, that every other failure keeps xcodebuild's exit code, and that a build App Store Connect already has is never uploaded again |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
