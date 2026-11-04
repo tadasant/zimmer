@@ -102,9 +102,8 @@ final class LiveAudioEngine {
     /// Bumped by every start and stop, so a start still waiting on the permission prompt, or a
     /// late stop from an older call, cannot touch a newer call's engine.
     private var token = 0
-    /// The reply item playing now: when its audio started, and how much of it was queued.
-    private var replyStartedAt: Date?
-    private var replyQueuedMs = 0
+    /// What is queued on the reply player, and how far through it the speaker is.
+    private var playout = LiveReplyPlayout()
 
     /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a
     /// time. Returns the token `stop(token:)` takes.
@@ -323,30 +322,24 @@ final class LiveAudioEngine {
         }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let engine, let player, engine.isRunning else { return }
-        if replyStartedAt == nil { replyStartedAt = Date() }
-        replyQueuedMs += samples.count * 1_000 / Int(RealtimeAudio.sampleRate)
+        playout.scheduled(samples: samples.count, at: ProcessInfo.processInfo.systemUptime)
         player.scheduleBuffer(buffer, completionHandler: nil)
     }
 
-    /// A new reply item starts: count its audio from zero.
-    func replyStarted() {
-        replyStartedAt = nil
-        replyQueuedMs = 0
+    /// A new reply item's audio follows whatever is still queued.
+    func replyStarted(itemID: String) {
+        playout.started(itemID: itemID, at: ProcessInfo.processInfo.systemUptime)
     }
 
-    /// Drop the reply that is playing — the user started talking over it — and say roughly how
-    /// many milliseconds of it were heard: the time since it started, up to what was queued.
-    @discardableResult
-    func stopPlayback() -> Int {
-        let elapsed = replyStartedAt.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? 0
-        let heard = min(elapsed, replyQueuedMs)
-        replyStartedAt = nil
-        replyQueuedMs = 0
-        if let engine, let player, engine.isRunning {
+    /// The user started talking: drop any reply audio still to sound, and say which items that
+    /// cut and how much of each was heard. Nothing left to sound is left alone.
+    func stopPlayback() -> [LiveReplyPlayout.Cut] {
+        let cuts = playout.stop(at: ProcessInfo.processInfo.systemUptime, latency: AVAudioSession.sharedInstance().outputLatency)
+        if !cuts.isEmpty, let engine, let player, engine.isRunning {
             player.stop()
             player.play()
         }
-        return heard
+        return cuts
     }
 
     /// Close the microphone and the player. With a `token`, only if it is still that start's call.
@@ -393,8 +386,7 @@ final class LiveAudioEngine {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
         token += 1
-        replyStartedAt = nil
-        replyQueuedMs = 0
+        playout = LiveReplyPlayout()
         engine = nil
         player = nil
         cuePlayer = nil

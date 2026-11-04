@@ -8554,6 +8554,19 @@ has no microphone worth testing echo cancellation on, and no deployment has the 
 It is built the way Motet's device-tested Play Live audio is, and that is the extent of the
 evidence. CarPlay's Live Voice entry has not run in a car either.
 
+## Where a phone call's reply was cut is an estimate
+
+When you talk over a reply on the phone, `LiveReplyPlayout` works out how much of it you heard from
+when each chunk of audio was scheduled, less the route's output latency. It does not read the
+player. If the audio engine stalls with audio queued (a route change, say) the estimate runs ahead
+of the speaker, and `conversation.item.truncate` marks more of the reply as heard than was. CI cannot
+play audio, so the position has been tested only against a fake clock; `reply.interrupted`'s
+`heard_ms` is how to check it on a real call.
+
+Speech can also cut off the tail of a reply that has finished generating, which is what lets you
+talk over it. The price is that a false start from turn detection, such as echo the canceller
+missed, can cut that tail too, as it already could while the reply was generating.
+
 ## A live conversation's stdio servers start from scratch on every call
 
 A catalog server a live conversation enables runs in the Rails process's container, spawned for one
