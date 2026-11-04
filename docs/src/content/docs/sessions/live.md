@@ -236,8 +236,22 @@ client reads `create_response` from each `session.created` and `session.updated`
 Listening says (`LiveConversations::Actions`). The car is one driver in a private space. A gated
 mode there drops lines without a sound, and the call sits on Listening as though it never heard.
 A call handed from the phone to the car mid-call becomes Always with the `session_update` the
-hand-over sends. On the phone, a dropped line puts the call back to Listening, and the call log
-records it (`listening.heard`, `dropped=true`). Every change to a Live setting, including one the
+hand-over sends.
+
+**A call that has been on the car stays on Always until it hangs up**, on the phone too
+(`live_conversations.car_call`). When the car disconnects, the call carries on through the phone
+with no word to the person, and they are still talking the way they were in the car. A gated mode
+arriving at that moment turns every line into a silent drop while the app says Listening. Nothing
+goes quiet this way: every client that re-applies Listening mid-call (the hand-over, the settings
+screen, the live model's own `update_live_settings`) builds its `session.update` as Always for the
+rest of the call. The next call, which mints a new secret, starts on Listening as usual.
+
+On the phone, a dropped line puts the call back to Listening, and the call log records it
+(`listening.heard`, `dropped=true`). `listening` on that line is the mode Zimmer decided in, which
+`POST turns` answers. A change to the mode during a call is logged too (`listening.changed`, with
+`from` and `to`), read off what OpenAI applied. `session.updated` says only whether a call is
+gated, so a call gated mid-call logs `to=gated`, and its next `listening.heard` names the mode.
+Every change to a Live setting, including one the
 live model makes itself, is logged at WARN as `[LiveSettings]`, so it is in the shipped logs
 beside the calls it changed.
 
@@ -269,7 +283,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Voice | voice | `marin` (or `LIVE_VOICE_VOICE`) | OpenAI's ten voices | next call |
 | Speaking speed | voice | 1.0 | 0.25–1.5 | mid-call |
 | Voice max output tokens | voice | no cap | 1,024–4,096 ([why the floor](#the-voice-output-cap)) | mid-call |
-| Listening | voice | `always` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call |
+| Listening | voice | `always` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call, except on a call that has been on the car |
 | Turn detection | voice | `semantic_vad` | `semantic_vad`, `server_vad` | mid-call |
 | Eagerness (semantic) | voice | `auto` | `auto`, `low`, `medium`, `high` | mid-call |
 | Threshold, prefix padding, silence duration (silence) | voice | 0.5, 300 ms, 500 ms | 0.1–0.95, 0–1,000 ms, 200–3,000 ms | mid-call |

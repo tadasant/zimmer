@@ -497,6 +497,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_04_160000) do
 
   create_table "live_conversations", force: :cascade do |t|
     t.string "agent_root", null: false
+    t.boolean "car_call", default: false, null: false
     t.string "client_surface"
     t.datetime "created_at", null: false
     t.datetime "ended_at"

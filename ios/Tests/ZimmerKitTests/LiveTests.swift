@@ -110,7 +110,7 @@ final class LiveAPITests: XCTestCase {
             { _ in Fixtures.json(200, ["output": "Enabled demo-clock.", "error": false, "tools_changed": true, "turn_id": 4,
                                        "tools": [["type": "function", "name": "demo-clock__current_time"]]]) },
             { _ in Fixtures.json(201, ["id": 5, "role": "assistant", "source": "spoken", "content": "Done.", "tool_error": false]) },
-            { _ in Fixtures.json(200, ["respond": false, "dropped": true]) },
+            { _ in Fixtures.json(200, ["respond": false, "dropped": true, "listening": "dynamic"]) },
         ])
         let secret = try await api.liveClientSecret(7)
         XCTAssertEqual(secret.clientSecret, "ek_1")
@@ -133,7 +133,8 @@ final class LiveAPITests: XCTestCase {
         XCTAssertNil(try body(transport.sent[2])["listening_modes"])
 
         let dropped = try await api.recordLiveTurn(7, role: .user, content: "talking to a friend", gated: true)
-        XCTAssertEqual(dropped, LiveHeard(respond: false, dropped: true))
+        XCTAssertEqual(dropped.listening, "dynamic", "the mode Zimmer decided in, for the call log")
+        XCTAssertEqual(dropped, LiveHeard(respond: false, dropped: true, listening: "dynamic"))
         XCTAssertEqual(try body(transport.sent[3])["listening_modes"] as? String, "1")
     }
 
@@ -745,6 +746,19 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertTrue(conductor.gated, "what was sent changes nothing until OpenAI says it applied it")
         _ = conductor.handle(event(#"{"type":"session.created","session":{"audio":{"input":{"turn_detection":{"create_response":true}}}}}"#))
         XCTAssertFalse(conductor.gated)
+    }
+
+    func testTheModeInForceFollowsTheSessionOpenAIApplied() {
+        var conductor = RealtimeConductor(listening: "dynamic")
+        XCTAssertEqual(conductor.listening, "dynamic")
+        _ = conductor.handle(event(#"{"type":"session.updated","session":{"audio":{"input":{"turn_detection":{"create_response":false}}}}}"#))
+        XCTAssertEqual(conductor.listening, "dynamic", "still gated: the mode the secret named stands")
+        _ = conductor.handle(event(#"{"type":"session.updated","session":{"audio":{"input":{"turn_detection":{"create_response":true}}}}}"#))
+        XCTAssertEqual(conductor.listening, "always")
+
+        var always = RealtimeConductor(listening: "always")
+        _ = always.handle(event(#"{"type":"session.updated","session":{"audio":{"input":{"turn_detection":{"create_response":false}}}}}"#))
+        XCTAssertEqual(always.listening, "gated", "never the stale always: the log must not read always on a call dropping lines")
     }
 
     func testMutedIsSaidBesideTheCallsState() {

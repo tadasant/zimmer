@@ -245,19 +245,23 @@ public struct LiveClientSecret: Decodable, Sendable, Equatable {
 public struct LiveHeard: Decodable, Sendable, Equatable {
     public let respond: Bool
     public let dropped: Bool
+    /// The mode that decided this line. Nil from a server from before it said.
+    public let listening: String?
 
-    public init(respond: Bool, dropped: Bool = false) {
+    public init(respond: Bool, dropped: Bool = false, listening: String? = nil) {
         self.respond = respond
         self.dropped = dropped
+        self.listening = listening
     }
 
-    enum CodingKeys: String, CodingKey { case respond, dropped }
+    enum CodingKeys: String, CodingKey { case respond, dropped, listening }
 
     /// A server from before Listening answers with the turn alone: kept, and answered.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         respond = try container.decodeIfPresent(Bool.self, forKey: .respond) ?? true
         dropped = try container.decodeIfPresent(Bool.self, forKey: .dropped) ?? false
+        listening = try container.decodeIfPresent(String.self, forKey: .listening)
     }
 }
 
