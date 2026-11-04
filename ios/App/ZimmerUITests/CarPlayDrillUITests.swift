@@ -66,7 +66,9 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call screen goes up; the car showed:\n\(car.debugDescription)")
         photograph("carplay-call-screen-gear")
         record("the call screen", car.debugDescription)
-        tapGear()
+        let clicked = clickTheGear()
+        record("the gear", clicked ? "a click in the CarPlay window opened the panel" : "no click reached the gear: the fixture pressed it")
+        print("carplay drill: the gear was \(clicked ? "pressed by a click in the CarPlay window" : "pressed by the fixture")")
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it")
         assertAlive("with the voice settings up")
@@ -142,11 +144,18 @@ final class CarPlayDrillUITests: XCTestCase {
         car.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", words)).firstMatch
     }
 
-    /// The gear is a bar button with no words, so it goes by its symbol's name.
-    private func tapGear() {
-        let gear = car.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'gear' OR label CONTAINS[c] 'setting'")).firstMatch
+    /// The gear is a bar button with no words, so it goes by its symbol's name. XCUITest finds it
+    /// and computes no hit point for it, as for Mute and End, so `ios/bin/ui-test` clicks it from
+    /// the Mac (see `carplay-click` there). True when that opened the panel. The fixture presses
+    /// the gear's action a few seconds later either way, so the panel is driven whichever it was.
+    private func clickTheGear() -> Bool {
+        let gear = car.buttons["gearshape.fill"]
         XCTAssertTrue(gear.waitForExistence(timeout: timeout), "no gear on the call screen; the car showed:\n\(car.debugDescription)")
-        gear.tap()
+        guard let artifacts = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] else { return false }
+        let window = car.windows.firstMatch.frame
+        let spot = "\(gear.frame.midX / window.width) \(gear.frame.midY / window.height)\n"
+        try? spot.write(toFile: artifacts + "/carplay-click", atomically: true, encoding: .utf8)
+        return row("Back to the call").waitForExistence(timeout: 6)
     }
 
     /// What XCUITest could see, kept with the run.

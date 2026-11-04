@@ -346,6 +346,39 @@ if [ -n "$carplay" ]; then
   # want of a car.
   export ZIMMER_UI_TEST_CARPLAY=1
   export TEST_RUNNER_ZIMMER_UI_TEST_CARPLAY=1
+
+  # XCUITest computes no hit point for what a CarPlay template draws in its bars and buttons, so
+  # no tap of its own reaches them. A click from the Mac does: the drill writes where it wants
+  # one, as fractions of the CarPlay window, and this clicks there and answers.
+  click_request="$artifacts/carplay-click"
+  (
+    while [ ! -e "$artifacts/.tests-finished" ]; do
+      if [ -e "$click_request" ]; then
+        read -r across down <"$click_request" || true
+        rm -f "$click_request"
+        osascript - "$across" "$down" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
+on run argv
+  set across to (item 1 of argv) as real
+  set down to (item 2 of argv) as real
+  tell application "Simulator" to activate
+  delay 0.5
+  tell application "System Events" to tell process "Simulator"
+    set theWindow to first window whose name contains "CarPlay"
+    set {left, top} to position of theWindow
+    set {wide, high} to size of theWindow
+    set titleBar to 28
+    set x to round (left + wide * across)
+    set y to round (top + titleBar + (high - titleBar) * down)
+    click at {x, y}
+  end tell
+  return "clicked " & x & "," & y & " in a window " & wide & "x" & high & " at " & left & "," & top
+end run
+APPLESCRIPT
+      fi
+      /bin/sleep 0.5
+    done
+  ) &
+  clicker=$!
 fi
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
@@ -355,6 +388,9 @@ touch "$artifacts/.started"
 
 printf '==> running the UI tests\n'
 status=0
+# One ordered test that spends a minute and a half reaching the car before it starts.
+test_allowance=300
+if [ -n "$carplay" ]; then test_allowance=480; fi
 xcodebuild test-without-building \
   -project App/Zimmer.xcodeproj \
   -scheme ZimmerUITests \
@@ -365,12 +401,14 @@ xcodebuild test-without-building \
   ${only_testing[@]+"${only_testing[@]}"} \
   -resultBundlePath "$artifacts/ZimmerUITests.xcresult" \
   -test-timeouts-enabled YES \
-  -maximum-test-execution-time-allowance 300 \
+  -maximum-test-execution-time-allowance "$test_allowance" \
   "${signing[@]}" || status=$?
 
 # The drill's photographs of the CarPlay window as plain files, beside the result bundle, so
 # they can be read without a Mac.
 if [ -n "$carplay" ]; then
+  touch "$artifacts/.tests-finished"
+  wait "$clicker" || true
   xcrun xcresulttool export attachments --path "$artifacts/ZimmerUITests.xcresult" \
     --output-path "$artifacts/carplay-photos" >/dev/null 2>&1 \
     || mkdir -p "$artifacts/carplay-photos"

@@ -238,7 +238,10 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 It does not press Mute or End. XCUITest finds the voice control template's two action buttons
 (labelled by their symbols, "microphone off" and "hang up") but computes no hit point for them,
 and neither an element tap nor a coordinate tap reaches them. The five states they switch between
-are `LiveCallScreenTests`'; pressing them is confirmed only by driving.
+are `LiveCallScreenTests`'; pressing them is confirmed only by driving. The gear has the same
+{-1, -1} hit point, so `ios/bin/ui-test` tries a click from the Mac at the gear's place in the
+CarPlay window, and in case that does not land the fixture presses the gear's action itself after 15
+seconds. The run's log says which it was (`carplay drill: the gear was …`).
 
 It is one ordered test in one Zimmer process. In the Simulator, CarPlay connects Zimmer's scene to
 the first process and never to one XCUITest relaunches: the window stays blank and `didConnect`

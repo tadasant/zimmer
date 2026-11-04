@@ -55,6 +55,9 @@ final class CarPlayLive {
     private var settings: CarPlayVoiceSettings?
     /// The panel is on the stack, so CarPlay going back to the root means it was closed.
     private var settingsOnStack = false
+    #if DEBUG
+    private var drillPressedTheGear = false
+    #endif
     /// The panel is closing, waiting for the driver's last write.
     private var settingsClosing = false
     /// The call the gear ended, to bring back. Kept until OpenAI has answered on the new call,
@@ -303,6 +306,9 @@ final class CarPlayLive {
             guard self.template === screen else { return }
             if shown {
                 self.activate()
+                #if DEBUG
+                self.drillPressesTheGear()
+                #endif
             } else {
                 // A presentation CarPlay refused leaves no screen: forget the template, so the
                 // next state change presents again rather than activating a state nobody sees.
@@ -345,6 +351,20 @@ final class CarPlayLive {
         }
         return screen
     }
+
+    #if DEBUG
+    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the gear's own action, once, a while
+    /// after the first call screen goes up. XCUITest computes no hit point for a template's bar
+    /// button, so this is how the panel is driven if a click from the Mac does not land either.
+    private func drillPressesTheGear() {
+        guard ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"), !drillPressedTheGear else { return }
+        drillPressedTheGear = true
+        Task {
+            try? await Task.sleep(for: .seconds(15))
+            self.openSettings()
+        }
+    }
+    #endif
 
     private func activate() {
         guard call.isActive else { return }
