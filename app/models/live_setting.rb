@@ -229,7 +229,7 @@ class LiveSetting < ApplicationRecord
     used, unused = FIELDS.select(&:applies_under).partition { |field| field.applies_under == mode }
     unused = unused.select { |field| inactive.include?(field.key) } if inactive
     "#{unused.map(&:label).to_sentence} #{unused.one? ? 'has' : 'have'} no effect under #{name} turn detection: " \
-      "saved, but never sent to OpenAI. Under #{name}, use #{used.map(&:label).to_sentence}."
+      "not sent to OpenAI. Under #{name}, use #{used.map(&:label).to_sentence}."
   end
 
   # The row, or a blank unsaved one before the first write — which answers every

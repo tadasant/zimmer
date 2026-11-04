@@ -297,17 +297,20 @@ OpenAI at all. The others stay saved and do nothing until the mode changes.
 | Silence (`server_vad`) | Threshold, prefix padding, silence duration | Eagerness |
 
 The save still goes through, so a setting can be tuned ahead of a switch, but no writer calls it a
-change that took. `LiveConversations::SettingsUpdate` works out what a write named that the mode now
+change that took. `LiveConversations::SettingsUpdate` works out what a write set that the mode now
 in force leaves unused, after the write, so a setting and the switch it needs can arrive together.
-Switching the mode names every setting it turned off. A reset names nothing.
+Switching the mode names every setting it turned off. A reset, or putting one setting back on its
+default, names nothing.
 
 - `update_live_settings` answers `Saved, but this changes nothing on a call:` when nothing else
-  changed, and tells the live model to say so out loud rather than confirm it.
+  changed, and tells the live model to say so out loud rather than confirm it. The conversation's
+  thread titles that note `Live Mode saved a setting with no effect`.
 - `action_live_settings` and `PATCH /api/v1/live/settings` put the same sentence in the answer, and
   REST also lists the keys in `no_effect`.
 - `get_live_settings` marks each unused setting `NO EFFECT now`. REST lists them in `inactive`.
 - The settings page shows an alert after the save. In the Voice section, each of these four settings
   carries an `applies` or `no effect` badge that follows the Turn detection select before you save.
+- The iOS app shows the sentence after a save.
 
 An open call is still sent a `session.update` after such a write. OpenAI just receives the same
 turn detection as before.

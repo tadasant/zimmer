@@ -50,7 +50,7 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" }, loaded: { voice_vad_threshold: "" } }
 
     assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, flash[:alert])
-    assert_match(/\ASaved\./, flash[:notice])
+    assert_equal "Saved. Threshold (silence): default (0.5) → 0.75", flash[:notice]
     follow_redirect!
 
     patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" } }
@@ -111,6 +111,20 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     get live_conversation_path(conversation)
 
     assert_select "[data-live-settings-change]", text: /Speaking speed: default \(1\.0\) → 1\.3/
+  end
+
+  test "a write with no effect shows in the thread as one, without the line meant for the live model" do
+    conversation = create_live_conversation(mode: "voice")
+    bridge = LiveConversations::ToolBridge.new(conversation)
+    bridge.execute("update_live_settings", { voice_vad_threshold: 0.75 }.to_json, call_id: "n")
+    bridge.execute("update_live_settings", { voice_speed: 1.3, voice_vad_threshold: 0.6 }.to_json, call_id: "m")
+
+    get live_conversation_path(conversation)
+
+    assert_select "[data-live-settings-change]", count: 2
+    assert_select "[data-live-settings-change]", text: /Live Mode saved a setting with no effect.*Threshold \(silence\) has no effect/m, count: 1
+    assert_select "[data-live-settings-change]", text: /Live Mode changed its settings.*Threshold \(silence\) has no effect/m, count: 1
+    assert_select "[data-live-settings-change]", text: /out loud|Saved, but|\AChanged:/, count: 0
   end
 
   test "the call dock can fetch a session.update for an open voice call" do

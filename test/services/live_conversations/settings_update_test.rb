@@ -144,6 +144,21 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     assert_match(/\ANothing changed\.\nThreshold \(silence\) has no effect/, result.summary)
   end
 
+  test "writing down the mode already in force turns nothing off" do
+    result = Update.call({ "voice_turn_detection" => "semantic_vad" }, actor: @human)
+
+    assert result.changed?
+    assert_empty result.no_effect
+  end
+
+  test "putting a knob back on its default tunes nothing, so it is not named" do
+    Update.call({ "voice_vad_threshold" => 0.75 }, actor: @human)
+    result = Update.call({ "voice_vad_threshold" => "default" }, actor: @human)
+
+    assert_nil LiveSetting.current.voice_vad_threshold
+    assert_empty result.no_effect
+  end
+
   test "a reset is not tuning anything, so it names nothing" do
     Update.call({ "voice_turn_detection" => "server_vad", "voice_vad_threshold" => 0.75 }, actor: @human)
     result = Update.call({}, actor: @human, reset: true)

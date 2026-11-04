@@ -53,9 +53,8 @@ module LiveConversations
         keys.any? { |key| key == "guidance" || LiveSetting::MID_CALL_KEYS.include?(key.to_sym) }
       end
 
-      # One line per change, in words — what the live model says back, and what
-      # the history shows.
-      def summary
+      # One line per change, in words, and anything the write adjusted.
+      def details
         lines = (change&.changeset || {}).map do |key, (before, after)|
           if key == "guidance"
             SettingsUpdate.describe_guidance_change(before, after)
@@ -65,8 +64,11 @@ module LiveConversations
           end
         end
         lines = [ "Nothing changed." ] unless changed?
-        (lines + notes + [ no_effect_note ].compact).join("\n")
+        lines + notes
       end
+
+      # What the live model says back, and what the history shows.
+      def summary = [ *details, no_effect_note ].compact.join("\n")
     end
 
     BLANK_VALUES = [ nil, "", "default" ].freeze
@@ -104,8 +106,10 @@ module LiveConversations
       values = normalize
       setting = LiveSetting.editable
       change = nil
+      mode_before = nil
 
       setting.with_lock do
+        mode_before = setting.effective(:voice_turn_detection)
         changeset = {}
         values.each do |key, value|
           if key == "append_guidance"
@@ -140,19 +144,20 @@ module LiveConversations
         end
       end
 
-      Result.new(setting: setting, change: change, notes: @notes, no_effect: no_effect(setting, values, change))
+      Result.new(setting: setting, change: change, notes: @notes, no_effect: no_effect(setting, values, mode_before))
     end
 
     private
 
-    # The knobs this write named that the mode now in force leaves unused, and
-    # all of them when this write changed the mode. A reset names nothing: it is
-    # not tuning anything, and the page and the listing show what is unused.
-    def no_effect(setting, values, change)
+    # The knobs this write set that the mode now in force leaves unused, and all
+    # of them when this write changed the mode. Putting a knob back on its default
+    # tunes nothing, so neither that nor a reset is named; the page and the
+    # listing show what is unused either way.
+    def no_effect(setting, values, mode_before)
       return [] if @reset
-      return setting.inactive_keys if change&.changeset&.key?("voice_turn_detection")
+      return setting.inactive_keys if setting.effective(:voice_turn_detection) != mode_before
 
-      setting.inactive_keys & values.keys.map(&:to_sym)
+      setting.inactive_keys & values.compact.keys.map(&:to_sym)
     end
 
     def actor_label
