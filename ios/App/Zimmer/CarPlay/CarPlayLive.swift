@@ -16,9 +16,10 @@ import os
 /// call still up, the call carries on as the phone's again.
 ///
 /// **When the call cannot connect, or drops, the car says so on the Talk button and tries
-/// again, quietly** (`LiveRetry`): *Live Mode unavailable, retrying…*, then *Tap to retry* once
-/// the retries are spent. It never speaks with another voice: the Realtime call is the car's
-/// only voice.
+/// again** (`LiveRetry`): *Live Mode unavailable, retrying…*, then *Tap to retry* once the retries
+/// are spent. The falling notes sound at the first failure and when it gives up, so a driver
+/// knows without looking. It never speaks with another voice: the Realtime call is the car's only
+/// voice.
 ///
 /// While the call runs the screen is a voice control template, as Apple requires of a
 /// voice-based conversational app while it records, and it is kept minimal:
@@ -83,6 +84,9 @@ final class CarPlayLive {
         call.$muted.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.muteChanged() }
         }.store(in: &watchers)
+        call.$microphoneLost.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.activate() }
+        }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
         call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
             MainActor.assumeIsolated { self?.errorChanged(error) }
@@ -94,6 +98,9 @@ final class CarPlayLive {
     /// The scene connected with a call already up: show it, and hand it to the car.
     func showIfActive() {
         guard call.isActive else { return }
+        // The car's call now: if it drops, the car calls back, as for one it started.
+        retry.asked()
+        retry.connected()
         Task { await call.carryOn(on: .carplay) }
         present()
     }
@@ -102,6 +109,8 @@ final class CarPlayLive {
     func start() {
         telemetry.track(.carPlay("talk_tapped", ["call_active": .bool(call.isActive)]))
         comeback?.talkTapped()
+        // A tap while the last one is still finding its conversation is the same wish.
+        guard !retry.lookingUp else { return }
         retryWait?.cancel()
         retry.asked()
         attempt()
@@ -125,19 +134,36 @@ final class CarPlayLive {
                 await call.start(conversation, startsMuted: comeback?.muted == true, from: .carplay)
                 return
             }
+            retry.lookup()
+            onChange?()
             do {
-                let api = AppEnvironment.shared.connection.api.live(from: .carplay)
-                let id: Int
-                if let current = try await api.liveConversations().current {
-                    id = current
-                } else {
-                    id = try await api.startLiveConversation(.voice).id
-                }
+                let id = try await conversationToCall()
+                retry.lookedUp()
+                guard retry.wanted else { return }
                 await call.start(id, startsMuted: comeback?.muted == true, from: .carplay)
             } catch {
+                retry.lookedUp()
+                guard retry.wanted else { return }
                 failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
             }
         }
+    }
+
+    /// The open conversation, or a new one. This comes before the call exists, so the call's own
+    /// deadline does not cover it: it gets the same one here, and a request still out when that
+    /// passes is cancelled.
+    private func conversationToCall() async throws -> Int {
+        let api = AppEnvironment.shared.connection.api.live(from: .carplay)
+        let lookup = Task { () throws -> Int in
+            if let current = try await api.liveConversations().current { return current }
+            return try await api.startLiveConversation(.voice).id
+        }
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(LiveCallHealth.connectDeadline))
+            lookup.cancel()
+        }
+        defer { deadline.cancel() }
+        return try await lookup.value
     }
 
     /// The driver ended the call: nothing is retried after it.
@@ -263,9 +289,11 @@ final class CarPlayLive {
         if !retryable { retry.gaveUp() }
         guard retryable, let wait = retry.failed() else {
             telemetry.track(.carPlay("retry_gave_up", level: .warn, ["reason": .string(reason), "retryable": .bool(retryable)]))
+            call.soundUnavailable()
             onChange?()
             return
         }
+        if retry.failures == 1 { call.soundUnavailable() }
         telemetry.track(.carPlay("retry_scheduled", level: .warn, ["reason": .string(reason), "wait_ms": .int(Int(wait.components.seconds * 1_000))]))
         onChange?()
         retryWait?.cancel()
@@ -382,6 +410,6 @@ final class CarPlayLive {
 
     private func activate() {
         guard call.isActive else { return }
-        template?.activateVoiceControlState(withIdentifier: LiveCallScreen.identifier(for: call.state, muted: call.muted))
+        template?.activateVoiceControlState(withIdentifier: LiveCallScreen.identifier(for: call.state, muted: call.muted, microphoneLost: call.microphoneLost))
     }
 }
