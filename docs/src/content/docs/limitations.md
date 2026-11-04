@@ -4682,7 +4682,8 @@ signal that it has fallen behind, and it is an accurate one.
 The voice output cap is a hard stop. When it costs a tool call, or a reply nobody heard, the client
 lifts it for the rest of that call and the model goes again. When it cuts off a reply already being
 spoken, with no tool call, the reply just ends and the call goes back to listening: the person hears
-it stop mid-sentence and nothing says why, beyond a `response.done` warning in the iOS call log. The
+it stop mid-sentence, then the failed cue, and only a `response.done` warning in the iOS call log says
+why. The
 floor of 1,024 makes this rare, and blank, the default, never does it. See
 [the voice output cap](/sessions/live/#the-voice-output-cap).
 

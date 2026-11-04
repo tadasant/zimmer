@@ -366,7 +366,7 @@ mid-way through a function call's arguments. So the cap has three guards:
 When the cap costs a tool call, or a reply nobody heard a word of (it can run out in the model's
 reasoning), the client lifts it for the rest of that call: `max_output_tokens: "inf"`, on that
 `session.update` and every later one. A reply nobody heard is asked for again. The next call starts
-on the setting. A spoken reply the cap cut off just ends, and the call goes back to listening.
+on the setting. A spoken reply the cap cut off just ends, with the failed cue, and the call goes back to listening.
 
 The failure is written down in two places. Zimmer logs every failed tool call as a
 `[LiveConversations::ToolBridge]` WARN line with the reason and the size of the arguments, never the
