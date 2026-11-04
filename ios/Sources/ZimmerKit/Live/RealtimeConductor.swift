@@ -37,9 +37,10 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - a response the user talked over (`cancelled`) asks for nothing more: a call first seen in
 ///   its `response.done` is not run, and one already relayed is answered but not followed up;
 /// - each call runs once, however often its events repeat;
-/// - finished transcript lines are recorded, and the user starting to speak stops the reply
-///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
-///   which a WebSocket client sends itself — over WebRTC the server does it);
+/// - finished transcript lines are recorded, and the user starting to speak stops whatever reply
+///   audio is still sounding, `response.done` or not, and tells OpenAI how much of it was heard
+///   (`conversation.item.truncate`, which a WebSocket client sends itself — over WebRTC the server
+///   holds the audio and does it);
 /// - with Listening gated (wake word, dynamic) turn detection starts no reply and cuts none off:
 ///   a finished user line comes out as `hear`, Zimmer says whether to answer it, and `heard`
 ///   asks for the reply — or deletes the line from the call;
@@ -58,11 +59,14 @@ public struct RealtimeConductor: Sendable {
         case hear(itemID: String?, text: String)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
-        /// A new reply item started playing: count its audio from here.
+        /// A new reply item's audio started arriving: count it from here.
         case replyStarted(itemID: String)
-        /// The user started talking over reply `itemID`: stop playing it, and send
-        /// `truncate(itemID:audioEndMs:)` with how much of it was played.
-        case interrupt(itemID: String)
+        /// The user started talking: stop any reply audio still sounding, and send
+        /// `truncate(itemID:audioEndMs:)` for each reply item not heard to the end
+        /// (`LiveReplyPlayout`). Only the player knows which those are: a reply can sound long
+        /// after its `response.done`. `arriving` is the item OpenAI was still sending, which was
+        /// not heard to the end even if all the audio that reached the phone was.
+        case interrupt(arriving: String?)
         case state(LiveVoiceState)
         case failure(String)
     }
@@ -73,8 +77,11 @@ public struct RealtimeConductor: Sendable {
     private var inFlight: Set<String> = []
     /// Calls of a cancelled response: answered when their result comes, followed up never.
     private var dropped: Set<String> = []
-    /// The reply item whose audio is playing.
+    /// The reply item whose audio is arriving, until its response is done.
     private var playingItem: String?
+    /// The item the user talked over while it was arriving: audio of it still on its way is
+    /// not played.
+    private var cutItem: String?
     /// Answered calls, until the response that asked for them is done.
     private var answered: Set<String> = []
     /// The calls of a finished response still waiting on their results.
@@ -137,12 +144,13 @@ public struct RealtimeConductor: Sendable {
             // Gated, speech does not cut the reply off: it may not be meant for the call at all.
             if gated { return playingItem == nil ? [.state(.listening)] : [] }
             defer { playingItem = nil }
-            return (playingItem.map { [Effect.interrupt(itemID: $0)] } ?? []) + [.state(.listening)]
+            if let playingItem { cutItem = playingItem }
+            return [.interrupt(arriving: playingItem), .state(.listening)]
         case "input_audio_buffer.speech_stopped":
             // The person stopped talking: the call is working on an answer from here — the
             // thinking cue starts and the screen says so — until the reply starts, or (gated)
-            // the line turns out not to be one to answer. Not while a reply plays (gated speech
-            // does not cut it off).
+            // the line turns out not to be one to answer. Not while a reply arrives (gated
+            // speech does not cut it off).
             return playingItem == nil ? [.state(.thinking)] : []
         case "response.created":
             responseActive = true
@@ -153,6 +161,7 @@ public struct RealtimeConductor: Sendable {
             return []
         case "response.output_audio.delta":
             guard let delta = event["delta"]?.string, let audio = Data(base64Encoded: delta) else { return [] }
+            if let item = event["item_id"]?.string, item == cutItem { return [] }
             var effects: [Effect] = []
             if let item = event["item_id"]?.string, item != playingItem {
                 playingItem = item

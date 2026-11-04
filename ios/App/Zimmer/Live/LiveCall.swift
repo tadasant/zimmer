@@ -392,11 +392,13 @@ final class LiveCall: ObservableObject {
                 hear(itemID: itemID, text: text, generation: generation)
             case let .play(pcm):
                 audio.play(pcm)
-            case .replyStarted:
-                audio.replyStarted()
-            case let .interrupt(itemID):
-                let heard = audio.stopPlayback()
-                send(RealtimeConductor.truncate(itemID: itemID, audioEndMs: heard))
+            case let .replyStarted(itemID):
+                audio.replyStarted(itemID: itemID)
+            case let .interrupt(arriving):
+                for cut in audio.stopPlayback(arriving: arriving) {
+                    send(RealtimeConductor.truncate(itemID: cut.itemID, audioEndMs: cut.heardMs))
+                    telemetry.track(.replyInterrupted(cut))
+                }
             case let .state(next):
                 // A reply coming through means the call recovered from whatever went wrong.
                 if next == .speaking { lastError = nil }
