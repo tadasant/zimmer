@@ -137,7 +137,7 @@ class LiveConversations::ListeningTest < ActiveSupport::TestCase
     kept = actions.record_turn(role: "user", content: "Zimmer, can you hear me?")
     reply = actions.record_turn(role: "assistant", content: "Loud and clear.")
 
-    assert_equal({ respond: false, dropped: true }, dropped.as_api_json)
+    assert_equal({ respond: false, dropped: true, listening: "wake_word" }, dropped.as_api_json)
     assert kept.respond
     assert_equal true, kept.as_api_json[:respond]
     assert reply.respond
