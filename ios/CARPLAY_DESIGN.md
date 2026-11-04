@@ -60,7 +60,7 @@ is the value shown, and a change here lands in the history as "the iOS app".
 
 **Reset to defaults** clears every setting the panel covers, a hidden one included, and nothing else.
 It leaves the model, the voice and Call telemetry, which are somebody's choice and not a knob pushed
-too far, and the guidance, which has its own history. It is the second row, and it asks for no
+too far, and the guidance, which has its own history. It sits straight under the way back, and it asks for no
 confirmation: it is the break-glass, every value it clears stays in the history, and an alert would
 be one more modal for CarPlay to refuse. The app's Live settings screen and the live model's
 `reset_to_defaults` are wider, for that reason: everything but the guidance.
@@ -73,12 +73,16 @@ which closes the microphone and releases the audio session, and whatever it was 
 the phone's side of the call stops: a reply is cut off, and a tool call still running on Zimmer's
 side finishes with nobody to tell. When the panel closes, by its own *Back to the call* or by
 CarPlay's Back, the same conversation is called again, muted if it was muted, with the same quiet
-retries as any call. The rising notes say it is back.
+retries as any call. The rising notes say it is back. CarPlay's Back knows only the one template, so
+from a row's choices it closes the panel too. The gear does nothing on a call already ended: the
+screen stays tappable for a moment after End, and that must not redial it (`CarCallComeback`).
 
 **Every change takes effect on the call that comes back, not before.** Nothing is listening while
 the panel is up, and that call is minted from the row, so a model or anything else OpenAI fixes for
-a call's life would apply too. It waits for the driver's last write, so it cannot read the row ahead
-of it. A call that starts on the phone meanwhile is the conversation: the panel goes, and the
+a call's life would apply too. Closing waits for the driver's last write, showing *Saving…*, so the
+call cannot read the row ahead of it. A write that failed keeps the panel up to say *Not saved*, and
+the next Back closes it on what the row holds. With CarPlay's Back there is no panel left to say it
+on, so the call comes back on the old value and the log records `settings_write_lost`. A call that starts on the phone meanwhile is the conversation: the panel goes, and the
 call the gear ended stays ended. So does one whose car disconnects with the panel up.
 
 **Radically simple: open, talk, mute, end.** After the first CarPlay builds crashed in a car
@@ -175,9 +179,9 @@ voice settings are the only thing pushed, also through the navigator. A row's ch
 list with its sections replaced, so opening one is no template change, and nothing is deeper than
 that one push.
 
-Reachable only from the call: the home screen stays one button, and a call that cannot connect has
-no gear, since a panel behind a call screen that never stays up is no help. The settings are all on
-the phone's Live settings screen too.
+Reachable only from the call screen, in any of its states: the home screen stays one button, so
+while the Talk button is retrying there is no gear. The settings are all on the phone's Live settings
+screen too.
 
 ### The call screen
 
@@ -248,10 +252,10 @@ running after every step, and any crash report fails the job.
 | --- | --- |
 | Voice is the primary modality at launch | The one button is the voice conversation; nothing is heard until it is tapped |
 | Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call |
-| Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template |
+| Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template. A present CarPlay refuses does not stop the call, so until the next state change presents again the microphone can be open with no screen; the comeback takes that path like any call |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
 | Depth of 3 | One root; one pushed list; the call screen is modal |
-| Few, large targets | One grid button; two call buttons and the gear; list rows, each one word and a value, with at most five choices |
+| Few, large targets | One grid button; two call buttons and the gear; list rows, each a name and a value, with at most five choices |
 | Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud. Reset to defaults does not ask: see *Break glass* |
 | Nothing a driver cannot act on | A call that will not connect says so on the button and retries |
 
@@ -264,7 +268,8 @@ running after every step, and any crash report fails the job.
   session action, no template but the grid, the call screen and the one list, nothing pushed but
   the panel, the call ended before the panel goes up, every sink on the call deferred, and the call
   screen built from `LiveCallScreen.identifiers`.
-- `CarVoiceSettingsTests` hold the panel's reads, writes and reset against the fake's row; a Rails
+- `CarVoiceSettingsTests` hold the panel's reads, writes and reset against the fake's row, and when
+  a comeback exists and ends (`CarCallComeback`); a Rails
   test holds that a cap and a Listening set by voice are read and cleared over the same API, and that
   the next minted call has no cap.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
