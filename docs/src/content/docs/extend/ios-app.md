@@ -768,10 +768,17 @@ system speech, no read-aloud, no spoken confirmations. The car answers every lin
 CarPlay is built as [Listening](/sessions/live/#listening-which-lines-get-an-answer) Always,
 whatever the setting says, so nothing you say there is dropped without a sound.
 
-**When Live Mode can't connect, the button says so.** If the call can't start, or drops, the
-button reads *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds,
-silently. Once those three are spent it reads *Live Mode unavailable. Tap to retry*. Ending the
-call ends the retries.
+**When Live Mode can't connect, the button says so, and you hear it.** A call that isn't up in 15
+seconds gives up. The button reads *Live Mode unavailable, retrying…* and the car tries again after
+2, 5 and 15 seconds, with the falling notes the first time and again when it stops. Once the retries
+are spent, or 30 seconds have gone since you tapped or the call dropped, it reads *Live Mode
+unavailable. Tap to retry*. Ending the call ends the retries.
+
+**A dropped call is noticed.** A socket error ends the call straight away. A socket that just goes
+quiet is pinged, and a call that has had a pong and then hears nothing for 20 seconds has dropped. In
+the car the retries above start a new call on the same conversation. On the phone the falling notes
+play and the screen says what happened. The Realtime session can't be picked up again: it ends with
+its connection.
 
 **You can hear what the call is doing.** The call makes short sounds besides Zimmer's voice, on
 the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit). The browser's call dock makes
@@ -805,13 +812,19 @@ call would sit on Listening and never answer. The call watches for that (`MicWat
 audio engine to restart, unless an interruption (a phone call, Siri) is still under way, in which
 case the call waits for it to end. Each stall is logged.
 
+**A lost microphone is said.** After 2 seconds the car's call screen goes back to Connecting…, the
+phone says *Waiting for the microphone…*, and the falling notes play if the audio is still the app's.
+The rising notes play when it comes back. A microphone that stopped on its own gets 20 seconds and
+an interruption gets 90, and then the call ends the way a drop does.
+
 **Every call is logged, for triage afterwards.** The app records each step of a Live voice call,
 from the phone or the car, and sends the log to Zimmer in batches (`LiveTelemetry`,
 `POST /api/v1/live/telemetry`). Zimmer puts each event on the shipped log stream as an `ios.live`
 record ([observability](/operate/observability/#the-ios-apps-call-log)). The log covers:
 
 - the call starting, its secret, connecting, hand-overs between phone and car, and ending, with
-  the reason and how long it ran;
+  the reason and how long it ran. A call the app died in gets its end on the next launch, with
+  `reason=abandoned`;
 - the microphone permission, the audio session (category, mode, options, rate, route), route
   changes, interruptions, and the engine starting, restarting or failing;
 - turn detection as OpenAI applied it, speech starting and stopping, and the time from the end of
@@ -873,9 +886,10 @@ it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScre
   - any system speech (`AVSpeechSynthesizer`) anywhere in the app;
   - any direct follow-up, merge, restart or archive from the CarPlay scene;
   - any template but the grid and the call screen.
-- The Live call's audio engine is main-actor only, so a route change (the car connecting or
-  disconnecting) can't reconfigure it on one thread while a hang-up stops it on another. Its
-  microphone tap takes the input's own format, so a route that changes the hardware rate can't
+- The Live call's audio engine has one owner at a time, so a route change (the car connecting or
+  disconnecting) can't reconfigure it on one thread while a hang-up stops it on another. The calls
+  that can block run on one serial queue and never on the main thread, so a stuck engine can't stop
+  the call timing out or End working. Its microphone tap takes the input's own format, so a route that changes the hardware rate can't
   install a mismatched tap.
 
 Apple granted the entitlement as a managed capability, and it is enabled on the App ID. It lives

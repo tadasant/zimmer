@@ -119,12 +119,16 @@ public struct LiveTelemetryAnswer: Decodable, Sendable, Equatable {
 /// VictoriaLogs under `scope.name:="ios.live"`).
 ///
 /// Cheap by construction: `track` checks the level, then takes a lock to append one small value;
-/// it never does I/O. Sending is a detached task, never on the caller's thread: within 15 seconds
+/// its only I/O is a small `UserDefaults` write for a call's end, and every few seconds of a call. Sending is a detached task, never on the caller's thread: within 15 seconds
 /// of an event, at once when 40 are waiting, and on `flush()` (a call ending, the app going to
 /// the background); a flush during a send is sent right after it. The buffer holds at most 500,
 /// in memory only; past that the oldest are dropped and counted, and the count rides on the
-/// next batch. A batch that fails to send goes back in the buffer for the next try. What is
-/// waiting when the app is terminated is lost.
+/// next batch. A batch that fails to send goes back in the buffer for the next try.
+///
+/// **Every call logs an end.** What is waiting when the app dies is lost, and a call the app died
+/// in cannot log its own end, so two things are kept in `defaults`, where dying does not reach:
+/// the open call (`call.ended` with `reason=abandoned` is logged for it on the next launch, or by
+/// the next call), and each `call.ended` until a batch carrying it has been answered.
 public final class LiveTelemetry: @unchecked Sendable {
     public typealias Sink = @Sendable (LiveTelemetryBatch) async throws -> LiveTelemetryAnswer
 
@@ -132,6 +136,22 @@ public final class LiveTelemetry: @unchecked Sendable {
     public static let batchSize = 40
     public static let flushEvery: Duration = .seconds(15)
     static let thresholdKey = "live.telemetry.threshold"
+    static let openCallKey = "live.telemetry.open_call"
+    static let unsentEndsKey = "live.telemetry.unsent_ends"
+    /// How stale the open call's last-seen time may get.
+    static let stampEvery: TimeInterval = 5
+    /// The most undelivered ends kept: a phone offline for weeks owes the log only so many.
+    static let unsentEndsCap = 20
+
+    /// The call under way, as the next launch will find it if this one dies.
+    private struct OpenCall: Codable {
+        let id: String
+        let conversation: Int?
+        let startedAt: Date
+        var lastSeenAt: Date
+        var lastSeq: Int
+        var surface: String
+    }
 
     private let lock = NSLock()
     private var buffer: [LiveTelemetryRecord] = []
@@ -144,6 +164,9 @@ public final class LiveTelemetry: @unchecked Sendable {
     private var minimum: LiveTelemetryLevel?
     private var call: (id: String, conversation: Int?)?
     private var client: LiveTelemetryClient
+    private var openCall: OpenCall?
+    private var stampedAt: TimeInterval = 0
+    private var restoredEnds = false
     private var sink: Sink?
     private let defaults: UserDefaults?
     private let now: @Sendable () -> Date
@@ -197,13 +220,55 @@ public final class LiveTelemetry: @unchecked Sendable {
     /// A call starts: every event until `endCall()` carries its id. Returns the id.
     @discardableResult
     public func beginCall(conversation: Int?) -> String {
+        recoverAbandonedCall()
         let id = UUID().uuidString.lowercased()
-        lock.withLock { call = (id, conversation) }
+        let at = now()
+        lock.withLock {
+            call = (id, conversation)
+            openCall = OpenCall(id: id, conversation: conversation, startedAt: at, lastSeenAt: at, lastSeq: seq, surface: client.surface)
+            stampedAt = uptime()
+            saveOpenCall()
+        }
         return id
     }
 
     public func endCall() {
-        lock.withLock { call = nil }
+        lock.withLock {
+            call = nil
+            openCall = nil
+            defaults?.removeObject(forKey: Self.openCallKey)
+        }
+    }
+
+    /// Log what an earlier run of the app could not: a `call.ended` it had not delivered, and one
+    /// for a call it died in. Once a run for the first, and every time for the second, so it is
+    /// safe to call at launch and before each call.
+    public func recoverAbandonedCall() {
+        let recovered: Bool = lock.withLock {
+            var found = false
+            if !restoredEnds {
+                restoredEnds = true
+                let ends = unsentEnds()
+                if !ends.isEmpty {
+                    buffer.insert(contentsOf: ends, at: 0)
+                    found = true
+                }
+            }
+            guard openCall == nil, let open = loadOpenCall() else { return found }
+            defaults?.removeObject(forKey: Self.openCallKey)
+            guard let minimum, LiveTelemetryLevel.warn >= minimum else { return found }
+            let record = LiveTelemetryRecord(
+                seq: open.lastSeq + 1, name: "call.ended", level: .warn, at: Self.iso(open.lastSeenAt),
+                monoMs: Int((uptime() * 1_000).rounded()), callID: open.id, conversationID: open.conversation,
+                fields: ["reason": .string("abandoned"), "duration_ms": .ms(open.lastSeenAt.timeIntervalSince(open.startedAt)),
+                         "last_surface": .string(open.surface), "last_seen_at": .string(Self.iso(open.lastSeenAt))]
+            )
+            buffer.append(record)
+            remember(end: record)
+            return true
+        }
+        guard recovered, autoFlush else { return }
+        flush()
     }
 
     public var callID: String? { lock.withLock { call?.id } }
@@ -215,8 +280,11 @@ public final class LiveTelemetry: @unchecked Sendable {
         let mono = Int((uptime() * 1_000).rounded())
         let full: Bool = lock.withLock {
             seq += 1
-            buffer.append(LiveTelemetryRecord(seq: seq, name: event.name, level: event.level, at: Self.iso(wall), monoMs: mono,
-                                              callID: call?.id, conversationID: call?.conversation, fields: fields))
+            let record = LiveTelemetryRecord(seq: seq, name: event.name, level: event.level, at: Self.iso(wall), monoMs: mono,
+                                             callID: call?.id, conversationID: call?.conversation, fields: fields)
+            buffer.append(record)
+            if event.name == "call.ended" { remember(end: record) }
+            stamp(wall: wall)
             if buffer.count > Self.capacity {
                 let over = buffer.count - Self.capacity
                 buffer.removeFirst(over)
@@ -240,6 +308,7 @@ public final class LiveTelemetry: @unchecked Sendable {
             let answer = try await sink(batch)
             let followUp = lock.withLock {
                 sending = false
+                forget(endsIn: batch)
                 defer { again = false }
                 return again || buffer.count >= Self.batchSize
             }
@@ -277,6 +346,51 @@ public final class LiveTelemetry: @unchecked Sendable {
             dropped = 0
             return (batch, sink)
         }
+    }
+
+    // The ledger. All of it runs under `lock`.
+
+    /// Keep the open call's last-seen time fresh enough to say roughly when it died.
+    private func stamp(wall: Date) {
+        guard var open = openCall else { return }
+        open.lastSeq = seq
+        open.lastSeenAt = wall
+        open.surface = client.surface
+        openCall = open
+        let at = uptime()
+        guard at - stampedAt >= Self.stampEvery else { return }
+        stampedAt = at
+        saveOpenCall()
+    }
+
+    private func saveOpenCall() {
+        guard let openCall, let data = try? JSONEncoder().encode(openCall) else { return }
+        defaults?.set(data, forKey: Self.openCallKey)
+    }
+
+    private func loadOpenCall() -> OpenCall? {
+        defaults?.data(forKey: Self.openCallKey).flatMap { try? JSONDecoder().decode(OpenCall.self, from: $0) }
+    }
+
+    private func unsentEnds() -> [LiveTelemetryRecord] {
+        defaults?.data(forKey: Self.unsentEndsKey).flatMap { try? JSONDecoder().decode([LiveTelemetryRecord].self, from: $0) } ?? []
+    }
+
+    private func saveUnsentEnds(_ ends: [LiveTelemetryRecord]) {
+        if ends.isEmpty {
+            defaults?.removeObject(forKey: Self.unsentEndsKey)
+        } else if let data = try? JSONEncoder().encode(ends) {
+            defaults?.set(data, forKey: Self.unsentEndsKey)
+        }
+    }
+
+    private func remember(end record: LiveTelemetryRecord) {
+        saveUnsentEnds(Array((unsentEnds() + [record]).suffix(Self.unsentEndsCap)))
+    }
+
+    private func forget(endsIn batch: LiveTelemetryBatch) {
+        guard batch.events.contains(where: { $0.name == "call.ended" }) else { return }
+        saveUnsentEnds(unsentEnds().filter { end in !batch.events.contains { $0.callID == end.callID && $0.seq == end.seq } })
     }
 
     private func armTimer() {

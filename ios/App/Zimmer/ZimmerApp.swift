@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // A call the last run died in gets its end logged now, not whenever the next call starts.
+        _ = LiveTelemetry.shared
         return true
     }
 

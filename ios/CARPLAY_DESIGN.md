@@ -133,9 +133,12 @@ on Listening for ever. After 300 ms without microphone audio the call sends sile
 and asks the engine to restart (`MicWatchdog`). It is the same rule as a muted call's silence
 (#1372), applied to a microphone that went quiet on its own.
 
-**Every call leaves a trace.** The car cannot be tested from CI, so each call logs every step to
-Zimmer's shipped logs (`LiveTelemetry` → `POST /api/v1/live/telemetry` → `ios.live` records in
-VictoriaLogs). The Live setting *Call telemetry* turns it down or off without a build. See
+**Every call leaves a trace, and every trace has an end.** The car cannot be tested from CI, so each
+call logs every step to Zimmer's shipped logs (`LiveTelemetry` → `POST /api/v1/live/telemetry` →
+`ios.live` records in VictoriaLogs). `call.ended` is kept in `UserDefaults` until a batch carrying it
+has been answered, and the open call is too, so a call the app died in gets `call.ended`
+`reason=abandoned` on the next launch, carrying when it was last seen. The Live setting *Call
+telemetry* turns it down or off without a build. See
 [docs: observability](https://docs.zimmer.tadasant.com/operate/observability/#the-ios-apps-call-log).
 
 **One thread.** Everything the driver says goes to the one Live Mode conversation: Talk to Zimmer
@@ -147,10 +150,47 @@ way to act on a session directly, and a source guard keeps it that way.
 button. The category's "primary modality of voice upon launch" is read as *the default action is
 voice*, not *the app speaks first*.
 
-**Live Mode unavailable is shown, never spoken.** When the call cannot connect, or drops, the button
-says *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds, silently
-(`LiveRetry`). Once those are spent it says *Live Mode unavailable. Tap to retry*; a tap is a fresh
-budget, a call that comes up earns it back, and ending the call stops the retries.
+**Live Mode unavailable is shown and heard, never spoken.** When the call cannot connect, or drops,
+the button says *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds
+(`LiveRetry`), with no voice. The falling notes sound at the first failure and again when it gives
+up, so a driver knows without looking. Once the retries are spent, or 30 seconds have gone from the
+tap or the drop, it says *Live Mode unavailable. Tap to retry*; a tap is a fresh budget, a call that
+comes up earns it back, and ending the call stops the retries. A call that never came up has no
+engine to play the notes, so it gets a short-lived one for them, in the call's own audio category
+and for as long as they sound (`LiveAudioEngine.playAlone`).
+
+**A call that will not connect gives up in 15 seconds.** The driver's answer comes quickly or it is
+no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and
+OpenAI has said `session.created`, so *Listening* and the connected notes mean somebody can hear
+you; the socket merely having been asked to open proves nothing. A tap answers at once (the button
+says *Connecting…*), a second tap is not a second attempt, and finding the conversation has the same
+deadline. Two calls that each hang to the deadline come to about half a minute, then *Tap to retry*
+(`LiveCallHealth`).
+
+**Nothing that can block runs on the main thread.** One call sat on Connecting… for 770 seconds with
+the time inside the audio engine's start, which was on the main thread: no deadline could fire, End
+could not be pressed, and the screen could not change. Starting, restarting and stopping the engine
+run on one serial queue (`LiveAudioEngine.queue`), and an engine out there is not the call's until
+it comes back. A call can give up on one that is stuck, and whatever comes back is torn down. The
+queue is serial on purpose, so a stuck engine holds up the calls after it too: they time out the same
+way, the falling notes can't play, and calling works again only once it comes back.
+
+**A dropped connection is noticed, and the car calls back.** A socket that errors ends the call, on
+receive, send or ping. A socket that just goes quiet is pinged: after 10 quiet seconds, and once as
+soon as the call is up, to learn that pongs come. Only a call that has had a pong can be called dead,
+20 seconds after it last heard anything, so a server that does not answer pings costs the detection
+and not the call. Then the falling notes play, the call ends, and the retries above start a new one
+on the same conversation. There is no resuming the old socket: a Realtime session belongs to its
+connection. The phone has no retries, so there the call says what happened and stops.
+
+**A lost microphone says so.** Past 2 seconds without microphone audio the call screen goes back to
+Connecting… (a sixth state is one CarPlay would drop), the phone says *Waiting for the microphone…*,
+and the falling notes play if the audio is still ours. When it comes back the rising notes play. An
+interruption can hold the microphone for 90 seconds, because they do come back (one ran 55 seconds
+and the call carried on) and iOS does not promise to say when one ends; a microphone that stopped
+on its own gets 20, counted from when the interruption let go of it. Then the call ends, as a drop
+does. An app with a phone call in progress cannot
+make a sound at all, so during one of those this is only shown.
 
 ## Screens
 
@@ -163,9 +203,9 @@ flowchart TD
   panel -- "Back to the call, or CarPlay's Back: calls again" --> call
   panel -- a row --> choices["The row's choices (the same list, redrawn)"]
   choices -- a choice, or Back to settings --> panel
-  call -- cannot connect, or drops --> retry["button: Live Mode unavailable, retrying…\n(2 s, 5 s, 15 s, silently)"]
+  call -- cannot connect in 15 s, or drops --> retry["button: Live Mode unavailable, retrying…\nfalling notes once\n(2 s, 5 s, 15 s, no more than 30 s)"]
   retry -- a retry connects --> call
-  retry -- retries spent --> tap["button: Live Mode unavailable. Tap to retry"]
+  retry -- retries spent --> tap["button: Live Mode unavailable. Tap to retry\nfalling notes"]
   tap -- tap --> call
 ```
 
@@ -213,7 +253,8 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | CarPlay's `presentedTemplate` is a stand-in, not the object presented, so a dismissal that compared by identity never happened and the call screen stayed up, "Connecting…", over a car that had given up | The navigator tracks the modal it put up itself and asks CarPlay only whether anything is up | `CarPlayTests.testTheCallScreenComesDownWhenCarPlayHandsBackAStandInForIt`; the drill's no-call-screen check |
 | A voice control template built with ten states; CarPlay keeps five | Five states, Muted one of them | `LiveCallScreenTests`, and a source guard on how `CarPlayLive` builds them |
 | `@Published` publishes in `willSet`, so the screen read the state the call was leaving | Every sink on the call is received on the main queue's next turn | A source guard |
-| The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` is main-actor only; its observers run on the main queue; a media-services reset ends the call | Review; no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
+| The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` decides everything on the main actor; its observers run on the main queue; an engine is reconfigured on one serial queue and belongs to it until it comes back; a media-services reset ends the call | A source guard for the blocking calls; review for the rest: no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
+| The audio engine's start blocked the main thread for 770 s with the call on Connecting…, so nothing could time it out or end it | Every call that can block runs on `LiveAudioEngine.queue`; `LiveCallHealth` gives up at 15 s | `CarPlayTests.testTheCallsThatCanBlockNeverRunOnTheMainActor`; `LiveCallHealthTests` |
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
 | The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | A source guard |
 | Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsOneButtonOneCallScreenAndOnePanel` |
@@ -266,12 +307,12 @@ running after every step, and any crash report fails the job.
 | Depth of 3 | One root; one pushed list; the call screen is modal |
 | Few, large targets | One grid button; two call buttons and the gear; list rows, each a name and a value, with at most five choices |
 | Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud. Reset to defaults does not ask: see *Break glass* |
-| Nothing a driver cannot act on | A call that will not connect says so on the button and retries |
+| Nothing a driver cannot act on | A call that will not connect gives up in 15 seconds, says so on the button with the falling notes, and retries |
 
 ## What is proven, and what is not
 
-- `LiveActivity`, `LiveCallScreen`, `LiveRetry`, `CarPlayNavigator`, `LiveReferencedSessions` and
-  the conductor are in ZimmerKit and tested on Linux and macOS on every iOS pull request.
+- `LiveActivity`, `LiveCallScreen`, `LiveRetry`, `LiveCallHealth`, `CarPlayNavigator`,
+  `LiveReferencedSessions` and the conductor are in ZimmerKit and tested on Linux and macOS on every iOS pull request.
 - `CarPlayTests` also reads the scene's source: no interface-controller call outside
   `CarPlayInterface.swift` or without a completion, no system speech anywhere in the app, no direct
   session action, no template but the grid, the call screen and the one list, nothing pushed but
@@ -287,7 +328,8 @@ running after every step, and any crash report fails the job.
   action), CarPlay's own Back on the panel, and a muted call coming back muted.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
-  are confirmed only by driving. Nor is a relaunch: in the Simulator a
+  are confirmed only by driving, as are a real interruption, a socket going quiet and whether OpenAI
+  answers pings (`socket.ping` in the log will say). Nor is a relaunch: in the Simulator a
   relaunched Zimmer never gets its CarPlay scene back (the window stays blank), and whether a car
   behaves the same after Zimmer crashes or is killed is untested. Nor is the call coming back from
   the panel to a voice: CI has no call that connects, so the drill proves it is called again and the

@@ -7,26 +7,49 @@ import Foundation
 /// The retries belong to the driver's tap. Tapping Talk starts a fresh budget; a few failures
 /// in a row use it up, and the tile then says Live Mode is unavailable until the driver taps it
 /// again. Hanging up ends the wish for a call, so nothing is retried after it.
+///
+/// The budget is time as well as tries. A call that fails at once uses all three retries; one
+/// that hangs until `LiveCallHealth.connectDeadline` would take over a minute to, so no wait
+/// starts that would run past `budget`, and a driver hears the outcome in about half a minute.
 public struct LiveRetry: Hashable, Sendable {
     /// The waits before each retry. Once they are used up the car stops trying.
     public static let delays: [Duration] = [.seconds(2), .seconds(5), .seconds(15)]
+    /// No retry is waited for past this long after the tap, or after a call that was up dropped.
+    public static let budget: TimeInterval = 30
 
     /// The driver asked for a call and has not hung up.
     public private(set) var wanted = false
     /// Failures since the driver last asked, or since the call last came up.
     public private(set) var failures = 0
+    /// Finding the conversation to call, the part of a tap that comes before the call exists.
+    /// A second tap in the meantime is not a second attempt.
+    public private(set) var lookingUp = false
+    /// When this run of trying began: the tap, or a good call's drop. Nil while a call is up.
+    private var since: TimeInterval?
 
     public init() {}
 
     /// The driver tapped Talk (or a session's row): a fresh budget.
-    public mutating func asked() {
+    public mutating func asked(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         wanted = true
         failures = 0
+        since = now
+    }
+
+    /// An attempt started finding its conversation.
+    public mutating func lookup() {
+        lookingUp = true
+    }
+
+    /// The attempt has its conversation, or has failed to find one.
+    public mutating func lookedUp() {
+        lookingUp = false
     }
 
     /// The call came up: the next drop gets the whole budget again.
     public mutating func connected() {
         failures = 0
+        since = nil
     }
 
     /// A failure no retry can fix (the microphone is off for Zimmer): stop, and say unavailable.
@@ -43,13 +66,16 @@ public struct LiveRetry: Hashable, Sendable {
 
     /// The call failed. How long to wait before trying again, or nil when the car should stop
     /// and say Live Mode is unavailable — or when nobody asked for this call.
-    public mutating func failed() -> Duration? {
+    public mutating func failed(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Duration? {
         guard wanted else { return nil }
-        guard failures < Self.delays.count else {
+        let since = self.since ?? now
+        self.since = since
+        let wait = failures < Self.delays.count ? Self.delays[failures] : nil
+        guard let wait, now - since + Double(wait.components.seconds) <= Self.budget else {
             wanted = false
+            failures = max(failures, 1)
             return nil
         }
-        let wait = Self.delays[failures]
         failures += 1
         return wait
     }
@@ -57,7 +83,7 @@ public struct LiveRetry: Hashable, Sendable {
     /// What the Talk tile says.
     public func tile(callIsActive: Bool) -> LiveTalkTile {
         if callIsActive { return .inCall }
-        guard failures > 0 else { return .ready }
+        guard failures > 0 else { return lookingUp ? .connecting : .ready }
         // Waiting to retry, or a retry connecting: either way it is still trying.
         return wanted ? .retrying : .unavailable
     }
@@ -65,12 +91,13 @@ public struct LiveRetry: Hashable, Sendable {
 
 /// The Talk tile's words: the one place the car says whether Live Mode is there.
 public enum LiveTalkTile: Hashable, Sendable {
-    case ready, inCall, retrying, unavailable
+    case ready, connecting, inCall, retrying, unavailable
 
     /// Longest first, as CarPlay chooses among them.
     public var titleVariants: [String] {
         switch self {
         case .ready: return ["Talk to Zimmer", "Talk"]
+        case .connecting: return ["Connecting…", "Calling…"]
         case .inCall: return ["Back to the call", "Call"]
         case .retrying: return ["Live Mode unavailable, retrying…", "Retrying…"]
         case .unavailable: return ["Live Mode unavailable. Tap to retry", "Retry"]
@@ -81,6 +108,7 @@ public enum LiveTalkTile: Hashable, Sendable {
     public var symbol: String {
         switch self {
         case .ready: return "mic.fill"
+        case .connecting: return "waveform"
         case .inCall: return "waveform"
         case .retrying: return "arrow.triangle.2.circlepath"
         case .unavailable: return "exclamationmark.triangle.fill"

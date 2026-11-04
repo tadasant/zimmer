@@ -208,8 +208,8 @@ public struct CarCallComeback: Sendable, Equatable {
     }
 
     /// The call came back and OpenAI has answered on it, so nothing is left to bring back.
-    /// Listening is not proof: the call reaches it when the microphone opens, before the socket
-    /// has said anything, and a socket that fails there is still a retry of this comeback.
+    /// Listening is not proof enough: nothing has been said on the new call yet, and one that
+    /// fails there is still a retry of this comeback.
     public func isSpent(by current: LiveVoiceState) -> Bool {
         switch current {
         case .thinking, .speaking, .working: true
