@@ -354,24 +354,24 @@ if [ -n "$carplay" ]; then
   (
     while [ ! -e "$artifacts/.tests-finished" ]; do
       if [ -e "$click_request" ]; then
-        read -r across down <"$click_request" || true
+        read -r spot_x spot_y <"$click_request" || true
         rm -f "$click_request"
-        osascript - "$across" "$down" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
+        osascript - "$spot_x" "$spot_y" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
 on run argv
-  set across to (item 1 of argv) as real
-  set down to (item 2 of argv) as real
+  set fracX to (item 1 of argv) as real
+  set fracY to (item 2 of argv) as real
   tell application "Simulator" to activate
   delay 0.5
   tell application "System Events" to tell process "Simulator"
     set theWindow to first window whose name contains "CarPlay"
-    set {left, top} to position of theWindow
-    set {wide, high} to size of theWindow
+    set {winX, winY} to position of theWindow
+    set {winW, winH} to size of theWindow
     set titleBar to 28
-    set x to round (left + wide * across)
-    set y to round (top + titleBar + (high - titleBar) * down)
-    click at {x, y}
+    set clickX to round (winX + winW * fracX)
+    set clickY to round (winY + titleBar + (winH - titleBar) * fracY)
+    click at {clickX, clickY}
   end tell
-  return "clicked " & x & "," & y & " in a window " & wide & "x" & high & " at " & left & "," & top
+  return "clicked " & clickX & "," & clickY & " in a window " & winW & "x" & winH & " at " & winX & "," & winY
 end run
 APPLESCRIPT
       fi
