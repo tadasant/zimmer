@@ -143,6 +143,11 @@ public extension LiveEvent {
         LiveEvent(.info, "call.handed_over") { ["surface": .string(surface)] }
     }
 
+    /// The mode in force changed mid-call: a hand-over, or Listening changed while it was up.
+    static func listeningChanged(from: String?, to: String?) -> LiveEvent {
+        LiveEvent(.info, "listening.changed") { ["from": .text(from), "to": .text(to)] }
+    }
+
     static func callEnded(reason: String, duration: TimeInterval?, summary: [String: JSONValue]) -> LiveEvent {
         LiveEvent(.info, "call.ended") { summary.merging(["reason": .string(reason), "duration_ms": .ms(duration)]) { $1 } }
     }

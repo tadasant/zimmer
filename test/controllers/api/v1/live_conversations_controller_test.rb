@@ -206,13 +206,77 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert response.parsed_body["respond"], "no line is dropped in the car"
   end
 
+  # What call 90fb7c5f did on a stored gated mode: the car hung up, the call carried
+  # on through the phone, and every line was heard and dropped.
+  test "a call handed from the car to the phone keeps answering every line until it hangs up" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "dynamic" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.5.0")
+    phone = @headers.merge("X-Zimmer-Client" => "ios/1.5.0")
+    url = "/api/v1/live_conversations/#{conversation.id}"
+    LiveConversations::RealtimeSession.any_instance.stubs(:create_secret).returns({ "value" => "ek_test" })
+    OpenaiClient.any_instance.expects(:chat_completion).never
+
+    post "#{url}/client_secret", params: { listening_modes: "1" }, headers: car
+    assert_equal "always", response.parsed_body["listening"]
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+                 response.parsed_body.dig("session", "audio", "input", "turn_detection"))
+    assert_equal "ios", conversation.reload.client_surface, "the hand-over is still noted: the instructions stop saying car"
+
+    post "#{url}/turns", params: { role: "user", content: "are you still there", listening_modes: "1" }, headers: phone
+    assert_response :created
+    assert_equal [ true, false, "always" ], response.parsed_body.values_at("respond", "dropped", "listening")
+
+    post "#{url}/tool_calls", params: { name: "update_live_settings", arguments: { voice_speed: 1.1 }.to_json, call_id: "call_s", listening_modes: "1" }, headers: phone
+    assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response"), "a mid-call setting change does not gate it either"
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response"), "nor the settings screen's refresh"
+
+    post "#{url}/client_secret", params: { listening_modes: "1" }, headers: phone
+    assert_equal "dynamic", response.parsed_body["listening"], "the next call, started on the phone, is on Listening again"
+    assert_not conversation.reload.car_call
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal false, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response")
+  end
+
+  test "a phone call handed to the car and back stays on Always for the rest of the call" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice", client_surface: "ios")
+    url = "/api/v1/live_conversations/#{conversation.id}"
+    LiveConversations::RealtimeSession.any_instance.stubs(:create_secret).returns({ "value" => "ek_test" })
+    phone = @headers.merge("X-Zimmer-Client" => "ios/1.5.0")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.5.0")
+
+    post "#{url}/client_secret", params: { listening_modes: "1" }, headers: phone
+    assert_equal "wake_word", response.parsed_body["listening"]
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: car
+    assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response")
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response")
+  end
+
+  test "a dropped line says the mode that dropped it" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice")
+
+    post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "talking to my friend", listening_modes: "1" }, headers: @headers.merge("X-Zimmer-Client" => "ios/1.5.0")
+
+    assert_equal "wake_word", response.parsed_body["listening"]
+  end
+
   test "with Listening gated, an app that asks for its own replies has a stray line dropped and a named one answered" do
     LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     conversation = create_live_conversation(mode: "voice")
 
     post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "talking to my friend", listening_modes: "1" }, headers: @headers
     assert_response :ok
-    assert_equal({ "respond" => false, "dropped" => true }, response.parsed_body)
+    assert_equal({ "respond" => false, "dropped" => true, "listening" => "wake_word" }, response.parsed_body)
 
     post "/api/v1/live_conversations/#{conversation.id}/turns", params: { role: "user", content: "Zimmer, is main green?", listening_modes: "1" }, headers: @headers
     assert_response :created
