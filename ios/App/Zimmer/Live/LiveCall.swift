@@ -394,8 +394,8 @@ final class LiveCall: ObservableObject {
                 audio.play(pcm)
             case let .replyStarted(itemID):
                 audio.replyStarted(itemID: itemID)
-            case .interrupt:
-                for cut in audio.stopPlayback() {
+            case let .interrupt(arriving):
+                for cut in audio.stopPlayback(arriving: arriving) {
                     send(RealtimeConductor.truncate(itemID: cut.itemID, audioEndMs: cut.heardMs))
                     telemetry.track(.replyInterrupted(cut))
                 }

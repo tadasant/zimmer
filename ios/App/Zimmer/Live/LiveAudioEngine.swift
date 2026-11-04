@@ -249,6 +249,7 @@ final class LiveAudioEngine {
     func recoverIfStopped() {
         guard !interrupted, let engine, let player, let cuePlayer, !engine.isRunning else { return }
         player.stop()
+        playout.queueDropped(at: ProcessInfo.processInfo.systemUptime)
         cuePlayer.stop()
         let wasThinking = thinking
         thinking = false
@@ -331,15 +332,16 @@ final class LiveAudioEngine {
         playout.started(itemID: itemID, at: ProcessInfo.processInfo.systemUptime)
     }
 
-    /// The user started talking: drop any reply audio still to sound, and say which items that
-    /// cut and how much of each was heard. Nothing left to sound is left alone.
-    func stopPlayback() -> [LiveReplyPlayout.Cut] {
-        let cuts = playout.stop(at: ProcessInfo.processInfo.systemUptime, latency: AVAudioSession.sharedInstance().outputLatency)
-        if !cuts.isEmpty, let engine, let player, engine.isRunning {
+    /// The user started talking: drop any reply audio still to sound, and say which items were
+    /// not heard to the end and how much of each was. The player stops whatever the answer: that
+    /// is a model of it, and a player with nothing queued loses nothing.
+    func stopPlayback(arriving: String?) -> [LiveReplyPlayout.Cut] {
+        if let engine, let player, engine.isRunning {
             player.stop()
             player.play()
         }
-        return cuts
+        return playout.stop(at: ProcessInfo.processInfo.systemUptime, latency: AVAudioSession.sharedInstance().outputLatency,
+                            arriving: arriving)
     }
 
     /// Close the microphone and the player. With a `token`, only if it is still that start's call.

@@ -59,13 +59,14 @@ public struct RealtimeConductor: Sendable {
         case hear(itemID: String?, text: String)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
-        /// A new reply item started playing: count its audio from here.
+        /// A new reply item's audio started arriving: count it from here.
         case replyStarted(itemID: String)
         /// The user started talking: stop any reply audio still sounding, and send
         /// `truncate(itemID:audioEndMs:)` for each reply item not heard to the end
-        /// (`LiveReplyPlayout`). Only the player knows: a reply can sound long after its
-        /// `response.done`.
-        case interrupt
+        /// (`LiveReplyPlayout`). Only the player knows which those are: a reply can sound long
+        /// after its `response.done`. `arriving` is the item OpenAI was still sending, which was
+        /// not heard to the end even if all the audio that reached the phone was.
+        case interrupt(arriving: String?)
         case state(LiveVoiceState)
         case failure(String)
     }
@@ -142,14 +143,14 @@ public struct RealtimeConductor: Sendable {
         case "input_audio_buffer.speech_started":
             // Gated, speech does not cut the reply off: it may not be meant for the call at all.
             if gated { return playingItem == nil ? [.state(.listening)] : [] }
-            cutItem = playingItem
-            playingItem = nil
-            return [.interrupt, .state(.listening)]
+            defer { playingItem = nil }
+            if let playingItem { cutItem = playingItem }
+            return [.interrupt(arriving: playingItem), .state(.listening)]
         case "input_audio_buffer.speech_stopped":
             // The person stopped talking: the call is working on an answer from here — the
             // thinking cue starts and the screen says so — until the reply starts, or (gated)
-            // the line turns out not to be one to answer. Not while a reply plays (gated speech
-            // does not cut it off).
+            // the line turns out not to be one to answer. Not while a reply arrives (gated
+            // speech does not cut it off).
             return playingItem == nil ? [.state(.thinking)] : []
         case "response.created":
             responseActive = true

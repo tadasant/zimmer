@@ -196,7 +196,7 @@ final class LiveDiagnosticsTests: XCTestCase {
 
     func testTheEndOfSpeechPutsTheCallToWorkAtOnce() {
         var conductor = RealtimeConductor()
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)])
         XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":2000}"#)), [.state(.thinking)],
                        "the thinking cue starts the moment the person stops talking")
         var gated = RealtimeConductor(listening: "wake_word")
