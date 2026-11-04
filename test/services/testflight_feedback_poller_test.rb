@@ -10,6 +10,8 @@ class TestflightFeedbackPollerTest < ActiveSupport::TestCase
   SCREENSHOTS = "/v1/apps/#{APP}/betaFeedbackScreenshotSubmissions".freeze
 
   setup do
+    # The fixtures' dates: CRASH_LOG_RETRY_WINDOW would otherwise age them out by the calendar.
+    travel_to Time.utc(2026, 10, 29, 12)
     @exporter = RecordingExporter.new
   end
 
