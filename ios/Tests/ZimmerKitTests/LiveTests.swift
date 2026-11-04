@@ -452,7 +452,7 @@ final class RealtimeConductorTests: XCTestCase {
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
         _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
         _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)],
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .signal(.personTalking), .state(.listening)],
                        "generation finishing says nothing about what the speaker has left")
     }
 
@@ -460,7 +460,7 @@ final class RealtimeConductorTests: XCTestCase {
         var conductor = RealtimeConductor(listening: "wake_word")
         _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
         _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)],
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.signal(.personTalking), .state(.listening)],
                        "it may not be meant for the call")
     }
 
