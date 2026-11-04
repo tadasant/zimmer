@@ -23,21 +23,23 @@
 # A superseded run waits for the newest run's answer instead, and the same wait covers a
 # re-run a newer push cancelled. A human has nothing to do while that answer is coming: a
 # failed newest run reaches this same listener, where a lost runner gets its one re-run and
-# anything else pages. So this stays quiet only once the newest run has FINISHED, because a
-# run still queued can yet be cancelled, and a cancelled run never pages. It pages when the
-# newest run:
+# anything else pages. So this stays quiet only once the newest run of the same trigger has
+# FINISHED, because a run still queued can yet be cancelled, and a cancelled run never pages.
+# It pages when that newest run:
 #   - concluded anything but success or a failure the listener hears (`cancelled` with
 #     nothing newer behind it is the usual one);
-#   - came from another trigger, so it may not be the same check (a `workflow_dispatch` of
-#     `ios-ui-tests.yml` picks its own configuration);
 #   - does not contain this run's commit;
 #   - skipped a job this run never finished. `ci.yml`'s iOS jobs skip on a commit that
 #     does not touch ios/, and a skip is a non-answer, so a green run there says nothing
 #     about the lost job;
 #   - had not finished when the wait ran out.
-# A job that really failed beside the lost one pages at once: with no lost runner it would
-# have paged, and a newer pass does not make it not have happened. `ci.yml`'s all-checks-pass
-# fails beside a lost iOS job, so a superseded `ci.yml` run still pages.
+# A dispatched run always pages: its inputs are its own (`signing` in `testflight.yml`, the
+# configuration in `ios-ui-tests.yml`), and no other run can answer for them.
+#
+# A job that really failed beside the lost one pages at once on both paths: with no lost
+# runner it would have paged, and a newer pass does not make it not have happened.
+# `ci.yml`'s `all-checks-pass` is the exception. It fails because the lost job did not pass,
+# which says nothing new, so it is not counted as a failure of its own.
 #
 # Every answer this cannot reach is "page". A missed re-run costs one human command; a
 # swallowed alert costs a red main nobody knows about.
@@ -60,6 +62,7 @@ POLL_SECONDS="${POLL_SECONDS:-60}"
 # Per API call: one stalled request is a transient error, not the whole wait.
 API_TIMEOUT="${API_TIMEOUT:-60}"
 MARKER="was not acquired by Runner"
+GATE_JOB="all-checks-pass"
 
 api() { timeout "$API_TIMEOUT" gh api "$@"; }
 
@@ -74,25 +77,27 @@ verdict() {
   exit 0
 }
 
-# The newest run of this workflow on main, as: id head_sha status conclusion event
+# The newest run of this workflow on main, as: id head_sha status conclusion
+# $1 narrows the query, as `&event=push`.
 read_newest() {
-  api "repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?branch=main&per_page=1" \
-    --jq '.workflow_runs[0] | "\(.id) \(.head_sha) \(.status) \(.conclusion // "-") \(.event)"'
+  api "repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?branch=main&per_page=1${1:-}" \
+    --jq '.workflow_runs[0] | "\(.id) \(.head_sha) \(.status) \(.conclusion // "-")"'
 }
 
 # Rule on the newest run, or return if it has not answered yet. A failed API call returns
 # too: one transient error must not page, and the deadline still does.
 check_newest() {
-  local context="$1" newest id sha status conclusion event contains ran job
-  newest="$(read_newest)" || return 0
-  read -r id sha status conclusion event <<<"$newest"
+  local context="$1" newest id sha status conclusion contains ran job
+  if [ "$RUN_EVENT" = "workflow_dispatch" ]; then
+    verdict true "${context}; a dispatched run has its own inputs, so no other run answers for it."
+  fi
+  # The same trigger only: a dispatch of `ios-ui-tests.yml` on top says nothing about pushes.
+  newest="$(read_newest "&event=${RUN_EVENT}")" || return 0
+  read -r id sha status conclusion <<<"$newest"
 
   # A number comparison, so an empty list (`null`) or a stale one pages as well.
   if ! [ "$id" -gt "$RUN_ID" ] 2>/dev/null; then
     verdict true "${context}; no newer run will answer for it."
-  fi
-  if [ "$event" != "$RUN_EVENT" ]; then
-    verdict true "${context}; the newest run ${id} came from ${event}, not ${RUN_EVENT}, so it does not answer for this one."
   fi
   [ "$status" = "completed" ] || return 0
 
@@ -110,12 +115,12 @@ check_newest() {
     --jq '.jobs[] | select(.conclusion != "skipped") | .name')" || return 0
   while read -r job; do
     [ -n "$job" ] || continue
-    if ! grep -qxF "$job" <<<"$ran"; then
-      verdict true "${context}; the newest run ${id} concluded ${conclusion} without running ${job}."
+    if ! grep -qxF -- "$job" <<<"$ran"; then
+      verdict true "${context}; the newest run ${id} concluded ${conclusion} and skipped ${job}."
     fi
   done <<<"$must_run"
 
-  verdict false "${context}; the newest run ${id} ran it and concluded ${conclusion}, which the listener answers for."
+  verdict false "${context}; the newest run ${id} did not skip it and concluded ${conclusion}, which the listener answers for."
 }
 
 # Hold until the newest run answers. The newest is re-read every time: the run seen first
@@ -125,7 +130,7 @@ await_newest() {
   while :; do
     check_newest "$context"
     if [ "${DRY_RUN:-}" = "1" ]; then
-      verdict false "DRY_RUN: ${context}; would wait up to ${WAIT_MINUTES} min for the newest run: $(read_newest)."
+      verdict false "DRY_RUN: ${context}; would wait up to ${WAIT_MINUTES} min for the newest run: $(read_newest "&event=${RUN_EVENT}")."
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
       verdict true "${context}; the newest run had not answered after ${WAIT_MINUTES} min."
@@ -152,7 +157,7 @@ while read -r id conclusion name; do
   [ -n "$id" ] || continue
   must_run="${must_run}${name}"$'\n'
   if [ "$conclusion" != "cancelled" ]; then
-    others="${others}${others:+, }${name}"
+    [ "$name" = "$GATE_JOB" ] || others="${others}${others:+, }${name}"
     continue
   fi
   if ! messages="$(api "repos/${REPO}/check-runs/${id}/annotations" --jq '.[].message')"; then
@@ -203,9 +208,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     success)
       verdict false "GitHub gave no runner to ${unacquired}; the automatic re-run passed." ;;
     cancelled | skipped)
-      # A newer push cancelled it, which only that push's run can answer for. Everything
-      # attempt 1 left unfinished went into this re-run, so all of it has to have run there:
-      # `all-checks-pass` failing beside a lost iOS job is not a second failure to page on.
+      # A newer push cancelling it is the usual cause, and only that push's run can answer.
+      if [ -n "$others" ]; then
+        verdict true "GitHub gave no runner to ${unacquired}, and ${others} did not pass either; the re-run was ${conclusion}."
+      fi
       await_newest "GitHub gave no runner to ${unacquired}; the re-run was ${conclusion}" ;;
     *)
       verdict true "GitHub gave no runner to ${unacquired} on attempt 1; the automatic re-run then concluded ${conclusion}." ;;
