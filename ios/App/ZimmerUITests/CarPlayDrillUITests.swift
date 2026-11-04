@@ -81,17 +81,14 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-voice-settings")
 
         // Silence: the threshold is real there, so it appears, with the value voice left.
-        row("Turn detection").tap()
-        XCTAssertTrue(row("Silence").waitForExistence(timeout: timeout), "a row opens its choices; the car showed:\n\(car.debugDescription)")
+        press("Turn detection", until: row("Back to settings"))
         photograph("carplay-voice-settings-choices")
-        row("Silence").tap()
-        XCTAssertTrue(row("Speech threshold").waitForExistence(timeout: timeout), "Silence brings the threshold; the car showed:\n\(car.debugDescription)")
+        press("Silence", until: row("Speech threshold"))
         XCTAssertTrue(anything(containing: "0.92").exists, "the value voice left; the car showed:\n\(car.debugDescription)")
         photograph("carplay-voice-settings-silence")
 
         // Reset to defaults: no cap, back on Semantic, and the threshold's row gone with it.
-        row("Reset to defaults").tap()
-        XCTAssertTrue(anything(containing: "No cap (default)").waitForExistence(timeout: timeout), "Reset clears the cap; the car showed:\n\(car.debugDescription)")
+        press("Reset to defaults", until: anything(containing: "No cap (default)"))
         XCTAssertFalse(row("Speech threshold").exists, "and it is back on Semantic")
         photograph("carplay-voice-settings-reset")
         assertAlive("after the reset")
@@ -100,7 +97,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // cannot connect (its Realtime secret points at realtime.invalid). The call screen goes
         // up, the call fails, and the car retries after 2, 5 and 15 seconds, each retry putting
         // the call screen up and taking it down — the churn that crashed it.
-        row("Back to the call").tap()
+        press("Back to the call", until: car.descendants(matching: .any).matching(NSPredicate(format: "label == 'Connecting…' OR label CONTAINS 'etry'")).firstMatch)
         XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a failed call says it is retrying, on the button")
         photograph("carplay-retrying")
         XCTAssertTrue(waitFor(anyOf: ["Retry", "Live Mode unavailable. Tap to retry"], seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
@@ -135,9 +132,20 @@ final class CarPlayDrillUITests: XCTestCase {
         car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
-    /// A list row by the words it starts with: its label carries its detail too.
+    /// A list row by its title: the cell has no label of its own, its title and detail do.
     private func row(_ words: String) -> XCUIElement {
-        car.cells.matching(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
+        car.cells.containing(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
+    }
+
+    /// Press a list row, and wait for `shown`. A tap if XCUITest can reach it, a click from the
+    /// Mac if it cannot.
+    private func press(_ words: String, until shown: XCUIElement) {
+        let target = row(words)
+        XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; the car showed:\n\(car.debugDescription)")
+        target.tap()
+        if shown.waitForExistence(timeout: 4) { return }
+        click(target)
+        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; the car showed:\n\(car.debugDescription)")
     }
 
     private func anything(containing words: String) -> XCUIElement {
@@ -151,11 +159,17 @@ final class CarPlayDrillUITests: XCTestCase {
     private func clickTheGear() -> Bool {
         let gear = car.buttons["gearshape.fill"]
         XCTAssertTrue(gear.waitForExistence(timeout: timeout), "no gear on the call screen; the car showed:\n\(car.debugDescription)")
-        guard let artifacts = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] else { return false }
-        let window = car.windows.firstMatch.frame
-        let spot = "\(gear.frame.midX / window.width) \(gear.frame.midY / window.height)\n"
-        try? spot.write(toFile: artifacts + "/carplay-click", atomically: true, encoding: .utf8)
+        click(gear)
         return row("Back to the call").waitForExistence(timeout: 6)
+    }
+
+    /// A click from the Mac at `element`'s place in the CarPlay window (`carplay-click` in
+    /// `ios/bin/ui-test`).
+    private func click(_ element: XCUIElement) {
+        guard element.exists, let artifacts = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] else { return }
+        let window = car.windows.firstMatch.frame
+        let spot = "\(element.frame.midX / window.width) \(element.frame.midY / window.height)\n"
+        try? spot.write(toFile: artifacts + "/carplay-click", atomically: true, encoding: .utf8)
     }
 
     /// What XCUITest could see, kept with the run.
