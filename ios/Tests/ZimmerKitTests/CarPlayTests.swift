@@ -244,18 +244,19 @@ final class CarPlayTests: XCTestCase {
         await navigator.present(call)
 
         // Ordered as the scene orders them, none waiting on the one before.
-        async let down: Void = navigator.dismiss(call)
-        async let up = navigator.push(panel)
-        _ = await down
-        let shown = await up
+        let down = Task { await navigator.dismiss(call) }
+        let up = Task { await navigator.push(panel) }
+        await down.value
+        let shown = await up.value
         XCTAssertTrue(shown)
         XCTAssertNil(host.presentedTemplate, "nothing is left over the panel")
         XCTAssertEqual(host.pushedCount, 1)
 
-        async let off: Void = navigator.pop(panel)
-        async let back = navigator.present(Template("call again"))
-        _ = await off
-        _ = await back
+        let again = Template("call again")
+        let off = Task { await navigator.pop(panel) }
+        let back = Task { await navigator.present(again) }
+        await off.value
+        _ = await back.value
         await navigator.settle()
         XCTAssertEqual(host.pushedCount, 0)
         XCTAssertNotNil(host.presentedTemplate, "and the call comes back over the root")

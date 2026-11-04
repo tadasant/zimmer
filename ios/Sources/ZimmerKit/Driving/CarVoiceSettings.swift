@@ -106,10 +106,11 @@ public struct CarVoiceSettings: Sendable, Equatable {
 
     // MARK: - Words
 
-    /// A server label up to its explanation: "Semantic — waits until you sound finished" is
-    /// "Semantic", and that is all a row has room for.
+    /// A server label up to its explanation, capitalized: "Semantic — waits until you sound
+    /// finished" is "Semantic", "auto (medium)" is "Auto", and that is all a row has room for.
     static func short(_ label: String) -> String {
-        label.components(separatedBy: " — ")[0]
+        let head = label.components(separatedBy: " — ")[0].components(separatedBy: " (")[0]
+        return head.prefix(1).uppercased() + head.dropFirst()
     }
 
     private static func shown(_ value: JSONValue, field: LiveSettingField, knob: Knob) -> String {
@@ -130,7 +131,8 @@ public struct CarVoiceSettings: Sendable, Equatable {
         var choices = field.options.map { option in
             let isDefault = field.defaultValue?.liveSettingText == option.value
             let parts = option.label.components(separatedBy: " — ")
-            return Choice(title: isDefault ? "\(parts[0]) (default)" : parts[0], note: parts.count > 1 ? parts[1] : nil,
+            let name = short(option.label)
+            return Choice(title: isDefault ? "\(name) (default)" : name, note: parts.count > 1 ? parts[1] : nil,
                           value: isDefault ? .null : .string(option.value), isCurrent: option.value == current)
         }
         // A setting with no default is off when unset, and off is one of its choices.
@@ -165,13 +167,50 @@ public struct CarVoiceSettings: Sendable, Equatable {
     }
 }
 
+/// The call the gear ended, to bring back when the panel closes.
+///
+/// `CarPlayLive` reads the call a main-queue turn after it changes, so everything here is asked of
+/// the call as it is now and never of the value a sink was handed: a state from just before the
+/// gear can arrive after the panel went up.
+public struct CarCallComeback: Sendable, Equatable {
+    /// The conversation to call again. Nil once the driver asked for a fresh start with Talk to
+    /// Zimmer, which picks the conversation itself.
+    public private(set) var conversation: Int?
+    /// A driver who had muted the call comes back muted, however many tries that takes.
+    public let muted: Bool
+
+    /// Nil when there is no call to come back to: the screen stays tappable for a moment after
+    /// End, and a gear tapped then must not redial a call the driver ended.
+    public init?(conversation: Int?, callIsActive: Bool, muted: Bool) {
+        guard callIsActive, let conversation else { return nil }
+        self.conversation = conversation
+        self.muted = muted
+    }
+
+    public var wantsCall: Bool { conversation != nil }
+
+    public mutating func talkTapped() {
+        conversation = nil
+    }
+
+    /// The call came back and OpenAI has answered on it, so nothing is left to bring back.
+    /// Listening is not proof: the call reaches it when the microphone opens, before the socket
+    /// has said anything, and a socket that fails there is still a retry of this comeback.
+    public func isSpent(by current: LiveVoiceState) -> Bool {
+        switch current {
+        case .thinking, .speaking, .working: true
+        case .idle, .connecting, .listening: false
+        }
+    }
+}
+
 /// The panel behind the gear: which page it is on, and its reads and writes. Every write goes
 /// through `LiveAPI`, the app's sign-in to `PATCH /api/v1/live/settings`, into the same
 /// `LiveConversations::SettingsUpdate` every other writer goes through, and the row it answers
 /// with is what the panel shows next.
 ///
-/// One write at a time: a tap during one is ignored, and `settled()` is what the call waits on
-/// before it comes back, so a new call never reads the row ahead of the write the driver made.
+/// One write at a time: a tap during one is ignored, and `settled()` is what closing the panel
+/// waits on, so a new call never reads the row ahead of the write the driver made.
 @MainActor
 public final class CarVoiceSettingsModel {
     public enum Page: Equatable, Sendable {
@@ -192,6 +231,7 @@ public final class CarVoiceSettingsModel {
 
     private let api: any LiveAPI
     private var write: Task<Void, Never>?
+    private var writeFailed = false
 
     public init(api: any LiveAPI) {
         self.api = api
@@ -242,6 +282,13 @@ public final class CarVoiceSettingsModel {
         await write?.value
     }
 
+    /// Whether the last write failed, once: the first answer holds the panel up so the driver
+    /// can read why, and the next one lets it close on what the row holds.
+    public func takeWriteFailure() -> Bool {
+        defer { writeFailed = false }
+        return writeFailed
+    }
+
     private func apply(_ changes: [String: JSONValue], what: String) {
         guard !saving else { return }
         saving = true
@@ -254,6 +301,7 @@ public final class CarVoiceSettingsModel {
                 self.onWritten?(what)
             } catch {
                 self.problem = "Not saved: \(Self.words(error))"
+                self.writeFailed = true
             }
             self.saving = false
             self.onChange?()

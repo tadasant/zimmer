@@ -55,9 +55,11 @@ final class CarPlayLive {
     private var settings: CarPlayVoiceSettings?
     /// The panel is on the stack, so CarPlay going back to the root means it was closed.
     private var settingsOnStack = false
-    /// The call the gear ended, to bring back. Kept until that call is up, because a retry is
-    /// still bringing back that conversation.
-    private var comeback: (conversation: Int, muted: Bool)?
+    /// The panel is closing, waiting for the driver's last write.
+    private var settingsClosing = false
+    /// The call the gear ended, to bring back. Kept until OpenAI has answered on the new call,
+    /// because a retry is still bringing back that conversation.
+    private var comeback: CarCallComeback?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay-live")
     private let telemetry = LiveTelemetry.shared
 
@@ -95,7 +97,7 @@ final class CarPlayLive {
     /// Talk to Zimmer: the open conversation with voice on, or a new one.
     func start() {
         telemetry.track(.carPlay("talk_tapped", ["call_active": .bool(call.isActive)]))
-        comeback = nil
+        comeback?.talkTapped()
         retryWait?.cancel()
         retry.asked()
         attempt()
@@ -104,13 +106,16 @@ final class CarPlayLive {
 
     private func attempt() {
         Task {
+            // CarPlay's Back can leave the panel with a write still out: no call reads the row
+            // ahead of it, Talk to Zimmer's included.
+            await settings?.settled()
             if call.isActive, let conversation = call.conversationID {
                 await call.start(conversation, from: .carplay)
                 present()
                 return
             }
-            if let comeback {
-                await call.start(comeback.conversation, startsMuted: comeback.muted, from: .carplay)
+            if let conversation = comeback?.conversation {
+                await call.start(conversation, startsMuted: comeback?.muted == true, from: .carplay)
                 return
             }
             do {
@@ -121,7 +126,7 @@ final class CarPlayLive {
                 } else {
                     id = try await api.startLiveConversation(.voice).id
                 }
-                await call.start(id, from: .carplay)
+                await call.start(id, startsMuted: comeback?.muted == true, from: .carplay)
             } catch {
                 failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
             }
@@ -131,6 +136,7 @@ final class CarPlayLive {
     /// The driver ended the call: nothing is retried after it.
     func hangUp() {
         telemetry.track(.carPlay("end_tapped"))
+        comeback = nil
         retryWait?.cancel()
         retry.stopped()
         call.hangUp()
@@ -143,6 +149,7 @@ final class CarPlayLive {
         if call.isActive { Task { await call.carryOn(on: .ios) } }
         settings = nil
         settingsOnStack = false
+        settingsClosing = false
         comeback = nil
         retryWait?.cancel()
         retry.stopped()
@@ -155,9 +162,10 @@ final class CarPlayLive {
 
     /// The gear: end the call, take its screen down, and put the panel up.
     private func openSettings() {
-        guard let navigator, settings == nil, let conversation = call.conversationID else { return }
+        guard let navigator, settings == nil,
+              let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted) else { return }
         telemetry.track(.carPlay("settings_opened", ["state": .string(String(describing: call.state))]))
-        comeback = (conversation, call.muted)
+        comeback = ended
         retryWait?.cancel()
         retry.stopped()
         call.hangUp()
@@ -172,6 +180,8 @@ final class CarPlayLive {
             guard self.settings === panel else { return }
             if shown {
                 self.settingsOnStack = true
+                // CarPlay's Back may have beaten this line.
+                self.settingsMayHaveClosed()
                 await panel.load()
             } else {
                 // No panel: the driver has lost the call for nothing, so it comes straight back.
@@ -182,22 +192,31 @@ final class CarPlayLive {
         }
     }
 
-    /// The panel closed, by its own Back to the call or by CarPlay's. Its screen goes at once;
-    /// the call waits for the driver's last write, so it is minted from what the driver chose.
+    /// The panel closed, by its own Back to the call or by CarPlay's. It waits for the driver's
+    /// last write, saying Saving…, so the call is minted from what the driver chose. A write that
+    /// failed keeps the panel up to say so, and the next Back closes it on what the row holds.
+    /// With CarPlay's Back there is no panel left to say it on, so the log does.
     private func closeSettings() {
-        guard let panel = settings else { return }
+        guard let panel = settings, !settingsClosing else { return }
         telemetry.track(.carPlay("settings_closed"))
-        settings = nil
-        settingsOnStack = false
+        settingsClosing = true
         Task {
-            await navigator?.pop(panel.template)
             await panel.settled()
+            guard self.settings === panel else { return }
+            self.settingsClosing = false
+            if panel.takeWriteFailure() {
+                guard self.navigator?.isAtRoot == true else { return }
+                self.telemetry.track(.carPlay("settings_write_lost", level: .warn))
+            }
+            self.settings = nil
+            self.settingsOnStack = false
+            await self.navigator?.pop(panel.template)
             self.callBack()
         }
     }
 
     private func callBack() {
-        guard navigator != nil, comeback != nil, !call.isActive else { return }
+        guard navigator != nil, comeback?.wantsCall == true, !call.isActive else { return }
         retry.asked()
         attempt()
         onChange?()
@@ -215,6 +234,7 @@ final class CarPlayLive {
         guard let panel = settings else { return }
         settings = nil
         settingsOnStack = false
+        settingsClosing = false
         comeback = nil
         Task { await navigator?.pop(panel.template) }
     }
@@ -255,13 +275,11 @@ final class CarPlayLive {
     // MARK: - The screen
 
     private func stateChanged(_ state: LiveVoiceState) {
-        if state == .listening {
-            retry.connected()
-            comeback = nil
-        }
+        if state == .listening { retry.connected() }
         // Asked of the call, not of `state`: this runs a turn late, so a state from just before
         // the gear ended the call can arrive after the panel went up.
         if call.isActive { dropSettings() }
+        if comeback?.isSpent(by: call.state) == true { comeback = nil }
         onChange?()
         if state == .idle {
             dismiss()

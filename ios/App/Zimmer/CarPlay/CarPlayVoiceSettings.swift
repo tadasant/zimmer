@@ -7,8 +7,9 @@ import ZimmerKit
 ///
 /// One list template, pushed, and that is the only change it ever makes: a row's choices are the
 /// same list with its sections replaced, so going in and out of them is no template change for
-/// CarPlay to refuse, and nothing here is deeper than the one screen. Every row is one word
-/// and a value, a choice is one tap, and the first row is always the way back to the call.
+/// CarPlay to refuse, and nothing here is deeper than the one screen. Every row is a name and a
+/// value, a choice is one tap, and the top of the list is always the way back. CarPlay's own Back
+/// knows only the one template, so from a row's choices it closes the panel.
 @MainActor
 final class CarPlayVoiceSettings {
     let template = CPListTemplate(title: "Voice settings", sections: [])
@@ -36,6 +37,11 @@ final class CarPlayVoiceSettings {
         await model.settled()
     }
 
+    /// Whether the last write failed, once.
+    func takeWriteFailure() -> Bool {
+        model.takeWriteFailure()
+    }
+
     private func draw() {
         var top: [CPListItem] = []
         if let problem = model.problem {
@@ -45,14 +51,14 @@ final class CarPlayVoiceSettings {
             })
         }
         if let row = model.openRow {
-            top.append(item("Back to settings", detail: row.title) { [weak self] in self?.model.back() })
+            top.append(item("Back to settings", detail: model.saving ? "Saving…" : row.title) { [weak self] in self?.model.back() })
             let choices = row.choices.map { choice in
                 item(choice.title, detail: choice.isCurrent ? "In use" : choice.note) { [weak self] in self?.model.choose(choice) }
             }
             template.updateSections([CPListSection(items: top + choices)])
             return
         }
-        top.insert(item("Back to the call") { [weak self] in self?.onClose?() }, at: 0)
+        top.insert(item("Back to the call", detail: model.saving ? "Saving…" : nil) { [weak self] in self?.onClose?() }, at: 0)
         guard let settings = model.settings else {
             if model.problem == nil { top.append(item("Loading…")) }
             template.updateSections([CPListSection(items: top)])
@@ -71,8 +77,7 @@ final class CarPlayVoiceSettings {
     }
 
     private func resetDetail(_ settings: CarVoiceSettings) -> String {
-        if model.saving { return "Saving…" }
-        return settings.canReset ? "Takes effect when the call comes back" : "Already on the defaults"
+        settings.canReset ? "Takes effect when the call comes back" : "Already on the defaults"
     }
 
     private func item(_ text: String, detail: String? = nil, tapped: (@MainActor () -> Void)? = nil) -> CPListItem {

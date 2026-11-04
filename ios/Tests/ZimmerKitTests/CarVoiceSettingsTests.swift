@@ -71,7 +71,7 @@ final class CarVoiceSettingsTests: XCTestCase {
         let keys = semantic.settings?.rows.map(\.key) ?? []
         XCTAssertFalse(keys.contains("voice_vad_threshold"), "0.92 goes nowhere under Semantic")
         XCTAssertFalse(keys.contains("voice_vad_silence_duration_ms"))
-        XCTAssertEqual(try row(semantic, "voice_vad_eagerness").detail, "low")
+        XCTAssertEqual(try row(semantic, "voice_vad_eagerness").detail, "Low")
         XCTAssertEqual(try row(semantic, "voice_turn_detection").detail, "Semantic (default). Threshold and pause need Silence")
 
         let (silence, _) = await panel(Self.silence)
@@ -100,7 +100,7 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertEqual(try row(model, "voice_speed").detail, "1× (default)")
         XCTAssertEqual(try row(model, "voice_vad_threshold").choices.map(\.title), ["0.3", "0.5 (default)", "0.7", "0.9"])
         XCTAssertEqual(try row(model, "voice_vad_silence_duration_ms").choices.map(\.title), ["300 ms", "500 ms (default)", "800 ms", "1200 ms"])
-        XCTAssertEqual(try row(model, "voice_noise_reduction").choices.map(\.title), ["Off (default)", "near field", "far field"])
+        XCTAssertEqual(try row(model, "voice_noise_reduction").choices.map(\.title), ["Off (default)", "Near field", "Far field"])
         XCTAssertEqual(try row(model, "voice_vad_threshold").choices.first?.note, "Hears quiet speech")
         for row in model.settings?.rows ?? [] {
             XCTAssertLessThanOrEqual(row.choices.count, 5, "\(row.key) is too many to take in at a glance")
@@ -168,7 +168,7 @@ final class CarVoiceSettingsTests: XCTestCase {
         let (model, api) = await panel(Self.silence)
         let threshold = try row(model, "voice_vad_threshold")
         model.open(threshold)
-        model.choose(try choice(threshold, "0.95"))
+        model.choose(try choice(threshold, "0.92"))
         await model.settled()
         XCTAssertEqual(model.page, .settings)
         let read = try await api.liveSettings()
@@ -182,6 +182,8 @@ final class CarVoiceSettingsTests: XCTestCase {
         model.choose(CarVoiceSettings.Choice(title: "Nonsense", note: nil, value: .string("nonsense"), isCurrent: false))
         await model.settled()
         XCTAssertTrue(model.problem?.hasPrefix("Not saved:") == true, model.problem ?? "no problem")
+        XCTAssertTrue(model.takeWriteFailure(), "closing the panel is held up once, to say so")
+        XCTAssertFalse(model.takeWriteFailure(), "and the next Back closes it")
         XCTAssertEqual(model.openRow?.key, "voice_turn_detection", "the choices stay up to try again")
         XCTAssertFalse(model.saving)
         let read = try await api.liveSettings()
@@ -200,6 +202,37 @@ final class CarVoiceSettingsTests: XCTestCase {
         await model.settled()
         let read = try await api.liveSettings()
         XCTAssertEqual(read.value("voice_vad_threshold"), .number(0.3), "the reset was a second write while the first was out")
+    }
+
+    // MARK: - The call coming back
+
+    func testTheGearOnACallAlreadyEndedBringsNothingBack() {
+        XCTAssertNil(CarCallComeback(conversation: 21, callIsActive: false, muted: false), "End, then the gear, in the moment the screen is still up")
+        XCTAssertNil(CarCallComeback(conversation: nil, callIsActive: true, muted: false))
+        XCTAssertEqual(CarCallComeback(conversation: 21, callIsActive: true, muted: true)?.conversation, 21)
+    }
+
+    /// Only OpenAI answering proves the new call is up. Listening is set when the microphone
+    /// opens, so a socket that fails right after is still a retry of this call, muted as it was.
+    func testAComebackLastsUntilOpenAIHasAnswered() throws {
+        let comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: true))
+        for held in [LiveVoiceState.idle, .connecting, .listening] {
+            XCTAssertFalse(comeback.isSpent(by: held), "\(held) proves nothing")
+        }
+        for spent in [LiveVoiceState.thinking, .speaking, .working] {
+            XCTAssertTrue(comeback.isSpent(by: spent))
+        }
+    }
+
+    /// Talk to Zimmer after the retries are spent is a fresh start, and a fresh start for a
+    /// driver who had muted must not open the microphone.
+    func testTalkDropsTheConversationButNotTheMute() throws {
+        var comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: true))
+        XCTAssertTrue(comeback.wantsCall)
+        comeback.talkTapped()
+        XCTAssertFalse(comeback.wantsCall)
+        XCTAssertNil(comeback.conversation)
+        XCTAssertTrue(comeback.muted)
     }
 
     // MARK: - Reset to defaults
@@ -269,7 +302,7 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertTrue(body["voice_vad_threshold"] is NSNull)
     }
 
-    private static func serverSettings(threshold: Double, overrides: [String]) -> [String: Any] {
+    private nonisolated static func serverSettings(threshold: Double, overrides: [String]) -> [String: Any] {
         [
             "settings": ["voice_vad_threshold": threshold],
             "overrides": overrides,
