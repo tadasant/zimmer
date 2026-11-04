@@ -34,7 +34,7 @@ case "$*" in
   *check-runs/*/annotations*)
     [ "${STUB_ANN_FAIL:-}" = 1 ] && exit 1
     # STUB_ANN_PLAIN names the job ids that were cancelled some other way.
-    id="${args[0]#*check-runs/}"; id="${id%%/*}"
+    id="${args[1]#*check-runs/}"; id="${id%%/*}"
     case " ${STUB_ANN_PLAIN:-} " in *" $id "*) message="The operation was canceled." ;; *) message="${STUB_ANN:-}" ;; esac
     serve "$(jq -n --arg m "$message" '[{message: $m}]')" ;;
   *compare/*)
