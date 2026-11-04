@@ -267,8 +267,6 @@ final class LiveAudioEngine {
         let wasLooping = looping
         looping = nil
         cuesEnd = 0
-        replyStartedAt = nil
-        replyQueuedMs = 0
         sink.changeGate {
             $0.stopLoop()
             $0.clearOneShots()
@@ -341,11 +339,9 @@ final class LiveAudioEngine {
         cuePlayer.play()
     }
 
-    /// How much of the reply is still to come out of the speaker. The reply's audio arrives
-    /// faster than it plays, so it outlives the response that sent it.
+    /// How much of the reply is still to come out of the speaker.
     private var replyRemaining: TimeInterval {
-        guard let replyStartedAt else { return 0 }
-        return max(0, Double(replyQueuedMs) / 1_000 - Date().timeIntervalSince(replyStartedAt))
+        playout.remaining(at: ProcessInfo.processInfo.systemUptime)
     }
 
     private static func buffer(_ samples: [Float]) -> AVAudioPCMBuffer? {
@@ -406,8 +402,7 @@ final class LiveAudioEngine {
         let player = self.player
         let cuePlayer = self.cuePlayer
         let loopPlayer = self.loopPlayer
-        replyStartedAt = nil
-        replyQueuedMs = 0
+        playout = LiveReplyPlayout()
         if let farewell { play(farewell) }
         abandon()
         guard let engine else { return }
