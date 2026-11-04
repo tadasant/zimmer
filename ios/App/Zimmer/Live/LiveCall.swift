@@ -237,7 +237,7 @@ final class LiveCall: ObservableObject {
         do {
             let session = try await api.liveSessionUpdate(conversation)
             guard mine == generation else { return }
-            send(RealtimeConductor.sessionUpdate(session))
+            send(conductor.sessionUpdate(keeping: session))
         } catch {
             let message = Self.describe(error)
             log.error("live session update failed: \(message, privacy: .public)")

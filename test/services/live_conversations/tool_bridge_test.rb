@@ -278,6 +278,25 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_not_includes line, "Fix the"
   end
 
+  test "a catalog server's error stays off the log line, and an exception logs only its class" do
+    lines = []
+    Rails.logger.stubs(:warn).with { |message| lines << message; true }
+    @conversation.update!(mcp_servers: [ "clock" ], mcp_tool_cache: { "clock" => [ { "name" => "now", "description" => "x", "input_schema" => { "type" => "object" } } ] })
+    bridge = LiveConversations::ToolBridge.new(@conversation)
+    server = stub(call_tool: [ "no such account: the words they said", true ])
+    LiveConversations::CatalogServer.stubs(:find!).returns(server)
+
+    assert bridge.execute("clock__now", "{}", call_id: "own").error
+    server.stubs(:call_tool).raises(ArgumentError, "row with the words they said")
+    assert bridge.execute("clock__now", "{}", call_id: "boom").error
+
+    logged = lines.grep(/\[LiveConversations::ToolBridge\]/)
+    assert_equal 2, logged.size
+    assert_match(/failed: the server reported an error/, logged.first)
+    assert_match(/failed: ArgumentError/, logged.second)
+    assert_empty logged.grep(/the words they said/)
+  end
+
   test "a call that worked writes no failure line" do
     lines = []
     Rails.logger.stubs(:warn).with { |message| lines << message; true }

@@ -192,7 +192,7 @@ Audio never passes through Zimmer:
 3. On `response.function_call_arguments.done` it relays the call to `POST tool_calls` and sends the
    output back as a `function_call_output` item. When that response's `response.done` arrives and
    every result is in, it sends exactly one `response.create`. A response the person talked over
-   (`cancelled`) gets no `response.create`. One the output cap cut short (`incomplete`) does: see
+   (`cancelled`) gets no `response.create`. One cut short (`incomplete`) does: see
    [the voice output cap](#the-voice-output-cap).
 4. Finished transcript lines (`conversation.item.input_audio_transcription.completed` and
    `response.output_audio_transcript.done`) are posted as turns, so the thread on the page and in
@@ -307,20 +307,23 @@ mid-way through a function call's arguments. So the cap has three guards:
   replies and all 4 tool calls on those responses.
 - **It is a person's to change.** `update_live_settings` refuses it, and a reset from a call leaves
   it as it was, because the model would be capping the calls it needs to undo the cap. To make
-  replies shorter, the model adds to the guidance. A person sets it on the settings page, or through
-  `PATCH /api/v1/live/settings` or `action_live_settings`.
-- **A cut-off tool call is not a silent one.** All three clients treat `incomplete` apart from a
-  person talking over a reply. The call is relayed as usual, Zimmer refuses arguments that do not
-  parse and runs nothing, and that answer goes back to the model with a `response.create`, so it can
-  try again or say what went wrong. When the cap was the reason, the client also sends
-  `max_output_tokens: "inf"` for the rest of that call, so the retry cannot be cut off the same way.
-  The next call starts on the setting again.
+  replies shorter, the model adds to the guidance. A person sets it on the settings page or through
+  `PATCH /api/v1/live/settings`. `action_live_settings` can too, within the same range.
+- **A cut-off tool call is not a silent one.** All three clients treat `incomplete`, from the cap
+  or OpenAI's content filter, apart from a person talking over a reply. The call is relayed as
+  usual, Zimmer refuses arguments that do not parse and runs nothing, and that answer goes back to
+  the model with a `response.create`, so it can try again or say what went wrong. Three cut-off
+  calls in a row stop the retries, and the client shows that OpenAI kept cutting the reply short.
 
-A spoken reply cut off with no tool call just ends, and the call goes back to listening.
+When the cap costs a tool call, or a reply nobody heard a word of (it can run out in the model's
+reasoning), the client lifts it for the rest of that call: `max_output_tokens: "inf"`, on that
+`session.update` and every later one. A reply nobody heard is asked for again. The next call starts
+on the setting. A spoken reply the cap cut off just ends, and the call goes back to listening.
 
 The failure is written down in two places. Zimmer logs every failed tool call as a
-`[LiveConversations::ToolBridge]` WARN line with the error and the size of the arguments, never the
-arguments. The iOS call log carries `max_output_tokens` on `realtime.session_created` and
+`[LiveConversations::ToolBridge]` WARN line with the reason and the size of the arguments, never the
+arguments. A catalog server's own error text stays on the tool turn, and an exception logs its class.
+The iOS call log carries `max_output_tokens` on `realtime.session_created` and
 `realtime.session_updated`, as OpenAI applied it, and a `response.done` that ended `incomplete` is a
 warning, so it survives telemetry turned down to `warn`.
 

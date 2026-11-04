@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-# LiveSetting's voice output cap gained a floor of 1,024, and every writer clamps to
-# it. A value stored before the floor existed never met that check, so it goes back
-# to blank, no cap: nobody needs to know it is there. Blank rather than the floor,
-# because that is what voice ran with before anything set a cap. Recorded in the
-# settings history like any other write. A second run finds nothing to do.
+# LiveSetting's voice output cap has a floor of 1,024 that every writer clamps to, and
+# a stored value below it never met that check. It goes back to blank, no cap, so
+# nobody needs to know it is there: blank is the shipped default, and no person chose
+# the value. Recorded in the settings history like any other write. A second run finds
+# nothing to do.
 class ClearVoiceOutputCapsBelowTheFloor < ActiveRecord::Migration[8.1]
   FLOOR = 1_024
 

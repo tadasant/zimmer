@@ -433,9 +433,70 @@ final class RealtimeConductorTests: XCTestCase {
                        ["conversation.item.create:t1", "response.create"])
     }
 
+    func testACapThatRanOutBeforeAWordWasSaidIsLiftedAndTheReplyAskedForAgain() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        let done = conductor.handle(event(#"{"type":"response.done","response":{"status":"incomplete","status_details":{"reason":"max_output_tokens"},"output":[]}}"#))
+        XCTAssertEqual(sent(done), ["session.update", "response.create"])
+        XCTAssertFalse(done.contains(.state(.listening)), "an answer is on its way")
+    }
+
+    func testALaterSessionUpdateKeepsTheCapLifted() {
+        var conductor = RealtimeConductor()
+        let zimmers = JSONValue.object(["type": .string("realtime"), "max_output_tokens": .number(1_024)])
+        XCTAssertEqual(conductor.sessionUpdate(keeping: zimmers)["session"]?["max_output_tokens"], .number(1_024), "nothing lifted it yet")
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(incomplete())
+        XCTAssertEqual(conductor.sessionUpdate(keeping: zimmers)["session"]?["max_output_tokens"], .string("inf"))
+
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"update_live_settings","arguments":"{}"}"#))
+        let effects = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Changed", session: zimmers))
+        guard let update = effects.compactMap({ effect -> JSONValue? in
+            if case let .send(event) = effect, event["type"]?.string == "session.update" { return event }
+            return nil
+        }).first else { return XCTFail("expected a session.update") }
+        XCTAssertEqual(update["session"]?["max_output_tokens"], .string("inf"))
+    }
+
+    func testACallCutOffBeforeItsFirstCharacterIsRefusedNotRunWithNoArguments() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        let done = conductor.handle(event(#"{"type":"response.done","response":{"status":"incomplete","status_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"b1","name":"gh__sync","arguments":""}]}}"#))
+        XCTAssertTrue(done.contains(.relay(callID: "b1", name: "gh__sync", arguments: "{")))
+    }
+
+    func testThreeCutsInARowStopAskingAndSaySo() {
+        var conductor = RealtimeConductor()
+        var last: [RealtimeConductor.Effect] = []
+        for id in ["f1", "f2", "f3"] {
+            _ = conductor.handle(event(#"{"type":"response.created"}"#))
+            _ = conductor.handle(incomplete(callID: id, reason: "content_filter"))
+            last = conductor.relayed(callID: id, result: LiveToolResult(output: "Nothing ran.", error: true))
+            if id != "f3" { XCTAssertTrue(sent(last).contains("response.create")) }
+        }
+        XCTAssertFalse(sent(last).contains("response.create"))
+        XCTAssertTrue(last.contains(.failure("OpenAI kept cutting that reply short.")))
+        XCTAssertTrue(last.contains(.state(.listening)))
+    }
+
+    func testACompletedResponseEndsARunOfCuts() {
+        var conductor = RealtimeConductor()
+        for id in ["f1", "f2"] {
+            _ = conductor.handle(event(#"{"type":"response.created"}"#))
+            _ = conductor.handle(incomplete(callID: id, reason: "content_filter"))
+            _ = conductor.relayed(callID: id, result: LiveToolResult(output: "Nothing ran.", error: true))
+        }
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(incomplete(callID: "f3", reason: "content_filter"))
+        XCTAssertTrue(sent(conductor.relayed(callID: "f3", result: LiveToolResult(output: "Nothing ran.", error: true))).contains("response.create"))
+    }
+
     func testASpokenReplyCutOffGoesBackToListeningAndAsksForNothing() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.done","response":{"status":"incomplete","status_details":{"reason":"max_output_tokens"},"output":[{"type":"message"}]}}"#)),
                        [.state(.listening)])
     }

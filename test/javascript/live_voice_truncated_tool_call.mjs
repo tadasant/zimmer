@@ -60,9 +60,67 @@ const cutOff = (output) => ({ status: "incomplete", status_details: { type: "inc
 {
   const dock = call()
   dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.output_audio_transcript.delta" }, 1)
   dock.handleEvent({ type: "response.done", response: cutOff([{ type: "message" }]) }, 1)
   await drain()
   report("speech_only_incomplete", dock)
+}
+
+// The result comes back before the response ends.
+{
+  const dock = call({ z1: { output: "Nothing ran: cut off." } })
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "z1", name: "zimmer", arguments: truncated.arguments }, 1)
+  await drain()
+  dock.handleEvent({ type: "response.done", response: cutOff([truncated]) }, 1)
+  await drain()
+  report("result_before_incomplete", dock)
+}
+
+// The cap ran out in the model's reasoning: nothing said, nothing called.
+{
+  const dock = call()
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.done", response: cutOff([]) }, 1)
+  await drain()
+  report("cut_before_a_word", dock)
+}
+
+// A settings change later in the call sends Zimmer's session, with the stored cap in it.
+{
+  const dock = call()
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.done", response: cutOff([truncated]) }, 1)
+  await drain()
+  dock.sendSession({ type: "realtime", max_output_tokens: 1024 })
+  report("later_session_update", dock)
+}
+
+// A call cut off before its first character.
+{
+  const dock = call()
+  const bodies = []
+  const post = dock.post
+  dock.post = (url, body) => { bodies.push(body.arguments); return post(url, body) }
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.done", response: cutOff([{ ...truncated, arguments: "" }]) }, 1)
+  await drain()
+  console.log(JSON.stringify({ name: "blank_arguments", arguments: bodies, relayed: dock.relayed, sent: [], state: dock.state }))
+}
+
+// OpenAI's filter keeps cutting the call: the cap is not why, and asking stops.
+{
+  const dock = call()
+  const filtered = { status: "incomplete", status_details: { reason: "content_filter" }, output: [truncated] }
+  dock.showError = (message) => { dock.error = message }
+  for (const id of ["f1", "f2", "f3"]) {
+    dock.requested = false
+    dock.handleEvent({ type: "response.created" }, 1)
+    dock.handleEvent({ type: "response.done", response: { ...filtered, output: [{ ...truncated, call_id: id }] } }, 1)
+    await drain()
+  }
+  report("three_cuts_in_a_row", dock)
+  console.log(JSON.stringify({ name: "three_cuts_error", error: dock.error, sent: [], relayed: [], state: dock.state }))
 }
 
 // The user talking over a response stays what it was: no follow-up.
