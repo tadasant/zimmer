@@ -64,6 +64,11 @@ public struct LiveReplyPlayout: Sendable {
         endsAt = now
     }
 
+    /// How much queued audio is still to play at `now`: what a cue due now has to wait out.
+    public func remaining(at now: TimeInterval) -> TimeInterval {
+        max(0, endsAt - now)
+    }
+
     /// The person started talking at `now`: forget the queue, and return every item they did not
     /// hear to the end, oldest first: those with audio still to play, and `arriving`, the item
     /// OpenAI was still sending. Empty means there is nothing to truncate. `latency` is the

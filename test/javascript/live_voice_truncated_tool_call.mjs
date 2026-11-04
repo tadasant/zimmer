@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs"
 const source = readFileSync(process.argv[2], "utf8")
   .replace(/^import .*$/gm, "")
   .replace("export default class extends Controller", "return class extends Controller")
-const LiveVoice = new Function("Controller", "csrfHeaders", source)(class {}, () => ({}))
+const LiveCueDirector = class { constructor() { return new Proxy(this, { get: () => () => {} }) } }
+const LiveCuePlayer = class { perform() {} unlock() {} }
+const LiveVoice = new Function("Controller", "csrfHeaders", "LiveCueDirector", "LiveCuePlayer", source)(class {}, () => ({}), LiveCueDirector, LiveCuePlayer)
 
 function call(answers = {}) {
   const dock = new LiveVoice()

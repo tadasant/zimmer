@@ -77,6 +77,8 @@ public struct RealtimeConductor: Sendable {
         case interrupt(arriving: String?)
         case state(LiveVoiceState)
         case failure(String)
+        /// For the cues: what the state alone does not say.
+        case signal(LiveCueDirector.Signal)
     }
 
     /// Every call ever started, so a repeated event never runs one twice.
@@ -141,7 +143,7 @@ public struct RealtimeConductor: Sendable {
     public mutating func heard(itemID: String?, respond: Bool) -> [Effect] {
         if respond {
             pendingResponse = true
-            return sendPendingResponse()
+            return [.signal(.heardPerson)] + sendPendingResponse()
         }
         // Not answered: back to listening, or the call would read as working on it for ever.
         let listening: [Effect] = responseActive || playingItem != nil ? [] : [.state(.listening)]
@@ -167,16 +169,18 @@ public struct RealtimeConductor: Sendable {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
             // Gated, speech does not cut the reply off: it may not be meant for the call at all.
-            if gated { return playingItem == nil ? [.state(.listening)] : [] }
+            if gated { return playingItem == nil ? [.signal(.personTalking), .state(.listening)] : [] }
             defer { playingItem = nil }
             if let playingItem { cutItem = playingItem }
-            return [.interrupt(arriving: playingItem), .state(.listening)]
+            return [.interrupt(arriving: playingItem), .signal(.personTalking), .state(.listening)]
         case "input_audio_buffer.speech_stopped":
             // The person stopped talking: the call is working on an answer from here — the
             // thinking cue starts and the screen says so — until the reply starts, or (gated)
             // the line turns out not to be one to answer. Not while a reply arrives (gated
-            // speech does not cut it off).
-            return playingItem == nil ? [.state(.thinking)] : []
+            // speech does not cut it off). Gated, the person counts as heard once Zimmer says
+            // the line gets an answer (`heard`).
+            guard playingItem == nil else { return [.signal(.personStopped)] }
+            return [.signal(.personStopped), .state(.thinking)] + (gated ? [] : [.signal(.heardPerson)])
         case "response.created":
             responseActive = true
             requested = false
@@ -201,11 +205,12 @@ public struct RealtimeConductor: Sendable {
         case "response.done":
             responseActive = false
             playingItem = nil
-            if event["response"]?["status"]?.string == "failed" {
+            let status = event["response"]?["status"]?.string
+            if status == "failed" {
                 let message = event["response"]?["status_details"]?["error"]?["message"]?.string
-                return finish(event["response"]).filter { $0 != .state(.listening) } + [.failure(message ?? "OpenAI could not answer that."), .state(.listening)]
+                return finish(event["response"]).filter { $0 != .state(.listening) } + [.failure(message ?? "OpenAI could not answer that."), .state(.listening), .signal(.actionFailed)]
             }
-            return finish(event["response"])
+            return finish(event["response"]) + (status == "incomplete" ? [.signal(.actionFailed)] : [])
         case "conversation.item.input_audio_transcription.completed":
             guard gated else { return record(.user, event["transcript"]?.string) }
             guard let text = event["transcript"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
@@ -223,7 +228,7 @@ public struct RealtimeConductor: Sendable {
             // With nothing running or about to, no answer is coming: back to listening, or the
             // call would read as working on it (and tick) for ever.
             let idle = !responseActive && inFlight.isEmpty && !pendingResponse && playingItem == nil
-            return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")] + (idle ? [.state(.listening)] : [])
+            return [.failure(event["error"]?["message"]?.string ?? "OpenAI reported an error.")] + (idle ? [.signal(.noAnswerComing), .state(.listening)] : [])
         default:
             return []
         }
@@ -250,7 +255,8 @@ public struct RealtimeConductor: Sendable {
         } else {
             answered.insert(callID)
         }
-        return effects + sendPendingResponse()
+        let failed = failure != nil || result?.error == true
+        return effects + sendPendingResponse() + [.signal(.toolsRunning(inFlight.count))] + (failed ? [.signal(.actionFailed)] : [])
     }
 
     /// The `session.update` client event carrying `session` — what Zimmer answered for a tool
@@ -290,7 +296,7 @@ public struct RealtimeConductor: Sendable {
     private mutating func start(callID: String, name: String, arguments: String) -> [Effect] {
         guard seen.insert(callID).inserted else { return [] }
         inFlight.insert(callID)
-        return [.relay(callID: callID, name: name, arguments: arguments), .state(.working)]
+        return [.relay(callID: callID, name: name, arguments: arguments), .signal(.toolsRunning(inFlight.count)), .state(.working)]
     }
 
     private mutating func finish(_ response: JSONValue?) -> [Effect] {

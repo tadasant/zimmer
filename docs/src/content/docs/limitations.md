@@ -5738,6 +5738,22 @@ variable on both the consent request and the token exchange, as X requires
 
 ---
 
+## Live call cues
+
+- **Nobody has judged the cues by ear on a road.** Their pitch, level and pace are chosen and tested
+  as numbers (`LiveCue`, `lib/live_cues.js`). No CI job plays them through a speaker, a car or an echo
+  canceller.
+- **A word started right on a cue can lose its first moment.** The microphone is sent as silence
+  while a cue sounds (`LiveCueGate`), so the first moment of speech goes to the gate. The cue stops
+  once turn detection hears the rest.
+- **The iOS working cue ends at the relay's timeout.** `HTTPTransport` sets no timeout, so a tool
+  call whose response stays silent for URLSession's default 60 seconds fails on the phone and sounds
+  *failed*, though the tool may still finish on the server. The browser's relay has no such limit.
+- **The web dock can play a cue over the end of a reply.** `lib/live_cues.js` does not know how much
+  of a reply is left, so a *failed* cue due at `response.done` can overlap the last of the audio. The
+  phone waits it out (`LiveAudioEngine.replyRemaining`).
+- **Background work has no cue.** A session finishing during a call sends the client nothing.
+
 ## UI
 
 Open issues:
