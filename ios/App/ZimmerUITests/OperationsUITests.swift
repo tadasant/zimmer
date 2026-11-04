@@ -325,13 +325,15 @@ final class OperationsUITests: XCTestCase {
     /// One tap is not always enough: on a main-branch run XCUITest delivered a tap to a hittable
     /// point on the nightly trigger, the app went idle at once, and thirty seconds later the same
     /// row was still on the same list, no frame of the recording having changed. A row that has
-    /// gone is a page on its way, so it is not tapped again and the last try waits the whole
-    /// timeout; a second tap on a row still there opens the same page, not another. Each tap goes
-    /// to where a fresh snapshot found the row: a push can start seconds after its tap on a loaded
-    /// simulator, and `row.tap()` on a row gone by then is a failure, where a miss here is not.
+    /// gone is not tapped again, and the last try waits the whole timeout, since its page may be
+    /// on the way; a second tap on a row still there opens the same page, not another. Each tap
+    /// goes to where a fresh snapshot found the row: a push can start seconds after its tap on a
+    /// loaded simulator, and `row.tap()` on a row gone by then is a failure, where a miss here is
+    /// not. A push that lands between the snapshot and a retry takes that tap on the page, at the
+    /// point the row was, so a row this opens must not have a control of its page under it.
     private func tapToOpen(_ app: XCUIApplication, _ row: XCUIElement, _ page: XCUIElement) -> Bool {
         for attempt in 0..<3 {
-            if let frame = try? row.snapshot().frame {
+            if let frame = try? row.snapshot().frame, !frame.isEmpty {
                 app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
             }
             if page.waitForExistence(timeout: attempt < 2 ? 5 : timeout) { return true }
