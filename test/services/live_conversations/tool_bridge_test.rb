@@ -221,6 +221,45 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_equal @conversation, change.live_conversation
   end
 
+  test "a knob with no effect is answered as no effect, with the instruction to say so, never as a change" do
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_vad_threshold: 0.75, voice_vad_silence_duration_ms: 900), call_id: "n1")
+
+    assert_not result.error
+    assert result.output.start_with?("Saved, but this changes nothing on a call:"), result.output
+    assert_no_match(/\AChanged:/, result.output)
+    assert_match(/have no effect under Semantic turn detection/, result.output)
+    assert_match(/Tell the person this out loud\. Do not say the setting was changed/, result.output)
+    assert_in_delta 0.75, LiveSetting.current.voice_vad_threshold
+
+    again = @bridge.execute("update_live_settings", JSON.generate(voice_vad_threshold: 0.75), call_id: "n2")
+    assert_match(/\ANothing changed: those are already the settings\.\nThreshold \(silence\) has no effect/, again.output)
+    assert_match(/Tell the person this out loud/, again.output)
+  end
+
+  test "a change that took is still answered as one, and a mixed one names what did nothing" do
+    took = @bridge.execute("update_live_settings", JSON.generate(voice_vad_eagerness: "low"), call_id: "m1")
+    assert took.output.start_with?("Changed:"), took.output
+    assert_no_match(/no effect|out loud/, took.output)
+
+    mixed = @bridge.execute("update_live_settings", JSON.generate(voice_speed: 1.2, voice_vad_threshold: 0.75), call_id: "m2")
+    assert mixed.output.start_with?("Changed:"), mixed.output
+    assert_match(/Threshold \(silence\) has no effect/, mixed.output)
+    assert_match(/Say what changed, and say out loud which settings have no effect\./, mixed.output)
+    assert_no_match(/Do not say the setting was changed/, mixed.output)
+
+    switched = @bridge.execute("update_live_settings", JSON.generate(voice_turn_detection: "server_vad"), call_id: "m3")
+    assert switched.output.start_with?("Changed:"), switched.output
+    assert_match(/Eagerness \(semantic\) has no effect under Silence/, switched.output)
+    assert_no_match(/Do not say the setting was changed/, switched.output)
+  end
+
+  test "reading the settings marks what the mode leaves unused" do
+    listing = @bridge.execute("get_live_settings", "{}", call_id: "r1").output
+
+    assert_match(/voice_vad_threshold = 0\.5 \(default\).*NO EFFECT now: used only under server_vad/, listing)
+    assert_no_match(/voice_vad_eagerness = .*NO EFFECT/, listing)
+  end
+
   test "the live model cannot change how much the app reports about its calls, nor reset it" do
     LiveConversations::SettingsUpdate.call({ "voice_telemetry" => "warn" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     schema = @bridge.realtime_tools.find { |t| t[:name] == "update_live_settings" }
