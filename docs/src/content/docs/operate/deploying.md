@@ -1455,18 +1455,28 @@ that waits too long for a runner ends with the annotation "The job was not acqui
 of type hosted even after multiple attempts". A shortage of macOS arm64 runners does this to
 the iOS jobs in `ci.yml` and the shards of `ios-ui-tests.yml`. It applies to any workflow, though.
 When a failed attempt-1 run has such a job, `.github/scripts/rerun-unacquired-jobs.sh` re-runs
-its failed jobs and waits up to 100 minutes for the result. It stays quiet if the re-run passes
-or is superseded. It pages, with a *Note:* line saying what happened, if the re-run fails, never
-finishes, or could not be started.
+its failed jobs and waits up to 100 minutes for the result. It stays quiet if the re-run passes.
+It pages, with a *Note:* line saying what happened, if the re-run fails, never finishes, or could
+not be started.
 
 - It waits in the same job rather than letting attempt 2 report for itself, because a re-run
   requested with `GITHUB_TOKEN` fires no `workflow_run` event when it completes.
 - It re-runs only a run that is still the newest of its workflow on `main`. A re-run joins the
   workflow's concurrency group, so re-running an older commit would cancel the newer commit's
-  run, and a cancelled run never pages. A superseded run pages instead.
+  run, and a cancelled run never pages.
+- A superseded run waits for the newest run to finish, inside the same 100 minutes, and so does a
+  re-run a newer push cancelled. Nothing needs a human while that answer is coming: a failed newest
+  run reaches this same listener, where a lost runner gets its one re-run and anything else pages.
+  It stays quiet once the newest run has finished with `success` or a failure the listener hears,
+  having really run every job the older run left unfinished. It pages if the newest run ends any
+  other way (`cancelled` with nothing newer is the usual one), came from another trigger, does not
+  contain the older commit, skipped one of those jobs, or has not finished when the wait runs out.
+  That last one can page for a run that goes on to pass, which is the safe way round.
+- A job that really failed beside the lost one pages at once on a superseded run. `all-checks-pass`
+  counts as one, so a superseded `ci.yml` run with a lost iOS job still pages.
 - Attempt 2 is never re-run again, and any answer the script cannot reach pages.
 - `rerun-unacquired-jobs_test.sh`, in `ci.yml`'s `shellcheck` job, drives every verdict
-  against a stub `gh`.
+  against a stub `gh` and prints each one's `page=` and `note=`.
 
 Four details worth knowing before you touch it:
 

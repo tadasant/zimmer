@@ -102,9 +102,10 @@ jobs:
       - name: Re-run a job GitHub never gave a runner, and wait for it
         # A hosted job no runner picks up ("not acquired by Runner of type hosted") fails the
         # run with no code at fault, which a macOS arm64 capacity shortage does to the iOS
-        # jobs. One automatic re-run answers it; the script says what it found in `note`, and
-        # sets `page=false` only when the re-run passed or was superseded. Attempt 2 is never
-        # re-run, and a failure here falls through to the alert.
+        # jobs. One automatic re-run answers it, or the newest run on main does when this one
+        # is superseded; the script says what it found in `note`, and sets `page=false` only
+        # once one of those has answered. Attempt 2 is never re-run, and a failure here falls
+        # through to the alert.
         id: retry
         if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
         # A step timeout fails the step and lets the job carry on to the alert; a job
@@ -117,6 +118,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
         run: bash .github/scripts/rerun-unacquired-jobs.sh
 
       - name: Post the failure to Slack
