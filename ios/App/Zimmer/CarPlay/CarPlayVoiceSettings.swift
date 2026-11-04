@@ -8,7 +8,7 @@ import ZimmerKit
 /// One list template, pushed, and that is the only change it ever makes: a row's choices are the
 /// same list with its sections replaced, so going in and out of them is no template change for
 /// CarPlay to refuse, and nothing here is deeper than the one screen. Every row is a name and a
-/// value, a choice is one tap, and the top of the list is always the way back. CarPlay's own Back
+/// value, a choice is one tap, and the way back is at the top of the list. CarPlay's own Back
 /// knows only the one template, so from a row's choices it closes the panel.
 @MainActor
 final class CarPlayVoiceSettings {
@@ -37,10 +37,8 @@ final class CarPlayVoiceSettings {
         await model.settled()
     }
 
-    /// Whether the last write failed, once.
-    func takeWriteFailure() -> Bool {
-        model.takeWriteFailure()
-    }
+    var isSaving: Bool { model.saving }
+    var writeFailed: Bool { model.writeFailed }
 
     private func draw() {
         var top: [CPListItem] = []

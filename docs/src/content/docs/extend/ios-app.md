@@ -749,14 +749,16 @@ per-session buttons.
 cannot be asked to fix itself, so the call screen has a gear, and behind it the voice settings, by
 touch: **Reset to defaults**, then the reply length cap, turn detection, Listening, noise reduction
 and speaking speed. These are the same [Live settings](/sessions/live/#live-settings) the live model
-changes when you ask it, so what voice left is what you see. Only what the call would act on is
+changes when you ask it, so what voice left is what you see. Only what a call would act on is
 shown: the speech threshold and the pause appear under Silence turn detection and eagerness under
-Semantic, because OpenAI is sent nothing else. Listening applies on the phone, since the car always
-answers. Reset clears all of those, hidden ones too, and leaves the model, the voice, Call telemetry
-and the guidance alone.
+Semantic, because OpenAI is sent nothing else. Listening is marked *Phone only*: a call that has been
+on the car answers everything until it hangs up, so it reaches calls started on the phone. Reset
+clears all of those, hidden ones too, and leaves the models, the voice, reasoning effort,
+transcription, Call telemetry and the guidance alone.
 
-The gear ends the call, because CarPlay allows recording only on the call screen. *Back to the call*
-calls the same conversation again, and every change takes effect on that call.
+The gear ends the call, because CarPlay allows recording only on the call screen, so a reply in
+progress is cut off. *Back to the call* calls the same conversation again, and every change takes
+effect on that call, Listening apart.
 
 **One thread, one voice.** Everything you say to Zimmer in the car goes through that one Live Mode
 conversation, over the OpenAI Realtime call. Live Mode delegates to sessions itself: it checks on
@@ -840,14 +842,15 @@ only for the call.
 **CarPlay drill** (`ios_carplay`). Zimmer is opened in the iOS Simulator's CarPlay window and driven
 by XCUITest:
 - it opens on one button;
-- the gear opens the voice settings, which show a cap a voice call set, offer the speech threshold
-  only under Silence, reset to the defaults, and call the conversation again;
+- the gear is on the call screen, and the panel behind it (opened by the fixture running the gear's
+  action) shows a cap a voice call set, offers the speech threshold only under Silence, resets to
+  the defaults, and calls the conversation again;
 - a call that cannot connect (the fixture's Realtime secret points nowhere) fails, retries, gives
   up on the button, leaves no call screen behind, and is tapped again.
 
-It cannot press Mute, End or the gear: XCUITest finds them but no tap reaches them, so pressing
-those is confirmed only by driving. The fixture runs the gear's own action instead, so what is behind
-the gear is driven for real.
+It cannot press Mute, End or the gear: XCUITest finds them but no tap reaches them, so a press of
+those is unconfirmed until someone drives it. The fixture runs the gear's own action instead, so what
+is behind the gear is driven for real.
 
 Zimmer must still be running after every step, and any crash report fails the job. The rules under
 it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScreenTests`):

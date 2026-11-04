@@ -9,16 +9,16 @@ import Foundation
 /// pushed too far by voice is the value shown here, and a choice made here is the value the next
 /// call is minted from.
 ///
-/// **The panel shows only what the call would act on.** Under Semantic turn detection, the
+/// **The panel shows only what a call would act on.** Under Semantic turn detection, the
 /// default, `RealtimeSession` sends OpenAI eagerness and nothing else: the threshold and the
 /// pause go nowhere, so they have no row until the driver picks Silence, and Eagerness has none
 /// under Silence. A value hidden that way is still cleared by Reset to defaults.
 ///
 /// **The first row is the reply cap, because that is what has actually broken a call.**
 /// `voice_max_output_tokens` at 180 cut off 12 of one call's 13 replies, and the tool calls with
-/// them. Listening is here for the same reason, with a caveat: a call from the car is built as
-/// Always whatever it says, but it applies the moment a call moves to the phone, and a gated
-/// mode there drops every line it hears.
+/// them. Listening is the one row a car call does not read, and it says so: a call that has been
+/// on the car is built as Always whatever it says, until it hangs up. It is here for the calls
+/// started on the phone, where a gated mode drops the lines it does not take to be meant for it.
 public struct CarVoiceSettings: Sendable, Equatable {
     public struct Choice: Sendable, Equatable, Identifiable {
         public let title: String
@@ -183,8 +183,8 @@ public struct CarCallComeback: Sendable, Equatable {
     /// The conversation to call again. Nil once the driver asked for a fresh start with Talk to
     /// Zimmer, which picks the conversation itself.
     public private(set) var conversation: Int?
-    /// A driver who had muted the call comes back muted, however many tries that takes.
-    public let muted: Bool
+    /// A driver who muted the call comes back muted, however many tries that takes.
+    public private(set) var muted: Bool
 
     /// Nil when there is no call to come back to: the screen stays tappable for a moment after
     /// End, and a gear tapped then must not redial a call the driver ended.
@@ -198,6 +198,13 @@ public struct CarCallComeback: Sendable, Equatable {
 
     public mutating func talkTapped() {
         conversation = nil
+    }
+
+    /// The driver muted or unmuted the call that came back, before OpenAI answered on it. Asked
+    /// of the live call only: hanging up resets its mute, and that is not the driver's choice.
+    public mutating func muteChanged(_ muted: Bool, callIsActive: Bool) {
+        guard callIsActive else { return }
+        self.muted = muted
     }
 
     /// The call came back and OpenAI has answered on it, so nothing is left to bring back.
@@ -237,8 +244,9 @@ public final class CarVoiceSettingsModel {
     public var onWritten: ((String) -> Void)?
 
     private let api: any LiveAPI
+    /// The last write failed. The next write clears it.
+    public private(set) var writeFailed = false
     private var write: Task<Void, Never>?
-    private var writeFailed = false
 
     public init(api: any LiveAPI) {
         self.api = api
@@ -278,7 +286,7 @@ public final class CarVoiceSettingsModel {
         apply([row.key: choice.value], what: row.key)
     }
 
-    /// Back to the defaults, from the row the server holds now, whatever put it there.
+    /// Back to the defaults, from the row as last read, whatever put it there.
     public func reset() {
         guard let settings, settings.canReset else { return }
         apply(settings.resetChanges, what: "reset")
@@ -289,17 +297,11 @@ public final class CarVoiceSettingsModel {
         await write?.value
     }
 
-    /// Whether the last write failed, once: the first answer holds the panel up so the driver
-    /// can read why, and the next one lets it close on what the row holds.
-    public func takeWriteFailure() -> Bool {
-        defer { writeFailed = false }
-        return writeFailed
-    }
-
     private func apply(_ changes: [String: JSONValue], what: String) {
         guard !saving else { return }
         saving = true
         problem = nil
+        writeFailed = false
         onChange?()
         write = Task { [api] in
             do {

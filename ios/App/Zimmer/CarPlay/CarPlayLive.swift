@@ -34,7 +34,8 @@ import os
 /// pushed, and the call screen has to come down first. So the call hangs up, which closes the
 /// microphone and releases the audio session, and when the panel closes the same conversation
 /// is called again, muted if it was muted. That call is minted from the row the panel wrote, so
-/// every change takes effect then, the ones OpenAI fixes for a call's life included.
+/// every change takes effect then, the ones OpenAI fixes for a call's life included. Listening is
+/// the exception: a car call is built as Always, so it reaches only calls started on the phone.
 ///
 /// The template is built once per call, put up when the call starts and taken down when it
 /// ends. It is never rebuilt, and Mute is a state like the others: every template change is one
@@ -80,7 +81,7 @@ final class CarPlayLive {
             MainActor.assumeIsolated { self?.stateChanged(state) }
         }.store(in: &watchers)
         call.$muted.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.activate() }
+            MainActor.assumeIsolated { self?.muteChanged() }
         }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
         call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
@@ -112,6 +113,9 @@ final class CarPlayLive {
             // CarPlay's Back can leave the panel with a write still out: no call reads the row
             // ahead of it, Talk to Zimmer's included.
             await settings?.settled()
+            // That can take as long as the write does, and the car may have gone or the driver
+            // ended it meanwhile: a call started now would have no screen to be seen on.
+            guard navigator != nil, retry.wanted else { return }
             if call.isActive, let conversation = call.conversationID {
                 await call.start(conversation, from: .carplay)
                 present()
@@ -190,6 +194,7 @@ final class CarPlayLive {
                 // No panel: the driver has lost the call for nothing, so it comes straight back.
                 self.telemetry.track(.carPlay("settings_refused", level: .warn))
                 self.settings = nil
+                self.settingsClosing = false
                 self.callBack()
             }
         }
@@ -203,11 +208,13 @@ final class CarPlayLive {
         guard let panel = settings, !settingsClosing else { return }
         telemetry.track(.carPlay("settings_closed"))
         settingsClosing = true
+        // A failure the driver has already read does not hold them up a second time.
+        let writing = panel.isSaving
         Task {
             await panel.settled()
             guard self.settings === panel else { return }
             self.settingsClosing = false
-            if panel.takeWriteFailure() {
+            if writing, panel.writeFailed {
                 guard self.navigator?.isAtRoot == true else { return }
                 self.telemetry.track(.carPlay("settings_write_lost", level: .warn))
             }
@@ -276,6 +283,11 @@ final class CarPlayLive {
     }
 
     // MARK: - The screen
+
+    private func muteChanged() {
+        comeback?.muteChanged(call.muted, callIsActive: call.isActive)
+        activate()
+    }
 
     private func stateChanged(_ state: LiveVoiceState) {
         if state == .listening { retry.connected() }
@@ -358,7 +370,8 @@ final class CarPlayLive {
     /// button, and a click from the Mac at its place does not reach it, so this is how the panel
     /// is driven.
     private func drillPressesTheGear() {
-        guard ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"), !drillPressedTheGear else { return }
+        guard AppEnvironment.shared.isFixture, ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"),
+              !drillPressedTheGear else { return }
         drillPressedTheGear = true
         Task {
             try? await Task.sleep(for: .seconds(15))
