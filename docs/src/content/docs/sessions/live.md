@@ -197,6 +197,8 @@ Audio never passes through Zimmer:
 4. Finished transcript lines (`conversation.item.input_audio_transcription.completed` and
    `response.output_audio_transcript.done`) are posted as turns, so the thread on the page and in
    the API carries what was said.
+5. Talking over a reply needs nothing from the browser. Over WebRTC OpenAI holds the audio, knows
+   how much has played, and stops and truncates it itself.
 
 ### Listening: which lines get an answer
 
@@ -389,7 +391,13 @@ same path. A call on the phone opens a **WebSocket** to OpenAI rather than WebRT
 It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 as
 `input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
 and transcript lines exactly as the browser does: the shared rules are `RealtimeConductor` in
-ZimmerKit. In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
+ZimmerKit. Over a WebSocket the phone holds the audio, so talking over a reply is the phone's job:
+OpenAI sends a reply faster than it plays, and the phone keeps track of what is still queued
+(`LiveReplyPlayout`). When you start talking it stops whatever is still sounding, even if OpenAI
+finished generating it seconds ago, and sends `conversation.item.truncate` at the point you cut in.
+In the two gated Listening modes speech does not cut a reply off.
+
+In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
 or a new one with voice on, on the same call, with Mute and End while it runs. The car has no
 other voice: if the call can't connect, the button says *Live Mode unavailable, retrying…* and the
 car retries silently. `GET /api/v1/live_conversations/:id/sessions` returns the sessions the

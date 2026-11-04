@@ -794,8 +794,11 @@ record ([observability](/operate/observability/#the-ios-apps-call-log)). The log
   changes, interruptions, and the engine starting, restarting or failing;
 - turn detection as OpenAI applied it, speech starting and stopping, and the time from the end of
   speech to the reply and to its first audio;
-- each response's outcome, each tool call's name and time, Listening's verdict on a line, and every
-  error;
+- each response's outcome and how much audio it held (`response.done`'s `audio_ms`, which set
+  against its `duration_ms` shows how far generation ran ahead of playback), each tool call's name
+  and time, Listening's verdict on a line, and every error;
+- each time you talk over a reply: how much audio it had and where you cut in (`reply.interrupted`,
+  `audio_ms` and `heard_ms`), and OpenAI accepting the cut (`reply.truncated`);
 - every state change, mute, cue, microphone stall and CarPlay screen change.
 
 It never carries what was said: a transcript line is logged by its length. How much is logged is
