@@ -214,7 +214,7 @@ final class CarVoiceSettingsTests: XCTestCase {
 
     /// Only OpenAI answering proves the new call is up. Listening is set when the microphone
     /// opens, so a socket that fails right after is still a retry of this call, muted as it was.
-    func testAComebackLastsUntilOpenAIHasAnswered() throws {
+    func testAComebackLastsUntilOpenAIHasAnswered() async throws {
         let comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: true))
         for held in [LiveVoiceState.idle, .connecting, .listening] {
             XCTAssertFalse(comeback.isSpent(by: held), "\(held) proves nothing")
@@ -226,7 +226,7 @@ final class CarVoiceSettingsTests: XCTestCase {
 
     /// Talk to Zimmer after the retries are spent is a fresh start, and a fresh start for a
     /// driver who had muted must not open the microphone.
-    func testTalkDropsTheConversationButNotTheMute() throws {
+    func testTalkDropsTheConversationButNotTheMute() async throws {
         var comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: true))
         XCTAssertTrue(comeback.wantsCall)
         comeback.talkTapped()
