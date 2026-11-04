@@ -38,14 +38,24 @@ module LiveConversations
     GET_SETTINGS = "get_live_settings"
     UPDATE_SETTINGS = "update_live_settings"
     # Settings the live model may not change itself: how much the app reports
-    # about calls is for whoever reads the trace, not for the call.
-    LIVE_MODEL_EXCLUDED = %i[voice_telemetry].freeze
+    # about calls is for whoever reads the trace, not for the call. The voice
+    # output cap cuts a response off wherever it lands, and it counts the tool
+    # calls the model would need to undo it: a model that wants shorter replies
+    # has `append_guidance`.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens].freeze
     DIRECT_SEPARATOR = "__"
 
     MAX_ENABLED_SERVERS = 8
     MAX_DIRECT_TOOLS = 80
     SUMMARY_LIMIT = 160
     FUNCTION_NAME_LIMIT = 64
+    LOGGED_ERROR_LIMIT = 300
+
+    # Said to the model, which is the only one who can recover: an output cap
+    # cuts a voice call's arguments off mid-JSON, and the client relays them as
+    # they are.
+    UNREADABLE_ARGUMENTS = "Nothing ran: the arguments were cut off or were not valid JSON. " \
+                           "Call it again with complete arguments, or tell the person it did not work."
 
     Function = Data.define(:name, :description, :parameters)
     # `session_changed`: the call changed a setting an open voice call can take
@@ -99,6 +109,7 @@ module LiveConversations
         output, error, tools_changed = "The tool failed: #{e.class}: #{e.message.to_s.truncate(300)}", true, false
       end
 
+      log_failure(name, call_id, arguments, output) if error
       turn = @conversation.turns.create!(
         role: "tool", tool_name: name.to_s, call_id: call_id.to_s,
         tool_arguments: args.is_a?(Hash) ? args : { "raw" => arguments.to_s.truncate(2_000) },
@@ -110,6 +121,16 @@ module LiveConversations
     end
 
     private
+
+    # The error and the size of what was sent, never the arguments: those are the
+    # person's words, and this line is shipped. Nothing else records why a voice
+    # call's tool call failed where someone can read it afterwards.
+    def log_failure(name, call_id, arguments, output)
+      Rails.logger.warn(
+        "[LiveConversations::ToolBridge] function=#{name.to_s.squish.first(FUNCTION_NAME_LIMIT)} live_conversation=#{@conversation.id} " \
+        "call_id=#{call_id.to_s.squish.first(FUNCTION_NAME_LIMIT)} arguments_chars=#{arguments.to_s.length} failed: #{output.to_s.squish.truncate(LOGGED_ERROR_LIMIT)}"
+      )
+    end
 
     def dispatch(name, args)
       case name
@@ -141,7 +162,7 @@ module LiveConversations
 
       parsed
     rescue JSON::ParserError
-      raise ToolFailure, "Arguments were not valid JSON."
+      raise ToolFailure, UNREADABLE_ARGUMENTS
     end
 
     # --- Zimmer's own surface -------------------------------------------------

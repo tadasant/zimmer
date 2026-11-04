@@ -191,7 +191,9 @@ Audio never passes through Zimmer:
    `oai-events` data channel.
 3. On `response.function_call_arguments.done` it relays the call to `POST tool_calls` and sends the
    output back as a `function_call_output` item. When that response's `response.done` arrives and
-   every result is in, it sends exactly one `response.create`.
+   every result is in, it sends exactly one `response.create`. A response the person talked over
+   (`cancelled`) gets no `response.create`. One the output cap cut short (`incomplete`) does: see
+   [the voice output cap](#the-voice-output-cap).
 4. Finished transcript lines (`conversation.item.input_audio_transcription.completed` and
    `response.output_audio_transcript.done`) are posted as turns, so the thread on the page and in
    the API carries what was said.
@@ -264,7 +266,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Voice reasoning effort | voice | the model's | `minimal` … `xhigh` | next call |
 | Voice | voice | `marin` (or `LIVE_VOICE_VOICE`) | OpenAI's ten voices | next call |
 | Speaking speed | voice | 1.0 | 0.25–1.5 | mid-call |
-| Voice max output tokens | voice | no cap | 128–4,096 | mid-call |
+| Voice max output tokens | voice | no cap | 1,024–4,096 ([why the floor](#the-voice-output-cap)) | mid-call |
 | Listening | voice | `always` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call |
 | Turn detection | voice | `semantic_vad` | `semantic_vad`, `server_vad` | mid-call |
 | Eagerness (semantic) | voice | `auto` | `auto`, `low`, `medium`, `high` | mid-call |
@@ -294,6 +296,33 @@ or a model, voice or mode not on the list, is refused and nothing is saved. A nu
 range is clamped, and the answer says so. If OpenAI still refuses what was saved (a model this key
 cannot use, say), the typed reply and the voice call each retry once on the defaults and say so: on
 the conversation's page, and as `settings_warning` from `client_secret`.
+
+### The voice output cap
+
+`max_output_tokens` caps one Realtime response: its reasoning, its speech and its tool calls
+together. A response that reaches it stops where it is and ends `incomplete`, mid-sentence or
+mid-way through a function call's arguments. So the cap has three guards:
+
+- **A floor of 1,024.** Every writer is clamped to it. At 180, a call lost the end of 12 of its 13
+  replies and all 4 tool calls on those responses.
+- **It is a person's to change.** `update_live_settings` refuses it, and a reset from a call leaves
+  it as it was, because the model would be capping the calls it needs to undo the cap. To make
+  replies shorter, the model adds to the guidance. A person sets it on the settings page, or through
+  `PATCH /api/v1/live/settings` or `action_live_settings`.
+- **A cut-off tool call is not a silent one.** All three clients treat `incomplete` apart from a
+  person talking over a reply. The call is relayed as usual, Zimmer refuses arguments that do not
+  parse and runs nothing, and that answer goes back to the model with a `response.create`, so it can
+  try again or say what went wrong. When the cap was the reason, the client also sends
+  `max_output_tokens: "inf"` for the rest of that call, so the retry cannot be cut off the same way.
+  The next call starts on the setting again.
+
+A spoken reply cut off with no tool call just ends, and the call goes back to listening.
+
+The failure is written down in two places. Zimmer logs every failed tool call as a
+`[LiveConversations::ToolBridge]` WARN line with the error and the size of the arguments, never the
+arguments. The iOS call log carries `max_output_tokens` on `realtime.session_created` and
+`realtime.session_updated`, as OpenAI applied it, and a `response.done` that ended `incomplete` is a
+warning, so it survives telemetry turned down to `warn`.
 
 ### Live mode guidance
 
@@ -359,8 +388,9 @@ Live conversation) and set **Call telemetry**. It applies from the app's next ba
 Zimmer filters every batch against the setting and answers with the level, which the app adopts.
 The app also reads the level from each call's client secret and keeps it across launches. The REST
 route is `PATCH /api/v1/live/settings {"voice_telemetry": "info"}`, and the MCP tool is
-`action_live_settings`. The live model cannot change it from a call: `update_live_settings` refuses
-it, and a reset from the call leaves it as it was. What is logged, and how to read it, is under
+`action_live_settings`. The live model cannot change it from a call, as with
+[the voice output cap](#the-voice-output-cap): `update_live_settings` refuses it, and a reset from
+the call leaves it as it was. What is logged, and how to read it, is under
 [CarPlay](/extend/ios-app/#carplay) and [observability](/operate/observability/#the-ios-apps-call-log).
 
 ## The OpenAI key

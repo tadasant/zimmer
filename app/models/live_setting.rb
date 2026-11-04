@@ -26,8 +26,10 @@
 # is no text reasoning-effort setting, and the stronger GPT-6 models (Astra, 6.1
 # Sol), which take tools only through the Responses API, are not offered. The
 # ranges are narrower than the API's where an extreme would silence the agent:
-# a VAD threshold of 1.0 never hears speech, and a 16-token cap never finishes a
-# sentence.
+# a VAD threshold of 1.0 never hears speech. The voice output cap's floor is the
+# same idea with a price on it: the cap counts reasoning, speech and tool-call
+# arguments together, and at 180 it cut 12 of a call's 13 responses short and
+# every tool call on them.
 class LiveSetting < ApplicationRecord
   Field = Data.define(:key, :path, :type, :label, :help, :options, :min, :max) do
     def text? = path == :text
@@ -124,8 +126,8 @@ class LiveSetting < ApplicationRecord
               help: "A multiple of normal speed, 0.25 to 1.5. Changes mid-call, from the next reply.",
               options: nil, min: 0.25, max: 1.5),
     Field.new(key: :voice_max_output_tokens, path: :voice, type: :integer, label: "Voice max output tokens",
-              help: "A cap on one spoken reply. Blank is no cap.",
-              options: nil, min: 128, max: 4_096),
+              help: "A cap on one voice response: its reasoning, speech and tool calls together. A low one cuts replies off mid-sentence. Blank is no cap.",
+              options: nil, min: 1_024, max: 4_096),
     Field.new(key: :voice_listening, path: :voice, type: :enum, label: "Listening",
               help: "Which lines get an answer. The others are dropped: not answered, not kept in the call, not written to the thread. The microphone still streams to OpenAI in every mode.",
               options: LISTENING, min: nil, max: nil),

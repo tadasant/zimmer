@@ -211,18 +211,26 @@ export default class extends Controller {
   // A response that asked for tools ends before their results exist; once every
   // result is in, ask for the response that uses them — exactly once.
   //
-  // Only for a response that completed: one the user talked over was cancelled,
-  // and a function call it was cut off in the middle of is not one to run.
+  // Not for a response the user talked over: that one was cancelled, and a
+  // function call it was cut off in the middle of is not one to run. A response
+  // the output cap cut short (incomplete) is not that: nobody talked over it, so
+  // its calls run and get their follow-up, and the model hears what came of them.
+  // Zimmer refuses arguments that were cut off, which is what tells the model to
+  // try again or say so. With the cap the reason, the call also drops it for the
+  // rest of its life, so the retry cannot be cut off the same way.
   // And never on top of a response already running — with server VAD the user
   // speaking mid-tool starts one — so in that case the request waits for it to
   // finish (sendPendingResponse).
   async finishResponse(response, generation) {
     this.sendPendingResponse()
-    if (response?.status && response.status !== "completed") return
+    if (response?.status && !["completed", "incomplete"].includes(response.status)) return
     const callIds = (response?.output || []).filter((item) => item.type === "function_call").map((item) => item.call_id)
     if (callIds.length === 0) {
       if (this.state !== "idle") this.setState("listening")
       return
+    }
+    if (response?.status_details?.reason === "max_output_tokens") {
+      this.sendSession({ type: "realtime", max_output_tokens: "inf" })
     }
     callIds.forEach((callId) => {
       if (!this.pendingCalls.has(callId)) {
