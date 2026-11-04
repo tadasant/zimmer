@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_29_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_04_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -497,6 +497,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_29_150000) do
 
   create_table "live_conversations", force: :cascade do |t|
     t.string "agent_root", null: false
+    t.boolean "car_call", default: false, null: false
     t.string "client_surface"
     t.datetime "created_at", null: false
     t.datetime "ended_at"

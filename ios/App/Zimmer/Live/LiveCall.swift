@@ -52,7 +52,6 @@ final class LiveCall: ObservableObject {
     private var cues = LiveCueDirector()
     private var watchdog = MicWatchdog()
     private var watching: Task<Void, Never>?
-    private var listening: String?
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -128,7 +127,6 @@ final class LiveCall: ObservableObject {
         cues = LiveCueDirector()
         timeline = LiveCallTimeline()
         timeline.started(at: Self.now)
-        listening = nil
         lastError = nil
         muted = false
         telemetry.beginCall(conversation: conversation)
@@ -144,7 +142,6 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             telemetry.adopt(secret.telemetry)
             telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
-            listening = secret.listening
             conductor = RealtimeConductor(listening: secret.listening)
             var request = URLRequest(url: secret.websocketURL)
             request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
@@ -159,7 +156,7 @@ final class LiveCall: ObservableObject {
             // Hung up, or replaced by a newer call, while the microphone was opening: close only
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
-            telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: listening, gated: conductor.gated))
+            telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: conductor.listening, gated: conductor.gated))
             watch(generation: mine)
             state = .listening
             // Handed over while connecting, after the secret was asked for: its instructions
@@ -367,7 +364,11 @@ final class LiveCall: ObservableObject {
                 }
                 if let text, let event = JSONValue.parse(text) {
                     for entry in self.timeline.observe(event, at: Self.now) { self.telemetry.track(entry) }
+                    let was = self.conductor.listening
                     let effects = self.conductor.handle(event)
+                    if self.conductor.listening != was {
+                        self.telemetry.track(.listeningChanged(from: was, to: self.conductor.listening))
+                    }
                     self.apply(effects, generation: generation)
                 }
                 self.receive(task, generation: generation)
@@ -417,7 +418,7 @@ final class LiveCall: ObservableObject {
             let heard = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: true)
             guard generation == self.generation else { return }
             telemetry.track(.lineHeard(respond: heard?.respond ?? true, dropped: heard?.dropped == true, ms: Self.now - asked,
-                                       listening: listening))
+                                       listening: heard?.listening ?? conductor.listening))
             if heard?.dropped != true { activity += 1 }
             apply(conductor.heard(itemID: itemID, respond: heard?.respond ?? true), generation: generation)
         }

@@ -23,7 +23,8 @@ module LiveConversations
   #
   # Gating needs a client that does that second half, so it applies only to a
   # client that says it can (`listening_modes`); any other one is answered as
-  # `always`.
+  # `always`. So is a call that has been on the car, for as long as it lasts
+  # (Actions).
   class Listening
     MODES = %w[always wake_word dynamic].freeze
     GATED = %w[wake_word dynamic].freeze

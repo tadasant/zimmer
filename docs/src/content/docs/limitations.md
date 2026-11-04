@@ -8661,6 +8661,10 @@ nothing here does.
 
 Gating has costs:
 
+- A call that has been on the car answers everything until it hangs up, on the phone too. If you
+  move to a room with people in it mid-call, it answers them. Changing Listening during such a call
+  saves the setting, and the settings screen and `update_live_settings` both report it saved, but
+  it takes effect from the next call. To gate sooner, hang up and call again.
 - Talking over a reply doesn't cut it off, because ambient speech would too.
 - Every answered line waits for a round trip to Zimmer. Under Dynamic it also waits for a text
   model's yes or no, up to about eight seconds before the line is answered anyway.
