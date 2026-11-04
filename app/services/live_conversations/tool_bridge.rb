@@ -102,14 +102,16 @@ module LiveConversations
         output, error, tools_changed = dispatch(name.to_s, args)
       rescue ToolFailure => e
         output, error, tools_changed = e.message, true, false
+        detail = e.message
       rescue StandardError => e
         # A tool that blows up is the model's problem to talk about, not the
         # conversation's to die of.
         ErrorReporter.report_exception(e, context: { source: "LiveConversations::ToolBridge", function: name.to_s, live_conversation_id: @conversation.id })
         output, error, tools_changed = "The tool failed: #{e.class}: #{e.message.to_s.truncate(300)}", true, false
+        detail = e.class.name
       end
 
-      log_failure(name, call_id, arguments, output) if error
+      log_failure(name, call_id, arguments, detail || own_tool_error(name, output)) if error
       turn = @conversation.turns.create!(
         role: "tool", tool_name: name.to_s, call_id: call_id.to_s,
         tool_arguments: args.is_a?(Hash) ? args : { "raw" => arguments.to_s.truncate(2_000) },
@@ -122,14 +124,21 @@ module LiveConversations
 
     private
 
-    # The error and the size of what was sent, never the arguments: those are the
-    # person's words, and this line is shipped. Nothing else records why a voice
-    # call's tool call failed where someone can read it afterwards.
-    def log_failure(name, call_id, arguments, output)
+    # Why it failed and the size of what was sent, never the arguments: those are
+    # the person's words, and this line is shipped. Nothing else records why a
+    # voice call's tool call failed where someone can read it afterwards.
+    def log_failure(name, call_id, arguments, why)
       Rails.logger.warn(
         "[LiveConversations::ToolBridge] function=#{name.to_s.squish.first(FUNCTION_NAME_LIMIT)} live_conversation=#{@conversation.id} " \
-        "call_id=#{call_id.to_s.squish.first(FUNCTION_NAME_LIMIT)} arguments_chars=#{arguments.to_s.length} failed: #{output.to_s.squish.truncate(LOGGED_ERROR_LIMIT)}"
+        "call_id=#{call_id.to_s.squish.first(FUNCTION_NAME_LIMIT)} arguments_chars=#{arguments.to_s.length} failed: #{why.to_s.squish.truncate(LOGGED_ERROR_LIMIT)}"
       )
+    end
+
+    # Zimmer's tools answer in Zimmer's words. A catalog server's error is
+    # whatever that server wrote, which can quote what it was sent, so it stays on
+    # the tool turn.
+    def own_tool_error(name, output)
+      direct_lookup.key?(name.to_s) ? "the server reported an error" : output
     end
 
     def dispatch(name, args)

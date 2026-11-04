@@ -143,6 +143,7 @@ export default class extends Controller {
       case "response.created":
         this.responseActive = true
         this.requested = false
+        this.spoke = false
         this.setState("thinking")
         break
       // What OpenAI applied, not what was sent: a refused session.update leaves
@@ -153,6 +154,7 @@ export default class extends Controller {
         break
       case "response.output_audio.delta":
       case "response.output_audio_transcript.delta":
+        this.spoke = true
         if (this.state !== "speaking") this.setState("speaking")
         break
       case "response.function_call_arguments.done":
@@ -213,29 +215,56 @@ export default class extends Controller {
   //
   // Not for a response the user talked over: that one was cancelled, and a
   // function call it was cut off in the middle of is not one to run. A response
-  // the output cap cut short (incomplete) is not that: nobody talked over it, so
-  // its calls run and get their follow-up, and the model hears what came of them.
-  // Zimmer refuses arguments that were cut off, which is what tells the model to
-  // try again or say so. With the cap the reason, the call also drops it for the
-  // rest of its life, so the retry cannot be cut off the same way.
+  // cut short (incomplete, by the output cap or OpenAI's content filter) is not
+  // that: nobody talked over it, so its calls run and get their follow-up, and
+  // the model hears what came of them. Zimmer refuses arguments that were cut
+  // off, which is what tells the model to try again or say so. Three in a row
+  // stops asking and says so, rather than retrying unheard for ever.
+  //
+  // When the output cap cost a tool call, or a reply nobody heard a word of, the
+  // call drops the cap for the rest of its life, so the same cap cannot do it
+  // twice. A reply nobody heard is asked for again. A spoken reply the cap cut
+  // off just ends: that is the cap.
+  //
   // And never on top of a response already running — with server VAD the user
   // speaking mid-tool starts one — so in that case the request waits for it to
   // finish (sendPendingResponse).
   async finishResponse(response, generation) {
-    this.sendPendingResponse()
-    if (response?.status && !["completed", "incomplete"].includes(response.status)) return
-    const callIds = (response?.output || []).filter((item) => item.type === "function_call").map((item) => item.call_id)
-    if (callIds.length === 0) {
-      if (this.state !== "idle") this.setState("listening")
-      return
+    const status = response?.status
+    const calls = (response?.output || []).filter((item) => item.type === "function_call")
+    const cut = status === "incomplete"
+    if (status === "completed") {
+      this.cutsInARow = 0
+    } else if (cut && calls.length > 0) {
+      this.cutsInARow = (this.cutsInARow || 0) + 1
     }
-    if (response?.status_details?.reason === "max_output_tokens") {
-      this.sendSession({ type: "realtime", max_output_tokens: "inf" })
+    const lifting = cut && !this.capLifted && response.status_details?.reason === "max_output_tokens" &&
+      (calls.length > 0 || !this.spoke)
+    if (lifting) {
+      this.capLifted = true
+      this.sendSession({ type: "realtime" })
+    }
+    this.sendPendingResponse()
+    if (status && status !== "completed" && !cut) return
+    const callIds = calls.map((item) => item.call_id)
+    if (callIds.length === 0) {
+      if (lifting) {
+        // The cap ran out before a word was said: nothing was heard, so ask
+        // again without it.
+        this.pendingResponse = true
+        this.sendPendingResponse()
+      } else if (this.state !== "idle") {
+        this.setState("listening")
+      }
+      return
     }
     callIds.forEach((callId) => {
       if (!this.pendingCalls.has(callId)) {
         const item = response.output.find((entry) => entry.call_id === callId)
-        this.relayToolCall({ call_id: callId, name: item.name, arguments: item.arguments }, generation)
+        // Zimmer reads blank arguments as none at all, which is a call the model
+        // did not finish making. `{` is what it refuses.
+        const args = item.arguments || (cut ? "{" : item.arguments)
+        this.relayToolCall({ call_id: callId, name: item.name, arguments: args }, generation)
       }
     })
     await Promise.all(callIds.map((callId) => this.pendingCalls.get(callId)))
@@ -248,6 +277,12 @@ export default class extends Controller {
   sendPendingResponse() {
     if (!this.pendingResponse || this.responseActive || this.requested) return
     this.pendingResponse = false
+    if (this.cutsInARow >= 3) {
+      this.cutsInARow = 0
+      this.showError("OpenAI kept cutting that reply short.")
+      this.setState("listening")
+      return
+    }
     this.requested = true
     this.send({ type: "response.create" })
   }
@@ -268,8 +303,10 @@ export default class extends Controller {
     }
   }
 
+  // Zimmer's session names the stored output cap: a call that lifted it keeps
+  // it lifted.
   sendSession(session) {
-    this.send({ type: "session.update", session })
+    this.send({ type: "session.update", session: this.capLifted ? { ...session, max_output_tokens: "inf" } : session })
   }
 
   // The call's session as OpenAI has it. Its turn detection says whether the
@@ -345,6 +382,8 @@ export default class extends Controller {
     this.responseActive = false
     this.requested = false
     this.gated = false
+    this.capLifted = false
+    this.cutsInARow = 0
     if (!keepError) this.showError(null)
     this.setState("idle")
   }
