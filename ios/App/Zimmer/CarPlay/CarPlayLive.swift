@@ -355,7 +355,8 @@ final class CarPlayLive {
     #if DEBUG
     /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the gear's own action, once, a while
     /// after the first call screen goes up. XCUITest computes no hit point for a template's bar
-    /// button, so this is how the panel is driven if a click from the Mac does not land either.
+    /// button, and a click from the Mac at its place does not reach it, so this is how the panel
+    /// is driven.
     private func drillPressesTheGear() {
         guard ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"), !drillPressedTheGear else { return }
         drillPressedTheGear = true

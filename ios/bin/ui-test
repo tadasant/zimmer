@@ -346,41 +346,6 @@ if [ -n "$carplay" ]; then
   # want of a car.
   export ZIMMER_UI_TEST_CARPLAY=1
   export TEST_RUNNER_ZIMMER_UI_TEST_CARPLAY=1
-
-  # XCUITest computes no hit point for what a CarPlay template draws in its bars and buttons, so
-  # no tap of its own reaches them. A click from the Mac does: the drill writes where it wants
-  # one, in the car's own points with the size of its screen, and this clicks there. The screen
-  # sits centred across the window, with a bezel of 18 points under it and the rest above.
-  click_request="$artifacts/carplay-click"
-  (
-    while [ ! -e "$artifacts/.tests-finished" ]; do
-      if [ -e "$click_request" ]; then
-        read -r spot_x spot_y car_w car_h <"$click_request" || true
-        rm -f "$click_request"
-        osascript - "$spot_x" "$spot_y" "$car_w" "$car_h" <<'APPLESCRIPT' >>"$artifacts/carplay-clicks.txt" 2>&1 || true
-on run argv
-  set spotX to (item 1 of argv) as real
-  set spotY to (item 2 of argv) as real
-  set carW to (item 3 of argv) as real
-  set carH to (item 4 of argv) as real
-  tell application "Simulator" to activate
-  delay 0.5
-  tell application "System Events" to tell process "Simulator"
-    set theWindow to first window whose name contains "CarPlay"
-    set {winX, winY} to position of theWindow
-    set {winW, winH} to size of theWindow
-    set clickX to round (winX + (winW - carW) / 2 + spotX)
-    set clickY to round (winY + winH - 18 - carH + spotY)
-    click at {clickX, clickY}
-  end tell
-  return "clicked " & clickX & "," & clickY & " in a window " & winW & "x" & winH & " at " & winX & "," & winY
-end run
-APPLESCRIPT
-      fi
-      /bin/sleep 0.5
-    done
-  ) &
-  clicker=$!
 fi
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
@@ -409,8 +374,6 @@ xcodebuild test-without-building \
 # The drill's photographs of the CarPlay window as plain files, beside the result bundle, so
 # they can be read without a Mac.
 if [ -n "$carplay" ]; then
-  touch "$artifacts/.tests-finished"
-  wait "$clicker" || true
   xcrun xcresulttool export attachments --path "$artifacts/ZimmerUITests.xcresult" \
     --output-path "$artifacts/carplay-photos" >/dev/null 2>&1 \
     || mkdir -p "$artifacts/carplay-photos"

@@ -66,9 +66,10 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call screen goes up; the car showed:\n\(car.debugDescription)")
         photograph("carplay-call-screen-gear")
         record("the call screen", car.debugDescription)
-        let clicked = clickTheGear()
-        record("the gear", clicked ? "a click in the CarPlay window opened the panel" : "no click reached the gear: the fixture pressed it")
-        print("carplay drill: the gear was \(clicked ? "pressed by a click in the CarPlay window" : "pressed by the fixture")")
+        // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
+        // click from the Mac at its place does not reach it either. So the fixture runs the
+        // gear's own action, 15 seconds after the call screen goes up.
+        XCTAssertTrue(car.buttons["gearshape.fill"].exists, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
@@ -137,39 +138,16 @@ final class CarPlayDrillUITests: XCTestCase {
         car.cells.containing(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
     }
 
-    /// Press a list row, and wait for `shown`. A tap if XCUITest can reach it, a click from the
-    /// Mac if it cannot.
+    /// Tap a list row, and wait for `shown`.
     private func press(_ words: String, until shown: XCUIElement) {
         let target = row(words)
         XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; the car showed:\n\(car.debugDescription)")
         target.tap()
-        if shown.waitForExistence(timeout: 4) { return }
-        click(target)
         XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; the car showed:\n\(car.debugDescription)")
     }
 
     private func anything(containing words: String) -> XCUIElement {
         car.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", words)).firstMatch
-    }
-
-    /// The gear is a bar button with no words, so it goes by its symbol's name. XCUITest finds it
-    /// and computes no hit point for it, as for Mute and End, so `ios/bin/ui-test` clicks it from
-    /// the Mac (see `carplay-click` there). True when that opened the panel. The fixture presses
-    /// the gear's action a few seconds later either way, so the panel is driven whichever it was.
-    private func clickTheGear() -> Bool {
-        let gear = car.buttons["gearshape.fill"]
-        XCTAssertTrue(gear.waitForExistence(timeout: timeout), "no gear on the call screen; the car showed:\n\(car.debugDescription)")
-        click(gear)
-        return row("Back to the call").waitForExistence(timeout: 6)
-    }
-
-    /// A click from the Mac at `element`'s place in the CarPlay window (`carplay-click` in
-    /// `ios/bin/ui-test`).
-    private func click(_ element: XCUIElement) {
-        guard element.exists, let artifacts = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] else { return }
-        let window = car.windows.firstMatch.frame
-        let spot = "\(element.frame.midX) \(element.frame.midY) \(window.width) \(window.height)\n"
-        try? spot.write(toFile: artifacts + "/carplay-click", atomically: true, encoding: .utf8)
     }
 
     /// What XCUITest could see, kept with the run.

@@ -57,6 +57,17 @@ final class CarVoiceSettingsTests: XCTestCase {
     }
 
     /// The server's range decides what is offered, so a raised floor needs no change here.
+    /// CarPlay cuts a detail at about forty characters in the 800-wide window, as the drill's
+    /// photographs showed, and a cut one hid the word Silence.
+    func testEveryDetailFitsOnTheRow() async throws {
+        for values in [Self.broken, Self.silence, [:]] {
+            let (model, _) = await panel(values)
+            for row in model.settings?.rows ?? [] {
+                XCTAssertLessThanOrEqual(row.detail.count, 36, "\(row.key): \(row.detail)")
+            }
+        }
+    }
+
     func testAPresetUnderTheServersFloorIsNotOffered() {
         let field = LiveSettingField(key: "voice_max_output_tokens", path: "voice", type: .integer, label: "Voice max output tokens", min: 800, max: 4_096)
         let settings = CarVoiceSettings(LiveSettings(settings: ["voice_max_output_tokens": .null], fields: [field]))
@@ -72,7 +83,7 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertFalse(keys.contains("voice_vad_threshold"), "0.92 goes nowhere under Semantic")
         XCTAssertFalse(keys.contains("voice_vad_silence_duration_ms"))
         XCTAssertEqual(try row(semantic, "voice_vad_eagerness").detail, "Low")
-        XCTAssertEqual(try row(semantic, "voice_turn_detection").detail, "Semantic (default). Threshold and pause need Silence")
+        XCTAssertEqual(try row(semantic, "voice_turn_detection").detail, "Semantic. Threshold needs Silence")
 
         let (silence, _) = await panel(Self.silence)
         let silenceKeys = silence.settings?.rows.map(\.key) ?? []
@@ -112,7 +123,7 @@ final class CarVoiceSettingsTests: XCTestCase {
     func testListeningIsOfferedAndSaysItIsThePhonesOnly() async throws {
         let (model, _) = await panel(Self.broken)
         let listening = try row(model, "voice_listening")
-        XCTAssertEqual(listening.detail, "Dynamic. On the phone. The car always answers")
+        XCTAssertEqual(listening.detail, "Dynamic. Phone only")
         XCTAssertEqual(listening.choices.map(\.title), ["Always (default)", "Wake word", "Dynamic"])
         XCTAssertTrue(CarVoiceSettings.resetKeys.contains("voice_listening"))
     }
