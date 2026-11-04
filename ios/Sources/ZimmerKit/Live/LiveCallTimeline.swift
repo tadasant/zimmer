@@ -212,11 +212,11 @@ public extension LiveEvent {
         LiveEvent(.debug, "cue.played") { ["cue": .string(cue.rawValue)] }
     }
 
-    static func thinkingCue(_ on: Bool) -> LiveEvent {
-        LiveEvent(.debug, on ? "cue.thinking_started" : "cue.thinking_stopped")
+    static func loopCue(_ cue: LiveCue, on: Bool) -> LiveEvent {
+        LiveEvent(.debug, "cue.\(cue.rawValue)_\(on ? "started" : "stopped")")
     }
 
-    static func thinkingTimedOut(after: TimeInterval) -> LiveEvent {
-        LiveEvent(.warn, "cue.thinking_timeout") { ["after_ms": .ms(after)] }
+    static func loopTimedOut(_ cue: LiveCue, after: TimeInterval) -> LiveEvent {
+        LiveEvent(.warn, "cue.\(cue.rawValue)_timeout") { ["after_ms": .ms(after)] }
     }
 }

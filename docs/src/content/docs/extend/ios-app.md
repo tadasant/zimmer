@@ -758,22 +758,29 @@ button reads *Live Mode unavailable, retrying…* and the car tries again after 
 silently. Once those three are spent it reads *Live Mode unavailable. Tap to retry*. Ending the
 call ends the retries.
 
-**You can hear what the call is doing.** The call makes three short sounds besides Zimmer's
-voice, on the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit):
+**You can hear what the call is doing.** The call makes short sounds besides Zimmer's voice, on
+the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit). The browser's call dock makes
+the same ones ([Voice](/sessions/live/#voice)).
 
-- **Connected**: two soft rising notes, once, when the call is up and listening.
-- **Thinking**: one quiet, low tick about once a second, from the moment you stop talking until
-  Zimmer starts to answer, tool calls included. It stops the instant the reply's audio starts, and
-  the first tick waits a third of a second, so an answer that starts sooner gets none. After 45
-  seconds with no answer the tick gives up (`cue.thinking_timeout`).
-- **Disconnected**: the connected notes falling, once, when a call drops. Ending the call yourself
-  makes no sound.
+| Sound | When | What it tells you |
+| --- | --- | --- |
+| **Connected**: two soft rising notes | Once, when the call is up | Zimmer is listening |
+| **Heard**: one short, quiet note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
+| **Thinking**: a quiet low tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
+| **Working**: a soft low pair of notes every 2.5 seconds | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the tick |
+| **Failed**: two low notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
+| **Ended**: one soft low note | You hung up | The call is over |
+| **Disconnected**: the connected notes falling | The call dropped | You did not end it |
+
+Every cue stops the moment you talk or a reply starts, nothing starts while you are talking, and a
+cue due while the reply is still playing waits for it to finish. A successful tool has no sound of its own: the next thing you hear is
+the answer. If you talk over a running tool, the working cue comes back when you stop.
 
 The cues play through the same voice-processing engine as the reply, so the echo canceller hears
 them as the phone's own output. While one sounds, the microphone is sent to OpenAI as silence
 (`LiveCueGate`), held open for the route's latency as well, so turn detection never takes a cue
-for speech. Between ticks the microphone is
-open, so you can still talk over a slow answer.
+for speech. Between sounds the microphone is open, so you can still talk over a slow answer. The
+first moment of a word spoken right on a cue can be lost to that silence.
 
 **A turn always ends.** OpenAI's turn detection measures silence in the audio it is sent, not in
 wall-clock time. A microphone that stops delivering mid-sentence (an interruption that never says
