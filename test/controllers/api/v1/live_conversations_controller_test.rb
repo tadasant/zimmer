@@ -261,6 +261,20 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response")
   end
 
+  test "a line from the car holds the call on Always even when the hand-over's session_update never landed" do
+    LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice", client_surface: "ios")
+    url = "/api/v1/live_conversations/#{conversation.id}"
+    phone = @headers.merge("X-Zimmer-Client" => "ios/1.5.0")
+
+    post "#{url}/turns", params: { role: "user", content: "talking to my friend", listening_modes: "1" }, headers: @headers.merge("X-Zimmer-Client" => "carplay/1.5.0")
+    assert_response :created
+    assert_equal "ios", conversation.reload.client_surface, "a late line from the car does not take the call back"
+
+    post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
+    assert_equal true, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response")
+  end
+
   test "a dropped line says the mode that dropped it" do
     LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     conversation = create_live_conversation(mode: "voice")

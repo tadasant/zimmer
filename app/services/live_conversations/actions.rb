@@ -137,6 +137,11 @@ module LiveConversations
       content = content.to_s.strip
       raise Refused, "content can't be blank." if content.empty?
 
+      # A line from the car proves the call has been there, even when the
+      # hand-over's own `session_update` never landed. The surface is left
+      # alone: a line still in flight after the hand-over must not take it back.
+      @conversation.update_column(:car_call, true) if @client_surface == "carplay" && !@conversation.car_call
+
       setting = LiveSetting.current
       mode = Listening.mode(setting, capable: listening_modes?)
       respond = role.to_s != "user" || Listening.new(@conversation, mode: mode, setting: setting).respond?(content)

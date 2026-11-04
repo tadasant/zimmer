@@ -136,7 +136,7 @@ final class LiveCall: ObservableObject {
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
-            let mintedFor = surface
+            let mintedFor = self.surface
             let asked = Self.now
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
@@ -161,7 +161,7 @@ final class LiveCall: ObservableObject {
             state = .listening
             // Handed over while connecting, after the secret was asked for: its instructions
             // name the client that started the call, so bring them up to the one driving it.
-            if surface != mintedFor { await refreshSession() }
+            if self.surface != mintedFor { await refreshSession() }
             guard mine == generation else { return }
             let first = pendingOpening ?? opening
             pendingOpening = nil
