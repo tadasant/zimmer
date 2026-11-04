@@ -134,7 +134,7 @@ final class LiveAPITests: XCTestCase {
 
         let dropped = try await api.recordLiveTurn(7, role: .user, content: "talking to a friend", gated: true)
         XCTAssertEqual(dropped.listening, "dynamic", "the mode Zimmer decided in, for the call log")
-        XCTAssertEqual(dropped, LiveHeard(respond: false, dropped: true))
+        XCTAssertEqual(dropped, LiveHeard(respond: false, dropped: true, listening: "dynamic"))
         XCTAssertEqual(try body(transport.sent[3])["listening_modes"] as? String, "1")
     }
 
