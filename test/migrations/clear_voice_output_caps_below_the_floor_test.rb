@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
-require Rails.root.join("db/migrate/20261104160000_clear_voice_output_caps_below_the_floor")
+require Rails.root.join("db/migrate/20261104200000_clear_voice_output_caps_below_the_floor")
 
 # Every writer clamps to the floor from this deploy on, but a value stored before it
 # was never checked against it: the 180 the live model left behind would go on
