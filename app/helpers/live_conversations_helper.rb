@@ -28,4 +28,21 @@ module LiveConversationsHelper
     turn.tool? && turn.tool_name == LiveConversations::ToolBridge::UPDATE_SETTINGS && !turn.tool_error &&
       turn.tool_output.to_s.start_with?(LiveConversations::ToolBridge::SETTINGS_CHANGED, LiveConversations::ToolBridge::SETTINGS_SAVED_NO_EFFECT)
   end
+
+  def live_settings_change_title(turn)
+    if turn.tool_output.to_s.start_with?(LiveConversations::ToolBridge::SETTINGS_SAVED_NO_EFFECT)
+      "Live Mode saved a setting with no effect"
+    else
+      "Live Mode changed its settings"
+    end
+  end
+
+  # The answer as a person reads it: without its lead, which the card's title
+  # says, or the line addressed to the live model.
+  def live_settings_change_text(turn)
+    bridge = LiveConversations::ToolBridge
+    turn.tool_output.to_s
+      .delete_prefix("#{bridge::SETTINGS_CHANGED}\n").delete_prefix("#{bridge::SETTINGS_SAVED_NO_EFFECT}\n")
+      .delete_suffix(bridge::SAY_NO_EFFECT).delete_suffix(bridge::SAY_SOME_NO_EFFECT)
+  end
 end

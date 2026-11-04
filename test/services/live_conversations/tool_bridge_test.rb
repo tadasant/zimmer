@@ -244,7 +244,13 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     mixed = @bridge.execute("update_live_settings", JSON.generate(voice_speed: 1.2, voice_vad_threshold: 0.75), call_id: "m2")
     assert mixed.output.start_with?("Changed:"), mixed.output
     assert_match(/Threshold \(silence\) has no effect/, mixed.output)
-    assert_match(/Tell the person this out loud/, mixed.output)
+    assert_match(/Say what changed, and say out loud which settings have no effect\./, mixed.output)
+    assert_no_match(/Do not say the setting was changed/, mixed.output)
+
+    switched = @bridge.execute("update_live_settings", JSON.generate(voice_turn_detection: "server_vad"), call_id: "m3")
+    assert switched.output.start_with?("Changed:"), switched.output
+    assert_match(/Eagerness \(semantic\) has no effect under Silence/, switched.output)
+    assert_no_match(/Do not say the setting was changed/, switched.output)
   end
 
   test "reading the settings marks what the mode leaves unused" do

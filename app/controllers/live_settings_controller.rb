@@ -57,7 +57,7 @@ class LiveSettingsController < ApplicationController
     flash[:alert] = result.no_effect_note if result.no_effect_note
     if result.changed?
       flash[:live_settings_saved] = true
-      redirect_to live_settings_path, status: :see_other, notice: "Saved. #{result.summary.lines.first.to_s.strip}#{' …' if result.summary.lines.size > 1}"
+      redirect_to live_settings_path, status: :see_other, notice: "Saved. #{result.details.first}#{' …' if result.details.size > 1}"
     else
       redirect_to live_settings_path, status: :see_other, notice: "Nothing changed."
     end
