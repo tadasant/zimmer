@@ -10,6 +10,8 @@ class LiveConversationDashboard < Administrate::BaseDashboard
     mode: Field::String,
     # Which client last drove the conversation (web, ios, carplay, mcp).
     client_surface: Field::String,
+    # The open voice call has been on the car: it stays on Always until it ends.
+    car_call: Field::Boolean,
     status: Field::String,
     agent_root: Field::String,
     model: Field::String,
@@ -31,7 +33,7 @@ class LiveConversationDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[id mode status agent_root model last_activity_at].freeze
 
   SHOW_PAGE_ATTRIBUTES = %i[
-    id mode client_surface status agent_root model title instructions_source mcp_servers mcp_tool_cache
+    id mode client_surface car_call status agent_root model title instructions_source mcp_servers mcp_tool_cache
     error_message responding_since last_activity_at ended_at instructions mode_instructions turns created_at updated_at
   ].freeze
 
