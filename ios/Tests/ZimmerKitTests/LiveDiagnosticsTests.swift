@@ -197,7 +197,8 @@ final class LiveDiagnosticsTests: XCTestCase {
     func testTheEndOfSpeechPutsTheCallToWorkAtOnce() {
         var conductor = RealtimeConductor()
         XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .signal(.personTalking), .state(.listening)])
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":2000}"#)), [.state(.thinking), .signal(.heardPerson)],
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":2000}"#)),
+                       [.signal(.personStopped), .state(.thinking), .signal(.heardPerson)],
                        "the thinking cue starts the moment the person stops talking")
         var gated = RealtimeConductor(listening: "wake_word")
         _ = gated.handle(event(#"{"type":"input_audio_buffer.speech_stopped"}"#))
@@ -370,7 +371,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(director.transition(to: .thinking), [.startLoop(.thinking)])
         XCTAssertEqual(director.transition(to: .listening), [.stopLoop], "a line not answered")
         _ = director.transition(to: .thinking)
-        XCTAssertEqual(director.dropped(), [.stopLoop, .play(.disconnected)])
+        XCTAssertEqual(director.dropped(), [.stopCues, .play(.disconnected)])
         var never = LiveCueDirector()
         XCTAssertEqual(never.dropped(), [], "a call that never connected makes no sound")
         XCTAssertEqual(never.hungUp(), [], "nor does hanging one up")
@@ -389,14 +390,24 @@ final class LiveDiagnosticsTests: XCTestCase {
 
         var talkedOver = LiveCueDirector()
         _ = talkedOver.transition(to: .listening)
-        _ = talkedOver.receive(.toolsRunning(1))
-        XCTAssertEqual(talkedOver.transition(to: .working), [.startLoop(.working)])
+        XCTAssertEqual(talkedOver.receive(.toolsRunning(1)), [.startLoop(.working)])
+        XCTAssertEqual(talkedOver.transition(to: .working), [])
         XCTAssertEqual(talkedOver.receive(.personTalking), [.stopCues], "the instant the person talks")
         XCTAssertEqual(talkedOver.transition(to: .listening), [], "and not back while they do")
-        XCTAssertEqual(talkedOver.transition(to: .thinking), [.startLoop(.working)], "they stopped, and the tool still runs")
+        XCTAssertEqual(talkedOver.transition(to: .thinking), [], "not for a response that starts under them either")
+        XCTAssertEqual(talkedOver.receive(.personStopped), [.startLoop(.working)], "they stopped, and the tool still runs")
         XCTAssertEqual(talkedOver.transition(to: .speaking), [.stopCues], "the interim answer")
         XCTAssertEqual(talkedOver.transition(to: .listening), [.startLoop(.working)], "which ended, and the tool still runs")
         XCTAssertEqual(talkedOver.receive(.toolsRunning(0)), [.stopLoop])
+    }
+
+    func testNothingSoundsWhileThePersonTalks() {
+        var director = LiveCueDirector()
+        _ = director.transition(to: .listening)
+        _ = director.receive(.personTalking)
+        XCTAssertEqual(director.receive(.heardPerson), [], "Zimmer's answer about an earlier line, arriving under the next one")
+        XCTAssertEqual(director.receive(.actionFailed), [], "it would close the microphone on them")
+        XCTAssertEqual(director.receive(.personStopped), [.play(.failed)], "held, not lost")
     }
 
     func testATurnsFailureSoundsOnce() {
@@ -405,6 +416,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(director.receive(.actionFailed), [.play(.failed)])
         XCTAssertEqual(director.receive(.actionFailed), [], "three tools failing is one cue")
         _ = director.receive(.personTalking)
+        _ = director.receive(.personStopped)
         XCTAssertEqual(director.receive(.actionFailed), [.play(.failed)], "a new turn")
 
         var waiting = LiveCueDirector()
@@ -418,7 +430,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         var director = LiveCueDirector()
         _ = director.transition(to: .listening)
         _ = director.transition(to: .thinking)
-        XCTAssertEqual(director.hungUp(), [.stopLoop, .play(.ended)])
+        XCTAssertEqual(director.hungUp(), [.stopCues, .play(.ended)], "a heard note still waiting does not get in front of the goodbye")
         XCTAssertEqual(director.hungUp(), [], "the call is over: nothing to say goodbye to")
     }
 
@@ -445,7 +457,8 @@ final class LiveDiagnosticsTests: XCTestCase {
                        [.state(.listening)], "talked over is no failure")
 
         var gated = RealtimeConductor(listening: "wake_word")
-        XCTAssertEqual(gated.handle(event(#"{"type":"input_audio_buffer.speech_stopped"}"#)), [.state(.thinking)], "not heard until Zimmer says so")
+        XCTAssertEqual(gated.handle(event(#"{"type":"input_audio_buffer.speech_stopped"}"#)), [.signal(.personStopped), .state(.thinking)],
+                       "not heard until Zimmer says so")
         XCTAssertEqual(gated.heard(itemID: "u1", respond: true).first, .signal(.heardPerson))
     }
 

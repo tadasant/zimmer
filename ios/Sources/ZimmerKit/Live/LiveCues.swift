@@ -168,9 +168,9 @@ public struct LiveCueGate: Sendable, Equatable {
 /// | The model is working on an answer, no tool running | *thinking* loop |
 /// | A tool is running | *working* loop, to its end |
 /// | The last tool finished, reply not started | back to the *thinking* loop |
-/// | The person starts talking, or a reply starts | every cue stops at once |
-/// | A reply ends with a tool still running | *working* loop again |
-/// | A tool failed, a reply failed or was cut short, an error ended the wait for an answer | *failed*, once a turn |
+/// | The person starts talking, or a reply starts | every cue stops at once; none starts until they stop |
+/// | The person stops, or a reply ends, with a tool still running | *working* loop again |
+/// | A tool failed, a reply failed or was cut short, an error ended the wait for an answer | *failed*, once a turn, after the person stops talking |
 /// | The thinking or working ceiling passes | the loop stops, *failed* |
 /// | The person hangs up | *ended* |
 /// | The call drops | *disconnected* |
@@ -187,6 +187,8 @@ public struct LiveCueDirector: Sendable, Equatable {
     public enum Signal: Equatable, Sendable {
         /// The person started talking.
         case personTalking
+        /// The person stopped talking.
+        case personStopped
         /// The person stopped talking and this line will be answered.
         case heardPerson
         /// This many tools are running.
@@ -203,6 +205,7 @@ public struct LiveCueDirector: Sendable, Equatable {
     private var tools = 0
     private var talking = false
     private var failureSounded = false
+    private var failureHeld = false
     private(set) var loop: LiveCue?
 
     public init() {}
@@ -217,13 +220,10 @@ public struct LiveCueDirector: Sendable, Equatable {
                 actions.append(.play(.connected))
             }
         case .speaking:
-            talking = false
             failureSounded = false
             loop = nil
             return [.stopCues]
-        case .thinking, .working:
-            talking = false
-        case .connecting, .idle:
+        case .thinking, .working, .connecting, .idle:
             break
         }
         return settle() + actions
@@ -236,12 +236,22 @@ public struct LiveCueDirector: Sendable, Equatable {
             failureSounded = false
             loop = nil
             return [.stopCues]
+        case .personStopped:
+            talking = false
+            let held = failureHeld ? receive(.actionFailed) : []
+            failureHeld = false
+            return settle() + held
         case .heardPerson:
-            return state == .speaking ? [] : [.play(.heard, after: LiveCue.heardLead)]
+            return state == .speaking || talking ? [] : [.play(.heard, after: LiveCue.heardLead)]
         case let .toolsRunning(count):
             tools = count
             return settle()
         case .actionFailed:
+            // Never while the person talks: it would close the microphone on them.
+            if talking {
+                failureHeld = true
+                return []
+            }
             guard !failureSounded else { return [] }
             failureSounded = true
             return [.play(.failed)]
@@ -268,19 +278,20 @@ public struct LiveCueDirector: Sendable, Equatable {
     }
 
     private mutating func farewell(_ cue: LiveCue) -> [Action] {
-        let wasLooping = loop != nil
+        let quiet: [Action] = greeted || loop != nil ? [.stopCues] : []
+        let goodbye: [Action] = greeted ? [.play(cue)] : []
         loop = nil
         state = .idle
-        let goodbye: [Action] = greeted ? [.play(cue)] : []
         greeted = false
-        return (wasLooping ? [.stopLoop] : []) + goodbye
+        return quiet + goodbye
     }
 
     /// The loop the call should be hearing now.
     private var wanted: LiveCue? {
+        guard !talking else { return nil }
         switch state {
         case .thinking, .working: return tools > 0 ? .working : .thinking
-        case .listening: return tools > 0 && !talking ? .working : nil
+        case .listening: return tools > 0 ? .working : nil
         case .speaking, .connecting, .idle: return nil
         }
     }

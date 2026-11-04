@@ -154,8 +154,8 @@ public struct RealtimeConductor: Sendable {
             // the line turns out not to be one to answer. Not while a reply arrives (gated
             // speech does not cut it off). Gated, the person counts as heard once Zimmer says
             // the line gets an answer (`heard`).
-            guard playingItem == nil else { return [] }
-            return [.state(.thinking)] + (gated ? [] : [.signal(.heardPerson)])
+            guard playingItem == nil else { return [.signal(.personStopped)] }
+            return [.signal(.personStopped), .state(.thinking)] + (gated ? [] : [.signal(.heardPerson)])
         case "response.created":
             responseActive = true
             requested = false

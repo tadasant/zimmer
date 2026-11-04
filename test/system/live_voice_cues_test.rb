@@ -7,7 +7,7 @@ require "application_system_test_case"
 class LiveVoiceCuesTest < ApplicationSystemTestCase
   # A dock with its player swapped for one that writes down what it was told, a
   # call in `listening`, and every event below delivered as the data channel would.
-  def drive(*events)
+  def drive(*events, gated: false)
     page.evaluate_script(<<~JS)
       (function () {
         const dock = document.getElementById("live-voice-dock");
@@ -19,9 +19,12 @@ class LiveVoiceCuesTest < ApplicationSystemTestCase
         live.generation = 1;
         live.post = () => new Promise(() => {});
         live.setState("listening");
+        live.gated = #{gated};
         heard.length = 0;
         #{events.to_json}.forEach((event) => live.handleEvent(event, 1));
         const seen = JSON.parse(JSON.stringify(heard));
+        live.gated = false;
+        live.runningTools = 0;
         live.setState("idle");
         return seen;
       })()
@@ -50,6 +53,15 @@ class LiveVoiceCuesTest < ApplicationSystemTestCase
     assert_equal [ { "stopCues" => true }, { "startLoop" => "thinking" }, { "play" => "heard", "after" => 0.35 },
                    { "stopLoop" => true }, { "startLoop" => "working" }, { "stopCues" => true } ],
       drive(speech("started"), speech("stopped"), tool("a"), speech("started"))
+  end
+
+  test "a gated call gets the working cue back when the person stops" do
+    assert_equal [ { "startLoop" => "working" }, { "stopCues" => true }, { "startLoop" => "working" } ],
+      drive(tool("a"), speech("started"), speech("stopped"), gated: true)
+  end
+
+  test "nothing starts under the person while they talk" do
+    assert_equal [ { "stopCues" => true } ], drive(speech("started"), { type: "response.created" })
   end
 
   test "a reply cut short or failed sounds failed, and one talked over does not" do
@@ -105,6 +117,7 @@ class LiveVoiceCuesTest < ApplicationSystemTestCase
         const gates = [];
         const player = new LiveCuePlayer({ onMicGate: (closed) => gates.push(closed), onLoopTimeout: () => {} });
         player.context = new OfflineAudioContext(1, 12000, 24000);
+        Object.defineProperty(player.context, "state", { value: "running" });
         player.perform([ { play: "failed" } ]);
         const rendered = await player.context.startRendering();
         const peak = Math.max(...rendered.getChannelData(0).map(Math.abs));
@@ -112,10 +125,17 @@ class LiveVoiceCuesTest < ApplicationSystemTestCase
         player.perform([ { play: "heard", after: 5 } ]);
         player.perform([ { stopCues: true } ]);
         await new Promise((resolve) => setTimeout(resolve, 50));
-        done({ peaks, peak, gates, closures: player.closures });
-      });
+        const suspended = [];
+        const asleep = new LiveCuePlayer({ onMicGate: (closed) => suspended.push(closed), onLoopTimeout: () => {} });
+        asleep.context = new OfflineAudioContext(1, 12000, 24000);
+        asleep.perform([ { play: "failed" } ]);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        done({ peaks, peak, gates, closures: player.closures, suspended });
+      }).catch((error) => done({ error: String(error) }));
     JS
+    assert_nil result["error"]
     assert_operator result["peak"], :>, 0.05, "it makes a sound"
+    assert_empty result["suspended"], "a browser holding audio back gets no silent cues closing the microphone"
     result["peaks"].each { |cue, peak| assert_operator peak, :<=, 0.25, cue }
     assert_equal [ true, false ], result["gates"], "closed for the cue, open after, and a cancelled cue never closes it"
     assert_equal 0, result["closures"]

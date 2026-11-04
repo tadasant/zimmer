@@ -93,6 +93,7 @@ export default class extends Controller {
 
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (mine !== this.generation) { this.stopMic(); return }
+      this.cues.unlock()
 
       const pc = new RTCPeerConnection()
       this.pc = pc
@@ -156,6 +157,7 @@ export default class extends Controller {
         break
       // Gated, the person counts as heard once Zimmer says the line gets an answer.
       case "input_audio_buffer.speech_stopped":
+        this.cues.perform(this.director.personStopped())
         if (!this.gated && this.state !== "speaking") {
           this.setState("thinking")
           this.cues.perform(this.director.heardPerson())

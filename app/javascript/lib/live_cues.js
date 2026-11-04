@@ -51,6 +51,7 @@ export class LiveCueDirector {
     this.tools = 0
     this.talking = false
     this.failureSounded = false
+    this.failureHeld = false
     this.loop = null
   }
 
@@ -61,12 +62,9 @@ export class LiveCueDirector {
       this.greeted = true
       actions.push({ play: "connected" })
     } else if (state === "speaking") {
-      this.talking = false
       this.failureSounded = false
       this.loop = null
       return [{ stopCues: true }]
-    } else if (state === "thinking" || state === "working") {
-      this.talking = false
     }
     return [...this.settle(), ...actions]
   }
@@ -78,8 +76,15 @@ export class LiveCueDirector {
     return [{ stopCues: true }]
   }
 
+  personStopped() {
+    this.talking = false
+    const held = this.failureHeld ? this.actionFailed() : []
+    this.failureHeld = false
+    return [...this.settle(), ...held]
+  }
+
   heardPerson() {
-    return this.state === "speaking" ? [] : [{ play: "heard", after: HEARD_LEAD }]
+    return this.state === "speaking" || this.talking ? [] : [{ play: "heard", after: HEARD_LEAD }]
   }
 
   toolsRunning(count) {
@@ -88,6 +93,11 @@ export class LiveCueDirector {
   }
 
   actionFailed() {
+    // Never while the person talks: it would close the microphone on them.
+    if (this.talking) {
+      this.failureHeld = true
+      return []
+    }
     if (this.failureSounded) return []
     this.failureSounded = true
     return [{ play: "failed" }]
@@ -114,17 +124,18 @@ export class LiveCueDirector {
   }
 
   farewell(cue) {
-    const wasLooping = this.loop !== null
+    const quiet = this.greeted || this.loop ? [{ stopCues: true }] : []
+    const goodbye = this.greeted ? [{ play: cue }] : []
     this.loop = null
     this.state = "idle"
-    const goodbye = this.greeted ? [{ play: cue }] : []
     this.greeted = false
-    return [...(wasLooping ? [{ stopLoop: true }] : []), ...goodbye]
+    return [...quiet, ...goodbye]
   }
 
   get wanted() {
+    if (this.talking) return null
     if (this.state === "thinking" || this.state === "working") return this.tools > 0 ? "working" : "thinking"
-    if (this.state === "listening" && this.tools > 0 && !this.talking) return "working"
+    if (this.state === "listening" && this.tools > 0) return "working"
     return null
   }
 
@@ -140,8 +151,7 @@ export class LiveCueDirector {
 // Plays the cues, and closes the microphone (`onMicGate(true)`) while one
 // sounds, so turn detection never takes a cue for speech: the browser's echo
 // canceller is not guaranteed to have Web Audio as its reference. The loops run
-// on timers rather than a looping source so that the gate and the sound can
-// never drift apart.
+// on timers rather than a looping source, so each repeat closes the gate itself.
 export class LiveCuePlayer {
   constructor({ onMicGate, onLoopTimeout }) {
     this.onMicGate = onMicGate
@@ -152,13 +162,13 @@ export class LiveCuePlayer {
     this.closures = 0
   }
 
-  // Called from the click that starts the call: a browser lets audio start
-  // only from a user gesture. A call with no cues is still a call, so a browser
-  // without Web Audio just goes without.
+  // A browser lets audio start from a user gesture, or once the page is
+  // capturing the microphone, so this is called at both. A call with no cues is
+  // still a call, so a browser that refuses just goes without.
   unlock() {
     try {
       this.context = this.context || new AudioContext()
-      this.context.resume()
+      this.context.resume().catch(() => {})
     } catch (_error) {
       this.context = null
     }
@@ -195,15 +205,16 @@ export class LiveCuePlayer {
   }
 
   sound(cue, delay, bag) {
-    if (!this.context) return
+    // Suspended, a cue would close the microphone and make no sound.
+    if (this.context?.state !== "running") return
     const source = this.context.createBufferSource()
     source.buffer = this.buffer(cue)
     source.connect(this.context.destination)
     source.start(this.context.currentTime + delay)
-    const window = source.buffer.duration + TAIL + (this.context.outputLatency || this.context.baseLatency || 0)
+    const closedFor = source.buffer.duration + TAIL + (this.context.outputLatency || this.context.baseLatency || 0)
     const entry = { source, closed: false }
     entry.closing = setTimeout(() => this.closeMic(entry), delay * 1000)
-    entry.opening = setTimeout(() => { this.openMic(entry); bag.delete(entry) }, (delay + window) * 1000)
+    entry.opening = setTimeout(() => { this.openMic(entry); bag.delete(entry) }, (delay + closedFor) * 1000)
     bag.add(entry)
   }
 
