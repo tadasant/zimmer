@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
+import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 
 // The Live Mode voice call, owned by a dock in the layout (shared/_live_voice_dock,
 // data-turbo-permanent) rather than by the conversation page — a Turbo
@@ -25,6 +26,8 @@ import { csrfHeaders } from "lib/csrf"
 //                   detection starts no reply itself: each finished user line
 //                   goes to POST turns, which answers whether to reply →
 //                   response.create, or conversation.item.delete to drop it
+//   cues            the call's state and these events → lib/live_cues, the same
+//                   sounds as the phone and the car
 export default class extends Controller {
   static targets = ["panel", "status", "title", "link", "mute", "error"]
 
@@ -34,6 +37,12 @@ export default class extends Controller {
   initialize() {
     this.state = "idle"
     this.pendingCalls = new Map()
+    this.runningTools = 0
+    this.director = new LiveCueDirector()
+    this.cues = new LiveCuePlayer({
+      onMicGate: (closed) => { this.cueSounding = closed; this.applyMic() },
+      onLoopTimeout: () => this.cues.perform(this.director.loopTimedOut())
+    })
   }
 
   connect() {
@@ -69,6 +78,8 @@ export default class extends Controller {
       if (this.call && String(this.call.conversationId) === String(call.conversationId)) return
       this.hangUp()
     }
+    this.cues.unlock()
+    this.director = new LiveCueDirector()
     this.call = call
     this.generation = (this.generation || 0) + 1
     const mine = this.generation
@@ -82,6 +93,7 @@ export default class extends Controller {
 
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (mine !== this.generation) { this.stopMic(); return }
+      this.cues.unlock()
 
       const pc = new RTCPeerConnection()
       this.pc = pc
@@ -92,7 +104,7 @@ export default class extends Controller {
       pc.onconnectionstatechange = () => {
         if (["failed", "closed"].includes(pc.connectionState) && mine === this.generation) {
           this.showError("The call dropped.")
-          this.hangUp()
+          this.hangUp({ keepError: true, dropped: true })
         }
       }
 
@@ -138,7 +150,18 @@ export default class extends Controller {
     switch (event.type) {
       case "input_audio_buffer.speech_started":
         // Gated, speech does not cut a reply off, so the reply is still what is happening.
-        if (!(this.gated && this.state === "speaking")) this.setState("listening")
+        if (!(this.gated && this.state === "speaking")) {
+          this.cues.perform(this.director.personTalking())
+          this.setState("listening")
+        }
+        break
+      // Gated, the person counts as heard once Zimmer says the line gets an answer.
+      case "input_audio_buffer.speech_stopped":
+        this.cues.perform(this.director.personStopped())
+        if (!this.gated && this.state !== "speaking") {
+          this.setState("thinking")
+          this.cues.perform(this.director.heardPerson())
+        }
         break
       case "response.created":
         this.responseActive = true
@@ -180,6 +203,11 @@ export default class extends Controller {
         // A refused response.create never gets its response.created.
         this.requested = false
         this.showError(event.error?.message || "OpenAI reported an error.")
+        // With nothing running or about to, no answer is coming.
+        if (!this.responseActive && this.runningTools === 0 && !this.pendingResponse && this.state !== "speaking") {
+          this.cues.perform(this.director.noAnswerComing())
+          this.setState("listening")
+        }
         break
     }
   }
@@ -188,6 +216,8 @@ export default class extends Controller {
   // response run side by side.
   relayToolCall({ call_id: callId, name, arguments: args }, generation) {
     if (!callId || this.pendingCalls.has(callId)) return
+    this.runningTools += 1
+    this.cues.perform(this.director.toolsRunning(this.runningTools))
     this.setState("working")
     const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1 })
       .then(async (response) => {
@@ -200,12 +230,20 @@ export default class extends Controller {
         } else if (response.ok && body.tools_changed && Array.isArray(body.tools)) {
           this.send({ type: "session.update", session: { type: "realtime", tools: body.tools } })
         }
+        this.toolFinished(!response.ok || body.error === true)
       })
       .catch((error) => {
         if (generation !== this.generation) return
         this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: `Zimmer could not be reached: ${error.message}` } })
+        this.toolFinished(true)
       })
     this.pendingCalls.set(callId, pending)
+  }
+
+  toolFinished(failed) {
+    this.runningTools -= 1
+    this.cues.perform(this.director.toolsRunning(this.runningTools))
+    if (failed) this.cues.perform(this.director.actionFailed())
   }
 
   // A response that asked for tools ends before their results exist; once every
@@ -218,7 +256,11 @@ export default class extends Controller {
   // finish (sendPendingResponse).
   async finishResponse(response, generation) {
     this.sendPendingResponse()
-    if (response?.status && response.status !== "completed") return
+    if (response?.status && response.status !== "completed") {
+      if (!this.requested && this.state !== "idle") this.setState("listening")
+      if (response.status !== "cancelled") this.cues.perform(this.director.actionFailed())
+      return
+    }
     const callIds = (response?.output || []).filter((item) => item.type === "function_call").map((item) => item.call_id)
     if (callIds.length === 0) {
       if (this.state !== "idle") this.setState("listening")
@@ -291,6 +333,7 @@ export default class extends Controller {
     }
     if (generation !== this.generation) return
     if (respond) {
+      this.cues.perform(this.director.heardPerson())
       this.pendingResponse = true
       this.sendPendingResponse()
     } else if (event.item_id) {
@@ -317,15 +360,22 @@ export default class extends Controller {
   }
 
   toggleMute() {
-    const track = this.mic?.getAudioTracks()[0]
-    if (!track) return
-    track.enabled = !track.enabled
-    this.muteTarget.textContent = track.enabled ? "Mute" : "Unmute"
-    this.muteTarget.setAttribute("aria-pressed", track.enabled ? "false" : "true")
+    if (!this.mic?.getAudioTracks()[0]) return
+    this.muted = !this.muted
+    this.applyMic()
+    this.muteTarget.textContent = this.muted ? "Unmute" : "Mute"
+    this.muteTarget.setAttribute("aria-pressed", this.muted ? "true" : "false")
   }
 
-  hangUp({ keepError = false } = {}) {
+  // A disabled track sends silence: when the person muted, and while a cue sounds.
+  applyMic() {
+    const track = this.mic?.getAudioTracks()[0]
+    if (track) track.enabled = !this.muted && !this.cueSounding
+  }
+
+  hangUp({ keepError = false, dropped = false } = {}) {
     this.generation = (this.generation || 0) + 1
+    this.cues.perform(dropped ? this.director.dropped() : this.director.hungUp())
     this.channel?.close()
     this.pc?.close()
     this.stopMic()
@@ -333,6 +383,9 @@ export default class extends Controller {
     this.channel = null
     this.pc = null
     this.pendingCalls.clear()
+    this.runningTools = 0
+    this.muted = false
+    this.muteTarget.setAttribute("aria-pressed", "false")
     this.pendingResponse = false
     this.responseActive = false
     this.requested = false
@@ -361,6 +414,7 @@ export default class extends Controller {
     if (this.call) this.linkTarget.href = this.call.conversationUrl
     this.muteTarget.classList.toggle("hidden", !live)
     if (!live) this.muteTarget.textContent = "Mute"
+    this.cues.perform(this.director.transition(state))
     this.broadcast()
   }
 

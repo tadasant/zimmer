@@ -17,9 +17,11 @@ import os
 /// quiet anyway, `LiveCall`'s watchdog covers it with silence so OpenAI's turn still ends, and
 /// asks for `recoverIfStopped()`.
 ///
-/// **The cues** (`LiveCue`) play on a second player node on the same engine, so the echo
+/// **The cues** (`LiveCue`) play on two more player nodes on the same engine, so the echo
 /// canceller has them as reference like the reply; and while one sounds, the microphone is sent
-/// as silence (`LiveCueGate`), so OpenAI's turn detection never takes a cue for speech.
+/// as silence (`LiveCueGate`), so OpenAI's turn detection never takes a cue for speech. One node
+/// holds the loop and the other the one-shots, because a buffer scheduled behind a looping
+/// buffer never plays. A cue never talks over the reply: it waits out what is still queued.
 ///
 /// Every step is reported to `LiveTelemetry`: the permission, the audio session as configured,
 /// the route and its changes, interruptions, the engine starting, restarting or failing.
@@ -88,10 +90,14 @@ final class LiveAudioEngine {
     private let sink = FrameSink()
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
-    /// The cues' own player, so stopping the reply (the person talked over it) never cuts a cue
-    /// and stopping the thinking tick never cuts the reply.
+    /// The one-shot cues' own player, so stopping the reply (the person talked over it) never
+    /// cuts a cue and stopping a cue never cuts the reply.
     private var cuePlayer: AVAudioPlayerNode?
-    private var thinking = false
+    /// The looping cue's own player.
+    private var loopPlayer: AVAudioPlayerNode?
+    private var looping: LiveCue?
+    /// When the last one-shot scheduled finishes: the next plays after it, whatever it asked for.
+    private var cuesEnd: TimeInterval = 0
     /// Between an interruption's `.began` and its `.ended`: the session belongs to someone else
     /// (a phone call, Siri), and reactivating it would fail and end the call.
     private var interrupted = false
@@ -135,13 +141,15 @@ final class LiveAudioEngine {
         let engine = AVAudioEngine()
         let player = AVAudioPlayerNode()
         let cuePlayer = AVAudioPlayerNode()
+        let loopPlayer = AVAudioPlayerNode()
         self.engine = engine
         self.player = player
         self.cuePlayer = cuePlayer
+        self.loopPlayer = loopPlayer
         sink.set(frames)
         self.failed = failed
         do {
-            try configure(engine: engine, player: player, cuePlayer: cuePlayer, restart: false)
+            try configure(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, restart: false)
         } catch {
             Self.telemetry.track(.audioEngineFailed(String(describing: error), restart: false))
             stop()
@@ -151,7 +159,8 @@ final class LiveAudioEngine {
         return mine
     }
 
-    private func configure(engine: AVAudioEngine, player: AVAudioPlayerNode, cuePlayer: AVAudioPlayerNode, restart: Bool) throws {
+    private func configure(engine: AVAudioEngine, player: AVAudioPlayerNode, cuePlayer: AVAudioPlayerNode, loopPlayer: AVAudioPlayerNode,
+                           restart: Bool) throws {
         let input = engine.inputNode
         // The echo canceller. Not fatal when refused: the mic still works, and headphones
         // sidestep echo entirely.
@@ -171,12 +180,15 @@ final class LiveAudioEngine {
         input.installTap(onBus: 0, bufferSize: 1_024, format: nil, block: Self.makeTap(sink))
         if player.engine == nil { engine.attach(player) }
         if cuePlayer.engine == nil { engine.attach(cuePlayer) }
+        if loopPlayer.engine == nil { engine.attach(loopPlayer) }
         engine.connect(player, to: engine.mainMixerNode, format: Self.replyFormat)
         engine.connect(cuePlayer, to: engine.mainMixerNode, format: Self.replyFormat)
+        engine.connect(loopPlayer, to: engine.mainMixerNode, format: Self.replyFormat)
         engine.prepare()
         try engine.start()
         player.play()
         cuePlayer.play()
+        loopPlayer.play()
         // How long a cue takes from scheduling to coming back through the microphone.
         let session = AVAudioSession.sharedInstance()
         let latency = session.outputLatency + session.inputLatency + session.ioBufferDuration
@@ -247,18 +259,23 @@ final class LiveAudioEngine {
     /// and so is one stopped by an interruption still under way: the session is not ours until
     /// it ends, and the call carries on (its turn kept alive with silence) until then.
     func recoverIfStopped() {
-        guard !interrupted, let engine, let player, let cuePlayer, !engine.isRunning else { return }
+        guard !interrupted, let engine, let player, let cuePlayer, let loopPlayer, !engine.isRunning else { return }
         player.stop()
         playout.queueDropped(at: ProcessInfo.processInfo.systemUptime)
         cuePlayer.stop()
-        let wasThinking = thinking
-        thinking = false
-        sink.changeGate { $0.stopLoop() }
+        loopPlayer.stop()
+        let wasLooping = looping
+        looping = nil
+        cuesEnd = 0
+        sink.changeGate {
+            $0.stopLoop()
+            $0.clearOneShots()
+        }
         do {
             try AVAudioSession.sharedInstance().setActive(true)
-            try configure(engine: engine, player: player, cuePlayer: cuePlayer, restart: true)
+            try configure(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, restart: true)
             Self.log.notice("live audio engine restarted after a configuration change")
-            if wasThinking { startThinking() }
+            if let wasLooping { startLoop(wasLooping) }
         } catch {
             Self.log.error("live audio engine could not restart: \(error.localizedDescription, privacy: .public)")
             Self.telemetry.track(.audioEngineFailed(error.localizedDescription, restart: true))
@@ -271,34 +288,60 @@ final class LiveAudioEngine {
 
     // MARK: - Cues
 
-    /// Play a one-shot cue (connected, disconnected), closing the microphone while it sounds.
-    func play(_ cue: LiveCue) {
-        guard let engine, let cuePlayer, engine.isRunning, let buffer = Self.buffer(cue.samples()) else { return }
-        sink.changeGate { $0.oneShot(cue, at: ProcessInfo.processInfo.systemUptime) }
+    /// Play a one-shot cue after `delay`, or once the queued reply has played if that is later,
+    /// closing the microphone while it sounds. Says whether it was scheduled.
+    @discardableResult
+    func play(_ cue: LiveCue, after delay: TimeInterval = 0) -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        let free = max(now, cuesEnd)
+        let start = max(now + max(delay, replyRemaining), free)
+        let silence = [Float](repeating: 0, count: Int((start - free) * RealtimeAudio.sampleRate))
+        guard let engine, let cuePlayer, engine.isRunning, let buffer = Self.buffer(silence + cue.samples()) else { return false }
+        cuesEnd = start + cue.duration
+        sink.changeGate { $0.oneShot(cue, at: start, now: now) }
         cuePlayer.scheduleBuffer(buffer, completionHandler: nil)
+        return true
     }
 
-    /// The thinking tick, looping from `LiveCue.thinkingLead` from now until `stopThinking()`.
-    func startThinking() {
-        guard !thinking, let engine, let cuePlayer, engine.isRunning,
-              let lead = Self.buffer([Float](repeating: 0, count: Int(LiveCue.thinkingLead * RealtimeAudio.sampleRate))),
-              let loop = Self.buffer(LiveCue.thinkingLoop()) else { return }
-        thinking = true
-        sink.changeGate { $0.startLoop(at: ProcessInfo.processInfo.systemUptime) }
-        cuePlayer.scheduleBuffer(lead, completionHandler: nil)
-        cuePlayer.scheduleBuffer(loop, at: nil, options: .loops, completionHandler: nil)
+    /// Loop `cue` from its lead, or from the end of the queued reply, until `stopLoop()`.
+    func startLoop(_ cue: LiveCue) {
+        guard looping == nil else { return }
+        // Remembered even with the engine stopped, so `recoverIfStopped()` brings it back.
+        looping = cue
+        let wait = max(cue.lead, replyRemaining)
+        guard let engine, let loopPlayer, engine.isRunning,
+              let lead = Self.buffer([Float](repeating: 0, count: Int(wait * RealtimeAudio.sampleRate))),
+              let loop = Self.buffer(cue.loop()) else { return }
+        let start = ProcessInfo.processInfo.systemUptime + wait
+        sink.changeGate { $0.startLoop(cue, at: start) }
+        loopPlayer.scheduleBuffer(lead, completionHandler: nil)
+        loopPlayer.scheduleBuffer(loop, at: nil, options: .loops, completionHandler: nil)
     }
 
-    /// Stop the tick at once: the reply is starting, or the call went back to listening.
-    func stopThinking() {
-        guard thinking else { return }
-        thinking = false
+    /// Stop the loop at once.
+    func stopLoop() {
+        guard looping != nil else { return }
+        looping = nil
         sink.changeGate { $0.stopLoop() }
+        guard let engine, let loopPlayer, engine.isRunning else { return }
+        loopPlayer.stop()
+        loopPlayer.play()
+    }
+
+    /// Stop every cue at once, a one-shot still waiting its turn included: the person is talking
+    /// or the reply is starting.
+    func stopCues() {
+        stopLoop()
+        cuesEnd = 0
+        sink.changeGate { $0.clearOneShots() }
         guard let engine, let cuePlayer, engine.isRunning else { return }
-        // Stopping a player drops everything scheduled on it; a cue is never more than a
-        // moment, so a one-shot still playing is no loss next to a tick over Zimmer's voice.
         cuePlayer.stop()
         cuePlayer.play()
+    }
+
+    /// How much of the reply is still to come out of the speaker.
+    private var replyRemaining: TimeInterval {
+        playout.remaining(at: ProcessInfo.processInfo.systemUptime)
     }
 
     private static func buffer(_ samples: [Float]) -> AVAudioPCMBuffer? {
@@ -358,11 +401,14 @@ final class LiveAudioEngine {
         let engine = self.engine
         let player = self.player
         let cuePlayer = self.cuePlayer
+        let loopPlayer = self.loopPlayer
+        playout = LiveReplyPlayout()
         if let farewell { play(farewell) }
         abandon()
         guard let engine else { return }
         engine.inputNode.removeTap(onBus: 0)
         player?.stop()
+        loopPlayer?.stop()
         guard let farewell, engine.isRunning else {
             Self.tearDown(engine, cuePlayer: cuePlayer, deactivate: true)
             return
@@ -392,7 +438,9 @@ final class LiveAudioEngine {
         engine = nil
         player = nil
         cuePlayer = nil
-        thinking = false
+        loopPlayer = nil
+        looping = nil
+        cuesEnd = 0
         sink.set(nil)
         failed = nil
     }
