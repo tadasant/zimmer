@@ -12,6 +12,8 @@ public struct LiveCallTimeline: Sendable {
     private var speechStoppedAt: TimeInterval?
     private var responseCreatedAt: TimeInterval?
     private var firstAudioSeen = false
+    /// Bytes of 16-bit PCM in the response under way.
+    private var responseAudioBytes = 0
     private var turns = 0
     private var responses = 0
 
@@ -74,10 +76,12 @@ public struct LiveCallTimeline: Sendable {
         case "response.created":
             responseCreatedAt = at
             firstAudioSeen = false
+            responseAudioBytes = 0
             responses += 1
             let sinceStop = speechStoppedAt.map { at - $0 }
             return [LiveEvent(.debug, "response.created") { ["since_speech_end_ms": .ms(sinceStop)] }]
         case "response.output_audio.delta":
+            responseAudioBytes += event["delta"]?.string.flatMap { Data(base64Encoded: $0) }?.count ?? 0
             guard !firstAudioSeen else { return [] }
             firstAudioSeen = true
             let sinceStop = speechStoppedAt.map { at - $0 }
@@ -90,6 +94,7 @@ public struct LiveCallTimeline: Sendable {
             let took = responseCreatedAt.map { at - $0 }
             let calls = (response["output"]?.array ?? []).filter { $0["type"]?.string == "function_call" }.count
             let audio = firstAudioSeen
+            let audioMs = responseAudioBytes * 1_000 / (2 * Int(RealtimeAudio.sampleRate))
             responseCreatedAt = nil
             if status == "failed" {
                 let message = response["status_details"]?["error"]?["message"]
@@ -97,8 +102,14 @@ public struct LiveCallTimeline: Sendable {
             }
             let reason = response["status_details"]?["reason"]
             return [LiveEvent(.debug, "response.done") {
-                ["status": .string(status), "reason": reason ?? .null, "duration_ms": .ms(took), "had_audio": .bool(audio), "function_calls": .int(calls)]
+                ["status": .string(status), "reason": reason ?? .null, "duration_ms": .ms(took), "had_audio": .bool(audio), "audio_ms": .int(audioMs),
+                 "function_calls": .int(calls)]
             }]
+        case "conversation.item.truncated":
+            // OpenAI took the truncate; one it refused is a `realtime.error`.
+            let item = event["item_id"]
+            let audioEnd = event["audio_end_ms"]
+            return [LiveEvent(.debug, "reply.truncated") { ["item_id": item ?? .null, "audio_end_ms": audioEnd ?? .null] }]
         case "conversation.item.input_audio_transcription.completed":
             // Its length only: never what was said.
             let characters = event["transcript"]?.string?.count
@@ -165,6 +176,11 @@ public extension LiveEvent {
         LiveEvent(respond ? .debug : .warn, "listening.heard") {
             ["respond": .bool(respond), "dropped": .bool(dropped), "duration_ms": .ms(ms), "listening": .text(listening)]
         }
+    }
+
+    /// The person talked over a reply: how long it was and where they cut in.
+    static func replyInterrupted(_ cut: LiveReplyPlayout.Cut) -> LiveEvent {
+        LiveEvent(.info, "reply.interrupted") { ["item_id": .string(cut.itemID), "audio_ms": .int(cut.audioMs), "heard_ms": .int(cut.heardMs)] }
     }
 
     static func toolCall(_ name: String, ms: TimeInterval, ok: Bool) -> LiveEvent {

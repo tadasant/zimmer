@@ -149,9 +149,34 @@ final class LiveDiagnosticsTests: XCTestCase {
                        "never per audio chunk")
         let done = timeline.observe(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#), at: 17)
         XCTAssertEqual(done[0].fields()["had_audio"], .bool(true))
+        XCTAssertEqual(done[0].fields()["audio_ms"], .number(0), "two samples, under a millisecond at 24 kHz")
         let error = timeline.observe(event(#"{"type":"error","error":{"type":"invalid_request_error","code":"x","message":"Bad"}}"#), at: 18)
         XCTAssertEqual(error[0].level, .error)
         XCTAssertEqual(timeline.summary["turns"], .number(1))
+    }
+
+    func testAReplysLengthAndWhereItWasCutAreLogged() {
+        var timeline = LiveCallTimeline()
+        _ = timeline.observe(event(#"{"type":"response.created"}"#), at: 1)
+        let second = Data(count: 48_000).base64EncodedString()
+        _ = timeline.observe(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"\#(second)"}"#), at: 1.1)
+        _ = timeline.observe(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"\#(second)"}"#), at: 1.2)
+        let done = timeline.observe(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#), at: 1.5)
+        XCTAssertEqual(done[0].fields()["audio_ms"], .number(2_000), "two seconds of reply, generated in half a second")
+        XCTAssertEqual(done[0].fields()["duration_ms"], .number(500))
+
+        _ = timeline.observe(event(#"{"type":"response.created"}"#), at: 2)
+        let next = timeline.observe(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#), at: 2.1)
+        XCTAssertEqual(next[0].fields()["audio_ms"], .number(0), "counted per response")
+
+        let cut = LiveEvent.replyInterrupted(.init(itemID: "r1", audioMs: 2_000, heardMs: 750))
+        XCTAssertEqual(cut.name, "reply.interrupted")
+        XCTAssertEqual(cut.level, .info)
+        XCTAssertEqual(cut.fields(), ["item_id": .string("r1"), "audio_ms": .number(2_000), "heard_ms": .number(750)])
+
+        let truncated = timeline.observe(event(#"{"type":"conversation.item.truncated","item_id":"r1","audio_end_ms":750}"#), at: 3)
+        XCTAssertEqual(truncated.map(\.name), ["reply.truncated"])
+        XCTAssertEqual(truncated[0].fields()["audio_end_ms"], .number(750))
     }
 
     func testALineAGatedCallDroppedIsAWarningNamingTheMode() {
@@ -171,7 +196,7 @@ final class LiveDiagnosticsTests: XCTestCase {
 
     func testTheEndOfSpeechPutsTheCallToWorkAtOnce() {
         var conductor = RealtimeConductor()
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)])
         XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_stopped","audio_end_ms":2000}"#)), [.state(.thinking)],
                        "the thinking cue starts the moment the person stops talking")
         var gated = RealtimeConductor(listening: "wake_word")

@@ -433,13 +433,123 @@ final class RealtimeConductorTests: XCTestCase {
                        [.replyStarted(itemID: "r1"), .play(Data([0, 0, 1, 0])), .state(.speaking)])
         XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)),
                        [.play(Data([0, 0])), .state(.speaking)], "the same item keeps counting")
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(itemID: "r1"), .state(.listening)])
-        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)], "nothing left playing to cut")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: "r1"), .state(.listening)])
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)), [],
+                       "audio of the item just cut, still on its way, does not start it again")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)],
+                       "a second start has nothing arriving")
+        XCTAssertEqual(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#)), [],
+                       "and leaves the cut item cut")
         let truncate = RealtimeConductor.truncate(itemID: "r1", audioEndMs: 1_250)
         XCTAssertEqual(truncate["type"]?.string, "conversation.item.truncate")
         XCTAssertEqual(truncate["audio_end_ms"], .number(1_250))
         XCTAssertEqual(conductor.handle(event(#"{"type":"error","error":{"message":"bad"}}"#)), [.failure("bad"), .state(.listening)],
                        "nothing running: the call says it is listening")
+    }
+
+    func testSpeechAfterResponseDoneStillInterruptsAReplyThatIsSounding() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
+        _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.interrupt(arriving: nil), .state(.listening)],
+                       "generation finishing says nothing about what the speaker has left")
+    }
+
+    func testAGatedCallDoesNotInterruptAfterResponseDoneEither() {
+        var conductor = RealtimeConductor(listening: "wake_word")
+        _ = conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"AAA="}"#))
+        _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
+        XCTAssertEqual(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)), [.state(.listening)],
+                       "it may not be meant for the call")
+    }
+
+    func testAPlayoutSaysHowMuchOfAReplyWasHeardAfterItsResponseFinished() {
+        var playout = LiveReplyPlayout()
+        var conductor = RealtimeConductor()
+        // Two seconds of audio arrives in a burst at t=100; generation is over at once.
+        var clock = 100.0
+        func deliver(_ effects: [RealtimeConductor.Effect]) {
+            for effect in effects {
+                switch effect {
+                case let .replyStarted(itemID): playout.started(itemID: itemID, at: clock)
+                case let .play(pcm): playout.scheduled(samples: pcm.count / 2, at: clock)
+                default: break
+                }
+            }
+        }
+        let second = Data(count: 48_000).base64EncodedString()
+        deliver(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"\#(second)"}"#)))
+        deliver(conductor.handle(event(#"{"type":"response.output_audio.delta","item_id":"r1","delta":"\#(second)"}"#)))
+        _ = conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
+
+        clock = 100.75
+        XCTAssertTrue(conductor.handle(event(#"{"type":"input_audio_buffer.speech_started"}"#)).contains(.interrupt(arriving: nil)))
+        let cuts = playout.stop(at: clock)
+        XCTAssertEqual(cuts, [.init(itemID: "r1", audioMs: 2_000, heardMs: 750)])
+        XCTAssertEqual(cuts.map { RealtimeConductor.truncate(itemID: $0.itemID, audioEndMs: $0.heardMs)["audio_end_ms"] }, [.number(750)])
+        XCTAssertEqual(playout.stop(at: clock), [], "the queue went with the interruption")
+    }
+
+    func testAPlayoutThatFinishedSoundingHasNothingToCut() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 24_000, at: 100)
+        XCTAssertEqual(playout.stop(at: 101.5), [], "nothing to stop, and a truncate would rewrite a line that was heard")
+    }
+
+    func testAPlayoutCutsAnItemQueuedBehindTheOneSoundingAtZero() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 48_000, at: 100)
+        playout.started(itemID: "r2", at: 100.5)
+        playout.scheduled(samples: 24_000, at: 100.5)
+        XCTAssertEqual(playout.stop(at: 101), [.init(itemID: "r1", audioMs: 2_000, heardMs: 1_000),
+                                               .init(itemID: "r2", audioMs: 1_000, heardMs: 0)],
+                       "the second item waits for the first, however early it arrived")
+    }
+
+    func testAPlayoutCountsAGapInTheAudioAsSilenceNotHearing() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 12_000, at: 100)
+        playout.scheduled(samples: 24_000, at: 101.5)
+        XCTAssertEqual(playout.stop(at: 101.75), [.init(itemID: "r1", audioMs: 1_500, heardMs: 750)])
+    }
+
+    func testAPlayoutDoesNotCountAudioStillOnItsWayToTheSpeaker() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 24_000, at: 100)
+        XCTAssertEqual(playout.stop(at: 100.5, latency: 0.25), [.init(itemID: "r1", audioMs: 1_000, heardMs: 250)])
+    }
+
+    func testAPlayoutForgetsAReplyHeardToTheEndWhenTheNextOneStarts() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 24_000, at: 100)
+        playout.started(itemID: "r2", at: 102)
+        playout.scheduled(samples: 24_000, at: 102)
+        XCTAssertEqual(playout.stop(at: 102.5), [.init(itemID: "r2", audioMs: 1_000, heardMs: 500)],
+                       "a reply heard to the end is forgotten")
+    }
+
+    func testAPlayoutCutsTheItemStillArrivingEvenWithItsQueueDrained() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 24_000, at: 100)
+        XCTAssertEqual(playout.stop(at: 102, arriving: "r1"), [.init(itemID: "r1", audioMs: 1_000, heardMs: 1_000)],
+                       "OpenAI generated more than reached the phone, and the person heard none of that")
+    }
+
+    func testAPlayoutThatLostItsQueueCountsOnlyWhatPlayedAndStartsTheNextChunkAtOnce() {
+        var playout = LiveReplyPlayout()
+        playout.started(itemID: "r1", at: 100)
+        playout.scheduled(samples: 48_000, at: 100)
+        playout.queueDropped(at: 100.5)
+        playout.scheduled(samples: 24_000, at: 100.75)
+        XCTAssertEqual(playout.stop(at: 101), [.init(itemID: "r1", audioMs: 1_500, heardMs: 750)],
+                       "half a second before the drop, a quarter after it")
     }
 
     func testMicrophoneAudioIsResampledTo24kPCM16() {
