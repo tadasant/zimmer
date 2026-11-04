@@ -486,7 +486,7 @@ final class CarPlayTests: XCTestCase {
 
     /// The microphone is open only with the voice control template on screen, so the call ends
     /// before its screen goes and before the panel goes up.
-    func testTheGearEndsTheCallBeforeThePanelGoesUp() throws {
+    func testTheGearEndsTheCallBeforeThePanelGoesUp() async throws {
         let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
         let gear = try XCTUnwrap(live.range(of: "private func openSettings()"))
         let body = live[gear.upperBound...]
