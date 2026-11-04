@@ -18,7 +18,8 @@
       <input type="hidden" name="loaded[guidance]" value="<%= setting.guidance_text %>">
       <% [ [ :text, "Typed turns", "Chat Completions, with Zimmer's tools. OpenAI accepts tools here only at reasoning effort “none”, so there is no effort setting for this path; the stronger GPT-6 models take tools only through the Responses API, which Live Mode does not use yet." ],
            [ :voice, "Voice", "The Realtime API. Speed, turn detection, noise reduction, transcription and the output cap change mid-call; the model, voice and reasoning effort apply from the next call." ] ].each do |path, heading, note| %>
-        <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-settings-section="<%= path %>">
+        <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-settings-section="<%= path %>"
+                 <% if path == :voice %>data-controller="live-settings-turn-detection" data-live-settings-turn-detection-default-value="<%= LiveSetting.default_for(:voice_turn_detection) %>"<% end %>>
           <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
             <h2 class="text-lg font-medium text-gray-900"><%= heading %></h2>
             <p class="mt-1 text-sm text-gray-500"><%= note %></p>
@@ -26,14 +27,21 @@
           <div class="px-4 py-5 sm:px-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
             <% LiveSetting::FIELDS.select { |field| field.path == path }.each do |field| %>
               <% id = "live_setting_#{field.key}" %>
-              <div data-live-setting-field="<%= field.key %>">
+              <% inactive = setting.inactive_keys.include?(field.key) %>
+              <div data-live-setting-field="<%= field.key %>"
+                   <% if field.applies_under %>data-live-settings-turn-detection-target="knob" data-applies-under="<%= field.applies_under %>"<% end %>>
                 <label for="<%= id %>" class="block text-sm font-medium text-gray-700">
                   <%= field.label %>
                   <% if setting.overridden?(field.key) %><span class="ml-1 text-xs font-normal text-indigo-600">changed</span><% end %>
+                  <% if field.applies_under %>
+                    <span data-knob-badge="inactive" class="ml-1 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 <%= "hidden" unless inactive %>">no effect</span>
+                    <span data-knob-badge="active" class="ml-1 px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800 <%= "hidden" if inactive %>">applies</span>
+                  <% end %>
                 </label>
                 <% default_label = field.default.nil? ? "not set" : field.default.to_s %>
                 <% if field.enum? %>
                   <select name="live_setting[<%= field.key %>]" id="<%= id %>"
+                          <% if field.key == :voice_turn_detection %>data-live-settings-turn-detection-target="mode" data-action="change->live-settings-turn-detection#update"<% end %>
                           class="mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2">
                     <option value="" <%= "selected" unless setting.overridden?(field.key) %>>Default (<%= default_label %>)</option>
                     <% LiveSetting.options_for(field).each do |value, text| %>
@@ -48,6 +56,12 @@
                          class="mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500 px-3 py-2">
                 <% end %>
                 <p class="mt-1 text-xs text-gray-500"><%= field.help %><% if field.numeric? %> Range <%= field.min %>–<%= field.max %>.<% end %></p>
+                <% if field.key == :voice_turn_detection %>
+                  <% LiveSetting::TURN_DETECTIONS.each_key do |mode| %>
+                    <p data-live-settings-turn-detection-target="modeNote" data-mode="<%= mode %>"
+                       class="mt-1 text-xs text-amber-800 <%= "hidden" unless mode == setting.effective(:voice_turn_detection) %>"><%= LiveSetting.turn_detection_summary(mode) %></p>
+                  <% end %>
+                <% end %>
               </div>
             <% end %>
           </div>

@@ -27,6 +27,41 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     assert_select "a[data-live-settings-link][href=?]", live_settings_path
   end
 
+  test "the voice section marks which turn detection settings apply under the saved mode" do
+    get live_settings_path
+
+    assert_select "[data-live-setting-field=voice_vad_eagerness] [data-knob-badge=active]:not(.hidden)"
+    assert_select "[data-live-setting-field=voice_vad_eagerness] [data-knob-badge=inactive].hidden"
+    assert_select "[data-live-setting-field=voice_vad_threshold] [data-knob-badge=inactive]:not(.hidden)", text: "no effect"
+    assert_select "[data-live-setting-field=voice_vad_silence_duration_ms] [data-knob-badge=active].hidden"
+    assert_select "[data-live-setting-field=voice_speed] [data-knob-badge]", count: 0
+    assert_select "p[data-mode=semantic_vad]:not(.hidden)", text: /Threshold \(silence\).*have no effect under Semantic/
+    assert_select "p[data-mode=server_vad].hidden"
+
+    LiveConversations::SettingsUpdate.call({ "voice_turn_detection" => "server_vad" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    get live_settings_path
+
+    assert_select "[data-live-setting-field=voice_vad_threshold] [data-knob-badge=active]:not(.hidden)", text: "applies"
+    assert_select "[data-live-setting-field=voice_vad_eagerness] [data-knob-badge=inactive]:not(.hidden)"
+    assert_select "p[data-mode=server_vad]:not(.hidden)", text: /Eagerness \(semantic\) has no effect under Silence/
+  end
+
+  test "saving a knob the mode does not use says so, whether or not it changed anything" do
+    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" }, loaded: { voice_vad_threshold: "" } }
+
+    assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, flash[:alert])
+    assert_equal "Saved. Threshold (silence): default (0.5) → 0.75", flash[:notice]
+    follow_redirect!
+
+    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" } }
+    assert_match(/Threshold \(silence\) has no effect/, flash[:alert])
+    assert_equal "Nothing changed.", flash[:notice]
+    follow_redirect!
+
+    patch live_settings_path, params: { live_setting: { voice_speed: "1.2" } }
+    assert_nil flash[:alert]
+  end
+
   test "saving writes only what was edited, records it as a person's, and asks an open call to refresh" do
     LiveConversations::SettingsUpdate.call({ "voice_speed" => 1.2 }, actor: LiveConversations::SettingsUpdate::Actor.agent("live conversation #1"))
 
@@ -76,6 +111,20 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     get live_conversation_path(conversation)
 
     assert_select "[data-live-settings-change]", text: /Speaking speed: default \(1\.0\) → 1\.3/
+  end
+
+  test "a write with no effect shows in the thread as one, without the line meant for the live model" do
+    conversation = create_live_conversation(mode: "voice")
+    bridge = LiveConversations::ToolBridge.new(conversation)
+    bridge.execute("update_live_settings", { voice_vad_threshold: 0.75 }.to_json, call_id: "n")
+    bridge.execute("update_live_settings", { voice_speed: 1.3, voice_vad_threshold: 0.6 }.to_json, call_id: "m")
+
+    get live_conversation_path(conversation)
+
+    assert_select "[data-live-settings-change]", count: 2
+    assert_select "[data-live-settings-change]", text: /Live Mode saved a setting with no effect.*Threshold \(silence\) has no effect/m, count: 1
+    assert_select "[data-live-settings-change]", text: /Live Mode changed its settings.*Threshold \(silence\) has no effect/m, count: 1
+    assert_select "[data-live-settings-change]", text: /out loud|Saved, but|\AChanged:/, count: 0
   end
 
   test "the call dock can fetch a session.update for an open voice call" do

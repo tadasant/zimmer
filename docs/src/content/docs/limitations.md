@@ -6023,6 +6023,13 @@ for — use `ac.sh` when you need isolation.
 
 ---
 
+## The iOS Live settings screen does not mark which turn detection settings apply
+
+The web page badges each turn detection setting as `applies` or `no effect`. The iOS screen lists
+all four as ordinary settings. It shows the `no effect` sentence after a save, and the REST API
+carries `inactive` and `applies_under`, but the app does not read them yet. See
+[Live settings](/sessions/live/#live-settings).
+
 ## Product gaps
 
 ### A goal is checked, not enforced

@@ -13,6 +13,12 @@ module LiveConversations
   #   says so;
   # - the guidance has a length cap.
   #
+  # A write can also be valid and do nothing: a turn detection knob the mode in
+  # force does not use (LiveSetting::TURN_DETECTION_KNOBS) is saved, because it
+  # applies if the mode changes, but it reaches nobody's call. The result names
+  # those in `no_effect`, and its summary says so, so no writer can report one as
+  # a change that took. Switching the mode reports every knob it just turned off.
+  #
   # And should OpenAI still refuse what was saved, the text path and the voice
   # path both retry on the defaults rather than fail (TextReply, RealtimeSession).
   #
@@ -27,21 +33,29 @@ module LiveConversations
       def self.agent(label, live_conversation: nil) = new(kind: LiveSettingChange::AGENT, label: label, live_conversation: live_conversation)
     end
 
-    Result = Data.define(:setting, :change, :notes) do
+    Result = Data.define(:setting, :change, :notes, :no_effect) do
       def changed? = !change.nil?
       def keys = change ? change.changeset.keys : []
+
+      # Written, but with nothing to show for it on a call: everything that
+      # changed is a knob the turn detection mode in force does not use.
+      def only_no_effect? = changed? && keys.map(&:to_sym).difference(no_effect).empty?
+
+      # The sentence every writer repeats when `no_effect` is not empty.
+      def no_effect_note
+        return nil if no_effect.empty?
+
+        LiveSetting.turn_detection_summary(setting.effective(:voice_turn_detection), inactive: no_effect)
+      end
 
       # Something an open voice call can take now, in a `session.update`.
       def mid_call_changed?
         keys.any? { |key| key == "guidance" || LiveSetting::MID_CALL_KEYS.include?(key.to_sym) }
       end
 
-      # One line per change, in words — what the live model says back, and what
-      # the history shows.
-      def summary
-        return "Nothing changed." unless changed?
-
-        lines = change.changeset.map do |key, (before, after)|
+      # One line per change, in words, and anything the write adjusted.
+      def details
+        lines = (change&.changeset || {}).map do |key, (before, after)|
           if key == "guidance"
             SettingsUpdate.describe_guidance_change(before, after)
           else
@@ -49,8 +63,12 @@ module LiveConversations
             "#{field.label}: #{SettingsUpdate.describe_value(field, before)} → #{SettingsUpdate.describe_value(field, after)}"
           end
         end
-        (lines + notes).join("\n")
+        lines = [ "Nothing changed." ] unless changed?
+        lines + notes
       end
+
+      # What the live model says back, and what the history shows.
+      def summary = [ *details, no_effect_note ].compact.join("\n")
     end
 
     BLANK_VALUES = [ nil, "", "default" ].freeze
@@ -88,8 +106,10 @@ module LiveConversations
       values = normalize
       setting = LiveSetting.editable
       change = nil
+      mode_before = nil
 
       setting.with_lock do
+        mode_before = setting.effective(:voice_turn_detection)
         changeset = {}
         values.each do |key, value|
           if key == "append_guidance"
@@ -124,10 +144,21 @@ module LiveConversations
         end
       end
 
-      Result.new(setting: setting, change: change, notes: @notes)
+      Result.new(setting: setting, change: change, notes: @notes, no_effect: no_effect(setting, values, mode_before))
     end
 
     private
+
+    # The knobs this write set that the mode now in force leaves unused, and all
+    # of them when this write changed the mode. Putting a knob back on its default
+    # tunes nothing, so neither that nor a reset is named; the page and the
+    # listing show what is unused either way.
+    def no_effect(setting, values, mode_before)
+      return [] if @reset
+      return setting.inactive_keys if setting.effective(:voice_turn_detection) != mode_before
+
+      setting.inactive_keys & values.compact.keys.map(&:to_sym)
+    end
 
     def actor_label
       [ @actor.kind, @actor.label ].join(": ").truncate(255)

@@ -86,6 +86,35 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert session["instructions"].end_with?("Talk like a pilot.")
   end
 
+  # The claim every writer makes rests on this: what TURN_DETECTION_KNOBS says is
+  # used must be what turn_detection sends, in both modes, or the settings page
+  # and update_live_settings start lying in a new direction.
+  test "a knob reaches OpenAI exactly when LiveSetting says it applies" do
+    probes = { voice_vad_eagerness: "high", voice_vad_threshold: 0.77, voice_vad_prefix_padding_ms: 111, voice_vad_silence_duration_ms: 999 }
+    sent_as = { voice_vad_eagerness: "eagerness", voice_vad_threshold: "threshold",
+                voice_vad_prefix_padding_ms: "prefix_padding_ms", voice_vad_silence_duration_ms: "silence_duration_ms" }
+    assert_equal LiveSetting::TURN_DETECTION_KNOBS.keys, probes.keys
+    actor = LiveConversations::SettingsUpdate::Actor.human("test")
+    LiveConversations::SettingsUpdate.call(probes.transform_keys(&:to_s), actor: actor)
+    conversation = create_live_conversation(mode: "voice")
+
+    LiveSetting::TURN_DETECTIONS.each_key do |mode|
+      LiveConversations::SettingsUpdate.call({ "voice_turn_detection" => mode }, actor: actor)
+      client = LiveConversationHelpers::FakeOpenai.new
+      LiveConversations::RealtimeSession.mint(conversation, client: client)
+      detection = client.secret_requests.sole.dig("session", "audio", "input", "turn_detection")
+
+      probes.each do |key, value|
+        if LiveSetting.field(key).applies_under == mode
+          assert_equal value, detection[sent_as.fetch(key)], "#{key} under #{mode}"
+        else
+          assert_not detection.key?(sent_as.fetch(key)), "#{key} under #{mode}"
+          assert_includes LiveSetting.current.inactive_keys, key
+        end
+      end
+    end
+  end
+
   test "settings OpenAI refuses start the call on the defaults rather than not at all" do
     LiveConversations::SettingsUpdate.call({ "voice_reasoning_effort" => "xhigh", "guidance" => "Stay terse." }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     client = LiveConversationHelpers::FakeOpenai.new(secret_failures: [ OpenaiClient::Error.new("OpenAI answered 400: unsupported effort", status: 400) ])
