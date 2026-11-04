@@ -47,14 +47,27 @@ that just reads stuff. It should always be real-time."* A source guard (`CarPlay
 build on any `AVSpeechSynthesizer` in the app.
 
 **Hear the call, don't watch it.** A driver should never have to look to know whether Zimmer is
-listening or working. The call has three short synthesized cues, which are tones, not a voice
-(`LiveCue`): two soft rising notes when the call is up, a quiet low tick about once a second from
-the end of speech until Zimmer's voice starts, and the notes falling when a call drops. Rising is
-*on*, falling is *off*, and the tick shares neither pitch nor shape with the notes. The tick waits
-a third of a second, so an answer that starts sooner gets none, stops the instant the reply's audio
-starts, and gives up after 45 seconds with no answer. The cues play through the call's voice-processing engine, so the echo canceller has them as
-reference, and while one sounds the microphone is sent as silence (`LiveCueGate`), so turn
-detection never takes a cue for speech.
+listening, working, stuck or finished. Silence alone cannot say which, so the call has short
+synthesized cues, which are tones, not a voice (`LiveCue`; `LiveCueDirector` holds the event-to-cue
+table):
+
+| Cue | Sound | Plays |
+| --- | --- | --- |
+| connected | E5, B5, soft and rising | Once, when the call is up |
+| heard | E5, short and quiet | 0.35 s after the driver stops talking, on a line that will be answered |
+| thinking | a 520 Hz tick, once a second | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
+| working | E4, G4, a soft pair, every 2.5 s | While a tool runs, for as long as it runs |
+| failed | F4, D4, low and falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
+| ended | E4, one soft note | The driver hung up |
+| disconnected | B5, E5, falling | The call dropped |
+
+Rising is *on*, falling is *off*, and working shares neither pitch, length nor pace with the tick.
+Success has no cue, because the answer follows and a chime on every tool would wear on a long
+drive; so nothing can pass for it. The cues that repeat stay at the tick's level and are mostly
+silence. Every cue stops the instant the driver talks or the reply's audio starts, and a cue
+due during the tail of a reply waits it out. The cues play through the call's voice-processing
+engine, so the echo canceller has them as reference, and while one sounds the microphone is sent as
+silence (`LiveCueGate`), so turn detection never takes a cue for speech.
 
 **A turn always ends.** OpenAI's turn detection over a WebSocket measures silence in the audio it
 receives. A microphone that stops delivering mid-sentence leaves the turn open, and the call sits

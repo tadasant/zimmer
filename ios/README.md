@@ -328,7 +328,7 @@ Each unblocks the next:
   deployment has the OpenAI key yet. The Realtime sequencing they drive (`RealtimeConductor`) and
   the PCM conversion (`RealtimeAudio`) are covered by ZimmerKit's tests, and the screens by
   `LiveUITests` against the fixture. So are the rules for the call's cues (`LiveCue`,
-  `LiveCueGate`, `LiveCueDirector`), its microphone watchdog (`MicWatchdog`) and its call log
+  `LiveCueGate`, `LiveCueDirector`, and the web's `lib/live_cues.js` in `LiveVoiceCuesTest`), its microphone watchdog (`MicWatchdog`) and its call log
   (`LiveTelemetry`, `LiveCallTimeline`), in `LiveDiagnosticsTests`. The sounds themselves have not
   been heard on a device. When a call goes wrong on a real phone or in the car, its trace is in
   VictoriaLogs under `scope.name:="ios.live"` (docs: Operate → Observability → The iOS app's call log).
