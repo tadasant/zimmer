@@ -92,6 +92,81 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     assert_equal LiveSetting.first, LiveSetting.editable
   end
 
+  test "a turn detection knob the mode does not use is saved, and the answer says it has no effect" do
+    result = Update.call({ "voice_vad_threshold" => 0.75, "voice_vad_silence_duration_ms" => 900 }, actor: @human)
+
+    assert_in_delta 0.75, LiveSetting.current.voice_vad_threshold
+    assert_equal %i[voice_vad_threshold voice_vad_silence_duration_ms], result.no_effect
+    assert result.only_no_effect?
+    assert_match(/Threshold \(silence\) and Silence duration ms \(silence\) have no effect under Semantic turn detection/, result.summary)
+    assert_match(/Under Semantic, use Eagerness \(semantic\)\./, result.summary)
+  end
+
+  test "a knob the mode uses is reported as nothing but a change" do
+    assert_empty Update.call({ "voice_vad_eagerness" => "low" }, actor: @human).no_effect
+
+    Update.call({ "voice_turn_detection" => "server_vad" }, actor: @human)
+    result = Update.call({ "voice_vad_threshold" => 0.75 }, actor: @human)
+
+    assert_empty result.no_effect
+    assert_nil result.no_effect_note
+    assert_no_match(/no effect/, result.summary)
+  end
+
+  test "the mode is judged after the write, so a knob and the switch it needs can arrive together" do
+    result = Update.call({ "voice_vad_threshold" => 0.75, "voice_turn_detection" => "server_vad" }, actor: @human)
+
+    assert_equal %i[voice_vad_eagerness], result.no_effect
+    assert_not result.only_no_effect?
+    assert_match(/Eagerness \(semantic\) has no effect under Silence turn detection/, result.summary)
+  end
+
+  test "a mixed write stays a change, and names only the knob that did nothing" do
+    result = Update.call({ "voice_speed" => 1.2, "voice_vad_threshold" => 0.75 }, actor: @human)
+
+    assert_equal %i[voice_vad_threshold], result.no_effect
+    assert_not result.only_no_effect?
+    assert_match(/Threshold \(silence\) has no effect/, result.summary)
+  end
+
+  test "switching the mode names every knob it just turned off" do
+    Update.call({ "voice_turn_detection" => "server_vad" }, actor: @human)
+    result = Update.call({ "voice_turn_detection" => "semantic_vad" }, actor: @human)
+
+    assert_equal %i[voice_vad_threshold voice_vad_prefix_padding_ms voice_vad_silence_duration_ms], result.no_effect
+  end
+
+  test "a write that changes nothing still says the knob has no effect" do
+    Update.call({ "voice_vad_threshold" => 0.75 }, actor: @human)
+    result = Update.call({ "voice_vad_threshold" => "0.75" }, actor: @human)
+
+    assert_not result.changed?
+    assert_match(/\ANothing changed\.\nThreshold \(silence\) has no effect/, result.summary)
+  end
+
+  test "writing down the mode already in force turns nothing off" do
+    result = Update.call({ "voice_turn_detection" => "semantic_vad" }, actor: @human)
+
+    assert result.changed?
+    assert_empty result.no_effect
+  end
+
+  test "putting a knob back on its default tunes nothing, so it is not named" do
+    Update.call({ "voice_vad_threshold" => 0.75 }, actor: @human)
+    result = Update.call({ "voice_vad_threshold" => "default" }, actor: @human)
+
+    assert_nil LiveSetting.current.voice_vad_threshold
+    assert_empty result.no_effect
+  end
+
+  test "a reset is not tuning anything, so it names nothing" do
+    Update.call({ "voice_turn_detection" => "server_vad", "voice_vad_threshold" => 0.75 }, actor: @human)
+    result = Update.call({}, actor: @human, reset: true)
+
+    assert_empty result.no_effect
+    assert_no_match(/no effect/, result.summary)
+  end
+
   test "the guidance has a length cap" do
     assert_raises(Update::Invalid) do
       Update.call({ "guidance" => "x" * (LiveSetting::GUIDANCE_MAX_LENGTH + 1) }, actor: @human)

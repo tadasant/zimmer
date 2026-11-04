@@ -220,6 +220,24 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal [ "Zimmer, is main green?" ], conversation.turns.map(&:content)
   end
 
+  test "Live settings over the API say which settings the mode leaves unused, and which of a write had no effect" do
+    get "/api/v1/live/settings", headers: @key_headers
+    body = response.parsed_body
+    assert_equal %w[voice_vad_threshold voice_vad_prefix_padding_ms voice_vad_silence_duration_ms], body["inactive"]
+    assert_equal "server_vad", body["fields"].find { |f| f["key"] == "voice_vad_threshold" }["applies_under"]
+    assert_equal "semantic_vad", body["fields"].find { |f| f["key"] == "voice_vad_eagerness" }["applies_under"]
+    assert_not body["fields"].find { |f| f["key"] == "voice_speed" }.key?("applies_under")
+
+    patch "/api/v1/live/settings", params: { voice_vad_threshold: 0.75 }, headers: @headers
+    assert_response :success
+    assert response.parsed_body["changed"]
+    assert_equal %w[voice_vad_threshold], response.parsed_body["no_effect"]
+    assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, response.parsed_body["summary"])
+
+    patch "/api/v1/live/settings", params: { voice_speed: 1.1 }, headers: @headers
+    assert_empty response.parsed_body["no_effect"]
+  end
+
   test "Live settings over the API: a key reads, only a person on the app writes, and a voice call gets its session.update" do
     get "/api/v1/live/settings", headers: @key_headers
     assert_response :success

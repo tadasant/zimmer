@@ -28,12 +28,20 @@
 # ranges are narrower than the API's where an extreme would silence the agent:
 # a VAD threshold of 1.0 never hears speech, and a 16-token cap never finishes a
 # sentence.
+#
+# Turn detection decides which of its own knobs are used at all: RealtimeSession
+# sends only the eagerness under `semantic_vad`, and only the threshold, padding
+# and silence duration under `server_vad`. The others stay saved and do nothing.
+# TURN_DETECTION_KNOBS is that split, `inactive_keys` is what follows from it for
+# the row, and every surface that shows or writes a setting says so.
 class LiveSetting < ApplicationRecord
   Field = Data.define(:key, :path, :type, :label, :help, :options, :min, :max) do
     def text? = path == :text
     def voice? = path == :voice
     def enum? = type == :enum
     def numeric? = %i[float integer].include?(type)
+    # The turn detection mode this field needs, or nil when it works in every mode.
+    def applies_under = LiveSetting::TURN_DETECTION_KNOBS[key]
 
     def default = LiveSetting.default_for(key)
 
@@ -41,7 +49,8 @@ class LiveSetting < ApplicationRecord
       {
         key: key.to_s, path: path.to_s, type: type.to_s, label: label, help: help,
         options: (LiveSetting.options_for(self).map { |value, text| { value: value, label: text } } if enum?),
-        min: min, max: max, default: default, mid_call: (LiveSetting::MID_CALL_KEYS.include?(key) if voice?)
+        min: min, max: max, default: default, mid_call: (LiveSetting::MID_CALL_KEYS.include?(key) if voice?),
+        applies_under: applies_under
       }.compact
     end
   end
@@ -66,6 +75,16 @@ class LiveSetting < ApplicationRecord
   TURN_DETECTIONS = {
     "semantic_vad" => "Semantic — waits until you sound finished",
     "server_vad" => "Silence — answers after a fixed pause"
+  }.freeze
+
+  TURN_DETECTION_NAMES = { "semantic_vad" => "Semantic", "server_vad" => "Silence" }.freeze
+
+  # The knobs RealtimeSession#turn_detection sends, and the mode it sends each in.
+  TURN_DETECTION_KNOBS = {
+    voice_vad_eagerness: "semantic_vad",
+    voice_vad_threshold: "server_vad",
+    voice_vad_prefix_padding_ms: "server_vad",
+    voice_vad_silence_duration_ms: "server_vad"
   }.freeze
 
   EAGERNESS = {
@@ -202,6 +221,17 @@ class LiveSetting < ApplicationRecord
 
   def self.field(key) = FIELDS_BY_KEY.fetch(key.to_sym)
 
+  def self.turn_detection_name(mode) = TURN_DETECTION_NAMES.fetch(mode.to_s, mode.to_s)
+
+  # One sentence on what a turn detection mode uses, for the page and the writers.
+  def self.turn_detection_summary(mode, inactive: nil)
+    name = turn_detection_name(mode)
+    used, unused = FIELDS.select(&:applies_under).partition { |field| field.applies_under == mode }
+    unused = unused.select { |field| inactive.include?(field.key) } if inactive
+    "#{unused.map(&:label).to_sentence} #{unused.one? ? 'has' : 'have'} no effect under #{name} turn detection: " \
+      "not sent to OpenAI. Under #{name}, use #{used.map(&:label).to_sentence}."
+  end
+
   # The row, or a blank unsaved one before the first write — which answers every
   # read with the defaults. Never raises on a read path: a live turn must not die
   # because its settings could not be read.
@@ -227,6 +257,12 @@ class LiveSetting < ApplicationRecord
 
   def overridden?(key) = !self[key.to_sym].nil?
 
+  # The settings saved but unused under the turn detection mode in force.
+  def inactive_keys
+    mode = effective(:voice_turn_detection)
+    TURN_DETECTION_KNOBS.reject { |_key, needs| needs == mode }.keys
+  end
+
   def guidance_text = guidance.to_s.strip
 
   # Every setting with its value, whether that is the default, and its choices
@@ -236,7 +272,8 @@ class LiveSetting < ApplicationRecord
     lines = FIELDS.map do |field|
       choices = field.enum? ? "choices: #{self.class.options_for(field).keys.join(', ')}" : "range #{field.min}–#{field.max}"
       value = effective(field.key)
-      "- #{field.key} = #{value.nil? ? 'not set' : value}#{' (default)' unless overridden?(field.key)} — #{field.label}; #{choices}"
+      unused = " — NO EFFECT now: used only under #{field.applies_under}" if inactive_keys.include?(field.key)
+      "- #{field.key} = #{value.nil? ? 'not set' : value}#{' (default)' unless overridden?(field.key)} — #{field.label}; #{choices}#{unused}"
     end
     "Live settings:\n#{lines.join("\n")}\n\nLive mode guidance:\n#{guidance_text.presence || '(empty)'}"
   end
@@ -245,6 +282,7 @@ class LiveSetting < ApplicationRecord
     {
       settings: KEYS.to_h { |key| [ key, effective(key) ] },
       overrides: KEYS.select { |key| overridden?(key) },
+      inactive: inactive_keys,
       guidance: guidance_text,
       updated_at: (updated_at if persisted?),
       updated_by: updated_by,
