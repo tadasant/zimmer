@@ -401,6 +401,17 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(talkedOver.receive(.toolsRunning(0)), [.stopLoop])
     }
 
+    func testACueKnowsHowMuchOfTheReplyIsLeftToWaitOut() {
+        var playout = LiveReplyPlayout()
+        XCTAssertEqual(playout.remaining(at: 10), 0, "nothing queued")
+        playout.started(itemID: "r1", at: 10)
+        playout.scheduled(samples: Int(2 * RealtimeAudio.sampleRate), at: 10)
+        XCTAssertEqual(playout.remaining(at: 10.5), 1.5, accuracy: 0.001)
+        XCTAssertEqual(playout.remaining(at: 13), 0, "it played out")
+        playout.queueDropped(at: 13)
+        XCTAssertEqual(playout.remaining(at: 13), 0, "an engine restart lost what was queued")
+    }
+
     func testNothingSoundsWhileThePersonTalks() {
         var director = LiveCueDirector()
         _ = director.transition(to: .listening)
