@@ -60,7 +60,7 @@ class Api::V1::LiveSettingsController < Api::BaseController
   end
 
   def render_result(result)
-    render json: payload.merge(changed: result.changed?, summary: result.summary)
+    render json: payload.merge(changed: result.changed?, summary: result.summary, no_effect: result.no_effect)
   end
 
   def require_a_person_on_the_app

@@ -241,7 +241,8 @@ needs a client holding the call, the second is a secret value. `set_mode` to `vo
 conversation is spoken; a client still has to open the call.
 `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`) read and change
 the [Live settings](/sessions/live/#live-settings) and the Live mode guidance, through the same
-checks as the settings page; a change made here is recorded as an agent's. The live model does not
+checks as the settings page; a change made here is recorded as an agent's. A turn detection setting
+the current mode does not use is saved, and the answer says it has no effect. The live model does not
 need them: its own `get_live_settings` / `update_live_settings` functions are always on its bridge.
 
 `live_conversations` is a group of its own, and opt-in, because of what a live conversation can do.

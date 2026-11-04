@@ -13,7 +13,7 @@ module Mcp
       description <<~DESC
         Read the Live settings — how Live Mode (typed and spoken) thinks, sounds and listens — and the Live mode guidance appended to its instructions on every turn.
 
-        Lists every setting with its current value, whether that is the default, and its choices or range; then the guidance; then the newest changes and who made each (a person, or an agent: a live conversation's own model, or a session through MCP). Change them with `action_live_settings`.
+        Lists every setting with its current value, whether that is the default, and its choices or range, marking any setting with no effect under the current turn detection mode; then the guidance; then the newest changes and who made each (a person, or an agent: a live conversation's own model, or a session through MCP). Change them with `action_live_settings`.
       DESC
 
       input_schema({ type: "object", properties: {} })

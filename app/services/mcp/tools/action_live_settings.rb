@@ -14,7 +14,7 @@ module Mcp
         Change the Live settings — Live Mode's models, voice, speaking speed, turn detection, output caps — or the Live mode guidance appended to its instructions on every turn. Read them first with `get_live_settings`.
 
         **Actions:**
-        - **update**: pass `settings`, an object of setting key → value (keys and choices as `get_live_settings` lists them; "default" puts one back), and/or `guidance` (replaces it) or `append_guidance` (adds a line). A model, voice or mode off the list is refused and nothing is saved; a number outside its range is clamped and the answer says so.
+        - **update**: pass `settings`, an object of setting key → value (keys and choices as `get_live_settings` lists them; "default" puts one back), and/or `guidance` (replaces it) or `append_guidance` (adds a line). A model, voice or mode off the list is refused and nothing is saved; a number outside its range is clamped and the answer says so. A turn detection setting the current mode does not use is saved, and the answer says it has no effect (`get_live_settings` marks these).
         - **reset**: every setting back to its default. The guidance is kept.
         - **restore_guidance**: the guidance as it was before change `change_id` (from `get_live_settings`' history).
 
@@ -42,7 +42,7 @@ module Mcp
         when "reset" then LiveConversations::SettingsUpdate.call({}, actor: actor, reset: true)
         when "restore_guidance" then restore_guidance(args)
         end
-        result.changed? ? "Live settings updated.\n\n#{result.summary}" : "Nothing changed."
+        result.changed? ? "Live settings updated.\n\n#{result.summary}" : result.summary
       rescue LiveConversations::SettingsUpdate::Invalid => e
         raise ToolError, "Nothing changed. #{e.message}"
       end
