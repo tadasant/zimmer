@@ -2330,6 +2330,24 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("live settings")
     page.save_screenshot(Rails.root.join("tmp/screenshots/live-settings-375.png").to_s)
 
+    # The badges follow the select before anything is saved, and the longest note
+    # on the page is the one Semantic draws.
+    within("[data-live-setting-field=voice_vad_threshold]") do
+      assert_text "no effect"
+      assert_no_text "applies"
+    end
+    select "Silence — answers after a fixed pause", from: "live_setting_voice_turn_detection"
+    within("[data-live-setting-field=voice_vad_threshold]") do
+      assert_text "applies"
+      assert_no_text "no effect"
+    end
+    within("[data-live-setting-field=voice_vad_eagerness]") do
+      assert_text "no effect"
+      assert_no_text "applies"
+    end
+    assert_text "Eagerness (semantic) has no effect under Silence turn detection"
+    assert_no_horizontal_overflow("live settings under Silence")
+
     visit live_conversation_path(conversation)
     assert_selector "[data-live-settings-change]"
     assert_no_horizontal_overflow("live conversation with a settings change")

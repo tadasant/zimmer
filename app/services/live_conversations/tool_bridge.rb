@@ -40,6 +40,9 @@ module LiveConversations
     # Settings the live model may not change itself: how much the app reports
     # about calls is for whoever reads the trace, not for the call.
     LIVE_MODEL_EXCLUDED = %i[voice_telemetry].freeze
+    SETTINGS_CHANGED = "Changed:"
+    SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
+    SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."
     DIRECT_SEPARATOR = "__"
 
     MAX_ENABLED_SERVERS = 8
@@ -375,7 +378,9 @@ module LiveConversations
                        "setting back. Speaking speed and turn detection change from your next reply; the models, " \
                        "voice and voice reasoning effort from the next call. `append_guidance` adds a standing " \
                        "instruction to the Live mode guidance; `guidance` replaces all of it — read it first. Every " \
-                       "change is recorded and shown to the person; say out loud what you changed.",
+                       "change is recorded and shown to the person; say out loud what you changed. When the answer " \
+                       "says a setting has no effect, say that out loud instead of confirming it: the person is " \
+                       "tuning something that will not change, and needs to know.",
           parameters: {
             type: "object",
             properties: properties.merge(
@@ -401,13 +406,20 @@ module LiveConversations
       changes = changes.merge(LIVE_MODEL_EXCLUDED.to_h { |key| [ key.to_s, LiveSetting.current[key] ] }) if reset
       result = SettingsUpdate.call(changes, actor: actor, reset: reset)
       @session_changed = result.mid_call_changed?
-      return "Nothing changed: those are already the settings." unless result.changed?
+      return unchanged_answer(result) unless result.changed?
 
       later = result.keys.map(&:to_sym) & %i[voice_model voice_name voice_reasoning_effort]
       tail = later.any? ? "\n(#{later.map { |key| LiveSetting.field(key).label }.join(', ')}: from the next call.)" : ""
-      "Changed:\n#{result.summary}#{tail}"
+      lead = result.only_no_effect? ? SETTINGS_SAVED_NO_EFFECT : SETTINGS_CHANGED
+      "#{lead}\n#{result.summary}#{tail}#{SAY_NO_EFFECT if result.no_effect.any?}"
     rescue SettingsUpdate::Invalid => e
       raise ToolFailure, "Nothing changed. #{e.message}"
+    end
+
+    def unchanged_answer(result)
+      return "Nothing changed: those are already the settings." if result.no_effect.empty?
+
+      "Nothing changed: those are already the settings.\n#{result.no_effect_note}#{SAY_NO_EFFECT}"
     end
 
     # --- Direct tools ----------------------------------------------------------

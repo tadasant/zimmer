@@ -29,6 +29,16 @@ class Mcp::Tools::LiveSettingsToolsTest < ActiveSupport::TestCase
     assert_includes result, "https://zimmer.example.com/live/settings"
   end
 
+  test "the read marks what the mode leaves unused, and update says when a write has no effect" do
+    assert_match(/voice_vad_threshold = 0\.5 \(default\).*NO EFFECT now/, @get.call({}))
+
+    result = @action.call({ "action" => "update", "settings" => { "voice_vad_threshold" => 0.75 } })
+    assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, result)
+
+    repeat = @action.call({ "action" => "update", "settings" => { "voice_vad_threshold" => 0.75 } })
+    assert_match(/\ANothing changed\.\nThreshold \(silence\) has no effect/, repeat)
+  end
+
   test "update changes settings and guidance as an agent's change; a bad value changes nothing" do
     result = @action.call({ "action" => "update", "settings" => { "voice_speed" => 1.2 }, "append_guidance" => "Be brief." })
 

@@ -26,6 +26,6 @@ module LiveConversationsHelper
   # A successful `update_live_settings` that changed something.
   def live_settings_change?(turn)
     turn.tool? && turn.tool_name == LiveConversations::ToolBridge::UPDATE_SETTINGS && !turn.tool_error &&
-      turn.tool_output.to_s.start_with?("Changed:")
+      turn.tool_output.to_s.start_with?(LiveConversations::ToolBridge::SETTINGS_CHANGED, LiveConversations::ToolBridge::SETTINGS_SAVED_NO_EFFECT)
   end
 end

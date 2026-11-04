@@ -52,6 +52,9 @@ class LiveSettingsController < ApplicationController
   def normalize(value) = value.to_s.gsub("\r\n", "\n").strip
 
   def saved(result)
+    # An alert of its own: the notice shows one line, and this must not be the
+    # line it cuts.
+    flash[:alert] = result.no_effect_note if result.no_effect_note
     if result.changed?
       flash[:live_settings_saved] = true
       redirect_to live_settings_path, status: :see_other, notice: "Saved. #{result.summary.lines.first.to_s.strip}#{' …' if result.summary.lines.size > 1}"
