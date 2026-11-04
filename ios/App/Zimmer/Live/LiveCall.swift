@@ -328,8 +328,7 @@ final class LiveCall: ObservableObject {
     private func perform(_ action: LiveCueDirector.Action) {
         switch action {
         case let .play(cue, delay):
-            audio.play(cue, after: delay)
-            telemetry.track(.cue(cue))
+            if audio.play(cue, after: delay) { telemetry.track(.cue(cue)) }
         case let .startLoop(cue):
             looping = (cue, Self.now)
             audio.startLoop(cue)
