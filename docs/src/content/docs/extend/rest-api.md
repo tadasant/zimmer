@@ -1231,12 +1231,16 @@ them. The writes take the app's sign-in acting as you, and are recorded as a per
 changes them through MCP (`action_live_settings`), where the change is recorded as an agent's.
 
 - `GET /live/settings` → `{settings: {key: value in force}, overrides: [keys set away from their
-  default], guidance, updated_at, updated_by, fields: [{key, path (text|voice), type
-  (enum|float|integer), label, help, options: [{value, label}], min, max, default, mid_call}],
+  default], inactive: [keys saved but unused under the turn detection in force], guidance,
+  updated_at, updated_by, fields: [{key, path (text|voice), type (enum|float|integer), label, help,
+  options: [{value, label}], min, max, default, mid_call, applies_under (the turn detection mode a
+  setting needs; absent when it works in every mode)}],
   guidance_max_length, history: [{id, actor_kind (human|agent), actor, live_conversation_id,
   changes: {key: {before, after}}, created_at}]}`, the newest 30 changes.
 - `PATCH /live/settings` (any setting key, `guidance` to replace it, `append_guidance` to add a
-  line) → the same, plus `{changed, summary}`. Blank or `"default"` puts a setting back. 422 with
+  line) → the same, plus `{changed, summary, no_effect}`. `no_effect` lists the keys this write
+  set that the [turn detection mode](/sessions/live/#live-settings) in force does not use, or every
+  such key when the write changed the mode, and `summary` says so. They are still saved. Blank or `"default"` puts a setting back. 422 with
   every problem, and nothing saved, on an unknown key or a value not among its `options`. A number
   outside `min`–`max` is clamped, and `summary` says so.
 - `POST /live/settings/reset` → every setting back to its default; the guidance is kept.
