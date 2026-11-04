@@ -36,6 +36,11 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 ///   mid-tool starts one), in which case it waits for that response to finish;
 /// - a response the user talked over (`cancelled`) asks for nothing more: a call first seen in
 ///   its `response.done` is not run, and one already relayed is answered but not followed up;
+/// - a response the output cap cut short (`incomplete`) is not that: nobody talked over it, so
+///   its calls run and get their follow-up like a completed response's, and the model hears what
+///   came of them. Zimmer refuses arguments that were cut off, which is what tells the model to
+///   try again or say so. With the cap the reason, the call also drops it for the rest of its life
+///   (`session.update`), so the retry cannot be cut off the same way;
 /// - each call runs once, however often its events repeat;
 /// - finished transcript lines are recorded, and the user starting to speak stops the reply
 ///   that is playing and tells OpenAI how much of it was heard (`conversation.item.truncate`,
@@ -253,19 +258,22 @@ public struct RealtimeConductor: Sendable {
         var effects = sendPendingResponse()
         let status = response?["status"]?.string
         let calls = (response?["output"]?.array ?? []).filter { $0["type"]?.string == "function_call" }
-        guard status == nil || status == "completed" else {
-            // Talked over: a call it asked for is not started, and one already relayed is
-            // answered without a follow-up.
+        guard status == nil || status == "completed" || status == "incomplete" else {
+            // Talked over, or failed: a call it asked for is not started, and one already
+            // relayed is answered without a follow-up.
             for call in calls {
                 guard let callID = call["call_id"]?.string else { continue }
                 if inFlight.contains(callID) { dropped.insert(callID) }
                 answered.remove(callID)
             }
-            // Cancelled or cut short with nothing asked for after it: no answer is coming.
+            // Nothing asked for after it: no answer is coming.
             return requested ? effects : effects + [.state(.listening)]
         }
         guard !calls.isEmpty else { return effects + [.state(.listening)] }
 
+        if response?["status_details"]?["reason"]?.string == "max_output_tokens" {
+            effects.append(.send(Self.sessionUpdate(.object(["type": .string("realtime"), "max_output_tokens": .string("inf")]))))
+        }
         for call in calls {
             guard let callID = call["call_id"]?.string else { continue }
             if !seen.contains(callID), let name = call["name"]?.string {

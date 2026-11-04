@@ -62,7 +62,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
   test "the session config is the Live settings, with the guidance last in the instructions" do
     LiveConversations::SettingsUpdate.call(
       { "voice_model" => "gpt-realtime-2.1", "voice_name" => "cedar", "voice_speed" => 1.25, "voice_reasoning_effort" => "low",
-        "voice_turn_detection" => "server_vad", "voice_vad_silence_duration_ms" => 800, "voice_max_output_tokens" => 1024,
+        "voice_turn_detection" => "server_vad", "voice_vad_silence_duration_ms" => 800, "voice_max_output_tokens" => 2_048,
         "voice_noise_reduction" => "far_field", "guidance" => "Talk like a pilot." },
       actor: LiveConversations::SettingsUpdate::Actor.human("test")
     )
@@ -77,7 +77,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-realtime-2.1", conversation.reload.model
     assert_equal({ "voice" => "cedar", "speed" => 1.25 }, session.dig("audio", "output"))
     assert_equal({ "effort" => "low" }, session["reasoning"])
-    assert_equal 1024, session["max_output_tokens"]
+    assert_equal 2_048, session["max_output_tokens"]
     assert_equal({ "type" => "far_field" }, session.dig("audio", "input", "noise_reduction"))
     detection = session.dig("audio", "input", "turn_detection")
     assert_equal "server_vad", detection["type"]

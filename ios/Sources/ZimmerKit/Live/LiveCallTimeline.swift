@@ -39,6 +39,7 @@ public struct LiveCallTimeline: Sendable {
             return [LiveEvent(.info, name) {
                 [
                     "model": session["model"] ?? .null,
+                    "max_output_tokens": session["max_output_tokens"] ?? .null,
                     "turn_detection": detection["type"] ?? .string("none"),
                     "eagerness": detection["eagerness"] ?? .null,
                     "threshold": detection["threshold"] ?? .null,
@@ -96,7 +97,9 @@ public struct LiveCallTimeline: Sendable {
                 return [LiveEvent(.error, "response.failed") { ["duration_ms": .ms(took), "message": message ?? .null] }]
             }
             let reason = response["status_details"]?["reason"]
-            return [LiveEvent(.debug, "response.done") {
+            // Cut short is the one ending that is a problem without being an error: the person
+            // lost the end of a reply, or a tool call.
+            return [LiveEvent(status == "incomplete" ? .warn : .debug, "response.done") {
                 ["status": .string(status), "reason": reason ?? .null, "duration_ms": .ms(took), "had_audio": .bool(audio), "function_calls": .int(calls)]
             }]
         case "conversation.item.input_audio_transcription.completed":
