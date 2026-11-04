@@ -385,8 +385,9 @@ finished generating it seconds ago, and sends `conversation.item.truncate` at th
 In the two gated Listening modes speech does not cut a reply off.
 
 In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
-or a new one with voice on, on the same call, with Mute and End while it runs. The car has no
-other voice: if the call can't connect, the button says *Live Mode unavailable, retrying…* and the
+or a new one with voice on, on the same call, with Mute and End while it runs, and a gear to the
+voice settings by touch, for a call that has stopped working. The car has no other voice: if the
+call can't connect, the button says *Live Mode unavailable, retrying…* and the
 car retries silently. `GET /api/v1/live_conversations/:id/sessions` returns the sessions the
 conversation's tool calls have named, newest first (`LiveConversation#referenced_session_ids`). See
 [CarPlay](/extend/ios-app/#carplay). Every TestFlight build signs in the CarPlay entitlement that

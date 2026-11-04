@@ -108,7 +108,10 @@ final class LiveCall: ObservableObject {
     ///
     /// `surface`: the client starting it. A call already running for this conversation is
     /// handed over to it (`carryOn(on:)`).
-    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, from surface: ClientSource.Surface = .ios) async {
+    ///
+    /// `startsMuted`: the microphone is off from the first frame, for a call coming back from
+    /// the car's voice settings to a driver who had muted it.
+    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, startsMuted: Bool = false, from surface: ClientSource.Surface = .ios) async {
         if isActive(for: conversation) {
             await carryOn(on: surface)
             // Hung up, or replaced, while the hand-over was answered.
@@ -129,7 +132,7 @@ final class LiveCall: ObservableObject {
         timeline = LiveCallTimeline()
         timeline.started(at: Self.now)
         lastError = nil
-        muted = false
+        muted = startsMuted
         telemetry.beginCall(conversation: conversation)
         telemetry.updateClient { $0.surface = surface.rawValue }
         telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil))

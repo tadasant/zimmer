@@ -9,7 +9,8 @@ user-facing prose is [docs: The iOS app → CarPlay](https://docs.zimmer.tadasan
 Someone is driving. Their hands are on the wheel and their eyes are on the road. What they want
 from Zimmer is a conversation: what needs me, deal with this, start that. Zimmer already has the
 thing that does all of it by voice, Live Mode, the OpenAI Realtime call that delegates to Zimmer's
-MCP surface. So the car is Live Mode and nothing else.
+MCP surface. So the car is Live Mode, plus the one thing a call cannot do for itself: be repaired
+when it has stopped working (*Break glass*, below).
 
 ## What Apple allows
 
@@ -19,21 +20,72 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 
 | Rule | What it means here |
 | --- | --- |
-| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses two: a grid (the Talk button) and the voice control template (the call) |
+| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses three: a grid (the Talk button), the voice control template (the call) and a list (the voice settings, behind the call screen's gear) |
 | "Primary modality of voice upon launch" | The one button is the voice conversation; the car stays silent until the driver taps it (see Decisions) |
 | "Only hold an audio session open when voice features are actively being used" | The audio session is held only while a call runs, never idle |
-| Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the call |
+| Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the call. The gear ends the call before its screen comes down, so the panel never records |
 | "Don't show text or imagery in response to queries" | Answers are spoken; the call screen shows a state word, never a transcript |
-| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and End. A trailing bar button as a status line did not render in the Simulator's CarPlay window, so there is none |
+| Voice control template: up to 2 action buttons, leading and trailing bar buttons (26.4+) | Mute and End; the gear to the voice settings is the leading bar button. A trailing bar button as a status line did not render in the Simulator's CarPlay window, so there is none |
 | Voice control template: up to 5 states (`init(voiceControlStates:)`) | Exactly five, one per call state (`LiveCallScreen`) |
 | Notifications: communication, EV charging, parking, public safety and driving task apps only | **This category cannot show notifications in CarPlay**, and Zimmer does not try to be proactive in the car |
 
 ## Decisions
 
+**Break glass.** Everything else in the car is voice, and that is exactly what fails here: a call the
+live model has mis-tuned cannot be asked to fix itself. Tadas asked for a touch way out, reachable
+from the call. So the call screen has a gear, and behind it one list, the voice settings. This
+reverses *radically simple* below on purpose and only this far: one list, reached only from the
+call, holding only settings.
+
+The request was for sensitivity, and there is no such setting. There is no microphone gain, no wake
+sensitivity (the wake word is a regex), and the closest thing, `voice_vad_threshold`, is not what
+broke anything. What the post-mortem of a broken call found (session 26864, call `40d6bb43`):
+
+- `voice_max_output_tokens` at 180, set by the live model, truncated 12 of 13 replies and the 4 tool
+  calls that failed. It is the panel's first row, and Reset clears it.
+- A gated Listening drops every line once a call moves from the car to the phone, which is what
+  "it can't hear me" looked like: speech transcribed, then `respond=false`. The car itself is always
+  Always, so the row says it is the phone's.
+- Under Semantic turn detection `RealtimeSession` sends eagerness and nothing else, so threshold,
+  pause and prefix padding go nowhere. A threshold of 0.92 was inert.
+
+So the panel is built from what the call acts on (`CarVoiceSettings`). **It shows only what the
+current turn detection sends to OpenAI:** under Semantic there is no threshold or pause row, and
+Turn detection says they need Silence; under Silence there is no eagerness row. Prefix padding has
+no row at all, being fine-tuning with no failure anyone has seen; Reset clears it.
+
+All of it is the one `LiveSetting` row, through `LiveAPI`, into the same
+`LiveConversations::SettingsUpdate` as the live model's `update_live_settings`. So a value voice left
+is the value shown, and a change here lands in the history as "the iOS app".
+
+**Reset to defaults** clears every setting the panel covers, a hidden one included, and nothing else.
+It leaves the model, the voice and Call telemetry, which are somebody's choice and not a knob pushed
+too far, and the guidance, which has its own history. It is the second row, and it asks for no
+confirmation: it is the break-glass, every value it clears stays in the history, and an alert would
+be one more modal for CarPlay to refuse. The app's Live settings screen and the live model's
+`reset_to_defaults` are wider, for that reason: everything but the guidance.
+
+**The gear ends the call; closing the panel brings it back.** CarPlay allows recording only with the
+voice control template on screen, and a list cannot be presented over that modal: it has to be
+pushed, and the call screen has to come down first. Muting would leave the microphone open, and
+holding the call would mean a new state for an audio engine no test can drive. So the call hangs up,
+which closes the microphone and releases the audio session, and whatever it was saying or doing on
+the phone's side of the call stops: a reply is cut off, and a tool call still running on Zimmer's
+side finishes with nobody to tell. When the panel closes, by its own *Back to the call* or by
+CarPlay's Back, the same conversation is called again, muted if it was muted, with the same quiet
+retries as any call. The rising notes say it is back.
+
+**Every change takes effect on the call that comes back, not before.** Nothing is listening while
+the panel is up, and that call is minted from the row, so a model or anything else OpenAI fixes for
+a call's life would apply too. It waits for the driver's last write, so it cannot read the row ahead
+of it. A call that starts on the phone meanwhile is the conversation: the panel goes, and the
+call the gear ended stays ended. So does one whose car disconnects with the panel up.
+
 **Radically simple: open, talk, mute, end.** After the first CarPlay builds crashed in a car
 (#1410), Tadas cut the app to the flow a driver actually uses: *"open the app, start talking to
 zimmer, mute, end conversation, maybe show some details while talking but keep em minimal, no
-multi-page nav."* The car has two screens: one button, and the call. Gone, deliberately: the tab
+multi-page nav."* The car has two screens: one button, and the call, and the voice settings behind
+it are the one exception (*Break glass*). Gone, deliberately: the tab
 bar, the Needs you and Running lists and their counts, the minute-by-minute board read, the
 per-session rows, the session cards and their Merge / Go ahead / Restart / Archive buttons, the
 confirm alerts and action sheet, the call title naming the session being discussed and the screen
@@ -101,6 +153,10 @@ flowchart TD
   connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Talk to Zimmer]"]
   home -- Talk to Zimmer --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Speaking / Working on it… / Muted\n[Mute] [End]"]
   call -- End --> home
+  call -- "gear: ends the call" --> panel["Voice settings (list, pushed)\n[Back to the call] [Reset to defaults]\n[Reply length cap] [Turn detection] …"]
+  panel -- "Back to the call, or CarPlay's Back: calls again" --> call
+  panel -- a row --> choices["The row's choices (the same list, redrawn)"]
+  choices -- a choice, or Back to settings --> panel
   call -- cannot connect, or drops --> retry["button: Live Mode unavailable, retrying…\n(2 s, 5 s, 15 s, silently)"]
   retry -- a retry connects --> call
   retry -- retries spent --> tap["button: Live Mode unavailable. Tap to retry"]
@@ -111,10 +167,17 @@ flowchart TD
 | --- | --- | --- |
 | Zimmer | Grid, one button | A grid's buttons are the largest targets CarPlay draws |
 | The call | Voice control template, presented | The only screen allowed while recording |
+| Voice settings | List, pushed | Text and a value, large rows, and CarPlay's own limits on them. No slider exists, so every value is a few discrete choices |
 
-Nothing is pushed. The call screen is the only modal. It is built once per call, presented when the
-call starts and dismissed when it ends, through `CarPlayNavigator`, one change at a time. It is never
-rebuilt.
+The call screen is the only modal. It is built once per call, presented when the call starts and
+dismissed when it ends, through `CarPlayNavigator`, one change at a time. It is never rebuilt. The
+voice settings are the only thing pushed, also through the navigator. A row's choices are the same
+list with its sections replaced, so opening one is no template change, and nothing is deeper than
+that one push.
+
+Reachable only from the call: the home screen stays one button, and a call that cannot connect has
+no gear, since a panel behind a call screen that never stays up is no help. The settings are all on
+the phone's Live settings screen too.
 
 ### The call screen
 
@@ -123,6 +186,8 @@ rebuilt.
   keeps the first five a voice control template is given (`LiveCallScreen`). A state change, Mute
   included, is one `activateVoiceControlState`; the template is never rebuilt.
 - **Mute** and **End**, the two action buttons.
+- **The gear**, the leading bar button. It is set on the template when it is built, so it takes no
+  state and costs no rebuild.
 
 The first version of this screen also had a status line (a trailing bar button: *Muted*, what the
 call was doing, or an error). It never rendered in the Simulator's CarPlay window, so it is gone;
@@ -145,7 +210,9 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` is main-actor only; its observers run on the main queue; a media-services reset ends the call | Review; no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
 | The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | A source guard |
-| Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Two templates; the call screen only goes up and down | `CarPlayTests.testTheCarIsOneButtonAndOneCallScreen` |
+| Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsOneButtonOneCallScreenAndOnePanel` |
+| A list pushed under a modal, or a pop with nothing pushed after the driver's own Back | The navigator takes the modal down first and pops only what it pushed, asking CarPlay how much is pushed rather than comparing templates | `CarPlayTests` (the strict fake models the stack); the drill |
+| The microphone open with no voice control template on screen | The gear hangs up before anything else | `CarPlayTests.testTheGearEndsTheCallBeforeThePanelGoesUp` |
 
 ## The CarPlay drill
 
@@ -156,6 +223,10 @@ without one — and opens that window from the Simulator's I/O menu through Syst
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
 
 - the car opens on one button and nothing else;
+- the gear on the call screen, on a call the fixture holds on Connecting… (`-ZimmerFixtureVoiceTurnedUp`,
+  with the settings a voice call left): the panel opens with the call screen gone, shows the cap of
+  180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
+  clears the cap, and Back to the call calls again;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
   tries again.
@@ -179,9 +250,9 @@ running after every step, and any crash report fails the job.
 | Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call |
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
-| Depth of 3 | One root; nothing is pushed; the call screen is modal |
-| Few, large targets | One grid button; two call buttons |
-| Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud |
+| Depth of 3 | One root; one pushed list; the call screen is modal |
+| Few, large targets | One grid button; two call buttons and the gear; list rows, each one word and a value, with at most five choices |
+| Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud. Reset to defaults does not ask: see *Break glass* |
 | Nothing a driver cannot act on | A call that will not connect says so on the button and retries |
 
 ## What is proven, and what is not
@@ -190,15 +261,21 @@ running after every step, and any crash report fails the job.
   the conductor are in ZimmerKit and tested on Linux and macOS on every iOS pull request.
 - `CarPlayTests` also reads the scene's source: no interface-controller call outside
   `CarPlayInterface.swift` or without a completion, no system speech anywhere in the app, no direct
-  session action, no template but the grid and the call screen, every sink on the call deferred,
-  and the call screen built from `LiveCallScreen.identifiers`.
+  session action, no template but the grid, the call screen and the one list, nothing pushed but
+  the panel, the call ended before the panel goes up, every sink on the call deferred, and the call
+  screen built from `LiveCallScreen.identifiers`.
+- `CarVoiceSettingsTests` hold the panel's reads, writes and reset against the fake's row; a Rails
+  test holds that a cap and a Listening set by voice are read and cleared over the same API, and that
+  the next minted call has no cap.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
   pull request.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
   are confirmed only by driving. Nor is a relaunch: in the Simulator a
   relaunched Zimmer never gets its CarPlay scene back (the window stays blank), and whether a car
-  behaves the same after Zimmer crashes or is killed is untested.
+  behaves the same after Zimmer crashes or is killed is untested. Nor is the call coming back from
+  the panel to a voice: CI has no call that connects, so the drill proves it is called again and the
+  rest is driving.
 
 ## Follow-ups
 

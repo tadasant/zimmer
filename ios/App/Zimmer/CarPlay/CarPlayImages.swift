@@ -33,6 +33,11 @@ enum CarPlayImages {
         return button
     }
 
+    /// A navigation bar button (the guide's bar buttons are 22pt).
+    static func bar(_ name: String) -> UIImage {
+        symbol(name, pointSize: 22, weight: .medium)
+    }
+
     static func symbol(_ name: String, pointSize: CGFloat, weight: UIImage.SymbolWeight) -> UIImage {
         let configuration = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
         return UIImage(systemName: name, withConfiguration: configuration) ?? UIImage(systemName: "circle", withConfiguration: configuration) ?? UIImage()
