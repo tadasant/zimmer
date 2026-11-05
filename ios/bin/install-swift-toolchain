@@ -30,7 +30,7 @@ install_toolchain() {
   local staging="$TARGET/.extract-$$"
   rm -rf "$staging"
   mkdir -p "$staging"
-  curl -fsSL -o "$archive" "$url"
+  curl -fsSL --retry 8 --retry-all-errors --connect-timeout 20 -o "$archive" "$url"
   tar -xzf "$archive" -C "$staging"
   rm -rf "$TOOLCHAIN"
   mv "$staging/$(basename "$TOOLCHAIN")" "$TOOLCHAIN"
