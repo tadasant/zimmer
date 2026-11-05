@@ -936,10 +936,46 @@ struct Toast: View {
                 .accessibilityIdentifier(identifier)
                 .allowsHitTesting(false)
                 .task(id: text) {
+                    ToastLog.shared.record(text, by: identifier)
                     try? await Task.sleep(for: .seconds(2.5))
                     guard !Task.isCancelled else { return }
                     withAnimation { self.text = nil }
                 }
+        }
+    }
+}
+
+/// What the toasts have said since launch, for a UI test against the `-ZimmerFixture`. A toast
+/// lives 2.5 seconds, and XCUITest cannot be relied on to look inside them: a `tap()` does not
+/// return until the app's animations settle, which on a loaded simulator took 3.2 seconds with
+/// the toast already gone (actions/runs/41988218184), and a predicate is first read a second
+/// after that. The toast's words stay here, so an assertion on them has no deadline to miss.
+/// Outside the fixture nothing is kept.
+@MainActor
+final class ToastLog: ObservableObject {
+    static let shared = ToastLog()
+
+    @Published private(set) var said: [String] = []
+
+    func record(_ text: String, by identifier: String) {
+        guard AppEnvironment.shared.isFixture else { return }
+        said.append("\(identifier): \(text)")
+    }
+}
+
+/// `ToastLog`, where a UI test reads it: in the accessibility value of an element with nothing
+/// to see, so no query for a label finds these words instead of the screen's own.
+struct ToastLogElement: View {
+    @ObservedObject private var log = ToastLog.shared
+
+    var body: some View {
+        if AppEnvironment.shared.isFixture {
+            Text(" ")
+                .font(.system(size: 1))
+                .foregroundStyle(.clear)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("toast.log")
+                .accessibilityValue(log.said.joined(separator: "\n"))
         }
     }
 }

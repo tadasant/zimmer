@@ -257,7 +257,7 @@ final class BoardViewUITests: XCTestCase {
         let confirm = app.buttons["Refresh All Now"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["toast"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForToast(app, on: "toast"))
     }
 
     func test_the_hierarchy_opens_a_related_session() throws {

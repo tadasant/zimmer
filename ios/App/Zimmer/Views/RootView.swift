@@ -21,6 +21,7 @@ struct RootView: View {
                 tabs
             }
         }
+        .overlay(alignment: .topLeading) { ToastLogElement() }
         // Behind the status bar, where the build strip's gold does not reach.
         .background(Theme.ground.ignoresSafeArea())
         // Here, at the scene's root, rather than on the board: heard whatever is on screen.
