@@ -24,7 +24,7 @@ final class WaitingUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["The gate checks again in about 6 minutes."].waitForExistence(timeout: timeout))
 
         app.buttons["waiting.action.spot_hold"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForToast(app, on: "followup.notice"))
         XCTAssertTrue(waitForDisappearance(banner), "a priority session is no longer held")
         let status = app.descendants(matching: .any)["detail.status"]
         XCTAssertTrue(waitForLabelContaining(status, "Running"), "promoting a waiting session starts it")
@@ -44,9 +44,7 @@ final class WaitingUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Stop session #1042's turn")).firstMatch.exists)
         confirm.tap()
 
-        let notice = app.descendants(matching: .any)["followup.notice"]
-        XCTAssertTrue(notice.waitForExistence(timeout: timeout))
-        XCTAssertTrue(notice.label.contains("put back in the queue"), "the server's sentence about the stopped turn")
+        XCTAssertTrue(waitForToast(app, saying: "put back in the queue"), "the server's sentence about the stopped turn")
         XCTAssertTrue(waitForDisappearance(banner), "the turn has its thread")
     }
 
@@ -72,7 +70,7 @@ final class WaitingUITests: XCTestCase {
         for _ in 0..<6 where !belowTheBar() { app.swipeDown(velocity: .fast) }
         XCTAssertTrue(belowTheBar(), "the banner is scrolled into view")
         reconnect.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForToast(app, on: "followup.notice"))
         XCTAssertTrue(waitForDisappearance(banner), "the message reached the agent, which loads the grant")
     }
 

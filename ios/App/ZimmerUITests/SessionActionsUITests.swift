@@ -33,7 +33,7 @@ final class SessionActionsUITests: XCTestCase {
         field.tap()
         field.typeText("Yes, merge it.")
         app.buttons["followup.send"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForToast(app, on: "followup.notice"))
         XCTAssertTrue(app.descendants(matching: .any)["detail.message.3"].waitForExistence(timeout: timeout))
         XCTAssertEqual(app.staticTexts["detail.status"].label, "Running")
         attachScreenshot(app, named: "detail-after-follow-up")

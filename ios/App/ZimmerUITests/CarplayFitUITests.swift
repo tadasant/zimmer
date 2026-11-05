@@ -63,7 +63,7 @@ final class CarplayFitUITests: XCTestCase {
         XCTAssertTrue(manual.waitForExistence(timeout: timeout), "the laptop side offers its reasons")
         attachScreenshot(app, named: "carplay-fit-reasons")
         manual.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "Marked Laptop only (manual steps)"))
+        XCTAssertTrue(waitForToast(app, saying: "Marked Laptop only (manual steps)"))
 
         // The menu now says what stands, with who set it.
         app.buttons["detail.actions"].tap()
@@ -78,7 +78,7 @@ final class CarplayFitUITests: XCTestCase {
         let clear = menuItem(app, titled: "Clear")
         XCTAssertTrue(clear.waitForExistence(timeout: timeout))
         clear.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "CarPlay fit cleared"))
+        XCTAssertTrue(waitForToast(app, saying: "CarPlay fit cleared"))
     }
 
     // MARK: - Helpers
