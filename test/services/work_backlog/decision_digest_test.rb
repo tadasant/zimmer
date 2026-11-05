@@ -45,6 +45,7 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     channel = FakeChannel.new
 
     travel 3.days do
+      reread(held)
       result = deliver(channel)
 
       assert_equal :delivered, result.outcome
@@ -54,6 +55,7 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
       assert_includes payload[:body], "#{held.key}: Tadas to pick #79/#141/#217"
       assert_equal "/issues", payload[:url]
       assert_equal "decision_digest", payload[:data][:notification_type]
+      assert_equal "decision-digest-#{Time.current.utc.to_date.iso8601}", payload[:data][:tag]
 
       held.reload
       assert_in_delta Time.current.to_f, held.hold_digested_at.to_f, 2
@@ -165,6 +167,39 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     assert_equal :delivered, result.outcome
     assert_not_nil held.reload.hold_digested_at
     assert_no_match(/ERROR/, @log.string)
+    assert_match(/WARN.*not reached: ios: RuntimeError: apns down/, @log.string,
+                 "a dead phone behind a live laptop must leave a record production keeps")
+  end
+
+  test "an unconfigured channel beside a working one is not a fault" do
+    held_row
+
+    deliver_through(ios: -> { FakeChannel.new({ sent: 0, failed: 0, disabled: 0, skipped: true }) },
+                    web_push: -> { FakeChannel.new })
+
+    assert_no_match(/WARN|ERROR/, @log.string)
+  end
+
+  test "a failure that lasts pages once per cadence, and a delivery re-arms it" do
+    held_row
+    dead = FakeChannel.new({ sent: 0, failed: 1, expired: 0 })
+
+    Rails.stub(:cache, ActiveSupport::Cache::MemoryStore.new) do
+      deliver(dead)
+      travel(1.day) { deliver(dead) }
+      assert_equal 1, @log.string.lines.grep(/ERROR/).size
+      assert_equal 1, @log.string.lines.grep(/WARN.*reached no device/).size
+
+      travel(WorkBacklog::DecisionDigest::CADENCE + 1.minute) { deliver(dead) }
+      assert_equal 2, @log.string.lines.grep(/ERROR/).size
+
+      travel(WorkBacklog::DecisionDigest::CADENCE + 1.day) do
+        deliver(FakeChannel.new)
+        WorkBacklogItem.update_all(hold_digested_at: nil)
+        deliver(dead)
+      end
+      assert_equal 3, @log.string.lines.grep(/ERROR/).size
+    end
   end
 
   test "the real channels with nobody subscribed count as nobody reached" do
@@ -181,7 +216,8 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
   end
 
   # A renewal says the evidence was read and has not changed. Nobody read this
-  # one, so it is delivered but its clock keeps running.
+  # one, so it is delivered but its clock keeps running, and it stays due so the
+  # next tick renews it if the read recovers.
   test "a row whose evidence could not be read is delivered but not renewed" do
     held = held_row
     original_until = held.held_until
@@ -195,7 +231,35 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     assert_includes channel.payloads.sole[:body], held.key
     held.reload
     assert_equal original_until.to_i, held.held_until.to_i
-    assert_not_nil held.hold_digested_at
+    assert_nil held.hold_digested_at
+  end
+
+  test "one failed read at a tick costs a day, not the hold" do
+    held = held_row
+    deliver(FakeChannel.new)
+    channel = FakeChannel.new
+
+    travel WorkBacklog::DecisionDigest::CADENCE do
+      held.record_liveness!(WorkBacklogItem::LIVENESS_UNKNOWN)
+      assert_equal 0, deliver(channel).renewed
+    end
+
+    travel WorkBacklog::DecisionDigest::CADENCE + 1.day do
+      held.record_liveness!(WorkBacklogItem::LIVENESS_NO_PR)
+      assert_equal 1, deliver(channel).renewed
+    end
+    assert_operator held.reload.held_until, :>, (WorkBacklog::DecisionDigest::CADENCE + 1.day).from_now
+  end
+
+  test "a reading the sweep has not refreshed does not renew a hold" do
+    held = held_row
+    original_until = held.held_until
+
+    travel WorkBacklog::DecisionDigest::EVIDENCE_MAX_AGE + 1.hour do
+      assert_equal 0, deliver(FakeChannel.new).renewed
+    end
+
+    assert_equal original_until.to_i, held.reload.held_until.to_i
   end
 
   # #1421 keeps a hold across a moving PR and takes the row off the Issues page.
@@ -247,10 +311,8 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     assert_empty channel.payloads
   end
 
-  test "a long list stays inside a web push payload, however wide its characters" do
-    25.times do |n|
-      held_row(key: "zimmer##{n + 1}", number: n + 1, reason: "決定" * 900)
-    end
+  test "a long list stays inside a web push payload, and only what it listed is renewed" do
+    rows = Array.new(25) { |n| held_row(key: "zimmer##{n + 1}", number: n + 1, reason: "決定" * 900) }
     channel = FakeChannel.new
 
     deliver(channel)
@@ -259,8 +321,26 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     assert_equal "25 decisions waiting on you", payload[:title]
     assert_operator payload[:body].bytesize, :<=, WorkBacklog::DecisionDigest::BODY_MAX_BYTES
     assert payload[:body].valid_encoding?
-    assert_equal 25, WorkBacklogItem.where.not(hold_digested_at: nil).count,
-                 "a row cut from the text is still on the page the push opens"
+    listed = rows.select { |row| payload[:body].include?("#{row.key}: ") }
+    assert_operator listed.size, :<, 25
+    assert_includes payload[:body], "+#{25 - listed.size} more on the Issues page"
+    assert_equal listed.map(&:id).sort, WorkBacklogItem.where.not(hold_digested_at: nil).pluck(:id).sort,
+                 "a row nobody was shown is not renewed"
+  end
+
+  test "rows cut from one push lead the next, until the whole list has gone out" do
+    Array.new(25) { |n| held_row(key: "zimmer##{n + 1}", number: n + 1, reason: "決定" * 900) }
+    channel = FakeChannel.new
+
+    5.times do |day|
+      travel(day.days) do
+        WorkBacklogItem.update_all(liveness_checked_at: Time.current)
+        deliver(channel)
+      end
+    end
+
+    assert_equal 0, WorkBacklogItem.where(hold_digested_at: nil).count
+    assert_operator channel.payloads.size, :<=, 5
   end
 
   test "a multi-line reason stays on its own line" do
@@ -306,6 +386,9 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
     assert_equal "1 decision waiting on you", message["title"]
     assert_equal "#{held.key}: Tadas to pick #79/#141/#217", message["body"]
     assert_equal "/issues", message.dig("data", "url")
+    assert_match(/\Adecision-digest-\d{4}-\d{2}-\d{2}\z/, message["tag"],
+                 "the service worker reads this: without it the push shares a tag and can be replaced")
+    assert_equal true, message["requireInteraction"]
   end
 
   test "the iOS alert says what kind of thing happened and carries no reason to Apple" do
@@ -338,6 +421,9 @@ class WorkBacklog::DecisionDigestTest < ActiveSupport::TestCase
   def with_log(&block)
     Rails.stub(:logger, Logger.new(@log), &block)
   end
+
+  # What the hourly sweep leaves behind when a read comes back unchanged.
+  def reread(row) = row.record_liveness!(row.reload.liveness_state)
 
   def started_row(key: "zimmer#1", number: 1, **overrides)
     backlog_item(**{ key: key, issue_url: "https://github.com/tadasant/zimmer/issues/#{number}",
