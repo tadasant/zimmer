@@ -922,7 +922,7 @@ A UI test never asserts on a toast's own element. A toast is on screen for 2.5 s
 `tap()` returns only once the app's animations settle, and a predicate is first read a second after
 that, so on a loaded simulator the toast can be gone before the test looks. The fixture keeps every
 toast in `ToastLog`, as the accessibility value of a `toast.log` element, and `waitForToast` reads it
-from there. Against a real server nothing is kept.
+from there. Outside the fixture nothing is kept.
 
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
