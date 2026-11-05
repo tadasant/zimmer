@@ -6,11 +6,7 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 tmp="$(mktemp -d)"
 server_pid=""
-cleanup() {
-  [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null
-  rm -rf "$tmp"
-}
-trap cleanup EXIT
+trap '[ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 printf 'the pinned bytes\n' >"$tmp/good"
 good_sha="$(sha256sum "$tmp/good" | cut -d' ' -f1)"
