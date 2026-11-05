@@ -565,16 +565,18 @@ rm -f "$artifacts/.started"
 # refusals, which no screenshot shows, and how far each tap on the car got. The job log gets the
 # two in time order. A row tap is `Sending UIEvent` lines and `Selected index path` in the host,
 # then `voice settings row handler` and `voice settings drawn` in the app, then
-# `Received update for list template` in the host. Where that stops is where the tap was lost.
+# `Received update for list template` in the host. Where that stops says how far the tap got. A
+# row with no choices is drawn no differently, and the host also takes updates no tap caused.
 if [ -n "$carplay" ]; then
   xcrun simctl spawn "$udid" log show --last 30m --info --predicate 'subsystem == "com.tadasant.zimmer"' \
     >"$artifacts/app-log.txt" 2>/dev/null || true
   xcrun simctl spawn "$udid" log show --last 30m --info --predicate \
     'process == "CarPlayTemplateUIHost" AND (subsystem == "com.apple.carplaysupport" OR eventMessage CONTAINS "Sending UIEvent")' \
     >"$artifacts/carplay-host-log.txt" 2>/dev/null || true
-  printf '==> the CarPlay log: the app and the host, in time order\n'
+  printf '==> the CarPlay log: the app and the host, in time order (%s host lines kept)\n' \
+    "$(wc -l <"$artifacts/carplay-host-log.txt" | tr -d ' ')"
   sort "$artifacts/app-log.txt" "$artifacts/carplay-host-log.txt" 2>/dev/null \
-    | grep -i -E 'carplay' | cut -c1-240 | tail -120 || true
+    | grep -i -E 'carplay' | cut -c1-300 | tail -120 || true
 fi
 
 # In the drill a crash is the failure being looked for, whatever the assertions made of it:
