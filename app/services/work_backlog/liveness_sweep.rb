@@ -352,10 +352,18 @@ module WorkBacklog
         # both halves of the band jump. Defer the reading rather than page on it or
         # let it poison the high-water mark — the unreadable repo is already named
         # at WARN by `report`, and the next pass says something true.
-        return if result.repos_failed.any?
+        #
+        # A lapse is the exception. It is a fact about the row's own clock, not the
+        # census, and it is the only backstop a hold has, so a repo that stays
+        # unreadable must not hold it back. Such a pass pages the lapse and leaves
+        # the band alone.
+        unreadable = result.repos_failed.any?
+        return if unreadable && lapsed_hold_ids(now).empty?
 
         age = result.oldest_stranded_age
         if age.nil? || age < ALERT_AFTER
+          return if unreadable
+
           # The condition is over. Forgetting the band is what makes the NEXT
           # population page from band one instead of being weighed against a worse
           # one that no longer exists.
@@ -367,7 +375,7 @@ module WorkBacklog
 
         rows = WorkBacklogItem.stranded(now: now).count
         band = severity_band(age, rows)
-        worse = worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
+        worse = !unreadable && worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
         lapsed = lapsed_hold_ids(now)
         return unless worse || lapsed.any?
 

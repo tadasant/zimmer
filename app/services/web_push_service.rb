@@ -106,6 +106,12 @@ class WebPushService
     payload[:data] = data.merge(url: url) if url.present?
     payload[:data] = data if url.blank? && data.present?
 
+    # The service worker reads these two from the top level. Without a tag of its
+    # own a push shares the default one, so it replaces whatever is showing and the
+    # next one replaces it.
+    payload[:tag] = data[:tag] if data[:tag].present?
+    payload[:requireInteraction] = true if data[:require_interaction]
+
     payload
   end
 end

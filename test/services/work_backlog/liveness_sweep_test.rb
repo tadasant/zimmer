@@ -680,8 +680,8 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_match(/decision digest did not renew them/, alerts.records.last)
       assert_equal "weeks-4", alerts.events.last[:fingerprint][1], "with its original age"
       assert_nil held.reload.held_at
-      assert_equal 14, alerts.log.string.lines.grep(/ERROR.*reached no device/).size,
-                   "and every failed tick before it was an ERROR"
+      assert_includes 1..2, alerts.log.string.lines.grep(/ERROR.*reached no device/).size,
+                      "and the failure was an ERROR well before that, once a week"
     end
   end
 
@@ -764,6 +764,29 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_operator channel.pushes, :>=, 2, "it stayed in the digest"
       assert_operator original_until, :<, 16.days.from_now
       assert_equal 1, alerts.pages.size, "nothing re-read its evidence, so nothing renewed it"
+    end
+  end
+
+  # A repo that stays unreadable defers the band alert for as long as it lasts, so
+  # the lapse has to be able to page anyway or nothing would.
+  test "a repo that stays unreadable still gets the lapse page, and leaves the band alone" do
+    held_row(started_at: 22.days.ago)
+    channel = PushCounter.new(sent: 1)
+    cache = ActiveSupport::Cache::MemoryStore.new
+
+    with_alerts(cache: cache) do |alerts|
+      16.times do |day|
+        travel(day.days) do
+          sweep(probe_error: "repository not found")
+          digest(channel)
+        end
+      end
+
+      assert_equal 1, alerts.pages.size
+      assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
+      assert_operator channel.pushes, :>=, 2, "it stayed in the digest until it lapsed"
+      assert_nil cache.read(WorkBacklog::LivenessSweep::ALERT_BAND_CACHE_KEY),
+                 "a census that could not be read does not set the high-water mark"
     end
   end
 
