@@ -36,6 +36,14 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 ///   mid-tool starts one), in which case it waits for that response to finish;
 /// - a response the user talked over (`cancelled`) asks for nothing more: a call first seen in
 ///   its `response.done` is not run, and one already relayed is answered but not followed up;
+/// - a response cut short (`incomplete`, by the output cap or OpenAI's content filter) is not
+///   that: nobody talked over it, so its calls run and get their follow-up like a completed
+///   response's, and the model hears what came of them. Zimmer refuses arguments that were cut
+///   off, which is what tells the model to try again or say so. Three in a row stops asking and
+///   says so, rather than retrying unheard for ever;
+/// - when the output cap cost a tool call, or a reply nobody heard a word of, the call drops the
+///   cap for the rest of its life (`session.update`), so the same cap cannot do it twice. A reply
+///   nobody heard is asked for again. A spoken reply the cap cut off just ends: that is the cap;
 /// - each call runs once, however often its events repeat;
 /// - finished transcript lines are recorded, and the user starting to speak stops whatever reply
 ///   audio is still sounding, `response.done` or not, and tells OpenAI how much of it was heard
@@ -99,6 +107,13 @@ public struct RealtimeConductor: Sendable {
     /// a session starts its own replies; a call that became gated mid-call reads `gated` here,
     /// because `session.updated` does not say which gated mode (`LiveHeard.listening` does).
     public private(set) var listening: String?
+    /// The output cap is off for this call: every later `session.update` keeps it off.
+    private var capLifted = false
+    /// The running response has played audio.
+    private var spoke = false
+    /// Responses cut short with a call on them since one last completed.
+    private var cutsInARow = 0
+    private static let cutsBeforeGivingUp = 3
 
     public init(listening: String? = nil) {
         self.listening = listening
@@ -169,6 +184,7 @@ public struct RealtimeConductor: Sendable {
         case "response.created":
             responseActive = true
             requested = false
+            spoke = false
             return [.state(.thinking)]
         case "session.created", "session.updated":
             note(session: event["session"] ?? .null)
@@ -176,6 +192,7 @@ public struct RealtimeConductor: Sendable {
         case "response.output_audio.delta":
             guard let delta = event["delta"]?.string, let audio = Data(base64Encoded: delta) else { return [] }
             if let item = event["item_id"]?.string, item == cutItem { return [] }
+            spoke = true
             var effects: [Effect] = []
             if let item = event["item_id"]?.string, item != playingItem {
                 playingItem = item
@@ -222,7 +239,7 @@ public struct RealtimeConductor: Sendable {
         guard inFlight.remove(callID) != nil else { return [] }
         var effects: [Effect] = []
         if let session = result?.session {
-            effects.append(.send(Self.sessionUpdate(session)))
+            effects.append(.send(sessionUpdate(keeping: session)))
         } else if let result, result.toolsChanged, let tools = result.tools {
             effects.append(.send(Self.sessionUpdate(.object(["type": .string("realtime"), "tools": tools]))))
         }
@@ -247,6 +264,14 @@ public struct RealtimeConductor: Sendable {
     /// the settings changed somewhere else.
     public static func sessionUpdate(_ session: JSONValue) -> JSONValue {
         .object(["type": .string("session.update"), "session": session])
+    }
+
+    /// `sessionUpdate(_:)` for a `session` Zimmer built, which names the stored output cap: a call
+    /// that lifted the cap keeps it lifted.
+    public func sessionUpdate(keeping session: JSONValue) -> JSONValue {
+        guard capLifted, case var .object(fields) = session else { return Self.sessionUpdate(session) }
+        fields["max_output_tokens"] = .string("inf")
+        return Self.sessionUpdate(.object(fields))
     }
 
     /// Tell OpenAI the user heard only the first `audioEndMs` of reply `itemID`.
@@ -275,26 +300,45 @@ public struct RealtimeConductor: Sendable {
     }
 
     private mutating func finish(_ response: JSONValue?) -> [Effect] {
-        var effects = sendPendingResponse()
         let status = response?["status"]?.string
         let calls = (response?["output"]?.array ?? []).filter { $0["type"]?.string == "function_call" }
-        guard status == nil || status == "completed" else {
-            // Talked over: a call it asked for is not started, and one already relayed is
-            // answered without a follow-up.
+        let cut = status == "incomplete"
+        if status == "completed" { cutsInARow = 0 } else if cut, !calls.isEmpty { cutsInARow += 1 }
+
+        var effects: [Effect] = []
+        let lifting = cut && !capLifted && response?["status_details"]?["reason"]?.string == "max_output_tokens"
+            && (!calls.isEmpty || !spoke)
+        if lifting {
+            capLifted = true
+            effects.append(.send(sessionUpdate(keeping: .object(["type": .string("realtime")]))))
+        }
+        effects += sendPendingResponse()
+        guard status == nil || status == "completed" || status == "incomplete" else {
+            // Talked over, or failed: a call it asked for is not started, and one already
+            // relayed is answered without a follow-up.
             for call in calls {
                 guard let callID = call["call_id"]?.string else { continue }
                 if inFlight.contains(callID) { dropped.insert(callID) }
                 answered.remove(callID)
             }
-            // Cancelled or cut short with nothing asked for after it: no answer is coming.
+            // Nothing asked for after it: no answer is coming.
             return requested ? effects : effects + [.state(.listening)]
         }
-        guard !calls.isEmpty else { return effects + [.state(.listening)] }
+        guard !calls.isEmpty else {
+            guard lifting else { return effects + [.state(.listening)] }
+            // The cap ran out before a word was said: nothing was heard, so ask again without it.
+            pendingResponse = true
+            return effects + sendPendingResponse()
+        }
 
         for call in calls {
             guard let callID = call["call_id"]?.string else { continue }
             if !seen.contains(callID), let name = call["name"]?.string {
-                effects += start(callID: callID, name: name, arguments: call["arguments"]?.string ?? "{}")
+                var arguments = call["arguments"]?.string ?? ""
+                // Zimmer reads blank arguments as none at all, which is a call the model did not
+                // finish making. `{` is what it refuses.
+                if arguments.isEmpty { arguments = cut ? "{" : "{}" }
+                effects += start(callID: callID, name: name, arguments: arguments)
             }
             if answered.remove(callID) == nil { awaiting.insert(callID) }
         }
@@ -308,6 +352,10 @@ public struct RealtimeConductor: Sendable {
     private mutating func sendPendingResponse() -> [Effect] {
         guard pendingResponse, !responseActive, !requested else { return [] }
         pendingResponse = false
+        if cutsInARow >= Self.cutsBeforeGivingUp {
+            cutsInARow = 0
+            return [.failure("OpenAI kept cutting that reply short."), .state(.listening)]
+        }
         requested = true
         return [.send(.object(["type": .string("response.create")]))]
     }

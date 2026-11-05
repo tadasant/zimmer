@@ -4690,6 +4690,21 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
+### A Live voice reply a person's output cap cuts off is not continued
+
+The voice output cap is a hard stop. When it costs a tool call, or a reply nobody heard, the client
+lifts it for the rest of that call and the model goes again. When it cuts off a reply already being
+spoken, with no tool call, the reply just ends and the call goes back to listening: the person hears
+it stop mid-sentence, then the failed cue, and only a `response.done` warning in the iOS call log says
+why. The
+floor of 1,024 makes this rare, and blank, the default, never does it. See
+[the voice output cap](/sessions/live/#the-voice-output-cap).
+
+**The recovery has not run against OpenAI.** Its tests use event sequences written from one failed
+call's telemetry, and CI holds no Realtime key. What is unproven is whether a Realtime session
+answers a `function_call_output` for an `incomplete` call with a usable reply. A build of the iOS app
+from before this behaviour keeps the old one, silence after a cut-off tool call, until it updates.
+
 ## Turn sources
 
 The [turn-source note](/sessions/turn-sources/) is a style hint. These are the places where it is

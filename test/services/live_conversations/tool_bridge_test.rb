@@ -273,6 +273,78 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_equal "warn", LiveSetting.current.voice_telemetry, "a reset from the call keeps it"
   end
 
+  test "the live model cannot change the voice output cap, nor reset a person's" do
+    LiveConversations::SettingsUpdate.call({ "voice_max_output_tokens" => 2_048 }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    schema = @bridge.realtime_tools.find { |t| t[:name] == "update_live_settings" }
+    assert_not schema.dig(:parameters, :properties).key?("voice_max_output_tokens"), "not offered"
+
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_max_output_tokens: 180), call_id: "t1")
+    assert result.error
+    assert_match(/a person's to change/, result.output)
+    assert_equal 2_048, LiveSetting.current.voice_max_output_tokens
+
+    @bridge.execute("update_live_settings", JSON.generate(reset_to_defaults: true), call_id: "t2")
+    assert_equal 2_048, LiveSetting.current.voice_max_output_tokens, "a reset from the call keeps it"
+  end
+
+  # What a Realtime response cut off by the output cap relays: the arguments as
+  # far as the model got, which is not JSON.
+  test "a call whose arguments were cut off runs nothing and tells the model to try again or say so" do
+    partial = %({"tool":"start_session","arguments":{"prompt":"Fix the)
+    assert_no_difference -> { Session.count } do
+      result = @bridge.execute("zimmer", partial, call_id: "cut1")
+
+      assert result.error
+      assert_match(/cut off/, result.output)
+      assert_match(/Nothing ran/, result.output)
+      assert_match(/tell the person/, result.output)
+    end
+  end
+
+  test "a failed call reaches the logs, with its error and never its arguments" do
+    lines = []
+    Rails.logger.stubs(:warn).with { |message| lines << message; true }
+
+    partial = %({"tool":"start_session","arguments":{"prompt":"Fix the)
+    @bridge.execute("zimmer", partial, call_id: "cut2")
+
+    line = lines.grep(/\[LiveConversations::ToolBridge\]/).sole
+    assert_includes line, "function=zimmer"
+    assert_includes line, "live_conversation=#{@conversation.id}"
+    assert_includes line, "call_id=cut2"
+    assert_includes line, "arguments_chars=#{partial.length}"
+    assert_match(/cut off/, line)
+    assert_not_includes line, "Fix the"
+  end
+
+  test "a catalog server's error stays off the log line, and an exception logs only its class" do
+    lines = []
+    Rails.logger.stubs(:warn).with { |message| lines << message; true }
+    @conversation.update!(mcp_servers: [ "clock" ], mcp_tool_cache: { "clock" => [ { "name" => "now", "description" => "x", "input_schema" => { "type" => "object" } } ] })
+    bridge = LiveConversations::ToolBridge.new(@conversation)
+    server = stub(call_tool: [ "no such account: the words they said", true ])
+    LiveConversations::CatalogServer.stubs(:find!).returns(server)
+
+    assert bridge.execute("clock__now", "{}", call_id: "own").error
+    server.stubs(:call_tool).raises(ArgumentError, "row with the words they said")
+    assert bridge.execute("clock__now", "{}", call_id: "boom").error
+
+    logged = lines.grep(/\[LiveConversations::ToolBridge\]/)
+    assert_equal 2, logged.size
+    assert_match(/failed: the server reported an error/, logged.first)
+    assert_match(/failed: ArgumentError/, logged.second)
+    assert_empty logged.grep(/the words they said/)
+  end
+
+  test "a call that worked writes no failure line" do
+    lines = []
+    Rails.logger.stubs(:warn).with { |message| lines << message; true }
+
+    @bridge.execute("get_live_settings", "{}", call_id: "ok1")
+
+    assert_empty lines.grep(/\[LiveConversations::ToolBridge\]/)
+  end
+
   test "every settings change is shipped as a [LiveSettings] line naming who made it" do
     lines = []
     Rails.logger.stubs(:warn).with { |message| lines << message; true }
