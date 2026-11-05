@@ -467,6 +467,9 @@ jobs:
   # runner image would mean tadasant-internal's ci-runner/ tree, a different repository; the
   # download keeps this self-contained here. Pinning the version keeps a new upstream release
   # from failing unrelated PRs, and the checksum is what makes the download safe to trust.
+  # fetch-pinned-download.sh keeps the verified tarball on the runner and re-checks it on every
+  # run, so an upstream 5xx cannot fail this job once a runner has it. A cold runner retries for
+  # about four minutes and then fails: a sustained outage must not skip the check.
   #
   # Scope is tracked *.sh, which is scripts/, .github/scripts/ and .agent-containers/ --
   # broader than scripts/ alone because .github/scripts/*.sh are deploy-path scripts too, and
@@ -494,10 +497,9 @@ jobs:
           # one, and `rm -rf "$dir"` two lines down is exactly the shape this job exists to catch.
           dir="${RUNNER_TEMP:?}/shellcheck"
           rm -rf "$dir"; mkdir -p "$dir"
-          curl -fsSL --retry 3 --retry-delay 2 \
+          .github/scripts/fetch-pinned-download.sh \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz" \
-            -o "$dir/shellcheck.tar.xz"
-          echo "${sha}  ${dir}/shellcheck.tar.xz" | sha256sum -c -
+            "$sha" "$dir/shellcheck.tar.xz"
           tar -xJf "$dir/shellcheck.tar.xz" -C "$dir" --strip-components=1
           echo "$dir" >> "$GITHUB_PATH"
       - name: ShellCheck every tracked shell script
@@ -562,6 +564,9 @@ jobs:
         # alert-ci-failure.yml only runs from main, after a real runner loss, so its re-run
         # and paging decisions are exercised here against a stub `gh` instead.
         run: bash .github/scripts/rerun-unacquired-jobs_test.sh
+
+      - name: Test the pinned download's retry, cache and checksum
+        run: bash .github/scripts/fetch-pinned-download_test.sh
 
   ios-changes:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
