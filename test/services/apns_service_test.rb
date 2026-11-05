@@ -115,7 +115,8 @@ class ApnsServiceTest < ActiveSupport::TestCase
   end
 
   test "every notification type has its own generic alert" do
-    assert_equal SendPushNotificationJob::NOTIFICATION_TYPES.sort, ApnsService::ALERT_BODIES.keys.sort
+    assert_equal (SendPushNotificationJob::NOTIFICATION_TYPES + [ WorkBacklog::DecisionDigest::NOTIFICATION_TYPE ]).sort,
+                 ApnsService::ALERT_BODIES.keys.sort
   end
 
   test "a custom message's or a failure's own text never reaches Apple" do

@@ -162,17 +162,28 @@ class WorkBacklogItem < ApplicationRecord
   # A hold records that outcome on the row, beside the evidence rather than in
   # place of it, and changes nothing else: not `status`, not the liveness state.
   # It takes the row out of `stranded` — the population that pages — and into
-  # `awaiting_decision`, which is listed on its own and never pages.
+  # `awaiting_decision`, which is listed on its own, never pages, and is delivered
+  # to its owner by WorkBacklog::DecisionDigest.
   #
-  # IT LAPSES, because a hold that did not would be the permanent silence #1127
-  # and #1175 were written to end. HOLD_DURATION after it is recorded the row is
-  # stranded again with its original age, and the next sweep pass that can read
-  # GitHub PAGES ON THE LAPSE — whatever band it last paged for — and only then
-  # clears the spent hold (WorkBacklog::LivenessSweep#announce_lapsed_holds). So
-  # the reminder is the same page that reached the human in the first place, once
-  # per hold, rather than a second alert path. A hold cannot be extended while it
-  # is active, and a lapsed one cannot be renewed until that page has gone out:
-  # WorkBacklog::Hold refuses a row still carrying a spent hold.
+  # IT LAPSES UNLESS A DELIVERY RENEWS IT (#1453), because a hold nothing maintains
+  # is the permanent silence #1127 and #1175 were written to end. HOLD_DURATION
+  # after it was recorded or last renewed the row is stranded again with its
+  # original age, and the next sweep pass that can read GitHub PAGES ON THE LAPSE,
+  # whatever band it last paged for, and only then clears the spent hold
+  # (WorkBacklog::LivenessSweep#announce_lapsed_holds).
+  #
+  # WorkBacklog::DecisionDigest is the only thing that renews one, and only by
+  # delivering it: a push that reached a device, with the row's evidence re-read
+  # and unchanged. So the person who owes the decision hears about it every
+  # CADENCE for as long as it is owed, and an unanswered hold does not page. Every
+  # way that delivery can stop ends in the lapse page, so the page is the backstop
+  # for a reminder that is not getting through. Until #1453 it WAS the reminder:
+  # one page per hold per fortnight, to a channel that reaches a triage chain whose
+  # only move was to re-hold. Eight such pages answered no decisions.
+  #
+  # A triager cannot extend a hold while it is active, and cannot renew a lapsed
+  # one until that page has gone out: WorkBacklog::Hold refuses a row still carrying
+  # a spent hold.
   #
   # And it is VOID once the evidence it was recorded against has changed. A hold
   # says "given THIS, a person has to decide"; once the issue closes, the row is
@@ -188,8 +199,9 @@ class WorkBacklogItem < ApplicationRecord
   # the row reads once the PR has merged, closed or gone quiet. `pr_stalled` is
   # judged like any other verdict: it is unresolved, so a hold that survived it
   # would be a silenced row with nothing moving. The hold lapses on its own
-  # clock throughout, and a `pr_open` row is not stranded, so a lapse while the
-  # PR is open pages on the first pass after the row is stranded again.
+  # clock throughout, the digest keeps delivering and renewing it, and a `pr_open`
+  # row is not stranded, so a lapse while the PR is open pages on the first pass
+  # after the row is stranded again.
   HOLD_DURATION = 14.days
 
   # Verdicts that say nothing about the evidence a hold stands on: a read that
@@ -199,7 +211,7 @@ class WorkBacklogItem < ApplicationRecord
 
   # What a voided or spent hold is reset to.
   CLEARED_HOLD = { held_at: nil, held_until: nil, held_by: nil, held_by_session_id: nil, hold_reason: nil,
-                   held_liveness_state: nil }.freeze
+                   held_liveness_state: nil, hold_digested_at: nil }.freeze
 
   # The keys in the file's item schema that have a column here. Everything else
   # in an item — ratings, prompt, notes, gate_session, and whatever the gate adds
@@ -437,6 +449,21 @@ class WorkBacklogItem < ApplicationRecord
     unresolved(grace: grace, now: now).where("held_until > ?", now)
   }
 
+  # Every decision still owed: `awaiting_decision` plus the holds a moving open PR
+  # has suspended. A suspended row is off the Issues page because the PR resolves
+  # it for the time being, but the decision has not gone anywhere, so the digest
+  # keeps delivering it. See WorkBacklog::DecisionDigest.
+  scope :decision_owed, ->(grace: WorkBacklog::LivenessSweep::GRACE, now: Time.current) {
+    liveness_candidates(grace: grace, now: now).where("held_until > ?", now)
+  }
+
+  # The holds a delivery may renew: the row's evidence reads as it did when the
+  # hold was recorded, or a moving PR is suspending the question. `unknown` is out
+  # because a renewal claims the evidence was read. Anything else voids the hold.
+  scope :hold_renewable, -> {
+    where("liveness_state = held_liveness_state OR liveness_state = ?", LIVENESS_PR_OPEN)
+  }
+
   # Has a later row taken this key over? That is what the triage route leaves
   # behind: `append_work_backlog_item` creates a fresh `queued` row rather than
   # moving this one, so this row's job is done even though its status never
@@ -621,6 +648,7 @@ class WorkBacklogItem < ApplicationRecord
       held_by_session_id: held_by_session_id,
       hold_reason: hold_reason,
       held_liveness_state: held_liveness_state,
+      hold_digested_at: hold_digested_at&.iso8601,
       payload: payload
     }
   end

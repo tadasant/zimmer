@@ -181,8 +181,8 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   # POST /api/v1/work_backlog_items/:id/hold
   # Body: reason (required), acting_session_id (self-declared, provenance only).
   #
-  # Hold a stranded row for a human decision: out of the stranded page until the
-  # hold lapses or the row's evidence changes. Mirrors the
+  # Hold a stranded row for a human decision: out of the stranded page, and into
+  # the decision digest, unless the hold lapses or the row's evidence changes. Mirrors the
   # hold_work_backlog_item_for_decision MCP tool through WorkBacklog::Hold. Not a
   # human-only operation — it moves and removes nothing.
   def hold
