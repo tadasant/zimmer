@@ -265,6 +265,14 @@ if the action ran and the page still did not open, a second tap changes nothing 
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
 
+### A switch on iOS 26 can lose a very short touch
+
+iOS 26's `UISwitch` flips through a long-press recognizer that begins a moment after the touch lands. If touch-down and touch-up reach the app together, it usually never begins: the app gets the touch, the switch does not move, and nothing is logged. XCUITest's `tap()` holds for 67 ms, and on a loaded runner the first touch of a screen reached the app 46 to 97 ms late, measured with touch logging on. With nothing logging, 1 plain tap in 53 failed the way [run 41951747877](https://github.com/tadasant/zimmer/actions/runs/41951747877) did. That run had no touch logging, so its cause is inferred from the matching failure.
+
+So every UI test flips a switch with `flip` in `ios/App/ZimmerUITests/SwitchFlip.swift`: one 200 ms press, about a person's tap, and no retry. The loss looks to be inside UIKit, where the app cannot reach it, though nothing tested that, and it has not been measured on a real device. If it happens there, a person sees the switch stay put and taps again.
+
+The app may also cause the loss by setting a switch during a touch. A `Toggle` is set again every time the view around it is re-evaluated. In loops with touch logging on, the only two 200 ms presses ever lost had a set land during them, and three others with one survived, so that is a suspect and not a proven cause. The Quick Router's switches moved into `QuickRouterSwitch`, which cut those sets to about a fifth once the sheet has settled. It did not end them, and it did not clearly reduce how often one lands during a touch. The app's other `Toggle`s, in Settings and on the trigger pages for example, are unchanged.
+
 ### The TestFlight export retry trusts a short list of error strings
 
 `ios/bin/testflight upload` retries `xcodebuild -exportArchive` up to three times, but only when an
@@ -885,6 +893,12 @@ the alert itself, so the job's `if:` excludes it by comparing against the litera
 itself.** (The literal is deliberate: `github.workflow` would be the tidier-looking test, but if it
 ever resolved to the *triggering* workflow's name the test would become `A != A` and the alert would
 silently stop firing forever. A loud failure beats a silent one.)
+
+### A job cut off at its time budget is never alerted on
+
+`timed_out` in `alert-ci-failure.yml`'s allowlist does not catch a job that hits its own `timeout-minutes`. GitHub concluded such a run `cancelled`, twice, on [run 41991046159](https://github.com/tadasant/zimmer/actions/runs/41991046159), even though `all-checks-pass` failed. That was a pull request. On `main` the same cut-off would page nobody and would not reach the re-run script, which is inferred, because no such run on `main` has been seen. `ios-ui-tests.yml` records the same thing costing four days of post-merge coverage.
+
+The `ios` job is the likely place for it, because its smoke run grows with every UI test file a pull request touches, and nothing bounds that. Six files needed more than 45 minutes, so its budget is 75, but a wider change can still pass that.
 
 ### A queued run that never starts is never alerted on
 

@@ -60,7 +60,9 @@ jobs:
     #                                otherwise silent deaths: a workflow whose YAML is
     #                                invalid on main never reaches a job at all, and a
     #                                hung job that hits its timeout would sail straight
-    #                                past a bare `== 'failure'` test.
+    #                                past a bare `== 'failure'` test. That does not cover
+    #                                a job's `timeout-minutes`: a run cut off that way
+    #                                has concluded `cancelled`, which this drops.
     #   head_branch == 'main'     -- feature branches are the author's problem.
     #   event != 'pull_request'   -- a PR's own red check is already in front of its
     #                                author; #alerts is for main.
