@@ -24,7 +24,10 @@ module Sessions
   # which writes SessionPrecedence::DEFAULT.
   #
   # The rules:
-  # - The write and its log row land together in one transaction.
+  # - An actor outside Sessions::ActorLabel raises KeyError before anything is
+  #   written.
+  # - The write and its log row (Sessions::PrecedenceLog) land together in one
+  #   transaction.
   # - A value equal to the stored one writes no log row. The comparison is
   #   against the stored value, not the in-memory one, so a retry after a failed
   #   write (the web door's with_db_retry) still logs the move.
@@ -44,8 +47,6 @@ module Sessions
       end
     end
 
-    ACTOR_LABELS = { web: "", mcp: " via MCP", rest: " via the REST API" }.freeze
-
     # @param session [Session]
     # @param precedence [Integer, String, nil] the new rank, already resolved
     # @param actor [Symbol] :web, :mcp or :rest — named in the log row
@@ -53,6 +54,7 @@ module Sessions
     # @return [Result]
     # @raise [ActiveRecord::RecordInvalid] when the session refuses the value
     #   (out of range, not an integer) or fails another validation
+    # @raise [KeyError] on an actor Sessions::ActorLabel does not know
     def self.call(session:, precedence:, actor: :web, &save)
       new(session: session, precedence: precedence, actor: actor).call(&save)
     end
@@ -66,17 +68,14 @@ module Sessions
     attr_reader :session, :precedence, :actor
 
     def call
+      label = Sessions::ActorLabel.for(actor)
+
       previous = nil
       session.transaction do
         previous = session.attribute_in_database("precedence")
         session.precedence = precedence
         block_given? ? yield : session.save!
-        if previous != session.precedence
-          session.logs.create!(
-            content: "Precedence set#{ACTOR_LABELS.fetch(actor)} to #{session.precedence} (was #{previous})",
-            level: "info"
-          )
-        end
+        Sessions::PrecedenceLog.write(session, previous: previous, label: label)
       end
 
       Result.new(session: session, previous: previous, precedence: session.precedence)
