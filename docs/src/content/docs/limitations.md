@@ -265,6 +265,14 @@ if the action ran and the page still did not open, a second tap changes nothing 
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
 
+### A switch on iOS 26 can lose a very short touch
+
+iOS 26's `UISwitch` flips through a long-press recognizer that begins a moment after the touch lands. If touch-down and touch-up reach the app together, it usually never begins: the app gets the touch, the switch does not move, and nothing is logged. XCUITest's `tap()` holds for 67 ms, and on a loaded runner the first touch of a screen reached the app 46 to 97 ms late, measured with touch logging on. With nothing logging, 1 plain tap in 53 failed the way [run 41951747877](https://github.com/tadasant/zimmer/actions/runs/41951747877) did. That run had no touch logging, so its cause is inferred from the matching failure.
+
+So every UI test flips a switch with `flip` in `ios/App/ZimmerUITests/SwitchFlip.swift`: one 200 ms press, about a person's tap, and no retry. The loss looks to be inside UIKit, where the app cannot reach it, though nothing tested that, and it has not been measured on a real device. If it happens there, a person sees the switch stay put and taps again.
+
+The app may also cause the loss by setting a switch during a touch. A `Toggle` is set again every time the view around it is re-evaluated. In loops with touch logging on, the only two 200 ms presses ever lost had a set land during them, and three others with one survived, so that is a suspect and not a proven cause. The Quick Router's switches moved into `QuickRouterSwitch`, which cut those sets to about a fifth once the sheet has settled. It did not end them, and it did not clearly reduce how often one lands during a touch. The app's other `Toggle`s, in Settings and on the trigger pages for example, are unchanged.
+
 ### The TestFlight export retry trusts a short list of error strings
 
 `ios/bin/testflight upload` retries `xcodebuild -exportArchive` up to three times, but only when an

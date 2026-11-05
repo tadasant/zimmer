@@ -29,7 +29,7 @@ final class SettingsUITests: XCTestCase {
         // A flip saves at once; the status line follows the server's answer.
         let toggle = app.switches["settings.experimental.warm_router_process"]
         reveal(app, toggle)
-        tapSwitch(toggle)
+        flip(toggle)
         XCTAssertTrue(waitForLabel(router, "Warm Quick Router process is ON."))
         XCTAssertEqual(toggle.value as? String, "1")
         // Back up to the first row: a Form row scrolled off is not in the accessibility tree.
@@ -80,7 +80,7 @@ final class SettingsUITests: XCTestCase {
         let master = app.switches["settings.mcpapps.enabled"]
         reveal(app, master)
         XCTAssertEqual(master.value as? String, "0", "off by default")
-        tapSwitch(master)
+        flip(master)
         XCTAssertEqual(master.value as? String, "1")
         let linear = app.buttons["settings.mcpapps.server.linear"]
         reveal(app, linear)
@@ -110,7 +110,7 @@ final class SettingsUITests: XCTestCase {
 
         let master = app.switches["settings.mcpapps.enabled"]
         reveal(app, master)
-        tapSwitch(master)
+        flip(master)
         XCTAssertEqual(master.value as? String, "1")
         let save = app.buttons["settings.mcpapps.save"]
         reveal(app, save)
@@ -180,24 +180,6 @@ final class SettingsUITests: XCTestCase {
         let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.45 : 0.75))
         let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.75 : 0.45))
         from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
-    }
-
-    /// A Form toggle's switch is tapped on its right edge, where the control is, until its
-    /// value has flipped. A tap on a switch that is on screen and at rest is sometimes dropped:
-    /// the event is synthesized, the switch neither moves nor highlights, and the app is idle
-    /// again at once. So the tap is repeated, up to three times, only while the value is still
-    /// the one it started at; a flip within 5s is never tapped back.
-    private func tapSwitch(_ toggle: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
-        guard let before = toggle.value as? String else {
-            XCTFail("\(toggle.identifier) has no value to flip", file: file, line: line)
-            return
-        }
-        for attempt in 1...3 {
-            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
-            let flipped = expectation(for: NSPredicate(format: "value != %@", before), evaluatedWith: toggle)
-            if XCTWaiter().wait(for: [flipped], timeout: attempt == 3 ? timeout : 5) == .completed { return }
-        }
-        XCTFail("\(toggle.identifier) was still \(before) after three taps", file: file, line: line)
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
