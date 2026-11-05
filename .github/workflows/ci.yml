@@ -469,7 +469,7 @@ jobs:
   # from failing unrelated PRs, and the checksum is what makes the download safe to trust.
   # fetch-pinned-download.sh keeps the verified tarball on the runner and re-checks it on every
   # run, so an upstream 5xx cannot fail this job once a runner has it. A cold runner retries for
-  # about four minutes and then fails: a sustained outage must not skip the check.
+  # at most ten minutes and then fails: a sustained outage must not skip the check.
   #
   # Scope is tracked *.sh, which is scripts/, .github/scripts/ and .agent-containers/ --
   # broader than scripts/ alone because .github/scripts/*.sh are deploy-path scripts too, and
@@ -481,6 +481,7 @@ jobs:
   shellcheck:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
+    timeout-minutes: 20
     env:
       SHELLCHECK_VERSION: "0.10.0"
     steps:
