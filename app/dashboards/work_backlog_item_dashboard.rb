@@ -36,6 +36,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     held_by_session: Field::BelongsTo,
     hold_reason: Field::Text,
     held_liveness_state: Field::String,
+    hold_digested_at: Field::DateTime,
     payload: Field::String.with_options(searchable: false),
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -88,6 +89,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     held_by_session
     hold_reason
     held_liveness_state
+    hold_digested_at
     payload
     created_at
     updated_at

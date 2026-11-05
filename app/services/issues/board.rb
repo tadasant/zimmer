@@ -19,7 +19,8 @@ module Issues
   #             whose issue is still open and whose premise has expired
   #   awaiting  a stranded row a triager held for a human decision, until the
   #   decision  hold lapses or its evidence changes (a moving open PR only
-  #             suspends it)
+  #             suspends it). WorkBacklog::DecisionDigest delivers these, and a
+  #             delivery renews the hold
   #   loose     an open GitHub issue with no queued or CLAIMED backlog row —
   #             held, unrated, or simply not picked up yet
   #
@@ -153,8 +154,8 @@ module Issues
 
     # Stranded rows a triager held for a human decision (#1225): the list of
     # decisions owed, each with the reason the triager wrote. Out of Stranded and
-    # out of the page until the hold lapses — see WorkBacklogItem::HOLD_DURATION.
-    # Soonest-lapsing first, because that is the one about to page. Bounded like
+    # out of the page unless the hold lapses — see WorkBacklogItem::HOLD_DURATION.
+    # Soonest-lapsing first, because that is the one that would page. Bounded like
     # the stranded list, and for the same reason.
     def awaiting_decision_truncated? = counts[:awaiting_decision] > awaiting_decision_rows.length
 
