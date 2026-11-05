@@ -328,37 +328,46 @@ not the whole pile.
 #### The decision digest
 
 **`WorkBacklogDecisionDigestJob` delivers every owed decision to its owner.** It runs daily and
-sends one push through both of Zimmer's push paths, listing each row with its `reason`. A new hold
-goes out on the next tick. After that the list goes out every `CADENCE` (7 days), for as long as any
-of it is owed. Tapping the web push opens the Issues view. The list includes holds a moving PR has
-suspended, because the decision is still owed even though those rows are not on that page.
+sends one push through both of Zimmer's push paths, listing rows with their `reason`. A new hold goes
+out on the next tick. After that a decision goes out every `CADENCE` (7 days), for as long as it is
+owed. Tapping the web push opens the Issues view. The list includes holds a moving PR has suspended,
+because the decision is still owed even though those rows are not on that page.
 
-A web push is capped at about 3,000 bytes and each reason at 160 characters, so a long list is cut
-off in the push and is whole on the Issues view. The iOS push says only "Decisions are waiting on
-you", because an APNs alert is readable by Apple and a reason stays on the server. Tapping it opens
-the app, not the Issues view.
+A web push holds about 3,000 bytes and each reason is cut at 160 characters, so a long list does not
+fit in one. The push lists the rows that have waited longest, says how many more there are, and the
+rest lead the next day's push, so a long list goes round over a few days. Each digest has its own
+notification tag, because Zimmer's pushes otherwise share one and each replaces the last.
 
-**Each delivery renews the holds it carried, and nothing else does.** A push that reaches at least
-one device sets `hold_digested_at` and gives each hold a fresh `HOLD_DURATION` (14 days), as long as
-the row's evidence reads what it read when the hold was recorded, or a moving PR is suspending it. A
-row that reads `unknown` is delivered but not renewed, because a renewal says the evidence was read.
-So an unanswered hold stays in **Awaiting your decision**, stays in the digest and does not page.
-`hold_digested_at` is on each row in `get_work_backlog`, the REST API and `/supervisor`, and answers
-whether this has run and what it covered.
+The iOS push says only "Decisions are waiting on you", because an APNs alert is readable by Apple and
+a reason stays on the server. Tapping it opens the app, not the Issues view.
 
-**A hold lapses only when that stops.** After `HOLD_DURATION` with no renewal the row is stranded
-again with its original age, and the next pass that can read GitHub pages on the lapse, whatever band
-the sweep last paged for. Only then is the spent hold cleared. Every way the digest can fail ends
-there, including the job crashing or its cron entry going missing, and none of those needs the digest
-to notice. Renewal being the receipt for a delivery is what keeps this from being the permanent
-silence of [#1127](https://github.com/tadasant/zimmer/issues/1127) and
+**A delivery is the only thing that renews a hold.** When a push reaches at least one device, each row
+it listed gets a fresh `HOLD_DURATION` (14 days) and a new `hold_digested_at`, if the sweep has read
+the row in the last 2 days and it reads what it read when the hold was recorded, or a moving PR is
+suspending it. A row that fails any of that is not renewed, stays due, and goes out again on the next
+tick. So an unanswered hold stays in **Awaiting your decision**, stays in the digest and does not
+page. `hold_digested_at` is on each row in `get_work_backlog`, the REST API and `/supervisor`, and
+answers whether this has run and what it covered.
+
+**A hold lapses when that stops.** After `HOLD_DURATION` with no renewal the row is stranded again
+with its original age, and the next pass pages on the lapse, whatever band the sweep last paged for.
+Only then is the spent hold cleared. A digest that crashes, loses its cron entry or reaches nobody
+ends there, and none of those needs the digest to notice. Renewal being the receipt for a delivery is
+what keeps this from being the permanent silence of
+[#1127](https://github.com/tadasant/zimmer/issues/1127) and
 [#1175](https://github.com/tadasant/zimmer/issues/1175).
 
-A failed delivery does not wait for that. A push that reaches no device, which includes no device
-being subscribed or neither path being configured, logs an ERROR on that tick and every daily tick
-after it. That trips the `zimmer_backend_log_errors` rule, so it reaches `#alerts` by a different
-path from the lapse page. The list stays due, so the next tick tries again. One missed digest costs
-nothing, because a hold lasts two cadences.
+The lapse page is the one page a pass that could not read a repo still sends. A row in a repo that
+stays unreadable reads `unknown`, so nothing renews it, and the band alert stays deferred for as long
+as the repo is unreadable. The lapse has to get through anyway. That pass leaves the remembered band
+alone.
+
+A failed delivery does not wait for the lapse. A push that reaches no device, which includes no device
+being subscribed or neither path being configured, logs an ERROR. That trips the
+`zimmer_backend_log_errors` rule, so it reaches `#alerts` by a different path from the lapse page. The
+list stays due, so every tick tries again, and a failure that lasts repeats the ERROR once per
+`CADENCE`, with WARN on the ticks between. A channel that is broken while another got through logs
+WARN. A hold lasts two cadences, so delivery can fail for a week before a hold lapses.
 
 **This reverses a decision.** Holds shipped in [#1225](https://github.com/tadasant/zimmer/issues/1225)
 with the lapse page as the only reminder, and this page rejected a second, slower one: it would add an

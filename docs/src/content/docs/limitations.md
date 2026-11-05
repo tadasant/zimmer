@@ -948,14 +948,18 @@ path, so a digest failure is also logged at ERROR, which trips the Grafana rule 
 ### The decision digest knows a push was accepted, not that it was read
 
 A digest counts as delivered when a push service accepts it for at least one device. Nothing says a
-person read it, and a subscription that has quietly stopped working on the phone can still be
-accepted. Such a hold keeps renewing without paging, and it stays listed on the Issues view the whole
-time. A decision nobody answers is pushed every week indefinitely. That is the design: it stays in
-front of the owner and does not go quiet, but nothing escalates it.
+person saw it. One old browser subscription that still accepts pushes is enough to keep every hold
+renewing with no page, for as long as it keeps accepting them, and renewal has no ceiling. A decision
+nobody answers is pushed every week indefinitely. That is the design: it stays in front of the owner
+and does not go quiet, but nothing escalates it.
 
-A long list can be cut off by the web push payload limit, and the iOS push carries no reasons, so the
-Issues view is the full list. The exception is a hold a moving PR has suspended, which is in the push
-and not on that view until the PR lands.
+An iOS device counts too, and the iOS push carries no reasons and opens the app rather than the Issues
+view. If iOS is the only device reached, the owner is told decisions are waiting but not which, and
+the holds renew anyway. Counting it was deliberate: the alternative pages a phone-only owner every
+week for a reminder that reached them.
+
+The Issues view is the full list up to its limit of 50 rows, with one exception: a hold a moving PR has
+suspended is in the digest and not on that view until the PR lands.
 
 ### A cron manager that stops inside a live worker is not paged on
 

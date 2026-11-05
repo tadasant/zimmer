@@ -175,11 +175,11 @@ class WorkBacklogItem < ApplicationRecord
   # WorkBacklog::DecisionDigest is the only thing that renews one, and only by
   # delivering it: a push that reached a device, with the row's evidence re-read
   # and unchanged. So the person who owes the decision hears about it every
-  # CADENCE for as long as it is owed, and an unanswered hold does not page. Every
-  # way that delivery can stop ends in the lapse page, so the page is the backstop
-  # for a reminder that is not getting through. Until #1453 it WAS the reminder:
-  # one page per hold per fortnight, to a channel that reaches a triage chain whose
-  # only move was to re-hold. Eight such pages answered no decisions.
+  # CADENCE for as long as it is owed, and an unanswered hold does not page. When
+  # delivery stops the hold lapses into the page, so the page is the backstop for a
+  # reminder that is not getting through rather than the reminder itself: as the
+  # reminder it reached a triage chain whose only move was to re-hold, 8 times in
+  # five weeks, and answered no decisions (#1453).
   #
   # A triager cannot extend a hold while it is active, and cannot renew a lapsed
   # one until that page has gone out: WorkBacklog::Hold refuses a row still carrying
@@ -457,11 +457,13 @@ class WorkBacklogItem < ApplicationRecord
     liveness_candidates(grace: grace, now: now).where("held_until > ?", now)
   }
 
-  # The holds a delivery may renew: the row's evidence reads as it did when the
-  # hold was recorded, or a moving PR is suspending the question. `unknown` is out
-  # because a renewal claims the evidence was read. Anything else voids the hold.
-  scope :hold_renewable, -> {
+  # The holds a delivery may renew: the sweep has read the row since `read_since`,
+  # and it read what it read when the hold was recorded, or a moving PR is
+  # suspending the question. `unknown` is out because a renewal claims the evidence
+  # was read. Anything else voids the hold.
+  scope :hold_renewable, ->(read_since:) {
     where("liveness_state = held_liveness_state OR liveness_state = ?", LIVENESS_PR_OPEN)
+      .where(liveness_checked_at: read_since..)
   }
 
   # Has a later row taken this key over? That is what the triage route leaves
