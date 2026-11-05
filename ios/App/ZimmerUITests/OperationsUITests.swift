@@ -25,8 +25,8 @@ final class OperationsUITests: XCTestCase {
         let toggle = app.switches["trigger.toggle.6"]
         XCTAssertTrue(toggle.waitForExistence(timeout: timeout))
         XCTAssertEqual(toggle.value as? String, "0")
-        toggle.tap()
-        XCTAssertTrue(waitForValue(toggle, "1"), "the slack trigger is on")
+        flip(toggle, timeout: timeout)
+        XCTAssertEqual(toggle.value as? String, "1", "the slack trigger is on")
 
         let nightly = app.descendants(matching: .any)["trigger.5"].firstMatch
         let invoke = swipeAction(app, nightly, titled: "Invoke")
@@ -58,11 +58,10 @@ final class OperationsUITests: XCTestCase {
                       "the re-use settings are on the page")
         XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.lastSession"].exists, "the session it last started is a tap away")
 
-        // A labelled switch: tap the switch itself, at the row's trailing edge.
         let toggle = app.switches["trigger.detail.toggle"]
         XCTAssertEqual(toggle.value as? String, "1")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
-        XCTAssertTrue(waitForValue(toggle, "0"), "the trigger is off")
+        flip(toggle, timeout: timeout)
+        XCTAssertEqual(toggle.value as? String, "0", "the trigger is off")
 
         let actions = app.buttons["trigger.detail.actions"]
         actions.tap()
@@ -349,10 +348,5 @@ final class OperationsUITests: XCTestCase {
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
-    private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "value == %@", value), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
     }
 }

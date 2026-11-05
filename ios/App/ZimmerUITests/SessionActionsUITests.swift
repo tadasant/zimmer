@@ -173,7 +173,7 @@ final class SessionActionsUITests: XCTestCase {
         // the session it starts is read back as spot.
         let spot = app.switches["quickrouter.spot"]
         XCTAssertTrue(spot.waitForExistence(timeout: timeout))
-        spot.tap()
+        flip(spot)
         attachScreenshot(app, named: "quick-router-advanced")
         app.buttons["quickrouter.start"].tap()
 
