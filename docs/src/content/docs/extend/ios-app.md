@@ -865,6 +865,9 @@ It cannot press Mute, End or the gear: XCUITest finds them but no tap reaches th
 those is unconfirmed until someone drives it. The fixture runs the gear's own action instead, so what
 is behind the gear is driven for real.
 
+When a tap in the drill changes nothing, the job log says how far it got: `ios/bin/ui-test` prints the
+app's and CarPlay's logs in time order, and keeps CarPlay's as `carplay-host-log.txt` with the run.
+
 Zimmer must still be running after every step, and any crash report fails the job. The rules under
 it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScreenTests`):
 
