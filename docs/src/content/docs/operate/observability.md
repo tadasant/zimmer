@@ -79,6 +79,18 @@ One call's trace, in order:
 {service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" call_id:="<id>" | sort by (seq)
 ```
 
+How calls ended, which is where to start when one went badly. `reason` is `hang_up`, `failed`,
+`app_terminated`, or `abandoned` for a call the app died in, logged on the next launch with the call's
+own `call_id` and a `last_seen_at`. Everything before that moment that had not been sent died with
+the app. `call.gave_up` says why a call was given up on (`connect_timed_out` with the `stage` it
+reached, `socket_silent`, `microphone_stopped`, `microphone_held`). `call.ended` is an `info` event,
+so a Call telemetry level of `warn` drops it, apart from the `abandoned` ones, which are `warn`
+events, and `error` drops those too.
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.ended" _time:7d | stats by (reason) count() calls
+```
+
 Every problem in the last week, which is the question a check-in on whether to turn the logging down asks:
 
 ```logsql

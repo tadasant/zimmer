@@ -23,6 +23,102 @@ final class LiveDiagnosticsTests: XCTestCase {
 
     // MARK: - Telemetry
 
+    private func defaults(_ name: String = #function) -> UserDefaults {
+        let suite = "live-telemetry-\(name)-\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        return UserDefaults(suiteName: suite)!
+    }
+
+    private func wasSent(by log: LiveTelemetry) async -> [LiveTelemetryRecord] {
+        let sent = Box<[LiveTelemetryRecord]>([])
+        log.setSink { batch in
+            sent.update { $0 += batch.events }
+            return LiveTelemetryAnswer(accepted: batch.events.count, telemetry: nil)
+        }
+        await log.send()
+        return sent.current
+    }
+
+    /// `a540cb67` and `90fb7c5f`: the log simply stopped, because the app died with the call open.
+    func testACallTheAppDiedInGetsItsEndOnTheNextLaunch() async throws {
+        let store = defaults()
+        let dead = telemetry(defaults: store)
+        let id = dead.beginCall(conversation: 8)
+        dead.track(LiveEvent(.info, "call.starting"))
+
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let sent = await wasSent(by: next)
+        let end = try XCTUnwrap(sent.first)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(end.name, "call.ended")
+        XCTAssertEqual(end.callID, id, "the end belongs to the call that died, not to a new one")
+        XCTAssertEqual(end.conversationID, 8)
+        XCTAssertEqual(end.level, .warn)
+        XCTAssertEqual(end.fields["reason"], .string("abandoned"))
+
+        let after = telemetry(defaults: store)
+        after.recoverAbandonedCall()
+        let again = await wasSent(by: after)
+        XCTAssertTrue(again.isEmpty, "said once, and answered: not said again")
+    }
+
+    func testALostCallIsNotLoggedWhenTheLevelIsAboveItsEnd() async {
+        for level in ["error", "off"] {
+            let store = defaults(level)
+            _ = telemetry(defaults: store).beginCall(conversation: 8)
+            let next = telemetry(defaults: store)
+            next.adopt(level)
+            next.recoverAbandonedCall()
+            let sent = await wasSent(by: next)
+            XCTAssertTrue(sent.isEmpty, level)
+            XCTAssertNil(store.data(forKey: "live.telemetry.open_call"), "and it is not carried forward")
+        }
+    }
+
+    func testACallThatEndedLeavesNothingToRecover() async {
+        let store = defaults()
+        let log = telemetry(defaults: store)
+        _ = log.beginCall(conversation: 8)
+        log.track(LiveEvent(.info, "call.ended"))
+        log.endCall()
+        _ = await wasSent(by: log)
+
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let sent = await wasSent(by: next)
+        XCTAssertTrue(sent.isEmpty)
+    }
+
+    func testAnEndThatNeverGotThroughIsSentByTheNextLaunch() async {
+        struct Offline: Error {}
+        let store = defaults()
+        let log = telemetry(defaults: store, sink: { _ in throw Offline() })
+        let id = log.beginCall(conversation: 8)
+        log.track(.callEnded(reason: "failed", duration: 12, summary: [:]))
+        log.endCall()
+        await log.send()
+
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let sent = await wasSent(by: next)
+        XCTAssertEqual(sent.map(\.name), ["call.ended"])
+        XCTAssertEqual(sent.first?.callID, id)
+        XCTAssertEqual(sent.first?.fields["reason"], .string("failed"), "the real reason, not abandoned")
+    }
+
+    func testTheNextCallEndsOneTheAppLostEvenBeforeAnyLaunchHook() async {
+        let store = defaults()
+        let dead = telemetry(defaults: store)
+        let lost = dead.beginCall(conversation: 8)
+
+        let next = telemetry(defaults: store)
+        let id = next.beginCall(conversation: 9)
+        let sent = await wasSent(by: next)
+        XCTAssertEqual(sent.map(\.callID), [lost])
+        XCTAssertNotEqual(id, lost)
+    }
+
     func testEventsBelowTheThresholdCostAComparisonAndNeverBuildTheirFields() {
         let log = telemetry()
         log.adopt("info")

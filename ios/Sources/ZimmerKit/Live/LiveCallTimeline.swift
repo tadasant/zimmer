@@ -162,6 +162,15 @@ public extension LiveEvent {
         LiveEvent(.info, "listening.changed") { ["from": .text(from), "to": .text(to)] }
     }
 
+    /// `LiveCallHealth` gave up on the call. How it ended follows in `call.failed`.
+    static func callGaveUp(_ reason: LiveCallHealth.GiveUp, stage: LiveCallHealth.Stage, sinceStart: TimeInterval?) -> LiveEvent {
+        LiveEvent(.warn, "call.gave_up") {
+            var fields: [String: JSONValue] = ["reason": .string(reason.reason), "since_start_ms": .ms(sinceStart)]
+            if case .connectTimedOut = reason { fields["stage"] = .string(stage.rawValue) }
+            return fields
+        }
+    }
+
     static func callEnded(reason: String, duration: TimeInterval?, summary: [String: JSONValue]) -> LiveEvent {
         LiveEvent(.info, "call.ended") { summary.merging(["reason": .string(reason), "duration_ms": .ms(duration)]) { $1 } }
     }
@@ -199,6 +208,14 @@ public extension LiveEvent {
         LiveEvent(.error, "socket.closed") { ["message": .string(reason)] }
     }
 
+    static func socketSendFailed(_ reason: String) -> LiveEvent {
+        LiveEvent(.error, "socket.send_failed") { ["message": .string(reason)] }
+    }
+
+    static func socketPing(ok: Bool, ms: TimeInterval) -> LiveEvent {
+        LiveEvent(ok ? .debug : .warn, "socket.ping") { ["ok": .bool(ok), "duration_ms": .ms(ms)] }
+    }
+
     // The microphone
 
     static func micStalled(afterMs: Int) -> LiveEvent {
@@ -207,6 +224,11 @@ public extension LiveEvent {
 
     static func micResumed(stalledMs: Int, silenceSentMs: Int) -> LiveEvent {
         LiveEvent(.warn, "mic.resumed") { ["stalled_ms": .int(stalledMs), "silence_sent_ms": .int(silenceSentMs)] }
+    }
+
+    /// The microphone has been out long enough for the person to be told, and back again.
+    static func micLost(_ lost: Bool) -> LiveEvent {
+        LiveEvent(.warn, lost ? "mic.lost" : "mic.back")
     }
 
     // Cues

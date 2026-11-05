@@ -3,6 +3,14 @@ import XCTest
 
 /// The car's call screen: its five states, and the conductor's opening line.
 final class LiveCallScreenTests: XCTestCase {
+    func testALostMicrophoneReadsAsConnectingWhateverTheCallIsDoing() {
+        for state in [LiveVoiceState.listening, .speaking, .working] {
+            XCTAssertEqual(LiveCallScreen.identifier(for: state, muted: false, microphoneLost: true), "connecting")
+            XCTAssertEqual(LiveCallScreen.identifier(for: state, muted: true, microphoneLost: true), "connecting", "Muted would say the driver chose this")
+        }
+        XCTAssertEqual(LiveCallScreen.identifier(for: .listening, muted: false, microphoneLost: false), "listening")
+    }
+
     /// The regression test for the call screen CarPlay could not show: ten states, a muted twin
     /// of each, of which CarPlay keeps five — so *speaking* and *working* were never there to
     /// activate.
