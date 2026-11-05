@@ -641,11 +641,12 @@ jobs:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
     runs-on: macos-latest
-    # About 12 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
-    # run. The headroom is for a pull request that touches several UI test files, whose
-    # classes the smoke run adds at roughly 35 seconds a test, and for a loaded runner. The
-    # full UI suite, five shards of up to 45 minutes each, is `ios-ui-tests.yml`.
-    timeout-minutes: 45
+    # About 25 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
+    # run, 19 to 24 of them before the first UI test on a hosted runner. The headroom is for a
+    # pull request that touches several UI test files, whose classes the smoke run adds whole:
+    # six of them took 55 minutes and were cut off twice at 45, each time reading as cancelled
+    # with no test failed. So this is `ios-ui-tests.yml`'s budget, which runs the same classes.
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4
