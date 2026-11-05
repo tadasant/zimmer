@@ -18,7 +18,7 @@ module Sessions
     # @param session [Session] saved, holding the new rank
     # @param previous [Integer] the rank stored before the save
     # @param label [String] from Sessions::ActorLabel
-    # @return [SessionLog, nil] the row, or nil when the rank did not move
+    # @return [Log, nil] the row, or nil when the rank did not move
     def write(session, previous:, label:)
       return if previous == session.precedence
 
