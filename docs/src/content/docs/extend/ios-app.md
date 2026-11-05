@@ -918,6 +918,12 @@ run does not cover is therefore first run on `main`, where a red shard alerts li
 To get the whole run and the screenshots for a branch before it merges, dispatch it:
 `gh workflow run ios-ui-tests.yml --ref <branch>`.
 
+A UI test never asserts on a toast's own element. A toast is on screen for 2.5 seconds, an action's
+`tap()` returns only once the app's animations settle, and a predicate is first read a second after
+that, so on a loaded simulator the toast can be gone before the test looks. The fixture keeps every
+toast in `ToastLog`, as the accessibility value of a `toast.log` element, and `waitForToast` reads it
+from there. Against a real server nothing is kept.
+
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
 runner is GitHub-hosted, which costs nothing on a public repository. It is the one exception to the

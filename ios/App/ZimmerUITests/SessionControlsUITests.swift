@@ -47,8 +47,7 @@ final class SessionControlsUITests: XCTestCase {
         pageCustom.tap()
         XCTAssertTrue(app.buttons["snooze.custom.save"].waitForExistence(timeout: timeout))
         app.buttons["snooze.custom.save"].tap()
-        // By its words: an earlier toast can still be on screen when this one arrives.
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "Snoozed until"))
+        XCTAssertTrue(waitForToast(app, saying: "Snoozed until", on: "followup.notice"), "the page's own toast, not the row's")
     }
 
     func test_the_heartbeat_is_turned_on_and_its_interval_chosen() throws {
@@ -60,7 +59,7 @@ final class SessionControlsUITests: XCTestCase {
 
         openMenu(app, "Heartbeat: off")
         tapMenuItem(app, "Turn On")
-        XCTAssertTrue(app.descendants(matching: .any)["followup.notice"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForToast(app))
 
         // "Beat every", from the web popout's intervals.
         openMenu(app, "Heartbeat: every 1 minute")
@@ -68,8 +67,7 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertTrue(beatEvery.waitForExistence(timeout: timeout))
         beatEvery.tap()
         tapMenuItem(app, "5 minutes")
-        let notice = app.descendants(matching: .any)["followup.notice"]
-        XCTAssertTrue(waitForLabelContaining(notice, "Heartbeat every 5 minutes"))
+        XCTAssertTrue(waitForToast(app, saying: "Heartbeat every 5 minutes"))
 
         app.buttons["detail.actions"].tap()
         XCTAssertTrue(app.buttons["Heartbeat: every 5 minutes"].firstMatch.waitForExistence(timeout: timeout), "the menu says the interval in force")
@@ -81,6 +79,8 @@ final class SessionControlsUITests: XCTestCase {
 
         let postgres = row(app, 1035)
         XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
+        XCTAssertTrue(app.staticTexts["toast.log"].exists, "the fixture keeps what the toasts say")
+        XCTAssertFalse(waitForToast(app, timeout: 1), "and no toast has spoken yet")
         openRowMenu(app, postgres, "Rename")
         let field = app.alerts.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
@@ -93,8 +93,7 @@ final class SessionControlsUITests: XCTestCase {
         // Refresh, as the card's button beside its status pill: the transcript is read again.
         let merge = row(app, 1038)
         openRowMenu(app, merge, "Refresh Transcript")
-        // By its words: the "Renamed" toast can still be on screen.
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Transcript refreshed"))
+        XCTAssertTrue(waitForToast(app, saying: "Transcript refreshed"))
 
         // A running session is live already, so the card offers no refresh.
         let running = row(app, 1042)
