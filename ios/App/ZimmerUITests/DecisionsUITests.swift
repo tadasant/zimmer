@@ -22,7 +22,7 @@ final class DecisionsUITests: XCTestCase {
         let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForToast(app, saying: "Merge authorized"))
+        XCTAssertTrue(waitForToast(app, saying: "Merge authorized", on: "toast"))
     }
 
     func test_merge_from_the_session_menu() throws {
@@ -36,7 +36,7 @@ final class DecisionsUITests: XCTestCase {
         let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForToast(app, saying: "Merge authorized"))
+        XCTAssertTrue(waitForToast(app, saying: "Merge authorized", on: "followup.notice"))
     }
 
     func test_reprioritize_from_the_view_menu_names_the_session_that_took_it() throws {
