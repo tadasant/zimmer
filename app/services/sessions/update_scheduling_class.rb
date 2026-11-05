@@ -31,7 +31,8 @@ module Sessions
   # The class and the rank go in ONE `update!`, so `saved_change_to_scheduling_class?`
   # (which the Ranked view's membership broadcast keys on) sees both, and the
   # write and its log rows commit together. The "was" values are read from the
-  # stored row, so a retry after a failed write still logs the move.
+  # stored row, so a retry after a failed write still logs the move. The rank's
+  # row is Sessions::PrecedenceLog's, the same one Sessions::UpdatePrecedence writes.
   #
   # == The start
   #
@@ -69,8 +70,7 @@ module Sessions
     NOT_GIVEN = Object.new.freeze
     private_constant :NOT_GIVEN
 
-    # Named in the log rows and in StartNow's "Started now by …" line.
-    ACTOR_LABELS = { web: "", mcp: " via MCP", rest: " via the REST API" }.freeze
+    # Named in StartNow's "Started now by …" line.
     START_ACTORS = {
       web: "a user promoting it in the web UI",
       mcp: "an agent promoting it through MCP",
@@ -100,6 +100,7 @@ module Sessions
     # @raise [UnknownSchedulingClass] on a class that is not one of SessionGenesis::CLASSES
     # @raise [ArgumentError] on both `precedence:` and `place:`, or an unknown place
     # @raise [ActiveRecord::RecordInvalid] when the session refuses the rank
+    # @raise [KeyError] on an actor Sessions::ActorLabel does not know
     def self.call(session:, scheduling_class:, actor:, precedence: NOT_GIVEN, place: nil, start: true)
       new(session: session, scheduling_class: scheduling_class, actor: actor,
         precedence: precedence, place: place).call(start: start)
@@ -131,6 +132,7 @@ module Sessions
         raise UnknownSchedulingClass, scheduling_class
       end
       raise ArgumentError, SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE if place && precedence != NOT_GIVEN
+      label = Sessions::ActorLabel.for(actor)
 
       previous_class = nil
       previous_precedence = nil
@@ -146,7 +148,8 @@ module Sessions
         end
         session.update!(attrs)
 
-        log_changes(previous_class, previous_precedence)
+        log_class_change(previous_class, label)
+        Sessions::PrecedenceLog.write(session, previous: previous_precedence, label: label)
       end
 
       result = Result.new(session: session, previous_class: previous_class,
@@ -165,20 +168,13 @@ module Sessions
         SessionGenesis.effective_class(session.genesis_key)
     end
 
-    def log_changes(previous_class, previous_precedence)
-      label = ACTOR_LABELS.fetch(actor)
-      if previous_class != session.priority_class
-        session.logs.create!(
-          content: "Scheduling class set#{label} to #{session.priority_class} (was #{previous_class})",
-          level: "info"
-        )
-      end
-      if previous_precedence != session.precedence
-        session.logs.create!(
-          content: "Precedence set#{label} to #{session.precedence} (was #{previous_precedence})",
-          level: "info"
-        )
-      end
+    def log_class_change(previous_class, label)
+      return if previous_class == session.priority_class
+
+      session.logs.create!(
+        content: "Scheduling class set#{label} to #{session.priority_class} (was #{previous_class})",
+        level: "info"
+      )
     end
   end
 end

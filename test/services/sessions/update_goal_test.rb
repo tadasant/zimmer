@@ -115,6 +115,18 @@ class Sessions::UpdateGoalTest < ActiveSupport::TestCase
 
   # --- the refusals -----------------------------------------------------------
 
+  test "an unknown actor is refused before anything is written" do
+    session = session_with_goal("Old goal")
+
+    assert_no_difference -> { Log.count } do
+      assert_raises(KeyError) do
+        Sessions::UpdateGoal.call(session: session, goal: "New goal", actor: :api)
+      end
+    end
+
+    assert_equal "Old goal", session.reload.goal
+  end
+
   test "an over-length goal is refused, not cut short, and nothing is written" do
     session = session_with_goal("Old goal")
 

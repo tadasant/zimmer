@@ -94,4 +94,63 @@ class Sessions::UpdatePrecedenceTest < ActiveSupport::TestCase
     assert_equal "ridden-along", @session.slug
     assert_equal "Precedence set via the REST API to 300 (was 10)", @session.logs.order(:created_at).last.content
   end
+
+  test "each actor's log row reads the way its door wrote it" do
+    { web: "Precedence set to 21 (was 10)",
+      mcp: "Precedence set via MCP to 21 (was 10)",
+      rest: "Precedence set via the REST API to 21 (was 10)" }.each do |actor, line|
+      @session.update!(precedence: 10)
+      @session.logs.delete_all
+
+      Sessions::UpdatePrecedence.call(session: @session, precedence: 21, actor: actor)
+
+      assert_equal [ line ], @session.logs.pluck(:content), "actor #{actor}"
+    end
+  end
+
+  test "a failed log write rolls back the rank it describes" do
+    @session.logs.stub(:create!, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :web)
+      end
+    end
+
+    assert_equal 10, Session.find(@session.id).precedence
+  end
+
+  test "a failed log write rolls back a save the caller owns, with the columns riding on it" do
+    @session.update!(title: "Original")
+    @session.title = "Renamed"
+
+    @session.logs.stub(:create!, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :rest) { @session.save! }
+      end
+    end
+
+    stored = Session.find(@session.id)
+    assert_equal 10, stored.precedence
+    assert_equal "Original", stored.title
+  end
+
+  test "an unknown actor is refused before anything is written" do
+    assert_no_difference -> { Log.count } do
+      assert_raises(KeyError) do
+        Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :api)
+      end
+    end
+
+    assert_equal 10, @session.precedence, "the rank is not even assigned"
+    assert_equal 10, @session.reload.precedence
+  end
+
+  test "an unknown actor never reaches the save a caller owns" do
+    saved = false
+
+    assert_raises(KeyError) do
+      Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :api) { saved = true }
+    end
+
+    assert_not saved
+  end
 end

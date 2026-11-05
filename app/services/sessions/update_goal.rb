@@ -59,9 +59,6 @@ module Sessions
       end
     end
 
-    # Named in the log row.
-    ACTOR_LABELS = { web: "", mcp: " via MCP", rest: " via the REST API" }.freeze
-
     # `previous_goal` is the stored goal, nil when there was none.
     Result = Data.define(:session, :previous_goal) do
       def changed?
@@ -90,7 +87,7 @@ module Sessions
     attr_reader :session, :goal, :actor
 
     def call
-      label = ACTOR_LABELS.fetch(actor)
+      label = Sessions::ActorLabel.for(actor)
       raise TooLong if Sessions::FollowUpGoal.too_long?(goal)
 
       previous_goal = nil
