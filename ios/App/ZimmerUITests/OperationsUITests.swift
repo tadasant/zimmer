@@ -15,8 +15,7 @@ final class OperationsUITests: XCTestCase {
         app.tabBars.buttons["Inbox"].tap()
         let notification = app.buttons["inbox.91"]
         XCTAssertTrue(notification.waitForExistence(timeout: timeout))
-        notification.tap()
-        XCTAssertTrue(app.navigationBars["#1038"].waitForExistence(timeout: timeout), "the session it is about opens")
+        XCTAssertTrue(tapToOpen(app, notification, app.navigationBars["#1038"]), "the session it is about opens")
         XCTAssertTrue(app.tabBars.buttons["Sessions"].isSelected)
     }
 
@@ -54,8 +53,7 @@ final class OperationsUITests: XCTestCase {
         app.tabBars.buttons["Triggers"].tap()
         let open = app.buttons["trigger.open.5"]
         XCTAssertTrue(open.waitForExistence(timeout: timeout))
-        open.tap()
-        XCTAssertTrue(app.navigationBars["Nightly dependency sweep"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(tapToOpen(app, open, app.navigationBars["Nightly dependency sweep"]), "the trigger's page opens")
         XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.enqueue"].waitForExistence(timeout: timeout),
                       "the re-use settings are on the page")
         XCTAssertTrue(app.descendants(matching: .any)["trigger.detail.lastSession"].exists, "the session it last started is a tap away")
@@ -321,6 +319,26 @@ final class OperationsUITests: XCTestCase {
             if action.waitForExistence(timeout: 5) { break }
         }
         return action
+    }
+
+    /// Tap `row` until the page it opens is there, three tries at most, and say whether it came.
+    /// One tap is not always enough: on a main-branch run XCUITest delivered a tap to a hittable
+    /// point on the nightly trigger, the app went idle at once, and thirty seconds later the same
+    /// row was still on the same list, no frame of the recording having changed. A row that has
+    /// gone is not tapped again, and the last try waits the whole timeout, since its page may be
+    /// on the way; a second tap on a row still there opens the same page, not another. Each tap
+    /// goes to where a fresh snapshot found the row: a push can start seconds after its tap on a
+    /// loaded simulator, and `row.tap()` on a row gone by then is a failure, where a miss here is
+    /// not. A push that lands between the snapshot and a retry takes that tap on the page, at the
+    /// point the row was, so a row this opens must not have a control of its page under it.
+    private func tapToOpen(_ app: XCUIApplication, _ row: XCUIElement, _ page: XCUIElement) -> Bool {
+        for attempt in 0..<3 {
+            if let frame = try? row.snapshot().frame, !frame.isEmpty {
+                app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: frame.midY)).tap()
+            }
+            if page.waitForExistence(timeout: attempt < 2 ? 5 : timeout) { return true }
+        }
+        return false
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
