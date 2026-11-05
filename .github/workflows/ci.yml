@@ -642,10 +642,11 @@ jobs:
     needs: ios-changes
     runs-on: macos-latest
     # About 25 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
-    # run, 19 to 24 of them before the first UI test on a hosted runner. The headroom is for a
-    # pull request that touches several UI test files, whose classes the smoke run adds whole:
-    # six of them took 55 minutes and were cut off twice at 45, each time reading as cancelled
-    # with no test failed. So this is `ios-ui-tests.yml`'s budget, which runs the same classes.
+    # run, most of them before the first UI test on a hosted runner. The headroom is for a pull
+    # request that touches several UI test files, whose classes the smoke run adds whole: six of
+    # them did not fit in 45 minutes, twice, with no test failed. So this is the budget of
+    # `ios-ui-tests.yml`, which runs the same classes. A job cut off here fails `all-checks-pass`,
+    # but the run concludes `cancelled`, so on `main` it pages nobody (see Known limitations).
     timeout-minutes: 75
 
     steps:
