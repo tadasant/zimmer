@@ -34,6 +34,9 @@ final class CarPlayTests: XCTestCase {
             guard let onScreen else { return nil }
             return proxies ? Template(onScreen.name + " (proxy)") : onScreen
         }
+        /// What is pushed above the root.
+        private var stack: [Template] = []
+        var pushedCount: Int { stack.count }
         private(set) var violations: [String] = []
         private(set) var history: [String] = []
         private var animating = false
@@ -53,6 +56,27 @@ final class CarPlayTests: XCTestCase {
             let name = onScreen?.name ?? ""
             try await animate { self.onScreen = nil }
             history.append("dismiss \(name)")
+        }
+
+        /// A pushed template sits under a modal: CarPlay takes the push and the driver sees
+        /// nothing, so a push with a modal up is a violation here.
+        func push(_ template: Template, animated: Bool) async throws {
+            try refuseIf(animating, "push \(template.name) during an animation")
+            try refuseIf(onScreen != nil, "push \(template.name) under \(onScreen?.name ?? "")")
+            try await animate { self.stack.append(template) }
+            history.append("push \(template.name)")
+        }
+
+        func popToRoot(animated: Bool) async throws {
+            try refuseIf(animating, "pop during an animation")
+            try refuseIf(stack.isEmpty, "pop with nothing pushed")
+            try await animate { self.stack.removeAll() }
+            history.append("pop")
+        }
+
+        /// CarPlay's own Back, which the app is not asked about.
+        func driverWentBack() {
+            stack.removeAll()
         }
 
         private func animate(_ change: () -> Void) async throws {
@@ -209,6 +233,83 @@ final class CarPlayTests: XCTestCase {
         XCTAssertTrue(again, "the next change carries on")
     }
 
+    /// The gear: the call screen is a modal and a list cannot be presented, so the panel is
+    /// pushed, with the call screen taken down first.
+    func testThePanelReplacesTheCallScreenOneChangeAtATime() async {
+        let host = StrictHost()
+        host.proxies = true
+        let navigator = CarPlayNavigator(host: host)
+        let call = Template("call")
+        let panel = Template("panel")
+        await navigator.present(call)
+
+        // Ordered as the scene orders them, none waiting on the one before.
+        let down = Task { await navigator.dismiss(call) }
+        let up = Task { await navigator.push(panel) }
+        await down.value
+        let shown = await up.value
+        XCTAssertTrue(shown)
+        XCTAssertNil(host.presentedTemplate, "nothing is left over the panel")
+        XCTAssertEqual(host.pushedCount, 1)
+
+        let again = Template("call again")
+        let off = Task { await navigator.pop(panel) }
+        let back = Task { await navigator.present(again) }
+        await off.value
+        _ = await back.value
+        await navigator.settle()
+        XCTAssertEqual(host.pushedCount, 0)
+        XCTAssertNotNil(host.presentedTemplate, "and the call comes back over the root")
+        XCTAssertEqual(host.violations, [])
+        XCTAssertEqual(host.history, ["present call", "dismiss call", "push panel", "pop", "present call again"])
+    }
+
+    func testPushingGivesWayToWhateverModalIsUp() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        await navigator.present(Template("call"))
+        let panel = Template("panel")
+        await navigator.push(panel)
+        await navigator.push(panel)
+        XCTAssertEqual(host.history, ["present call", "dismiss call", "push panel"], "pushing the same panel twice is once")
+        XCTAssertEqual(host.violations, [])
+    }
+
+    func testThePanelTheDriverLeftWithBackIsNotPoppedAgain() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        let panel = Template("panel")
+        await navigator.push(panel)
+        XCTAssertFalse(navigator.isAtRoot)
+        host.driverWentBack()
+        XCTAssertTrue(navigator.isAtRoot, "this is how the scene hears the driver left")
+        await navigator.pop(panel)
+        XCTAssertEqual(host.violations, [], "no pop with nothing pushed")
+    }
+
+    func testAPopTakesOffOnlyItsOwnTemplate() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        await navigator.push(Template("panel"))
+        await navigator.pop(Template("another"))
+        XCTAssertEqual(host.pushedCount, 1)
+    }
+
+    func testARefusedPushIsReportedAndTheCarCarriesOn() async {
+        let host = StrictHost()
+        let navigator = CarPlayNavigator(host: host)
+        var errors: [String] = []
+        navigator.onError = { errors.append($0) }
+        host.refuseNext = true
+        let panel = Template("panel")
+        let shown = await navigator.push(panel)
+        XCTAssertFalse(shown, "the scene brings the call straight back")
+        XCTAssertEqual(errors.count, 1, errors.joined())
+        await navigator.pop(panel)
+        let call = await navigator.present(Template("call"))
+        XCTAssertTrue(call)
+    }
+
     func testANavigatorWhoseCarHasGoneDoesNothing() async {
         var host: StrictHost? = StrictHost()
         let navigator = CarPlayNavigator(host: host!)
@@ -355,11 +456,13 @@ final class CarPlayTests: XCTestCase {
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
     }
 
-    /// Radically simple: the car is one button and one call screen. A list, a tab bar, a card,
-    /// an alert, an action sheet or a pushed screen is one more template CarPlay can refuse a
-    /// change to, and the car had all of them when it crashed.
-    func testTheCarIsOneButtonAndOneCallScreen() {
-        let allowed: Set = ["CPTemplate", "CPGridTemplate", "CPVoiceControlTemplate"]
+    /// Radically simple: the car is one button, one call screen and one panel behind the call
+    /// screen's gear. A tab bar, a card, an alert, an action sheet or any other list is one more
+    /// template CarPlay can refuse a change to, and the car had all of them when it crashed. The
+    /// panel is the one exception, made on purpose: a call that cannot hear the driver cannot be
+    /// asked to fix that (`ios/CARPLAY_DESIGN.md`).
+    func testTheCarIsOneButtonOneCallScreenAndOnePanel() {
+        let allowed: Set = ["CPTemplate", "CPGridTemplate", "CPVoiceControlTemplate", "CPListTemplate"]
         let template = try! NSRegularExpression(pattern: #"\bCP[A-Za-z]*Template\b"#)
         var seen: Set<String> = []
         for (name, text) in Self.carPlaySources {
@@ -368,12 +471,37 @@ final class CarPlayTests: XCTestCase {
                     guard let range = Range(match.range, in: line) else { continue }
                     let used = String(line[range])
                     seen.insert(used)
-                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a Talk button (CPGridTemplate) and the call screen (CPVoiceControlTemplate)\n\(line)")
+                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a Talk button (CPGridTemplate), the call screen (CPVoiceControlTemplate) and the voice settings (CPListTemplate)\n\(line)")
+                    if used == "CPListTemplate" {
+                        XCTAssertEqual(name, "CarPlayVoiceSettings.swift", "\(name):\(number): the one list in the car is the voice settings\n\(line)")
+                    }
                 }
-                XCTAssertFalse(line.contains("pushTemplate"), "\(name):\(number): nothing is pushed in the car\n\(line)")
+                if line.contains("navigator.push(") || line.contains("pushTemplate") {
+                    XCTAssertTrue(line.contains("panel.template") || name == "CarPlayInterface.swift", "\(name):\(number): the only thing pushed in the car is the voice settings\n\(line)")
+                }
             }
         }
-        XCTAssertTrue(seen.isSuperset(of: ["CPGridTemplate", "CPVoiceControlTemplate"]), "the guard sees the two templates the car does use: \(seen)")
+        XCTAssertTrue(seen.isSuperset(of: ["CPGridTemplate", "CPVoiceControlTemplate", "CPListTemplate"]), "the guard sees the three templates the car does use: \(seen)")
+    }
+
+    /// The microphone is open only with the voice control template on screen, so the call ends
+    /// before its screen goes and before the panel goes up.
+    func testTheGearEndsTheCallBeforeThePanelGoesUp() async throws {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        let gear = try XCTUnwrap(live.range(of: "private func openSettings()"))
+        let body = live[gear.upperBound...]
+        let hangUp = try XCTUnwrap(body.range(of: "call.hangUp()"))
+        let down = try XCTUnwrap(body.range(of: "dismiss()"))
+        let up = try XCTUnwrap(body.range(of: "navigator.push(panel.template)"))
+        XCTAssertLessThan(hangUp.lowerBound, down.lowerBound)
+        XCTAssertLessThan(down.lowerBound, up.lowerBound)
+    }
+
+    /// The gear is the template's, set once, so the five states stay what they are.
+    func testTheGearIsOnTheCallScreenFromTheDayItIsBuilt() {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        XCTAssertTrue(live.contains("screen.leadingNavigationBarButtons"), "the gear is the call screen's leading bar button")
+        XCTAssertEqual(live.components(separatedBy: "NavigationBarButtons =").count - 1, 1, "and it is the only time a bar button is set")
     }
 
     /// `@Published` publishes in `willSet`: a sink that reads the call synchronously reads the

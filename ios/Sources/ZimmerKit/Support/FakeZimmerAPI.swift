@@ -92,6 +92,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public private(set) var signedOutEverywhere = false
         /// Live Mode: see FakeZimmerAPI+Live.swift.
     var liveState = FakeLiveState.sample()
+    /// How long the next client secret takes to mint.
+    var liveSecretHold: Duration?
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
@@ -99,11 +101,16 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// `degraded`: queue recovery mode is on and network egress is degraded, so the two
     /// site-wide banners show.
     /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
+    /// `liveSettings`: Live settings already away from their default, as a voice call leaves
+    /// them. `liveSecretHold`: the first call stays on Connecting… this long.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
                 refuses: Set<String> = [], writeDelay: Duration? = nil,
+                liveSettings: [String: JSONValue] = [:], liveSecretHold: Duration? = nil,
                 web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
+        self.liveState.settingOverrides = liveSettings
+        self.liveSecretHold = liveSecretHold
         self.trashedElsewhere = trashedElsewhere
         self.refuses = refuses
         self.writeDelay = writeDelay

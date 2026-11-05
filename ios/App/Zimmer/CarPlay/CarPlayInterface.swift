@@ -26,6 +26,17 @@ extension CPInterfaceController: CarPlayModalHost {
         guard try await dismissTemplate(animated: animated) else { throw Refused(what: "dismiss") }
     }
 
+    /// Everything on the stack is here but the root; a presented modal never is.
+    public var pushedCount: Int { max(templates.count - 1, 0) }
+
+    public func push(_ template: CPTemplate, animated: Bool) async throws {
+        guard try await pushTemplate(template, animated: animated) else { throw Refused(what: "push \(type(of: template))") }
+    }
+
+    public func popToRoot(animated: Bool) async throws {
+        guard try await popToRootTemplate(animated: animated) else { throw Refused(what: "pop to the root") }
+    }
+
     /// The scene's root, set once on connect.
     func setRoot(_ template: CPTemplate) async throws {
         guard try await setRootTemplate(template, animated: false) else { throw Refused(what: "set the root") }

@@ -26,7 +26,16 @@ import os
 /// - the call's state as its picture and title — Connecting…, Listening, Speaking, Working on
 ///   it…, or Muted while the microphone is off: the five states CarPlay keeps
 ///   (`LiveCallScreen`);
-/// - Mute and End, the two action buttons iOS 26.4 allows.
+/// - Mute and End, the two action buttons iOS 26.4 allows;
+/// - a gear, the leading bar button, to the voice settings.
+///
+/// **The gear ends the call, and closing the panel brings it back.** CarPlay allows recording only
+/// with the voice control template on screen, and a list cannot be presented over it: it is
+/// pushed, and the call screen has to come down first. So the call hangs up, which closes the
+/// microphone and releases the audio session, and when the panel closes the same conversation
+/// is called again, muted if it was muted. That call is minted from the row the panel wrote, so
+/// every change takes effect then, the ones OpenAI fixes for a call's life included. Listening is
+/// the exception: a car call is built as Always, so it reaches only calls started on the phone.
 ///
 /// The template is built once per call, put up when the call starts and taken down when it
 /// ends. It is never rebuilt, and Mute is a state like the others: every template change is one
@@ -43,6 +52,18 @@ final class CarPlayLive {
     private var watchers: Set<AnyCancellable> = []
     private(set) var retry = LiveRetry()
     private var retryWait: Task<Void, Never>?
+    /// The voice settings, from the gear until the panel closes.
+    private var settings: CarPlayVoiceSettings?
+    /// The panel is on the stack, so CarPlay going back to the root means it was closed.
+    private var settingsOnStack = false
+    #if DEBUG
+    private var drillPressedTheGear = false
+    #endif
+    /// The panel is closing, waiting for the driver's last write.
+    private var settingsClosing = false
+    /// The call the gear ended, to bring back. Kept until OpenAI has answered on the new call,
+    /// because a retry is still bringing back that conversation.
+    private var comeback: CarCallComeback?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay-live")
     private let telemetry = LiveTelemetry.shared
 
@@ -60,7 +81,7 @@ final class CarPlayLive {
             MainActor.assumeIsolated { self?.stateChanged(state) }
         }.store(in: &watchers)
         call.$muted.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.activate() }
+            MainActor.assumeIsolated { self?.muteChanged() }
         }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
         call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
@@ -80,6 +101,7 @@ final class CarPlayLive {
     /// Talk to Zimmer: the open conversation with voice on, or a new one.
     func start() {
         telemetry.track(.carPlay("talk_tapped", ["call_active": .bool(call.isActive)]))
+        comeback?.talkTapped()
         retryWait?.cancel()
         retry.asked()
         attempt()
@@ -88,9 +110,19 @@ final class CarPlayLive {
 
     private func attempt() {
         Task {
+            // CarPlay's Back can leave the panel with a write still out: no call reads the row
+            // ahead of it, Talk to Zimmer's included.
+            await settings?.settled()
+            // That can take as long as the write does, and the car may have gone or the driver
+            // ended it meanwhile: a call started now would have no screen to be seen on.
+            guard navigator != nil, retry.wanted else { return }
             if call.isActive, let conversation = call.conversationID {
                 await call.start(conversation, from: .carplay)
                 present()
+                return
+            }
+            if let conversation = comeback?.conversation {
+                await call.start(conversation, startsMuted: comeback?.muted == true, from: .carplay)
                 return
             }
             do {
@@ -101,7 +133,7 @@ final class CarPlayLive {
                 } else {
                     id = try await api.startLiveConversation(.voice).id
                 }
-                await call.start(id, from: .carplay)
+                await call.start(id, startsMuted: comeback?.muted == true, from: .carplay)
             } catch {
                 failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
             }
@@ -111,20 +143,110 @@ final class CarPlayLive {
     /// The driver ended the call: nothing is retried after it.
     func hangUp() {
         telemetry.track(.carPlay("end_tapped"))
+        comeback = nil
         retryWait?.cancel()
         retry.stopped()
         call.hangUp()
         onChange?()
     }
 
-    /// The scene is going away: the call carries on on the phone; only the screen is dropped.
+    /// The scene is going away: the call carries on on the phone; only the screen is dropped. A
+    /// call the gear ended stays ended: there is no car left to bring it back to.
     func disconnect() {
         if call.isActive { Task { await call.carryOn(on: .ios) } }
+        settings = nil
+        settingsOnStack = false
+        settingsClosing = false
+        comeback = nil
         retryWait?.cancel()
         retry.stopped()
         watchers.removeAll()
         navigator = nil
         template = nil
+    }
+
+    // MARK: - The voice settings
+
+    /// The gear: end the call, take its screen down, and put the panel up.
+    private func openSettings() {
+        guard let navigator, settings == nil,
+              let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted) else { return }
+        telemetry.track(.carPlay("settings_opened", ["state": .string(String(describing: call.state))]))
+        comeback = ended
+        retryWait?.cancel()
+        retry.stopped()
+        call.hangUp()
+        dismiss()
+        let panel = CarPlayVoiceSettings(api: AppEnvironment.shared.connection.api.live(from: .carplay))
+        panel.onClose = { [weak self] in self?.closeSettings() }
+        panel.onWritten = { [telemetry] what in telemetry.track(.carPlay("settings_changed", ["what": .string(what)])) }
+        settings = panel
+        onChange?()
+        Task {
+            let shown = await navigator.push(panel.template)
+            guard self.settings === panel else { return }
+            if shown {
+                self.settingsOnStack = true
+                // CarPlay's Back may have beaten this line.
+                self.settingsMayHaveClosed()
+                await panel.load()
+            } else {
+                // No panel: the driver has lost the call for nothing, so it comes straight back.
+                self.telemetry.track(.carPlay("settings_refused", level: .warn))
+                self.settings = nil
+                self.settingsClosing = false
+                self.callBack()
+            }
+        }
+    }
+
+    /// The panel closed, by its own Back to the call or by CarPlay's. It waits for the driver's
+    /// last write, saying Saving…, so the call is minted from what the driver chose. A write that
+    /// failed keeps the panel up to say so, and the next Back closes it on what the row holds.
+    /// With CarPlay's Back there is no panel left to say it on, so the log does.
+    private func closeSettings() {
+        guard let panel = settings, !settingsClosing else { return }
+        telemetry.track(.carPlay("settings_closed"))
+        settingsClosing = true
+        // A failure the driver has already read does not hold them up a second time.
+        let writing = panel.isSaving
+        Task {
+            await panel.settled()
+            guard self.settings === panel else { return }
+            self.settingsClosing = false
+            if writing, panel.writeFailed {
+                guard self.navigator?.isAtRoot == true else { return }
+                self.telemetry.track(.carPlay("settings_write_lost", level: .warn))
+            }
+            self.settings = nil
+            self.settingsOnStack = false
+            await self.navigator?.pop(panel.template)
+            self.callBack()
+        }
+    }
+
+    private func callBack() {
+        guard navigator != nil, comeback?.wantsCall == true, !call.isActive else { return }
+        retry.asked()
+        attempt()
+        onChange?()
+    }
+
+    /// CarPlay showed a template: if that left nothing above the root, the driver went Back.
+    func settingsMayHaveClosed() {
+        guard settingsOnStack, navigator?.isAtRoot == true else { return }
+        closeSettings()
+    }
+
+    /// A call started without the car, on the phone, while the panel was up: it is the
+    /// conversation now, so the panel goes and the call the gear ended stays ended.
+    private func dropSettings() {
+        guard let panel = settings else { return }
+        settings = nil
+        settingsOnStack = false
+        settingsClosing = false
+        comeback = nil
+        Task { await navigator?.pop(panel.template) }
     }
 
     // MARK: - Failing quietly
@@ -162,8 +284,17 @@ final class CarPlayLive {
 
     // MARK: - The screen
 
+    private func muteChanged() {
+        comeback?.muteChanged(call.muted, callIsActive: call.isActive)
+        activate()
+    }
+
     private func stateChanged(_ state: LiveVoiceState) {
         if state == .listening { retry.connected() }
+        // Asked of the call, not of `state`: this runs a turn late, so a state from just before
+        // the gear ended the call can arrive after the panel went up.
+        if call.isActive { dropSettings() }
+        if comeback?.isSpent(by: call.state) == true { comeback = nil }
         onChange?()
         if state == .idle {
             dismiss()
@@ -187,6 +318,9 @@ final class CarPlayLive {
             guard self.template === screen else { return }
             if shown {
                 self.activate()
+                #if DEBUG
+                self.drillPressesTheGear()
+                #endif
             } else {
                 // A presentation CarPlay refused leaves no screen: forget the template, so the
                 // next state change presents again rather than activating a state nobody sees.
@@ -203,7 +337,8 @@ final class CarPlayLive {
     }
 
     /// Every state, each with its picture, its title and the two buttons, so a state change —
-    /// Mute included — is one `activate`. Five states: CarPlay ignores any after the fifth.
+    /// Mute included — is one `activate`. Five states: CarPlay ignores any after the fifth. The
+    /// gear belongs to the template rather than to a state, and is set here, once.
     private func build() -> CPVoiceControlTemplate {
         let states = LiveCallScreen.identifiers.map { identifier -> CPVoiceControlState in
             let voiceState = CPVoiceControlState(
@@ -220,8 +355,30 @@ final class CarPlayLive {
             }
             return voiceState
         }
-        return CPVoiceControlTemplate(voiceControlStates: states)
+        let screen = CPVoiceControlTemplate(voiceControlStates: states)
+        if #available(iOS 26.4, *) {
+            screen.leadingNavigationBarButtons = [
+                CPBarButton(image: CarPlayImages.bar("gearshape.fill")) { [weak self] _ in self?.openSettings() },
+            ]
+        }
+        return screen
     }
+
+    #if DEBUG
+    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the gear's own action, once, a while
+    /// after the first call screen goes up. XCUITest computes no hit point for a template's bar
+    /// button, and a click from the Mac at its place does not reach it, so this is how the panel
+    /// is driven.
+    private func drillPressesTheGear() {
+        guard AppEnvironment.shared.isFixture, ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"),
+              !drillPressedTheGear else { return }
+        drillPressedTheGear = true
+        Task {
+            try? await Task.sleep(for: .seconds(15))
+            self.openSettings()
+        }
+    }
+    #endif
 
     private func activate() {
         guard call.isActive else { return }
