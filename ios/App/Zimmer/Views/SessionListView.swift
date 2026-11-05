@@ -72,9 +72,9 @@ struct SessionListView: View {
                 Task { await model.viewChanged() }
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
-            // Here and not on `FilterBar`: from inside a `List` row, a publish of `AppModel` could
-            // hand the open sheet a new identity, in place, which dropped its scroll position, any
-            // open menu and every choice not yet applied (#1458).
+            // Here and not on `FilterBar`: presented from inside a `List` row, a publish of
+            // `AppModel` can give the open sheet a new identity in place, which costs it its scroll
+            // position, any open menu and every choice not yet applied (#1458).
             .sheet(isPresented: $model.showingFilters) { BoardFiltersSheet(initial: model.filters) }
             .modifier(QueuedTrashQuestion { _ in model.path.isEmpty })
     }

@@ -60,7 +60,8 @@ final class BoardFiltersUITests: XCTestCase {
         XCTAssertNotNil(scrolled, "the picker sits below the fold, and a swipe brings it up")
         guard let scrolled else { return }
 
-        // Long enough to see the burst out: it starts ten seconds after the sheet opened and lasts nine.
+        // Through the burst, or most of it: `publishUnderFilters` says why its length is not exact.
+        // A reset before `scrolled` was read shows up at Apply, as a tick the sheet has lost.
         _ = XCTWaiter().wait(for: [XCTestExpectation(description: "the app updating")], timeout: 20)
 
         XCTAssertEqual(pickerFrame(app)?.minY, scrolled.minY, "the form stays where it was scrolled to")
@@ -78,7 +79,7 @@ final class BoardFiltersUITests: XCTestCase {
         return app
     }
 
-    /// Read in one snapshot of a fresh query, as `CarplayFitUITests.pickerFrame` says why.
+    /// One snapshot of a fresh query: `CarplayFitUITests.pickerFrame` says why.
     private func pickerFrame(_ app: XCUIApplication) -> CGRect? {
         let picker = app.descendants(matching: .any).matching(identifier: "filters.carplayFit").firstMatch
         guard let frame = try? picker.snapshot().frame, !frame.isEmpty else { return nil }
