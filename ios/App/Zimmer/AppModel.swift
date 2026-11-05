@@ -234,9 +234,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Publish from the model again and again under the open Filters sheet, so a UI test can see
-    /// the sheet keep its state. A burst, because one publish costs the sheet its state too rarely
-    /// to test: a sheet presented from a `List` row lost it in 1 launch in 18 with a single publish
-    /// and 4 in 12 with this. The wait lets the test finish choosing and scrolling first.
+    /// the sheet keep its state. A burst, because a sheet presented from a `List` row loses its
+    /// state to a publish only now and then. Sixty ticks take well over the nominal nine seconds
+    /// on a CI runner, and on a slow one they start before the test has finished scrolling.
     private func publishUnderFilters() async {
         #if DEBUG
         try? await Task.sleep(for: .seconds(10))
