@@ -155,6 +155,26 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(timeline.summary["turns"], .number(1))
     }
 
+    func testTheOutputCapOpenAIAppliedIsReported() {
+        var timeline = LiveCallTimeline()
+        let created = timeline.observe(event(#"{"type":"session.created","session":{"max_output_tokens":1024}}"#), at: 1)
+        XCTAssertEqual(created[0].fields()["max_output_tokens"], .number(1_024))
+        let updated = timeline.observe(event(#"{"type":"session.updated","session":{"max_output_tokens":"inf"}}"#), at: 2)
+        XCTAssertEqual(updated[0].fields()["max_output_tokens"], .string("inf"))
+    }
+
+    func testAResponseTheCapCutOffIsAWarningAtEveryLevel() {
+        var timeline = LiveCallTimeline()
+        _ = timeline.observe(event(#"{"type":"response.created"}"#), at: 1)
+        let cut = timeline.observe(event(#"{"type":"response.done","response":{"status":"incomplete","status_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call"}]}}"#), at: 3)
+        XCTAssertEqual(cut[0].name, "response.done")
+        XCTAssertEqual(cut[0].level, .warn, "kept with telemetry turned down: a cut reply or tool call is a problem")
+        XCTAssertEqual(cut[0].fields()["reason"], .string("max_output_tokens"))
+        _ = timeline.observe(event(#"{"type":"response.created"}"#), at: 4)
+        let talkedOver = timeline.observe(event(#"{"type":"response.done","response":{"status":"cancelled","status_details":{"reason":"turn_detected"},"output":[]}}"#), at: 5)
+        XCTAssertEqual(talkedOver[0].level, .debug, "being talked over is a call working")
+    }
+
     func testAReplysLengthAndWhereItWasCutAreLogged() {
         var timeline = LiveCallTimeline()
         _ = timeline.observe(event(#"{"type":"response.created"}"#), at: 1)

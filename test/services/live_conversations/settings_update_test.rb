@@ -50,6 +50,18 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     assert_equal 0, LiveSettingChange.count
   end
 
+  test "the voice output cap has a floor no writer gets under, and a person can still set it" do
+    low = Update.call({ "voice_max_output_tokens" => 180 }, actor: @human)
+    assert_equal 1_024, LiveSetting.current.voice_max_output_tokens
+    assert_match(/outside 1024–4096/, low.summary)
+
+    Update.call({ "voice_max_output_tokens" => 2_048 }, actor: @human)
+    assert_equal 2_048, LiveSetting.current.voice_max_output_tokens
+
+    Update.call({ "voice_max_output_tokens" => "" }, actor: @human)
+    assert_nil LiveSetting.current.voice_max_output_tokens, "blank is no cap"
+  end
+
   test "numbers out of range are clamped and the answer says so; nonsense is refused" do
     result = Update.call({ "voice_speed" => 4, "voice_vad_threshold" => 1.0 }, actor: @human)
 
