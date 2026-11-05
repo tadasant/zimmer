@@ -22,8 +22,11 @@ public enum LiveCallScreen {
     public static let identifiers = ["connecting", "listening", "speaking", "working", "muted"]
 
     /// The state to show for the call: Muted while the microphone is off, else the call's state.
-    /// A call going idle is about to be taken down; until it is, it reads as connecting.
-    public static func identifier(for state: LiveVoiceState, muted: Bool) -> String {
+    /// A call going idle is about to be taken down; until it is, it reads as connecting. So does
+    /// a call that lost its microphone: nothing the driver says is reaching it, whatever else it
+    /// is doing, and a sixth state is one CarPlay would drop.
+    public static func identifier(for state: LiveVoiceState, muted: Bool, microphoneLost: Bool = false) -> String {
+        if microphoneLost { return "connecting" }
         if muted { return "muted" }
         switch state {
         case .idle, .connecting: return "connecting"

@@ -21,11 +21,16 @@ import os
 /// every server event is `RealtimeConductor`'s call (ZimmerKit, tested on Linux): function calls
 /// are relayed to Zimmer and answered, transcript lines recorded, `response.create` sent once.
 ///
-/// Three things keep a driver from having to look: the cues (`LiveCueDirector` has the whole map:
+/// A call is up when its microphone is open and OpenAI has said `session.created`, and not
+/// before: *Listening* and the connected notes both mean somebody can hear you.
+///
+/// Four things keep a driver from having to look: the cues (`LiveCueDirector` has the whole map:
 /// up, heard, thinking, a tool running, failed, hung up, dropped); the
 /// microphone watchdog (`MicWatchdog`), which sends silence when the microphone stops delivering
-/// so OpenAI's turn detection always gets to the end of a turn; and the call log
-/// (`LiveTelemetry`), which records every step for whoever reads the trace afterwards.
+/// so OpenAI's turn detection always gets to the end of a turn; the call's health
+/// (`LiveCallHealth`), which gives up on a call that will not connect, or whose socket or
+/// microphone has gone; and the call log (`LiveTelemetry`), which records every step for whoever
+/// reads the trace afterwards.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
@@ -36,6 +41,8 @@ final class LiveCall: ObservableObject {
     @Published private(set) var conversationID: Int?
     @Published private(set) var muted = false
     @Published private(set) var lastError: String?
+    /// The microphone has been out long enough to say so: nothing said is reaching the call.
+    @Published private(set) var microphoneLost = false
     /// Bumped on every recorded line or tool call, so an open thread knows to read again.
     @Published private(set) var activity = 0
 
@@ -51,6 +58,16 @@ final class LiveCall: ObservableObject {
     private var timeline = LiveCallTimeline()
     private var cues = LiveCueDirector()
     private var watchdog = MicWatchdog()
+    private var health = LiveCallHealth()
+    /// The microphone's engine is up.
+    private var microphoneOpen = false
+    /// OpenAI has said `session.created`: the socket works.
+    private var sessionOpen = false
+    /// The client the secret was minted for: its instructions name it.
+    private var mintedFor = ClientSource.Surface.ios
+    /// The last call dropped and played the falling notes, so nothing more needs to be heard. A
+    /// hang-up's goodbye is not news of a failure and does not count.
+    private var saidGoodbye = false
     private var watching: Task<Void, Never>?
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -63,6 +80,10 @@ final class LiveCall: ObservableObject {
         // the send is given the time to finish.
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { Self.flushInBackground() }
+        }
+        // iOS or the person is ending the app: the call's end is kept for the next launch to send.
+        NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.end(reason: "app_terminated", farewell: []) }
         }
     }
 
@@ -118,7 +139,7 @@ final class LiveCall: ObservableObject {
             guard isActive(for: conversation) else { return }
             if let opening {
                 // Still connecting: there is no socket to send on yet; the start under way sends it.
-                if state == .connecting { pendingOpening = opening } else { open(with: opening) }
+                if !health.isConnected { pendingOpening = opening } else { open(with: opening) }
             }
             return
         }
@@ -131,16 +152,25 @@ final class LiveCall: ObservableObject {
         cues = LiveCueDirector()
         timeline = LiveCallTimeline()
         timeline.started(at: Self.now)
+        watchdog = MicWatchdog()
+        health = LiveCallHealth()
+        health.started(at: Self.now)
+        microphoneOpen = false
+        sessionOpen = false
+        mintedFor = surface
+        pendingOpening = opening
+        saidGoodbye = false
         lastError = nil
         muted = startsMuted
         telemetry.beginCall(conversation: conversation)
         telemetry.updateClient { $0.surface = surface.rawValue }
         telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil))
         state = .connecting
+        watch(generation: mine)
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
-            let mintedFor = self.surface
+            mintedFor = self.surface
             let asked = Self.now
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
@@ -153,6 +183,7 @@ final class LiveCall: ObservableObject {
             socket = task
             task.resume()
             receive(task, generation: mine)
+            health.stage = .microphone
             let audioToken = try await audio.start(
                 frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, generation: mine) } },
                 failed: { [weak self] message in Task { @MainActor in self?.fail(message, generation: mine) } }
@@ -160,20 +191,31 @@ final class LiveCall: ObservableObject {
             // Hung up, or replaced by a newer call, while the microphone was opening: close only
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
-            telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: conductor.listening, gated: conductor.gated))
-            watch(generation: mine)
-            state = .listening
-            // Handed over while connecting, after the secret was asked for: its instructions
-            // name the client that started the call, so bring them up to the one driving it.
-            if self.surface != mintedFor { await refreshSession() }
-            guard mine == generation else { return }
-            let first = pendingOpening ?? opening
-            pendingOpening = nil
-            if let first { open(with: first) }
+            watchdog.arm(at: Self.now)
+            microphoneOpen = true
+            health.stage = .session
+            connectIfReady(generation: mine)
         } catch is CancellationError {
             return
         } catch {
             fail(Self.describe(error), generation: mine)
+        }
+    }
+
+    /// The call is up once the microphone is open and OpenAI has answered, in either order.
+    private func connectIfReady(generation mine: Int) {
+        guard mine == generation, !health.isConnected, microphoneOpen, sessionOpen else { return }
+        health.connected(at: Self.now)
+        telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: conductor.listening, gated: conductor.gated))
+        state = .listening
+        Task {
+            // Handed over while connecting, after the secret was asked for: its instructions
+            // name the client that started the call, so bring them up to the one driving it.
+            if surface != mintedFor { await refreshSession() }
+            guard mine == generation else { return }
+            let first = pendingOpening
+            pendingOpening = nil
+            if let first { open(with: first) }
         }
     }
 
@@ -188,17 +230,19 @@ final class LiveCall: ObservableObject {
         watching = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        microphoneLost = false
         // The engine stays up just long enough to play the goodbye.
         var goodbye: LiveCue?
         for action in farewell {
             if case let .play(cue, _) = action {
                 goodbye = cue
-                telemetry.track(.cue(cue))
             } else {
                 perform(action)
             }
         }
-        audio.stop(farewell: goodbye)
+        let played = audio.stop(farewell: goodbye)
+        saidGoodbye = played && goodbye == .disconnected
+        if played, let goodbye { telemetry.track(.cue(goodbye)) }
         state = .idle
         muted = false
         pendingOpening = nil
@@ -207,6 +251,16 @@ final class LiveCall: ObservableObject {
             telemetry.endCall()
             telemetry.flush()
         }
+    }
+
+    /// Say with the falling notes that a call is not coming, unless the end that said so already
+    /// played them. A call that was never up has no engine to play them for it.
+    func soundUnavailable() {
+        guard !isActive, !saidGoodbye else {
+            saidGoodbye = false
+            return
+        }
+        if audio.playAlone(.disconnected) { telemetry.track(.cue(.disconnected)) }
     }
 
     /// Put `text` to the model as a typed line and ask for its reply (`RealtimeConductor.open`).
@@ -287,13 +341,12 @@ final class LiveCall: ObservableObject {
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
 
-    /// The microphone watchdog: every 100 ms, silence in place of a microphone that stopped
-    /// delivering (`MicWatchdog`), so the turn the person was in the middle of still ends; and a
-    /// stalled engine is asked to restart.
+    /// The call's watch, from the moment it starts: every 100 ms, silence in place of a
+    /// microphone that stopped delivering (`MicWatchdog`), so the turn the person was in the
+    /// middle of still ends; a stalled engine is asked to restart; and the call's health is
+    /// checked (`LiveCallHealth`).
     private func watch(generation: Int) {
         watching?.cancel()
-        watchdog = MicWatchdog()
-        watchdog.arm(at: Self.now)
         watching = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
@@ -315,6 +368,60 @@ final class LiveCall: ObservableObject {
                     self.audio.recoverIfStopped()
                 }
                 if silence > 0 { self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence))) }
+                // Nothing else asks again: a restart that came back to a stopped engine, a second
+                // route change, would otherwise sit out the microphone's deadline.
+                if self.watchdog.stalledSince != nil { self.audio.recoverIfStopped() }
+                // Someone reading the permission prompt is not a call failing to connect. The
+                // phone only: in the car it cannot be answered, so the deadline stands.
+                if self.surface == .ios, self.audio.awaitingPermission { self.health.started(at: Self.now) }
+                #if DEBUG
+                // The CarPlay drill holds its call on Connecting… on purpose, for the gear.
+                if Self.drillHoldsTheCall { self.health.started(at: Self.now) }
+                #endif
+                let actions = self.health.tick(at: Self.now, stalledSince: self.watchdog.stalledSince, interrupted: self.audio.interrupted)
+                for action in actions { self.act(on: action, generation: generation) }
+            }
+        }
+    }
+
+    #if DEBUG
+    private static let drillHoldsTheCall = AppEnvironment.shared.isFixture
+        && ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp")
+    #endif
+
+    private func act(on action: LiveCallHealth.Action, generation: Int) {
+        switch action {
+        case .ping:
+            ping(generation: generation)
+        case .microphoneLost:
+            microphoneLost = true
+            telemetry.track(.micLost(true))
+            perform(.play(.disconnected))
+        case .microphoneBack:
+            microphoneLost = false
+            telemetry.track(.micLost(false))
+            perform(.play(.connected))
+        case let .giveUp(reason):
+            telemetry.track(.callGaveUp(reason, stage: health.stage, sinceStart: timeline.sinceStart(Self.now)))
+            fail(reason.message, generation: generation)
+        }
+    }
+
+    /// A quiet socket can be a dead one. The answer counts as hearing from OpenAI; an error means
+    /// the socket has gone.
+    private func ping(generation: Int) {
+        guard let socket else { return }
+        let asked = Self.now
+        socket.sendPing { [weak self] error in
+            let failure = error?.localizedDescription
+            Task { @MainActor in
+                guard let self, generation == self.generation else { return }
+                self.telemetry.track(.socketPing(ok: failure == nil, ms: Self.now - asked))
+                if let failure {
+                    self.fail("The call dropped: \(failure)", generation: generation)
+                } else {
+                    self.health.pong(at: Self.now)
+                }
             }
         }
     }
@@ -348,9 +455,16 @@ final class LiveCall: ObservableObject {
     }
 
     private func send(_ event: JSONValue) {
+        let mine = generation
         socket?.send(.string(event.encoded())) { [weak self] error in
             guard let error else { return }
-            Task { @MainActor in self?.log.error("realtime send failed: \(error.localizedDescription, privacy: .public)") }
+            let failure = error.localizedDescription
+            Task { @MainActor in
+                guard let self, mine == self.generation else { return }
+                self.log.error("realtime send failed: \(failure, privacy: .public)")
+                self.telemetry.track(.socketSendFailed(failure))
+                self.fail("The call dropped: \(failure)", generation: mine)
+            }
         }
     }
 
@@ -370,6 +484,7 @@ final class LiveCall: ObservableObject {
                     return
                 }
                 if let text, let event = JSONValue.parse(text) {
+                    self.health.heard(at: Self.now)
                     for entry in self.timeline.observe(event, at: Self.now) { self.telemetry.track(entry) }
                     let was = self.conductor.listening
                     let effects = self.conductor.handle(event)
@@ -377,6 +492,10 @@ final class LiveCall: ObservableObject {
                         self.telemetry.track(.listeningChanged(from: was, to: self.conductor.listening))
                     }
                     self.apply(effects, generation: generation)
+                    if event["type"]?.string == "session.created" {
+                        self.sessionOpen = true
+                        self.connectIfReady(generation: generation)
+                    }
                 }
                 self.receive(task, generation: generation)
             }
@@ -408,6 +527,8 @@ final class LiveCall: ObservableObject {
                     telemetry.track(.replyInterrupted(cut))
                 }
             case let .state(next):
+                // Connecting ends in one place, `connectIfReady`.
+                guard health.isConnected else { continue }
                 // A reply coming through means the call recovered from whatever went wrong.
                 if next == .speaking { lastError = nil }
                 state = next
@@ -460,6 +581,8 @@ final class LiveCall: ObservableObject {
         telemetry.track(.callFailed(message, state: state))
         end(reason: "failed", farewell: cues.dropped())
         lastError = message
+        // The car retries first, and says so itself (`CarPlayLive`). The phone has only this.
+        if surface == .ios { soundUnavailable() }
     }
 
     private static func describe(_ error: Error) -> String {

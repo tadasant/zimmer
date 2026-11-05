@@ -369,8 +369,45 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(retry.tile(callIsActive: false), .ready, "hanging up is not a failure")
     }
 
+    /// Two calls that each hang to the deadline, then falling notes: about half a minute from
+    /// the tap, where three retries of hanging calls would have taken over a minute.
+    func testHangingCallsSpendTheBudgetInTimeNotTries() {
+        var retry = LiveRetry()
+        retry.asked(at: 100)
+        XCTAssertEqual(retry.failed(at: 115), .seconds(2), "the first hang gets a retry")
+        XCTAssertNil(retry.failed(at: 132), "the second is too late for another wait")
+        XCTAssertEqual(retry.tile(callIsActive: false), .unavailable)
+        XCTAssertFalse(retry.wanted)
+
+        var quick = LiveRetry()
+        quick.asked(at: 100)
+        XCTAssertEqual(quick.failed(at: 100.5), .seconds(2))
+        XCTAssertEqual(quick.failed(at: 103), .seconds(5))
+        XCTAssertEqual(quick.failed(at: 108.5), .seconds(15), "calls that fail at once still get all three")
+
+        var dropped = LiveRetry()
+        dropped.asked(at: 0)
+        dropped.connected()
+        XCTAssertEqual(dropped.failed(at: 900), .seconds(2), "a good call that drops gets a budget from the drop")
+        XCTAssertEqual(dropped.failed(at: 917), .seconds(5))
+        XCTAssertNil(dropped.failed(at: 934), "and it runs out the same way")
+    }
+
+    func testATapShowsAtOnceAndASecondTapIsNotASecondAttempt() {
+        var retry = LiveRetry()
+        retry.asked()
+        retry.lookup()
+        XCTAssertEqual(retry.tile(callIsActive: false), .connecting, "the car answers the tap before the call exists")
+        XCTAssertTrue(retry.lookingUp)
+        retry.lookedUp()
+        XCTAssertEqual(retry.tile(callIsActive: true), .inCall)
+        XCTAssertEqual(retry.failed(), .seconds(2))
+        retry.lookup()
+        XCTAssertEqual(retry.tile(callIsActive: false), .retrying, "a retry looking up is still retrying")
+    }
+
     func testEveryTileSaysSomethingOnANarrowScreen() {
-        for tile in [LiveTalkTile.ready, .inCall, .retrying, .unavailable] {
+        for tile in [LiveTalkTile.ready, .connecting, .inCall, .retrying, .unavailable] {
             XCTAssertEqual(tile.titleVariants.count, 2)
             XCTAssertLessThanOrEqual(tile.titleVariants[1].count, 10, "\(tile)")
             XCTAssertFalse(tile.symbol.isEmpty)
@@ -394,6 +431,53 @@ final class CarPlayTests: XCTestCase {
         guard let walker = FileManager.default.enumerator(atPath: app.path) else { return [] }
         return walker.compactMap { $0 as? String }.filter { $0.hasSuffix(".swift") }.sorted().compactMap { name in
             (try? String(contentsOf: app.appendingPathComponent(name), encoding: .utf8)).map { (name, $0) }
+        }
+    }
+
+    /// `bda7cf2e` sat 770 s inside the engine's start with the main thread waiting on it, so no
+    /// deadline could fire, End could not be pressed and the screen could not change. The calls
+    /// that can block run on the audio queue; this is what keeps them there.
+    func testTheCallsThatCanBlockNeverRunOnTheMainActor() async throws {
+        let text = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix("Live/LiveAudioEngine.swift") }?.text)
+        let source = Self.code(text).map(\.line).joined(separator: "\n")
+        let graph = try XCTUnwrap(source.range(of: "private struct Graph"))
+        let telemetry = try XCTUnwrap(source.range(of: "private nonisolated static let telemetry"))
+        let mainActor = String(source[source.startIndex..<graph.lowerBound]) + String(source[telemetry.upperBound...])
+        var outsideGraph = mainActor
+        for closure in ["try await Self.onQueue {", "Self.queue.async {", "func activateSession"] {
+            XCTAssertTrue(mainActor.contains(closure), closure)
+        }
+        // Everything inside a closure handed to the queue is what the queue runs.
+        while let open = outsideGraph.range(of: "Self.onQueue {") ?? outsideGraph.range(of: "Self.queue.async {") {
+            var depth = 1
+            var index = open.upperBound
+            while depth > 0, index < outsideGraph.endIndex {
+                if outsideGraph[index] == "{" { depth += 1 }
+                if outsideGraph[index] == "}" { depth -= 1 }
+                index = outsideGraph.index(after: index)
+            }
+            outsideGraph.removeSubrange(open.lowerBound..<index)
+        }
+        let activate = try XCTUnwrap(outsideGraph.range(of: "private nonisolated static func activateSession"))
+        let afterActivate = try XCTUnwrap(outsideGraph.range(of: "private let sink = FrameSink()", range: activate.upperBound..<outsideGraph.endIndex))
+        outsideGraph.removeSubrange(activate.lowerBound..<afterActivate.lowerBound)
+        for blocking in ["engine.start()", "engine?.start()", "setActive(", "setVoiceProcessingEnabled", ".configure(sink:", "engine.stop()", "tearDown(deactivate"] {
+            XCTAssertFalse(outsideGraph.contains(blocking), "\(blocking) on the main actor")
+        }
+    }
+
+    /// An engine handed between the main actor and the audio queue is every node of it, each way:
+    /// one left behind means `stop()` cannot tear the engine down.
+    func testEveryNodeOfAnEngineIsHandedBack() async throws {
+        let source = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix("Live/LiveAudioEngine.swift") }?.text)
+        let nodes = ["engine", "player", "cuePlayer", "loopPlayer"]
+        for node in nodes {
+            XCTAssertEqual(source.components(separatedBy: "self.\(node) = graph.\(node)").count - 1, 1, "\(node), after a restart")
+            XCTAssertEqual(source.components(separatedBy: "        \(node) = graph.\(node)\n").count - 1, 1, "\(node), after a start")
+            XCTAssertEqual(source.components(separatedBy: "self.\(node) = nil").count - 1, 1, "\(node), handed over for a restart")
+        }
+        for property in ["bringingUp", "resets", "awaitingPermission"] {
+            XCTAssertTrue(source.contains("var \(property) "), "\(property) is declared")
         }
     }
 

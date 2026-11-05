@@ -9,7 +9,8 @@ import ZimmerKit
 /// How much it keeps is Zimmer's Live setting `voice_telemetry` (Settings → Live settings → Call
 /// telemetry), which each call's client secret and each batch's answer carry. Until the app has
 /// heard one, it reports everything (`debug`). `LiveCall` sends what is waiting when a call ends
-/// and when the app goes to the background.
+/// and when the app goes to the background. Whatever the last run of the app could not say about
+/// how a call ended is said the first time this is touched, which `ZimmerApp` makes launch.
 extension LiveTelemetry {
     static let shared: LiveTelemetry = {
         let info = Bundle.main.infoDictionary
@@ -25,6 +26,7 @@ extension LiveTelemetry {
             let api = await MainActor.run { AppEnvironment.shared.connection.api }
             return try await api.reportLiveTelemetry(batch)
         }
+        telemetry.recoverAbandonedCall()
         return telemetry
     }()
 
@@ -46,7 +48,7 @@ extension LiveEvent {
     }
 
     static func audioSessionConfigured(_ session: AVAudioSession) -> LiveEvent {
-        // Read now, on the main thread, not later inside the fields closure.
+        // Read now, not later inside the fields closure.
         let category = session.category.rawValue
         let mode = session.mode.rawValue
         let options = session.categoryOptions.rawValue
