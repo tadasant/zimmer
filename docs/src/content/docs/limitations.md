@@ -279,9 +279,13 @@ The scheduling class control in the board's Filters sheet loses short touches to
 
 ### A row in the CarPlay drill can ignore a tap, and nothing yet says why
 
-Once, in [run 42091565874](https://github.com/tadasant/zimmer/actions/runs/42091565874), the drill tapped the centre of the voice settings' Turn detection row and the list did not change in the 20 seconds that followed. The re-run passed on the same commit. That run could not say whether the touch was lost in CarPlay's host, whether the row's handler ran, or whether a redraw was dropped, and two instrumented loops did not lose a touch to tell us: about 1,050 touches, 0 lost, 270 of them first plain taps on a freshly pushed panel and 210 of those on the exact path of the failure. The one thing that stood out in the failed run was a stall of about 15 seconds just before the tap, and those loops never recreated it. Twelve `yes` processes did not slow the simulator, so nothing here was measured under real load.
+Once, in [run 42091565874](https://github.com/tadasant/zimmer/actions/runs/42091565874), the drill tapped the centre of the voice settings' Turn detection row and the list did not change in the 20 seconds that followed. The re-run passed on the same commit.
 
-So the cause is not known, and the drill has no retry, because the failure could be the app's. The drill's job log now prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got: the comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
+That run could not say whether the touch was lost in CarPlay's host, whether the row's handler ran, or whether a redraw was dropped. Two instrumented loops lost nothing: about 1,050 touches, 270 of them first plain taps on a freshly pushed panel, and 210 of those on the exact path of the failure. That makes a plain lost tap unlikely, not impossible.
+
+The failed run did stand out in one way. XCTest's steps stalled for 14.5 seconds just before the tap, and those loops never recreated that. Twelve `yes` processes did not slow the simulator, so nothing here was measured under real load.
+
+So the cause is not known, and the drill has no retry, because the fault could be the app's. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
 
 ### A sheet presented from inside a `List` row can reset itself
 
