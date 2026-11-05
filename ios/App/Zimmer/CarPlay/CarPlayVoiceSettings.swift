@@ -85,9 +85,9 @@ final class CarPlayVoiceSettings {
 
     private func item(_ text: String, detail: String? = nil, tapped: (@MainActor () -> Void)? = nil) -> CPListItem {
         let item = CPListItem(text: text, detailText: detail)
-        item.handler = { _, done in
+        item.handler = { [log] _, done in
             MainActor.assumeIsolated {
-                self.log.notice("voice settings row handler: \(text, privacy: .public)")
+                log.notice("voice settings row handler: \(text, privacy: .public)")
                 tapped?()
             }
             done()
