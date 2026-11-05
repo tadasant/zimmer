@@ -46,7 +46,7 @@ final class QuickRouterKeyboardUITests: XCTestCase {
         // Off, the board stays under the sheet, so it is the board's keyboard being checked.
         let open = app.switches["quickrouter.open"]
         XCTAssertTrue(open.waitForExistence(timeout: timeout))
-        open.tap()
+        flip(open)
         XCTAssertEqual(open.value as? String, "0")
         app.buttons["quickrouter.start"].tap()
 

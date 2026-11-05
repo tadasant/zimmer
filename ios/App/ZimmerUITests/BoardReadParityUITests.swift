@@ -104,7 +104,7 @@ final class BoardReadParityUITests: XCTestCase {
 
         let open = app.switches["quickrouter.open"]
         XCTAssertTrue(open.waitForExistence(timeout: timeout))
-        open.tap()
+        flip(open)
         let field = app.descendants(matching: .any)["quickrouter.field"]
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
         field.tap()

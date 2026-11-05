@@ -63,13 +63,7 @@ struct QuickRouterView: View {
                         Spacer()
                     }
                     if let parent = app.quickRouterParent {
-                        Toggle(isOn: $threadUnderParent) {
-                            Text(verbatim: "Thread under #\(parent)")
-                                .font(.subheadline)
-                                .foregroundStyle(Theme.ink)
-                        }
-                        .tint(Theme.accent)
-                        .accessibilityIdentifier("quickrouter.parent")
+                        QuickRouterSwitch(title: "Thread under #\(parent)", isOn: $threadUnderParent, identifier: "quickrouter.parent")
                     }
                     if let page = app.quickRouterPage {
                         // The web bubble's "Page context is automatically included."
@@ -84,16 +78,12 @@ struct QuickRouterView: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("quickrouter.page")
                     }
-                    Toggle(isOn: $opensSession) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Open the session when it starts").font(.subheadline).foregroundStyle(Theme.ink)
-                            Text("Off, it starts in the background and this screen stays.")
-                                .font(.caption)
-                                .foregroundStyle(Theme.inkSoft)
-                        }
-                    }
-                    .tint(Theme.accent)
-                    .accessibilityIdentifier("quickrouter.open")
+                    QuickRouterSwitch(
+                        title: "Open the session when it starts",
+                        detail: "Off, it starts in the background and this screen stays.",
+                        isOn: $opensSession,
+                        identifier: "quickrouter.open"
+                    )
                     advanced
                     if let error = app.error { ErrorBanner(error: error) }
                 }
@@ -174,16 +164,12 @@ struct QuickRouterView: View {
                 } else {
                     LoadingState(text: "Loading the harnesses…").frame(height: 44)
                 }
-                Toggle(isOn: $spot) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Run as spot").font(.subheadline).foregroundStyle(Theme.ink)
-                        Text("Waits for quota room instead of starting now, at the top of the spot queue.")
-                            .font(.caption)
-                            .foregroundStyle(Theme.inkSoft)
-                    }
-                }
-                .tint(Theme.accent)
-                .accessibilityIdentifier("quickrouter.spot")
+                QuickRouterSwitch(
+                    title: "Run as spot",
+                    detail: "Waits for quota room instead of starting now, at the top of the spot queue.",
+                    isOn: $spot,
+                    identifier: "quickrouter.spot"
+                )
             }
             .padding(.top, 8)
         } label: {
@@ -432,5 +418,32 @@ extension View {
                     .padding(.trailing, Theme.margin)
                     .padding(.bottom, 14)
             }
+    }
+}
+
+/// One of the sheet's switches, as a view of its own. `QuickRouterView` reads `AppModel`, so
+/// whatever the app publishes re-evaluates its body, and a `Toggle` written in that body has its
+/// `UISwitch` set again each time, unchanged. Here it is set only when these properties change,
+/// which is fewer sets, not none. Why that matters is in the limitations page: a set during a
+/// touch is a suspect in a lost press, not a proven cause.
+private struct QuickRouterSwitch: View {
+    let title: String
+    var detail: String?
+    @Binding var isOn: Bool
+    let identifier: String
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: title).font(.subheadline).foregroundStyle(Theme.ink)
+                if let detail {
+                    Text(verbatim: detail)
+                        .font(.caption)
+                        .foregroundStyle(Theme.inkSoft)
+                }
+            }
+        }
+        .tint(Theme.accent)
+        .accessibilityIdentifier(identifier)
     }
 }

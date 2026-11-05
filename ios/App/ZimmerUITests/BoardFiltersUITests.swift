@@ -21,7 +21,7 @@ final class BoardFiltersUITests: XCTestCase {
         more.tap()
         let failed = app.switches["filters.status.failed"]
         XCTAssertTrue(failed.waitForExistence(timeout: timeout))
-        tapSwitch(failed)
+        flip(failed)
         app.buttons["filters.apply"].tap()
         XCTAssertTrue(row(app, 1027).waitForExistence(timeout: timeout), "the failed session joins the needs-input ones")
         XCTAssertTrue(row(app, 1038).exists)
@@ -53,11 +53,6 @@ final class BoardFiltersUITests: XCTestCase {
 
     private func row(_ app: XCUIApplication, _ id: Int) -> XCUIElement {
         app.descendants(matching: .any)["session.row.\(id)"]
-    }
-
-    /// A Form toggle's switch is tapped on its right edge, where the control is.
-    private func tapSwitch(_ toggle: XCUIElement) {
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
