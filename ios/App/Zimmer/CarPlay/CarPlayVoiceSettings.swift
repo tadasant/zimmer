@@ -1,6 +1,7 @@
 import CarPlay
 import Foundation
 import ZimmerKit
+import os
 
 /// The voice settings panel: the break-glass for a call that has stopped working, whose driver
 /// therefore cannot ask it to fix that. The rules are `CarVoiceSettings`; this draws them.
@@ -21,6 +22,9 @@ final class CarPlayVoiceSettings {
     }
 
     private let model: CarVoiceSettingsModel
+    /// A row's handler ran and the list was drawn again: with CarPlay's own log, these say how far
+    /// a tap that changed nothing got.
+    private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     init(api: any LiveAPI) {
         model = CarVoiceSettingsModel(api: api)
@@ -41,6 +45,7 @@ final class CarPlayVoiceSettings {
     var writeFailed: Bool { model.writeFailed }
 
     private func draw() {
+        log.notice("voice settings drawn: \(String(describing: self.model.page), privacy: .public), loaded \(self.model.settings != nil, privacy: .public)")
         var top: [CPListItem] = []
         if let problem = model.problem {
             top.append(item(problem, detail: model.settings == nil ? "Tap to try again" : nil) { [weak self] in
@@ -81,7 +86,10 @@ final class CarPlayVoiceSettings {
     private func item(_ text: String, detail: String? = nil, tapped: (@MainActor () -> Void)? = nil) -> CPListItem {
         let item = CPListItem(text: text, detailText: detail)
         item.handler = { _, done in
-            MainActor.assumeIsolated { tapped?() }
+            MainActor.assumeIsolated {
+                self.log.notice("voice settings row handler: \(text, privacy: .public)")
+                tapped?()
+            }
             done()
         }
         return item
