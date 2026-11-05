@@ -42,6 +42,95 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
     end
   end
 
+  test "each actor's rank row reads the way its door wrote it" do
+    { web: "Precedence set to 42 (was 10)",
+      mcp: "Precedence set via MCP to 42 (was 10)",
+      rest: "Precedence set via the REST API to 42 (was 10)" }.each do |actor, line|
+      session = spot(10, status: :needs_input)
+      Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "spot", actor: actor, precedence: 42)
+      assert_equal [ line ], log_contents(session), "actor #{actor}"
+    end
+  end
+
+  test "a rank that does not move writes no rank row, and neither does a class that does not" do
+    session = spot(10, status: :needs_input)
+
+    assert_no_difference -> { session.logs.count } do
+      Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "spot", actor: :rest, precedence: 10)
+    end
+  end
+
+  test "a class that moves with a rank that does not writes the class row alone" do
+    session = spot(10, status: :needs_input)
+
+    Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :mcp, precedence: 10)
+
+    assert_equal [ "Scheduling class set via MCP to priority (was spot)" ], log_contents(session)
+  end
+
+  test "a failed log write rolls back the class and the rank it describes" do
+    session = spot(10, status: :needs_input)
+
+    session.logs.stub(:create!, ->(**) { raise ActiveRecord::ConnectionFailed, "simulated" }) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :web, precedence: 42)
+      end
+    end
+
+    stored = Session.find(session.id)
+    assert_equal SessionGenesis::SPOT, stored.scheduling_class
+    assert_equal 10, stored.precedence
+  end
+
+  test "a failed rank row rolls back the class row and the write before it" do
+    session = spot(10, status: :needs_input)
+    fail_on_rank = lambda do |content:, level:|
+      raise ActiveRecord::ConnectionFailed, "simulated" if content.start_with?("Precedence")
+
+      Log.create!(session: session, content: content, level: level)
+    end
+
+    session.logs.stub(:create!, fail_on_rank) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :web, precedence: 42)
+      end
+    end
+
+    stored = Session.find(session.id)
+    assert_equal SessionGenesis::SPOT, stored.scheduling_class
+    assert_equal 10, stored.precedence
+    assert_empty log_contents(session)
+  end
+
+  test "an unknown actor is refused before anything is written" do
+    session = spot(10, status: :needs_input)
+
+    assert_no_difference -> { Log.count } do
+      assert_raises(KeyError) do
+        Sessions::UpdateSchedulingClass.call(session: session, scheduling_class: "priority", actor: :api, precedence: 42)
+      end
+    end
+
+    assert_equal SessionGenesis::SPOT, session.scheduling_class, "the class is not even assigned"
+    assert_equal 10, session.precedence, "the rank is not even assigned"
+    assert_equal SessionGenesis::SPOT, session.reload.scheduling_class
+    assert_equal 10, session.precedence
+  end
+
+  test "an unknown class is refused ahead of an unknown actor" do
+    assert_raises(Sessions::UpdateSchedulingClass::UnknownSchedulingClass) do
+      Sessions::UpdateSchedulingClass.call(session: spot(10), scheduling_class: "bogus", actor: :api)
+    end
+  end
+
+  test "place and precedence together are refused ahead of an unknown actor" do
+    error = assert_raises(ArgumentError) do
+      Sessions::UpdateSchedulingClass.call(session: spot(10), scheduling_class: "spot", actor: :api,
+        precedence: 5, place: "top_of_spot")
+    end
+    assert_equal SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE, error.message
+  end
+
   test "a blank class clears the choice back to the one the origin derives" do
     session = Session.create!(git_root: "https://github.com/t/r.git", prompt: "x", status: :needs_input,
       genesis: SessionGenesis::GITHUB_ISSUE, scheduling_class: SessionGenesis::PRIORITY)
