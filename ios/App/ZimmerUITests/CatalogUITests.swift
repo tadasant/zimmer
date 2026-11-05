@@ -54,7 +54,7 @@ final class CatalogUITests: XCTestCase {
         XCTAssertTrue(skill.waitForExistence(timeout: timeout))
         skill.tap()
         app.buttons["catalog.save"].tap()
-        XCTAssertTrue(waitForToast(app), "the change is confirmed")
+        XCTAssertTrue(waitForToast(app, saying: "Skills updated", on: "followup.notice"), "the change is confirmed")
 
         actions.tap()
         app.buttons["Modify MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()

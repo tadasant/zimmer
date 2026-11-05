@@ -35,8 +35,7 @@ final class OptimisticActionsUITests: XCTestCase {
         // The refusal: a toast says the row was not moved, the row is back, the Undo gone. The
         // refusal's banner is the list's first row too, which a list the press and the menu
         // scrolled may hold off screen; the toast at the foot is what this looks for.
-        let toast = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'toast' AND label CONTAINS 'Not moved to trash'")).firstMatch
-        XCTAssertTrue(toast.waitForExistence(timeout: timeout), "the refusal shows over the board")
+        XCTAssertTrue(waitForToast(app, saying: "Not moved to trash", on: "toast", timeout: timeout), "the refusal shows over the board")
         attachScreenshot(app, named: "trash-put-back")
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "the refused trash put the row back")
         XCTAssertTrue(waitForDisappearance(undo, within: timeout), "nothing to undo")

@@ -14,8 +14,13 @@ extension XCTestCase {
     func waitForToast(_ app: XCUIApplication, saying words: String = "", on identifier: String = "",
                       timeout: TimeInterval = 20) -> Bool {
         let wanted = identifier.isEmpty && !words.isEmpty ? words : "\(identifier): \(words)"
-        let said = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", wanted),
-                                             object: app.staticTexts["toast.log"])
-        return XCTWaiter().wait(for: [said], timeout: timeout) == .completed
+        let log = app.staticTexts["toast.log"]
+        let said = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", wanted), object: log)
+        guard XCTWaiter().wait(for: [said], timeout: timeout) == .completed else {
+            // What was said instead, for the run that goes red.
+            if log.exists { add(XCTAttachment(string: log.value as? String ?? "")) }
+            return false
+        }
+        return true
     }
 }

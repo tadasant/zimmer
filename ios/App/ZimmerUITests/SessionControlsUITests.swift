@@ -59,7 +59,7 @@ final class SessionControlsUITests: XCTestCase {
 
         openMenu(app, "Heartbeat: off")
         tapMenuItem(app, "Turn On")
-        XCTAssertTrue(waitForToast(app))
+        XCTAssertTrue(waitForToast(app, on: "followup.notice"))
 
         // "Beat every", from the web popout's intervals.
         openMenu(app, "Heartbeat: every 1 minute")
@@ -67,7 +67,7 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertTrue(beatEvery.waitForExistence(timeout: timeout))
         beatEvery.tap()
         tapMenuItem(app, "5 minutes")
-        XCTAssertTrue(waitForToast(app, saying: "Heartbeat every 5 minutes"))
+        XCTAssertTrue(waitForToast(app, saying: "Heartbeat every 5 minutes", on: "followup.notice"))
 
         app.buttons["detail.actions"].tap()
         XCTAssertTrue(app.buttons["Heartbeat: every 5 minutes"].firstMatch.waitForExistence(timeout: timeout), "the menu says the interval in force")
@@ -79,8 +79,9 @@ final class SessionControlsUITests: XCTestCase {
 
         let postgres = row(app, 1035)
         XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.staticTexts["toast.log"].exists, "the fixture keeps what the toasts say")
-        XCTAssertFalse(waitForToast(app, timeout: 1), "and no toast has spoken yet")
+        let log = app.staticTexts["toast.log"]
+        XCTAssertTrue(log.exists, "the fixture keeps what the toasts say")
+        XCTAssertFalse((log.value as? String ?? "").contains(": "), "and no toast has spoken yet")
         openRowMenu(app, postgres, "Rename")
         let field = app.alerts.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: timeout))
