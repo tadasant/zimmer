@@ -894,6 +894,12 @@ itself.** (The literal is deliberate: `github.workflow` would be the tidier-look
 ever resolved to the *triggering* workflow's name the test would become `A != A` and the alert would
 silently stop firing forever. A loud failure beats a silent one.)
 
+### A job cut off at its time budget is never alerted on
+
+`timed_out` in `alert-ci-failure.yml`'s allowlist does not catch a job that hits its own `timeout-minutes`. GitHub concluded such a run `cancelled`, twice, on [run 41991046159](https://github.com/tadasant/zimmer/actions/runs/41991046159), even though `all-checks-pass` failed. That was a pull request. On `main` the same cut-off would page nobody and would not reach the re-run script, which is inferred, because no such run on `main` has been seen. `ios-ui-tests.yml` records the same thing costing four days of post-merge coverage.
+
+The `ios` job is the likely place for it, because its smoke run grows with every UI test file a pull request touches, and nothing bounds that. Six files needed more than 45 minutes, so its budget is 75, but a wider change can still pass that.
+
 ### A queued run that never starts is never alerted on
 
 `alert-ci-failure.yml` fires on an allowlist of conclusions (`failure`, `startup_failure`,
