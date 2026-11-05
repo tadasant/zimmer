@@ -22,7 +22,7 @@ final class DecisionsUITests: XCTestCase {
         let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "Merge authorized"))
+        XCTAssertTrue(waitForToast(app, saying: "Merge authorized"))
     }
 
     func test_merge_from_the_session_menu() throws {
@@ -36,7 +36,7 @@ final class DecisionsUITests: XCTestCase {
         let confirm = app.sheets.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["followup.notice"], "Merge authorized"))
+        XCTAssertTrue(waitForToast(app, saying: "Merge authorized"))
     }
 
     func test_reprioritize_from_the_view_menu_names_the_session_that_took_it() throws {
@@ -50,7 +50,7 @@ final class DecisionsUITests: XCTestCase {
         let confirm = app.sheets.buttons["Reprioritize"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
         confirm.tap()
-        XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["toast"], "is re-ranking the board"))
+        XCTAssertTrue(waitForToast(app, saying: "is re-ranking the board"))
     }
 
     // MARK: - Helpers
@@ -60,10 +60,5 @@ final class DecisionsUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture"] + extra
         app.launch()
         return app
-    }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", text), object: element)
-        return XCTWaiter().wait(for: [match], timeout: timeout) == .completed
     }
 }
