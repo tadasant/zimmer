@@ -17,7 +17,9 @@ final class AppModel: ObservableObject {
         didSet { AppModel.store(filters, "boardFilters") }
     }
     /// The filter sheet (the funnel on the chip row).
-    @Published var showingFilters = false
+    @Published var showingFilters = false {
+        didSet { if showingFilters, fixturePublishesUnderFilters { Task { await publishUnderFilters() } } }
+    }
     /// The catalog's agent roots and geneses, for the filter sheet's pickers; read once.
     @Published private(set) var filterOptions: AppConfigs?
     /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
@@ -153,6 +155,8 @@ final class AppModel: ObservableObject {
     var fixtureSection: SessionPageSection?
     /// `-ZimmerFixtureFullScreen`: the opened session's transcript opens full screen.
     var fixtureOpensFullScreen = false
+    /// `-ZimmerFixturePublishUnderFilters`: see `publishUnderFilters`.
+    var fixturePublishesUnderFilters = false
     /// `-ZimmerFixtureTrigger <id>`, or a link to `/triggers/<id>`: the Triggers tab opens on
     /// that trigger's page.
     @Published var fixtureTrigger: Int?
@@ -229,6 +233,21 @@ final class AppModel: ObservableObject {
         if !environment.isFixture { await PushCoordinator.shared.enable() }
     }
 
+    /// Publish from the model again and again under the open Filters sheet, so a UI test can see
+    /// the sheet keep its state. A burst, because a sheet presented from a `List` row loses its
+    /// state to a publish only now and then. Sixty ticks take well over the nominal nine seconds
+    /// on a CI runner, and on a slow one they start before the test has finished scrolling.
+    private func publishUnderFilters() async {
+        #if DEBUG
+        try? await Task.sleep(for: .seconds(10))
+        let count = unreadCount
+        for tick in 0..<60 {
+            unreadCount = tick.isMultiple(of: 2) ? count + 1 : count
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        #endif
+    }
+
     /// `#if DEBUG` launch arguments that open a screen `simctl` cannot tap its way to,
     /// so `ios/bin/ui-test` can photograph it.
     private func openFixtureScreen() {
@@ -268,6 +287,7 @@ final class AppModel: ObservableObject {
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
         fixtureTypesSlash = arguments.contains("-ZimmerFixtureSlash")
         fixtureOpensFullScreen = arguments.contains("-ZimmerFixtureFullScreen")
+        fixturePublishesUnderFilters = arguments.contains("-ZimmerFixturePublishUnderFilters")
         func value(_ flag: String) -> String? {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]

@@ -51,7 +51,7 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   the catalog, a [CarPlay fit](/sessions/carplay-fit/) (*Not laptop-only*, the driving default,
   *CarPlay-ok*, *Laptop only* or *Untagged*; *Any* by default), board visibility, and the web UI's quick filters (*All*, *All unarchived*, *All
   priority, unarchived*). A combination the chips cannot show is spelled out under them with a
-  *Reset*. Filters and board visibility are remembered across launches, as the web UI remembers
+  *Reset*. The form keeps your place and your choices while the board updates behind it. Filters and board visibility are remembered across launches, as the web UI remembers
   them in a cookie. Over the default filters *Ranked* shows waiting, running, needs-input and failed
   together, worked out each time as the web does, so leaving Ranked is back to *Needs input*. With no status ticked the list is every status but Archived, where the web reads ticking
   nothing as everything. Board visibility is *On board* by default, like the web UI's board, with

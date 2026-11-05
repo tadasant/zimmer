@@ -132,9 +132,7 @@ final class CarplayFitUITests: XCTestCase {
 
     /// A menu item by its title, whatever element type it reads as. A row of a menu-style
     /// Picker, or a submenu, carries a legacy Button type and a modern PopUpButton one, and
-    /// XCUITest resolves the mismatch either way from one run to the next: a board-shard run
-    /// on main found "Not laptop-only" as a Button, screenshotted the open menu, and then
-    /// retried the tap for forty seconds against a PopUpButton that `app.buttons` never matched.
+    /// XCUITest resolves the mismatch either way from one run to the next.
     private func menuItem(_ app: XCUIApplication, titled title: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", title)).firstMatch
     }
