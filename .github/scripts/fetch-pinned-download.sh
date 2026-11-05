@@ -12,15 +12,18 @@
 # fail the job, because nobody has a shell on these runners to clear it and the bad file would
 # keep `main` red. A download that does not match does fail the job, and nothing is cached.
 #
-# A cold cache gets 8 retries with curl's doubling backoff, so 1+2+...+128 = 255 seconds
-# between attempts: long enough to outlast a short upstream blip, bounded so that a sustained
-# outage still fails the job. FETCH_RETRIES exists for the test, which cannot wait that long.
+# A cold cache gets 8 retries with curl's doubling backoff, so 255 seconds of waiting between
+# attempts, which outlasts a short upstream blip. `timeout` is the hard bound: curl obeys a
+# server's Retry-After and --max-time does not cover that wait, so without it an outage that
+# answers `Retry-After: 3600` would hold a runner for hours instead of failing. FETCH_RETRIES
+# and FETCH_TIMEOUT exist for the test, which cannot wait that long.
 set -euo pipefail
 
 url="${1:?usage: fetch-pinned-download.sh <url> <sha256> <dest>}"
 sha="${2:?usage: fetch-pinned-download.sh <url> <sha256> <dest>}"
 dest="${3:?usage: fetch-pinned-download.sh <url> <sha256> <dest>}"
 retries="${FETCH_RETRIES:-8}"
+limit="${FETCH_TIMEOUT:-600}"
 cache_dir="${FETCH_CACHE_DIR:-${HOME:?}/.zimmer-ci/downloads}"
 cached="${cache_dir}/${sha}"
 
@@ -29,18 +32,19 @@ matches_pin() {
 }
 
 if [ -f "$cached" ]; then
-  if matches_pin "$cached"; then
-    cp "$cached" "$dest"
+  cp "$cached" "$dest"
+  if matches_pin "$dest"; then
     echo "Using the cached copy of ${url}"
     exit 0
   fi
   echo "::warning::The cached copy at ${cached} does not match its pin. Dropping it and fetching again."
-  rm -f "$cached"
+  rm -f "$dest"
+  rm -f "$cached" || true
 fi
 
 # --retry-all-errors, because plain --retry skips a dropped connection or a failed DNS lookup.
-curl -fsSL --retry "$retries" --retry-all-errors --connect-timeout 20 --max-time 120 \
-  -o "$dest" "$url"
+timeout "$limit" curl -fsSL --retry "$retries" --retry-all-errors \
+  --connect-timeout 20 --max-time 60 -o "$dest" "$url"
 
 if ! matches_pin "$dest"; then
   actual="$(sha256sum "$dest" | cut -d' ' -f1)"
@@ -52,9 +56,11 @@ fi
 # The file is verified and in place, so a runner that cannot cache is slower, not broken.
 # Runners on one machine share this directory, so the rename is what publishes the file:
 # none of them can ever read a half-written copy.
+tmp=""
 if ! { mkdir -p "$cache_dir" &&
   tmp="$(mktemp "${cache_dir}/.incoming.XXXXXX")" &&
   cp "$dest" "$tmp" &&
   mv -f "$tmp" "$cached"; }; then
+  [ -z "$tmp" ] || rm -f "$tmp" || true
   echo "::warning::Could not cache ${url} in ${cache_dir}; the next run will download it again."
 fi

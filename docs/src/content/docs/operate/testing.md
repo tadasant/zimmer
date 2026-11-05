@@ -80,9 +80,11 @@ A failed download must not turn `main` red when nothing is wrong in the repo, an
 the check either. `.github/scripts/fetch-pinned-download.sh` keeps the verified tarball in
 `~/.zimmer-ci/downloads` on the runner, named by its sha256, and checks it against the pin on every
 run, so a runner that has it makes no request. A cached copy that fails the check is dropped and
-fetched again. A cold runner retries for about four minutes, then fails the job. A download that
-does not match the pin always fails the job. `fetch-pinned-download_test.sh` runs in the same job
-and exercises each of those against a local server answering 504.
+fetched again. A cold runner retries with doubling backoff, then fails the job after ten minutes
+at most. A download that does not match the pin always fails the job. A runner that already has
+the tarball still passes during an outage, with a verified binary and the check run in full.
+`fetch-pinned-download_test.sh` runs in the same job and exercises each of those against a local
+server that answers 504, drops the connection, or sends a long `Retry-After`.
 
 Three guards keep the job from passing while checking nothing. It fails on an empty file list; it
 fails if any of the four root-privileged scripts above has dropped out of the set, which is the
