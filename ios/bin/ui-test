@@ -355,6 +355,9 @@ touch "$artifacts/.started"
 
 printf '==> running the UI tests\n'
 status=0
+# One ordered test that spends a minute and a half reaching the car before it starts.
+test_allowance=300
+if [ -n "$carplay" ]; then test_allowance=480; fi
 xcodebuild test-without-building \
   -project App/Zimmer.xcodeproj \
   -scheme ZimmerUITests \
@@ -365,8 +368,16 @@ xcodebuild test-without-building \
   ${only_testing[@]+"${only_testing[@]}"} \
   -resultBundlePath "$artifacts/ZimmerUITests.xcresult" \
   -test-timeouts-enabled YES \
-  -maximum-test-execution-time-allowance 300 \
+  -maximum-test-execution-time-allowance "$test_allowance" \
   "${signing[@]}" || status=$?
+
+# The drill's photographs of the CarPlay window as plain files, beside the result bundle, so
+# they can be read without a Mac.
+if [ -n "$carplay" ]; then
+  xcrun xcresulttool export attachments --path "$artifacts/ZimmerUITests.xcresult" \
+    --output-path "$artifacts/carplay-photos" >/dev/null 2>&1 \
+    || mkdir -p "$artifacts/carplay-photos"
+fi
 
 # A screenshot whatever happened: on a red run it is the first thing worth looking at.
 #

@@ -30,6 +30,39 @@ struct FakeLiveState: Sendable {
         LiveSettingField(key: "voice_speed", path: "voice", type: .float, label: "Speaking speed",
                          help: "A multiple of normal speed, 0.25 to 1.5. Changes mid-call, from the next reply.",
                          min: 0.25, max: 1.5, defaultValue: .number(1.0), midCall: true),
+        LiveSettingField(key: "voice_turn_detection", path: "voice", type: .choice, label: "Turn detection",
+                         help: "How the model decides you have finished talking.",
+                         options: [.init(value: "semantic_vad", label: "Semantic — waits until you sound finished"),
+                                   .init(value: "server_vad", label: "Silence — answers after a fixed pause")],
+                         defaultValue: .string("semantic_vad"), midCall: true),
+        LiveSettingField(key: "voice_vad_eagerness", path: "voice", type: .choice, label: "Eagerness (semantic)",
+                         help: "How soon semantic turn detection answers.",
+                         options: [.init(value: "auto", label: "auto (medium)"), .init(value: "low", label: "low — waits longest (up to 8s)"),
+                                   .init(value: "medium", label: "medium (up to 4s)"), .init(value: "high", label: "high — answers soonest (up to 2s)")],
+                         defaultValue: .string("auto"), midCall: true),
+        LiveSettingField(key: "voice_vad_threshold", path: "voice", type: .float, label: "Threshold (silence)",
+                         help: "How loud counts as speech, for silence turn detection. Higher ignores more background noise.",
+                         min: 0.1, max: 0.95, defaultValue: .number(0.5), midCall: true),
+        LiveSettingField(key: "voice_vad_prefix_padding_ms", path: "voice", type: .integer, label: "Prefix padding ms (silence)",
+                         help: "Audio kept from before speech was detected.",
+                         min: 0, max: 1_000, defaultValue: .number(300), midCall: true),
+        LiveSettingField(key: "voice_vad_silence_duration_ms", path: "voice", type: .integer, label: "Silence duration ms (silence)",
+                         help: "How long a pause ends your turn.",
+                         min: 200, max: 3_000, defaultValue: .number(500), midCall: true),
+        LiveSettingField(key: "voice_max_output_tokens", path: "voice", type: .integer, label: "Voice max output tokens",
+                         help: "A cap on one spoken reply. Blank is no cap.",
+                         min: 128, max: 4_096, midCall: true),
+        LiveSettingField(key: "voice_listening", path: "voice", type: .choice, label: "Listening",
+                         help: "Which lines get an answer.",
+                         options: [.init(value: "always", label: "Always — answers everything it hears (a private space, the car)"),
+                                   .init(value: "wake_word", label: "Wake word — answers only lines that say “Zimmer”"),
+                                   .init(value: "dynamic", label: "Dynamic — answers only lines it judges were said to it")],
+                         defaultValue: .string("always"), midCall: true),
+        LiveSettingField(key: "voice_noise_reduction", path: "voice", type: .choice, label: "Noise reduction",
+                         help: "Filters the microphone before the model hears it. Blank is off.",
+                         options: [.init(value: "near_field", label: "near field — headphones, a phone at your ear"),
+                                   .init(value: "far_field", label: "far field — laptop or car microphone")],
+                         midCall: true),
     ]
 
     static func sample() -> FakeLiveState {
@@ -121,6 +154,12 @@ extension FakeZimmerAPI {
 
     public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
         guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 409, message: "Voice is off for this conversation. Turn it on first.") }
+        // Only the first: a call held on Connecting… while its screen is driven, and every call
+        // after it fails as fast as ever.
+        if let hold = liveSecretHold {
+            liveSecretHold = nil
+            try await Task.sleep(for: hold)
+        }
         return LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }

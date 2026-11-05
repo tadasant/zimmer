@@ -239,13 +239,14 @@ recording only under the voice control template, and shows no notifications. The
 decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
 - The car is radically simple: one **Talk to Zimmer** button, and the Live Mode call screen with
-  Mute and End. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
+  Mute, End and a gear to the voice settings. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
   call screen's five states, Muted one of them, and the words for what the call is doing),
   `LiveRetry.swift` (what the button says, and the quiet retries when Live Mode can't connect),
-  and `CarPlayNavigator.swift` (every modal change, one at a time, tracking what it presented).
+  `CarPlayNavigator.swift` (every modal change, one at a time, tracking what it presented), and
+  `CarVoiceSettings.swift` (the panel's rows, its writes, and the call coming back).
   `Tests/ZimmerKitTests/CarPlayTests.swift` drives the navigator against a strict fake that refuses
   what CarPlay refuses, and holds the scene's source to its rules: no system speech, no direct
-  session actions, no template but the grid and the call screen, and no interface-controller call
+  session actions, no template but the grid, the call screen and the voice settings list, and no interface-controller call
   without a completion.
 - `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring; `CarPlayHome.swift` is the grid
   with its one button; `CarPlayLive.swift` is the call screen, a `CPVoiceControlTemplate` built once

@@ -359,6 +359,35 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Be brief.", response.parsed_body["guidance"]
   end
 
+  # The car's voice settings panel writes what `update_live_settings` wrote, the
+  # way the app sends it: a JSON null on each key, which SettingsUpdate takes as
+  # back on the default. The panel is only a break-glass if this is the same row.
+  test "a cap and a gated Listening set by voice are read and cleared over the API, and the next call has no cap" do
+    conversation = create_live_conversation(mode: "voice")
+    written = { voice_max_output_tokens: 180, voice_listening: "dynamic", voice_vad_eagerness: "low", voice_vad_threshold: 0.92 }
+    post "/api/v1/live_conversations/#{conversation.id}/tool_calls",
+      params: { name: "update_live_settings", arguments: written.to_json, call_id: "call_voice" }, headers: @headers
+    assert_response :success
+
+    get "/api/v1/live/settings", headers: @headers
+    assert_equal 180, response.parsed_body.dig("settings", "voice_max_output_tokens")
+    assert_equal "dynamic", response.parsed_body.dig("settings", "voice_listening")
+    assert_equal written.keys.map(&:to_s).sort, response.parsed_body["overrides"].sort
+    assert_equal 180, LiveConversations::RealtimeSession.new(conversation).session_config[:max_output_tokens]
+
+    patch "/api/v1/live/settings", params: written.transform_values { nil }, headers: @headers, as: :json
+    assert_response :success
+    assert_empty response.parsed_body["overrides"]
+    assert_equal "always", response.parsed_body.dig("settings", "voice_listening")
+    assert_nil response.parsed_body.dig("settings", "voice_max_output_tokens")
+    assert_equal [ "human", "the iOS app" ], LiveSettingChange.recent_first.first.then { |c| [ c.actor_kind, c.actor ] }
+
+    config = LiveConversations::RealtimeSession.new(conversation, setting: LiveSetting.current).session_config
+    assert_not config.key?(:max_output_tokens), "a call minted after the reset has no cap"
+    assert_equal({ type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: true },
+      config.dig(:audio, :input, :turn_detection))
+  end
+
   test "a voice tool call that changes the settings hands the client a session.update" do
     conversation = create_live_conversation(mode: "voice")
 

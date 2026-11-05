@@ -1,9 +1,11 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button, and a call that cannot connect fails, retries and puts
-/// the call screen up and down again and again, gives up and says so on the button, and a tap
-/// after that tries again. After every step Zimmer must still be running, and no call
+/// the car's app: it opens on one button; the call screen shows the gear, and the gear's action
+/// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
+/// which show what a voice call left behind, change it and reset it, and the call comes back; and
+/// a call that cannot connect fails, retries and puts the call screen up and down again and
+/// again, gives up and says so on the button, and a tap after that tries again. After every step Zimmer must still be running, and no call
 /// screen may be left over a car with no call: those are the changes CarPlay turns into an
 /// exception, and a crash, as it did in a car (#1410).
 ///
@@ -40,10 +42,14 @@ final class CarPlayDrillUITests: XCTestCase {
     /// buttons ("microphone off", "hang up") but computes no hit point for them, and neither an
     /// element tap nor a coordinate tap reaches them, so the drill cannot drive them; the five
     /// states they switch between are `LiveCallScreenTests`', and the rest is driving.
-    func test_open_on_one_button_then_a_call_that_cannot_connect_retries_gives_up_and_tries_again() {
+    ///
+    /// `-ZimmerFixtureVoiceTurnedUp` starts the Live settings where voice calls left them on the
+    /// call that broke, and holds the first call on Connecting…, so the call screen stays up to
+    /// be driven; every call after it fails as fast as ever.
+    func test_open_on_one_button_then_the_gear_then_a_call_that_cannot_connect_retries_gives_up_and_tries_again() {
         XCTAssertGreaterThanOrEqual(XCUIScreen.screens.count, 2, "the CarPlay window is a second screen, and there is none")
         zimmer = XCUIApplication()
-        zimmer.launchArguments = ["-ZimmerFixture"]
+        zimmer.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureVoiceTurnedUp"]
         zimmer.launch()
         openInTheCar()
 
@@ -56,10 +62,45 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-home")
         assertAlive("on the home screen")
 
-        // A call that cannot connect (the fixture's Realtime secret points at realtime.invalid):
-        // the call screen goes up, the call fails, and the car retries after 2, 5 and 15 seconds,
-        // each retry putting the call screen up and taking it down — the churn that crashed it.
+        // The gear: on the call screen, on a call held on Connecting….
         tapTile("Talk to Zimmer")
+        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call screen goes up; the car showed:\n\(car.debugDescription)")
+        photograph("carplay-call-screen-gear")
+        record("the call screen", car.debugDescription)
+        // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
+        // click from the Mac at its place does not reach it either. So the fixture runs the
+        // gear's own action, 15 seconds after the call screen goes up.
+        XCTAssertTrue(car.buttons["gearshape.fill"].exists, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
+        assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
+        assertAlive("with the voice settings up")
+
+        // What voice left behind, the reply cap first. Under Semantic the threshold would go
+        // nowhere, so there is no row for it.
+        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; the car showed:\n\(car.debugDescription)")
+        XCTAssertFalse(row("Speech threshold").exists, "no control that does nothing under Semantic")
+        photograph("carplay-voice-settings")
+
+        // Silence: the threshold is real there, so it appears, with the value voice left.
+        press("Turn detection", until: row("Back to settings"))
+        photograph("carplay-voice-settings-choices")
+        press("Silence", until: row("Speech threshold"))
+        XCTAssertTrue(anything(containing: "0.92").exists, "the value voice left; the car showed:\n\(car.debugDescription)")
+        photograph("carplay-voice-settings-silence")
+
+        // Reset to defaults: no cap, back on Semantic, and the threshold's row gone with it.
+        press("Reset to defaults", until: anything(containing: "No cap (default)"))
+        XCTAssertFalse(row("Speech threshold").exists, "and it is back on Semantic")
+        photograph("carplay-voice-settings-reset")
+        assertAlive("after the reset")
+
+        // Back to the call: the same conversation is called again, and in this fixture that call
+        // cannot connect (its Realtime secret points at realtime.invalid). The call screen goes
+        // up, the call fails, and the car retries after 2, 5 and 15 seconds, each retry putting
+        // the call screen up and taking it down — the churn that crashed it.
+        press("Back to the call", until: car.descendants(matching: .any).matching(NSPredicate(format: "label == 'Connecting…' OR label CONTAINS 'etry'")).firstMatch)
+        XCTAssertFalse(row("Reply length cap").exists, "the panel has left the stack")
         XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a failed call says it is retrying, on the button")
         photograph("carplay-retrying")
         XCTAssertTrue(waitFor(anyOf: ["Retry", "Live Mode unavailable. Tap to retry"], seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
@@ -94,6 +135,31 @@ final class CarPlayDrillUITests: XCTestCase {
         car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
+    /// A list row by its title: the cell has no label of its own, its title and detail do.
+    private func row(_ words: String) -> XCUIElement {
+        car.cells.containing(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
+    }
+
+    /// Tap a list row, and wait for `shown`.
+    private func press(_ words: String, until shown: XCUIElement) {
+        let target = row(words)
+        XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; the car showed:\n\(car.debugDescription)")
+        target.tap()
+        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; the car showed:\n\(car.debugDescription)")
+    }
+
+    private func anything(containing words: String) -> XCUIElement {
+        car.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", words)).firstMatch
+    }
+
+    /// What XCUITest could see, kept with the run.
+    private func record(_ name: String, _ tree: String) {
+        let attachment = XCTAttachment(string: tree)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func tapTile(_ label: String, or other: String? = nil) {
         // A grid tile is a button named for its symbol with the tile's words as a text inside.
         let tile = car.buttons.containing(NSPredicate(format: "label == %@", label)).firstMatch
@@ -126,8 +192,11 @@ final class CarPlayDrillUITests: XCTestCase {
     /// screen left up over a car that gave up is the bug this drill first caught (CarPlay hands
     /// back a stand-in for the template it presented, so a dismissal that compared by identity
     /// never happened).
-    private func assertNoCallScreen(_ when: String) {
-        let titles = ["Connecting…", "Listening", "Speaking", "Working on it…", "Muted"]
+    ///
+    /// With the voice settings up, *Listening* is one of their rows, so it says nothing there.
+    private func assertNoCallScreen(_ when: String, panelUp: Bool = false) {
+        var titles = ["Connecting…", "Speaking", "Working on it…", "Muted"]
+        if !panelUp { titles.append("Listening") }
         let title = car.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", titles)).firstMatch
         let gone = NSPredicate(format: "exists == false")
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)

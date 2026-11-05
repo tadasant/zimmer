@@ -1,6 +1,6 @@
 import Foundation
 
-/// The modal half of a CarPlay interface controller, as `CarPlayNavigator` drives it. The app's
+/// A CarPlay interface controller, as `CarPlayNavigator` drives it. The app's
 /// `CPInterfaceController` conforms through CarPlay's async calls; the tests' strict fake
 /// conforms by failing exactly where CarPlay does.
 ///
@@ -18,6 +18,12 @@ public protocol CarPlayModalHost: AnyObject {
     func present(_ template: Template, animated: Bool) async throws
     /// Dismiss the modal on screen. Throws when CarPlay refuses — including when none is.
     func dismissPresented(animated: Bool) async throws
+    /// How many templates are pushed above the root.
+    var pushedCount: Int { get }
+    /// Push `template` above the root. Throws when CarPlay refuses.
+    func push(_ template: Template, animated: Bool) async throws
+    /// Back to the root. Throws when CarPlay refuses — including when it is there already.
+    func popToRoot(animated: Bool) async throws
 }
 
 /// Every modal change the car makes, one at a time.
@@ -40,6 +46,8 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
     /// CarPlay drill caught in the Simulator's CarPlay window. The host is asked only whether
     /// anything is up, which also covers a modal the driver closed with CarPlay's own button.
     private var shown: Template?
+    /// The template this navigator pushed and has not popped.
+    private var pushed: Template?
     /// The last change queued; the next one waits for it.
     private var tail: Task<Void, Never>?
     /// A change CarPlay refused, in words, for the log.
@@ -81,6 +89,44 @@ public final class CarPlayNavigator<Host: CarPlayModalHost> {
             do { try await host.dismissPresented(animated: true) } catch { self.report("dismiss", error) }
         } otherwise: { () }
     }
+
+    /// Put `template` on the stack with nothing over it: a list cannot be presented, and a pushed
+    /// screen sits under any modal, so whatever modal is up goes first. True when it is up.
+    @discardableResult
+    public func push(_ template: Template) async -> Bool {
+        await serially { host in
+            if self.pushed === template, host.pushedCount > 0 { return true }
+            if host.presentedTemplate != nil {
+                do { try await host.dismissPresented(animated: false) } catch {
+                    self.report("dismiss before push", error)
+                    return false
+                }
+            }
+            self.shown = nil
+            do {
+                try await host.push(template, animated: true)
+                self.pushed = template
+                return true
+            } catch {
+                self.report("push", error)
+                return false
+            }
+        } otherwise: { false }
+    }
+
+    /// Take `template` off the stack if it is the one pushed. The driver's own Back may have got
+    /// there first, and a pop with nothing pushed is one CarPlay refuses.
+    public func pop(_ template: Template) async {
+        await serially { host in
+            guard self.pushed === template else { return }
+            self.pushed = nil
+            guard host.pushedCount > 0 else { return }
+            do { try await host.popToRoot(animated: true) } catch { self.report("pop", error) }
+        } otherwise: { () }
+    }
+
+    /// Whether nothing is pushed above the root, however it got that way.
+    public var isAtRoot: Bool { (host?.pushedCount ?? 0) == 0 }
 
     /// Wait for every change queued so far.
     public func settle() async {
