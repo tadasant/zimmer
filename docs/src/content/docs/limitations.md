@@ -273,6 +273,8 @@ So every UI test flips a switch with `flip` in `ios/App/ZimmerUITests/SwitchFlip
 
 The app may also cause the loss by setting a switch during a touch. A `Toggle` is set again every time the view around it is re-evaluated. In loops with touch logging on, the only two 200 ms presses ever lost had a set land during them, and three others with one survived, so that is a suspect and not a proven cause. The Quick Router's switches moved into `QuickRouterSwitch`, which cut those sets to about a fifth once the sheet has settled. It did not end them, and it did not clearly reduce how often one lands during a touch. The app's other `Toggle`s, in Settings and on the trigger pages for example, are unchanged.
 
+The segmented control in the board's Filters sheet loses short touches too: its selection starts to move and snaps back, and the choice is never made. In one run of 100 touches of each length, a 67 ms `tap()` lost 4 and a 200 ms press lost 1, with the sheet itself untouched. So the tests press it, and the Filters sheet's own test asserts on a switch through `flip`. Nothing here was measured on a real device.
+
 ### The TestFlight export retry trusts a short list of error strings
 
 `ios/bin/testflight upload` retries `xcodebuild -exportArchive` up to three times, but only when an
