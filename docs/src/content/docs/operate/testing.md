@@ -76,6 +76,14 @@ The job downloads a pinned, checksummed shellcheck release into `$RUNNER_TEMP`. 
 self-hosted runner has no shellcheck on it and CI jobs there do not run as root, so `apt-get
 install` is not an option; putting it in the runner image would mean a different repository.
 
+A failed download must not turn `main` red when nothing is wrong in the repo, and it must not skip
+the check either. `.github/scripts/fetch-pinned-download.sh` keeps the verified tarball in
+`~/.zimmer-ci/downloads` on the runner, named by its sha256, and checks it against the pin on every
+run, so a runner that has it makes no request. A cached copy that fails the check is dropped and
+fetched again. A cold runner retries for about four minutes, then fails the job. A download that
+does not match the pin always fails the job. `fetch-pinned-download_test.sh` runs in the same job
+and exercises each of those against a local server answering 504.
+
 Three guards keep the job from passing while checking nothing. It fails on an empty file list; it
 fails if any of the four root-privileged scripts above has dropped out of the set, which is the
 failure mode a glob invites; and it fails on a repo-root `.shellcheckrc` or a file-level `#
