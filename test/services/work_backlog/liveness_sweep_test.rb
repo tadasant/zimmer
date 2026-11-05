@@ -645,6 +645,150 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
+  # --- the decision digest (#1453) --------------------------------------------
+  #
+  # A hold no longer needs a page to remind anyone, because the digest does that.
+  # These run the real sweep and the real digest together, a day at a time, since
+  # what they pin is how the two meet. The first is the fix. The rest are what
+  # separates it from a silence.
+
+  test "an unanswered hold stays awaiting decision through eight weeks of delivered digests, with no page" do
+    held = held_row
+    channel = PushCounter.new(sent: 1)
+
+    with_alerts do |alerts|
+      each_day(56) { |no_pr| digest(channel); sweep(probes: no_pr) }
+
+      assert_empty alerts.pages, "a lapse nobody can act on is a reminder, and the digest is the reminder"
+      assert_equal 8, channel.pushes, "and the decision kept being delivered, once a week"
+      travel 56.days do
+        assert_includes WorkBacklogItem.awaiting_decision.pluck(:id), held.id, "it did not go quiet"
+      end
+      assert_equal "pick one", held.reload.hold_reason, "and it was not cleared"
+    end
+  end
+
+  test "a digest that stops reaching anyone lets the hold lapse, and that page goes out" do
+    held = held_row
+    channel = PushCounter.new(sent: 0)
+
+    with_alerts do |alerts|
+      each_day(15) { |no_pr| digest(channel); sweep(probes: no_pr) }
+
+      assert_equal 1, alerts.pages.size
+      assert_match(/1 hold\(s\) for a human decision lapsed/, alerts.records.last)
+      assert_match(/decision digest did not renew them/, alerts.records.last)
+      assert_equal "weeks-4", alerts.events.last[:fingerprint][1], "with its original age"
+      assert_nil held.reload.held_at
+      assert_equal 14, alerts.log.string.lines.grep(/ERROR.*reached no device/).size,
+                   "and every failed tick before it was an ERROR"
+    end
+  end
+
+  test "a digest job that never runs at all still ends in the lapse page" do
+    held_row
+
+    with_alerts do |alerts|
+      each_day(15) { |no_pr| sweep(probes: no_pr) }
+
+      assert_equal 1, alerts.pages.size
+      assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
+    end
+  end
+
+  test "delivery that stops after weeks of working pages one hold duration later" do
+    # 22 days old, so the days around the lapse sit inside one week band and the
+    # only page here is the lapse.
+    held_row(started_at: 22.days.ago)
+    channel = PushCounter.new(sent: 1)
+
+    with_alerts do |alerts|
+      each_day(21) { |no_pr| digest(channel); sweep(probes: no_pr) }
+      assert_empty alerts.pages
+
+      channel.sent = 0
+      each_day(9, from: 21) { |no_pr| digest(channel); sweep(probes: no_pr) }
+
+      assert_equal 1, alerts.pages.size
+      assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
+    end
+  end
+
+  test "a stranded row nobody triaged still pages on age and band beside a renewed hold" do
+    held_row
+    channel = PushCounter.new(sent: 1)
+    started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
+    probes = { 1 => probe, 2 => probe(number: 2) }
+
+    with_alerts do |alerts|
+      each_day(8, probes: probes) { |current| digest(channel); sweep(probes: current) }
+
+      assert_equal [ "weeks-1", "weeks-2" ], alerts.events.map { |event| event[:fingerprint][1] }
+      assert_equal [ 0, 0 ], alerts.events.map { |event| event.dig(:context, :lapsed_holds) }
+      assert_equal [ 1, 1 ], alerts.events.map { |event| event.dig(:context, :awaiting_decision_rows) }
+    end
+  end
+
+  test "a renewed hold whose evidence changes is void, and the row pages at its full age" do
+    held = held_row
+    channel = PushCounter.new(sent: 1)
+
+    with_alerts do |alerts|
+      each_day(20) { |no_pr| digest(channel); sweep(probes: no_pr) }
+      assert_empty alerts.pages
+      assert_operator held.reload.held_until, :>, 20.days.from_now, "renewed past its first fortnight"
+
+      travel 21.days do
+        sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: 1.day.ago) ]) })
+
+        assert_nil held.reload.held_at
+        assert_equal [ held.id ], WorkBacklogItem.stranded.pluck(:id)
+        assert_equal 1, alerts.pages.size
+        assert_equal "weeks-5", alerts.events.last[:fingerprint][1]
+        assert_equal 0, alerts.events.last.dig(:context, :lapsed_holds), "a void is not a lapse"
+      end
+    end
+  end
+
+  test "a row GitHub stops answering for is delivered but lapses and pages" do
+    # 22 days old for the same reason as above: one week band around the lapse.
+    held = held_row(started_at: 22.days.ago)
+    channel = PushCounter.new(sent: 1)
+
+    with_alerts do |alerts|
+      digest(channel)
+      original_until = held.reload.held_until
+
+      each_day(16, probes: {}) { |nothing| sweep(probes: nothing); digest(channel) }
+
+      assert_operator channel.pushes, :>=, 2, "it stayed in the digest"
+      assert_operator original_until, :<, 16.days.from_now
+      assert_equal 1, alerts.pages.size, "nothing re-read its evidence, so nothing renewed it"
+    end
+  end
+
+  test "a hold suspended past its original fortnight by a moving PR does not page when the PR lands" do
+    held = held_row(state: WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN)
+    channel = PushCounter.new(sent: 1)
+    moving = ->(at) { { 1 => probe(references: [ reference(state: "OPEN", updated_at: at) ]) } }
+
+    with_alerts do |alerts|
+      16.times do |day|
+        travel day.days do
+          digest(channel)
+          sweep(probes: moving.call(Time.current))
+        end
+      end
+
+      travel 16.days do
+        sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: 1.hour.ago) ]) })
+
+        assert_empty alerts.pages
+        assert_includes WorkBacklogItem.awaiting_decision.pluck(:id), held.id
+      end
+    end
+  end
+
   test "a pass that could not read a repo says nothing" do
     started_row(started_at: 9.days.ago)
 
@@ -714,6 +858,44 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   end
 
   private
+
+  # A push channel with a number of devices it says it reached.
+  class PushCounter
+    attr_accessor :sent
+    attr_reader :pushes
+
+    def initialize(sent:)
+      @sent = sent
+      @pushes = 0
+    end
+
+    def send_to_all(**)
+      @pushes += 1 if sent.positive?
+      { sent: sent, failed: 0, expired: 0 }
+    end
+  end
+
+  def held_row(state: WorkBacklogItem::LIVENESS_NO_PR, started_at: 20.days.ago)
+    row = started_row(started_at: started_at)
+    row.record_liveness!(state)
+    row.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+    # `travel` truncates to the second, so a hold stamped this instant could still
+    # be a fraction short of lapsing on the day these tests expect it to.
+    row.update_columns(held_at: row.held_at - 1.minute, held_until: row.held_until - 1.minute)
+    row
+  end
+
+  def digest(channel)
+    WorkBacklog::DecisionDigest.deliver!(channels: { fake: -> { channel } })
+  end
+
+  # Yields once for each of `days` days, the clock on that day. A pass on day zero
+  # first, as a deploy would see it.
+  def each_day(days, from: 0, probes: { 1 => probe })
+    (from...(from + days)).each do |day|
+      travel(day.days) { yield probes }
+    end
+  end
 
   def issue_url(number) = "https://github.com/tadasant/zimmer/issues/#{number}"
 

@@ -2,8 +2,8 @@
 
     Posts to WorkBacklogHoldsController, through WorkBacklog::Hold — the same
     write the `hold_work_backlog_item_for_decision` MCP tool makes. It moves the
-    row to "Awaiting your decision" and out of the stranded page until the hold
-    lapses; it changes nothing else about the row. %>
+    row to "Awaiting your decision", out of the stranded page and into the
+    decision digest; it changes nothing else about the row. %>
 <%= form_with url: hold_work_backlog_item_path(row.item, query_params), method: :post,
     class: "mt-1 flex items-center gap-1" do %>
   <%= text_field_tag "reason", nil,

@@ -240,6 +240,11 @@
       "class": "WorkBacklogLivenessSweepJob",
       "description": "Re-check backlog rows that left the queue, and record which have outlived the reason they left"
     },
+    "work_backlog_decision_digest": {
+      "cron": "10 15 * * *",
+      "class": "WorkBacklogDecisionDigestJob",
+      "description": "Push the decisions the work backlog is waiting on to their owner, and renew the holds that reached them"
+    },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
@@ -566,6 +571,11 @@
       "cron": "25 * * * *",
       "class": "WorkBacklogLivenessSweepJob",
       "description": "Re-check backlog rows that left the queue, and record which have outlived the reason they left"
+    },
+    "work_backlog_decision_digest": {
+      "cron": "10 15 * * *",
+      "class": "WorkBacklogDecisionDigestJob",
+      "description": "Push the decisions the work backlog is waiting on to their owner, and renew the holds that reached them"
     },
     "burn_rate_recompute": {
       "cron": "*/20 * * * *",

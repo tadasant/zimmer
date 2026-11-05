@@ -44,7 +44,8 @@ class ApnsService
     "elicitation_pending" => "A session is asking you something.",
     "session_complete" => "A session finished.",
     "session_failed" => "A session failed.",
-    "custom_message" => "A session sent you a message."
+    "custom_message" => "A session sent you a message.",
+    "decision_digest" => "Decisions are waiting on you."
   }.freeze
   ALERT_TITLE = "Zimmer"
 

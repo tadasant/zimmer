@@ -10,7 +10,8 @@ module Mcp
     # In the `work_backlog` group, beside append and pull, and for the same reason
     # they are there: it changes what the fleet is told about the queue. It is
     # NOT a removal and has none of the human-only levers' reach — it moves no row,
-    # changes no status, and lapses on its own — which is why an agent may hold it.
+    # changes no status, and lapses unless a delivery reaches its owner — which is why
+    # an agent may hold it.
     #
     # `held_by` is stamped from the connection, never taken from an argument, the
     # way `append_work_backlog_item` stamps `added_by`.
@@ -20,9 +21,9 @@ module Mcp
       description <<~DESC
         Record that a **stranded** work backlog row is waiting on a **human decision**, so it stops paging while that decision is owed. Use this when you have triaged a stranded row and the right outcome is neither "put it back" (`append_work_backlog_item`) nor "it is finished" (a human closes the issue), but "a person has to choose" — pick between overlapping issues, seed a secret, rule on a declined PR.
 
-        **What it does.** The row moves from `status: "stranded"` to `status: "awaiting_decision"` in `get_work_backlog`, and out of the population whose age pages `#alerts` (`WorkBacklogLivenessSweepJob`). It is listed under "Awaiting your decision" on the Issues page with your `reason`. It does NOT change the row's `status`, remove it, or re-queue it.
+        **What it does.** The row moves from `status: "stranded"` to `status: "awaiting_decision"` in `get_work_backlog`, and out of the population whose age pages `#alerts` (`WorkBacklogLivenessSweepJob`). It is listed under "Awaiting your decision" on the Issues page with your `reason`, and `WorkBacklogDecisionDigestJob` pushes that `reason` to the owner within a day and every #{WorkBacklog::DecisionDigest::CADENCE.inspect} after that until it is answered, so write it to be read on a phone. It does NOT change the row's `status`, remove it, or re-queue it.
 
-        **It lapses after #{WorkBacklogItem::HOLD_DURATION.inspect}.** The row is then stranded again with its original age, and the next sweep pages on the lapse — that page is the reminder that the decision is still owed. A hold cannot be extended while it is active, and cannot be renewed until its lapse has paged. After that you may hold the row again, but read it first: the question is whether the decision is still the one owed.
+        **It lasts while it keeps reaching the owner.** Each digest that reaches a device renews the hold for #{WorkBacklogItem::HOLD_DURATION.inspect}, as long as the row's evidence reads unchanged. So an unanswered hold stays awaiting decision and does not page. If the digest stops reaching anyone, or the row's evidence stops being readable, the hold lapses: the row is stranded again with its original age, and the next sweep pages. You cannot extend a hold while it is active, and cannot renew a lapsed one until its lapse has paged. After that you may hold the row again, but read it first: the question is why the digest stopped, and whether the decision is still the one owed.
 
         **It is void when the evidence changes.** The hold records the row's `liveness_state`; if a later sweep reads a different one (the issue closed, a newer row superseded it, a PR merged onto a row that had none, a PR stalled), the hold is cleared and the row is triaged afresh. A failed GitHub read (`unknown`) does not void it, and neither does a moving open PR (`pr_open`): that suspends the hold, and once the PR merges or closes the hold is judged on what the row reads then. A PR that only mentions the issue therefore leaves it in force.
 
