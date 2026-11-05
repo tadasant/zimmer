@@ -111,8 +111,24 @@ class Sessions::UpdateSchedulingClassTest < ActiveSupport::TestCase
       end
     end
 
+    assert_equal SessionGenesis::SPOT, session.scheduling_class, "the class is not even assigned"
+    assert_equal 10, session.precedence, "the rank is not even assigned"
     assert_equal SessionGenesis::SPOT, session.reload.scheduling_class
     assert_equal 10, session.precedence
+  end
+
+  test "an unknown class is refused ahead of an unknown actor" do
+    assert_raises(Sessions::UpdateSchedulingClass::UnknownSchedulingClass) do
+      Sessions::UpdateSchedulingClass.call(session: spot(10), scheduling_class: "bogus", actor: :api)
+    end
+  end
+
+  test "place and precedence together are refused ahead of an unknown actor" do
+    error = assert_raises(ArgumentError) do
+      Sessions::UpdateSchedulingClass.call(session: spot(10), scheduling_class: "spot", actor: :api,
+        precedence: 5, place: "top_of_spot")
+    end
+    assert_equal SessionPrecedence::BOTH_PLACE_AND_PRECEDENCE, error.message
   end
 
   test "a blank class clears the choice back to the one the origin derives" do

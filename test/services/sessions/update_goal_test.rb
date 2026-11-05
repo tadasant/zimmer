@@ -124,6 +124,7 @@ class Sessions::UpdateGoalTest < ActiveSupport::TestCase
       end
     end
 
+    assert_equal "Old goal", session.goal, "the goal is not even assigned"
     assert_equal "Old goal", session.reload.goal
   end
 

@@ -5,13 +5,13 @@ module Sessions
   # the web UI, " via MCP" or " via the REST API" otherwise. The words go straight
   # after the verb, so "Precedence set via MCP to 55 (was 10)".
   #
-  # Shared by the writers every door reaches: Sessions::UpdatePrecedence,
-  # Sessions::UpdateSchedulingClass and Sessions::UpdateGoal. Other services keep
-  # their own labels because their rows read differently: Sessions::ReorderPrecedence
-  # names a drag, and the restart and transcript rows spell out a whole phrase.
-  # Sessions::UpdateEffort, UpdateModel and UpdateCatalogSelection say " via API"
-  # under an `:api` actor, and UpdateAutoCompactWindow and UpdateMemoryBoost have
-  # no REST door.
+  # Shared by Sessions::UpdatePrecedence, Sessions::UpdateSchedulingClass and
+  # Sessions::UpdateGoal. Other services keep their own labels because theirs
+  # differ: Sessions::ReorderPrecedence and the restart and transcript rows use a
+  # different phrase in a different place, Sessions::UpdateEffort, UpdateModel and
+  # UpdateCatalogSelection say " via API" under an `:api` actor, and
+  # UpdateAutoCompactWindow and UpdateMemoryBoost have no `:rest` and fall back to
+  # no label on an unknown actor.
   #
   # The lookup is strict, and each writer does it before its first write, so an
   # actor that is not one of these raises KeyError with nothing written.
