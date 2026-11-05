@@ -9,9 +9,8 @@ module Sessions
   # undoes the write it describes. `previous` is the stored value, which the caller
   # read before saving, and a rank that did not move writes no row.
   #
-  # Not a drag: Sessions::ReorderPrecedence's row says how the session got there
-  # ("… by drag-and-drop in the Ranked view") and Sessions::ApplyUserViewOrder's
-  # says where it landed, so each writes its own.
+  # Sessions::ReorderPrecedence and Sessions::ApplyUserViewOrder write their own
+  # rows, because theirs carry a reason after the "(was …)".
   module PrecedenceLog
     module_function
 

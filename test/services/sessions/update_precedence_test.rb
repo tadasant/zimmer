@@ -133,6 +133,30 @@ class Sessions::UpdatePrecedenceTest < ActiveSupport::TestCase
     assert_equal "Original", stored.title
   end
 
+  test "a retry after a failed log write still logs the move" do
+    real_create = @session.logs.method(:create!)
+    attempts = 0
+    flaky_create = lambda do |**attrs|
+      attempts += 1
+      raise ActiveRecord::ConnectionFailed, "simulated" if attempts == 1
+
+      real_create.call(**attrs)
+    end
+
+    result = nil
+    @session.logs.stub(:create!, flaky_create) do
+      assert_raises(ActiveRecord::ConnectionFailed) do
+        Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :web)
+      end
+      result = Sessions::UpdatePrecedence.call(session: @session, precedence: 640, actor: :web)
+    end
+
+    assert_equal 2, attempts
+    assert_equal 10, result.previous
+    assert_equal 640, @session.reload.precedence
+    assert_equal "Precedence set to 640 (was 10)", @session.logs.order(:created_at).last.content
+  end
+
   test "an unknown actor is refused before anything is written" do
     assert_no_difference -> { Log.count } do
       assert_raises(KeyError) do

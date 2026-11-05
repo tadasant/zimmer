@@ -74,6 +74,7 @@ module Sessions
     # @raise [TooLong] on a goal over Session::GOAL_MAX_LENGTH characters
     # @raise [UnknownGoalId] on an id-shaped goal the catalog does not have
     # @raise [ActiveRecord::RecordInvalid] when the session fails another validation
+    # @raise [KeyError] on an actor Sessions::ActorLabel does not know
     def self.call(session:, goal:, actor:, &save)
       new(session: session, goal: goal, actor: actor).call(&save)
     end
