@@ -277,6 +277,12 @@ The app may also cause the loss by setting a switch during a touch. A `Toggle` i
 
 The scheduling class control in the board's Filters sheet loses short touches too: its selection starts to move and snaps back, and the choice is never made. In one run of 100 touches of each length, a 67 ms `tap()` lost 4 and a 200 ms press lost 1, with the sheet itself untouched. So `BoardFiltersUITests` presses it, and that class's test of the sheet's state asserts on a switch through `flip`. A press that is lost still fails the test that made it. Nothing here was measured on a real device.
 
+### A row in the CarPlay drill can ignore a tap, and nothing yet says why
+
+Once, in [run 42091565874](https://github.com/tadasant/zimmer/actions/runs/42091565874), the drill tapped the centre of the voice settings' Turn detection row and the list did not change in the 20 seconds that followed. The re-run passed on the same commit. That run could not say whether the touch was lost in CarPlay's host, whether the row's handler ran, or whether a redraw was dropped, and two instrumented loops did not lose a touch to tell us: about 1,050 touches, 0 lost, 270 of them first plain taps on a freshly pushed panel and 210 of those on the exact path of the failure. The one thing that stood out in the failed run was a stall of about 15 seconds just before the tap, and those loops never recreated it. Twelve `yes` processes did not slow the simulator, so nothing here was measured under real load.
+
+So the cause is not known, and the drill has no retry, because the failure could be the app's. The drill's job log now prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got: the comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
+
 ### A sheet presented from inside a `List` row can reset itself
 
 A `.sheet` attached to a view inside a `List` row can get a new identity in place when the model publishes. The sheet stays up, but its scroll position, open menus and `@State` are gone. It happened to the board's Filters sheet, which is now presented from the view that owns the `List` ([#1458](https://github.com/tadasant/zimmer/issues/1458)). Why it happens is not known, and neither is why only some launches do it. Moving the sheet stopped it in every test. Attach sheets to the view that owns the `List`, not to a row.
