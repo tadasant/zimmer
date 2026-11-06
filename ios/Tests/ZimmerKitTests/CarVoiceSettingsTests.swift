@@ -248,9 +248,9 @@ final class CarVoiceSettingsTests: XCTestCase {
         }
     }
 
-    /// Talk to Zimmer after the retries are spent is a fresh start, and a fresh start for a
-    /// driver who had muted must not open the microphone.
-    func testTalkDropsTheConversationButNotTheMute() async throws {
+    /// A tile after the retries are spent is a fresh start, and a fresh start for a driver who
+    /// had muted must not open the microphone.
+    func testATileDropsTheConversationButNotTheMute() async throws {
         var comeback = try XCTUnwrap(CarCallComeback(conversation: 21, callIsActive: true, muted: true))
         XCTAssertTrue(comeback.wantsCall)
         comeback.talkTapped()

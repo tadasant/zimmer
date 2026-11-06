@@ -323,12 +323,12 @@ final class CarPlayTests: XCTestCase {
 
     func testAFailedCallIsRetriedQuietlyThenTheTileSaysLiveModeIsUnavailable() {
         var retry = LiveRetry()
-        XCTAssertEqual(retry.tile(callIsActive: false), .ready)
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation)
         retry.asked()
         XCTAssertEqual(retry.failed(), .seconds(2))
         XCTAssertEqual(retry.tile(callIsActive: false), .retrying)
         XCTAssertEqual(retry.tile(callIsActive: false).titleVariants.first, "Live Mode unavailable, retrying…")
-        XCTAssertEqual(retry.tile(callIsActive: false), .retrying, "a retry connecting is still retrying, not Talk to Zimmer")
+        XCTAssertEqual(retry.tile(callIsActive: false), .retrying, "a retry connecting is still retrying, not a choice")
         XCTAssertEqual(retry.failed(), .seconds(5))
         XCTAssertEqual(retry.failed(), .seconds(15))
         XCTAssertNil(retry.failed(), "three retries in a row, then it stops")
@@ -336,7 +336,7 @@ final class CarPlayTests: XCTestCase {
         XCTAssertNil(retry.failed(), "and stays stopped")
 
         retry.asked()
-        XCTAssertEqual(retry.tile(callIsActive: false), .ready, "a tap is a fresh budget")
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation, "a tap is a fresh budget")
         XCTAssertEqual(retry.failed(), .seconds(2))
     }
 
@@ -347,7 +347,7 @@ final class CarPlayTests: XCTestCase {
         _ = retry.failed()
         retry.connected()
         XCTAssertEqual(retry.tile(callIsActive: true), .inCall)
-        XCTAssertEqual(retry.tile(callIsActive: false), .ready, "a call that came up is not a failure")
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation, "a call that came up is not a failure")
         XCTAssertEqual(retry.failed(), .seconds(2), "a drop after a good call starts the budget over")
 
         var denied = LiveRetry()
@@ -360,13 +360,13 @@ final class CarPlayTests: XCTestCase {
     func testNothingIsRetriedThatTheDriverDidNotAskForOrHungUp() {
         var retry = LiveRetry()
         XCTAssertNil(retry.failed(), "a call the phone started is the phone's to retry")
-        XCTAssertEqual(retry.tile(callIsActive: false), .ready)
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation)
 
         retry.asked()
         _ = retry.failed()
         retry.stopped()
         XCTAssertNil(retry.failed(), "hung up: nothing comes back")
-        XCTAssertEqual(retry.tile(callIsActive: false), .ready, "hanging up is not a failure")
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation, "hanging up is not a failure")
     }
 
     /// Two calls that each hang to the deadline, then falling notes: about half a minute from
@@ -407,11 +407,144 @@ final class CarPlayTests: XCTestCase {
     }
 
     func testEveryTileSaysSomethingOnANarrowScreen() {
-        for tile in [LiveTalkTile.ready, .connecting, .inCall, .retrying, .unavailable] {
+        for tile in [LiveTalkTile.continueConversation, .newConversation, .connecting, .inCall, .retrying, .unavailable] {
             XCTAssertEqual(tile.titleVariants.count, 2)
             XCTAssertLessThanOrEqual(tile.titleVariants[1].count, 10, "\(tile)")
             XCTAssertFalse(tile.symbol.isEmpty)
         }
+    }
+
+    // MARK: - Continue or New
+
+    func testAtRestTheDriverChoosesAndWithNothingOpenThereIsOnlyNew() {
+        let retry = LiveRetry()
+        XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: true), [.continueConversation, .newConversation])
+        XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: nil), [.continueConversation, .newConversation],
+                       "before Zimmer has said, both: one is nearly always open, and the tap reads again")
+        XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: false), [.newConversation], "no tile that does nothing")
+    }
+
+    /// Whatever is open, a tile under way is one tile: there is nothing to choose.
+    func testAnythingUnderWayIsOneTile() {
+        for open in [true, false, nil] as [Bool?] {
+            var retry = LiveRetry()
+            XCTAssertEqual(retry.tiles(callIsActive: true, conversationOpen: open), [.inCall])
+            retry.asked()
+            retry.lookup()
+            XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: open), [.connecting])
+            retry.lookedUp()
+            XCTAssertNotNil(retry.failed())
+            XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: open), [.retrying])
+        }
+    }
+
+    /// A conversation that will not connect is when New is most wanted.
+    func testGivingUpKeepsNewBesideRetry() {
+        var retry = LiveRetry()
+        retry.asked()
+        retry.gaveUp()
+        for open in [true, false, nil] as [Bool?] {
+            XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: open), [.unavailable, .newConversation])
+        }
+    }
+
+    func testEachTileMakesItsChoiceAndAStatusTileAsksAgain() {
+        var wish = CarLiveWish()
+        XCTAssertEqual(wish.choice, .continueOpen)
+        wish.tapped(.newConversation, callIsActive: false)
+        XCTAssertEqual(wish.choice, .startNew)
+        for status in [LiveTalkTile.connecting, .retrying, .unavailable] {
+            wish.tapped(status, callIsActive: false)
+            XCTAssertEqual(wish.choice, .startNew, "\(status) repeats the wish: a failed New retries New, not the old conversation")
+        }
+        wish.tapped(.continueConversation, callIsActive: false)
+        XCTAssertEqual(wish.choice, .continueOpen)
+    }
+
+    func testAStaleNewTileGoesBackToARunningCallRatherThanReplacingIt() {
+        var wish = CarLiveWish()
+        wish.tapped(.newConversation, callIsActive: true)
+        XCTAssertEqual(wish.choice, .continueOpen)
+    }
+
+    func testContinueCallsTheOpenConversationAndStartsNothing() async throws {
+        let api = FakeZimmerAPI()
+        let wish = CarLiveWish()
+        let before = try await api.liveConversations().conversations.count
+        let id = try await api.conversation(for: wish.choice)
+        XCTAssertEqual(id, 21)
+        let after = try await api.liveConversations()
+        XCTAssertEqual(after.conversations.count, before)
+        XCTAssertEqual(after.current, 21)
+    }
+
+    func testNewEndsTheOpenConversationAndTheOldOneStaysReadable() async throws {
+        let api = FakeZimmerAPI()
+        var wish = CarLiveWish()
+        wish.tapped(.newConversation, callIsActive: false)
+        let answer = try await api.conversation(for: wish.choice)
+        let id = try XCTUnwrap(answer)
+        XCTAssertNotEqual(id, 21)
+        let current = try await api.liveConversations().current
+        XCTAssertEqual(current, id)
+        let new = try await api.liveConversation(id, afterTurn: nil)
+        XCTAssertEqual(new.mode, .voice, "the car's call has voice on")
+        let old = try await api.liveConversation(21, afterTurn: nil)
+        XCTAssertFalse(old.status.isOpen)
+        XCTAssertEqual(old.turns?.isEmpty, false, "and what was said in it is still there")
+    }
+
+    /// The bug a naive New would have: every retry a fresh conversation, ending the last one.
+    func testARetryAfterNewCallsTheConversationNewStartedRatherThanAnother() async throws {
+        let api = FakeZimmerAPI()
+        var wish = CarLiveWish()
+        wish.tapped(.newConversation, callIsActive: false)
+        let first = try await api.conversation(for: wish.choice)
+        XCTAssertNotNil(first)
+        wish.answered()
+        let total = try await api.liveConversations().conversations.count
+        for _ in 0..<3 {
+            let again = try await api.conversation(for: wish.choice)
+            XCTAssertEqual(again, first)
+        }
+        let after = try await api.liveConversations().conversations.count
+        XCTAssertEqual(after, total, "no second conversation")
+    }
+
+    /// A start Zimmer never answered made no conversation the car knows of, so Retry starts one.
+    func testAStartNeverAnsweredIsStillNew() {
+        var wish = CarLiveWish()
+        wish.tapped(.newConversation, callIsActive: false)
+        wish.tapped(.unavailable, callIsActive: false)
+        XCTAssertEqual(wish.choice, .startNew)
+    }
+
+    func testContinueWithNothingOpenFindsNothingAndStartsNothing() async throws {
+        let api = FakeZimmerAPI()
+        _ = try await api.finishLiveConversation(21)
+        let wish = CarLiveWish()
+        let id = try await api.conversation(for: wish.choice)
+        XCTAssertNil(id, "the car does not swap in a new thread for the one the driver asked to continue")
+        let current = try await api.liveConversations().current
+        XCTAssertNil(current)
+    }
+
+    /// The tap before any `await`: a tap arriving during one must find the attempt under way, or
+    /// New reaches Zimmer twice.
+    func testASecondTapIsHeldOffBeforeAnythingAsynchronousRuns() async throws {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        let start = try XCTUnwrap(live.range(of: "private func attempt() {"))
+        let body = live[start.upperBound...]
+        let lookup = try XCTUnwrap(body.range(of: "retry.lookup()"))
+        let task = try XCTUnwrap(body.range(of: "Task {"))
+        XCTAssertLessThan(lookup.lowerBound, task.lowerBound, "attempt() marks the lookup before its Task")
+    }
+
+    /// A muted driver who chooses a fresh start asked to talk. Retry keeps the mute, in
+    /// `CarCallComeback`; New lets go of the comeback that holds it.
+    func testNewLetsGoOfTheMuteTheComebackHeld() async throws {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        XCTAssertTrue(live.contains("if wish.choice == .startNew { comeback = nil }"))
     }
 
     // MARK: - The scene's source
@@ -540,12 +673,12 @@ final class CarPlayTests: XCTestCase {
         XCTAssertFalse(live.contains("for muted in"), "a muted twin of every state is ten states; CarPlay keeps five")
     }
 
-    /// Radically simple: the car is one button, one call screen and one panel behind the call
+    /// Radically simple: the car is a home of tiles, one call screen and one panel behind the call
     /// screen's gear. A tab bar, a card, an alert, an action sheet or any other list is one more
     /// template CarPlay can refuse a change to, and the car had all of them when it crashed. The
     /// panel is the one exception, made on purpose: a call that cannot hear the driver cannot be
     /// asked to fix that (`ios/CARPLAY_DESIGN.md`).
-    func testTheCarIsOneButtonOneCallScreenAndOnePanel() {
+    func testTheCarIsAHomeOneCallScreenAndOnePanel() {
         let allowed: Set = ["CPTemplate", "CPGridTemplate", "CPVoiceControlTemplate", "CPListTemplate"]
         let template = try! NSRegularExpression(pattern: #"\bCP[A-Za-z]*Template\b"#)
         var seen: Set<String> = []
@@ -555,7 +688,7 @@ final class CarPlayTests: XCTestCase {
                     guard let range = Range(match.range, in: line) else { continue }
                     let used = String(line[range])
                     seen.insert(used)
-                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a Talk button (CPGridTemplate), the call screen (CPVoiceControlTemplate) and the voice settings (CPListTemplate)\n\(line)")
+                    XCTAssertTrue(allowed.contains(used), "\(name):\(number): \(used) — the car is a home of tiles (CPGridTemplate), the call screen (CPVoiceControlTemplate) and the voice settings (CPListTemplate)\n\(line)")
                     if used == "CPListTemplate" {
                         XCTAssertEqual(name, "CarPlayVoiceSettings.swift", "\(name):\(number): the one list in the car is the voice settings\n\(line)")
                     }
@@ -612,11 +745,10 @@ final class CarPlayTests: XCTestCase {
         var value: Bool? { lock.withLock { stored } }
     }
 
-    /// Every control on the call screen and the panel hands CarPlay a closure that belongs to no
+    /// Every control on the home, the call screen and the panel hands CarPlay a closure that belongs to no
     /// actor. One written in `CarPlayLive`, or in a `CarPlayVoiceSettings` method that is not
     /// nonisolated, inherits the main actor, and `MainActor.assumeIsolated` traps the same way.
-    /// The Home screen's grid button is outside this guard: see `limitations.md`.
-    func testTheCallScreenAndThePanelGiveCarPlayNoIsolatedHandler() {
+    func testTheHomeTheCallScreenAndThePanelGiveCarPlayNoIsolatedHandler() {
         func code(_ name: String) -> [String] {
             Self.code(Self.carPlaySources.first { $0.name == name }?.text ?? "").map(\.line)
         }
@@ -626,6 +758,11 @@ final class CarPlayTests: XCTestCase {
         }
         for control in ["gear", "mute", "end"] {
             XCTAssertTrue(live.contains { $0.contains("CarPlayImages.tapped(\"\(control)\")") }, "\(control) goes through CarPlayTap")
+        }
+        let home = code("CarPlayHome.swift")
+        XCTAssertTrue(home.contains { $0.contains("handler: CarPlayImages.tapped(") }, "the tiles go through CarPlayTap")
+        for line in home {
+            XCTAssertFalse(line.contains("{ [weak self] _ in"), "CarPlayHome: a handler closure written in place inherits the main actor\n\(line)")
         }
         let panel = code("CarPlayVoiceSettings.swift")
         XCTAssertTrue(panel.contains { $0.contains("nonisolated static func handler(") }, "a row's closure is built where no actor is inherited")

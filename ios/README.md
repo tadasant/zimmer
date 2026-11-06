@@ -238,10 +238,11 @@ control templates (Zimmer uses two: a grid and the voice control template), with
 recording only under the voice control template, and shows no notifications. The design and every
 decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
-- The car is radically simple: one **Talk to Zimmer** button, and the Live Mode call screen with
+- The car is radically simple: **Continue** and **New** tiles, and the Live Mode call screen with
   Mute, End and a gear to the voice settings. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
   call screen's five states, Muted one of them, and the words for what the call is doing),
-  `LiveRetry.swift` (what the button says, and the quiet retries when Live Mode can't connect),
+  `LiveRetry.swift` (what the tiles say, and the quiet retries when Live Mode can't connect),
+  `CarLiveChoice.swift` (which conversation a tap calls, across its retries),
   `CarPlayNavigator.swift` (every modal change, one at a time, tracking what it presented), and
   `CarVoiceSettings.swift` (the panel's rows, its writes, and the call coming back).
   `Tests/ZimmerKitTests/CarPlayTests.swift` drives the navigator against a strict fake that refuses
@@ -249,7 +250,7 @@ decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
   session actions, no template but the grid, the call screen and the voice settings list, and no interface-controller call
   without a completion.
 - `App/Zimmer/CarPlay/CarPlaySceneDelegate.swift` is the wiring; `CarPlayHome.swift` is the grid
-  with its one button; `CarPlayLive.swift` is the call screen, a `CPVoiceControlTemplate` built once
+  with its tiles; `CarPlayLive.swift` is the call screen, a `CPVoiceControlTemplate` built once
   per call, presented and dismissed and never rebuilt. `CarPlayInterface.swift` is the only place
   the interface controller is called, through its async forms. The car has one voice, the Realtime
   call, and listens only through it: there is no speech synthesizer and no recogniser.
