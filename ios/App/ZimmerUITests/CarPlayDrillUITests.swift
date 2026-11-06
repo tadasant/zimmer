@@ -161,9 +161,10 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-home-nothing-to-continue")
         assertAlive("with nothing to continue")
 
-        // And New from there is one tap too.
+        // And New from there is one tap too. With the microphone refused it gives up at once
+        // rather than retrying, because no retry brings a microphone back; either way it tried.
         tapTile(Self.newTitles[0], or: Self.newTitles[1])
-        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New from the one tile tries a call")
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles + Self.retryTitles, seconds: 30), "New from the one tile tries a call")
         assertAlive("at the end of the drill")
     }
 
@@ -198,7 +199,16 @@ final class CarPlayDrillUITests: XCTestCase {
 
     /// End the open conversation from the phone's own Live screen, in this same process. The
     /// fixture lands there with voice on and starts no call.
+    ///
+    /// Each car call has asked for the microphone, so the system's prompt can be up over the
+    /// phone. Don't Allow keeps the audio engine out of the rest of the drill, and it is the
+    /// first button.
     private func endTheConversationOnThePhone() {
+        let prompt = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
+        if prompt.waitForExistence(timeout: 3) {
+            record("the microphone prompt", prompt.debugDescription)
+            prompt.buttons.element(boundBy: 0).tap()
+        }
         // The phone is still on the thread it landed on when the car left, and that is the
         // conversation New ended: back out, and in again to the one that is open.
         let thread = zimmer.navigationBars["Live Mode"]

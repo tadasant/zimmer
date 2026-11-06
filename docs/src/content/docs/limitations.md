@@ -8402,7 +8402,7 @@ so a tap on it delivered off the main thread would trap; `talk_tapped` from real
 reaching its handler. CarPlay's own Back on the
 panel is not driven either.
 
-The car's home reads what is open when it connects and when a call ends, not while it sits there. A
+The car's home reads what is open when it connects and when you end a call, not while it sits there. A
 conversation started on the phone meanwhile leaves the home showing New alone until the next read,
 and tapping it ends that conversation. One ended on the phone leaves Continue showing, and the tap
 finds nothing, plays the falling notes and starts no call. Continue reaches only an open
