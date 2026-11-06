@@ -60,6 +60,8 @@ final class AppEnvironment {
             // threshold Semantic ignores, plus a gated Listening), and the first call holds on
             // Connecting… so the call screen stays up to be driven.
             let voiceTurnedUp = arguments.contains("-ZimmerFixtureVoiceTurnedUp")
+            // `-ZimmerFixtureCarScript`: a call held on Connecting… for as long as a test needs it.
+            let carScript = arguments.contains("-ZimmerFixtureCarScript")
             // `-ZimmerFixtureRelayOnly`: the sign-in may not act as you, so the Inference
             // page's writes are refused with the server's 403.
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
@@ -67,7 +69,7 @@ final class AppEnvironment {
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
                                                                                          refuses: refuses, writeDelay: writeDelay,
                                                                                          liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
-                                                                                         liveSecretHold: voiceTurnedUp ? .seconds(60) : nil,
+                                                                                         liveSecretHold: voiceTurnedUp ? .seconds(120) : carScript ? .seconds(600) : nil,
                                                                                          web: origins.web), edge: nil)
             isFixture = true
             return

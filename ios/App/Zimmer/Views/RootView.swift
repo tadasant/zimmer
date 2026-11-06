@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import ZimmerKit
 
 /// Sign-in gates everything; after it, the tabs: the web UI's top navigation (sessions,
@@ -71,10 +72,76 @@ extension RootView {
         }
         // A link to one of this Zimmer's pages, tapped in a transcript, opens its screen here.
         .environment(\.inAppLinks, model.inAppLinks)
+        // Here, with the tabs: it needs them, and a phone scene that opens after the car has left
+        // arrives at this the same way as one that was open all along.
+        .background { CarHandoverLanding() }
         // Presented from the tabs, not from one screen: the button on any tab opens it.
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
         .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
-        .sheet(isPresented: $model.showingLive) { LiveHomeView() }
+        .sheet(isPresented: $model.showingLive, onDismiss: { model.liveClosed() }) { LiveHomeView() }
+    }
+}
+
+/// Takes the phone to a call the car left on it, when `LiveHandover` says so. It asks only while
+/// the app is in front, every half second while a route is armed, because a sheet closing is
+/// heard by nothing here.
+///
+/// The half second before the first asking is for a push: a tap on one brings the app forward and
+/// arrives a moment later, and what the person tapped goes first.
+private struct CarHandoverLanding: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var call = LiveCall.shared
+    @State private var keyboardIsUp = false
+
+    private struct Asking: Equatable {
+        let route: LiveHandover.Route?
+        let inFront: Bool
+    }
+
+    var body: some View {
+        Color.clear
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardIsUp = true }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardIsUp = false }
+            .task(id: Asking(route: call.handover.route, inFront: scenePhase == .active)) {
+                guard scenePhase == .active, call.handover.route != nil else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled else { return }
+                    switch call.handoverStep(inFront: true, screen: screen) {
+                    case .nothing: return
+                    case .wait: continue
+                    case let .land(conversation):
+                        model.landOnCall(conversation)
+                        return
+                    }
+                }
+            }
+    }
+
+    private var screen: LiveHandover.Screen {
+        if keyboardIsUp || model.showingQuickRouter || model.showingNewSession { return .busy }
+        if model.showingLive {
+            guard presentedOverTheTabs <= 1 else { return .busy }
+            return model.liveThreadOnScreen.map { .liveThread($0) } ?? .liveList
+        }
+        return presentedOverTheTabs == 0 ? .free : .busy
+    }
+
+    /// Everything presented, whoever presented it: a session page's sheets and dialogs are its
+    /// own, and UIKit would refuse a sheet over them, leaving Live's flag set with nothing shown.
+    /// With no window to ask, assume the worst: a landing is never worth a refused sheet.
+    private var presentedOverTheTabs: Int {
+        let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        guard let root = scene?.keyWindow?.rootViewController else { return .max }
+        var count = 0
+        var top = root.presentedViewController
+        while let shown = top {
+            count += 1
+            top = shown.presentedViewController
+        }
+        return count
     }
 }
 

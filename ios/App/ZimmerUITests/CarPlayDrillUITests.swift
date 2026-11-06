@@ -1,7 +1,9 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button; the call screen shows the gear, and the gear's closure
+/// the car's app: it opens on one button; the call screen shows the gear; the car is unplugged
+/// from under that call, by the Simulator's own menu, the phone lands on it, and plugged back in
+/// the call is on the car again; the gear's closure
 /// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
 /// which show what a voice call left behind, change it and reset it, and the call comes back; and
 /// a call that cannot connect fails, retries and puts the call screen up and down again and
@@ -73,6 +75,23 @@ final class CarPlayDrillUITests: XCTestCase {
         record("the call screen", car.debugDescription)
         XCTAssertTrue(gearIsUp, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
+
+        // The car goes away with the call up, by the Simulator's own menu: the scene really
+        // disconnects, and the phone goes to the call.
+        plug("Disabled")
+        let landed = zimmer.descendants(matching: .any)["live.call.state"].firstMatch.waitForExistence(timeout: timeout)
+        photographThePhone("carplay-phone-after-the-car-left")
+        record("the phone after the car left", zimmer.debugDescription)
+        XCTAssertTrue(landed, "the phone goes to the call; it showed:\n\(zimmer.debugDescription)")
+        assertAlive("with the car gone and the call on the phone")
+
+        // The car comes back: the call goes up on it again, and the phone stays as it is.
+        plug("CarPlay")
+        openInTheCar(callIsUp: true)
+        XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "the call goes back to the car; the car showed:\n\(car.debugDescription)")
+        photograph("carplay-call-screen-after-the-car-came-back")
+        assertAlive("with the car back")
+
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
         // gear's own closure, off the main thread, 15 seconds after the call screen goes up.
@@ -122,9 +141,9 @@ final class CarPlayDrillUITests: XCTestCase {
     // MARK: - Getting there
 
     /// Zimmer's CarPlay scene, from the CarPlay home screen: home first, in case the car is on
-    /// another app, then Zimmer's icon.
-    private func openInTheCar() {
-        if text("Talk to Zimmer").waitForExistence(timeout: 5) { return }
+    /// another app, then Zimmer's icon. `callIsUp`: the scene opens on the call, not the button.
+    private func openInTheCar(callIsUp: Bool = false) {
+        if callIsUp ? car.buttons["gearshape.fill"].waitForExistence(timeout: 5) : text("Talk to Zimmer").waitForExistence(timeout: 5) { return }
         let home = dashboard.descendants(matching: .any)["CARStatusBarHomeButton"]
         if home.exists {
             home.tap()
@@ -132,7 +151,20 @@ final class CarPlayDrillUITests: XCTestCase {
         let icon = dashboard.descendants(matching: .any).matching(NSPredicate(format: "label == 'Zimmer'")).firstMatch
         XCTAssertTrue(icon.waitForExistence(timeout: timeout), "Zimmer is on the CarPlay home screen; it showed:\n\(dashboard.debugDescription)")
         icon.tap()
+        guard !callIsUp else { return }
         XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
+    }
+
+    /// Clicks an item of the Simulator's External Displays menu, through `ios/bin/ui-test`: only
+    /// the Mac can reach it. It removes the file once it has clicked.
+    private func plug(_ item: String) {
+        let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] ?? ""
+        let file = URL(fileURLWithPath: directory).appendingPathComponent("carplay-plug")
+        XCTAssertNoThrow(try Data(item.utf8).write(to: file))
+        for _ in 0..<60 where FileManager.default.fileExists(atPath: file.path) {
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "ios/bin/ui-test did not click \(item)")
     }
 
     /// Any element with these words: the button's text, or the call screen's title.
@@ -214,6 +246,14 @@ final class CarPlayDrillUITests: XCTestCase {
     private func assertAlive(_ when: String) {
         XCTAssertTrue(zimmer.state == .runningForeground || zimmer.state == .runningBackground,
                       "Zimmer is not running \(when): it crashed (state \(zimmer.state.rawValue))")
+    }
+
+    /// The phone's own screen, kept with the run.
+    private func photographThePhone(_ name: String) {
+        let shot = XCTAttachment(screenshot: XCUIScreen.screens[0].screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
     }
 
     /// The CarPlay window, kept with the run.

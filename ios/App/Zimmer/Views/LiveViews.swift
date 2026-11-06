@@ -77,6 +77,16 @@ struct LiveHomeView: View {
                 }
             }
         }
+        .onChange(of: path, initial: true) { _, path in model.liveThreadOnScreen = path.last?.id }
+        // A call the car left on the phone. Voice stays out of it: the thread opens on the
+        // call as it is, and neither `setLiveMode` nor `call.start` runs.
+        .onChange(of: model.liveLanding, initial: true) { _, conversation in
+            guard let conversation else { return }
+            model.liveLanding = nil
+            var instantly = Transaction()
+            instantly.disablesAnimations = true
+            withTransaction(instantly) { path = [LiveDestination(id: conversation)] }
+        }
     }
 
     @ViewBuilder
