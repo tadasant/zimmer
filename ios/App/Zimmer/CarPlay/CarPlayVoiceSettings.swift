@@ -91,10 +91,10 @@ final class CarPlayVoiceSettings {
 
     /// Static, so the closure CarPlay is given belongs to no actor: a row can be tapped from any
     /// thread (`CarPlayTap`).
-    private nonisolated static func handler(_ text: String, log: Logger, tapped: (@MainActor @Sendable () -> Void)?) -> (any CPSelectableListItem, @escaping () -> Void) -> Void {
+    private nonisolated static func handler(_ text: String, log: Logger, tapped: (@MainActor @Sendable () -> Void)?) -> @Sendable (any CPSelectableListItem, @escaping () -> Void) -> Void {
         { _, done in
             nonisolated(unsafe) let done = done
-            CarPlayTap.run(offMain: { CarPlayImages.offMain("row") }) {
+            CarPlayTap.run(arrived: { CarPlayImages.arrived("row", onMain: $0) }) {
                 log.notice("voice settings row handler: \(text, privacy: .public)")
                 tapped?()
                 done()

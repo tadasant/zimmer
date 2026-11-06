@@ -8393,10 +8393,13 @@ through the car app (one button; the voice settings panel, its choices and Reset
 call that cannot connect, its retries and giving up, and a tap that tries again), failing on any
 crash. The car app itself was cut to one flow (open, talk,
 mute, end) so there is little left to drive. The drill cannot press Mute, End or the voice settings gear: XCUITest finds
-them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's closure, off the main thread
+them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's closure from a background thread,
 and a press of the gear is unconfirmed until someone does it in a car. That includes the fix for the
-gear crashing the app: the cause is inferred from the call log, not seen on a head unit, and the log
-line `carplay.tap_off_main` is what a real press will confirm it with. CarPlay's own Back on the
+gear crashing the app: the cause is inferred from the call log, not seen on a head unit. A real press
+settles it: `carplay.off_main` says CarPlay called off the main thread, and `last_mark` on an
+`abandoned` call says how far a tap got. The Home screen's grid button still has a main-actor closure,
+so a tap on it delivered off the main thread would trap; `talk_tapped` from real cars says it has been
+reaching its handler. CarPlay's own Back on the
 panel is not driven either.
 
 The gear ends the call, so a reply in progress is cut off, and the call comes back as a new one. A

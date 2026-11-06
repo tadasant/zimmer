@@ -63,6 +63,34 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertTrue(again.isEmpty, "said once, and answered: not said again")
     }
 
+    /// A mark is on disk at once, inside the 5 seconds a stamp can lag, so the line for a call the
+    /// app died in says how far a tap got even though every event after the last batch was lost.
+    func testALostCallSaysItsLastMark() async throws {
+        let store = defaults()
+        let dead = telemetry(defaults: store)
+        dead.beginCall(conversation: 8)
+        dead.mark("carplay:gear:off_main")
+
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let sent = await wasSent(by: next)
+        let end = try XCTUnwrap(sent.first)
+        XCTAssertEqual(end.fields["last_mark"], .string("carplay:gear:off_main"))
+    }
+
+    func testALostCallWithNoMarkSaysNone() async throws {
+        let store = defaults()
+        let dead = telemetry(defaults: store)
+        dead.mark("before any call")
+        dead.beginCall(conversation: 8)
+
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let sent = await wasSent(by: next)
+        let end = try XCTUnwrap(sent.first)
+        XCTAssertNil(end.fields["last_mark"])
+    }
+
     func testALostCallIsNotLoggedWhenTheLevelIsAboveItsEnd() async {
         for level in ["error", "off"] {
             let store = defaults(level)
