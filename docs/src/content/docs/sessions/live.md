@@ -405,7 +405,7 @@ with voice on. One tap on **Type instead** turns voice off in that thread. **New
 the thread's toolbar and its confirmation are the two taps to a fresh one, in whichever mode the
 thread is in. Back leads to the Live list. The web's `/live` keeps its own entry, which opens the
 list. Starting a call on the phone
-turns voice on first (`POST …/mode`), so Enable voice, Talk and the car's Talk to Zimmer all take the
+turns voice on first (`POST …/mode`), so Enable voice, Talk and the car's tiles all take the
 same path. A call on the phone opens a **WebSocket** to OpenAI rather than WebRTC.
 It uses the `websocket_url` the client-secret call returns, sends 24 kHz PCM16 as
 `input_audio_buffer.append`, and plays `response.output_audio.delta`. It relays function calls
@@ -416,10 +416,12 @@ OpenAI sends a reply faster than it plays, and the phone keeps track of what is 
 finished generating it seconds ago, and sends `conversation.item.truncate` at the point you cut in.
 In the two gated Listening modes speech does not cut a reply off.
 
-In the car, **Talk to Zimmer** is the one button: the open conversation with voice on,
-or a new one with voice on, on the same call, with Mute and End while it runs, and a gear to the
+In the car you choose with one tap: **Continue conversation** calls the open conversation with
+voice on, and **New conversation** ends it and calls a fresh one. It is still one thread, and the
+ended conversation stays readable. With nothing open there is only New, because an ended conversation
+can't take a call. Either way it is the same call, with Mute and End while it runs, and a gear to the
 voice settings by touch, for a call that has stopped working. The car has no other voice: a call
-that isn't up in 15 seconds gives up, the button says *Live Mode unavailable, retrying…*, and the
+that isn't up in 15 seconds gives up, the tile says *Live Mode unavailable, retrying…*, and the
 car retries with no voice, playing the falling notes the first time and when it stops. Unplug
 with a call up and it carries on on the phone, which [goes to the call's thread](/extend/ios-app/#carplay).
 `GET /api/v1/live_conversations/:id/sessions` returns the sessions the
