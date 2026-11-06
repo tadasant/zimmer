@@ -73,7 +73,7 @@ That is how the removability mechanism is meant to behave. Registration is a cla
 a name resolves is a property of the tree the app was built from.
 
 `pty_transport` fulfils one-off headless inference — session titles and notification
-summaries — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
+summaries, once its runner declares `#text_only?` (see below) — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
 transcript, instead of shelling out to `claude -p`. It can therefore fill the `usage` slot on
 `ClaudePrintRunner::Result`, which print mode cannot; today every caller of
 `HeadlessInferenceService` discards that slot, so the slot is there for a backend that can populate

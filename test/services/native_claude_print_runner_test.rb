@@ -135,6 +135,22 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
     )
   end
 
+  # A CLI update can drop a flag, and every caller reads the failure as "no answer",
+  # so the log line is the only place the reason survives.
+  test "logs the child's stderr when it exits non-zero, and not its stdout" do
+    binary = File.join(@config_base, "reject-flag")
+    File.write(binary, "#!/bin/sh\necho 'quoted prompt text'\necho \"error: unknown option '--tools'\" >&2\nexit 1\n")
+    File.chmod(0o755, binary)
+    runner = NativeClaudePrintRunner.new(claude_binary: binary, model: "haiku", logger: @logger)
+
+    result = runner.run(prompt: "name this", timeout: 5)
+
+    assert result.failed?
+    assert_equal 1, @logger.warnings.length
+    assert_includes @logger.warnings.first, "claude exited 1: error: unknown option '--tools'"
+    refute_includes @logger.warnings.first, "quoted prompt text"
+  end
+
   # Print-mode inference has no Zimmer session, so it used to inherit the
   # worker's environment and read the shared credentials file — which since
   # issue #618 is a file nothing writes, so every title and summary call answered
