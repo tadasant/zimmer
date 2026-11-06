@@ -1,7 +1,7 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button; the call screen shows the gear, and the gear's action
+/// the car's app: it opens on one button; the call screen shows the gear, and the gear's closure
 /// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
 /// which show what a voice call left behind, change it and reset it, and the call comes back; and
 /// a call that cannot connect fails, retries and puts the call screen up and down again and
@@ -75,7 +75,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
-        // gear's own action, 15 seconds after the call screen goes up.
+        // gear's own closure, off the main thread, 15 seconds after the call screen goes up.
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")

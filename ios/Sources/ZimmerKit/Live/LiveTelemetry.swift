@@ -151,6 +151,8 @@ public final class LiveTelemetry: @unchecked Sendable {
         var lastSeenAt: Date
         var lastSeq: Int
         var surface: String
+        /// The last `mark`, for the `abandoned` line.
+        var lastMark: String?
     }
 
     private let lock = NSLock()
@@ -232,6 +234,18 @@ public final class LiveTelemetry: @unchecked Sendable {
         return id
     }
 
+    /// Write `what` on the open call's record now, not on the next stamp. Events wait in memory
+    /// and die with the app, so this is how the run after a crash learns how far a step got: the
+    /// `abandoned` line carries the last mark as `last_mark`. Does nothing with no call open.
+    public func mark(_ what: String) {
+        lock.withLock {
+            guard var open = openCall else { return }
+            open.lastMark = what
+            openCall = open
+            saveOpenCall()
+        }
+    }
+
     public func endCall() {
         lock.withLock {
             call = nil
@@ -257,11 +271,15 @@ public final class LiveTelemetry: @unchecked Sendable {
             guard openCall == nil, let open = loadOpenCall() else { return found }
             defaults?.removeObject(forKey: Self.openCallKey)
             guard let minimum, LiveTelemetryLevel.warn >= minimum else { return found }
+            var fields: [String: JSONValue] = [
+                "reason": .string("abandoned"), "duration_ms": .ms(open.lastSeenAt.timeIntervalSince(open.startedAt)),
+                "last_surface": .string(open.surface), "last_seen_at": .string(Self.iso(open.lastSeenAt)),
+            ]
+            if let mark = open.lastMark { fields["last_mark"] = .string(mark) }
             let record = LiveTelemetryRecord(
                 seq: open.lastSeq + 1, name: "call.ended", level: .warn, at: Self.iso(open.lastSeenAt),
                 monoMs: Int((uptime() * 1_000).rounded()), callID: open.id, conversationID: open.conversation,
-                fields: ["reason": .string("abandoned"), "duration_ms": .ms(open.lastSeenAt.timeIntervalSince(open.startedAt)),
-                         "last_surface": .string(open.surface), "last_seen_at": .string(Self.iso(open.lastSeenAt))]
+                fields: fields
             )
             buffer.append(record)
             remember(end: record)

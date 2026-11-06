@@ -76,8 +76,12 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     /// The driver's own Back leaves the panel without telling it, and this is how the car hears.
-    func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
-        live?.settingsMayHaveClosed()
+    /// Nonisolated for the reason a tap is (`CarPlayTap`): CarPlay does not say which thread this
+    /// comes in on.
+    nonisolated func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
+        CarPlayTap.run(arrived: { CarPlayImages.arrived("template_did_appear", onMain: $0) }) { [weak self] in
+            self?.live?.settingsMayHaveClosed()
+        }
     }
 
     private func tearDown() {
