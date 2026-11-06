@@ -74,10 +74,13 @@ and nothing runs in parallel. The home is still the one grid, so no template was
 - **A second tap is not a second start.** The lookup is marked before the first `await`, so one
   arriving during it changes nothing.
 - **The comeback is unchanged.** Closing the voice settings calls the same conversation again,
-  whatever the tiles say. A tile tapped after that gives up makes the driver's own choice.
+  whatever the tiles say. A tile tapped after that gives up makes the driver's own choice. Retry
+  keeps a mute the comeback was holding. New lets go of it, because a driver who chooses a fresh
+  start has asked to talk.
 
-The home reads what is open when the scene connects and when a call ends. It is a read, so the car
-stays silent (*Silent until asked*).
+The home reads what is open when the scene connects and when the driver's call ends, not when the
+phone ends a call the car started: there the tap finds out. It is a read, so the car stays silent
+(*Silent until asked*).
 
 **Break glass.** Everything else in the car is voice, and that is exactly what fails here: a call the
 live model has mis-tuned cannot be asked to fix itself. Tadas asked for a touch way out, reachable
@@ -379,7 +382,8 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   fails, retries, gives up with Retry and New on the home, and leaves no call screen;
 - New from there, one tap to a call that retries and gives up the same way;
 - the conversation ended on the phone's own Live screen, by ordinary taps in the same process, then
-  Retry: no call, one tile, New, and a tap on it tries a call.
+  Retry: no call, one tile, New, and a tap on it tries a call. The car's calls leave the system's
+  microphone prompt over the phone, so the drill answers it first, with Don't Allow.
 
 The tiles come back to rest only when a call ends, and no call in the drill connects or can be ended,
 so the order is what reaches each state: Continue gets one tap at rest, and nothing to continue comes

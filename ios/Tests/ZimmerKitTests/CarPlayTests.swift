@@ -540,6 +540,13 @@ final class CarPlayTests: XCTestCase {
         XCTAssertLessThan(lookup.lowerBound, task.lowerBound, "attempt() marks the lookup before its Task")
     }
 
+    /// A muted driver who chooses a fresh start asked to talk. Retry keeps the mute, in
+    /// `CarCallComeback`; New lets go of the comeback that holds it.
+    func testNewLetsGoOfTheMuteTheComebackHeld() async throws {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        XCTAssertTrue(live.contains("if wish.choice == .startNew { comeback = nil }"))
+    }
+
     // MARK: - The scene's source
 
     private static var carPlaySources: [(name: String, text: String)] {

@@ -108,8 +108,9 @@ final class CarPlayLive {
     var tiles: [LiveTalkTile] { retry.tiles(callIsActive: call.isActive, conversationOpen: conversationOpen) }
 
     /// Whether there is anything to continue, for the tiles. Only a read, so the car stays
-    /// silent, and only at rest: a call or a retry is already showing what it is doing. One that
-    /// fails leaves the tiles as they are, and the tap reads again.
+    /// silent, and only once the driver has stopped asking for a call: until then the tiles are
+    /// showing what the car is doing. One that fails, or is skipped, leaves the tiles as they
+    /// are, and the tap reads again.
     func readWhatIsOpen() {
         guard !call.isActive, !retry.wanted else { return }
         let api = AppEnvironment.shared.connection.api.live(from: .carplay)
@@ -139,6 +140,9 @@ final class CarPlayLive {
         comeback?.talkTapped()
         guard !retry.lookingUp else { return }
         wish.tapped(tile, callIsActive: call.isActive)
+        // A fresh start is asked for out loud: a mute left over from the call it replaces would
+        // open a new conversation on a microphone that hears nothing. Retry keeps it.
+        if wish.choice == .startNew { comeback = nil }
         openRead?.cancel()
         retryWait?.cancel()
         retry.asked()
@@ -182,11 +186,17 @@ final class CarPlayLive {
                     return
                 }
                 conversationOpen = true
-                guard retry.wanted else { return }
+                guard retry.wanted else {
+                    onChange?()
+                    return
+                }
                 await call.start(found, startsMuted: comeback?.muted == true, from: .carplay)
             } catch {
                 retry.lookedUp()
-                guard retry.wanted else { return }
+                guard retry.wanted else {
+                    onChange?()
+                    return
+                }
                 failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
             }
         }
