@@ -81,8 +81,9 @@ One call's trace, in order:
 
 How calls ended, which is where to start when one went badly. `reason` is `hang_up`, `failed`,
 `app_terminated`, or `abandoned` for a call the app died in, logged on the next launch with the call's
-own `call_id` and a `last_seen_at`. Everything before that moment that had not been sent died with
-the app. `call.gave_up` says why a call was given up on (`connect_timed_out` with the `stage` it
+own `call_id`, a `last_seen_at`, and a `last_mark` if a step wrote one: `carplay:gear:main` says a tap
+on the gear reached the app's handler, on the main thread or `off_main`. Everything before that moment
+that had not been sent died with the app. `call.gave_up` says why a call was given up on (`connect_timed_out` with the `stage` it
 reached, `socket_silent`, `microphone_stopped`, `microphone_held`). `call.ended` is an `info` event,
 so a Call telemetry level of `warn` drops it, apart from the `abandoned` ones, which are `warn`
 events, and `error` drops those too.

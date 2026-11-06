@@ -295,7 +295,7 @@ So the cause is not known, and the drill has no retry, because the fault could b
 
 ### A long stall can make the CarPlay drill miss the gear
 
-The fixture runs the gear's action 15 seconds after the call screen goes up, on its own clock, and the drill has to see the gear before that. Reaching the gear takes 3 to 5 seconds on a normal run, so a stall of about 10 seconds at that step fails the drill with `no gear on the call screen` and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+The fixture runs the gear's closure 15 seconds after the call screen goes up, on its own clock, and the drill has to see the gear before that. Reaching the gear takes 3 to 5 seconds on a normal run, so a stall of about 10 seconds at that step fails the drill with `no gear on the call screen` and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
 
 ### A sheet presented from inside a `List` row can reset itself
 
@@ -8393,8 +8393,13 @@ through the car app (one button; the voice settings panel, its choices and Reset
 call that cannot connect, its retries and giving up, and a tap that tries again), failing on any
 crash. The car app itself was cut to one flow (open, talk,
 mute, end) so there is little left to drive. The drill cannot press Mute, End or the voice settings gear: XCUITest finds
-them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's action
-and a press of the gear is unconfirmed until someone does it in a car. CarPlay's own Back on the
+them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's closure from a background thread,
+and a press of the gear is unconfirmed until someone does it in a car. That includes the fix for the
+gear crashing the app: the cause is inferred from the call log, not seen on a head unit. A real press
+settles it: `carplay.off_main` says CarPlay called off the main thread, and `last_mark` on an
+`abandoned` call says how far a tap got. The Home screen's grid button still has a main-actor closure,
+so a tap on it delivered off the main thread would trap; `talk_tapped` from real cars says it has been
+reaching its handler. CarPlay's own Back on the
 panel is not driven either.
 
 The gear ends the call, so a reply in progress is cut off, and the call comes back as a new one. A

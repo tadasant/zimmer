@@ -59,6 +59,8 @@ final class CarPlayLive {
     private var settingsOnStack = false
     #if DEBUG
     private var drillPressedTheGear = false
+    /// What CarPlay runs for a tap on the gear, for the drill to run the same way.
+    private var drillGear: (press: (CPBarButton) -> Void, button: CPBarButton)?
     #endif
     /// The panel is closing, waiting for the driver's last write.
     private var settingsClosing = false
@@ -377,33 +379,40 @@ final class CarPlayLive {
             )
             if #available(iOS 26.4, *) {
                 voiceState.actionButtons = [
-                    CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill") { [weak self] _ in self?.call.toggleMute() },
-                    CarPlayImages.actionButton("End", symbol: "phone.down.fill") { [weak self] _ in self?.hangUp() },
+                    CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill", handler: CarPlayImages.tapped("mute") { [weak self] in self?.call.toggleMute() }),
+                    CarPlayImages.actionButton("End", symbol: "phone.down.fill", handler: CarPlayImages.tapped("end") { [weak self] in self?.hangUp() }),
                 ]
             }
             return voiceState
         }
         let screen = CPVoiceControlTemplate(voiceControlStates: states)
         if #available(iOS 26.4, *) {
-            screen.leadingNavigationBarButtons = [
-                CPBarButton(image: CarPlayImages.bar("gearshape.fill")) { [weak self] _ in self?.openSettings() },
-            ]
+            let pressed: (CPBarButton) -> Void = CarPlayImages.tapped("gear") { [weak self] in self?.openSettings() }
+            let gear = CPBarButton(image: CarPlayImages.bar("gearshape.fill"), handler: pressed)
+            screen.leadingNavigationBarButtons = [gear]
+            #if DEBUG
+            drillGear = (pressed, gear)
+            #endif
         }
         return screen
     }
 
     #if DEBUG
-    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the gear's own action, once, a while
-    /// after the first call screen goes up. XCUITest computes no hit point for a template's bar
-    /// button, and a click from the Mac at its place does not reach it, so this is how the panel
-    /// is driven.
+    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the Swift closure behind the gear,
+    /// once, a while after the first call screen goes up, and off the main thread, the one
+    /// way a tap can arrive that the Simulator never shows. XCUITest computes no hit point for a
+    /// template's bar button, and a click from the Mac at its place does not reach it, so this is
+    /// how the panel is driven.
     private func drillPressesTheGear() {
         guard AppEnvironment.shared.isFixture, ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"),
               !drillPressedTheGear else { return }
         drillPressedTheGear = true
         Task {
             try? await Task.sleep(for: .seconds(15))
-            self.openSettings()
+            guard let gear = self.drillGear else { return }
+            nonisolated(unsafe) let press = gear.press
+            nonisolated(unsafe) let button = gear.button
+            DispatchQueue.global().async { press(button) }
         }
     }
     #endif

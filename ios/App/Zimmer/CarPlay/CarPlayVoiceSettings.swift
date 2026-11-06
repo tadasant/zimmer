@@ -83,15 +83,22 @@ final class CarPlayVoiceSettings {
         settings.canReset ? "Takes effect when the call comes back" : "Already on the defaults"
     }
 
-    private func item(_ text: String, detail: String? = nil, tapped: (@MainActor () -> Void)? = nil) -> CPListItem {
+    private func item(_ text: String, detail: String? = nil, tapped: (@MainActor @Sendable () -> Void)? = nil) -> CPListItem {
         let item = CPListItem(text: text, detailText: detail)
-        item.handler = { [log] _, done in
-            MainActor.assumeIsolated {
+        item.handler = Self.handler(text, log: log, tapped: tapped)
+        return item
+    }
+
+    /// Static, so the closure CarPlay is given belongs to no actor: a row can be tapped from any
+    /// thread (`CarPlayTap`).
+    private nonisolated static func handler(_ text: String, log: Logger, tapped: (@MainActor @Sendable () -> Void)?) -> @Sendable (any CPSelectableListItem, @escaping () -> Void) -> Void {
+        { _, done in
+            nonisolated(unsafe) let done = done
+            CarPlayTap.run(arrived: { CarPlayImages.arrived("row", onMain: $0) }) {
                 log.notice("voice settings row handler: \(text, privacy: .public)")
                 tapped?()
+                done()
             }
-            done()
         }
-        return item
     }
 }
