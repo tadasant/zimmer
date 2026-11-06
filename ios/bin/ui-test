@@ -346,6 +346,24 @@ if [ -n "$carplay" ]; then
   # want of a car.
   export ZIMMER_UI_TEST_CARPLAY=1
   export TEST_RUNNER_ZIMMER_UI_TEST_CARPLAY=1
+
+  # The car's plug. The same menu takes the head unit away, and a test on the phone cannot reach
+  # the Mac's menus, so the drill writes the item it wants ("Disabled", or "CarPlay" to plug back
+  # in) to this file, and this clicks it and removes the file to say it has.
+  (
+    while :; do
+      if [ -s "$artifacts/carplay-plug" ]; then
+        item="$(cat "$artifacts/carplay-plug")"
+        osascript -e 'tell application "Simulator" to activate' -e 'delay 0.5' \
+          -e "tell application \"System Events\" to tell process \"Simulator\" to click menu item \"$item\" of menu 1 of menu item \"External Displays\" of menu 1 of menu bar item \"I/O\" of menu bar 1" \
+          >"$artifacts/carplay-plug.log" 2>&1 || true
+        printf '    the car'"'"'s plug: %s\n' "$item"
+        rm -f "$artifacts/carplay-plug"
+      fi
+      /bin/sleep 0.5
+    done
+  ) &
+  plug=$!
 fi
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
@@ -370,6 +388,7 @@ xcodebuild test-without-building \
   -test-timeouts-enabled YES \
   -maximum-test-execution-time-allowance "$test_allowance" \
   "${signing[@]}" || status=$?
+[ -z "$carplay" ] || kill "$plug" 2>/dev/null || true
 
 # The drill's photographs of the CarPlay window as plain files, beside the result bundle, so
 # they can be read without a Mac.
