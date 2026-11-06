@@ -130,6 +130,7 @@ final class PushCoordinator: ObservableObject {
     /// A tapped notification opens its session.
     func open(_ payload: PushPayload) {
         guard let id = payload.sessionID else { return }
+        LiveCall.shared.personChoseElsewhere()
         guard let model else {
             pending = payload
             return

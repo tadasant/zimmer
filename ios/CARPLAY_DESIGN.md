@@ -87,6 +87,51 @@ the next Back closes it on what the row holds. With CarPlay's Back there is no p
 on, so the call comes back on the old value and the log records `settings_write_lost`. A call that starts on the phone meanwhile is the conversation: the panel goes, and the
 call the gear ended stays ended. So does one whose car disconnects with the panel up.
 
+**A call the car leaves goes to the phone's screen, without being asked and without being in the
+way.** The audio has always carried on when the car goes; the phone used to stay on whatever it
+showed, with no way to the call but opening Live. Now the phone lands on that call's thread
+(`LiveHandover`, ZimmerKit; `LiveCall.carLeft`). A driver who has pulled in should find the call in
+front of them, and the rules are mostly about when not to do it:
+
+- **The route follows the audio.** It arms on `call.isActive` at disconnect, the same test that
+  carries the call on, so Connecting… counts. A call waiting on its retry, one that ended moments
+  before, and one the gear ended do not: all three are idle, and disconnect stops the retry and
+  forgets the comeback, so nothing is carried on to look at.
+- **Three seconds first.** CarPlay drops with the car moving, through a cable, wireless or a
+  Bluetooth blip, and a phone on a dash mount should not change screens for one. So "immediately"
+  costs up to three and a half seconds, and the car coming back inside that leaves the phone where
+  it was. An outage longer than that does move the phone, and a reconnect then leaves it on the
+  thread of the call the car is showing: the same call in two places, not two things to deal with.
+- **The next foreground, for as long as the call lives.** iOS will not bring an app forward, so a
+  locked or backgrounded phone waits. There is no timer: a call still up an hour later is still what
+  the phone is doing. One landing, for that call: its end forgets the route, and the route is
+  checked against the call again on arrival. It lives in memory, because the call does.
+- **It only opens.** Nothing is dismissed, so nothing typed can be lost. While anything is presented
+  over the tabs (asked of UIKit, because a session page's sheets are its own, and UIKit refuses a
+  second presentation), or the keyboard is up, it waits, and goes when they clear. Live's own list
+  gets the thread pushed; the call's own thread spends the route; another thread is left alone, since
+  its composer may hold a draft, until the person backs out of it.
+- **The person wins.** Opening a session, from a row, a push or a link, forgets the route, and so
+  does closing Live: Done on another thread must not bring Live straight back up. The half second
+  before the first look is what lets a push tap arrive first.
+- **Nothing happens to the call.** The landing opens the thread with `voice: false`: no
+  `POST …/mode`, no `call.start`, no microphone, no audio, no cue, no touch needed.
+
+The state is on `LiveCall.shared`, not `AppModel`, because CarPlay can run the app with no phone scene
+and so no model. `CarHandoverLanding` sits with the tabs, so a phone scene opening cold, signing
+in or not, reaches it the same way as one open all along. The reconnect's `carCameBack` comes after
+`didConnect`'s own tear-down, which would otherwise arm a route on every scene restart. Nothing
+changes for the web or any other client: the call only ever lived in this process.
+
+"The car came back" means Zimmer's scene connected, not that a cable went in. If the car returns and
+nobody opens Zimmer on it, the scene stays away, so the call is still the phone's and the next
+foreground lands on it. That is true to where the call is. A long-press menu is not a presentation
+UIKit reports, so a landing can close one; nothing typed lives in a menu.
+
+There is no nudge. A notification is a sound or a banner while possibly still driving, and a Lock
+Screen Live Activity is a new surface, which is a product decision (*Follow-ups*). The call's own
+audio is the signal.
+
 **Radically simple: open, talk, mute, end.** After the first CarPlay builds crashed in a car
 (#1410), Tadas cut the app to the flow a driver actually uses: *"open the app, start talking to
 zimmer, mute, end conversation, maybe show some details while talking but keep em minimal, no
@@ -273,8 +318,11 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 - the car opens on one button and nothing else;
 - the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
   (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
-- the panel, opened by the fixture running the gear's Swift closure off the main thread: the call
-  screen is gone, it shows the
+- the car unplugged with that call up, by the Simulator's own I/O menu, so the scene truly
+  disconnects (`ios/bin/ui-test` clicks it, because a test on the phone cannot reach the Mac): the
+  phone lands on the call's thread; and plugged back in, the call goes up on the car again;
+- the panel, opened by the fixture running the gear's Swift closure off the main thread on the
+  reconnected scene: the call screen is gone, it shows the
   cap of 180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
   clears the cap, and Back to the call calls again, all by ordinary taps;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
@@ -327,10 +375,18 @@ running after every step, and any crash report fails the job.
   a comeback exists and ends (`CarCallComeback`); a Rails
   test holds that a cap and a Listening set by voice are read and cleared over the same API, and that
   the next minted call has no cap.
+- `LiveHandoverTests` hold when the phone goes to a call the car left on it, in every order of
+  disconnect, reconnect, call ending, foreground and sheet; `LiveHandoverUITests` hold the screens,
+  on the same calls the scene makes, with the fixture playing the car's moves.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
-  pull request.
+  pull request, one true disconnect and reconnect among them.
 - **Not confirmed anywhere, until someone drives it:** a press of the gear (the fixture runs its
-  action), CarPlay's own Back on the panel, and a muted call coming back muted.
+  action), CarPlay's own Back on the panel, a muted call coming back muted, and how long a real
+  cable or wireless blip lasts against the three-second settle. The drill's flap is one disconnect
+  and one reconnect, seconds apart; a flap inside the settle is the fixture's.
+- **Not driven anywhere:** the cold path, CarPlay running the app with no phone scene and the phone
+  scene opening afterwards. XCUITest always launches with a window. It shares every line of the warm
+  path after the route is armed, and the route lives outside the scene so that it can.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
   are confirmed only by driving, as are a real interruption, a socket going quiet and whether OpenAI
@@ -345,6 +401,8 @@ running after every step, and any crash report fails the job.
 - **iOS 27 overlay.** The voice control template as an overlay. Needs Xcode 27 in CI.
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
+- **A nudge on the Lock Screen.** A Live Activity for a call handed to a locked phone, with no sound.
+  A new surface, so it needs a product decision first.
 - **Crash reports.** The app ships no crash reporter; a crash in the car is visible only in
   TestFlight's crash feedback in App Store Connect. MetricKit (`MXCrashDiagnostic`) posted to Zimmer,
   or the Sentry SDK against GlitchTip, would bring them where an agent can read them.

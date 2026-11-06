@@ -221,11 +221,13 @@ printf '    simulator %s\n' "$udid"
 xcrun simctl boot "$udid" >/dev/null 2>&1 &
 
 recorder=""
+plug=""
 cleanup() {
   # INT rather than TERM: `simctl io recordVideo` finalises the container on SIGINT and
   # leaves an unplayable file on SIGTERM, which is the difference between an artifact and
   # a zero-byte one.
   if [ -n "$recorder" ]; then kill -INT "$recorder" 2>/dev/null || true; wait "$recorder" 2>/dev/null || true; fi
+  if [ -n "$plug" ]; then kill "$plug" 2>/dev/null || true; fi
   xcrun simctl shutdown "$udid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -346,6 +348,26 @@ if [ -n "$carplay" ]; then
   # want of a car.
   export ZIMMER_UI_TEST_CARPLAY=1
   export TEST_RUNNER_ZIMMER_UI_TEST_CARPLAY=1
+
+  # The car's plug. The same menu takes the head unit away, and a test on the phone cannot reach
+  # the Mac's menus, so the drill writes the item it wants ("Disabled", or "CarPlay" to plug back
+  # in) to this file, and this clicks it and removes the file to say it has. A click that fails
+  # leaves the file, so the drill says so rather than blaming the app.
+  (
+    while :; do
+      if [ -s "$artifacts/carplay-plug" ]; then
+        item="$(cat "$artifacts/carplay-plug")"
+        if osascript -e 'tell application "Simulator" to activate' -e 'delay 0.5' \
+          -e "tell application \"System Events\" to tell process \"Simulator\" to click menu item \"$item\" of menu 1 of menu item \"External Displays\" of menu 1 of menu bar item \"I/O\" of menu bar 1" \
+          >"$artifacts/carplay-plug.log" 2>&1; then
+          printf '    the car'"'"'s plug: %s\n' "$item"
+          rm -f "$artifacts/carplay-plug"
+        fi
+      fi
+      /bin/sleep 0.5
+    done
+  ) &
+  plug=$!
 fi
 
 xcrun simctl io "$udid" recordVideo --codec h264 --force "$artifacts/run.mp4" &
@@ -357,7 +379,7 @@ printf '==> running the UI tests\n'
 status=0
 # One ordered test that spends a minute and a half reaching the car before it starts.
 test_allowance=300
-if [ -n "$carplay" ]; then test_allowance=480; fi
+if [ -n "$carplay" ]; then test_allowance=600; fi
 xcodebuild test-without-building \
   -project App/Zimmer.xcodeproj \
   -scheme ZimmerUITests \
