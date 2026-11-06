@@ -47,7 +47,7 @@ final class LiveHandoverUITests: XCTestCase {
         assertStaysOnTheBoard(app, "the blip passed")
     }
 
-    func test_a_flap_lands_once_for_the_last_disconnect_and_only_after_it_settles() {
+    func test_a_flap_lands_once_for_the_last_disconnect() {
         let app = launch(["-ZimmerFixtureCarScript", "left@2,back@3,left@4,back@5,left@6"])
         XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "the car stayed gone, so the phone goes to the call")
         XCTAssertEqual(app.navigationBars.matching(identifier: "Live Mode").count, 1, "one thread, not one for each disconnect")
@@ -67,6 +67,16 @@ final class LiveHandoverUITests: XCTestCase {
 
         app.navigationBars.buttons["Cancel"].firstMatch.tap()
         XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "closing it lets the phone go to the call")
+    }
+
+    func test_closing_live_on_another_thread_does_not_bring_it_back_up() {
+        let app = launch(["-ZimmerFixtureLiveConversation", "21", "-ZimmerFixtureCarScript", "other@0,left@8"])
+        XCTAssertTrue(app.navigationBars["Live Mode"].waitForExistence(timeout: timeout))
+        Thread.sleep(forTimeInterval: 8 + wellPastTheSettle)
+        XCTAssertFalse(callState(app).exists, "another thread is left alone")
+        app.swipeDown(velocity: .fast)
+        XCTAssertTrue(board(app).waitForExistence(timeout: timeout))
+        assertStaysOnTheBoard(app, "closing Live was a choice")
     }
 
     func test_a_sheet_the_model_does_not_know_about_holds_it_too() {

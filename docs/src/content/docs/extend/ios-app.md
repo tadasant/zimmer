@@ -751,7 +751,8 @@ comes to the front while the call is still up. The wait is for a bad cable or a 
 the car comes back inside it, the phone stays where it was and the call goes back to the car. A call
 that has ended by then, one the gear ended, or one that was only retrying, leaves the phone alone.
 Nothing is closed to get there. With a sheet, a dialog, the keyboard or another Live thread open, it
-waits until they are gone, so nothing you were typing is lost. Opening a push or a link wins over it.
+waits until they are gone, so nothing you were typing is lost. Opening a session or a link, or closing
+Live, cancels it.
 It needs no touch and makes no sound, and it changes nothing about the call.
 
 **The gear is the way out when a call has stopped working.** A call the live model has mis-tuned
@@ -857,8 +858,8 @@ call is the phone's `LiveCall`, but every request it makes from the car says `ca
 (`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
 the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
 started is handed to the car when the car connects or Talk picks it up, and back to the phone when
-the car disconnects (`LiveHandover` decides when the phone's screen follows). The audio session is held only while the call runs, and the microphone opens
-only for the call.
+the car disconnects (`LiveHandover` decides when the phone's screen follows). The audio session is
+held only while the call runs, and the microphone opens only for the call.
 
 **What keeps it from crashing, and the tests that hold it.** Every iOS pull request runs the
 **CarPlay drill** (`ios_carplay`). Zimmer is opened in the iOS Simulator's CarPlay window and driven

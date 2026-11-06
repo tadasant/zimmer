@@ -111,8 +111,9 @@ front of them, and the rules are mostly about when not to do it:
   second presentation), or the keyboard is up, it waits, and goes when they clear. Live's own list
   gets the thread pushed; the call's own thread spends the route; another thread is left alone, since
   its composer may hold a draft, until the person backs out of it.
-- **The person wins.** A push or a link opened on purpose forgets the route. The half second before
-  the first look is what lets a push tap arrive first.
+- **The person wins.** Opening a session, from a row, a push or a link, forgets the route, and so
+  does closing Live: Done on another thread must not bring Live straight back up. The half second
+  before the first look is what lets a push tap arrive first.
 - **Nothing happens to the call.** The landing opens the thread with `voice: false`: no
   `POST …/mode`, no `call.start`, no microphone, no audio, no cue, no touch needed.
 
@@ -121,6 +122,11 @@ and so no model. `CarHandoverLanding` sits with the tabs, so a phone scene openi
 in or not, reaches it the same way as one open all along. The reconnect's `carCameBack` comes after
 `didConnect`'s own tear-down, which would otherwise arm a route on every scene restart. Nothing
 changes for the web or any other client: the call only ever lived in this process.
+
+"The car came back" means Zimmer's scene connected, not that a cable went in. If the car returns and
+nobody opens Zimmer on it, the scene stays away, so the call is still the phone's and the next
+foreground lands on it. That is true to where the call is. A long-press menu is not a presentation
+UIKit reports, so a landing can close one; nothing typed lives in a menu.
 
 There is no nudge. A notification is a sound or a banner while possibly still driving, and a Lock
 Screen Live Activity is a new surface, which is a product decision (*Follow-ups*). The call's own
@@ -312,13 +318,13 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 - the car opens on one button and nothing else;
 - the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
   (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
+- the car unplugged with that call up, by the Simulator's own I/O menu, so the scene truly
+  disconnects (`ios/bin/ui-test` clicks it, because a test on the phone cannot reach the Mac): the
+  phone lands on the call's thread; and plugged back in, the call goes up on the car again;
 - the panel, opened by the fixture running the gear's Swift closure off the main thread on the
   reconnected scene: the call screen is gone, it shows the
   cap of 180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
   clears the cap, and Back to the call calls again, all by ordinary taps;
-- the car unplugged with that call up, by the Simulator's own I/O menu, so the scene truly
-  disconnects (`ios/bin/ui-test` clicks it, because a test on the phone cannot reach the Mac): the
-  phone lands on the call's thread; and plugged back in, the call goes up on the car again;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
   `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
   tries again.
@@ -378,6 +384,9 @@ running after every step, and any crash report fails the job.
   action), CarPlay's own Back on the panel, a muted call coming back muted, and how long a real
   cable or wireless blip lasts against the three-second settle. The drill's flap is one disconnect
   and one reconnect, seconds apart; a flap inside the settle is the fixture's.
+- **Not driven anywhere:** the cold path, CarPlay running the app with no phone scene and the phone
+  scene opening afterwards. XCUITest always launches with a window. It shares every line of the warm
+  path after the route is armed, and the route lives outside the scene so that it can.
 - **Not driven anywhere but a car:** the audio route moving to the car (the Simulator has none), and
   a call that connects (CI has no microphone and no OpenAI key), so Listening, Speaking and Working
   are confirmed only by driving, as are a real interruption, a socket going quiet and whether OpenAI

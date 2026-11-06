@@ -17,7 +17,8 @@ import Foundation
 ///   landing: the call ending forgets it, and it is checked against the call again on arrival.
 /// - **It takes nothing away.** A landing only ever opens: it closes nothing, so it cannot lose
 ///   what was typed, and while anything is up over the tabs, or the keyboard is, it waits.
-/// - **The person wins.** Opening a session from a push or a link forgets the route.
+/// - **The person wins.** Opening a session, from a row, a push or a link, or closing Live, forgets
+///   the route.
 ///
 /// A landing changes nothing about the call: no request, no microphone, no audio, no sound.
 public struct LiveHandover: Sendable, Equatable {
@@ -69,7 +70,7 @@ public struct LiveHandover: Sendable, Equatable {
         route = nil
     }
 
-    /// The person opened something on purpose: a push, a link.
+    /// The person chose something else: opened a session, followed a link, closed Live.
     public mutating func personChoseElsewhere() {
         route = nil
     }
