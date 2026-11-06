@@ -171,8 +171,10 @@ class SmokeTest < ApplicationSystemTestCase
         click_button "Create Session"
 
         # Should redirect to the session show page
-        # Wait for session page to load - check we're on a session page
-        assert_current_path(/\/sessions\/\d+/, wait: 10)
+        # Wait for session page to load - check we're on a session page. Jobs run
+        # inline here, so this redirect waits on them too: 11.6s on a CI runner,
+        # most of it the session job and the status summary it leads to.
+        assert_current_path(/\/sessions\/\d+/, wait: 30)
 
         # Get the created session from the URL
         session_id = current_path.match(/\/sessions\/(\d+)/)[1]

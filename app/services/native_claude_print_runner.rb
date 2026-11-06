@@ -14,6 +14,9 @@ require "fileutils"
 # same reason a session is: there is no host-global credentials file to inherit
 # any more. See issue #618.
 #
+# The call is a text completion: ClaudePrintRunner::TEXT_ONLY_ARGS gives the child
+# no tools and none of the user's or project's configuration.
+#
 # Implements the ClaudePrintRunner contract:
 #   #run(prompt:, timeout:) -> ClaudePrintRunner::Result
 #
@@ -33,6 +36,9 @@ class NativeClaudePrintRunner
   # final poll after its deadline passes.
   REAP_WINDOW = 1.0
   REAP_POLL_INTERVAL = 0.02
+
+  # How much of a failed child's stderr reaches the log.
+  STDERR_LOG_CHARS = 300
 
   # @param claude_binary [String] the binary to drive (injectable for tests)
   # @param model [String, nil] model id passed through as `--model`
@@ -65,6 +71,7 @@ class NativeClaudePrintRunner
     pid = nil
     temp_dir = Dir.mktmpdir("headless_inference_")
     output_file = File.join(temp_dir, "output.txt")
+    error_file = File.join(temp_dir, "error.txt")
 
     # The env overlay goes first, as Process.spawn's optional leading hash. It
     # carries this process's credentials: without it the CLI reads whatever the
@@ -75,15 +82,18 @@ class NativeClaudePrintRunner
       *build_command(prompt),
       chdir: temp_dir,
       out: [ output_file, "w" ],
-      err: File::NULL
+      err: [ error_file, "w" ]
     )
 
     status = Timeout.timeout(timeout) do
       @process_manager.wait(pid)
     end
 
+    exit_status = exit_status_of(status)
+    log_failure(exit_status, error_file) unless exit_status.nil? || exit_status.zero?
+
     ClaudePrintRunner::Result.new(
-      text: File.read(output_file), usage: nil, exit_status: exit_status_of(status)
+      text: File.read(output_file), usage: nil, exit_status: exit_status
     )
   rescue Timeout::Error
     terminate_process(pid)
@@ -93,6 +103,14 @@ class NativeClaudePrintRunner
   end
 
   private
+
+  # Stderr is where the CLI says it rejected a flag, and a CLI update can do that
+  # without warning. Every caller reads a failure as "no answer", so this line is the
+  # only trace of why. Stdout is not logged, because it can quote the prompt.
+  def log_failure(exit_status, error_file)
+    detail = File.exist?(error_file) ? File.read(error_file).squish.truncate(STDERR_LOG_CHARS) : ""
+    @logger.warn "[NativeClaudePrintRunner] claude exited #{exit_status}: #{detail.presence || '(no stderr)'}"
+  end
 
   # `ProcessManager#wait` answers `Process.wait2`'s `[pid, status]`, so the code
   # is one hop in. Nil rather than a guess when the shape is not what we expect:
@@ -105,7 +123,7 @@ class NativeClaudePrintRunner
   end
 
   def build_command(prompt)
-    cmd = [ @claude_binary, "--dangerously-skip-permissions" ]
+    cmd = [ @claude_binary, *ClaudePrintRunner::TEXT_ONLY_ARGS ]
     # `--model` is omitted only when no model is supplied (a diagnostics-only
     # path), in which case `claude` inherits its own default. The production
     # consumer (HeadlessInferenceService) always pins a model, so the live path

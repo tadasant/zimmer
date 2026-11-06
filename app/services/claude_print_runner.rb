@@ -20,6 +20,12 @@
 # resolved through Zimmer::ExtensionRegistry, this module names no concrete
 # extension: with the PTY extension removed, every call falls back to native.
 #
+# Every call here is a text completion, never an agent. The prompts carry
+# transcripts and last messages, and those hold text from outside the circle of
+# trust: Slack messages, inbound email, GitHub comments. So a backend runs with no
+# tools and none of the user's or project's configuration (TEXT_ONLY_ARGS), and
+# #build refuses an extension backend that does not declare it does the same.
+#
 # Scope note: this seam governs print-mode inference only. Interactive
 # agent-session execution (a long-lived process that streams a transcript over
 # time and supports resume / follow-up / MCP / image input) is a structurally
@@ -45,6 +51,33 @@ module ClaudePrintRunner
     def failed? = !exit_status.nil? && !exit_status.zero?
   end
 
+  # What makes a `claude` invocation a text completion, as measured against CLI
+  # 2.1.318 with a stub API:
+  #
+  #   --tools ""                  no built-in tools. MCP tools and hooks survive it.
+  #   --setting-sources ""        no user, project or local settings: no hooks and
+  #                               no CLAUDE.md. Managed settings still apply.
+  #
+  # Two more are defensive rather than measured to be necessary:
+  #
+  #   --strict-mcp-config         no MCP server from any config file, whatever
+  #                               counts as a setting source.
+  #   --disable-slash-commands    a prompt cannot open a skill or command.
+  #
+  # `--dangerously-skip-permissions` stays out on purpose. Nothing here needs it, and
+  # without it a tool needing approval has nobody to grant it: `Bash` was denied when
+  # the CLI was given its default tools. Read-only tools may not need approval, so
+  # this is a backstop and not a replacement for `--tools ""`.
+  #
+  # `--no-session-persistence` stays out too: TokenUsageIngestionService reads these
+  # calls' transcripts to account for their spend.
+  TEXT_ONLY_ARGS = [
+    "--tools", "",
+    "--strict-mcp-config",
+    "--setting-sources", "",
+    "--disable-slash-commands"
+  ].freeze
+
   module_function
 
   # Build the runner for the current configuration. This is the single point at
@@ -60,22 +93,38 @@ module ClaudePrintRunner
   #   (considering all extensions, ignoring enablement); `false` forces the
   #   native backend; nil consults the enabled extensions. For tests/diagnostics.
   # @param logger [Logger]
-  # @return [#run] a runner responding to run(prompt:, timeout:) -> Result
+  # @return [#run] a runner responding to run(prompt:, timeout:) -> Result. An
+  #   extension backend that does not declare #text_only? is replaced by native.
   def build(claude_binary: "claude", model: nil, process_manager: nil, pty_override: nil, logger: Rails.logger)
     backend = extension_backend(
       claude_binary: claude_binary, model: model,
       process_manager: process_manager, logger: logger, override: pty_override
     )
-    backend || NativeClaudePrintRunner.new(
+    return backend if backend && text_only?(backend)
+
+    if backend
+      logger.warn "[ClaudePrintRunner] #{backend.class} does not declare #text_only?; using the native backend"
+    end
+
+    NativeClaudePrintRunner.new(
       claude_binary: claude_binary, model: model,
       process_manager: process_manager, logger: logger
     )
   end
 
+  # Whether a backend has declared that it runs with the equivalent of
+  # TEXT_ONLY_ARGS. An extension backend is code this repository may not hold, so
+  # silence reads as "no": the failure is a cost (no `usage`), not a model with
+  # tools reading untrusted text. `pty_override: true` does not skip this.
+  def text_only?(backend)
+    backend.respond_to?(:text_only?) && backend.text_only? == true
+  end
+
   # Whether an extension backend is active for print inference. An explicit
   # override wins (tests/diagnostics); otherwise ask the registry whether any
   # enabled extension provides one. Kept for tests/diagnostics that assert which
-  # path is live.
+  # path is live. It does not consult #text_only?, so #build can still answer with
+  # native while this is true.
   def pty_enabled?(override = nil)
     return override unless override.nil?
 
