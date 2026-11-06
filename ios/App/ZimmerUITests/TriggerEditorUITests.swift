@@ -118,6 +118,11 @@ final class TriggerEditorUITests: XCTestCase {
         XCTAssertTrue(refusal.label.contains("must include channel_id for Slack conditions"), "and the Slack condition's")
         XCTAssertTrue(name.exists, "still on the form, with what was typed")
 
+        // Refused again in the same words, from the prompt again: the form scrolls again.
+        XCTAssertTrue(reveal(app, prompt))
+        app.buttons["trigger.form.save"].tap()
+        XCTAssertTrue(comesOnScreen(app, refusal), "the form scrolls up to a second refusal too")
+
         app.buttons["Cancel"].firstMatch.tap()
         let nightly = app.descendants(matching: .any)["trigger.5"].firstMatch
         XCTAssertTrue(nightly.waitForExistence(timeout: timeout))

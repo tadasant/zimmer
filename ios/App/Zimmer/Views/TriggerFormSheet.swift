@@ -43,14 +43,17 @@ struct TriggerFormSheet: View {
                     conditionsSections
                     templateSections
                 }
-                // Any scroll puts the keyboard away: a form this long is scrolled with the keyboard
+                // Any drag puts the keyboard away: a form this long is scrolled with the keyboard
                 // up, and a row under the keyboard is not one a finger can reach.
                 .scrollDismissesKeyboard(.immediately)
-                .task(id: refusals) {
-                    guard refusals > 0 else { return }
-                    // After the layout that adds the row, or the scroll can miss.
-                    try? await Task.sleep(for: .milliseconds(300))
-                    proxy.scrollTo(Self.refusalAnchor, anchor: .top)
+                // On the change alone, not `.task(id:)`: that runs again each time a pushed picker
+                // pops, and would take the form away from whatever is being corrected.
+                .onChange(of: refusals) { _, _ in
+                    Task {
+                        // After the layout that adds the row, or the scroll can miss.
+                        try? await Task.sleep(for: .milliseconds(300))
+                        proxy.scrollTo(Self.refusalAnchor, anchor: .top)
+                    }
                 }
             }
             .themeGround()

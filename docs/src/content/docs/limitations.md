@@ -267,9 +267,9 @@ that never appeared behind a tap that succeeded means a re-run first.
 
 ### Dragging the iOS trigger form back up can stall
 
-In the iOS trigger form, a drag up the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.
+In the iOS trigger form, a drag toward the top of the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.
 
-A refusal no longer depends on it, because the form scrolls to the refusal itself. Somebody scrolling a long form by hand can still meet it, and so can the other upward `reveal`s in `TriggerEditorUITests`, which are short and have not failed this way. A failed save that is not a refusal, such as a network error, still shows its banner at the top of the form with no scroll, so it can appear off screen.
+A refusal does not depend on it, because the form scrolls to the refusal itself. Somebody scrolling a long form by hand can still meet it, and so can the other upward `reveal`s in `TriggerEditorUITests`, which are short and have not failed this way. A failed save that is not a refusal, such as a network error, still shows its banner at the top of the form with no scroll, so it can appear off screen.
 
 ### A switch on iOS 26 can lose a very short touch
 
