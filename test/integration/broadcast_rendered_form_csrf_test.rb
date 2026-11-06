@@ -2,10 +2,9 @@ require "test_helper"
 require "mocha/minitest"
 
 # A partial broadcast over a Turbo Stream is rendered with no user and no session,
-# so its forms carry no CSRF token. A real submit of one, with forgery protection
-# on, is what reached the 422 page on `update_carplay_fit`. The browser half, which
-# supplies the page's token, is pinned in test/system/broadcast_rendered_form_csrf_test.rb.
-# This half pins what that fix stands on, and that the server still refuses.
+# so its forms carry no CSRF token. The browser supplies the page's token, which
+# test/system/broadcast_rendered_form_csrf_test.rb pins. This half pins what that
+# stands on, and that the server still refuses a submit without a valid token.
 class BroadcastRenderedFormCsrfTest < ActionDispatch::IntegrationTest
   # The test environment disables forgery protection, and with it off every request
   # below would succeed and prove nothing.
@@ -73,7 +72,7 @@ class BroadcastRenderedFormCsrfTest < ActionDispatch::IntegrationTest
     assert_equal "carplay_ok", @session.reload.carplay_fit
   end
 
-  test "a request render keeps its own per-form token" do
+  test "a request render embeds a token of its own" do
     get session_path(@session)
 
     assert carplay_form(response.body).at_css("input[name=authenticity_token]")&.[]("value").present?

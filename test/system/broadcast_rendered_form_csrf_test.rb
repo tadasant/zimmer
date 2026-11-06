@@ -1,15 +1,13 @@
 require "application_system_test_case"
-require "mocha/minitest"
 
-# The report was a CSRF page on `update_carplay_fit`, from the dashboard's drawer. A
-# broadcast had replaced the drawer's header with a render that has no session, so
-# the chevron menu's `data-turbo="false"` form had no token, and a browser submitting
-# it sent none. Only a real browser with forgery protection on can show this: the
-# test environment disables it, and a request test cannot run the page's JavaScript.
+# A broadcast replaces a form with a render that has no session, so the chevron
+# menu's `data-turbo="false"` form has no token of its own and the page has to supply
+# it. Only a real browser with forgery protection on can show this: the test
+# environment disables it, and a request test cannot run the page's JavaScript.
 #
 # The test cable adapter delivers nothing to the browser, so each test hands the page
 # the same stream a broadcast would, built from the same render the model uses.
-class BroadcastRenderedFormCsrfTest < ApplicationSystemTestCase
+class BroadcastRenderedFormCsrfSystemTest < ApplicationSystemTestCase
   setup do
     @original_forgery_protection = ActionController::Base.allow_forgery_protection
     ActionController::Base.allow_forgery_protection = true
@@ -41,11 +39,10 @@ class BroadcastRenderedFormCsrfTest < ApplicationSystemTestCase
   def choose_laptop_only
     find("#{header} summary[aria-label='More CarPlay fit choices']").click
     find("#{header} button[value='laptop_only']").click
-    assert_no_text "The change you wanted was rejected"
   end
 
   def assert_mark_written
-    assert_text "Waiting on a car"
+    assert_text "marked Laptop only"
     assert_equal "laptop_only", @session.reload.carplay_fit
     assert_equal "human", @session.carplay_fit_source
   end
@@ -95,41 +92,50 @@ class BroadcastRenderedFormCsrfTest < ApplicationSystemTestCase
       click_button "Set"
     end
 
-    assert_no_text "The change you wanted was rejected"
-    assert_selector "#session-precedence"
+    assert_text "Precedence is now 7."
     assert_equal 7, @session.reload.precedence
   end
 
-  test "a same-origin form that already has a token keeps it, and another origin gets none" do
+  test "only a same-origin POST without a token gets one" do
     visit session_path(@session)
     assert_selector header
 
     result = page.evaluate_script(<<~JS)
       (function () {
         const page = document.querySelector("meta[name='csrf-token']").content;
-        const read = (action, field) => {
+        const read = ({ action = "/sessions", method = "post", field, button = {} }) => {
           const form = document.createElement("form");
-          form.setAttribute("method", "post");
+          form.dataset.turbo = "false";
+          form.setAttribute("method", method);
           form.setAttribute("action", action);
+          form.addEventListener("submit", (event) => event.preventDefault());
           if (field) {
             const input = document.createElement("input");
             input.name = "authenticity_token";
             input.value = field;
             form.append(input);
           }
+          const submitter = document.createElement("button");
+          Object.entries(button).forEach(([name, value]) => submitter.setAttribute(name, value));
+          form.append(submitter);
           document.body.append(form);
+          form.requestSubmit(submitter);
           const token = new FormData(form).get("authenticity_token");
           form.remove();
           return token;
         };
         return {
-          filled: read("/sessions") === page,
-          kept: read("/sessions", "per-form"),
-          crossOrigin: read("https://example.com/collect")
+          filled: read({}) === page,
+          kept: read({ field: "per-form" }),
+          crossOrigin: read({ action: "https://example.com/collect" }),
+          get: read({ method: "get" }),
+          submitterCrossOrigin: read({ button: { formaction: "https://example.com/collect" } }),
+          submitterGet: read({ button: { formmethod: "get" } })
         };
       })()
     JS
 
-    assert_equal({ "filled" => true, "kept" => "per-form", "crossOrigin" => nil }, result)
+    assert_equal({ "crossOrigin" => nil, "filled" => true, "get" => nil, "kept" => "per-form",
+                   "submitterCrossOrigin" => nil, "submitterGet" => nil }, result)
   end
 end
