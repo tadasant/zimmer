@@ -468,9 +468,10 @@ running after every step, and any crash report fails the job.
 
 ## Follow-ups
 
-- **Continuing an ended conversation.** Continue offers only what is open. When a conversation can
-  be reopened, `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's
-  read is where a reopenable conversation would keep the Continue tile up.
+- **Continuing an ended conversation.** Continue offers only what is open, and an ended conversation
+  is reached by saying so on a call. `LiveAPI.switchLiveConversation(nil, from:)` is what a tile
+  would call: `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's read
+  is where a reopenable conversation would keep the Continue tile up.
 - **iOS 27 overlay.** The voice control template as an overlay. Needs Xcode 27 in CI.
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
