@@ -281,6 +281,9 @@ final class AppModel: ObservableObject {
             fixtureLiveConversation = id
             showingLive = true
         }
+        if let flag = arguments.firstIndex(of: "-ZimmerFixtureCarScript"), arguments.indices.contains(flag + 1) {
+            runFixtureCarScript(arguments[flag + 1])
+        }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
@@ -605,6 +608,34 @@ final class AppModel: ObservableObject {
             break
         }
     }
+
+    #if DEBUG
+    /// `-ZimmerFixtureCarScript left@6,back@7,end@9`: a call from the car on conversation 21, held
+    /// on Connecting…, and the car's moves at those seconds after launch, so a phone test can see
+    /// what a disconnect does in every order. `left` and `back` are what the CarPlay scene calls.
+    private func runFixtureCarScript(_ script: String) {
+        let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
+            let parts = move.split(separator: "@")
+            guard parts.count == 2, let at = Double(parts[1]) else { return nil }
+            return (parts[0], at)
+        }
+        Task {
+            let call = LiveCall.shared
+            Task { await call.start(21, from: .carplay) }
+            var elapsed = 0.0
+            for move in moves {
+                try? await Task.sleep(for: .seconds(move.at - elapsed))
+                elapsed = move.at
+                switch move.name {
+                case "left": await call.carryOn(on: .ios)
+                case "back": await call.carryOn(on: .carplay)
+                case "end": call.hangUp()
+                default: break
+                }
+            }
+        }
+    }
+    #endif
 
     /// `-ZimmerFixtureTrashedWhileAway <id>`: session `id` goes to the trash elsewhere as the
     /// app goes to the background, so a UI test can see the board catch up on its return.

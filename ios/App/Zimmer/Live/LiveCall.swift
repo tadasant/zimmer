@@ -386,7 +386,7 @@ final class LiveCall: ObservableObject {
 
     #if DEBUG
     private static let drillHoldsTheCall = AppEnvironment.shared.isFixture
-        && ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp")
+        && !Set(ProcessInfo.processInfo.arguments).isDisjoint(with: ["-ZimmerFixtureVoiceTurnedUp", "-ZimmerFixtureCarScript"])
     #endif
 
     private func act(on action: LiveCallHealth.Action, generation: Int) {

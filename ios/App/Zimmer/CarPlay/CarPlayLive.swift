@@ -58,6 +58,8 @@ final class CarPlayLive {
     /// The panel is on the stack, so CarPlay going back to the root means it was closed.
     private var settingsOnStack = false
     #if DEBUG
+    /// How many scenes have put a call screen up. The drill unplugs the car from the first.
+    private static var drillScenes = 0
     private var drillPressedTheGear = false
     /// What CarPlay runs for a tap on the gear, for the drill to run the same way.
     private var drillGear: (press: (CPBarButton) -> Void, button: CPBarButton)?
@@ -399,14 +401,16 @@ final class CarPlayLive {
 
     #if DEBUG
     /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the Swift closure behind the gear,
-    /// once, a while after the first call screen goes up, and off the main thread, the one
-    /// way a tap can arrive that the Simulator never shows. XCUITest computes no hit point for a
-    /// template's bar button, and a click from the Mac at its place does not reach it, so this is
-    /// how the panel is driven.
+    /// once, a while after the call screen goes up on the scene the drill reconnected, and off the
+    /// main thread, the one way a tap can arrive that the Simulator never shows. XCUITest computes
+    /// no hit point for a template's bar button, and a click from the Mac at its place does not
+    /// reach it, so this is how the panel is driven.
     private func drillPressesTheGear() {
         guard AppEnvironment.shared.isFixture, ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureVoiceTurnedUp"),
               !drillPressedTheGear else { return }
         drillPressedTheGear = true
+        Self.drillScenes += 1
+        guard Self.drillScenes == 2 else { return }
         Task {
             try? await Task.sleep(for: .seconds(15))
             guard let gear = self.drillGear else { return }
