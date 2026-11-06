@@ -21,6 +21,11 @@ export function csrfToken() {
   return document.querySelector(SELECTOR)?.content || ""
 }
 
+// The name Rails reads the token from in a form body, or "" with no meta tag.
+export function csrfParam() {
+  return document.querySelector('meta[name="csrf-param"]')?.content || ""
+}
+
 // Headers for a JSON request body. Anything sending FormData wants the browser
 // to set Content-Type itself (it carries the multipart boundary), so those call
 // sites use `csrfToken()` directly instead.
