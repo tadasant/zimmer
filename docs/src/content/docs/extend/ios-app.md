@@ -404,8 +404,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   the agent root, the four catalog lists, the goal, session re-use, scheduling class,
   precedence, the burst cap, the coalescing window, skip while pending and the prompt
   template, in the web form's order and words. A refusal (422) is listed at the top of the
-  form in the server's words, as the web form lists it, with nothing saved. *Delete* on the
-  page asks the web page's question first (`DELETE /api/v1/triggers/:id`). *Enqueue messages*
+  form in the server's words, as the web form lists it, with nothing saved, and the form scrolls
+  up to it. *Delete* on the page asks the web page's question first (`DELETE /api/v1/triggers/:id`). *Enqueue messages*
   and *Resuscitate archived* are shown, not switched: they stay on the trigger's web page
   (#1318), which *Open in browser* gets you to. *More* holds *Costs*, *Health* and *CLIs*. *Costs* is the
   web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage

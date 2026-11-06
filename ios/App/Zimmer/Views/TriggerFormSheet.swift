@@ -6,8 +6,9 @@ import ZimmerKit
 /// form fetches), then the session template — agent root, the four catalog lists, goal,
 /// session re-use, scheduling class, precedence, the burst cap, the coalescing window, skip
 /// while pending, and the prompt template — in the web form's order and words. The server's
-/// refusal is listed at the top, as the web form lists it. The two re-use switches under
-/// session re-use are shown, not switched: they stay on the trigger's web page.
+/// refusal is listed at the top, as the web form lists it, and the form scrolls up to it: Save
+/// is usually tapped from the prompt, the last field, a long way below. The two re-use switches
+/// under session re-use are shown, not switched: they stay on the trigger's web page.
 struct TriggerFormSheet: View {
     @EnvironmentObject private var app: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -21,6 +22,8 @@ struct TriggerFormSheet: View {
     @State private var refusal: TriggerValidationError?
     @State private var saveError: ZimmerError?
     @State private var saving = false
+    /// Counts the refusals, so a second refusal in the same words scrolls again.
+    @State private var refusals = 0
     @State private var channels: PickerLoad<SlackChannel> = .idle
     @State private var chats: PickerLoad<WhatsAppChat> = .idle
     @State private var goalIsCustom = false
@@ -33,15 +36,26 @@ struct TriggerFormSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                refusalSection
-                nameSection
-                conditionsSections
-                templateSections
+            ScrollViewReader { proxy in
+                Form {
+                    refusalSection
+                    nameSection
+                    conditionsSections
+                    templateSections
+                }
+                // Any drag puts the keyboard away: a form this long is scrolled with the keyboard
+                // up, and a row under the keyboard is not one a finger can reach.
+                .scrollDismissesKeyboard(.immediately)
+                // On the change alone, not `.task(id:)`: that runs again each time a pushed picker
+                // pops, and would take the form away from whatever is being corrected.
+                .onChange(of: refusals) { _, _ in
+                    Task {
+                        // After the layout that adds the row, or the scroll can miss.
+                        try? await Task.sleep(for: .milliseconds(300))
+                        proxy.scrollTo(Self.refusalAnchor, anchor: .top)
+                    }
+                }
             }
-            // Any scroll puts the keyboard away: a form this long is scrolled with the keyboard
-            // up, and a row under the keyboard is not one a finger can reach.
-            .scrollDismissesKeyboard(.immediately)
             .themeGround()
             .navigationTitle(editing == nil ? "New Trigger" : "Edit Trigger")
             .navigationBarTitleDisplayMode(.inline)
@@ -61,6 +75,8 @@ struct TriggerFormSheet: View {
 
     // MARK: - Sections
 
+    private static let refusalAnchor = "trigger.form.refusal"
+
     @ViewBuilder
     private var refusalSection: some View {
         if let refusal {
@@ -76,6 +92,7 @@ struct TriggerFormSheet: View {
                 .padding(.vertical, 2)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("trigger.form.error")
+                .id(Self.refusalAnchor)
             }
             .themeRows()
         }
@@ -384,6 +401,7 @@ struct TriggerFormSheet: View {
             dismiss()
         } catch let refused as TriggerValidationError {
             refusal = refused
+            refusals += 1
             Haptics.failure()
         } catch {
             saveError = error as? ZimmerError ?? .transport(error)

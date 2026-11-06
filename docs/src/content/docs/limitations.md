@@ -265,6 +265,12 @@ if the action ran and the page still did not open, a second tap changes nothing 
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
 
+### Dragging the iOS trigger form back up can stall
+
+In the iOS trigger form, a drag toward the top of the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.
+
+A refusal does not depend on it, because the form scrolls to the refusal itself. Somebody scrolling a long form by hand can still meet it, and so can the other upward `reveal`s in `TriggerEditorUITests`, which are short and have not failed this way. A failed save that is not a refusal, such as a network error, still shows its banner at the top of the form with no scroll, so it can appear off screen.
+
 ### A switch on iOS 26 can lose a very short touch
 
 iOS 26's `UISwitch` flips through a long-press recognizer that begins a moment after the touch lands. If touch-down and touch-up reach the app together, it usually never begins: the app gets the touch, the switch does not move, and nothing is logged. XCUITest's `tap()` holds for 67 ms, and on a loaded runner the first touch of a screen reached the app 46 to 97 ms late, measured with touch logging on. With nothing logging, 1 plain tap in 53 failed the way [run 41951747877](https://github.com/tadasant/zimmer/actions/runs/41951747877) did. That run had no touch logging, so its cause is inferred from the matching failure.
