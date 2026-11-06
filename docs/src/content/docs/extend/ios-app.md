@@ -745,6 +745,15 @@ it…), or say **Muted** while the microphone is off. Its two buttons are **Mute
 already running when the car connects is shown at once. There are no tabs, counts, session cards or
 per-session buttons.
 
+**Unplug with a call up and the phone goes to it.** The call carries on, and the phone lands on its
+Live thread, with Mute and Hang up, about three seconds later if the app is open, or the next time it
+comes to the front while the call is still up. The wait is for a bad cable or a Bluetooth blip: if
+the car comes back inside it, the phone stays where it was and the call goes back to the car. A call
+that has ended by then, one the gear ended, or one that was only retrying, leaves the phone alone.
+Nothing is closed to get there. With a sheet, a dialog, the keyboard or another Live thread open, it
+waits until they are gone, so nothing you were typing is lost. Opening a push or a link wins over it.
+It needs no touch and makes no sound, and it changes nothing about the call.
+
 **The gear is the way out when a call has stopped working.** A call the live model has mis-tuned
 cannot be asked to fix itself, so the call screen has a gear, and behind it the voice settings, by
 touch: **Reset to defaults**, then the reply length cap, turn detection, Listening, noise reduction
@@ -848,13 +857,15 @@ call is the phone's `LiveCall`, but every request it makes from the car says `ca
 (`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
 the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
 started is handed to the car when the car connects or Talk picks it up, and back to the phone when
-the car disconnects. The audio session is held only while the call runs, and the microphone opens
+the car disconnects (`LiveHandover` decides when the phone's screen follows). The audio session is held only while the call runs, and the microphone opens
 only for the call.
 
 **What keeps it from crashing, and the tests that hold it.** Every iOS pull request runs the
 **CarPlay drill** (`ios_carplay`). Zimmer is opened in the iOS Simulator's CarPlay window and driven
 by XCUITest:
 - it opens on one button;
+- the car is unplugged with a call up, by the Simulator's own menu, and the phone lands on the call;
+  plugged back in, the call is on the car again;
 - the gear is on the call screen, and the panel behind it (opened by the fixture running the gear's
   action) shows a cap a voice call set, offers the speech threshold only under Silence, resets to
   the defaults, and calls the conversation again;
@@ -909,7 +920,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too, whole, so a pull request touching several can take most of the job's 75 minutes. A job [cut off there](/limitations/#a-job-cut-off-at-its-time-budget-is-never-alerted-on) fails `all-checks-pass` with no test failed |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: one button; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind, and a tap that tries again (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: one button; a true disconnect with a call up, the phone landing on it, and the reconnect; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind, and a tap that tries again (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as five shards on five simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `python3 -m unittest discover -s ios/tools` | `ios` | The export retry in `ios/tools/app_store_connect.py`: which failures are retried, that every other failure keeps xcodebuild's exit code, and that a build App Store Connect already has is never uploaded again |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |

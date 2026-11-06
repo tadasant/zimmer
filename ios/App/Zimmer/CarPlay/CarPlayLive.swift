@@ -13,7 +13,8 @@ import os
 ///
 /// A call started here, or taken over from the phone, says it is `carplay` on every request,
 /// so Zimmer tells the live model the person is in a car. When the car disconnects with the
-/// call still up, the call carries on as the phone's again.
+/// call still up, the call carries on as the phone's again, and the phone goes to it
+/// (`LiveCall.carLeft`, `LiveHandover`).
 ///
 /// **When the call cannot connect, or drops, the car says so on the Talk button and tries
 /// again** (`LiveRetry`): *Live Mode unavailable, retrying…*, then *Tap to retry* once the retries
@@ -183,7 +184,7 @@ final class CarPlayLive {
     /// The scene is going away: the call carries on on the phone; only the screen is dropped. A
     /// call the gear ended stays ended: there is no car left to bring it back to.
     func disconnect() {
-        if call.isActive { Task { await call.carryOn(on: .ios) } }
+        call.carLeft()
         settings = nil
         settingsOnStack = false
         settingsClosing = false

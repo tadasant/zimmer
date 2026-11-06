@@ -45,6 +45,9 @@ final class LiveCall: ObservableObject {
     @Published private(set) var microphoneLost = false
     /// Bumped on every recorded line or tool call, so an open thread knows to read again.
     @Published private(set) var activity = 0
+    /// The phone's way to a call the car left on it. Here rather than on `AppModel`: CarPlay can
+    /// run the app with no phone scene and so no model, and this outlives the car's scene.
+    @Published private(set) var handover = LiveHandover()
 
     private var conductor = RealtimeConductor()
     /// An opening line given while the call was still connecting: sent once it is up.
@@ -312,6 +315,34 @@ final class LiveCall: ObservableObject {
         await refreshSession()
     }
 
+    /// The CarPlay scene went away: a call that is up carries on as the phone's, and the phone
+    /// goes to it when it can (`LiveHandover`). A call the gear ended stays ended.
+    func carLeft() {
+        handover.carLeft(conversation: conversationID, callIsActive: isActive, at: Self.now)
+        guard isActive else { return }
+        telemetry.track(.carPlay("handover_armed"))
+        Task { await carryOn(on: .ios) }
+    }
+
+    /// The CarPlay scene connected, so nothing is on its way to the phone's screen.
+    func carCameBack() {
+        handover.carCameBack()
+    }
+
+    /// The person opened something on purpose, which is worth more than a landing.
+    func personChoseElsewhere() {
+        handover.personChoseElsewhere()
+    }
+
+    /// What the phone should do about a call the car left on it, as things stand.
+    func handoverStep(inFront: Bool, screen: LiveHandover.Screen) -> LiveHandover.Step {
+        var next = handover
+        let step = next.step(callConversation: conversationID, callIsActive: isActive, inFront: inFront, screen: screen, at: Self.now)
+        if next != handover { handover = next }
+        if case .land = step { telemetry.track(.carPlay("handover_landed")) }
+        return step
+    }
+
     // MARK: - Internals
 
     /// A no-op when it is on already. A server from before voice folded into Live Mode has no
@@ -429,6 +460,7 @@ final class LiveCall: ObservableObject {
     /// Every state change: logged, and the cues follow it.
     private func stateChanged(from previous: LiveVoiceState) {
         telemetry.track(.stateChanged(from: previous, to: state, muted: muted))
+        if state == .idle, handover.route != nil { handover.callEnded() }
         for action in cues.transition(to: state) { perform(action) }
     }
 

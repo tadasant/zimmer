@@ -14,7 +14,7 @@ final class LiveHandoverUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func test_with_the_app_open_the_phone_lands_on_the_call_and_it_can_be_left_again() {
+    func test_with_the_app_open_the_phone_lands_on_the_call() {
         let app = launch(["-ZimmerFixtureCarScript", "left@2"])
         XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "the phone goes to the call")
         XCTAssertTrue(app.buttons["live.talk"].exists, "with its Hang up to hand")

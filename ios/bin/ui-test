@@ -375,7 +375,7 @@ printf '==> running the UI tests\n'
 status=0
 # One ordered test that spends a minute and a half reaching the car before it starts.
 test_allowance=300
-if [ -n "$carplay" ]; then test_allowance=480; fi
+if [ -n "$carplay" ]; then test_allowance=600; fi
 xcodebuild test-without-building \
   -project App/Zimmer.xcodeproj \
   -scheme ZimmerUITests \
