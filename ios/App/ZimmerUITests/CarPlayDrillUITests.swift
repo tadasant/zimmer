@@ -64,13 +64,18 @@ final class CarPlayDrillUITests: XCTestCase {
 
         // The gear: on the call screen, on a call held on Connecting….
         tapTile("Talk to Zimmer")
-        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call screen goes up; the car showed:\n\(car.debugDescription)")
+        // The gear says the call screen is up, and the words cannot: the tile says Connecting…
+        // while the tap finds its conversation, and on a stalled run that outlasts one look.
+        // The screen also comes up wearing CarPlay's own Cancel, so the gear takes a wait of its
+        // own. The photo and the tree come before the assertion, to be kept if it fails.
+        let gearIsUp = car.buttons["gearshape.fill"].waitForExistence(timeout: timeout)
         photograph("carplay-call-screen-gear")
         record("the call screen", car.debugDescription)
+        XCTAssertTrue(gearIsUp, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
         // gear's own action, 15 seconds after the call screen goes up.
-        XCTAssertTrue(car.buttons["gearshape.fill"].exists, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
@@ -135,9 +140,11 @@ final class CarPlayDrillUITests: XCTestCase {
         car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
-    /// A list row by its title: the cell has no label of its own, its title and detail do.
+    /// A list row by its title: the cell has no label of its own, its title and detail do. The
+    /// list is a table; the grid's tile is a cell too, in a collection view, and during a call it
+    /// says Back to the call.
     private func row(_ words: String) -> XCUIElement {
-        car.cells.containing(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
+        car.tables.cells.containing(NSPredicate(format: "label BEGINSWITH %@", words)).firstMatch
     }
 
     /// Tap a list row, and wait for `shown`.
