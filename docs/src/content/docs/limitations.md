@@ -8397,9 +8397,7 @@ them but no tap, by element or by coordinate, reaches them, so the fixture runs 
 and a press of the gear is unconfirmed until someone does it in a car. That includes the fix for the
 gear crashing the app: the cause is inferred from the call log, not seen on a head unit. A real press
 settles it: `carplay.off_main` says CarPlay called off the main thread, and `last_mark` on an
-`abandoned` call says how far a tap got. The Home screen's grid button still has a main-actor closure,
-so a tap on it delivered off the main thread would trap; `talk_tapped` from real cars says it has been
-reaching its handler. CarPlay's own Back on the
+`abandoned` call says how far a tap got. CarPlay's own Back on the
 panel is not driven either.
 
 The car's home reads what is open when it connects and when you end a call, not while it sits there. A

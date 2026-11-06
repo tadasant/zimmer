@@ -27,9 +27,8 @@ final class CarPlayHome {
 
     private func draw() {
         let buttons = tiles.map { tile in
-            CPGridButton(titleVariants: tile.titleVariants, image: CarPlayImages.tile(tile.symbol)) { [weak self] _ in
-                self?.onTap?(tile)
-            }
+            CPGridButton(titleVariants: tile.titleVariants, image: CarPlayImages.tile(tile.symbol),
+                         handler: CarPlayImages.tapped("tile.\(tile)") { [weak self] in self?.onTap?(tile) })
         }
         template.updateGridButtons(buttons)
     }

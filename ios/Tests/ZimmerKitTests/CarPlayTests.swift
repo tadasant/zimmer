@@ -745,11 +745,10 @@ final class CarPlayTests: XCTestCase {
         var value: Bool? { lock.withLock { stored } }
     }
 
-    /// Every control on the call screen and the panel hands CarPlay a closure that belongs to no
+    /// Every control on the home, the call screen and the panel hands CarPlay a closure that belongs to no
     /// actor. One written in `CarPlayLive`, or in a `CarPlayVoiceSettings` method that is not
     /// nonisolated, inherits the main actor, and `MainActor.assumeIsolated` traps the same way.
-    /// The Home screen's grid button is outside this guard: see `limitations.md`.
-    func testTheCallScreenAndThePanelGiveCarPlayNoIsolatedHandler() {
+    func testTheHomeTheCallScreenAndThePanelGiveCarPlayNoIsolatedHandler() {
         func code(_ name: String) -> [String] {
             Self.code(Self.carPlaySources.first { $0.name == name }?.text ?? "").map(\.line)
         }
@@ -759,6 +758,11 @@ final class CarPlayTests: XCTestCase {
         }
         for control in ["gear", "mute", "end"] {
             XCTAssertTrue(live.contains { $0.contains("CarPlayImages.tapped(\"\(control)\")") }, "\(control) goes through CarPlayTap")
+        }
+        let home = code("CarPlayHome.swift")
+        XCTAssertTrue(home.contains { $0.contains("handler: CarPlayImages.tapped(") }, "the tiles go through CarPlayTap")
+        for line in home {
+            XCTAssertFalse(line.contains("{ [weak self] _ in"), "CarPlayHome: a handler closure written in place inherits the main actor\n\(line)")
         }
         let panel = code("CarPlayVoiceSettings.swift")
         XCTAssertTrue(panel.contains { $0.contains("nonisolated static func handler(") }, "a row's closure is built where no actor is inherited")
