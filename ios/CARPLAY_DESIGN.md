@@ -382,8 +382,8 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   fails, retries, gives up with Retry and New on the home, and leaves no call screen;
 - New from there, one tap to a call that retries and gives up the same way;
 - the conversation ended on the phone's own Live screen, by ordinary taps in the same process, then
-  Retry: no call, one tile, New, and a tap on it tries a call. The car's calls leave the system's
-  microphone prompt over the phone, so the drill answers it first, with Don't Allow.
+  Retry: no call, one tile, New, and a tap on it tries a call. The car's calls can leave the system's
+  microphone prompt over the phone, so the drill answers it first if it is up, with Don't Allow.
 
 The tiles come back to rest only when a call ends, and no call in the drill connects or can be ended,
 so the order is what reaches each state: Continue gets one tap at rest, and nothing to continue comes
