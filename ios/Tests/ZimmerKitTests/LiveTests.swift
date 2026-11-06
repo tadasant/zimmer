@@ -377,15 +377,15 @@ final class RealtimeConductorTests: XCTestCase {
 
     func testACallThatMovedLiveModeSendsNothingMoreDownItsSocketAndReattaches() {
         var conductor = RealtimeConductor()
-        _ = conductor.handle(event(["type": "response.created"]))
-        _ = conductor.handle(event(["type": "response.function_call_arguments.done", "call_id": "s1", "name": "switch_live_conversation", "arguments": "{}"]))
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"switch_live_conversation","arguments":"{}"}"#))
         let effects = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Switched", switchedTo: LiveSwitchTarget(id: 8, title: "the poller test")))
         XCTAssertEqual(effects, [.reattach(conversation: 8)], "no function_call_output and no response.create: that session is over")
     }
 
     func testARefusedSwitchIsAnsweredLikeAnyOtherCall() {
         var conductor = RealtimeConductor()
-        _ = conductor.handle(event(["type": "response.function_call_arguments.done", "call_id": "s1", "name": "switch_live_conversation", "arguments": "{}"]))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"switch_live_conversation","arguments":"{}"}"#))
         XCTAssertEqual(sent(conductor.relayed(callID: "s1", result: LiveToolResult(output: "No", error: true))), ["conversation.item.create:s1"])
     }
 
