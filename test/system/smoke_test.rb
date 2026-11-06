@@ -168,20 +168,13 @@ class SmokeTest < ApplicationSystemTestCase
         assert_no_selector "[data-catalog-field='mcp_servers'] [data-catalog-multiselect-target='dropdown']:not(.hidden)"
 
         # Submit the form
-        t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        names = []
-        sub = ActiveSupport::Notifications.subscribe("perform.active_job") { |_n, st, fin, _i, pl| names << format("%s %.2fs", pl[:job].class.name, fin - st) }
         click_button "Create Session"
 
         # Should redirect to the session show page
-        # Wait for session page to load - check we're on a session page
-        begin
-          assert_current_path(/\/sessions\/\d+/, wait: 60)
-        ensure
-          warn format("SUBMIT %.2fs", Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0)
-          warn names.join(" | ")
-          ActiveSupport::Notifications.unsubscribe(sub)
-        end
+        # Wait for session page to load - check we're on a session page. Jobs run
+        # inline here, so this redirect waits on them too: 11.6s on a CI runner,
+        # most of it the session job and the status summary it leads to.
+        assert_current_path(/\/sessions\/\d+/, wait: 30)
 
         # Get the created session from the URL
         session_id = current_path.match(/\/sessions\/(\d+)/)[1]
