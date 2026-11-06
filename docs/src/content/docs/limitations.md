@@ -287,6 +287,10 @@ The failed run did stand out in one way. XCTest's steps stalled for 14.5 seconds
 
 So the cause is not known, and the drill has no retry, because the fault could be the app's. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
 
+### A long stall can make the CarPlay drill miss the gear
+
+The fixture runs the gear's action 15 seconds after the call screen goes up, on its own clock, and the drill has to see the gear before that. Reaching the gear takes 3 to 5 seconds on a normal run, so a stall of about 10 seconds at that step fails the drill with `no gear on the call screen` and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+
 ### A sheet presented from inside a `List` row can reset itself
 
 A `.sheet` attached to a view inside a `List` row can get a new identity in place when the model publishes. The sheet stays up, but its scroll position, open menus and `@State` are gone. It happened to the board's Filters sheet, which is now presented from the view that owns the `List` ([#1458](https://github.com/tadasant/zimmer/issues/1458)). Why it happens is not known, and neither is why only some launches do it. Moving the sheet stopped it in every test. Attach sheets to the view that owns the `List`, not to a row.

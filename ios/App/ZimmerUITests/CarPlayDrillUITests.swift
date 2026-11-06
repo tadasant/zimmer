@@ -65,12 +65,14 @@ final class CarPlayDrillUITests: XCTestCase {
         // The gear: on the call screen, on a call held on Connecting….
         tapTile("Talk to Zimmer")
         // The gear says the call screen is up, and the words cannot: the tile says Connecting…
-        // while the tap finds its conversation, and under load that outlasts one look.
-        // The screen also comes up wearing CarPlay's own Close, so the gear takes a wait of its own.
-        XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "no gear on the call screen; the car showed:\n\(car.debugDescription)")
-        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
+        // while the tap finds its conversation, and on a stalled run that outlasts one look.
+        // The screen also comes up wearing CarPlay's own Cancel, so the gear takes a wait of its
+        // own. The photo and the tree come before the assertion, to be kept if it fails.
+        let gearIsUp = car.buttons["gearshape.fill"].waitForExistence(timeout: timeout)
         photograph("carplay-call-screen-gear")
         record("the call screen", car.debugDescription)
+        XCTAssertTrue(gearIsUp, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
         // gear's own action, 15 seconds after the call screen goes up.
