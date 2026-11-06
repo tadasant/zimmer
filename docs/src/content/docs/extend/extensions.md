@@ -73,7 +73,7 @@ That is how the removability mechanism is meant to behave. Registration is a cla
 a name resolves is a property of the tree the app was built from.
 
 `pty_transport` fulfils one-off headless inference — session titles and notification
-summaries — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
+summaries, once its runner declares `#text_only?` (see below) — by driving the interactive Claude TUI inside a pseudo-terminal and scraping the
 transcript, instead of shelling out to `claude -p`. It can therefore fill the `usage` slot on
 `ClaudePrintRunner::Result`, which print mode cannot; today every caller of
 `HeadlessInferenceService` discards that slot, so the slot is there for a backend that can populate
@@ -81,6 +81,14 @@ it rather than for a consumer that reads it. The technique depends on internal-o
 not publish, which `Zimmer::Extension`'s own docstring says in as many words, so its code lives
 outside this repository and reaches the deployment that has it as a
 [bind mount](#enable-install-remove) rather than as a merged directory.
+
+A print backend has one more obligation. Headless prompts carry transcripts, and transcripts hold
+text from Slack, email and GitHub, so the call has to be a text completion that cannot act on what
+it reads. The runner declares that by answering `#text_only?` with `true`, which promises it runs
+with the equivalent of `ClaudePrintRunner::TEXT_ONLY_ARGS`: no tools, no MCP servers, no hooks, and
+no user or project settings. `ClaudePrintRunner.build` logs a warning and uses the native backend
+for a runner that does not declare it, even under `pty_override: true`, because extension code may
+not be in this repository to check.
 
 A standalone install of Zimmer therefore gets the native path for headless inference and gives up
 nothing observable: `NativeClaudePrintRunner` is the historically-proven backend, and it returns the

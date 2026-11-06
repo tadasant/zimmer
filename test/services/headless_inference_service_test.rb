@@ -135,7 +135,7 @@ class HeadlessInferenceServiceTest < ActiveSupport::TestCase
 
     assert_kind_of Array, command_captured
     assert command_captured.include?("claude")
-    assert command_captured.include?("--dangerously-skip-permissions")
+    refute command_captured.include?("--dangerously-skip-permissions")
     assert_equal "opus", command_captured[command_captured.index("--model") + 1]
     assert command_captured.include?("-p")
     assert command_captured.include?("Test prompt")

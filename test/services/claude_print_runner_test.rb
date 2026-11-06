@@ -21,6 +21,13 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
       @claude_binary = claude_binary
       @model = model
     end
+
+    def text_only? = true
+  end
+
+  # An extension backend written before the contract named #text_only?.
+  class UndeclaredPrintBackend
+    def initialize(**) = nil
   end
 
   class FakePrintExtension < Zimmer::Extension
@@ -30,6 +37,13 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
     def print_runner_backend(claude_binary:, model:, process_manager:, logger:)
       FakePrintBackend.new(claude_binary: claude_binary, model: model)
     end
+  end
+
+  class UndeclaredPrintExtension < Zimmer::Extension
+    def id = "undeclared_print"
+    def provides_print_runner? = true
+
+    def print_runner_backend(**) = UndeclaredPrintBackend.new
   end
 
   setup do
@@ -78,6 +92,30 @@ class ClaudePrintRunnerTest < ActiveSupport::TestCase
     runner = ClaudePrintRunner.build(pty_override: true)
 
     assert_instance_of FakePrintBackend, runner
+  end
+
+  test "refuses an enabled extension backend that does not declare it is text-only" do
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register(UndeclaredPrintExtension.new)
+    AppSetting.editable.tap { |s| s.set_extension_enabled("undeclared_print", true); s.save! }
+    logger = Minitest::Mock.new
+    logger.expect(:warn, nil) { |message| message.include?("UndeclaredPrintBackend") }
+
+    assert_instance_of NativeClaudePrintRunner, ClaudePrintRunner.build(logger: logger)
+    logger.verify
+  end
+
+  test "pty_override: true does not get past the text-only check" do
+    Zimmer::ExtensionRegistry.reset!
+    Zimmer::ExtensionRegistry.register(UndeclaredPrintExtension.new)
+
+    assert_instance_of NativeClaudePrintRunner, ClaudePrintRunner.build(pty_override: true)
+  end
+
+  test "text_only? reads only an explicit true as a declaration" do
+    refute ClaudePrintRunner.text_only?(Object.new)
+    refute ClaudePrintRunner.text_only?(Struct.new(:text_only?).new("yes"))
+    assert ClaudePrintRunner.text_only?(Struct.new(:text_only?).new(true))
   end
 
   test "pty_enabled? consults the registry when no override is given" do
