@@ -129,6 +129,15 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(result.switchedTo, LiveSwitchTarget(id: 8, title: "the poller test"))
     }
 
+    func testACallFollowsASpokenConversationAndEndsRatherThanTurnVoiceOnOverATypedOne() {
+        let spoken = LiveConversation(id: 8, mode: .voice, status: .active, title: "", agentRoot: "", model: "")
+        let typed = LiveConversation(id: 9, mode: .text, status: .active, title: "", agentRoot: "", model: "")
+        XCTAssertEqual(LiveOverview(conversations: [spoken], current: 8).move(forCallOn: 7), .follow(8))
+        XCTAssertEqual(LiveOverview(conversations: [typed], current: 9).move(forCallOn: 7), .end)
+        XCTAssertEqual(LiveOverview(conversations: [spoken], current: 8).move(forCallOn: 8), .stay)
+        XCTAssertEqual(LiveOverview(conversations: [], current: nil).move(forCallOn: 8), .stay, "ended with nothing open: not this call's to act on")
+    }
+
     func testStartingNewThenGoingBackLeavesOneOpenConversationOnTheOldThread() async throws {
         let fake = FakeZimmerAPI()
         let old = try await fake.liveConversations().current

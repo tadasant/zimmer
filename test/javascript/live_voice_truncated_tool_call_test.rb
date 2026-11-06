@@ -84,6 +84,23 @@ class LiveVoiceTruncatedToolCallTest < ActiveSupport::TestCase
     assert_equal [ 8 ], scenario("follows_current")["followed"]
   end
 
+  test "a conversation someone is typing in ends the call instead of turning voice on over them" do
+    run = scenario("typed_conversation_ends_the_call")
+
+    assert_match(/typed conversation/, run["hungUp"].first)
+    assert_equal true, run["hungUp"].last["keepError"]
+  end
+
+  test "the move itself: a new secret for the new conversation, mute kept, the model asked to speak, nothing on the thread" do
+    run = scenario("reattach_through_start")
+
+    assert_equal [ "/live_conversations/8/client_secret", "https://openai.test/calls" ], run["requests"]
+    assert_equal 8, run["conversation"]
+    assert_equal true, run["muted"]
+    assert_equal [ "idle", "connecting", "listening" ], run["states"]
+    assert_equal [ "conversation.item.create", "response.create" ], run["sent"]
+  end
+
   test "a call that moved speaks first, and the line is not recorded on the thread" do
     run = scenario("speaks_first")
 

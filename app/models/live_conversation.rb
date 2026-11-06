@@ -165,10 +165,13 @@ class LiveConversation < ApplicationRecord
       .sort_by(&:first).map(&:last).uniq
   end
 
-  def end!
+  # `keeping_reply_claim`: Switch leaves a live reply's claim in place, so going
+  # back while that job is still inside a request cannot start a second one
+  # beside it. The job lets go by itself when it next looks.
+  def end!(keeping_reply_claim: false)
     return if ended? || failed?
 
-    update!(status: ENDED, ended_at: Time.current, responding_since: nil)
+    update!(status: ENDED, ended_at: Time.current, responding_since: keeping_reply_claim ? responding_since : nil)
   end
 
   # Back to being the current conversation. Only Switch calls this, under the
@@ -184,7 +187,7 @@ class LiveConversation < ApplicationRecord
     update!(
       status: instructions.present? ? ACTIVE : PREPARING,
       ended_at: nil,
-      responding_since: nil,
+      responding_since: responding? ? responding_since : nil,
       error_message: nil,
       mode: target.key,
       model: target.model,

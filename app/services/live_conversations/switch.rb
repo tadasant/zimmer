@@ -6,9 +6,9 @@ module LiveConversations
   # moves which one it is. With no id, the target is the one left most recently,
   # so "go back" needs no list and a second "go back" undoes the first.
   #
-  # `from_id` says which conversation the caller believes is current. If another
-  # one is by the time this runs, the person is looking at something stale, and
-  # moving them from a conversation they cannot see is refused. The target
+  # `from_id` says which conversation the caller believes is current, 0 for none.
+  # If another one is by the time this runs, the person is looking at something
+  # stale, and moving them from a conversation they cannot see is refused. The target
   # already being current is a no-op, not an error, which is also how the loser
   # of two racing switches to the same place comes out.
   #
@@ -26,7 +26,8 @@ module LiveConversations
 
     def initialize(id, from_id: nil, mode: nil, client_surface: nil)
       @id = id
-      @from_id = from_id.presence && Integer(from_id, exception: false)
+      # What cannot be read cannot be what is current, so it counts as stale.
+      @from_id = from_id.presence && (Integer(from_id, exception: false) || 0)
       @mode = mode.presence&.to_s
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
     end
@@ -72,7 +73,7 @@ module LiveConversations
         current = open_rows.max_by(&:id)
         raise Actions::Refused.new(changed_message(current), status: :conflict) if @from_id && current && current.id != @from_id
 
-        open_rows.each(&:end!)
+        open_rows.each { |row| row.end!(keeping_reply_claim: true) }
         target.reopen!(mode: @mode || current&.mode || target.mode, client_surface: @client_surface)
         Outcome.new(conversation: target, moved: true, left: open_rows)
       end

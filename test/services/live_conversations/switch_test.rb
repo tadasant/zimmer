@@ -139,6 +139,28 @@ class LiveConversations::SwitchTest < ActiveSupport::TestCase
     assert LiveConversations::Switch.call(old.id, from_id: 123).moved
   end
 
+  test "a page that saw nothing open is refused once something is, and an unreadable from_id is stale" do
+    old = ended
+    current = create_live_conversation
+
+    assert_equal :conflict, refusal(old.id, from_id: 0).status
+    assert_equal :conflict, refusal(old.id, from_id: "nonsense").status
+    assert current.reload.active?
+  end
+
+  test "a reply still running holds its claim through a switch and back, so no second one starts" do
+    thread = create_live_conversation(responding_since: Time.current)
+    thread.turns.create!(role: "user", source: "typed", content: "Did it land?")
+    other = ended
+
+    LiveConversations::Switch.call(other.id)
+    assert thread.reload.ended?
+    assert_not_nil thread.responding_since
+    LiveConversations::Switch.call(thread.id)
+
+    assert thread.reload.responding?
+  end
+
   test "Live Mode being off refuses, in words a person can act on" do
     OpenaiClient.stubs(:api_key).returns(nil)
     old = ended

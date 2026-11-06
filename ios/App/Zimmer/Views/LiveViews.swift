@@ -504,7 +504,7 @@ struct LiveConversationView: View {
         defer { switching = false }
         do {
             let current = try await api.liveConversations().current
-            conversation = try await api.switchLiveConversation(id, from: current).conversation
+            conversation = try await api.switchLiveConversation(id, from: current ?? 0).conversation
             error = nil
             await call.reattach(to: id)
         } catch {

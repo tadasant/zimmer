@@ -21,35 +21,50 @@ class LiveConversationPrepareJob < ApplicationJob
 
     root = AgentRootsConfig.find(conversation.agent_root)
     if root.nil?
-      conversation.fail!("The catalog has no `#{conversation.agent_root}` agent root.")
+      fail_if_preparing(conversation, "The catalog has no `#{conversation.agent_root}` agent root.")
       return
     end
 
     instructions = LiveConversations::RootInstructions.fetch(root)
     servers, cache, dropped = list_tools(conversation.enabled_mcp_servers)
 
-    conversation.update!(
-      status: LiveConversation::ACTIVE,
-      instructions: instructions.text,
-      instructions_source: instructions.source,
-      mode_instructions: instructions.modes,
-      mcp_servers: servers,
-      mcp_tool_cache: cache,
-      error_message: dropped.any? ? "Could not enable #{dropped.join('; ')}" : nil,
-      last_activity_at: Time.current
-    )
+    # Under the lock and looked at again: reading the root takes seconds, and the
+    # conversation may have been left meanwhile. Activating it then would trip the
+    # unique index and fail a conversation that can still be gone back to.
+    activated = conversation.with_lock do
+      next false unless conversation.preparing?
+
+      conversation.update!(
+        status: LiveConversation::ACTIVE,
+        instructions: instructions.text,
+        instructions_source: instructions.source,
+        mode_instructions: instructions.modes,
+        mcp_servers: servers,
+        mcp_tool_cache: cache,
+        error_message: dropped.any? ? "Could not enable #{dropped.join('; ')}" : nil,
+        last_activity_at: Time.current
+      )
+      true
+    end
+    return unless activated
+
     # Typed before the instructions were in: answer it now.
     LiveConversationReplyJob.perform_later(conversation.id) if conversation.text? && LiveConversations::TextReply.awaiting_reply?(conversation)
   rescue LiveConversations::RootInstructions::Error => e
-    conversation&.fail!(e.message)
+    fail_if_preparing(conversation, e.message)
   rescue StandardError => e
     # Anything else would leave the conversation `preparing` forever, with a
     # page waiting on it. Fail it with the reason, and report it.
     ErrorReporter.report_exception(e, context: { source: "LiveConversationPrepareJob", live_conversation_id: conversation_id })
-    conversation&.fail!("Could not prepare this conversation: #{e.class}: #{e.message.to_s.truncate(300)}")
+    fail_if_preparing(conversation, "Could not prepare this conversation: #{e.class}: #{e.message.to_s.truncate(300)}")
   end
 
   private
+
+  # `failed` is final, so it is only for a conversation still waiting on this job.
+  def fail_if_preparing(conversation, message)
+    conversation&.with_lock { conversation.fail!(message) if conversation.preparing? }
+  end
 
   def refresh(conversation)
     return unless conversation&.active?

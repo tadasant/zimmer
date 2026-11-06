@@ -223,6 +223,16 @@ public struct LiveSwitch: Decodable, Sendable, Equatable {
     }
 }
 
+/// What a call on one conversation does about the conversation that is current now.
+public enum LiveCallMove: Sendable, Equatable {
+    /// It is still the current one, or nothing is.
+    case stay
+    /// Reconnect there.
+    case follow(Int)
+    /// Somebody chose to type there, and a call must not turn voice on over them.
+    case end
+}
+
 public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
     /// The one open conversation, typed or spoken.
@@ -231,6 +241,12 @@ public struct LiveOverview: Sendable, Equatable {
     public init(conversations: [LiveConversation], current: Int?) {
         self.conversations = conversations
         self.current = current
+    }
+
+    /// `call`: the conversation a call is on.
+    public func move(forCallOn call: Int?) -> LiveCallMove {
+        guard let current, current != call else { return .stay }
+        return conversations.first { $0.id == current }?.mode == .text ? .end : .follow(current)
     }
 }
 
