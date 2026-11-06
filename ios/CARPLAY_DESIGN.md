@@ -260,6 +260,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsOneButtonOneCallScreenAndOnePanel` |
 | A list pushed under a modal, or a pop with nothing pushed after the driver's own Back | The navigator takes the modal down first and pops only what it pushed, asking CarPlay how much is pushed rather than comparing templates | `CarPlayTests` (the strict fake models the stack); the drill for the push and the pop, not for the driver's own Back |
 | The microphone open with no voice control template on screen | The gear hangs up before anything else | `CarPlayTests.testTheGearEndsTheCallBeforeThePanelGoesUp` |
+| The gear ended the app in a car (iOS 27.0.1, TestFlight 92.1), with no crash report to read. The process logged no `settings_opened` and left its call `abandoned`, so it died before the gear's hang-up finished: the panel and the push never ran. End goes through the same hang-up and works, which leaves the entry to the gear's handler. A closure written in a `@MainActor` type and handed to an Objective-C API opens with a compiler-inserted executor check, so it traps on its first instruction if CarPlay calls it off the main thread. **Inferred, not reproduced on a head unit** | Every control on the call screen and the panel, and `templateDidAppear`, hands CarPlay a closure that belongs to no actor and hops to the main actor (`CarPlayTap`). A call from off the main thread logs `carplay.tap_off_main` | `CarPlayTests.testATapFromAnyThreadRunsOnTheMainActorAndSaysItWasOff` and a source guard; the drill runs the gear's closure off the main thread |
 
 ## The CarPlay drill
 
@@ -272,7 +273,8 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
 - the car opens on one button and nothing else;
 - the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
   (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
-- the panel, opened by the fixture running the gear's action: the call screen is gone, it shows the
+- the panel, opened by the fixture running the closure CarPlay was given for the gear, off the main
+  thread: the call screen is gone, it shows the
   cap of 180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
   clears the cap, and Back to the call calls again, all by ordinary taps;
 - Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
@@ -284,9 +286,11 @@ It does not press Mute or End. XCUITest finds the voice control template's two a
 and neither an element tap nor a coordinate tap reaches them. The five states they switch between
 are `LiveCallScreenTests`'; pressing them is confirmed only by driving. The gear is the same: its
 hit point is {-1, -1}, and a click from the Mac at its place in the CarPlay window, tried from
-System Events, did not open the panel. So the fixture runs the gear's own action 15 seconds after
-the call screen goes up. The drill proves the gear is on the screen and that the panel behind it
-works. Pressing the gear is unconfirmed until someone does it in a car. List rows take ordinary
+System Events, did not open the panel. So the fixture runs the gear's closure from a background
+thread 15 seconds after the call screen goes up. The drill proves the gear is on the screen, that its
+closure survives being called off the main thread, and that the panel behind it works. Pressing the
+gear is unconfirmed until someone does it in a car, and only that press can say which thread CarPlay
+calls from: `carplay.tap_off_main` in the log if it was off the main one. List rows take ordinary
 taps, so the panel is driven for real. CarPlay's own Back on the panel is not driven: the fixture
 presses the gear once, and the one visit leaves by Back to the call.
 
