@@ -79,7 +79,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     /// Nonisolated for the reason a tap is (`CarPlayTap`): CarPlay does not say which thread this
     /// comes in on.
     nonisolated func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
-        CarPlayTap.run(offMain: { CarPlayImages.offMain("template_did_appear") }) { [weak self] in
+        CarPlayTap.run(arrived: { CarPlayImages.arrived("template_did_appear", onMain: $0) }) { [weak self] in
             self?.live?.settingsMayHaveClosed()
         }
     }

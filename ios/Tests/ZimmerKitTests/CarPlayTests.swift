@@ -585,51 +585,55 @@ final class CarPlayTests: XCTestCase {
     /// written in a `@MainActor` type and handed to CarPlay would trap on its first instruction,
     /// the likeliest reason the gear ended the app with nothing logged (`CarPlayTap`).
     func testATapFromAnyThreadRunsOnTheMainActorAndSaysItWasOff() async {
-        let offMain = Flag()
+        let arrivedOnMain = Recorded()
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            let tapped: (String) -> Void = CarPlayTap.handler(offMain: { offMain.set() }) {
+            let tapped: (String) -> Void = CarPlayTap.handler(arrived: { arrivedOnMain.set($0) }) {
                 MainActor.preconditionIsolated()
                 done.resume()
             }
             nonisolated(unsafe) let press = tapped
             Thread.detachNewThread { press("gear") }
         }
-        XCTAssertTrue(offMain.isSet)
+        XCTAssertEqual(arrivedOnMain.value, false)
     }
 
-    func testATapOnTheMainThreadStillRunsAndSaysNothing() async {
-        let offMain = Flag()
+    func testATapOnTheMainThreadRunsAndSaysItWasOnIt() async {
+        let arrivedOnMain = Recorded()
         await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            CarPlayTap.run(offMain: { offMain.set() }) { done.resume() }
+            CarPlayTap.run(arrived: { arrivedOnMain.set($0) }) { done.resume() }
         }
-        XCTAssertFalse(offMain.isSet)
+        XCTAssertEqual(arrivedOnMain.value, true)
     }
 
-    private final class Flag: @unchecked Sendable {
+    private final class Recorded: @unchecked Sendable {
         private let lock = NSLock()
-        private var value = false
-        func set() { lock.withLock { value = true } }
-        var isSet: Bool { lock.withLock { value } }
+        private var stored: Bool?
+        func set(_ value: Bool) { lock.withLock { stored = value } }
+        var value: Bool? { lock.withLock { stored } }
     }
 
     /// Every control on the call screen and the panel hands CarPlay a closure that belongs to no
-    /// actor. A closure in place in `CarPlayLive` or `CarPlayVoiceSettings` would inherit the main
-    /// actor and trap off the main thread, and `MainActor.assumeIsolated` would do the same.
+    /// actor. One written in `CarPlayLive`, or in a `CarPlayVoiceSettings` method that is not
+    /// nonisolated, inherits the main actor, and `MainActor.assumeIsolated` traps the same way.
+    /// The Home screen's grid button is outside this guard: see `limitations.md`.
     func testTheCallScreenAndThePanelGiveCarPlayNoIsolatedHandler() {
-        for name in ["CarPlayLive.swift", "CarPlayVoiceSettings.swift", "CarPlaySceneDelegate.swift"] {
-            let text = Self.carPlaySources.first { $0.name == name }?.text ?? ""
-            XCTAssertFalse(text.isEmpty, name)
-            for (number, line) in Self.code(text) {
-                XCTAssertFalse(line.contains("CPBarButton(image:") && line.contains("{"), "\(name):\(number): a bar button's closure in place inherits the main actor\n\(line)")
-                XCTAssertFalse(line.contains("actionButton(") && !line.contains("CarPlayImages.tapped("), "\(name):\(number): a button's closure in place inherits the main actor\n\(line)")
-                XCTAssertFalse(line.contains(".handler = {"), "\(name):\(number): a row's closure in place inherits the main actor\n\(line)")
-                if name == "CarPlayVoiceSettings.swift" {
-                    XCTAssertFalse(line.contains("MainActor.assumeIsolated"), "\(name):\(number): assumeIsolated traps off the main thread\n\(line)")
-                }
-            }
+        func code(_ name: String) -> [String] {
+            Self.code(Self.carPlaySources.first { $0.name == name }?.text ?? "").map(\.line)
         }
-        let delegate = Self.carPlaySources.first { $0.name == "CarPlaySceneDelegate.swift" }?.text ?? ""
-        XCTAssertTrue(delegate.contains("nonisolated func templateDidAppear"), "CarPlay's delegate call hops to the main actor itself")
+        let live = code("CarPlayLive.swift")
+        for line in live where line.contains("{ [weak self] _ in") {
+            XCTAssertTrue(line.contains(".sink"), "CarPlayLive: a handler closure written in place inherits the main actor\n\(line)")
+        }
+        for control in ["gear", "mute", "end"] {
+            XCTAssertTrue(live.contains { $0.contains("CarPlayImages.tapped(\"\(control)\")") }, "\(control) goes through CarPlayTap")
+        }
+        let panel = code("CarPlayVoiceSettings.swift")
+        XCTAssertTrue(panel.contains { $0.contains("nonisolated static func handler(") }, "a row's closure is built where no actor is inherited")
+        for line in panel {
+            XCTAssertFalse(line.contains("MainActor.assumeIsolated"), "assumeIsolated traps off the main thread\n\(line)")
+            XCTAssertFalse(line.contains(".handler = {"), "a row's closure written in place inherits the main actor\n\(line)")
+        }
+        XCTAssertTrue(code("CarPlaySceneDelegate.swift").contains { $0.contains("nonisolated func templateDidAppear") }, "CarPlay's delegate call hops to the main actor itself")
     }
 
     /// The gear is the template's, set once, so the five states stay what they are.

@@ -398,8 +398,8 @@ final class CarPlayLive {
     }
 
     #if DEBUG
-    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the closure CarPlay was given for the
-    /// gear, once, a while after the first call screen goes up, and off the main thread, the one
+    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the Swift closure behind the gear,
+    /// once, a while after the first call screen goes up, and off the main thread, the one
     /// way a tap can arrive that the Simulator never shows. XCUITest computes no hit point for a
     /// template's bar button, and a click from the Mac at its place does not reach it, so this is
     /// how the panel is driven.

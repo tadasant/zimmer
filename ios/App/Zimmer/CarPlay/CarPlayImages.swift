@@ -34,14 +34,19 @@ enum CarPlayImages {
     }
 
     /// What a tap on `control` runs: `action`, on the main actor, whichever thread CarPlay called
-    /// from (`CarPlayTap`). A call from elsewhere is logged, because no test can see which thread a
-    /// head unit's tap arrives on.
+    /// from (`CarPlayTap`).
     static func tapped<Control>(_ control: String, _ action: @escaping @MainActor @Sendable () -> Void) -> (Control) -> Void {
-        CarPlayTap.handler(offMain: { offMain(control) }, action)
+        CarPlayTap.handler(arrived: { arrived(control, onMain: $0) }, action)
     }
 
-    static func offMain(_ control: String) {
-        LiveTelemetry.shared.track(.carPlay("tap_off_main", level: .warn, ["control": .string(control)]))
+    /// CarPlay reached `control`'s handler. A mark, because a crash right after loses the log's
+    /// events, and a line when it called off the main thread, because no test can see which thread
+    /// a head unit's tap arrives on.
+    static func arrived(_ control: String, onMain: Bool) {
+        LiveTelemetry.shared.mark("carplay:\(control):\(onMain ? "main" : "off_main")")
+        if !onMain {
+            LiveTelemetry.shared.track(.carPlay("off_main", level: .warn, ["control": .string(control)]))
+        }
     }
 
     /// A navigation bar button (the guide's bar buttons are 22pt).
