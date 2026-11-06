@@ -66,10 +66,9 @@
   <!-- GitHub PR Link -->
   <%= render "sessions/github_pr_link", agent_session: agent_session, size: :large %>
 
-  <%# Use link_to with data-turbo-method instead of button_to to fix CSRF token issues %>
-  <%# When partials are broadcast via Turbo Streams, button_to forms get stale/empty CSRF tokens %>
-  <%# because they're rendered without an HTTP request context. link_to with data-turbo-method %>
-  <%# reads the CSRF token from the page's meta tag on each request, avoiding this issue. %>
+  <%# A broadcast render has no session, so a form rendered here carries no CSRF token. A %>
+  <%# link with data-turbo-method sends the page's meta tag token as a header; a non-Turbo %>
+  <%# form gets the same token at submit from lib/form_token_fill.js. %>
 
   <!-- Refresh Button -->
   <%= link_to refresh_session_path(agent_session), data: { turbo_method: :post, turbo_frame: "_top" }, class: "inline-flex items-center justify-center w-10 h-10 rounded-full hover:bg-gray-100 transition-colors text-gray-500 hover:text-gray-700", title: "Refresh transcript from filesystem", "aria-label" => "Refresh transcript from filesystem" do %>

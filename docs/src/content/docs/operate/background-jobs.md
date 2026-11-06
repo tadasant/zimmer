@@ -2663,6 +2663,19 @@ each worker tracks independently. It needs Redis to be truly global. Zimmer *doe
 cache in production — but nothing enforces that, and in development it silently degrades.
 :::
 
+## A broadcast render has no session
+
+A partial broadcast over a Turbo Stream is rendered by a job or a model callback, so there is no
+user and no session behind it. Rails cannot mint a CSRF token for nobody, and with sessions disabled
+`form_with` and `button_to` leave the hidden `authenticity_token` field out of the render.
+
+A Turbo submission doesn't care: Turbo sends the token from the page's `csrf-token` meta tag as a
+header. A `data-turbo="false"` form has only its own fields, so `app/javascript/lib/form_token_fill.js`
+adds the page's token on `submit` to any form that has none and is posting to this origin, reading a
+submit button's `formaction` and `formmethod` as well as the form's own attributes. The server's check
+is the same one every other request gets. That makes a form in a broadcast partial work either way,
+but only [with JavaScript running](/limitations/#a-broadcast-rendered-form-needs-javascript-to-submit).
+
 ## The circuit breaker on the UI
 
 `BroadcastService` wraps Turbo broadcasts in a hand-rolled circuit breaker: `THRESHOLD = 5` failures,

@@ -337,6 +337,13 @@ database error once paged the production Slack channel. Errors are therefore add
 `Rails.env` being `production` or `staging`
 ([details](/operate/observability/#only-production-and-staging-may-report)).
 
+### A broadcast-rendered form needs JavaScript to submit
+
+A broadcast render has no session, so its forms carry no CSRF token, and a `data-turbo="false"` form
+among them gets the page's token from JavaScript as it submits
+([details](/operate/background-jobs/#a-broadcast-render-has-no-session)). With JavaScript off, that
+form gets the 422 page until a reload replaces it with a request render.
+
 ### A CSRF failure still ships a context-free WARN, and is still counted per record
 
 `ApplicationController` handles `ActionController::InvalidAuthenticityToken` and re-logs it at
