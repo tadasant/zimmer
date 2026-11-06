@@ -247,6 +247,7 @@ final class LiveCall: ObservableObject {
         telemetry.updateClient { $0.surface = surface.rawValue }
         telemetry.track(.callStarting(surface: surface.rawValue, opening: true))
         conversationID = conversation
+        handover.callMoved(to: conversation)
         conductor = RealtimeConductor()
         cues = LiveCueDirector()
         timeline = LiveCallTimeline()
