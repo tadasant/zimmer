@@ -23,6 +23,11 @@
 # same prompt; the PTY backend additionally surfaces token usage, which this
 # one-line-completion path discards.
 #
+# A completion here cannot act on what it reads: ClaudePrintRunner gives the model
+# no tools, whichever backend runs. Prompts should still fence untrusted text, since
+# the model can be talked into a bad answer even when it cannot be talked into an
+# action.
+#
 # Example usage:
 #   service = HeadlessInferenceService.new
 #   title = service.generate("Generate a 6-word title for: #{content}")

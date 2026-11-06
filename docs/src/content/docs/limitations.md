@@ -2833,6 +2833,22 @@ answers neither signal costs about two.
 The `pty_transport` extension substitutes its own print runner, which this teardown path does not
 cover.
 
+### Headless inference relies on four CLI flags that nothing checks in CI
+
+`ClaudePrintRunner::TEXT_ONLY_ARGS` keeps `claude -p` from having tools, MCP servers, hooks or
+settings. Those flags were measured against CLI 2.1.318 with a stub API, and CI has no real `claude`
+binary, so the suite pins the argv and not what the CLI does with it. `ClaudeCodeUpdateJob` moves
+the CLI on its own. If an update drops a flag the call exits non-zero, which every caller already
+treats as no answer: titles fall back to the prompt and summaries are skipped, quietly. If an update
+changes what a flag means, there is still no `--dangerously-skip-permissions`, so a tool the model
+is handed would be denied rather than run.
+
+### A short refusal can still become a session title
+
+`SessionTitleJob` rejects an answer by its shape, because a refusal can be worded any way at all.
+"Cannot read the Slack message" is five words with no closing punctuation, so it passes. Fencing the
+transcript makes that answer unlikely, not impossible.
+
 ---
 
 ## Claude Code OAuth (inherited assumptions)

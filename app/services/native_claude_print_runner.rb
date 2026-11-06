@@ -14,6 +14,9 @@ require "fileutils"
 # same reason a session is: there is no host-global credentials file to inherit
 # any more. See issue #618.
 #
+# The call is a text completion: ClaudePrintRunner::TEXT_ONLY_ARGS gives the child
+# no tools and none of the user's or project's configuration.
+#
 # Implements the ClaudePrintRunner contract:
 #   #run(prompt:, timeout:) -> ClaudePrintRunner::Result
 #
@@ -105,7 +108,7 @@ class NativeClaudePrintRunner
   end
 
   def build_command(prompt)
-    cmd = [ @claude_binary, "--dangerously-skip-permissions" ]
+    cmd = [ @claude_binary, *ClaudePrintRunner::TEXT_ONLY_ARGS ]
     # `--model` is omitted only when no model is supplied (a diagnostics-only
     # path), in which case `claude` inherits its own default. The production
     # consumer (HeadlessInferenceService) always pins a model, so the live path

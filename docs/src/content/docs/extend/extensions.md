@@ -82,6 +82,14 @@ not publish, which `Zimmer::Extension`'s own docstring says in as many words, so
 outside this repository and reaches the deployment that has it as a
 [bind mount](#enable-install-remove) rather than as a merged directory.
 
+A print backend has one more obligation. Headless prompts carry transcripts, and transcripts hold
+text from Slack, email and GitHub, so the call has to be a text completion that cannot act on what
+it reads. The runner declares that by answering `#text_only?` with `true`, which promises it runs
+with the equivalent of `ClaudePrintRunner::TEXT_ONLY_ARGS`: no tools, no MCP servers, no hooks, and
+no user or project settings. `ClaudePrintRunner.build` logs a warning and uses the native backend
+for a runner that does not declare it, even under `pty_override: true`, because extension code may
+not be in this repository to check.
+
 A standalone install of Zimmer therefore gets the native path for headless inference and gives up
 nothing observable: `NativeClaudePrintRunner` is the historically-proven backend, and it returns the
 same text for the same prompt.
