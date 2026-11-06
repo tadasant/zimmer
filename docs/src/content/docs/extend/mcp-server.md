@@ -90,7 +90,7 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=settings` | The Settings page's global defaults: read and change the base runtime and model and the Experimental toggles |
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
-| `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
+| `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, go back to one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
@@ -235,8 +235,9 @@ production.
 
 `get_live_conversations` and `action_live_conversation` read and drive [Live Mode](/sessions/live/)
 conversations: whether Live Mode can start, the current conversation and whether voice is on, a
-conversation's thread with its tool calls, and start / send a typed message / `set_mode` (voice on or
-off) / end. The voice call's audio relay and the OpenAI key are deliberately not tools — the first
+conversation's thread with its tool calls, what going back would return to, and start / `switch`
+(go back to an earlier conversation, ending the current one) / send a typed message / `set_mode`
+(voice on or off) / end. The voice call's audio relay and the OpenAI key are deliberately not tools — the first
 needs a client holding the call, the second is a secret value. `set_mode` to `voice` only says the
 conversation is spoken; a client still has to open the call.
 `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`) read and change

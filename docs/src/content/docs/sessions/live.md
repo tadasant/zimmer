@@ -26,7 +26,9 @@ menu on a phone. `/live` has it as well, plus whether the OpenAI key is set.
 ## One conversation
 
 Live Mode has one current conversation. Opening it resumes that conversation; **New conversation**
-ends it and starts a fresh one, typed. The database enforces this with a unique index over open
+ends it and starts a fresh one, typed. An ended conversation can be gone back to, which
+[moves which one is current](#going-back-to-a-conversation) rather than opening a second. The
+database enforces this with a unique index over open
 conversations, so two starts racing cannot leave two current threads. Ended conversations stay
 readable, including those from the retired `live-voice` root. The migration that folded voice into
 Live Mode (`UnifyLiveModes`) ended any that were still open rather than deleting them.
@@ -46,7 +48,59 @@ to manage. What it shares with sessions is what it delegates to them.
 
 Its lifecycle is short: `preparing` while Zimmer reads its agent root's AGENTS.md, then `active`,
 then `ended`. It goes to `failed` when the instructions cannot be read, and the reason is shown on
-the page.
+the page. `ended` is not final: going back reopens the same row, so its id, its thread and the
+sessions it touched are all still there. `failed` is final.
+
+### Going back to a conversation
+
+Say "go back to my last conversation" on a call, or press **Go back to this conversation** on an
+ended thread, on the web or the phone. The conversation being left ends, the target becomes current,
+and you can go back the same way, so starting a new conversation never loses the old one.
+
+`LiveConversations::Switch` does this, and every surface goes through it: the live model's
+`switch_live_conversation`, `action_live_conversation`'s `switch`, `POST /api/v1/live_conversations/switch`
+and the web button.
+
+- **Which one.** With no id, the conversation ended most recently that has anything in it. That is
+  what "go back" means, so it needs no list, and a second "go back" undoes the first. An explicit id
+  is any conversation from `list_live_conversations`.
+- **One open, always.** The switch locks the open rows and the target in one ordered statement, ends
+  what is open and reopens the target in one transaction. The unique index catches whatever the
+  locks cannot see. Two racing switches to one place come out as a switch and a no-op; to different
+  places, the last one wins.
+- **Refused, with nothing moved.** A target that does not exist, a `failed` one, one from the
+  retired `live-voice` root, or Live Mode being unavailable. So is a stale selection: a caller passes
+  `from_id`, the conversation it believes is current, and if another one is current by then it is
+  told so instead of ending something it cannot see. The target already being current is a no-op.
+- **What comes back.** The thread, and its own MCP servers less any the catalog has dropped. It
+  takes the mode of the conversation being left, so a call stays a call. It is usable at once: the
+  instructions and tool lists it had are good enough for a call that cannot wait, and they catch up
+  with the catalog in the background (`LiveConversationPrepareJob` with `refresh: true`). A read that
+  fails there changes nothing. One that ended before it ever read its instructions goes through
+  `preparing`.
+- **A reply in flight.** The reply job looks before every round and every tool call, and stops once
+  its conversation is no longer active. An answer already on its way lands on the old thread, where
+  it is read on return. A typed line that never got an answer gets one when you go back.
+- **Background sessions** are not touched. A session reports nothing into a conversation: the live
+  model checks on it with `get_session`, whichever conversation it is in, so no result can land on
+  the wrong thread or be lost by a switch. `live_conversation_id` on a delegated turn is provenance
+  only. A call's recap carries what was said and not the tool calls, so it also lists the sessions
+  the thread has touched, which is how a reopened call knows what it set going.
+
+**A call follows the current conversation.** Moving a call means reconnecting it. `session.update`
+can replace a Realtime session's instructions and tools, but nothing removes what the session has
+already heard, so the old thread would stay in the model's context. A new session starts from the
+new conversation's own recap, the same way a dropped call comes back. A tool call that switched
+answers `switched_to`, and the client sends nothing more down that socket. While a call is up it
+also asks which conversation is current every 5 seconds, so it follows a switch made somewhere else.
+The new call opens with a line nobody said, kept off the thread, so the model says where it picked
+up rather than leaving you in silence. Mute carries over and no hang-up sound plays. On the phone the
+microphone stays open and the call never goes idle.
+
+A client that does not send `reattaches` on `tool_calls` is refused the switch, because it would
+carry on talking on a conversation that had ended. Web thread pages follow the same move from the
+header broadcast, unless a message is being typed, in which case the header links to the current
+conversation. A write that still reaches the old conversation is refused with a 409.
 
 ## The agent root is the system prompt
 
@@ -89,7 +143,7 @@ root, so a `live-voice` root left in a catalog is ignored.
 
 ## The tool bridge
 
-The model can call four kinds of function (`LiveConversations::ToolBridge`):
+The model can call five kinds of function (`LiveConversations::ToolBridge`):
 
 - **`zimmer(tool, arguments)`**, which calls one of Zimmer's own MCP tools in-process. This is the
   delegation path: `quick_router` or `start_session` to start work, `get_session` to check on it,
@@ -104,6 +158,11 @@ The model can call four kinds of function (`LiveConversations::ToolBridge`):
 - **`get_live_settings`, `update_live_settings`**: its own [settings](#live-settings) and guidance,
   always present. "Talk faster" or "from now on, always…" becomes a change the live agent makes
   itself.
+- **`list_live_conversations`, `switch_live_conversation`**: [going back](#going-back-to-a-conversation),
+  always present, whatever servers are enabled. The list is at most three short names to say aloud,
+  taken from the first thing said in each thread, because nothing sets a conversation's `title`.
+  These are functions of their own because `action_live_conversation` is opt-in and withheld from
+  the `zimmer` gateway: a model holding it could also end its own conversation for good.
 
 ```mermaid
 flowchart LR
@@ -418,8 +477,10 @@ In the two gated Listening modes speech does not cut a reply off.
 
 In the car you choose with one tap: **Continue conversation** calls the open conversation with
 voice on, and **New conversation** ends it and calls a fresh one. It is still one thread, and the
-ended conversation stays readable. With nothing open there is only New, because an ended conversation
-can't take a call. Either way it is the same call, with Mute and End while it runs, and a gear to the
+ended conversation stays readable. With nothing open the tile is only New, and going back is by
+voice, with no screen for it: "go back to my last conversation" needs no list, and the call stays on
+its one call screen, reading Connecting… for the moment it takes to reconnect
+([Going back to a conversation](#going-back-to-a-conversation)). Either way it is the same call, with Mute and End while it runs, and a gear to the
 voice settings by touch, for a call that has stopped working. The car has no other voice: a call
 that isn't up in 15 seconds gives up, the tile says *Live Mode unavailable, retrying…*, and the
 car retries with no voice, playing the falling notes the first time and when it stops. Unplug
@@ -483,14 +544,14 @@ how those sessions authenticate or bill.
 ## From an agent or a script
 
 - **MCP:** `get_live_conversations` (whether Live Mode can start, the current and recent
-  conversations, one thread) and `action_live_conversation` (`start`, `send_message`, `set_mode`,
-  `finish`); `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
+  conversations, what going back would return to, one thread) and `action_live_conversation`
+  (`start`, `switch`, `send_message`, `set_mode`, `finish`); `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
   for the [Live settings](#live-settings). All four are in the opt-in
   `live_conversations` group, which nothing carries by default: a live model can reach the whole
   catalog, so a session must not be able to steer one just by holding `sessions`. See
   [the MCP server](/extend/mcp-server/).
 - **REST:** `/api/v1/live`, `/api/v1/live/settings` and `/api/v1/live_conversations`. An API key
-  may read them. Starting, messaging, switching, finishing, the voice relay and changing the settings
+  may read them. Starting, going back, messaging, switching mode, finishing, the voice relay and changing the settings
   take the iOS app's sign-in acting as you, for the same reason. An agent changes the settings through
   MCP, where the change is recorded as an agent's. See [the REST API](/extend/rest-api/#live-conversations).
 - **Supervisor:** `/supervisor/live_conversations` and `/supervisor/live_conversation_turns`, both

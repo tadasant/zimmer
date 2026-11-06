@@ -458,4 +458,78 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   def bearer(access_token) = { "Authorization" => "Bearer #{access_token}" }
+
+  test "switch goes back and says so, and the conversation it left is ended" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    old.turns.create!(role: "user", source: "typed", content: "Is main green right now")
+    current = create_live_conversation
+
+    post switch_api_v1_live_conversations_url, params: {}, headers: @headers, as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal old.id, body["id"]
+    assert_equal true, body["switched"]
+    assert_equal "active", body["status"]
+    assert current.reload.ended?
+  end
+
+  test "switch refusals carry their status" do
+    current = create_live_conversation
+    failed = create_live_conversation(status: LiveConversation::FAILED)
+
+    post switch_api_v1_live_conversations_url, params: { id: 0 }, headers: @headers, as: :json
+    assert_response :not_found
+    post switch_api_v1_live_conversations_url, params: { id: failed.id }, headers: @headers, as: :json
+    assert_response :conflict
+    post switch_api_v1_live_conversations_url, params: { id: current.id }, headers: @headers, as: :json
+    assert_response :success
+    assert_equal false, response.parsed_body["switched"]
+  end
+
+  test "a tool call that switches answers where it went and nothing else to send" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago, mode: "voice")
+    old.turns.create!(role: "user", source: "spoken", content: "Deploy the fix to staging")
+    current = create_live_conversation(mode: "voice")
+
+    post tool_calls_api_v1_live_conversation_url(current), params: { name: "switch_live_conversation", arguments: "{}", call_id: "c1", reattaches: 1 },
+                                                           headers: @headers, as: :json
+
+    assert_response :success
+    body = response.parsed_body
+    assert_equal({ "id" => old.id, "title" => "Deploy the fix to staging" }, body["switched_to"])
+    assert_nil body["session"]
+  end
+
+  test "a tool call from an app that cannot reattach is refused the switch" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    old.turns.create!(role: "user", source: "typed", content: "Is main green right now")
+    current = create_live_conversation(mode: "voice")
+
+    post tool_calls_api_v1_live_conversation_url(current), params: { name: "switch_live_conversation", arguments: "{}", call_id: "c1" }, headers: @headers, as: :json
+
+    assert_response :success
+    assert_equal true, response.parsed_body["error"]
+    assert current.reload.active?
+  end
+
+  test "the old conversation stops taking turns once it has been left" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    old.turns.create!(role: "user", source: "typed", content: "Is main green right now")
+    current = create_live_conversation(mode: "voice")
+    LiveConversations::Switch.call(old.id)
+
+    post turns_api_v1_live_conversation_url(current), params: { role: "user", content: "still here?" }, headers: @headers, as: :json
+
+    assert_response :conflict
+    assert_empty current.turns
+  end
+
+  test "a fleet API key cannot switch" do
+    create_live_conversation
+
+    post switch_api_v1_live_conversations_url, params: {}, headers: @key_headers, as: :json
+
+    assert_includes [ 401, 403 ], response.status
+  end
 end

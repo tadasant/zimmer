@@ -223,6 +223,15 @@ struct LiveConversationView: View {
                 } else {
                     composer(conversation)
                 }
+            } else if let conversation, conversation.reopenable {
+                Divider()
+                Button { Task { await goBack() } } label: {
+                    Label(switching ? "Going back…" : "Go back to this conversation", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(switching)
+                .padding()
+                .accessibilityIdentifier("live.conversation.reopen")
             }
         }
         .navigationTitle("Live Mode")
@@ -264,6 +273,14 @@ struct LiveConversationView: View {
             landingCall = false
         }
         .onChange(of: call.activity) { _, _ in Task { await readNew() } }
+        // The call this thread was showing moved to another conversation: the screen goes with it.
+        .onChange(of: call.conversationID) { old, new in
+            if old == id, let new, new != id, call.isActive { replaced(LiveDestination(id: new)) }
+        }
+        // It ended elsewhere with another conversation current: a screen left here could only read.
+        .onChange(of: conversation?.status) { old, new in
+            if old?.isOpen == true, new == .ended { Task { await followCurrent() } }
+        }
     }
 
     private func header(_ conversation: LiveConversation) -> some View {
@@ -471,6 +488,27 @@ struct LiveConversationView: View {
             conversation = try await api.finishLiveConversation(id)
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't end the conversation."
+        }
+    }
+
+    private func followCurrent() async {
+        guard let current = try? await api.liveConversations().current, current != id else { return }
+        replaced(LiveDestination(id: current))
+    }
+
+    /// This one becomes the current conversation, ending whichever is open. A call up on that one
+    /// moves here with it; a screen that is stale by now is told so (409) rather than ending
+    /// something it cannot see.
+    private func goBack() async {
+        switching = true
+        defer { switching = false }
+        do {
+            let current = try await api.liveConversations().current
+            conversation = try await api.switchLiveConversation(id, from: current).conversation
+            error = nil
+            await call.reattach(to: id)
+        } catch {
+            self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't go back to that conversation."
         }
     }
 

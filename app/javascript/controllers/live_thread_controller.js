@@ -56,12 +56,34 @@ export default class extends Controller {
     const header = this.element.querySelector("[data-live-conversation-mode]")
     if (!header?.parentElement) return
     this.modeObserver = new MutationObserver(() => {
+      if (this.followStatus()) return
       const mode = this.element.querySelector("[data-live-conversation-mode]")?.dataset.liveConversationMode
       if (!mode || mode === this.element.dataset.liveConversationMode || this.switching) return
       if (this.hasInputTarget && this.inputTarget.value.trim() !== "") return
       Turbo.visit(window.location.href, { action: "replace" })
     })
     this.modeObserver.observe(header.parentElement, { childList: true })
+  }
+
+  // The conversation opened or closed somewhere else: another device, or the
+  // live model switching mid-call. A page left on an ended thread goes to the
+  // current one, or re-renders with its controls gone; one that came back
+  // re-renders with them. A message being typed keeps the page where it is, and
+  // the header says where the conversation went.
+  followStatus() {
+    const header = this.element.querySelector("[data-live-conversation-status]")
+    if (!header) return false
+    const open = (status) => status === "preparing" || status === "active"
+    const wasOpen = open(this.element.dataset.liveConversationStatus)
+    if (wasOpen === open(header.dataset.liveConversationStatus)) return false
+    if (this.hasInputTarget && this.inputTarget.value.trim() !== "") return true
+    const current = header.dataset.liveCurrentId
+    if (wasOpen && current) {
+      Turbo.visit(`/live_conversations/${current}`)
+    } else {
+      Turbo.visit(window.location.href, { action: "replace" })
+    }
+    return true
   }
 
   disconnect() {

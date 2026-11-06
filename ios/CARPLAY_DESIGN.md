@@ -238,7 +238,12 @@ telemetry* turns it down or off without a build. See
 [docs: observability](https://docs.zimmer.tadasant.com/operate/observability/#the-ios-apps-call-log).
 
 **One thread.** Everything the driver says goes to the one Live Mode conversation: Continue resumes
-the open conversation with voice on, and New ends it and starts another (*Continue or new*). Live Mode acts on sessions itself, with
+the open conversation with voice on, and New ends it and starts another (*Continue or new*). Going
+back to an earlier conversation moves which one that is and adds no screen: the driver says "go back
+to my last conversation", or asks what there is and hears up to three short names, and the live model
+switches. `LiveCall` reconnects onto the new conversation with the microphone open and without going
+idle, so the call screen stays up, reads Connecting…, and the rising notes and the model's first line
+say it worked. A call also follows a switch made on another device, within 5 seconds. Live Mode acts on sessions itself, with
 its own guardrails (it confirms before a merge or anything that cannot be undone). The car has no
 way to act on a session directly, and a source guard keeps it that way.
 
@@ -441,8 +446,11 @@ running after every step, and any crash report fails the job.
   on the same calls the scene makes, with the fixture playing the car's moves.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
   pull request, one true disconnect and reconnect among them.
+- `RealtimeConductor` stopping a socket when a tool call answers `switched_to` is tested in ZimmerKit,
+  and the switch itself in Rails, races included.
 - **Not confirmed anywhere, until someone drives it:** a press of the gear (the fixture runs its
-  action), CarPlay's own Back on the panel, a muted call coming back muted, which of the two
+  action), CarPlay's own Back on the panel, a muted call coming back muted, a call moving to another
+  conversation (`LiveCall.reattach`), which needs a call that connects, which of the two
   tile titles a real head unit picks at its width, and how long a real cable or wireless blip lasts
   against the three-second settle. The drill's flap is one disconnect
   and one reconnect, seconds apart; a flap inside the settle is the fixture's.

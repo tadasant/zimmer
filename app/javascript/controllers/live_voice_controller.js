@@ -28,6 +28,18 @@ import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 //                   response.create, or conversation.item.delete to drop it
 //   cues            the call's state and these events → lib/live_cues, the same
 //                   sounds as the phone and the car
+//   switching       a tool call that moved Live Mode answers switched_to; the dock
+//                   also polls /live/current.json while a call is up, for a switch
+//                   made elsewhere. Either way the call reconnects onto the new
+//                   conversation: a Realtime session cannot forget what it heard,
+//                   and a fresh one starts from that conversation's own recap.
+
+// How often a call looks for a switch made somewhere else.
+const FOLLOW_INTERVAL_MS = 5000
+// Put to the model on a call that has just moved, so it speaks first. Not on the
+// thread: the person did not say it. The same words as RealtimeConductor's.
+const SWITCHED_OPENING = "(We have just switched to this conversation. In one short sentence, say so and where it left off, then stop.)"
+
 export default class extends Controller {
   static targets = ["panel", "status", "title", "link", "mute", "error"]
 
@@ -73,7 +85,9 @@ export default class extends Controller {
     // call with the page; nothing else should.
   }
 
-  async start(call) {
+  // `moved`: this call has followed Live Mode to another conversation, so it may
+  // need voice turning on there, and the model speaks first.
+  async start(call, { moved = false, muted = false } = {}) {
     if (this.state !== "idle") {
       if (this.call && String(this.call.conversationId) === String(call.conversationId)) return
       this.hangUp()
@@ -87,6 +101,8 @@ export default class extends Controller {
     this.showError(null)
 
     try {
+      if (moved) await this.post(call.modeUrl, { mode: "voice" })
+      if (mine !== this.generation) return
       const session = await this.mintSecret(call.clientSecretUrl)
       if (mine !== this.generation) return
       this.gated = ["wake_word", "dynamic"].includes(session.listening)
@@ -94,6 +110,7 @@ export default class extends Controller {
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (mine !== this.generation) { this.stopMic(); return }
       this.cues.unlock()
+      if (muted) this.toggleMute()
 
       const pc = new RTCPeerConnection()
       this.pc = pc
@@ -110,7 +127,12 @@ export default class extends Controller {
 
       const channel = pc.createDataChannel("oai-events")
       this.channel = channel
-      channel.onopen = () => { if (mine === this.generation) this.setState("listening") }
+      channel.onopen = () => {
+        if (mine !== this.generation) return
+        this.setState("listening")
+        this.watchCurrent(mine)
+        if (moved) this.speakFirst()
+      }
       channel.onmessage = (message) => this.handleEvent(JSON.parse(message.data), mine)
 
       const offer = await pc.createOffer()
@@ -128,6 +150,50 @@ export default class extends Controller {
       this.showError(error.message || String(error))
       this.hangUp({ keepError: true })
     }
+  }
+
+  watchCurrent(generation) {
+    clearInterval(this.following)
+    this.following = setInterval(() => this.followCurrent(generation), FOLLOW_INTERVAL_MS)
+  }
+
+  // Live Mode moved while this call was on the old conversation. A failed look
+  // changes nothing: the next one will do.
+  async followCurrent(generation) {
+    try {
+      const response = await fetch("/live/current.json", { credentials: "same-origin", headers: { Accept: "application/json" } })
+      if (!response.ok || generation !== this.generation) return
+      const { current_id: current } = await response.json()
+      if (generation !== this.generation || !current || String(current) === String(this.call?.conversationId)) return
+      this.reattach(current)
+    } catch (_error) {
+      // Next time.
+    }
+  }
+
+  // Reconnect onto `id`: the same dock, the same mute, with no hang-up sound.
+  reattach(id) {
+    const muted = this.muted
+    this.hangUp({ quiet: true })
+    const base = `/live_conversations/${id}`
+    this.start({
+      conversationId: id,
+      conversationUrl: base,
+      modeUrl: `${base}/mode`,
+      clientSecretUrl: `${base}/client_secret`,
+      toolCallsUrl: `${base}/tool_calls`,
+      sessionUpdateUrl: `${base}/session_update`,
+      turnsUrl: `${base}/turns`
+    }, { moved: true, muted })
+  }
+
+  speakFirst() {
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "user", content: [{ type: "input_text", text: SWITCHED_OPENING }] }
+    })
+    this.pendingResponse = true
+    this.sendPendingResponse()
   }
 
   // The conversation may still be reading its AGENTS.md (409); give it a moment.
@@ -221,10 +287,15 @@ export default class extends Controller {
     this.runningTools += 1
     this.cues.perform(this.director.toolsRunning(this.runningTools))
     this.setState("working")
-    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1 })
+    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1, reattaches: 1 })
       .then(async (response) => {
         const body = await response.json().catch(() => ({}))
         if (generation !== this.generation) return
+        // This session is over: nothing more goes down it.
+        if (response.ok && body.switched_to) {
+          this.reattach(body.switched_to.id)
+          return
+        }
         const output = response.ok ? body.output : `Zimmer could not run ${name}: ${body.error || response.status}`
         this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: String(output ?? "") } })
         if (response.ok && body.session) {
@@ -418,9 +489,10 @@ export default class extends Controller {
     if (track) track.enabled = !this.muted && !this.cueSounding
   }
 
-  hangUp({ keepError = false, dropped = false } = {}) {
+  hangUp({ keepError = false, dropped = false, quiet = false } = {}) {
     this.generation = (this.generation || 0) + 1
-    this.cues.perform(dropped ? this.director.dropped() : this.director.hungUp())
+    clearInterval(this.following)
+    if (!quiet) this.cues.perform(dropped ? this.director.dropped() : this.director.hungUp())
     this.channel?.close()
     this.pc?.close()
     this.stopMic()

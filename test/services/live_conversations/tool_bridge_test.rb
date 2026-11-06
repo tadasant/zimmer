@@ -12,7 +12,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "a conversation with the zimmer server gets the gateway, not one function per Zimmer tool" do
     names = @bridge.functions.map(&:name)
 
-    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings], names
+    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation], names
     gateway = @bridge.functions.first
     assert_includes gateway.parameters[:properties][:tool][:enum], "quick_router"
     assert_includes gateway.parameters[:properties][:tool][:enum], "get_system_health"
@@ -372,5 +372,101 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     @bridge.execute("update_live_settings", JSON.generate(voice_speed: "default"), call_id: "c6")
     assert_nil LiveSetting.current.voice_speed, "one numeric setting can go back to its default"
     assert_equal "gpt-realtime-2.1", LiveSetting.current.voice_model
+  end
+
+  # --- Other conversations ---------------------------------------------------
+
+  def ended_conversation(said: "Deploy the fix to staging when CI is green please")
+    other = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago, mode: "voice")
+    other.turns.create!(role: "user", source: "spoken", content: said)
+    other
+  end
+
+  def go_back_setup
+    stub_live_root
+    stub_live_key
+  end
+
+  test "the switch functions are there with no Zimmer server enabled" do
+    @conversation.update!(mcp_servers: [])
+
+    names = LiveConversations::ToolBridge.new(@conversation).functions.map(&:name)
+
+    assert_includes names, "switch_live_conversation"
+    assert_includes names, "list_live_conversations"
+  end
+
+  test "the list is three short names to say, and no URLs" do
+    4.times { ended_conversation }
+
+    output = @bridge.execute("list_live_conversations", "{}", call_id: "c1").output
+
+    assert_equal 3, output.scan(/^- id /).size
+    assert_includes output, "Deploy the fix to staging when…"
+    assert_not_includes output, "http"
+  end
+
+  test "an empty list says so" do
+    assert_match(/no earlier conversation/, @bridge.execute("list_live_conversations", "{}", call_id: "c1").output)
+  end
+
+  test "going back with no arguments moves to the last one and records the call on the thread left" do
+    go_back_setup
+    other = ended_conversation
+
+    result = LiveConversations::ToolBridge.new(@conversation).execute("switch_live_conversation", "{}", call_id: "c1")
+
+    assert_equal other, result.switched_to
+    assert_not result.error
+    assert_match(/Switched to "Deploy the fix/, result.output)
+    assert_equal @conversation, result.turn.live_conversation
+    assert @conversation.reload.ended?
+    assert_equal other, LiveConversation.current
+  end
+
+  test "a refusal is the model's to say: nothing moves" do
+    go_back_setup
+
+    result = LiveConversations::ToolBridge.new(@conversation).execute("switch_live_conversation", "{}", call_id: "c1")
+
+    assert result.error
+    assert_nil result.switched_to
+    assert_match(/no earlier conversation/, result.output)
+    assert @conversation.reload.active?
+  end
+
+  test "switching to where it already is moves nothing" do
+    go_back_setup
+
+    result = LiveConversations::ToolBridge.new(@conversation).execute("switch_live_conversation", { "id" => @conversation.id }, call_id: "c1")
+
+    assert_nil result.switched_to
+    assert_not result.error
+    assert_match(/already in/, result.output)
+  end
+
+  test "a client that cannot reattach is refused the switch, and its call stays on a live thread" do
+    go_back_setup
+    other = ended_conversation
+
+    result = LiveConversations::ToolBridge.new(@conversation, can_reattach: false).execute("switch_live_conversation", "{}", call_id: "c1")
+
+    assert result.error
+    assert_match(/cannot move a call/, result.output)
+    assert @conversation.reload.active?
+    assert other.reload.ended?
+  end
+
+  test "the target's own servers are what a bridge built on it offers" do
+    go_back_setup
+    stub_clock_server
+    other = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago, mcp_servers: [ "zimmer", CLOCK_SERVER ],
+                                     mcp_tool_cache: { CLOCK_SERVER => [ { "name" => "now", "description" => "The time.", "input_schema" => { "type" => "object" } } ] })
+    other.turns.create!(role: "user", source: "typed", content: "What time is it now")
+    assert_not_includes LiveConversations::ToolBridge.new(@conversation).functions.map(&:name), "test-clock__now"
+
+    target = LiveConversations::ToolBridge.new(@conversation).execute("switch_live_conversation", "{}", call_id: "c1").switched_to
+
+    assert_includes LiveConversations::ToolBridge.new(target).functions.map(&:name), "test-clock__now"
   end
 end

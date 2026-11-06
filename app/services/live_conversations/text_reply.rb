@@ -34,6 +34,10 @@ module LiveConversations
     def call
       rounds = 0
       while awaiting_reply?
+        # Left for another conversation: what was already written stays on this
+        # thread, and nothing more is done in its name.
+        break unless still_active?
+
         rounds += 1
         if rounds > MAX_ROUNDS
           @conversation.turns.create!(role: "assistant", content: "I stopped after #{MAX_ROUNDS} rounds of tool calls without an answer. Ask again, or narrow it down.")
@@ -49,6 +53,8 @@ module LiveConversations
     end
 
     private
+
+    def still_active? = LiveConversation.where(id: @conversation.id, status: LiveConversation::ACTIVE).exists?
 
     # Also true when a message arrived while a request was in flight: its turn
     # sits before that request's answer, so "the thread ends on an assistant
@@ -94,6 +100,8 @@ module LiveConversations
       end
 
       calls.each do |call|
+        break unless still_active?
+
         heartbeat!
         call_id = call["id"].presence || "call_#{SecureRandom.hex(8)}"
         @bridge = ToolBridge.new(@conversation) if @bridge.execute(call.dig("function", "name"), call.dig("function", "arguments"), call_id: call_id).tools_changed

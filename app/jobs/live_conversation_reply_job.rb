@@ -19,7 +19,9 @@ class LiveConversationReplyJob < ApplicationJob
       conversation.update!(error_message: "OpenAI: #{e.message}")
       failed = true
     ensure
-      conversation.update!(responding_since: nil)
+      # Reloaded: the conversation may have been left mid-reply, and this write
+      # re-renders the header from what the record says.
+      conversation.reload.update!(responding_since: nil)
     end
 
     # A message that landed after the loop's last look, while this job still
