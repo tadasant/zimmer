@@ -5,9 +5,11 @@
     rest.
 
     Presentation and triage only. It changes which rows a driver is shown and
-    nothing about when the session runs. No JavaScript: plain PATCHes, and the
-    full set of choices in a native <details> disclosure, so it works on every
-    surface the same way.
+    nothing about when the session runs. Plain PATCHes, and the full set of
+    choices in a native <details> disclosure, so it works on every surface the
+    same way. This partial is broadcast, and a broadcast render has no session to
+    mint a CSRF token from: the menu's form then gets the page's token at submit
+    from lib/form_token_fill.js.
 
     Locals:
       agent_session — the session
