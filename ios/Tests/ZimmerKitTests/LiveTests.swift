@@ -101,6 +101,48 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(ended.status, .ended)
     }
 
+    func testSwitchingPostsTheTargetAndTheConversationItBelievesIsCurrent() async throws {
+        let (api, transport) = client([{ _ in Fixtures.json(200, Self.conversation().merging(["switched": true, "reopenable": false]) { $1 }) }])
+        let result = try await api.switchLiveConversation(7, from: 9)
+        let request = try XCTUnwrap(transport.sent.first)
+        XCTAssertEqual(request.url.path, "/api/v1/live_conversations/switch")
+        let sent = try body(request)
+        XCTAssertEqual(sent["id"] as? Int, 7)
+        XCTAssertEqual(sent["from_id"] as? Int, 9)
+        XCTAssertEqual(result.conversation.id, 7)
+        XCTAssertTrue(result.switched)
+    }
+
+    func testGoingBackWithNoTargetLeavesItToZimmer() async throws {
+        let (api, transport) = client([{ _ in Fixtures.json(200, Self.conversation().merging(["switched": false]) { $1 }) }])
+        let result = try await api.switchLiveConversation(nil, from: nil)
+        XCTAssertTrue(try body(try XCTUnwrap(transport.sent.first)).isEmpty)
+        XCTAssertFalse(result.switched)
+    }
+
+    func testAToolCallSaysThisClientCanReattachAndReadsWhereItMoved() async throws {
+        let (api, transport) = client([{ _ in
+            Fixtures.json(200, ["output": "Switched", "error": false, "tools_changed": false, "switched_to": ["id": 8, "title": "the poller test"]])
+        }])
+        let result = try await api.relayLiveToolCall(7, name: "switch_live_conversation", arguments: "{}", callID: "c1")
+        XCTAssertEqual(try body(try XCTUnwrap(transport.sent.first))["reattaches"] as? String, "1")
+        XCTAssertEqual(result.switchedTo, LiveSwitchTarget(id: 8, title: "the poller test"))
+    }
+
+    func testStartingNewThenGoingBackLeavesOneOpenConversationOnTheOldThread() async throws {
+        let fake = FakeZimmerAPI()
+        let old = try await fake.liveConversations().current
+        let fresh = try await fake.startLiveConversation(.voice)
+        let back = try await fake.switchLiveConversation(nil, from: fresh.id)
+        XCTAssertEqual(back.conversation.id, old)
+        XCTAssertTrue(back.switched)
+        let overview = try await fake.liveConversations()
+        XCTAssertEqual(overview.current, old)
+        XCTAssertEqual(overview.conversations.filter(\.status.isOpen).count, 1)
+        let again = try await fake.switchLiveConversation(old, from: nil)
+        XCTAssertFalse(again.switched, "already there is a no-op")
+    }
+
     func testTheVoiceRelayEndpoints() async throws {
         let (api, transport) = client([
             { _ in Fixtures.json(200, ["client_secret": "ek_1", "expires_at": 1, "model": "gpt-realtime-2.1-mini",
@@ -323,6 +365,20 @@ final class RealtimeConductorTests: XCTestCase {
     }
 
     private let done = #"{"type":"response.done","response":{"status":"completed","output":[{"type":"function_call","call_id":"a1","name":"list_mcp_servers","arguments":"{}"}]}}"#
+
+    func testACallThatMovedLiveModeSendsNothingMoreDownItsSocketAndReattaches() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(["type": "response.created"]))
+        _ = conductor.handle(event(["type": "response.function_call_arguments.done", "call_id": "s1", "name": "switch_live_conversation", "arguments": "{}"]))
+        let effects = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Switched", switchedTo: LiveSwitchTarget(id: 8, title: "the poller test")))
+        XCTAssertEqual(effects, [.reattach(conversation: 8)], "no function_call_output and no response.create: that session is over")
+    }
+
+    func testARefusedSwitchIsAnsweredLikeAnyOtherCall() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(["type": "response.function_call_arguments.done", "call_id": "s1", "name": "switch_live_conversation", "arguments": "{}"]))
+        XCTAssertEqual(sent(conductor.relayed(callID: "s1", result: LiveToolResult(output: "No", error: true))), ["conversation.item.create:s1"])
+    }
 
     func testACallIsRelayedThenAnsweredThenOneResponseIsRequested() {
         var conductor = RealtimeConductor()

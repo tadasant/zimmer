@@ -8,6 +8,7 @@
 #   POST /api/v1/live_conversations                start one (mode=text|voice, default text); ends the open one
 #   GET  /api/v1/live_conversations/:id            one conversation with its turns (?after_turn_id= for new ones)
 #   GET  /api/v1/live_conversations/:id/sessions   the sessions its tool calls have touched, newest first, with board rows
+#   POST /api/v1/live_conversations/switch         go back to one (id, or the last one; from_id, mode); ends the open one
 #   POST /api/v1/live_conversations/:id/finish     end it
 #   POST /api/v1/live_conversations/:id/mode       switch typed ⇄ spoken (mode=text|voice)
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
@@ -29,10 +30,10 @@ class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
-  PERSON_ACTIONS = %i[create finish mode messages client_secret tool_calls turns session_update].freeze
+  PERSON_ACTIONS = %i[create switch finish mode messages client_secret tool_calls turns session_update].freeze
 
   before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
-  before_action :set_conversation, except: %i[modes index create]
+  before_action :set_conversation, except: %i[modes index create switch]
 
   def modes
     render json: LiveConversations::Availability.current.as_api_json
@@ -83,6 +84,12 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)
   end
 
+  # `switched` is false when it was already the current conversation.
+  def switch
+    outcome = LiveConversations::Switch.call(params[:id], from_id: params[:from_id], mode: params[:mode], client_surface: api_turn_source.surface)
+    render json: outcome.conversation.as_api_json.merge(switched: outcome.moved)
+  end
+
   def finish
     render json: actions.finish.as_api_json
   end
@@ -126,6 +133,9 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   # `listening_modes`: the client asks for each reply itself when Listening is
   # gated (LiveConversations::Listening); an app from before that is answered as
-  # `always`.
-  def actions = LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface, listening_modes: params[:listening_modes].present?)
+  # `always`. `reattaches`: it can move a call to another conversation.
+  def actions
+    LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface, listening_modes: params[:listening_modes].present?,
+                                                  reattaches: params[:reattaches].present?)
+  end
 end

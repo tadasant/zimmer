@@ -68,4 +68,26 @@ class LiveVoiceTruncatedToolCallTest < ActiveSupport::TestCase
   test "a response the user talked over still asks for nothing more" do
     assert_equal [ "conversation.item.create" ], scenario("cancelled")["sent"]
   end
+
+  test "a tool call that moved Live Mode sends nothing more and reattaches, keeping mute" do
+    run = scenario("switched_mid_call")
+
+    assert_empty run["sent"]
+    assert_equal 1, run["bodies"].first["reattaches"]
+    started = run["started"].sole
+    assert_equal 8, started["next"]["conversationId"]
+    assert_equal "/live_conversations/8/client_secret", started["next"]["clientSecretUrl"]
+    assert_equal({ "moved" => true, "muted" => true }, started["options"])
+  end
+
+  test "a call follows the current conversation, and nothing else" do
+    assert_equal [ 8 ], scenario("follows_current")["followed"]
+  end
+
+  test "a call that moved speaks first, and the line is not recorded on the thread" do
+    run = scenario("speaks_first")
+
+    assert_equal [ "conversation.item.create", "response.create" ], run["sent"]
+    assert_empty run["relayed"]
+  end
 end

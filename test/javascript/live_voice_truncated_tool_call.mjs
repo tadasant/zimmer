@@ -22,7 +22,9 @@ function call(answers = {}) {
   dock.relayed = []
   dock.send = (event) => dock.sent.push(event)
   dock.setState = (state) => { dock.state = state; dock.states.push(state) }
+  dock.bodies = []
   dock.post = async (_url, body) => {
+    dock.bodies.push(body)
     dock.relayed.push(body.call_id)
     const answer = answers[body.call_id] ?? { output: "done" }
     return { ok: true, status: 200, json: async () => answer }
@@ -133,4 +135,48 @@ const cutOff = (output) => ({ status: "incomplete", status_details: { type: "inc
   dock.handleEvent({ type: "response.done", response: { status: "cancelled", status_details: { reason: "turn_detected" }, output: [{ type: "function_call", call_id: "c1", name: "x", arguments: "{}" }] } }, 1)
   await drain()
   report("cancelled", dock)
+}
+
+// A tool call that moved Live Mode: nothing more down this session, and the dock
+// reconnects onto the conversation it names, keeping mute, with no hang-up sound.
+{
+  const dock = call({ s1: { output: "Switched", switched_to: { id: 8, title: "the poller test" } } })
+  const started = []
+  dock.director = { hungUp: () => { throw new Error("a move is not a hang-up") }, toolsRunning: () => [], transition: () => [], dropped: () => [] }
+  dock.channel = { close() {} }
+  dock.muteTarget = { setAttribute() {} }
+  dock.showError = () => {}
+  dock.muted = true
+  dock.start = (next, options) => started.push({ next, options })
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "s1", name: "switch_live_conversation", arguments: "{}" }, 1)
+  await drain()
+  console.log(JSON.stringify({
+    name: "switched_mid_call", sent: dock.sent.map((event) => event.type), started,
+    bodies: dock.bodies
+  }))
+}
+
+// A switch made elsewhere: the poll finds another conversation current. One it
+// already follows, or an answer that arrives after this call moved on, is nothing.
+{
+  const followed = []
+  const look = async (dock, generation, current) => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ current_id: current }) })
+    dock.reattach = (id) => followed.push(id)
+    await dock.followCurrent(generation)
+  }
+  const dock = call()
+  await look(dock, 1, 1)
+  await look(dock, 1, null)
+  await look(dock, 0, 8)
+  await look(dock, 1, 8)
+  console.log(JSON.stringify({ name: "follows_current", followed }))
+}
+
+// The first thing a moved call does: speak, unasked and unrecorded.
+{
+  const dock = call()
+  dock.speakFirst()
+  console.log(JSON.stringify({ name: "speaks_first", sent: dock.sent.map((event) => event.type), relayed: dock.relayed }))
 }

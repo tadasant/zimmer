@@ -10,7 +10,8 @@ module LiveConversations
   # 3. how to answer in the mode it is in right now: the root's own style file
   #    for that mode when it ships one (RootInstructions, `modes/<mode>.md`),
   #    Zimmer's short default (Mode#default_style) when it does not;
-  # 4. for a voice call, which starts with no memory, what was already said;
+  # 4. for a voice call, which starts with no memory, what was already said and
+  #    the sessions the thread has touched;
   # 5. the Live mode guidance (LiveSetting#guidance), last so it reads as the
   #    newest word.
   #
@@ -32,7 +33,7 @@ module LiveConversations
 
     def build(recap: false)
       sections = [ @conversation.instructions.to_s.strip, mechanics, mode_section ]
-      sections << recap_section if recap
+      sections.push(recap_section, sessions_section) if recap
       sections << guidance_section
       sections.compact_blank.join("\n\n")
     end
@@ -51,6 +52,7 @@ module LiveConversations
         "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you. Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`.",
         "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
+        "- `#{ToolBridge::SWITCH_CONVERSATION}` goes back to an earlier conversation when the person asks; on its own it means the one they were in last, so \"go back\" needs no list. `#{ToolBridge::LIST_CONVERSATIONS}` is for when they ask what there is. Say at most three names, never ids. Starting a new conversation does not lose this one: it can be gone back to.",
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ]
       lines.compact.join("\n")
@@ -91,6 +93,16 @@ module LiveConversations
       "## Right now: #{mode.voice? ? 'spoken' : 'typed'}\n\n" \
         "How to answer while the conversation is #{mode.voice? ? 'spoken' : 'typed'}. Where anything above says otherwise about style, this wins.\n\n" \
         "#{style.strip}"
+    end
+
+    # The recap carries what was said, not the tool calls, so a call reopening an
+    # older thread would not otherwise know what it had set going.
+    def sessions_section
+      ids = @conversation.referenced_session_ids
+      return nil if ids.empty?
+
+      "## Sessions this conversation has touched\n\n" \
+        "Newest first: #{ids.map { |id| "##{id}" }.join(', ')}. Check on one with `#{ToolBridge::ZIMMER_TOOL}` before saying how it went."
     end
 
     # A voice call starts a fresh Realtime session, which remembers nothing —

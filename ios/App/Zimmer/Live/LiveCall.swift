@@ -31,6 +31,15 @@ import os
 /// (`LiveCallHealth`), which gives up on a call that will not connect, or whose socket or
 /// microphone has gone; and the call log (`LiveTelemetry`), which records every step for whoever
 /// reads the trace afterwards.
+///
+/// **A call follows the current conversation.** Live Mode has one current conversation, and it
+/// can move under a call: the live model switching when asked, or another device. A tool call that
+/// moved it says so at once (`RealtimeConductor.Effect.reattach`), and a call up looks for any other
+/// move every few seconds. Either way the call reconnects (`reattach(to:)`): a Realtime session
+/// cannot forget what it heard, so the old thread would stay in the model's head, and a new session
+/// starts from the new conversation's own recap. It is the same call to everyone watching: the
+/// microphone stays open, mute stays as it was, and the state goes to Connecting… and never idle,
+/// so the car's one template stays up.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
@@ -50,12 +59,19 @@ final class LiveCall: ObservableObject {
     @Published private(set) var handover = LiveHandover()
 
     private var conductor = RealtimeConductor()
-    /// An opening line given while the call was still connecting: sent once it is up.
-    private var pendingOpening: String?
+    /// An opening line given while the call was still connecting: sent once it is up. `recorded`:
+    /// the thread carries it, which it does not for the line a call that moved opens with.
+    private var pendingOpening: (text: String, recorded: Bool)?
     private var socket: URLSessionWebSocketTask?
     private let audio = LiveAudioEngine()
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
     private var generation = 0
+    /// The generation the microphone was opened under. Moving to another conversation moves
+    /// `generation` to drop the old socket's late answers, and keeps the microphone.
+    private var microphoneGeneration: Int?
+    /// When this call last asked which conversation is current.
+    private var lookedForMove: TimeInterval = 0
+    private static let followEvery: TimeInterval = 5
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-call")
     private let telemetry = LiveTelemetry.shared
     private var timeline = LiveCallTimeline()
@@ -142,7 +158,7 @@ final class LiveCall: ObservableObject {
             guard isActive(for: conversation) else { return }
             if let opening {
                 // Still connecting: there is no socket to send on yet; the start under way sends it.
-                if !health.isConnected { pendingOpening = opening } else { open(with: opening) }
+                if !health.isConnected { pendingOpening = (text: opening, recorded: true) } else { open(with: opening) }
             }
             return
         }
@@ -161,7 +177,8 @@ final class LiveCall: ObservableObject {
         microphoneOpen = false
         sessionOpen = false
         mintedFor = surface
-        pendingOpening = opening
+        pendingOpening = opening.map { (text: $0, recorded: true) }
+        lookedForMove = Self.now
         saidGoodbye = false
         lastError = nil
         muted = startsMuted
@@ -180,16 +197,12 @@ final class LiveCall: ObservableObject {
             telemetry.adopt(secret.telemetry)
             telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
             conductor = RealtimeConductor(listening: secret.listening)
-            var request = URLRequest(url: secret.websocketURL)
-            request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
-            let task = URLSession.shared.webSocketTask(with: request)
-            socket = task
-            task.resume()
-            receive(task, generation: mine)
+            openSocket(secret, generation: mine)
             health.stage = .microphone
+            microphoneGeneration = mine
             let audioToken = try await audio.start(
-                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, generation: mine) } },
-                failed: { [weak self] message in Task { @MainActor in self?.fail(message, generation: mine) } }
+                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: mine) } },
+                failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
             )
             // Hung up, or replaced by a newer call, while the microphone was opening: close only
             // what this start opened.
@@ -202,6 +215,75 @@ final class LiveCall: ObservableObject {
             return
         } catch {
             fail(Self.describe(error), generation: mine)
+        }
+    }
+
+    private func openSocket(_ secret: LiveClientSecret, generation mine: Int) {
+        var request = URLRequest(url: secret.websocketURL)
+        request.setValue("Bearer \(secret.clientSecret)", forHTTPHeaderField: "Authorization")
+        let task = URLSession.shared.webSocketTask(with: request)
+        socket = task
+        task.resume()
+        receive(task, generation: mine)
+    }
+
+    /// Move this call to `conversation`, which Live Mode has moved to: a new secret, a new socket
+    /// and the same microphone. The old socket's late answers are dropped, and what was still
+    /// sounding stops. A failure here is a call that dropped, which the car retries on whatever is
+    /// current by then. A call still connecting has nothing to move: it is minted from the
+    /// conversation it asked for, and fails or looks again once it is up.
+    func reattach(to conversation: Int) async {
+        guard isActive, health.isConnected, conversationID != conversation else { return }
+        generation += 1
+        let mine = generation
+        socket?.cancel(with: .normalClosure, reason: nil)
+        socket = nil
+        _ = audio.stopPlayback(arriving: nil)
+        perform(.stopCues)
+        telemetry.track(.callEnded(reason: "switched", duration: timeline.sinceStart(Self.now), summary: timeline.summary))
+        telemetry.endCall()
+        telemetry.flush()
+        telemetry.beginCall(conversation: conversation)
+        telemetry.updateClient { $0.surface = surface.rawValue }
+        telemetry.track(.callStarting(surface: surface.rawValue, opening: true))
+        conversationID = conversation
+        conductor = RealtimeConductor()
+        cues = LiveCueDirector()
+        timeline = LiveCallTimeline()
+        timeline.started(at: Self.now)
+        health = LiveCallHealth()
+        health.started(at: Self.now)
+        sessionOpen = false
+        mintedFor = surface
+        pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
+        lookedForMove = Self.now
+        lastError = nil
+        state = .connecting
+        watch(generation: mine)
+        do {
+            try await turnVoiceOn(conversation)
+            guard mine == generation else { return }
+            let asked = Self.now
+            let secret = try await mintSecret(conversation)
+            guard mine == generation else { return }
+            telemetry.adopt(secret.telemetry)
+            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            conductor = RealtimeConductor(listening: secret.listening)
+            openSocket(secret, generation: mine)
+            health.stage = .session
+        } catch is CancellationError {
+            return
+        } catch {
+            fail(Self.describe(error), generation: mine)
+        }
+    }
+
+    /// Ask which conversation is current, and follow it. A failed look changes nothing: the next
+    /// one will do. A move this call made itself is on its way already, so the answer is dropped.
+    private func followCurrent(generation mine: Int) {
+        Task {
+            guard let current = try? await api.liveConversations().current, mine == generation else { return }
+            await reattach(to: current)
         }
     }
 
@@ -218,7 +300,7 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             let first = pendingOpening
             pendingOpening = nil
-            if let first { open(with: first) }
+            if let first { open(with: first.text, recorded: first.recorded) }
         }
     }
 
@@ -233,6 +315,7 @@ final class LiveCall: ObservableObject {
         watching = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        microphoneGeneration = nil
         microphoneLost = false
         // The engine stays up just long enough to play the goodbye.
         var goodbye: LiveCue?
@@ -267,10 +350,11 @@ final class LiveCall: ObservableObject {
     }
 
     /// Put `text` to the model as a typed line and ask for its reply (`RealtimeConductor.open`).
-    private func open(with text: String) {
+    private func open(with text: String, recorded: Bool = true) {
         guard let conversation = conversationID else { return }
         let mine = generation
         apply(conductor.open(with: text), generation: mine)
+        guard recorded else { return }
         Task {
             _ = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: false)
             guard mine == generation else { return }
@@ -367,9 +451,14 @@ final class LiveCall: ObservableObject {
         throw ZimmerError.http(status: 409, message: "The conversation is taking too long to get ready.")
     }
 
-    private func sendAudio(_ pcm: Data, generation: Int) {
-        guard generation == self.generation, !pcm.isEmpty else { return }
+    private func sendAudio(_ pcm: Data, microphone: Int) {
+        guard microphone == microphoneGeneration, !pcm.isEmpty else { return }
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
+    }
+
+    private func microphoneFailed(_ message: String, microphone: Int) {
+        guard microphone == microphoneGeneration else { return }
+        fail(message, generation: generation)
     }
 
     /// The call's watch, from the moment it starts: every 100 ms, silence in place of a
@@ -409,6 +498,10 @@ final class LiveCall: ObservableObject {
                 // The CarPlay drill holds its call on Connecting… on purpose, for the gear.
                 if Self.drillHoldsTheCall { self.health.started(at: Self.now) }
                 #endif
+                if self.health.isConnected, Self.now - self.lookedForMove >= Self.followEvery {
+                    self.lookedForMove = Self.now
+                    self.followCurrent(generation: generation)
+                }
                 let actions = self.health.tick(at: Self.now, stalledSince: self.watchdog.stalledSince, interrupted: self.audio.interrupted)
                 for action in actions { self.act(on: action, generation: generation) }
             }
@@ -549,6 +642,8 @@ final class LiveCall: ObservableObject {
                 }
             case let .hear(itemID, text):
                 hear(itemID: itemID, text: text, generation: generation)
+            case let .reattach(conversation):
+                Task { await reattach(to: conversation) }
             case let .play(pcm):
                 audio.play(pcm)
             case let .replyStarted(itemID):

@@ -93,13 +93,15 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
     public let instructionsSource: String?
     public let mcpServers: [String]
     public let responding: Bool
+    /// Ended, and can be gone back to (`LiveAPI.switchLiveConversation`).
+    public let reopenable: Bool
     public let errorMessage: String?
     /// Present on `show`; for `after_turn_id` reads, only the turns after it.
     public let turns: [LiveTurn]?
 
     public init(id: Int, mode: LiveMode, status: Status, title: String, agentRoot: String, model: String,
                 instructionsSource: String? = nil, mcpServers: [String] = [], responding: Bool = false,
-                errorMessage: String? = nil, turns: [LiveTurn]? = nil) {
+                reopenable: Bool = false, errorMessage: String? = nil, turns: [LiveTurn]? = nil) {
         self.id = id
         self.mode = mode
         self.status = status
@@ -109,12 +111,13 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
         self.instructionsSource = instructionsSource
         self.mcpServers = mcpServers
         self.responding = responding
+        self.reopenable = reopenable
         self.errorMessage = errorMessage
         self.turns = turns
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, mode, status, title, model, responding, turns
+        case id, mode, status, title, model, responding, reopenable, turns
         case agentRoot = "agent_root"
         case instructionsSource = "instructions_source"
         case mcpServers = "mcp_servers"
@@ -133,6 +136,7 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
         instructionsSource = try c.decodeIfPresent(String.self, forKey: .instructionsSource)
         mcpServers = try c.decodeIfPresent([String].self, forKey: .mcpServers) ?? []
         responding = try c.decodeIfPresent(Bool.self, forKey: .responding) ?? false
+        reopenable = try c.decodeIfPresent(Bool.self, forKey: .reopenable) ?? false
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
         turns = try c.decodeIfPresent([LiveTurn].self, forKey: .turns)
     }
@@ -200,6 +204,25 @@ public struct LiveTurn: Decodable, Sendable, Equatable, Identifiable {
 }
 
 /// `GET /api/v1/live_conversations`: the recent conversations and the open one.
+/// What going back to a conversation answers: that conversation, and whether anything moved.
+public struct LiveSwitch: Decodable, Sendable, Equatable {
+    public let conversation: LiveConversation
+    /// False when it was already the current conversation.
+    public let switched: Bool
+
+    public init(conversation: LiveConversation, switched: Bool) {
+        self.conversation = conversation
+        self.switched = switched
+    }
+
+    enum CodingKeys: String, CodingKey { case switched }
+
+    public init(from decoder: Decoder) throws {
+        conversation = try LiveConversation(from: decoder)
+        switched = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .switched) ?? true
+    }
+}
+
 public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
     /// The one open conversation, typed or spoken.
@@ -266,6 +289,18 @@ public struct LiveHeard: Decodable, Sendable, Equatable {
 }
 
 /// What Zimmer answered for one relayed function call.
+/// Where a tool call moved Live Mode.
+public struct LiveSwitchTarget: Decodable, Sendable, Equatable {
+    public let id: Int
+    /// A short name, fit to say aloud.
+    public let title: String
+
+    public init(id: Int, title: String) {
+        self.id = id
+        self.title = title
+    }
+}
+
 public struct LiveToolResult: Decodable, Sendable, Equatable {
     /// What to send back as the `function_call_output`.
     public let output: String
@@ -276,18 +311,24 @@ public struct LiveToolResult: Decodable, Sendable, Equatable {
     /// The call changed a Live setting an open call can take: send this as the `session.update`
     /// instead of the tools-only one. It carries the tools too.
     public let session: JSONValue?
+    /// The call moved Live Mode to this conversation: this call's session is over, and it
+    /// reconnects there.
+    public let switchedTo: LiveSwitchTarget?
 
-    public init(output: String, error: Bool = false, toolsChanged: Bool = false, tools: JSONValue? = nil, session: JSONValue? = nil) {
+    public init(output: String, error: Bool = false, toolsChanged: Bool = false, tools: JSONValue? = nil, session: JSONValue? = nil,
+                switchedTo: LiveSwitchTarget? = nil) {
         self.output = output
         self.error = error
         self.toolsChanged = toolsChanged
         self.tools = tools
         self.session = session
+        self.switchedTo = switchedTo
     }
 
     enum CodingKeys: String, CodingKey {
         case output, error, tools, session
         case toolsChanged = "tools_changed"
+        case switchedTo = "switched_to"
     }
 }
 

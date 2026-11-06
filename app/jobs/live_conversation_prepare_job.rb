@@ -6,11 +6,17 @@
 # building the function list later never has to spawn a server. A server that
 # cannot be listed is dropped from the conversation rather than failing it; a
 # root whose instructions cannot be read fails it, with the reason on the page.
+#
+# `refresh: true` is the same read for a conversation already active, after
+# LiveConversations::Switch reopened it: instructions and tool lists catch up
+# with the catalog in the background, and a read that fails changes nothing,
+# because a conversation that has just come back has to keep working.
 class LiveConversationPrepareJob < ApplicationJob
   queue_as :default
 
-  def perform(conversation_id)
+  def perform(conversation_id, refresh: false)
     conversation = LiveConversation.find_by(id: conversation_id)
+    return refresh(conversation) if refresh
     return unless conversation&.preparing?
 
     root = AgentRootsConfig.find(conversation.agent_root)
@@ -44,6 +50,27 @@ class LiveConversationPrepareJob < ApplicationJob
   end
 
   private
+
+  def refresh(conversation)
+    return unless conversation&.active?
+
+    root = AgentRootsConfig.find(conversation.agent_root)
+    return if root.nil?
+
+    instructions = LiveConversations::RootInstructions.fetch(root)
+    _servers, cache, _dropped = list_tools(conversation.enabled_mcp_servers)
+    # Under the lock and re-read: a call can enable a server meanwhile.
+    conversation.with_lock do
+      conversation.update!(
+        instructions: instructions.text,
+        instructions_source: instructions.source,
+        mode_instructions: instructions.modes,
+        mcp_tool_cache: conversation.mcp_tool_cache.merge(cache).slice(*conversation.enabled_mcp_servers)
+      )
+    end
+  rescue StandardError => e
+    ErrorReporter.report_exception(e, context: { source: "LiveConversationPrepareJob#refresh", live_conversation_id: conversation&.id })
+  end
 
   def list_tools(names)
     servers = []
