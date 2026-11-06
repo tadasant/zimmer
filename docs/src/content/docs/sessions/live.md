@@ -71,7 +71,8 @@ and the web button.
 - **Refused, with nothing moved.** A target that does not exist, a `failed` one, one from the
   retired `live-voice` root, or Live Mode being unavailable. So is a stale selection: a caller passes
   `from_id`, the conversation it believes is current, and if another one is current by then it is
-  told so instead of ending something it cannot see. The target already being current is a no-op.
+  told so instead of ending something it cannot see (`0` means it believes nothing is open, and a
+  value it cannot read counts as stale). The target already being current is a no-op.
 - **What comes back.** The thread, and its own MCP servers less any the catalog has dropped. It
   takes the mode of the conversation being left, so a call stays a call. It is usable at once: the
   instructions and tool lists it had are good enough for a call that cannot wait, and they catch up
@@ -80,7 +81,9 @@ and the web button.
   `preparing`.
 - **A reply in flight.** The reply job looks before every round and every tool call, and stops once
   its conversation is no longer active. An answer already on its way lands on the old thread, where
-  it is read on return. A typed line that never got an answer gets one when you go back.
+  it is read on return. If the thread was left on a typed line nobody answered, going back to it typed
+  gets that line its answer. A reply still running when you go back keeps its claim, so a second one
+  cannot start beside it.
 - **Background sessions** are not touched. A session reports nothing into a conversation: the live
   model checks on it with `get_session`, whichever conversation it is in, so no result can land on
   the wrong thread or be lost by a switch. `live_conversation_id` on a delegated turn is provenance
@@ -92,7 +95,10 @@ can replace a Realtime session's instructions and tools, but nothing removes wha
 already heard, so the old thread would stay in the model's context. A new session starts from the
 new conversation's own recap, the same way a dropped call comes back. A tool call that switched
 answers `switched_to`, and the client sends nothing more down that socket. While a call is up it
-also asks which conversation is current every 5 seconds, so it follows a switch made somewhere else.
+also asks which conversation is current every 5 seconds, so it follows a move made somewhere else,
+including a new voice conversation started on another device. A call never turns voice on over
+someone typing: if the current conversation is typed, the call ends and says why. The car treats that
+as a drop and calls back, because in the car the driver is the one talking.
 The new call opens with a line nobody said, kept off the thread, so the model says where it picked
 up rather than leaving you in silence. Mute carries over and no hang-up sound plays. On the phone the
 microphone stays open and the call never goes idle.

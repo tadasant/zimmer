@@ -269,5 +269,6 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal current.id, response.parsed_body["current_id"]
+    assert_equal false, response.parsed_body["voice"]
   end
 end

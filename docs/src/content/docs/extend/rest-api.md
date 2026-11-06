@@ -1179,7 +1179,7 @@ What the car shows beside a call ·
 `POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
 is in that mode already; 409 once it has ended, 422 on an unknown mode ·
 `POST /live_conversations/switch` (`id`, or none for the conversation ended most recently that has
-turns; `from_id`, the one you believe is current; `mode`, by default the mode of the one being left)
+turns; `from_id`, the one you believe is current, `0` for none; `mode`, by default the mode of the one being left)
 → the conversation, current, with `switched: true`, or `switched: false` when it already was. 404
 when it does not exist, 409 when it failed, is from the retired root, there is nothing to go back
 to, or `from_id` is stale, 503 when Live Mode is unavailable. See

@@ -8819,9 +8819,10 @@ connected when another device turns voice off keeps its spoken instructions unti
 
 ## Moving a call between conversations has not been heard on a real call
 
-Going back is proven against the server, its races included, and the web dock's and the phone's
-sequencing are proven with the socket taken away. Nothing in CI has a call that connects, so the
-reconnect itself (`LiveCall.reattach`, the dock's `reattach`) and the line the model opens with are
+Going back is proven against the server, its races included. The web dock's move runs its shipped
+code under Node with the browser and OpenAI stubbed. On the phone, `RealtimeConductor` and the
+decision to follow are tested, and `LiveCall.reattach` itself is tested by nothing. Nothing in CI has
+a call that connects, so a call moving between conversations and the line the model opens with are
 confirmed only by driving.
 
 ## A line said in the seconds after a switch made elsewhere is not kept

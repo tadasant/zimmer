@@ -26,7 +26,7 @@
         <% if conversation.reopenable? %>
           <% current = LiveConversation.current %>
           <%= button_to "Go back to this conversation", reopen_live_conversation_path(conversation), method: :post,
-              params: { from_id: current&.id }.compact,
+              params: { from_id: current&.id.to_i },
               form: { data: { turbo_confirm: (current ? "End the current conversation and go back to this one?" : nil) } },
               class: "inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700" %>
         <% end %>

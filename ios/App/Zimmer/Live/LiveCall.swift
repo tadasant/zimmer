@@ -254,6 +254,9 @@ final class LiveCall: ObservableObject {
         health = LiveCallHealth()
         health.started(at: Self.now)
         sessionOpen = false
+        // The health that would have said it came back has just been replaced. Still lost, the
+        // new one says so again.
+        microphoneLost = false
         mintedFor = surface
         pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
         lookedForMove = Self.now
@@ -261,8 +264,6 @@ final class LiveCall: ObservableObject {
         state = .connecting
         watch(generation: mine)
         do {
-            try await turnVoiceOn(conversation)
-            guard mine == generation else { return }
             let asked = Self.now
             let secret = try await mintSecret(conversation)
             guard mine == generation else { return }
@@ -278,12 +279,18 @@ final class LiveCall: ObservableObject {
         }
     }
 
-    /// Ask which conversation is current, and follow it. A failed look changes nothing: the next
-    /// one will do. A move this call made itself is on its way already, so the answer is dropped.
+    /// Ask which conversation is current, and act on it (`LiveOverview.move`). A failed look changes
+    /// nothing: the next one will do. A move this call made itself is on its way already, so the
+    /// answer is dropped. A call ended here is a call that dropped: the car retries, and a car's
+    /// call turns voice on, because the driver is the one talking.
     private func followCurrent(generation mine: Int) {
         Task {
-            guard let current = try? await api.liveConversations().current, mine == generation else { return }
-            await reattach(to: current)
+            guard let overview = try? await api.liveConversations(), mine == generation else { return }
+            switch overview.move(forCallOn: conversationID) {
+            case .stay: return
+            case let .follow(conversation): await reattach(to: conversation)
+            case .end: fail("The call ended: Live Mode moved to a typed conversation.", generation: mine)
+            }
         }
     }
 

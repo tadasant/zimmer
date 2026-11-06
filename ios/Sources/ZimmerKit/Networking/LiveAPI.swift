@@ -16,8 +16,8 @@ public protocol LiveAPI: Sendable {
     /// Start a fresh conversation, typed or spoken from the start, ending the open one.
     func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation
     /// Go back to an earlier conversation, ending the open one; `nil` is the one left most
-    /// recently. `from` is the conversation this screen believes is current: another having taken
-    /// over since is refused (409). The target already being current changes nothing.
+    /// recently. `from` is the conversation this screen believes is current, 0 for none: another
+    /// having taken over since is refused (409). The target already being current changes nothing.
     func switchLiveConversation(_ id: Int?, from: Int?) async throws -> LiveSwitch
     func finishLiveConversation(_ id: Int) async throws -> LiveConversation
     /// Typed ⇄ spoken, in the same conversation. Voice must be on before a call can mint its

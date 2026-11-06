@@ -29,10 +29,11 @@ import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 //   cues            the call's state and these events → lib/live_cues, the same
 //                   sounds as the phone and the car
 //   switching       a tool call that moved Live Mode answers switched_to; the dock
-//                   also polls /live/current.json while a call is up, for a switch
+//                   also polls /live/current.json while a call is up, for a move
 //                   made elsewhere. Either way the call reconnects onto the new
 //                   conversation: a Realtime session cannot forget what it heard,
-//                   and a fresh one starts from that conversation's own recap.
+//                   and a fresh one starts from that conversation's own recap. A
+//                   conversation someone is typing in ends the call instead.
 
 // How often a call looks for a switch made somewhere else.
 const FOLLOW_INTERVAL_MS = 5000
@@ -85,8 +86,8 @@ export default class extends Controller {
     // call with the page; nothing else should.
   }
 
-  // `moved`: this call has followed Live Mode to another conversation, so it may
-  // need voice turning on there, and the model speaks first.
+  // `moved`: this call has followed Live Mode to another conversation, so the
+  // model speaks first.
   async start(call, { moved = false, muted = false } = {}) {
     if (this.state !== "idle") {
       if (this.call && String(this.call.conversationId) === String(call.conversationId)) return
@@ -101,8 +102,6 @@ export default class extends Controller {
     this.showError(null)
 
     try {
-      if (moved) await this.post(call.modeUrl, { mode: "voice" })
-      if (mine !== this.generation) return
       const session = await this.mintSecret(call.clientSecretUrl)
       if (mine !== this.generation) return
       this.gated = ["wake_word", "dynamic"].includes(session.listening)
@@ -163,8 +162,14 @@ export default class extends Controller {
     try {
       const response = await fetch("/live/current.json", { credentials: "same-origin", headers: { Accept: "application/json" } })
       if (!response.ok || generation !== this.generation) return
-      const { current_id: current } = await response.json()
+      const { current_id: current, voice } = await response.json()
       if (generation !== this.generation || !current || String(current) === String(this.call?.conversationId)) return
+      if (voice === false) {
+        // Somebody chose to type there. A call must not turn voice on over them.
+        this.showError("The call ended: Live Mode moved to a typed conversation.")
+        this.hangUp({ keepError: true })
+        return
+      }
       this.reattach(current)
     } catch (_error) {
       // Next time.
@@ -179,7 +184,6 @@ export default class extends Controller {
     this.start({
       conversationId: id,
       conversationUrl: base,
-      modeUrl: `${base}/mode`,
       clientSecretUrl: `${base}/client_secret`,
       toolCallsUrl: `${base}/tool_calls`,
       sessionUpdateUrl: `${base}/session_update`,

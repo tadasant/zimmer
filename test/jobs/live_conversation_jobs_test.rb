@@ -163,4 +163,33 @@ class LiveConversationJobsTest < ActiveJob::TestCase
 
     LiveConversationPrepareJob.perform_now(conversation.id, refresh: true)
   end
+
+  test "a conversation left while it was preparing stays ended, and can be gone back to" do
+    stub_live_root
+    conversation = create_live_conversation(status: LiveConversation::PREPARING, instructions: nil)
+    LiveConversations::RootInstructions.stubs(:fetch).with do
+      LiveConversation.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      create_live_conversation
+      true
+    end.returns(LiveConversations::RootInstructions::Result.new(text: "# New", source: "new", modes: {}))
+
+    LiveConversationPrepareJob.perform_now(conversation.id)
+
+    assert conversation.reload.ended?
+    assert_nil conversation.error_message
+    assert conversation.reopenable?
+  end
+
+  test "a read that fails after the conversation was left does not fail it" do
+    stub_live_root
+    conversation = create_live_conversation(status: LiveConversation::PREPARING, instructions: nil)
+    LiveConversations::RootInstructions.stubs(:fetch).with do
+      LiveConversation.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      true
+    end.raises(LiveConversations::RootInstructions::Error, "unreachable")
+
+    LiveConversationPrepareJob.perform_now(conversation.id)
+
+    assert conversation.reload.ended?
+  end
 end
