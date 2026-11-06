@@ -1,13 +1,14 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button; the call screen shows the gear; the car is unplugged
-/// from under that call, by the Simulator's own menu, the phone lands on it, and plugged back in
-/// the call is on the car again; the gear's closure
+/// the car's app: it opens on Continue and New; Continue goes to the call screen, which shows the
+/// gear; the car is unplugged from under that call, by the Simulator's own menu, the phone lands on
+/// it, and plugged back in the call is on the car again; the gear's closure
 /// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
 /// which show what a voice call left behind, change it and reset it, and the call comes back; and
 /// a call that cannot connect fails, retries and puts the call screen up and down again and
-/// again, gives up and says so on the button, and a tap after that tries again. After every step Zimmer must still be running, and no call
+/// again, gives up and says so on a tile beside New; New is one tap to a call of its own; and a
+/// conversation ended on the phone leaves only New. After every step Zimmer must still be running, and no call
 /// screen may be left over a car with no call: those are the changes CarPlay turns into an
 /// exception, and a crash, as it did in a car (#1410).
 ///
@@ -48,24 +49,31 @@ final class CarPlayDrillUITests: XCTestCase {
     /// `-ZimmerFixtureVoiceTurnedUp` starts the Live settings where voice calls left them on the
     /// call that broke, and holds the first call on Connecting…, so the call screen stays up to
     /// be driven; every call after it fails as fast as ever.
-    func test_open_on_one_button_then_the_gear_then_a_call_that_cannot_connect_retries_gives_up_and_tries_again() {
+    ///
+    /// Nothing but a call ending brings the tiles back to rest, and no call here connects or can
+    /// be ended, so the order is what reaches each state: the drill has one tap of Continue, at
+    /// rest, and the nothing-to-continue state comes last, by the only route left: a Retry that
+    /// finds the conversation gone.
+    func test_open_on_continue_and_new_then_the_gear_then_retries_then_new_then_nothing_to_continue() {
         XCTAssertGreaterThanOrEqual(XCUIScreen.screens.count, 2, "the CarPlay window is a second screen, and there is none")
         zimmer = XCUIApplication()
         zimmer.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureVoiceTurnedUp"]
         zimmer.launch()
         openInTheCar()
 
-        // Open: one button, and nothing else.
-        XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "the one button is Talk to Zimmer")
+        // Open: the two choices, and nothing else.
+        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "Continue is offered: the fixture has a conversation open")
+        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "and New beside it")
         for gone in ["Needs you", "Running"] {
-            XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is one button")
+            XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is its two choices")
         }
-        XCTAssertEqual(car.cells.count, 1, "one button on the screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(car.cells.count, 2, "two tiles on the screen; the car showed:\n\(car.debugDescription)")
         photograph("carplay-home")
+        record("the home", car.debugDescription)
         assertAlive("on the home screen")
 
-        // The gear: on the call screen, on a call held on Connecting….
-        tapTile("Talk to Zimmer")
+        // Continue: one tap to the call screen, where the gear is, on a call held on Connecting….
+        tapTile(Self.continueTitles[0], or: Self.continueTitles[1])
         // The gear says the call screen is up, and the words cannot: the tile says Connecting…
         // while the tap finds its conversation, and on a stalled run that outlasts one look.
         // The screen also comes up wearing CarPlay's own Cancel, so the gear takes a wait of its
@@ -125,25 +133,46 @@ final class CarPlayDrillUITests: XCTestCase {
         // the call screen up and taking it down — the churn that crashed it.
         press("Back to the call", until: car.descendants(matching: .any).matching(NSPredicate(format: "label == 'Connecting…' OR label CONTAINS 'etry'")).firstMatch)
         XCTAssertFalse(row("Reply length cap").exists, "the panel has left the stack")
-        XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a failed call says it is retrying, on the button")
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "a failed call says it is retrying, on the tile")
         photograph("carplay-retrying")
-        XCTAssertTrue(waitFor(anyOf: ["Retry", "Live Mode unavailable. Tap to retry"], seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
+        XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
         assertNoCallScreen("once the car has given up")
+        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "New stays beside Retry: the way out of a conversation that will not connect")
+        XCTAssertEqual(car.cells.count, 2, "Retry and New; the car showed:\n\(car.debugDescription)")
         photograph("carplay-unavailable")
         assertAlive("after three retries")
 
-        // A tap after giving up is a fresh set of retries.
-        tapTile("Retry", or: "Live Mode unavailable. Tap to retry")
-        XCTAssertTrue(waitFor(anyOf: ["Retrying…", "Live Mode unavailable, retrying…"], seconds: 30), "a tap tries again")
+        // New: one tap to a call on a conversation of its own, which in this fixture cannot
+        // connect either, so it retries that conversation and gives up the same way.
+        tapTile(Self.newTitles[0], or: Self.newTitles[1])
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New tries a call")
+        XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and gives up on its own conversation")
+        assertNoCallScreen("once New has given up")
+        assertAlive("after New")
+
+        // Nothing to continue: the conversation ends on the phone, behind the car's tiles, and
+        // Retry finds nothing open. The car starts nothing in its place: one tile, New.
+        endTheConversationOnThePhone()
+        tapTile(Self.retryTitles[1], or: Self.retryTitles[0])
+        waitForOneTile()
+        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "with nothing open, New is what is left")
+        XCTAssertFalse(Self.continueTitles.contains { text($0).exists }, "nothing to continue; the car showed:\n\(car.debugDescription)")
+        assertNoCallScreen("with nothing to continue")
+        photograph("carplay-home-nothing-to-continue")
+        assertAlive("with nothing to continue")
+
+        // And New from there is one tap too.
+        tapTile(Self.newTitles[0], or: Self.newTitles[1])
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New from the one tile tries a call")
         assertAlive("at the end of the drill")
     }
 
     // MARK: - Getting there
 
     /// Zimmer's CarPlay scene, from the CarPlay home screen: home first, in case the car is on
-    /// another app, then Zimmer's icon. `callIsUp`: the scene opens on the call, not the button.
+    /// another app, then Zimmer's icon. `callIsUp`: the scene opens on the call, not the tiles.
     private func openInTheCar(callIsUp: Bool = false) {
-        if callIsUp ? car.buttons["gearshape.fill"].waitForExistence(timeout: 5) : text("Talk to Zimmer").waitForExistence(timeout: 5) { return }
+        if callIsUp ? car.buttons["gearshape.fill"].waitForExistence(timeout: 5) : text(Self.newTitles[0]).waitForExistence(timeout: 5) || text(Self.newTitles[1]).exists { return }
         let home = dashboard.descendants(matching: .any)["CARStatusBarHomeButton"]
         if home.exists {
             home.tap()
@@ -152,7 +181,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(icon.waitForExistence(timeout: timeout), "Zimmer is on the CarPlay home screen; it showed:\n\(dashboard.debugDescription)")
         icon.tap()
         guard !callIsUp else { return }
-        XCTAssertTrue(text("Talk to Zimmer").waitForExistence(timeout: timeout), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
     }
 
     /// Clicks an item of the Simulator's External Displays menu, through `ios/bin/ui-test`: only
@@ -167,7 +196,38 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "ios/bin/ui-test did not click \(item)")
     }
 
-    /// Any element with these words: the button's text, or the call screen's title.
+    /// End the open conversation from the phone's own Live screen, in this same process. The
+    /// fixture lands there with voice on and starts no call.
+    private func endTheConversationOnThePhone() {
+        // The phone is still on the thread it landed on when the car left, and that is the
+        // conversation New ended: back out, and in again to the one that is open.
+        let thread = zimmer.navigationBars["Live Mode"]
+        if thread.waitForExistence(timeout: 3) {
+            thread.buttons.element(boundBy: 0).tap()
+            let done = zimmer.buttons["live.done"]
+            XCTAssertTrue(done.waitForExistence(timeout: timeout), "Back leads to the Live list; the phone showed:\n\(zimmer.debugDescription)")
+            done.tap()
+        }
+        let open = zimmer.buttons["live.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: timeout), "the waveform button is on the phone's session list")
+        open.tap()
+        let menu = zimmer.buttons["live.conversation.menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: timeout), "the waveform button lands in the open conversation")
+        menu.tap()
+        let end = zimmer.buttons["End conversation"]
+        XCTAssertTrue(end.waitForExistence(timeout: timeout), "the menu offers End conversation")
+        end.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: menu)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "the conversation ended on the phone")
+    }
+
+    /// The tile's words, longest first: CarPlay chooses among them by the width it has.
+    private static let continueTitles = ["Continue conversation", "Continue"]
+    private static let newTitles = ["New conversation", "New"]
+    private static let retryingTitles = ["Live Mode unavailable, retrying…", "Retrying…"]
+    private static let retryTitles = ["Live Mode unavailable. Tap to retry", "Retry"]
+
+    /// Any element with these words: the tile's text, or the call screen's title.
     private func text(_ label: String) -> XCUIElement {
         car.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
@@ -214,6 +274,16 @@ final class CarPlayDrillUITests: XCTestCase {
             }
         }
         XCTFail("no \(label) tile; the car showed:\n\(car.debugDescription)")
+    }
+
+    /// The home comes down to a single tile, checking Zimmer is alive each second.
+    private func waitForOneTile() {
+        for _ in 0..<Int(timeout) {
+            if car.cells.count == 1 { return }
+            assertAlive("while waiting for one tile")
+            Thread.sleep(forTimeInterval: 1)
+        }
+        XCTFail("still \(car.cells.count) tiles; the car showed:\n\(car.debugDescription)")
     }
 
     /// Polls rather than one `waitForExistence`, checking Zimmer is alive each second, so a

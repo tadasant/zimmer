@@ -8389,8 +8389,8 @@ five; template changes made without a completion handler, which CarPlay turns in
 when it refuses them; and the call's audio engine restarted on a notification thread while a
 hang-up stopped it on the main one. Each now has a Linux test or a source guard, and every iOS
 pull request also runs the CarPlay drill: Zimmer in the iOS Simulator's CarPlay window, driven
-through the car app (one button; the voice settings panel, its choices and Reset to defaults; a
-call that cannot connect, its retries and giving up, and a tap that tries again), failing on any
+through the car app (Continue and New; the voice settings panel, its choices and Reset to defaults;
+a call that cannot connect, its retries and giving up; New; and nothing to continue), failing on any
 crash. The car app itself was cut to one flow (open, talk,
 mute, end) so there is little left to drive. The drill cannot press Mute, End or the voice settings gear: XCUITest finds
 them but no tap, by element or by coordinate, reaches them, so the fixture runs the gear's closure from a background thread,
@@ -8401,6 +8401,12 @@ settles it: `carplay.off_main` says CarPlay called off the main thread, and `las
 so a tap on it delivered off the main thread would trap; `talk_tapped` from real cars says it has been
 reaching its handler. CarPlay's own Back on the
 panel is not driven either.
+
+The car's home reads what is open when it connects and when a call ends, not while it sits there. A
+conversation started on the phone meanwhile leaves the home showing New alone until the next read,
+and tapping it ends that conversation. One ended on the phone leaves Continue showing, and the tap
+finds nothing, plays the falling notes and starts no call. Continue reaches only an open
+conversation, so a conversation that has ended can't be picked up from the car.
 
 The gear ends the call, so a reply in progress is cut off, and the call comes back as a new one. A
 write still out when CarPlay's Back leaves the panel, if it then fails, is reported only in the call

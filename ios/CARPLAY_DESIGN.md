@@ -20,8 +20,8 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 
 | Rule | What it means here |
 | --- | --- |
-| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses three: a grid (the Talk button), the voice control template (the call) and a list (the voice settings, behind the call screen's gear) |
-| "Primary modality of voice upon launch" | The one button is the voice conversation; the car stays silent until the driver taps it (see Decisions) |
+| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses three: a grid (the home's tiles), the voice control template (the call) and a list (the voice settings, behind the call screen's gear) |
+| "Primary modality of voice upon launch" | Each tile is a voice conversation, one tap away; the car stays silent until the driver taps one (see Decisions) |
 | "Only hold an audio session open when voice features are actively being used" | The audio session is held only while a call runs, never idle |
 | Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the call. The gear ends the call before its screen comes down, so the panel never records |
 | "Don't show text or imagery in response to queries" | Answers are spoken; the call screen shows a state word, never a transcript |
@@ -30,6 +30,54 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 | Notifications: communication, EV charging, parking, public safety and driving task apps only | **This category cannot show notifications in CarPlay**, and Zimmer does not try to be proactive in the car |
 
 ## Decisions
+
+**Continue or new: the driver chooses.** This reverses *one button, no choice to make* from
+*Radically simple*, on purpose and only this far. Tadas, from the car: *"give the user two options:
+start a new live session with Zimmer, or continue the most recent live session. Live mode is a
+single thread, but the user wants an explicit choice."* The one button always resumed, so a fresh
+start in the car meant ending the conversation on the phone or asking the live model to forget.
+
+Live Mode is still one thread: New ends the open conversation, as the phone's New conversation does,
+and nothing runs in parallel. The home is still the one grid, so no template was added.
+
+| The home is | Its tiles |
+| --- | --- |
+| At rest, with a conversation open, or before Zimmer has said | **Continue** and **New** |
+| At rest, with nothing open | **New** |
+| Connecting, retrying, or in a call | The one tile saying so |
+| Given up | **Retry** and **New** |
+
+- **One tap, no confirmation.** An ended conversation stays readable, so New loses nothing, and an
+  alert would be one more modal for CarPlay to refuse. The phone asks because a New there is a
+  toolbar button in reach of a stray thumb on a thread being read; here it is a decision the driver
+  came to the screen to make.
+- **Nothing to continue is one tile, not a disabled one.** A tile that does nothing is a target a
+  driver has to read to rule out.
+- **Both tiles before Zimmer has answered.** A conversation stays open until something ends it, so
+  one nearly always is. A *Continue* appearing beside *New* after a second would move the tile a
+  finger is reaching for. If the read fails, or was stale, the tap reads again.
+- **Continue means the open conversation.** A conversation that has ended cannot take a call, because
+  `LiveConversations::Actions` mints a Realtime secret only for an open one. So the most recent
+  conversation is continuable only while it is open, and otherwise the honest offer is New.
+- **Continue never swaps threads.** If the tap finds nothing open, because it ended on the phone
+  since the tiles were drawn, the car calls nobody: the falling notes play and the tiles come down
+  to New. A retry or a dropped call that finds nothing open does the same. A new conversation in
+  its place would sound like a live model that had forgotten everything, with nothing to say why.
+- **New is spent when Zimmer answers it** (`CarLiveWish`). Starting ends the open conversation, so a
+  retry that started again would end the one the driver had just asked for. Once Zimmer has answered,
+  retries and drops go through Continue, onto that conversation. A start Zimmer never answered
+  stays New, so Retry does not go back to the conversation the driver chose to leave.
+- **A running call wins.** Any tile with a call up goes back to it and takes it over from the phone.
+  A stale New tile never ends a call: End does that.
+- **Given up keeps New.** A conversation that will not connect is when a fresh one is most useful,
+  and Retry alone would hold the driver on it.
+- **A second tap is not a second start.** The lookup is marked before the first `await`, so one
+  arriving during it changes nothing.
+- **The comeback is unchanged.** Closing the voice settings calls the same conversation again,
+  whatever the tiles say. A tile tapped after that gives up makes the driver's own choice.
+
+The home reads what is open when the scene connects and when a call ends. It is a read, so the car
+stays silent (*Silent until asked*).
 
 **Break glass.** Everything else in the car is voice, and that is exactly what fails here: a call the
 live model has mis-tuned cannot be asked to fix itself. Tadas asked for a touch way out, reachable
@@ -135,8 +183,8 @@ audio is the signal.
 **Radically simple: open, talk, mute, end.** After the first CarPlay builds crashed in a car
 (#1410), Tadas cut the app to the flow a driver actually uses: *"open the app, start talking to
 zimmer, mute, end conversation, maybe show some details while talking but keep em minimal, no
-multi-page nav."* The car has two screens: one button, and the call, and the voice settings behind
-it are the one exception (*Break glass*). Gone, deliberately: the tab
+multi-page nav."* The car has two screens: the home, and the call, and the voice settings behind
+it are the one exception (*Break glass*). The home was one button until *Continue or new*. Gone, deliberately: the tab
 bar, the Needs you and Running lists and their counts, the minute-by-minute board read, the
 per-session rows, the session cards and their Merge / Go ahead / Restart / Archive buttons, the
 confirm alerts and action sheet, the call title naming the session being discussed and the screen
@@ -186,17 +234,17 @@ has been answered, and the open call is too, so a call the app died in gets `cal
 telemetry* turns it down or off without a build. See
 [docs: observability](https://docs.zimmer.tadasant.com/operate/observability/#the-ios-apps-call-log).
 
-**One thread.** Everything the driver says goes to the one Live Mode conversation: Talk to Zimmer
-resumes the open conversation with voice on, or starts one. Live Mode acts on sessions itself, with
+**One thread.** Everything the driver says goes to the one Live Mode conversation: Continue resumes
+the open conversation with voice on, and New ends it and starts another (*Continue or new*). Live Mode acts on sessions itself, with
 its own guardrails (it confirms before a merge or anything that cannot be undone). The car has no
 way to act on a session directly, and a source guard keeps it that way.
 
-**Silent until asked.** Opening the app says nothing. The call starts only when the driver taps the
-button. The category's "primary modality of voice upon launch" is read as *the default action is
+**Silent until asked.** Opening the app says nothing. The call starts only when the driver taps a
+tile. The category's "primary modality of voice upon launch" is read as *the default action is
 voice*, not *the app speaks first*.
 
 **Live Mode unavailable is shown and heard, never spoken.** When the call cannot connect, or drops,
-the button says *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds
+the tile says *Live Mode unavailable, retrying…* and the car tries again after 2, 5 and 15 seconds
 (`LiveRetry`), with no voice. The falling notes sound at the first failure and again when it gives
 up, so a driver knows without looking. Once the retries are spent, or 30 seconds have gone from the
 tap or the drop, it says *Live Mode unavailable. Tap to retry*; a tap is a fresh budget, a call that
@@ -207,7 +255,7 @@ and for as long as they sound (`LiveAudioEngine.playAlone`).
 **A call that will not connect gives up in 15 seconds.** The driver's answer comes quickly or it is
 no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and
 OpenAI has said `session.created`, so *Listening* and the connected notes mean somebody can hear
-you; the socket merely having been asked to open proves nothing. A tap answers at once (the button
+you; the socket merely having been asked to open proves nothing. A tap answers at once (the tile
 says *Connecting…*), a second tap is not a second attempt, and finding the conversation has the same
 deadline. Two calls that each hang to the deadline come to about half a minute, then *Tap to retry*
 (`LiveCallHealth`).
@@ -241,22 +289,24 @@ make a sound at all, so during one of those this is only shown.
 
 ```mermaid
 flowchart TD
-  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Talk to Zimmer]"]
-  home -- Talk to Zimmer --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Speaking / Working on it… / Muted\n[Mute] [End]"]
+  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Continue] [New]\nNew alone with nothing open"]
+  home -- "Continue: the open conversation" --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Speaking / Working on it… / Muted\n[Mute] [End]"]
+  home -- "New: ends the open one, starts another" --> call
+  home -- "Continue, nothing open: falling notes, no call" --> home
   call -- End --> home
   call -- "gear: ends the call" --> panel["Voice settings (list, pushed)\n[Back to the call] [Reset to defaults]\n[Reply length cap] [Turn detection] …"]
   panel -- "Back to the call, or CarPlay's Back: calls again" --> call
   panel -- a row --> choices["The row's choices (the same list, redrawn)"]
   choices -- a choice, or Back to settings --> panel
-  call -- cannot connect in 15 s, or drops --> retry["button: Live Mode unavailable, retrying…\nfalling notes once\n(2 s, 5 s, 15 s, no more than 30 s)"]
+  call -- cannot connect in 15 s, or drops --> retry["tile: Live Mode unavailable, retrying…\nfalling notes once\n(2 s, 5 s, 15 s, no more than 30 s)"]
   retry -- a retry connects --> call
-  retry -- retries spent --> tap["button: Live Mode unavailable. Tap to retry\nfalling notes"]
-  tap -- tap --> call
+  retry -- retries spent --> tap["tiles: Live Mode unavailable. Tap to retry, and New\nfalling notes"]
+  tap -- Retry or New --> call
 ```
 
 | Screen | Template | Why this template |
 | --- | --- | --- |
-| Zimmer | Grid, one button | A grid's buttons are the largest targets CarPlay draws |
+| Zimmer | Grid, one or two tiles | A grid's buttons are the largest targets CarPlay draws |
 | The call | Voice control template, presented | The only screen allowed while recording |
 | Voice settings | List, pushed | Text and a value, large rows, and CarPlay's own limits on them. No slider exists, so every value is a few discrete choices |
 
@@ -266,8 +316,8 @@ voice settings are the only thing pushed, also through the navigator. A row's ch
 list with its sections replaced, so opening one is no template change, and nothing is deeper than
 that one push.
 
-Reachable only from the call screen, in any of its states: the home screen stays one button, so
-while the Talk button is retrying there is no gear. The settings are all on the phone's Live settings
+Reachable only from the call screen, in any of its states: the home screen has no gear, so while a
+tile says it is retrying there is no way to the settings. The settings are all on the phone's Live settings
 screen too.
 
 ### The call screen
@@ -282,7 +332,7 @@ screen too.
 
 The first version of this screen also had a status line (a trailing bar button: *Muted*, what the
 call was doing, or an error). It never rendered in the Simulator's CarPlay window, so it is gone;
-an error that ends the call shows on the Talk button instead.
+an error that ends the call shows on the home's tile instead.
 
 The call is the phone's `LiveCall`, so a call started at the desk carries on in the car and the
 other way round; ending it in the car ends it everywhere. A call already running when the car
@@ -315,7 +365,7 @@ the app signed ad hoc with the CarPlay entitlement — the Simulator's CarPlay w
 without one — and opens that window from the Simulator's I/O menu through System Events. XCUITest
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
 
-- the car opens on one button and nothing else;
+- the car opens on Continue and New and nothing else, and Continue is one tap to the call screen;
 - the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
   (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
 - the car unplugged with that call up, by the Simulator's own I/O menu, so the scene truly
@@ -325,9 +375,16 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   reconnected scene: the call screen is gone, it shows the
   cap of 180 and no threshold row, Silence brings the threshold back with its 0.92, Reset to defaults
   clears the cap, and Back to the call calls again, all by ordinary taps;
-- Talk to Zimmer with a call that cannot connect (the fixture's Realtime secret points at
-  `realtime.invalid`): it fails, retries, gives up on the button, leaves no call screen, and a tap
-  tries again.
+- a call that cannot connect (the fixture's Realtime secret points at `realtime.invalid`): it
+  fails, retries, gives up with Retry and New on the home, and leaves no call screen;
+- New from there, one tap to a call that retries and gives up the same way;
+- the conversation ended on the phone's own Live screen, by ordinary taps in the same process, then
+  Retry: no call, one tile, New, and a tap on it tries a call.
+
+The tiles come back to rest only when a call ends, and no call in the drill connects or can be ended,
+so the order is what reaches each state: Continue gets one tap at rest, and nothing to continue comes
+last. Which conversation each tile called is `CarPlayTests`', because the drill can see only the
+screen.
 
 It does not press Mute or End. XCUITest finds the voice control template's two action buttons
 (labelled by their symbols, "microphone off" and "hang up") but computes no hit point for them,
@@ -353,18 +410,18 @@ running after every step, and any crash report fails the job.
 
 | Guideline | How the app follows it |
 | --- | --- |
-| Voice is the primary modality at launch | The one button is the voice conversation; nothing is heard until it is tapped |
+| Voice is the primary modality at launch | Each tile is the voice conversation; nothing is heard until one is tapped |
 | Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call |
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template. A present CarPlay refuses does not stop the call, so until the next state change presents again the microphone can be open with no screen; the comeback takes that path like any call |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
 | Depth of 3 | One root; one pushed list; the call screen is modal |
-| Few, large targets | One grid button; two call buttons and the gear; list rows, each a name and a value, with at most five choices |
+| Few, large targets | Two grid tiles at most; two call buttons and the gear; list rows, each a name and a value, with at most five choices |
 | Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud. Reset to defaults does not ask: see *Break glass* |
-| Nothing a driver cannot act on | A call that will not connect gives up in 15 seconds, says so on the button with the falling notes, and retries |
+| Nothing a driver cannot act on | A call that will not connect gives up in 15 seconds, says so on the tile with the falling notes, and retries |
 
 ## What is proven, and what is not
 
-- `LiveActivity`, `LiveCallScreen`, `LiveRetry`, `LiveCallHealth`, `CarPlayNavigator`,
+- `LiveActivity`, `LiveCallScreen`, `LiveRetry`, `CarLiveChoice`, `LiveCallHealth`, `CarPlayNavigator`,
   `LiveReferencedSessions` and the conductor are in ZimmerKit and tested on Linux and macOS on every iOS pull request.
 - `CarPlayTests` also reads the scene's source: no interface-controller call outside
   `CarPlayInterface.swift` or without a completion, no system speech anywhere in the app, no direct
@@ -381,8 +438,9 @@ running after every step, and any crash report fails the job.
 - The CarPlay drill drives the real CarPlay templates in the Simulator's CarPlay window on every iOS
   pull request, one true disconnect and reconnect among them.
 - **Not confirmed anywhere, until someone drives it:** a press of the gear (the fixture runs its
-  action), CarPlay's own Back on the panel, a muted call coming back muted, and how long a real
-  cable or wireless blip lasts against the three-second settle. The drill's flap is one disconnect
+  action), CarPlay's own Back on the panel, a muted call coming back muted, which of the two
+  tile titles a real head unit picks at its width, and how long a real cable or wireless blip lasts
+  against the three-second settle. The drill's flap is one disconnect
   and one reconnect, seconds apart; a flap inside the settle is the fixture's.
 - **Not driven anywhere:** the cold path, CarPlay running the app with no phone scene and the phone
   scene opening afterwards. XCUITest always launches with a window. It shares every line of the warm
@@ -398,6 +456,9 @@ running after every step, and any crash report fails the job.
 
 ## Follow-ups
 
+- **Continuing an ended conversation.** Continue offers only what is open. When a conversation can
+  be reopened, `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's
+  read is where a reopenable conversation would keep the Continue tile up.
 - **iOS 27 overlay.** The voice control template as an overlay. Needs Xcode 27 in CI.
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
