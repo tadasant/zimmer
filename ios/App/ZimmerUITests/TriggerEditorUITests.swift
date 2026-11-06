@@ -94,6 +94,8 @@ final class TriggerEditorUITests: XCTestCase {
     }
 
     /// A blank name is refused by the server in its words, in place, and nothing is created.
+    /// Save is tapped from the prompt, the bottom of a long form, and the refusal heads it: the
+    /// form scrolls up to it, or all the person sees is a button that flickers.
     func test_a_refusal_is_shown_in_place_and_nothing_is_created() throws {
         let app = launch(["-ZimmerFixtureTab", "triggers"])
         let add = app.buttons["trigger.new"]
@@ -108,14 +110,18 @@ final class TriggerEditorUITests: XCTestCase {
         prompt.typeText("Answer the thread.")
         app.buttons["trigger.form.save"].tap()
 
-        // The refusal heads the form, which is scrolled to the prompt: a row scrolled past is
-        // not in the hierarchy until it is scrolled back to.
+        // No scrolling here: the form brings the refusal on screen itself.
         let refusal = app.descendants(matching: .any)["trigger.form.error"]
-        XCTAssertTrue(reveal(app, refusal, upward: false), "the refusal heads the form")
+        XCTAssertTrue(comesOnScreen(app, refusal), "the form scrolls up to the refusal that heads it")
         XCTAssertTrue(refusal.label.contains("prohibited this trigger from being saved"), "the web form's heading: \(refusal.label)")
         XCTAssertTrue(refusal.label.contains("Name can't be blank"), "the server's reason")
         XCTAssertTrue(refusal.label.contains("must include channel_id for Slack conditions"), "and the Slack condition's")
         XCTAssertTrue(name.exists, "still on the form, with what was typed")
+
+        // Refused again in the same words, from the prompt again: the form scrolls again.
+        XCTAssertTrue(reveal(app, prompt))
+        app.buttons["trigger.form.save"].tap()
+        XCTAssertTrue(comesOnScreen(app, refusal), "the form scrolls up to a second refusal too")
 
         app.buttons["Cancel"].firstMatch.tap()
         let nightly = app.descendants(matching: .any)["trigger.5"].firstMatch
@@ -151,28 +157,39 @@ final class TriggerEditorUITests: XCTestCase {
         return app
     }
 
-    /// Scroll the form until `element` is on screen, below the navigation bar — a tap on a row
-    /// still under the bar lands on the bar — and above the keyboard, which a tap on a row under
-    /// it lands on; and return whether it is. The form puts the keyboard away on the first drag.
-    /// `upward` is which way to look for a row that is not in the tree: further down the form
-    /// (the default), or back up past the bar.
+    /// Whether `element` is on screen: below the navigation bar — a tap on a row still under the
+    /// bar lands on the bar — and above the keyboard, which a tap on a row under it lands on.
+    private func isOnScreen(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists, !element.frame.isEmpty else { return false }
+        let bar = app.navigationBars.firstMatch
+        let top = bar.exists ? bar.frame.maxY : 0
+        let keyboard = app.keyboards.firstMatch
+        let bottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
+        return element.frame.minY >= top && element.frame.maxY <= bottom
+    }
+
+    /// Wait, touching nothing, for the app to bring `element` on screen.
+    private func comesOnScreen(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isOnScreen(app, element) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        return isOnScreen(app, element)
+    }
+
+    /// Scroll the form until `element` is on screen, and return whether it is. The form puts the
+    /// keyboard away on the first drag. `upward` is which way to look for a row that is not in
+    /// the tree: further down the form (the default), or back up past the bar.
     @discardableResult
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement, upward: Bool = true) -> Bool {
-        func reachable() -> Bool {
-            guard element.exists, !element.frame.isEmpty else { return false }
-            let bar = app.navigationBars.firstMatch
-            let top = bar.exists ? bar.frame.maxY : 0
-            let keyboard = app.keyboards.firstMatch
-            let bottom = keyboard.exists ? keyboard.frame.minY : app.frame.maxY
-            return element.frame.minY >= top && element.frame.maxY <= bottom
-        }
         // A row off screen is not in the accessibility tree, so look for it after every step.
         for _ in 0..<30 {
-            if reachable() { break }
+            if isOnScreen(app, element) { break }
             let aboveTheBar = element.exists && !element.frame.isEmpty && element.frame.minY < app.navigationBars.firstMatch.frame.maxY
             scroll(app, down: !(aboveTheBar || (!element.exists && !upward)))
         }
-        return reachable()
+        return isOnScreen(app, element)
     }
 
     /// A deliberate drag of a third of the screen, not a flick: a flick carries a row from under
