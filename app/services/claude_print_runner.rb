@@ -51,18 +51,23 @@ module ClaudePrintRunner
     def failed? = !exit_status.nil? && !exit_status.zero?
   end
 
-  # What makes a `claude` invocation a text completion. Each flag closes something
-  # the others leave open, measured against CLI 2.1.318:
+  # What makes a `claude` invocation a text completion, as measured against CLI
+  # 2.1.318 with a stub API:
   #
-  #   --tools ""                  no built-in tools. MCP tools survive this flag.
-  #   --strict-mcp-config         no MCP server from any config file.
-  #   --setting-sources ""        no user, project or local settings, so no hooks,
-  #                               no CLAUDE.md and no plugins. Managed settings
-  #                               still apply.
+  #   --tools ""                  no built-in tools. MCP tools and hooks survive it.
+  #   --setting-sources ""        no user, project or local settings: no hooks and
+  #                               no CLAUDE.md. Managed settings still apply.
+  #
+  # Two more are defensive rather than measured to be necessary:
+  #
+  #   --strict-mcp-config         no MCP server from any config file, whatever
+  #                               counts as a setting source.
   #   --disable-slash-commands    a prompt cannot open a skill or command.
   #
-  # `--dangerously-skip-permissions` stays out on purpose. Nothing here can prompt,
-  # and if a future CLI hands the model a tool anyway, the call should be denied.
+  # `--dangerously-skip-permissions` stays out on purpose. Nothing here needs it, and
+  # without it a tool needing approval has nobody to grant it: `Bash` was denied when
+  # the CLI was given its default tools. Read-only tools may not need approval, so
+  # this is a backstop and not a replacement for `--tools ""`.
   #
   # `--no-session-persistence` stays out too: TokenUsageIngestionService reads these
   # calls' transcripts to account for their spend.
@@ -118,7 +123,8 @@ module ClaudePrintRunner
   # Whether an extension backend is active for print inference. An explicit
   # override wins (tests/diagnostics); otherwise ask the registry whether any
   # enabled extension provides one. Kept for tests/diagnostics that assert which
-  # path is live.
+  # path is live. It does not consult #text_only?, so #build can still answer with
+  # native while this is true.
   def pty_enabled?(override = nil)
     return override unless override.nil?
 

@@ -2839,9 +2839,12 @@ cover.
 settings. Those flags were measured against CLI 2.1.318 with a stub API, and CI has no real `claude`
 binary, so the suite pins the argv and not what the CLI does with it. `ClaudeCodeUpdateJob` moves
 the CLI on its own. If an update drops a flag the call exits non-zero, which every caller already
-treats as no answer: titles fall back to the prompt and summaries are skipped, quietly. If an update
-changes what a flag means, there is still no `--dangerously-skip-permissions`, so a tool the model
-is handed would be denied rather than run.
+treats as no answer: titles fall back to the prompt, push notifications lose their summary, and a
+status summary records a failure. Nothing raises an alert. The one trace is a
+`[NativeClaudePrintRunner] claude exited` warning in the log, carrying the CLI's stderr. If an update
+changes what a flag means, there is still no `--dangerously-skip-permissions`, so a tool that needs
+approval has nobody to grant it. `Bash` was measured being denied this way. A read-only tool may not
+need approval, so this is a backstop and not a second wall.
 
 ### A short refusal can still become a session title
 
