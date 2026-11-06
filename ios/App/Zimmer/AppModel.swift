@@ -88,6 +88,8 @@ final class AppModel: ObservableObject {
         // Opening a session from anywhere (a push, the inbox, a trigger) shows the Sessions tab.
         didSet {
             if !path.isEmpty, tab != .sessions { tab = .sessions }
+            // Opening a session is the person's own choice, and a landing would cover it.
+            if !path.isEmpty { LiveCall.shared.personChoseElsewhere() }
             // A session opened from a push or a notification has usually just been read.
             if !path.isEmpty { Task { await refreshUnreadCount() } }
         }
@@ -139,6 +141,14 @@ final class AppModel: ObservableObject {
     func landOnCall(_ conversation: Int) {
         liveLanding = conversation
         showingLive = true
+    }
+
+    /// Live's sheet closed, by Done or a swipe, which is a choice too: the sheet does not pop back
+    /// up on a call the person has just walked away from.
+    func liveClosed() {
+        liveLanding = nil
+        liveThreadOnScreen = nil
+        LiveCall.shared.personChoseElsewhere()
     }
 
     /// Debug fixture: the live conversation LiveHomeView opens straight into.
@@ -630,9 +640,16 @@ final class AppModel: ObservableObject {
             guard parts.count == 2, let at = Double(parts[1]) else { return nil }
             return (parts[0], at)
         }
+        // A real call's audio keeps the app running in a pocket. This held one has no audio yet, so
+        // the script asks for the time itself, or iOS would suspend it behind a test's Home press.
+        let running = UIApplication.shared.beginBackgroundTask(withName: "fixture-car-script")
         Task {
+            defer { UIApplication.shared.endBackgroundTask(running) }
             let call = LiveCall.shared
-            Task { await call.start(21, from: .carplay) }
+            // `other@0`: the call is on a new conversation, for a thread that is not the call's.
+            let other = moves.contains { $0.name == "other" }
+            let conversation = other ? (try? await connection.api.startLiveConversation(.voice).id) ?? 21 : 21
+            Task { await call.start(conversation, from: .carplay) }
             var elapsed = 0.0
             for move in moves {
                 try? await Task.sleep(for: .seconds(move.at - elapsed))

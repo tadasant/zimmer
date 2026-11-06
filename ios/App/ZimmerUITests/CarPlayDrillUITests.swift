@@ -1,7 +1,9 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on one button; the call screen shows the gear, and the gear's closure
+/// the car's app: it opens on one button; the call screen shows the gear; the car is unplugged
+/// from under that call, by the Simulator's own menu, the phone lands on it, and plugged back in
+/// the call is on the car again; the gear's closure
 /// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
 /// which show what a voice call left behind, change it and reset it, and the call comes back; and
 /// a call that cannot connect fails, retries and puts the call screen up and down again and

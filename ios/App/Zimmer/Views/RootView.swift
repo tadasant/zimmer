@@ -78,7 +78,7 @@ extension RootView {
         // Presented from the tabs, not from one screen: the button on any tab opens it.
         .sheet(isPresented: $model.showingQuickRouter) { QuickRouterView() }
         .sheet(isPresented: $model.showingNewSession) { NewSessionView() }
-        .sheet(isPresented: $model.showingLive) { LiveHomeView() }
+        .sheet(isPresented: $model.showingLive, onDismiss: { model.liveClosed() }) { LiveHomeView() }
     }
 }
 
@@ -130,11 +130,13 @@ private struct CarHandoverLanding: View {
 
     /// Everything presented, whoever presented it: a session page's sheets and dialogs are its
     /// own, and UIKit would refuse a sheet over them, leaving Live's flag set with nothing shown.
+    /// With no window to ask, assume the worst: a landing is never worth a refused sheet.
     private var presentedOverTheTabs: Int {
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
+        guard let root = scene?.keyWindow?.rootViewController else { return .max }
         var count = 0
-        var top = scene?.keyWindow?.rootViewController?.presentedViewController
+        var top = root.presentedViewController
         while let shown = top {
             count += 1
             top = shown.presentedViewController

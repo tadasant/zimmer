@@ -8885,6 +8885,11 @@ The landing also waits three seconds for the car to come back, and that length i
 longer than three seconds moves an open phone to the call's thread even though the car returns. The
 call is not affected. How long real cable and wireless drops last has not been measured.
 
+The route clears when Zimmer's CarPlay scene comes back, not when the car does. If the car returns and
+nobody opens Zimmer on it, the next foreground still lands on the call, which is the phone's until
+the scene connects. CarPlay running the app with no phone scene, then the phone opening, has not been
+run on a device or in the Simulator.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
