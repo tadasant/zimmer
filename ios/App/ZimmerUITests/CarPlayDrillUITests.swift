@@ -80,7 +80,7 @@ final class CarPlayDrillUITests: XCTestCase {
         let landed = zimmer.descendants(matching: .any)["live.call.state"].firstMatch.waitForExistence(timeout: timeout)
         photographThePhone("carplay-phone-after-the-car-left")
         record("the phone after the car left", zimmer.debugDescription)
-        if !landed { print("REPRO: the phone did not land on the call") }
+        XCTAssertTrue(landed, "the phone goes to the call; it showed:\n\(zimmer.debugDescription)")
         assertAlive("with the car gone and the call on the phone")
 
         // The car comes back: the call goes up on it again, and the phone stays as it is.

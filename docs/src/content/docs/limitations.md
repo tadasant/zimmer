@@ -8874,6 +8874,17 @@ session. The same was true of a second tap before the page opened at the tap; th
 same, only now there is a button in it. The fix is a key on the Quick Router endpoint, which the
 app would then send.
 
+## A locked phone does not say the car's call is waiting on it
+
+When CarPlay disconnects with a call up, the phone goes to the call only when the app is next in
+front: iOS will not bring an app forward by itself. Until then the call's audio is the only sign. A
+notification would sound or light up while someone may still be driving, and a Lock Screen Live
+Activity would be a new surface, so neither exists.
+
+The landing also waits three seconds for the car to come back, and that length is a judgement. A blip
+longer than three seconds moves an open phone to the call's thread even though the car returns. The
+call is not affected. How long real cable and wireless drops last has not been measured.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

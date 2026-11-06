@@ -130,6 +130,17 @@ final class AppModel: ObservableObject {
         showingLive = true
     }
 
+    /// A call the car left on the phone: LiveHomeView opens this thread, as it stands. Unlike the
+    /// waveform's landing it is not asked to turn voice on, so nothing happens to the call.
+    @Published var liveLanding: Int?
+    /// The thread Live's sheet is showing; nil on its list.
+    var liveThreadOnScreen: Int?
+    /// `LiveHandover` said to go: into Live if its sheet is up, or up with it.
+    func landOnCall(_ conversation: Int) {
+        liveLanding = conversation
+        showingLive = true
+    }
+
     /// Debug fixture: the live conversation LiveHomeView opens straight into.
     var fixtureLiveConversation: Int?
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
@@ -627,8 +638,10 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(move.at - elapsed))
                 elapsed = move.at
                 switch move.name {
-                case "left": await call.carryOn(on: .ios)
-                case "back": await call.carryOn(on: .carplay)
+                case "left": call.carLeft()
+                case "back":
+                    call.carCameBack()
+                    await call.carryOn(on: .carplay)
                 case "end": call.hangUp()
                 default: break
                 }
@@ -1072,6 +1085,7 @@ final class AppModel: ObservableObject {
     /// The app's screen for a page of the web UI, wherever the link to it was tapped.
     func open(_ link: ZimmerLink) {
         linksOpened += 1
+        LiveCall.shared.personChoseElsewhere()
         showingQuickRouter = false
         showingLive = false
         showingNewSession = false
