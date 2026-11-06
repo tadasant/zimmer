@@ -180,8 +180,8 @@ public struct CarVoiceSettings: Sendable, Equatable {
 /// the call as it is now and never of the value a sink was handed: a state from just before the
 /// gear can arrive after the panel went up.
 public struct CarCallComeback: Sendable, Equatable {
-    /// The conversation to call again. Nil once the driver asked for a fresh start with Talk to
-    /// Zimmer, which picks the conversation itself.
+    /// The conversation to call again. Nil once the driver tapped a tile, which picks the
+    /// conversation itself.
     public private(set) var conversation: Int?
     /// A driver who muted the call comes back muted, however many tries that takes.
     public private(set) var muted: Bool

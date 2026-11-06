@@ -737,9 +737,13 @@ the other categories fit: Zimmer isn't audio, navigation, messaging, or a drivin
 and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md).
 
 **Radically simple: open, talk, mute, end.** The car has two screens, and one panel behind a gear. When the phone connects it
-shows one button, **Talk to Zimmer**, and says nothing. One tap starts [Live Mode](/sessions/live/)
-with voice on, in the open conversation or a new one, on the same call as the phone's, so a call
-started at the desk carries on in the car. While the call runs the screen is the voice control
+shows two tiles, **Continue conversation** and **New conversation**, and says nothing. One tap on
+either starts [Live Mode](/sessions/live/) with voice on, on the same call as the phone's, so a call
+started at the desk carries on in the car. Continue calls the open conversation. New ends it and
+calls a fresh one, with no confirmation, because the ended conversation stays readable on the
+phone. With nothing open there is only New: an ended conversation can't take a call. If you tap
+Continue and the conversation has ended on the phone since the tiles were drawn, you hear the falling
+notes, no call starts, and the tiles come down to New. While the call runs the screen is the voice control
 template. Its picture and title follow the call (Connecting…, Listening, Speaking, Working on
 it…), or say **Muted** while the microphone is off. Its two buttons are **Mute** and **End**. A call
 already running when the car connects is shown at once. There are no tabs, counts, session cards or
@@ -778,7 +782,7 @@ system speech, no read-aloud, no spoken confirmations. The car answers every lin
 CarPlay is built as [Listening](/sessions/live/#listening-which-lines-get-an-answer) Always,
 whatever the setting says, so nothing you say there is dropped without a sound.
 
-**When Live Mode can't connect, the button says so, and you hear it.** A call that isn't up in 15
+**When Live Mode can't connect, the tile says so, and you hear it.** A call that isn't up in 15
 seconds gives up. The button reads *Live Mode unavailable, retrying…* and the car tries again after
 2, 5 and 15 seconds, with the falling notes the first time and again when it stops. Once the retries
 are spent, or 30 seconds have gone since you tapped or the call dropped, it reads *Live Mode
@@ -857,21 +861,23 @@ A call from the car is tagged `carplay` ([turn sources](/sessions/turn-sources/)
 call is the phone's `LiveCall`, but every request it makes from the car says `carplay`
 (`LiveAPI.live(from:)`), so the conversation records the car as its client, the live model is told
 the person is driving, and its delegations are tagged `carplay · live_voice`. A call the phone
-started is handed to the car when the car connects or Talk picks it up, and back to the phone when
+started is handed to the car when the car connects or a tile picks it up, and back to the phone when
 the car disconnects (`LiveHandover` decides when the phone's screen follows). The audio session is
 held only while the call runs, and the microphone opens only for the call.
 
 **What keeps it from crashing, and the tests that hold it.** Every iOS pull request runs the
 **CarPlay drill** (`ios_carplay`). Zimmer is opened in the iOS Simulator's CarPlay window and driven
 by XCUITest:
-- it opens on one button;
+- it opens on Continue and New, and Continue is one tap to the call screen;
 - the car is unplugged with a call up, by the Simulator's own menu, and the phone lands on the call;
   plugged back in, the call is on the car again;
 - the gear is on the call screen, and the panel behind it (opened by the fixture running the gear's
   action) shows a cap a voice call set, offers the speech threshold only under Silence, resets to
   the defaults, and calls the conversation again;
 - a call that cannot connect (the fixture's Realtime secret points nowhere) fails, retries, gives
-  up on the button, leaves no call screen behind, and is tapped again.
+  up with Retry and New on the home, and leaves no call screen behind;
+- New is one tap to a call of its own;
+- a conversation ended on the phone leaves one tile, New, and Retry starts nothing in its place.
 
 It cannot press Mute, End or the gear: XCUITest finds them but no tap reaches them, so a press of
 those is unconfirmed until someone drives it. The fixture runs the gear's own action instead, so what
@@ -921,7 +927,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too, whole, so a pull request touching several can take most of the job's 75 minutes. A job [cut off there](/limitations/#a-job-cut-off-at-its-time-budget-is-never-alerted-on) fails `all-checks-pass` with no test failed |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: one button; a true disconnect with a call up, the phone landing on it, and the reconnect; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind, and a tap that tries again (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: Continue and New; a true disconnect with a call up, the phone landing on it, and the reconnect; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind; New; and nothing to continue once the conversation has ended on the phone (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as five shards on five simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `python3 -m unittest discover -s ios/tools` | `ios` | The export retry in `ios/tools/app_store_connect.py`: which failures are retried, that every other failure keeps xcodebuild's exit code, and that a build App Store Connect already has is never uploaded again |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |

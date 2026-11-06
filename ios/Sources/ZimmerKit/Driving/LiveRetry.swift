@@ -1,11 +1,11 @@
 import Foundation
 
 /// What the car does when a Live Mode call it started cannot connect, or drops: it says so on
-/// the Talk tile and tries again, quietly. It never speaks with any other voice — the car has
+/// the home's tile and tries again, quietly. It never speaks with any other voice — the car has
 /// one voice, the Realtime call's — so a call that is not up is shown, not said.
 ///
-/// The retries belong to the driver's tap. Tapping Talk starts a fresh budget; a few failures
-/// in a row use it up, and the tile then says Live Mode is unavailable until the driver taps it
+/// The retries belong to the driver's tap. A tap starts a fresh budget; a few failures in a row
+/// use it up, and the tile then says Live Mode is unavailable until the driver taps it
 /// again. Hanging up ends the wish for a call, so nothing is retried after it.
 ///
 /// The budget is time as well as tries. A call that fails at once uses all three retries; one
@@ -29,7 +29,7 @@ public struct LiveRetry: Hashable, Sendable {
 
     public init() {}
 
-    /// The driver tapped Talk (or a session's row): a fresh budget.
+    /// The driver tapped a tile: a fresh budget.
     public mutating func asked(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         wanted = true
         failures = 0
@@ -80,23 +80,45 @@ public struct LiveRetry: Hashable, Sendable {
         return wait
     }
 
-    /// What the Talk tile says.
+    /// What the home's first tile says. At rest that is Continue; `tiles` says whether it is
+    /// offered.
     public func tile(callIsActive: Bool) -> LiveTalkTile {
         if callIsActive { return .inCall }
-        guard failures > 0 else { return lookingUp ? .connecting : .ready }
+        guard failures > 0 else { return lookingUp ? .connecting : .continueConversation }
         // Waiting to retry, or a retry connecting: either way it is still trying.
         return wanted ? .retrying : .unavailable
     }
+
+    /// The home's tiles. At rest the driver chooses, and anything under way is one tile saying
+    /// so, because there is nothing to choose. Giving up keeps New beside Retry: a conversation
+    /// that will not connect is when a fresh one is most worth having.
+    ///
+    /// `conversationOpen`: whether Zimmer has a conversation to continue, nil until it has said.
+    /// Nil offers both, because one is nearly always open and a tile appearing beside another
+    /// moves the one a finger is reaching for. The tap reads Zimmer again anyway.
+    public func tiles(callIsActive: Bool, conversationOpen: Bool?) -> [LiveTalkTile] {
+        let first = tile(callIsActive: callIsActive)
+        switch first {
+        case .continueConversation:
+            return conversationOpen == false ? [.newConversation] : [.continueConversation, .newConversation]
+        case .unavailable:
+            return [.unavailable, .newConversation]
+        case .newConversation, .connecting, .inCall, .retrying:
+            return [first]
+        }
+    }
 }
 
-/// The Talk tile's words: the one place the car says whether Live Mode is there.
+/// The home's tiles: the driver's two choices, and the one place the car says whether Live Mode
+/// is there.
 public enum LiveTalkTile: Hashable, Sendable {
-    case ready, connecting, inCall, retrying, unavailable
+    case continueConversation, newConversation, connecting, inCall, retrying, unavailable
 
     /// Longest first, as CarPlay chooses among them.
     public var titleVariants: [String] {
         switch self {
-        case .ready: return ["Talk to Zimmer", "Talk"]
+        case .continueConversation: return ["Continue conversation", "Continue"]
+        case .newConversation: return ["New conversation", "New"]
         case .connecting: return ["Connecting…", "Calling…"]
         case .inCall: return ["Back to the call", "Call"]
         case .retrying: return ["Live Mode unavailable, retrying…", "Retrying…"]
@@ -107,11 +129,22 @@ public enum LiveTalkTile: Hashable, Sendable {
     /// The tile's symbol.
     public var symbol: String {
         switch self {
-        case .ready: return "mic.fill"
+        case .continueConversation: return "arrow.uturn.forward"
+        case .newConversation: return "plus.circle"
         case .connecting: return "waveform"
         case .inCall: return "waveform"
         case .retrying: return "arrow.triangle.2.circlepath"
         case .unavailable: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    /// The choice this tile makes. Nil for a tile reporting on one already made: tapping it asks
+    /// for the same thing again.
+    public var choice: CarLiveChoice? {
+        switch self {
+        case .continueConversation: return .continueOpen
+        case .newConversation: return .startNew
+        case .connecting, .inCall, .retrying, .unavailable: return nil
         }
     }
 }

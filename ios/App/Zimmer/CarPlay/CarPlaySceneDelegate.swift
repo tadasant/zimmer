@@ -9,15 +9,16 @@ import os
 /// `CarPlayNavigator`, tested on Linux); the screens are `CarPlayHome` and `CarPlayLive`. This is
 /// the wiring.
 ///
-/// Radically simple: open the app, talk to Zimmer, mute, end. One root screen with one button,
-/// and one call screen that goes up when the call starts and down when it ends. Everything else
+/// Radically simple: open the app, talk to Zimmer, mute, end. One root screen where the driver
+/// continues the conversation or starts a new one, and one call screen that goes up when the
+/// call starts and down when it ends. Everything else
 /// — what needs you, what is running, acting on a session — is the Live Mode conversation's,
 /// over the Realtime call, which is the car's only voice. The one exception is the gear on the
 /// call screen: the voice settings, by touch, because a call that has stopped working cannot be
 /// asked to fix itself (`CarPlayVoiceSettings`).
 ///
-/// Silent until asked. The car opens on the button and says nothing; the call starts only when
-/// the driver taps it.
+/// Silent until asked. The car opens on its tiles and says nothing; the call starts only when
+/// the driver taps one.
 ///
 /// CarPlay connects the scene declared in Info.plist only in a build that signs in the
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
@@ -42,16 +43,16 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         interfaceController.delegate = self
 
         let home = CarPlayHome()
-        home.onTalk = { [weak self] in self?.live?.start() }
+        home.onTap = { [weak self] tile in self?.live?.start(tile) }
         self.home = home
 
         let live = CarPlayLive(interfaceController: interfaceController)
         live.onChange = { [weak self] in
             guard let self, let live = self.live else { return }
-            self.home?.talkTile = live.tile
+            self.home?.tiles = live.tiles
         }
         self.live = live
-        home.talkTile = live.tile
+        home.tiles = live.tiles
 
         Task { [weak self, log] in
             do {
@@ -64,6 +65,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             // A call already running (started on the phone) is the conversation: show it.
             guard let self, self.live === live else { return }
             live.showIfActive()
+            live.readWhatIsOpen()
         }
     }
 
