@@ -452,6 +452,13 @@ fallback, and it is what the title is derived from when there is no transcript y
 page-context block runs to 50,000 characters, so the composed prompt would have been all block and
 no ask.
 
+The transcript goes to the model fenced off as data, and the answer has to look like a title. More
+than 10 words, an ending like a sentence's, or several lines with no `TITLE:` label all count as
+the model talking rather than answering, and the job takes the fallback instead. That is a check on
+shape, not on wording, so a short refusal with no punctuation can still pass. On a trigger session
+the fallback is the first sentence of the template, so every session from one Slack trigger with a
+thin transcript gets the same title, such as "There is a new message in Slack, channel alerts".
+
 The slug is derived from the title at the moment the title is *first* applied, and
 `generate_slug_from_title!` returns early once a slug exists, so a title changed later leaves the
 original slug behind. Falling back to `prompt` therefore named every chat-bubble session

@@ -86,9 +86,53 @@ class NativeClaudePrintRunnerTest < ActiveSupport::TestCase
 
     assert_equal "a title\n", result.text
     assert_nil result.usage
-    assert_equal [ "/fake/claude", "--dangerously-skip-permissions", "--model", "haiku", "-p", "name this" ],
+    assert_equal [ "/fake/claude", *ClaudePrintRunner::TEXT_ONLY_ARGS, "--model", "haiku", "-p", "name this" ],
       @pm.spawned_processes.first[:command]
     assert_empty @pm.killed_processes, "a child that completes on time is never signalled"
+  end
+
+  # The prompts here carry transcripts, so a child that could act would act on
+  # whatever a Slack message or an email told it to. `--tools ""` is not enough on
+  # its own: measured against the real CLI, MCP tools and hooks both survive it.
+  test "runs the child as a text completion" do
+    write_output_on_spawn("a title\n")
+
+    build_runner.run(prompt: "name this", timeout: 5)
+
+    command = @pm.spawned_processes.first[:command]
+    assert_equal "", command[command.index("--tools") + 1]
+    assert_equal "", command[command.index("--setting-sources") + 1]
+    assert_includes command, "--strict-mcp-config"
+    assert_includes command, "--disable-slash-commands"
+    refute_includes command, "--dangerously-skip-permissions"
+    refute_includes command, "--allow-dangerously-skip-permissions"
+  end
+
+  # These transcripts are how TokenUsageIngestionService accounts for this spend.
+  test "leaves session persistence on" do
+    write_output_on_spawn("a title\n")
+
+    build_runner.run(prompt: "name this", timeout: 5)
+
+    refute_includes @pm.spawned_processes.first[:command], "--no-session-persistence"
+  end
+
+  # The mock process manager proves the argv array, and this proves what a real
+  # child receives: an empty-string argument is the whole of `--tools ""`, and a
+  # spawn that dropped it would turn `--tools` into something else.
+  test "a real child receives the empty arguments intact" do
+    binary = File.join(@config_base, "print-argv")
+    File.write(binary, "#!/bin/sh\nfor arg in \"$@\"; do printf '[%s]\\n' \"$arg\"; done\n")
+    File.chmod(0o755, binary)
+    runner = NativeClaudePrintRunner.new(claude_binary: binary, model: "haiku", logger: @logger)
+
+    result = runner.run(prompt: "name this", timeout: 5)
+
+    assert_equal(
+      [ "[--tools]", "[]", "[--strict-mcp-config]", "[--setting-sources]", "[]", "[--disable-slash-commands]",
+        "[--model]", "[haiku]", "[-p]", "[name this]" ],
+      result.text.lines.map(&:chomp)
+    )
   end
 
   # Print-mode inference has no Zimmer session, so it used to inherit the

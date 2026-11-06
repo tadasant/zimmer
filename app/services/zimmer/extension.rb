@@ -118,6 +118,10 @@ module Zimmer
     # Receives the same construction kwargs ClaudePrintRunner.build would pass a
     # backend; unknown kwargs should be ignored.
     #
+    # The runner must also answer #text_only? with true, which is its promise that
+    # it runs with the equivalent of ClaudePrintRunner::TEXT_ONLY_ARGS. Without it
+    # ClaudePrintRunner.build logs a warning and uses the native backend.
+    #
     # @return [#run, nil]
     def print_runner_backend(claude_binary:, model:, process_manager:, logger:)
       nil

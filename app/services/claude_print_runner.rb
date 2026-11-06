@@ -20,6 +20,12 @@
 # resolved through Zimmer::ExtensionRegistry, this module names no concrete
 # extension: with the PTY extension removed, every call falls back to native.
 #
+# Every call here is a text completion, never an agent. The prompts carry
+# transcripts and last messages, and those hold text from outside the circle of
+# trust: Slack messages, inbound email, GitHub comments. So a backend runs with no
+# tools and none of the user's or project's configuration (TEXT_ONLY_ARGS), and
+# #build refuses an extension backend that does not declare it does the same.
+#
 # Scope note: this seam governs print-mode inference only. Interactive
 # agent-session execution (a long-lived process that streams a transcript over
 # time and supports resume / follow-up / MCP / image input) is a structurally
@@ -45,6 +51,28 @@ module ClaudePrintRunner
     def failed? = !exit_status.nil? && !exit_status.zero?
   end
 
+  # What makes a `claude` invocation a text completion. Each flag closes something
+  # the others leave open, measured against CLI 2.1.318:
+  #
+  #   --tools ""                  no built-in tools. MCP tools survive this flag.
+  #   --strict-mcp-config         no MCP server from any config file.
+  #   --setting-sources ""        no user, project or local settings, so no hooks,
+  #                               no CLAUDE.md and no plugins. Managed settings
+  #                               still apply.
+  #   --disable-slash-commands    a prompt cannot open a skill or command.
+  #
+  # `--dangerously-skip-permissions` stays out on purpose. Nothing here can prompt,
+  # and if a future CLI hands the model a tool anyway, the call should be denied.
+  #
+  # `--no-session-persistence` stays out too: TokenUsageIngestionService reads these
+  # calls' transcripts to account for their spend.
+  TEXT_ONLY_ARGS = [
+    "--tools", "",
+    "--strict-mcp-config",
+    "--setting-sources", "",
+    "--disable-slash-commands"
+  ].freeze
+
   module_function
 
   # Build the runner for the current configuration. This is the single point at
@@ -60,16 +88,31 @@ module ClaudePrintRunner
   #   (considering all extensions, ignoring enablement); `false` forces the
   #   native backend; nil consults the enabled extensions. For tests/diagnostics.
   # @param logger [Logger]
-  # @return [#run] a runner responding to run(prompt:, timeout:) -> Result
+  # @return [#run] a runner responding to run(prompt:, timeout:) -> Result. An
+  #   extension backend that does not declare #text_only? is replaced by native.
   def build(claude_binary: "claude", model: nil, process_manager: nil, pty_override: nil, logger: Rails.logger)
     backend = extension_backend(
       claude_binary: claude_binary, model: model,
       process_manager: process_manager, logger: logger, override: pty_override
     )
-    backend || NativeClaudePrintRunner.new(
+    return backend if backend && text_only?(backend)
+
+    if backend
+      logger.warn "[ClaudePrintRunner] #{backend.class} does not declare #text_only?; using the native backend"
+    end
+
+    NativeClaudePrintRunner.new(
       claude_binary: claude_binary, model: model,
       process_manager: process_manager, logger: logger
     )
+  end
+
+  # Whether a backend has declared that it runs with the equivalent of
+  # TEXT_ONLY_ARGS. An extension backend is code this repository may not hold, so
+  # silence reads as "no": the failure is a cost (no `usage`), not a model with
+  # tools reading untrusted text. `pty_override: true` does not skip this.
+  def text_only?(backend)
+    backend.respond_to?(:text_only?) && backend.text_only? == true
   end
 
   # Whether an extension backend is active for print inference. An explicit
