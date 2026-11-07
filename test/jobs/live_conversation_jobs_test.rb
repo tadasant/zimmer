@@ -132,4 +132,64 @@ class LiveConversationJobsTest < ActiveJob::TestCase
 
     assert_equal "Back.", conversation.turns.last.content
   end
+
+  test "refresh brings an active conversation's instructions and tool lists up to the catalog" do
+    stub_live_root
+    conversation = create_live_conversation(instructions_source: "old")
+    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "# New", source: "new", modes: {}))
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true)
+
+    assert_equal "# New", conversation.reload.instructions
+    assert_equal "new", conversation.instructions_source
+    assert conversation.active?
+  end
+
+  test "a refresh that cannot read the root changes nothing: a conversation that just came back keeps working" do
+    stub_live_root
+    conversation = create_live_conversation
+    LiveConversations::RootInstructions.stubs(:fetch).raises(LiveConversations::RootInstructions::Error, "unreachable")
+    ErrorReporter.stubs(:report_exception)
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true)
+
+    assert conversation.reload.active?
+    assert_equal "# Live\nBe brief.", conversation.instructions
+  end
+
+  test "a refresh of a conversation no longer active does nothing" do
+    conversation = create_live_conversation(status: LiveConversation::ENDED)
+    LiveConversations::RootInstructions.expects(:fetch).never
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true)
+  end
+
+  test "a conversation left while it was preparing stays ended, and can be gone back to" do
+    stub_live_root
+    conversation = create_live_conversation(status: LiveConversation::PREPARING, instructions: nil)
+    LiveConversations::RootInstructions.stubs(:fetch).with do
+      LiveConversation.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      create_live_conversation
+      true
+    end.returns(LiveConversations::RootInstructions::Result.new(text: "# New", source: "new", modes: {}))
+
+    LiveConversationPrepareJob.perform_now(conversation.id)
+
+    assert conversation.reload.ended?
+    assert_nil conversation.error_message
+    assert conversation.reopenable?
+  end
+
+  test "a read that fails after the conversation was left does not fail it" do
+    stub_live_root
+    conversation = create_live_conversation(status: LiveConversation::PREPARING, instructions: nil)
+    LiveConversations::RootInstructions.stubs(:fetch).with do
+      LiveConversation.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      true
+    end.raises(LiveConversations::RootInstructions::Error, "unreachable")
+
+    LiveConversationPrepareJob.perform_now(conversation.id)
+
+    assert conversation.reload.ended?
+  end
 end

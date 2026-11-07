@@ -14,6 +14,9 @@ class LiveController < ApplicationController
   end
 
   def show
+    # What the call dock polls, to follow a switch made somewhere else.
+    return render(json: LiveConversation.current.then { |current| { current_id: current&.id, voice: current&.voice? } }) if request.format.json?
+
     @availability = LiveConversations::Availability.current
     current = LiveConversation.current
     return redirect_to(live_conversation_path(current)) if current && params[:start].blank?

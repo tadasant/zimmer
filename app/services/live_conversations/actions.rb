@@ -31,8 +31,12 @@ module LiveConversations
     #   hangs up, on the phone too (`LiveConversation#car_call`): the person
     #   carrying on from the car was never told the rules changed, so a gate
     #   arriving with the hand-over would look like a call that went deaf.
-    def initialize(conversation, client_surface: nil, listening_modes: false)
+    # @param reattaches [Boolean] whether the client can move its call to another
+    #   conversation when a tool call answers `switched_to`. One that cannot is
+    #   refused the switch rather than left talking on a conversation that ended.
+    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false)
       @conversation = conversation
+      @reattaches = reattaches
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
       @listening_modes = listening_modes
     end
@@ -98,9 +102,13 @@ module LiveConversations
       raise Refused, "call_id is required." if call_id.blank?
 
       note_client!
-      bridge = ToolBridge.new(@conversation)
+      bridge = ToolBridge.new(@conversation, can_reattach: @reattaches)
       result = bridge.execute(name, arguments, call_id: call_id)
       response = { output: result.output, error: result.error, tools_changed: result.tools_changed, turn_id: result.turn.id }
+      # Nothing more goes down this socket: the client reconnects onto the
+      # conversation this names, with its own instructions and tools.
+      return response.merge(switched_to: { id: result.switched_to.id, title: result.switched_to.spoken_title }) if result.switched_to
+
       response[:tools] = ToolBridge.new(@conversation.reload).realtime_tools if result.tools_changed
       # The live model changed its own settings: hand the client the
       # `session.update` that applies them to the call it is on.

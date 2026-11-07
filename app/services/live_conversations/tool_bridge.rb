@@ -28,6 +28,14 @@ module LiveConversations
   #    history as this conversation's, and its tool turn shows on the page as a
   #    settings change; a voice client is handed a `session.update` for it.
   #
+  # 5. **Other conversations** — `list_live_conversations` and
+  #    `switch_live_conversation`, so "go back to my last conversation" works by
+  #    speech alone. Always present, like the settings: a conversation with no
+  #    Zimmer server can still leave, and `action_live_conversation` is withheld
+  #    from the gateway below. Neither ends the thread for good: a switch can be
+  #    undone with another. A call relayed by a voice client answers with
+  #    `switched_to`, and the client reconnects onto that conversation.
+  #
   # Every call is recorded as a `tool` turn on the conversation.
   class ToolBridge
     ZIMMER_TOOL = "zimmer"
@@ -37,6 +45,10 @@ module LiveConversations
     DISABLE_SERVER = "disable_mcp_server"
     GET_SETTINGS = "get_live_settings"
     UPDATE_SETTINGS = "update_live_settings"
+    LIST_CONVERSATIONS = "list_live_conversations"
+    SWITCH_CONVERSATION = "switch_live_conversation"
+    # Few, because they are read aloud to someone who cannot look at a list.
+    LISTED_CONVERSATIONS = 3
     # Settings the live model may not change itself: how much the app reports
     # about calls is for whoever reads the trace, not for the call. The voice
     # output cap cuts a response off wherever it lands, and it counts the tool
@@ -62,14 +74,23 @@ module LiveConversations
                            "Call it again with complete arguments, or tell the person it did not work."
 
     Function = Data.define(:name, :description, :parameters)
+    # Said to the model on a call whose app predates reattaching: it would carry
+    # on talking on the conversation it had just ended.
+    CANNOT_REATTACH = "Nothing changed: this app cannot move a call to another conversation. Tell the person to update " \
+                      "the app, or to hang up and go back to that conversation from the Live list."
+
     # `session_changed`: the call changed a setting an open voice call can take
     # mid-call, so the client should send a fresh `session.update`.
-    Result = Data.define(:turn, :output, :error, :tools_changed, :session_changed)
+    # `switched_to`: the call moved Live Mode to this conversation.
+    Result = Data.define(:turn, :output, :error, :tools_changed, :session_changed, :switched_to)
 
     class ToolFailure < StandardError; end
 
-    def initialize(conversation)
+    # @param can_reattach [Boolean] whether the client relaying these calls can
+    #   move its call to another conversation. A typed reply has no call to move.
+    def initialize(conversation, can_reattach: true)
       @conversation = conversation
+      @can_reattach = can_reattach
     end
 
     # @return [Array<Function>]
@@ -78,6 +99,7 @@ module LiveConversations
       list.concat(zimmer_functions) if zimmer_tools.any?
       list.concat(server_functions)
       list.concat(settings_functions)
+      list.concat(conversation_functions)
       list.concat(direct_functions.map(&:first))
       list
     end
@@ -101,6 +123,7 @@ module LiveConversations
     def execute(name, arguments, call_id:)
       args = nil
       @session_changed = false
+      @switched_to = nil
       begin
         args = parse_arguments(arguments)
         output, error, tools_changed = dispatch(name.to_s, args)
@@ -123,7 +146,7 @@ module LiveConversations
       )
       @conversation.touch_activity!
       Result.new(turn: turn, output: turn.model_output, error: turn.tool_error, tools_changed: tools_changed ? true : false,
-                 session_changed: @session_changed && !turn.tool_error)
+                 session_changed: @session_changed && !turn.tool_error, switched_to: @switched_to)
     end
 
     private
@@ -154,6 +177,8 @@ module LiveConversations
       when DISABLE_SERVER then [ disable_server(args), false, true ]
       when GET_SETTINGS then [ settings_listing, false, false ]
       when UPDATE_SETTINGS then [ update_settings(args), false, false ]
+      when LIST_CONVERSATIONS then [ conversation_listing, false, false ]
+      when SWITCH_CONVERSATION then [ switch_conversation(args), false, false ]
       else
         server_name, tool_name = direct_lookup[name]
         raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
@@ -450,6 +475,55 @@ module LiveConversations
       return "Nothing changed: those are already the settings." if result.no_effect.empty?
 
       "Nothing changed: those are already the settings.\n#{result.no_effect_note}#{SAY_NO_EFFECT}"
+    end
+
+    # --- Other conversations ---------------------------------------------------
+
+    def conversation_functions
+      [
+        Function.new(
+          name: LIST_CONVERSATIONS,
+          description: "List the conversations the person could go back to, newest first, a few at most, each with a " \
+                       "short name to say aloud. Only when they ask which ones there are or you cannot tell which they mean.",
+          parameters: { type: "object", properties: {} }
+        ),
+        Function.new(
+          name: SWITCH_CONVERSATION,
+          description: "Leave this conversation and go back to an earlier one, with its history and its servers. Leave " \
+                       "\"id\" out for the one they were in last, which is what \"go back\" means; you need no list for " \
+                       "that. This conversation ends but can be gone back to the same way, so do not ask them to confirm. " \
+                       "Only when they ask: never to tidy up.",
+          parameters: {
+            type: "object",
+            properties: { id: { type: "number", description: "From #{LIST_CONVERSATIONS}. Omit for the last one." } }
+          }
+        )
+      ]
+    end
+
+    def conversation_listing
+      conversations = LiveConversation.to_go_back_to.limit(LISTED_CONVERSATIONS).to_a
+      return "There is no earlier conversation to go back to." if conversations.empty?
+
+      lines = conversations.map do |conversation|
+        "- id #{conversation.id}: \"#{conversation.spoken_title}\", #{time_ago_in_words(conversation.ended_at)} ago"
+      end
+      "Say these names, not the ids.\n#{lines.join("\n")}"
+    end
+
+    def time_ago_in_words(time) = ActionController::Base.helpers.time_ago_in_words(time || Time.current)
+
+    def switch_conversation(args)
+      raise ToolFailure, CANNOT_REATTACH unless @can_reattach
+
+      outcome = Switch.call(args["id"], from_id: @conversation.id, client_surface: @conversation.client_surface)
+      name = outcome.conversation.spoken_title
+      return "You are already in \"#{name}\"." unless outcome.moved
+
+      @switched_to = outcome.conversation
+      "Switched to \"#{name}\". This conversation has ended and can be gone back to."
+    rescue Actions::Refused => e
+      raise ToolFailure, e.message
     end
 
     # --- Direct tools ----------------------------------------------------------

@@ -227,4 +227,48 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   ensure
     original.each { |key, value| ENV[key] = value }
   end
+
+  test "an ended conversation offers to go back, and going back makes it current" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    old.turns.create!(role: "user", source: "typed", content: "Is main green right now")
+    current = create_live_conversation
+
+    get live_conversation_path(old)
+    assert_select "form[action=?]", reopen_live_conversation_path(old)
+    assert_select "input[name=from_id][value=?]", current.id.to_s
+    assert_select "[data-live-moved] a[href=?]", live_conversation_path(current)
+
+    post reopen_live_conversation_path(old), params: { from_id: current.id }
+
+    assert_redirected_to live_conversation_path(old)
+    assert old.reload.active?
+    assert current.reload.ended?
+  end
+
+  test "a stale Go back is refused with the reason" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    current = create_live_conversation
+
+    post reopen_live_conversation_path(old), params: { from_id: current.id + 1 }
+
+    assert_redirected_to live_conversation_path(old)
+    assert_match(/changed/, flash[:alert])
+    assert current.reload.active?
+  end
+
+  test "a failed conversation offers no way back, and the open one needs none" do
+    failed = create_live_conversation(status: LiveConversation::FAILED)
+    get live_conversation_path(failed)
+    assert_select "form[action=?]", reopen_live_conversation_path(failed), count: 0
+  end
+
+  test "the dock can ask which conversation is current" do
+    current = create_live_conversation
+
+    get "/live/current.json"
+
+    assert_response :success
+    assert_equal current.id, response.parsed_body["current_id"]
+    assert_equal false, response.parsed_body["voice"]
+  end
 end

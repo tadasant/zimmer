@@ -15,7 +15,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-realtime-2.1-mini", minted[:model]
     assert_equal "https://api.openai.com/v1/realtime/calls", minted[:calls_url]
     assert_equal "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini", minted[:websocket_url]
-    assert_equal minted[:tools].map { |t| t[:name] }, %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings]
+    assert_equal minted[:tools].map { |t| t[:name] }, %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation]
 
     body = client.secret_requests.sole
     assert_equal({ "anchor" => "created_at", "seconds" => 600 }, body["expires_after"])

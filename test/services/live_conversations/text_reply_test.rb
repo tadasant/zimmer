@@ -123,4 +123,36 @@ class LiveConversations::TextReplyTest < ActiveSupport::TestCase
     assert_equal "Hello.", @conversation.turns.last.content
     assert_match(/ran on the defaults/, @conversation.reload.error_message)
   end
+
+  test "left for another conversation mid-reply: the answer in hand is kept and no more tools run" do
+    conversation = @conversation
+    conversation.turns.create!(role: "user", source: "typed", content: "Check on it")
+    client = LiveConversationHelpers::FakeOpenai.new(chat_responses: [ LiveConversationHelpers::FakeOpenai.calls([ "list_mcp_servers", {} ]) ])
+    client.define_singleton_method(:chat_completion) do |body|
+      conversation.class.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      super(body)
+    end
+
+    LiveConversations::TextReply.call(conversation, client: client)
+
+    assert_equal 1, client.chat_requests.size
+    assert_empty conversation.turns.where(role: "tool")
+  end
+
+  test "a typed reply that switches stops there, and writes nothing more on the thread it left" do
+    stub_live_root
+    stub_live_key
+    other = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    other.turns.create!(role: "user", source: "typed", content: "The older thread here")
+    other.turns.create!(role: "assistant", content: "Yes.")
+    conversation = @conversation
+    conversation.turns.create!(role: "user", source: "typed", content: "Go back to the other one")
+    client = LiveConversationHelpers::FakeOpenai.new(chat_responses: [ LiveConversationHelpers::FakeOpenai.calls([ "switch_live_conversation", {} ]) ])
+
+    LiveConversations::TextReply.call(conversation, client: client)
+
+    assert_equal other, LiveConversation.current
+    assert_equal "tool", conversation.turns.reorder(id: :desc).first.role
+    assert_equal 1, client.chat_requests.size
+  end
 end

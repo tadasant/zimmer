@@ -551,7 +551,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   instead* turns voice off in the same thread. *New conversation* on the thread's toolbar, then
   its confirmation, starts a fresh one in the thread's mode. Back leads to the Live list: whether
   Live Mode can start (and why not), *Resume conversation* for the open one, *New conversation*,
-  and the recent ones. When Live Mode cannot start and nothing is open, the button stops on that
+  and the recent ones. An ended thread has *Go back to this conversation*, which makes it current,
+  ending the open one and bringing a call up on that one with it. A thread the call has left, or
+  one that ended elsewhere with another conversation current, moves to the current one by itself. When Live Mode cannot start and nothing is open, the button stops on that
   list, where the reason shows. A conversation is one thread: typed and spoken
   lines, each tool call as a line that opens to its output (`zimmer → quick_router`), read again
   every two seconds. Typed, it has a composer with *Enable voice* beside it. With voice on, it has
@@ -747,7 +749,9 @@ notes, no call starts, and the tiles come down to New. While the call runs the s
 template. Its picture and title follow the call (Connecting…, Listening, Speaking, Working on
 it…), or say **Muted** while the microphone is off. Its two buttons are **Mute** and **End**. A call
 already running when the car connects is shown at once. There are no tabs, counts, session cards or
-per-session buttons.
+per-session buttons. Going back to an earlier conversation is done by saying so: the call stays on
+that one screen, reads Connecting… while it reconnects, and the model says where it picked up
+([Going back to a conversation](/sessions/live/#going-back-to-a-conversation)).
 
 **Unplug with a call up and the phone goes to it.** The call carries on, and the phone lands on its
 Live thread, with Mute and Hang up, about three seconds later if the app is open, or the next time it

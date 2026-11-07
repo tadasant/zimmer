@@ -15,7 +15,7 @@ module Mcp
       description <<~DESC
         Read Live Mode conversations: one continuous thread between the human and a fast OpenAI model that hands slow work to background sessions. A conversation is typed or spoken (voice on) at any moment and can switch mid-thread.
 
-        - No "id": whether Live Mode can start (and why not), the current conversation, and the most recent conversations.
+        - No "id": whether Live Mode can start (and why not), the current conversation, the one "go back" would return to, and the most recent conversations, each with a short name to say aloud.
         - With "id": that conversation's details, the sessions its tool calls have touched (newest first), and its newest turns — what was said, and every tool call it made with its output. Pass "after_turn_id" to read only turns newer than one you have seen.
       DESC
 
@@ -37,20 +37,22 @@ module Mcp
       def list
         availability = LiveConversations::Availability.current
         current = LiveConversation.current
+        previous = LiveConversation.previous
         lines = [
           "## #{LiveConversations::LABEL}",
           "",
           "- **State:** #{availability.available? ? 'available' : "off — #{availability.reasons.join(' ')}"}",
           "- **Agent root:** `#{LiveConversations::AGENT_ROOT}`",
           "- **Models:** #{LiveConversations::MODES.values.map { |mode| "#{mode.key} `#{mode.model}`" }.join(', ')}",
-          "- **Current conversation:** #{current ? "##{current.id} (#{current.status}, #{current.live_mode.label.downcase})" : 'none'}"
+          "- **Current conversation:** #{current ? "##{current.id} (#{current.status}, #{current.live_mode.label.downcase})" : 'none'}",
+          "- **Going back would return to:** #{previous ? "##{previous.id} \"#{previous.spoken_title}\"" : 'nothing'}"
         ]
 
         scope = LiveConversation.recent_first.limit(LIST_LIMIT)
         lines += [ "", "## Recent conversations", "" ]
         lines << "None yet." if scope.empty?
         scope.each do |conversation|
-          lines << "- ##{conversation.id} #{conversation.display_title} (#{conversation.live_mode.label.downcase}) — #{conversation.status}, #{conversation.turns.size} turns, " \
+          lines << "- ##{conversation.id} \"#{conversation.spoken_title}\" (#{conversation.live_mode.label.downcase}) — #{conversation.status}, #{conversation.turns.size} turns, " \
                    "last activity #{conversation.last_activity_at&.iso8601 || 'never'} — #{context.base_url}/live_conversations/#{conversation.id}"
         end
         lines.join("\n")

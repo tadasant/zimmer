@@ -4,7 +4,8 @@
     session will accept. The buttons live on the page around it.
 
     Locals: conversation %>
-<div id="<%= conversation.header_dom_id %>" data-live-conversation-status="<%= conversation.status %>" data-live-conversation-mode="<%= conversation.mode %>" class="bg-white shadow-sm rounded-lg border border-gray-200 p-4">
+<% current = conversation.open? ? nil : LiveConversation.current %>
+<div id="<%= conversation.header_dom_id %>" data-live-conversation-status="<%= conversation.status %>" data-live-conversation-mode="<%= conversation.mode %>" data-live-current-id="<%= current&.id %>" class="bg-white shadow-sm rounded-lg border border-gray-200 p-4">
   <div class="flex items-start justify-between gap-3">
     <div class="min-w-0">
       <div class="flex items-center gap-2">
@@ -41,13 +42,16 @@
     <% end %>
   </div>
 
+  <% if current %>
+    <p class="mt-3 text-sm text-gray-600 break-words" data-live-moved>This conversation has ended. The current one is <%= link_to current.spoken_title, live_conversation_path(current), class: "text-indigo-700 underline" %>.</p>
+  <% end %>
   <% if conversation.preparing? %>
     <p class="mt-3 text-sm text-yellow-800" data-live-preparing>Reading <code class="font-mono"><%= conversation.agent_root %></code>'s AGENTS.md…</p>
   <% end %>
   <% if conversation.error_message.present? %>
     <p class="mt-3 text-sm <%= conversation.failed? ? 'text-red-700' : 'text-orange-700' %> break-words" data-live-error><%= conversation.error_message %></p>
   <% end %>
-  <% if conversation.text? && conversation.responding? %>
+  <% if conversation.open? && conversation.text? && conversation.responding? %>
     <p class="mt-3 text-sm text-gray-500 animate-pulse" data-live-responding>Thinking…</p>
   <% end %>
 </div>

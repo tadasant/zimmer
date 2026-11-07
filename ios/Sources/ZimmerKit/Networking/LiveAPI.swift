@@ -15,6 +15,10 @@ public protocol LiveAPI: Sendable {
     func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
     /// Start a fresh conversation, typed or spoken from the start, ending the open one.
     func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation
+    /// Go back to an earlier conversation, ending the open one; `nil` is the one left most
+    /// recently. `from` is the conversation this screen believes is current, 0 for none: another
+    /// having taken over since is refused (409). The target already being current changes nothing.
+    func switchLiveConversation(_ id: Int?, from: Int?) async throws -> LiveSwitch
     func finishLiveConversation(_ id: Int) async throws -> LiveConversation
     /// Typed ⇄ spoken, in the same conversation. Voice must be on before a call can mint its
     /// secret; typing waits for it to be off.
@@ -84,6 +88,13 @@ extension ZimmerHTTPClient {
         try await post("/api/v1/live_conversations", json: ["mode": mode.rawValue])
     }
 
+    public func switchLiveConversation(_ id: Int?, from: Int?) async throws -> LiveSwitch {
+        var body: [String: Any] = [:]
+        if let id { body["id"] = id }
+        if let from { body["from_id"] = from }
+        return try await post("/api/v1/live_conversations/switch", json: body)
+    }
+
     public func finishLiveConversation(_ id: Int) async throws -> LiveConversation {
         try await post("/api/v1/live_conversations/\(id)/finish", json: [:])
     }
@@ -106,7 +117,7 @@ extension ZimmerHTTPClient {
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         try await post("/api/v1/live_conversations/\(id)/tool_calls",
-                       json: ["name": name, "arguments": arguments, "call_id": callID].merging(Self.listeningModes) { $1 })
+                       json: ["name": name, "arguments": arguments, "call_id": callID, "reattaches": "1"].merging(Self.listeningModes) { $1 })
     }
 
     public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard {

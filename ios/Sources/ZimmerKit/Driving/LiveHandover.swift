@@ -9,6 +9,7 @@ import Foundation
 /// - **It follows the audio.** A route is armed by a call that is up when the car goes, which is
 ///   exactly the call that carries on: Connecting… included, a retry or a call that has just
 ///   ended (the gear's included) not, because neither has a call left to go to.
+///   A call that moves to another conversation is the same call, so the route moves with it.
 /// - **It waits out a blip.** CarPlay drops with the car moving, through a cable or a Bluetooth
 ///   flap, so nothing moves until the car has been gone for `settle`. The car coming back forgets
 ///   the route, so a flap leaves the phone where it was and no route armed.
@@ -68,6 +69,12 @@ public struct LiveHandover: Sendable, Equatable {
 
     public mutating func callEnded() {
         route = nil
+    }
+
+    /// The call moved to another conversation (`LiveCall.reattach`): the audio carries on there, so
+    /// that is where the phone goes. The settle still counts from when the car left.
+    public mutating func callMoved(to conversation: Int) {
+        route = route.map { Route(conversation: conversation, leftAt: $0.leftAt) }
     }
 
     /// The person chose something else: opened a session, followed a link, closed Live.

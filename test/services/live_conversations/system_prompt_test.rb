@@ -70,4 +70,15 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     conversation.update_column(:client_surface, "ios")
     assert_not_includes LiveConversations::SystemPrompt.build(conversation.reload), "is CarPlay"
   end
+
+  test "says how to go back, and a call's recap names the sessions the thread touched" do
+    conversation = create_live_conversation(mode: "voice")
+    conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c1", tool_arguments: { "tool" => "quick_router" }, tool_output: "Started session #1101")
+
+    prompt = LiveConversations::SystemPrompt.build(conversation, recap: true)
+
+    assert_includes prompt, "`switch_live_conversation`"
+    assert_includes prompt, "#1101"
+    assert_not_includes LiveConversations::SystemPrompt.build(conversation), "## Sessions this conversation has touched"
+  end
 end

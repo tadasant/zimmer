@@ -24,6 +24,19 @@ final class LiveHandoverTests: XCTestCase {
         XCTAssertEqual(step(&handover, after: settled), .land(21))
     }
 
+    func testACallThatMovesConversationAfterTheCarWentLandsWhereTheCallIsNow() {
+        var handover = armed()
+        handover.callMoved(to: 30)
+        XCTAssertEqual(step(&handover, call: 30, after: settled - 1), .wait, "the settle still counts from when the car left")
+        XCTAssertEqual(step(&handover, call: 30, after: settled), .land(30))
+    }
+
+    func testACallMovingWithNoRouteArmsNothing() {
+        var handover = LiveHandover()
+        handover.callMoved(to: 30)
+        XCTAssertNil(handover.route)
+    }
+
     func testNoCallWhenTheCarGoesArmsNothing_aRetryOrACallTheGearOrTheDriverEnded() {
         var handover = LiveHandover()
         // The gear's hang-up, a failed call waiting on its retry and an End all leave `conversationID`
