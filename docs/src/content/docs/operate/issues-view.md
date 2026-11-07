@@ -63,8 +63,10 @@ counted. See [the limitation](/limitations/#stranded-reads-outside-the-issues-vi
 Each stranded row whose evidence the sweep has read carries a **Hold** form under its verdict: type
 the decision owed and the row moves to **Awaiting your decision**. That section lists stranded rows a
 person or an agent held because what remains is a human's call, with the reason and the date the
-hold lapses, soonest first. A held row does not page. When its hold lapses, or the sweep reads new
-evidence on it, it goes back to Stranded. See [Held for a human
+hold lapses, soonest first. A held row does not page, and a push carries it to you every week until
+you answer it. Each push that reaches a device moves that date out. If the pushes stop reaching
+anyone the hold lapses, and it goes back to Stranded and pages. So it does if the sweep reads new
+evidence on it. See [Held for a human
 decision](/operate/work-backlog/#held-for-a-human-decision).
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —
