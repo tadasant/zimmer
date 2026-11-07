@@ -224,6 +224,7 @@ Rails.application.routes.draw do
       # What the iOS app's voice calls did, onto the shipped logs (Telemetry).
       post "live/telemetry", to: "live_telemetry#create"
       resources :live_conversations, only: [ :index, :show, :create ] do
+        post :switch, on: :collection
         member do
           get :sessions
           post :finish
@@ -598,6 +599,7 @@ Rails.application.routes.draw do
   get "live/:mode", to: redirect("/live/current"), constraints: { mode: /text|voice/ }
   resources :live_conversations, only: [ :show, :create ] do
     member do
+      post :reopen
       post :finish
       post :mode
       post :messages

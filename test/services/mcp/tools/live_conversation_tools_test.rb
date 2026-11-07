@@ -99,4 +99,37 @@ class Mcp::Tools::LiveConversationToolsTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) { @action.call("action" => "set_mode", "id" => conversation.id, "mode" => "video") }
     assert_match(/mode must be one of/, error.message)
   end
+
+  test "switch goes back, with no id to the last one, and says what ended" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago, mode: "voice")
+    old.turns.create!(role: "user", source: "spoken", content: "Deploy the fix to staging")
+    current = create_live_conversation
+
+    output = @action.call("action" => "switch")
+
+    assert_includes output, "Back in live conversation ##{old.id}"
+    assert_includes output, "**Ended:** ##{current.id}"
+    assert_equal old, LiveConversation.current
+    assert_equal "mcp", old.reload.client_surface
+  end
+
+  test "switch to the current conversation is a no-op and a stale from_id or a failed target is a refusal" do
+    current = create_live_conversation
+    failed = create_live_conversation(status: LiveConversation::FAILED)
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+
+    assert_includes @action.call("action" => "switch", "id" => current.id), "Nothing changed"
+    assert_raises(Mcp::ToolError) { @action.call("action" => "switch", "id" => failed.id) }
+    assert_raises(Mcp::ToolError) { @action.call("action" => "switch", "id" => old.id, "from_id" => old.id + 1) }
+    assert_equal current, LiveConversation.current
+  end
+
+  test "the list says what going back would return to, by a name fit to say" do
+    old = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    old.turns.create!(role: "user", source: "typed", content: "Is the poller test still failing on main")
+
+    output = @get.call({})
+
+    assert_includes output, "**Going back would return to:** ##{old.id} \"Is the poller test still failing…\""
+  end
 end

@@ -21,6 +21,15 @@ class LiveConversationsController < ApplicationController
     redirect_to live_path, alert: "Unknown live mode."
   end
 
+  # Go back to this conversation. `from_id` is the one the page was showing as
+  # current: another having taken over since is refused rather than ended unseen.
+  def reopen
+    LiveConversations::Switch.call(@conversation.id, from_id: params[:from_id], client_surface: "web")
+    redirect_to live_conversation_path(@conversation)
+  rescue LiveConversations::Actions::Refused => e
+    redirect_to live_conversation_path(@conversation), alert: e.message
+  end
+
   def mode
     actions.switch_mode(params[:mode].to_s)
     respond_to do |format|
@@ -90,6 +99,10 @@ class LiveConversationsController < ApplicationController
     @conversation = LiveConversation.find(params[:id])
   end
 
-  # `listening_modes`: the dock asks for each reply itself when Listening is gated.
-  def actions = LiveConversations::Actions.new(@conversation, client_surface: "web", listening_modes: params[:listening_modes].present?)
+  # `listening_modes`: the dock asks for each reply itself when Listening is
+  # gated. `reattaches`: it can move a call to another conversation.
+  def actions
+    LiveConversations::Actions.new(@conversation, client_surface: "web", listening_modes: params[:listening_modes].present?,
+                                                  reattaches: params[:reattaches].present?)
+  end
 end

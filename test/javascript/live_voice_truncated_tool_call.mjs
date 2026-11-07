@@ -22,7 +22,9 @@ function call(answers = {}) {
   dock.relayed = []
   dock.send = (event) => dock.sent.push(event)
   dock.setState = (state) => { dock.state = state; dock.states.push(state) }
+  dock.bodies = []
   dock.post = async (_url, body) => {
+    dock.bodies.push(body)
     dock.relayed.push(body.call_id)
     const answer = answers[body.call_id] ?? { output: "done" }
     return { ok: true, status: 200, json: async () => answer }
@@ -133,4 +135,94 @@ const cutOff = (output) => ({ status: "incomplete", status_details: { type: "inc
   dock.handleEvent({ type: "response.done", response: { status: "cancelled", status_details: { reason: "turn_detected" }, output: [{ type: "function_call", call_id: "c1", name: "x", arguments: "{}" }] } }, 1)
   await drain()
   report("cancelled", dock)
+}
+
+// A tool call that moved Live Mode: nothing more down this session, and the dock
+// reconnects onto the conversation it names, keeping mute, with no hang-up sound.
+{
+  const dock = call({ s1: { output: "Switched", switched_to: { id: 8, title: "the poller test" } } })
+  const started = []
+  dock.director = { hungUp: () => { throw new Error("a move is not a hang-up") }, toolsRunning: () => [], transition: () => [], dropped: () => [] }
+  dock.channel = { close() {} }
+  dock.muteTarget = { setAttribute() {} }
+  dock.showError = () => {}
+  dock.muted = true
+  dock.start = (next, options) => started.push({ next, options })
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "s1", name: "switch_live_conversation", arguments: "{}" }, 1)
+  await drain()
+  console.log(JSON.stringify({
+    name: "switched_mid_call", sent: dock.sent.map((event) => event.type), started,
+    bodies: dock.bodies
+  }))
+}
+
+// A switch made elsewhere: the poll finds another conversation current. One it
+// already follows, or an answer that arrives after this call moved on, is nothing.
+{
+  const followed = []
+  const look = async (dock, generation, current, voice = true) => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ current_id: current, voice }) })
+    dock.reattach = (id) => followed.push(id)
+    await dock.followCurrent(generation)
+  }
+  const dock = call()
+  await look(dock, 1, 1)
+  await look(dock, 1, null)
+  await look(dock, 0, 8)
+  await look(dock, 1, 8)
+  console.log(JSON.stringify({ name: "follows_current", followed }))
+  const hungUp = []
+  const typing = call()
+  typing.showError = (message) => hungUp.push(message)
+  typing.hangUp = (options) => hungUp.push(options)
+  await look(typing, 1, 9, false)
+  console.log(JSON.stringify({ name: "typed_conversation_ends_the_call", hungUp, followed }))
+}
+
+// The first thing a moved call does: speak, unasked and unrecorded.
+{
+  const dock = call()
+  dock.speakFirst()
+  console.log(JSON.stringify({ name: "speaks_first", sent: dock.sent.map((event) => event.type), relayed: dock.relayed }))
+}
+
+// The whole move through the real hangUp and start, with only the browser's own
+// objects and OpenAI stood in for: the secret comes from the new conversation, the
+// mic is asked for again, mute survives, and once the channel opens the model is
+// asked to speak with nothing posted to the thread.
+{
+  const requests = []
+  const channel = { readyState: "open", sent: [], send(raw) { this.sent.push(JSON.parse(raw).type) }, close() {} }
+  Object.defineProperty(globalThis, "navigator", { value: { mediaDevices: { getUserMedia: async () => {
+    const track = { enabled: true, stop() {} }
+    return { getTracks: () => [track], getAudioTracks: () => [track] }
+  } } }, configurable: true })
+  globalThis.document = { createElement: () => ({}) }
+  globalThis.RTCPeerConnection = class {
+    addTrack() {}
+    createDataChannel() { return channel }
+    async createOffer() { return { sdp: "offer" } }
+    async setLocalDescription() {}
+    async setRemoteDescription() { channel.onopen() }
+    close() {}
+  }
+  globalThis.fetch = async (url) => { requests.push(url); return { ok: true, status: 200, text: async () => "answer", json: async () => ({}) } }
+  const dock = new LiveVoice()
+  dock.initialize()
+  dock.generation = 1
+  dock.state = "listening"
+  dock.call = { conversationId: 1 }
+  dock.channel = { close() {} }
+  dock.muted = true
+  const states = []
+  dock.setState = (state) => { dock.state = state; states.push(state) }
+  dock.showError = () => {}
+  dock.muteTarget = { textContent: "", setAttribute() {} }
+  dock.watchCurrent = () => {}
+  dock.post = async (url, body) => { requests.push(url); return { ok: true, status: 200, json: async () => ({ client_secret: "ek", calls_url: "https://openai.test/calls" }) } }
+  dock.reattach(8)
+  await drain()
+  await drain()
+  console.log(JSON.stringify({ name: "reattach_through_start", requests, states, sent: channel.sent, conversation: dock.call.conversationId, muted: dock.muted }))
 }

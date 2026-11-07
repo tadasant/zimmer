@@ -117,6 +117,25 @@ extension FakeZimmerAPI {
         return conversation
     }
 
+    public func switchLiveConversation(_ id: Int?, from: Int?) async throws -> LiveSwitch {
+        let current = liveState.conversations.values.first { $0.status.isOpen }
+        let last = liveState.conversations.values.filter { $0.status == .ended }.map(\.id).max()
+        guard let id = id ?? last, let target = liveState.conversations[id] else {
+            throw ZimmerError.http(status: 404, message: "Live conversation not found")
+        }
+        if target.status.isOpen { return LiveSwitch(conversation: target, switched: false) }
+        guard target.status == .ended else {
+            throw ZimmerError.http(status: 409, message: "That conversation failed, so it can't be gone back to. Start a new one.")
+        }
+        if let from, let current, current.id != from {
+            throw ZimmerError.http(status: 409, message: "The current conversation changed. Look again before switching.")
+        }
+        if let current { liveState.conversations[current.id] = current.with(status: .ended) }
+        let reopened = target.with(status: .active, mode: current?.mode)
+        liveState.conversations[id] = reopened
+        return LiveSwitch(conversation: reopened, switched: true)
+    }
+
     public func finishLiveConversation(_ id: Int) async throws -> LiveConversation {
         guard let conversation = liveState.conversations[id] else { throw ZimmerError.http(status: 404, message: "Live conversation not found") }
         let ended = conversation.with(status: .ended)
@@ -287,6 +306,6 @@ extension LiveConversation {
         LiveConversation(id: id, mode: mode ?? self.mode, status: status ?? self.status, title: title, agentRoot: agentRoot,
                          model: mode.map(FakeZimmerAPI.liveModel) ?? model,
                          instructionsSource: instructionsSource, mcpServers: mcpServers, responding: responding,
-                         errorMessage: errorMessage, turns: turns ?? self.turns)
+                         reopenable: (status ?? self.status) == .ended, errorMessage: errorMessage, turns: turns ?? self.turns)
     }
 }

@@ -31,6 +31,8 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 /// - each result goes back as a `function_call_output` item, followed by a `session.update` when
 ///   the call enabled or disabled a server or changed a Live setting (Zimmer's `session` when it
 ///   sent one, otherwise just the tools);
+/// - a call that moved Live Mode to another conversation (`LiveToolResult.switchedTo`) sends
+///   nothing more: its session is over, and `reattach` says where the call goes;
 /// - once the response that asked for them is done and every result is in, exactly one
 ///   `response.create` — and never on top of a response already running (the user speaking
 ///   mid-tool starts one), in which case it waits for that response to finish;
@@ -65,6 +67,8 @@ public struct RealtimeConductor: Sendable {
         /// Gated: record this user line with Zimmer, which says whether to answer it; then call
         /// `heard(itemID:respond:)`.
         case hear(itemID: String?, text: String)
+        /// A tool call moved Live Mode to this conversation: reconnect onto it.
+        case reattach(conversation: Int)
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
         /// A new reply item's audio started arriving: count it from here.
@@ -80,6 +84,11 @@ public struct RealtimeConductor: Sendable {
         /// For the cues: what the state alone does not say.
         case signal(LiveCueDirector.Signal)
     }
+
+    /// Put to the model when a call has just moved to another conversation, so it speaks first and
+    /// the person is not left in silence. Not on the thread: nobody said it. The same words as the
+    /// web dock's (`live_voice_controller.js`).
+    public static let switchedOpening = "(We have just switched to this conversation. In one short sentence, say so and where it left off, then stop.)"
 
     /// Every call ever started, so a repeated event never runs one twice.
     private var seen: Set<String> = []
@@ -237,6 +246,7 @@ public struct RealtimeConductor: Sendable {
     /// Zimmer answered a relayed call (`result`), or could not be reached (`failure`).
     public mutating func relayed(callID: String, result: LiveToolResult?, failure: String? = nil) -> [Effect] {
         guard inFlight.remove(callID) != nil else { return [] }
+        if let target = result?.switchedTo { return [.reattach(conversation: target.id)] }
         var effects: [Effect] = []
         if let session = result?.session {
             effects.append(.send(sessionUpdate(keeping: session)))

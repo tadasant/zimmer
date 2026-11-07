@@ -2312,6 +2312,21 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     original.each { |key, value| ENV[key] = value }
   end
 
+  # One button more in the row above the thread, and the longest label in it.
+  test "an ended conversation offering to go back does not overflow on a phone" do
+    stub_live_root
+    stub_live_key
+    ended = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago)
+    ended.turns.create!(role: "user", source: "typed", content: "Is the flaky poller test still failing on main?")
+    create_live_conversation
+
+    visit live_conversation_path(ended)
+
+    assert_button "Go back to this conversation"
+    assert_selector "[data-live-moved]"
+    assert_no_horizontal_overflow("live ended thread")
+  end
+
   test "Live settings and a voice thread carrying a settings change do not overflow on a phone" do
     stub_live_root
     stub_live_key

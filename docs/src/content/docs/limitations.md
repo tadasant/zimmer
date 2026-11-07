@@ -8817,6 +8817,22 @@ hang-up from the dock leaves the conversation in voice, and typing is refused un
 **Type instead** (or `set_mode`). The page says voice is on and offers both. A call that is still
 connected when another device turns voice off keeps its spoken instructions until it hangs up.
 
+## Moving a call between conversations has not been heard on a real call
+
+Going back is proven against the server, its races included. The web dock's move runs its shipped
+code under Node with the browser and OpenAI stubbed. On the phone, `RealtimeConductor` and the
+decision to follow are tested, and `LiveCall.reattach` itself is tested by nothing. Nothing in CI has
+a call that connects, so a call moving between conversations and the line the model opens with are
+confirmed only by driving.
+
+## A line said in the seconds after a switch made elsewhere is not kept
+
+A call follows a switch made on another device by asking every 5 seconds. Until it does it is still
+on the old conversation, whose thread is refusing writes, so what is said in that gap reaches the
+model and the old session but no thread, and the new call has not heard it. A switch the model makes
+on the call itself has no gap. Two calls open on one conversation is possible, as it was before, and
+both follow.
+
 ## Listening gates the answer, not the microphone
 
 Wake word and Dynamic decide which lines get an answer. They do not decide what OpenAI hears: in

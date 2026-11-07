@@ -13,7 +13,9 @@
 # them. See docs/sessions/live.md.
 #
 # Lifecycle: preparing (AGENTS.md being fetched) → active → ended, or failed
-# when it could not be prepared. At most one open conversation at a time.
+# when it could not be prepared. At most one open conversation at a time. An
+# ended conversation can come back (reopen!, through LiveConversations::Switch):
+# the same row, so its id, its thread and the sessions it touched all survive.
 class LiveConversation < ApplicationRecord
   include BroadcastsThroughService
 
@@ -40,6 +42,14 @@ class LiveConversation < ApplicationRecord
 
   scope :unfinished, -> { where(status: OPEN_STATUSES) }
   scope :recent_first, -> { order(updated_at: :desc, id: :desc) }
+  # What Switch can move to, the most recently left first. A conversation nobody
+  # said anything in is not one to go back to, and one from a retired root has
+  # no instructions Live Mode reads any more.
+  scope :to_go_back_to, lambda {
+    where(status: ENDED, agent_root: LiveConversations::AGENT_ROOT)
+      .where(LiveConversationTurn.where("live_conversation_turns.live_conversation_id = live_conversations.id").arel.exists)
+      .order(Arel.sql("ended_at DESC NULLS LAST"), id: :desc)
+  }
 
   after_update_commit :broadcast_header, if: -> { saved_change_to_status? || saved_change_to_mode? || saved_change_to_responding_since? || saved_change_to_mcp_servers? || saved_change_to_title? }
 
@@ -55,6 +65,9 @@ class LiveConversation < ApplicationRecord
     unfinished.order(id: :desc).first
   end
 
+  # The conversation "go back" means: the one left most recently.
+  def self.previous = to_go_back_to.first
+
   def live_mode = LiveConversations.mode(mode)
   def voice? = live_mode.voice?
   def text? = live_mode.text?
@@ -69,8 +82,27 @@ class LiveConversation < ApplicationRecord
     responding_since.present? && responding_since > RESPONDING_STALE_AFTER.ago
   end
 
+  def reopenable? = ended? && agent_root == LiveConversations::AGENT_ROOT
+
   def display_title
     title.presence || "#{LiveConversations::LABEL} · #{created_at&.strftime('%b %-d, %H:%M')}"
+  end
+
+  SPOKEN_TITLE_WORDS = 6
+  SPOKEN_TITLE_MIN_WORDS = 3
+
+  # A name to say aloud: nothing writes `title`, and "Live Mode, November 6" is
+  # no help to a driver choosing between three of them. The thread's first line
+  # with something in it, cut to a few words, is what the person will remember.
+  def spoken_title
+    return title if title.present?
+
+    lines = turns.where(role: "user").limit(5).map { |turn| turn.content.to_s.squish }
+    line = lines.find { |text| text.split.size >= SPOKEN_TITLE_MIN_WORDS } || lines.first
+    return "the conversation from #{created_at&.strftime('%B %-d')}" if line.blank?
+
+    words = line.split
+    words.size > SPOKEN_TITLE_WORDS ? "#{words.first(SPOKEN_TITLE_WORDS).join(' ')}…" : line
   end
 
   # The style text the agent root ships for this mode, or nil when it ships none.
@@ -133,10 +165,38 @@ class LiveConversation < ApplicationRecord
       .sort_by(&:first).map(&:last).uniq
   end
 
-  def end!
+  # `keeping_reply_claim`: Switch leaves a live reply's claim in place, so going
+  # back while that job is still inside a request cannot start a second one
+  # beside it. The job lets go by itself when it next looks.
+  def end!(keeping_reply_claim: false)
     return if ended? || failed?
 
-    update!(status: ENDED, ended_at: Time.current, responding_since: nil)
+    update!(status: ENDED, ended_at: Time.current, responding_since: keeping_reply_claim ? responding_since : nil)
+  end
+
+  # Back to being the current conversation. Only Switch calls this, under the
+  # locks that keep it the only open one.
+  #
+  # The servers that stay are the thread's own, less any the catalog has since
+  # dropped. One that died while preparing never read its instructions, so it
+  # reads them now; anything else is usable at once, and a voice call cannot wait
+  # on a root being fetched (Switch refreshes both in the background).
+  def reopen!(mode: self.mode, client_surface: nil)
+    target = LiveConversations.mode(mode)
+    servers = enabled_mcp_servers.select { |name| ServersConfig.find(name) }
+    update!(
+      status: instructions.present? ? ACTIVE : PREPARING,
+      ended_at: nil,
+      responding_since: responding? ? responding_since : nil,
+      error_message: nil,
+      mode: target.key,
+      model: target.model,
+      mcp_servers: servers,
+      mcp_tool_cache: mcp_tool_cache.slice(*servers),
+      client_surface: client_surface.presence || self.client_surface,
+      car_call: false,
+      last_activity_at: Time.current
+    )
   end
 
   def fail!(message)
@@ -166,6 +226,7 @@ class LiveConversation < ApplicationRecord
       mode_styles: LiveConversations.mode_keys.index_with { |key| style_for(key) ? "agent_root" : "zimmer_default" },
       mcp_servers: enabled_mcp_servers,
       responding: responding?,
+      reopenable: reopenable?,
       error_message: error_message,
       created_at: created_at,
       updated_at: updated_at,

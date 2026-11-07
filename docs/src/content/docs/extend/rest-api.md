@@ -1178,9 +1178,15 @@ followed up — the most recently named first, each as `GET /sessions` gives it,
 What the car shows beside a call ·
 `POST /live_conversations/:id/mode` (`mode` text|voice) → the conversation, switched. A no-op when it
 is in that mode already; 409 once it has ended, 422 on an unknown mode ·
+`POST /live_conversations/switch` (`id`, or none for the conversation ended most recently that has
+turns; `from_id`, the one you believe is current, `0` for none; `mode`, by default the mode of the one being left)
+→ the conversation, current, with `switched: true`, or `switched: false` when it already was. 404
+when it does not exist, 409 when it failed, is from the retired root, there is nothing to go back
+to, or `from_id` is stale, 503 when Live Mode is unavailable. See
+[Going back to a conversation](/sessions/live/#going-back-to-a-conversation) ·
 `POST /live_conversations/:id/finish` → the ended conversation.
 
-A conversation is `{id, mode (text|voice — right now), voice, label, mode_label, status
+A conversation is `{id, mode (text|voice — right now), voice, label, mode_label, status, reopenable (ended, and can be gone back to)
 (preparing|active|ended|failed), title, agent_root, model, instructions_source, mode_styles: {text,
 voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, created_at, updated_at,
 last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
@@ -1203,7 +1209,10 @@ Voice — the relay a client holding the audio connection makes:
   with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
   voice is off; 502 when OpenAI refuses.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
-  `call_id`) → `{output, error, tools_changed, turn_id}`, plus `tools` when `tools_changed`, and
+  `call_id`, and `reattaches` from a client that can move its call; one that does not send it is
+  refused `switch_live_conversation`) → `{output, error, tools_changed, turn_id}`, plus `switched_to:
+  {id, title}` when the call moved Live Mode, in which case that is all and the client reconnects
+  there, `tools` when `tools_changed`, and
   `session` when the call changed a Live setting an open call can take. Send `session` as a
   `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
   `function_call_output` item.

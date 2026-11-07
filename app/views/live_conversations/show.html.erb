@@ -3,6 +3,7 @@
 <div class="min-h-screen bg-gray-50" data-controller="live-thread"
      data-live-conversation-id="<%= conversation.id %>"
      data-live-conversation-mode="<%= conversation.mode %>"
+     data-live-conversation-status="<%= conversation.status %>"
      data-conversation-url="<%= live_conversation_path(conversation) %>"
      data-mode-url="<%= mode_live_conversation_path(conversation) %>"
      data-client-secret-url="<%= client_secret_live_conversation_path(conversation) %>"
@@ -10,17 +11,24 @@
      data-turns-url="<%= turns_live_conversation_path(conversation) %>"
      data-session-update-url="<%= session_update_live_conversation_path(conversation) %>">
   <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col min-h-screen">
-    <div class="flex items-center justify-between gap-2 mb-4">
+    <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
       <%= link_to root_path, class: "inline-flex items-center text-sm text-gray-500 hover:text-gray-700", "aria-label" => "Back to sessions" do %>
         <svg class="h-5 w-5 mr-1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
         </svg>
         Sessions
       <% end %>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center justify-end gap-2">
         <%= link_to "All live", live_path, class: "text-sm text-gray-500 hover:text-gray-700 px-2 py-1" %>
         <%= link_to live_settings_path, class: "text-gray-500 hover:text-gray-700 p-1", title: "Live settings", "aria-label" => "Live settings", data: { live_settings_link: true } do %>
           <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+        <% end %>
+        <% if conversation.reopenable? %>
+          <% current = LiveConversation.current %>
+          <%= button_to "Go back to this conversation", reopen_live_conversation_path(conversation), method: :post,
+              params: { from_id: current&.id.to_i },
+              form: { data: { turbo_confirm: (current ? "End the current conversation and go back to this one?" : nil) } },
+              class: "inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700" %>
         <% end %>
         <%= button_to "New conversation", live_conversations_path, method: :post,
             form: { data: { turbo_confirm: (conversation.open? ? "End this conversation and start a new one?" : nil), action: "submit->live-thread#hangUp" } },
