@@ -297,13 +297,12 @@ final class AppModel: ObservableObject {
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
         // Live: the home sheet, or straight into one conversation's thread.
         if arguments.contains("-ZimmerFixtureLiveHome") { showingLive = true }
-        if let flag = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation"),
-           arguments.indices.contains(flag + 1), let id = Int(arguments[flag + 1]) {
-            fixtureLiveConversation = id
-            showingLive = true
-        }
+        let liveThread = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation")
+            .flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil }
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureCarScript"), arguments.indices.contains(flag + 1) {
-            runFixtureCarScript(arguments[flag + 1])
+            runFixtureCarScript(arguments[flag + 1], thread: liveThread)
+        } else if let liveThread {
+            openFixtureLiveThread(liveThread)
         }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
         fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
@@ -631,10 +630,23 @@ final class AppModel: ObservableObject {
     }
 
     #if DEBUG
+    private func openFixtureLiveThread(_ id: Int) {
+        fixtureLiveConversation = id
+        showingLive = true
+    }
+
+    private func startFixtureCallElsewhere() async {
+        let conversation = (try? await connection.api.startLiveConversation(.voice).id) ?? 21
+        Task { await LiveCall.shared.start(conversation, from: .carplay) }
+    }
+
     /// `-ZimmerFixtureCarScript left@6,back@7,end@9`: a call from the car on conversation 21, held
     /// on Connecting…, and the car's moves at those seconds after launch, so a phone test can see
     /// what a disconnect does in every order. `left` and `back` are what the CarPlay scene calls.
-    private func runFixtureCarScript(_ script: String) {
+    /// `other` puts the call on a new conversation, which ends the one before it. `other@0` is done
+    /// before `thread` opens, so the thread reads as ended from its first read; any later and it
+    /// ends with the thread on screen, with no call at all until then. Moves are in time order.
+    private func runFixtureCarScript(_ script: String, thread: Int?) {
         let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
             let parts = move.split(separator: "@")
             guard parts.count == 2, let at = Double(parts[1]) else { return nil }
@@ -646,10 +658,13 @@ final class AppModel: ObservableObject {
         Task {
             defer { UIApplication.shared.endBackgroundTask(running) }
             let call = LiveCall.shared
-            // `other@0`: the call is on a new conversation, for a thread that is not the call's.
-            let other = moves.contains { $0.name == "other" }
-            let conversation = other ? (try? await connection.api.startLiveConversation(.voice).id) ?? 21 : 21
-            Task { await call.start(conversation, from: .carplay) }
+            let other = moves.first { $0.name == "other" }
+            if let other, other.at == 0 {
+                await startFixtureCallElsewhere()
+            } else if other == nil {
+                Task { await call.start(21, from: .carplay) }
+            }
+            if let thread { openFixtureLiveThread(thread) }
             var elapsed = 0.0
             for move in moves {
                 try? await Task.sleep(for: .seconds(move.at - elapsed))
@@ -660,6 +675,7 @@ final class AppModel: ObservableObject {
                     call.carCameBack()
                     await call.carryOn(on: .carplay)
                 case "end": call.hangUp()
+                case "other" where move.at > 0: await startFixtureCallElsewhere()
                 default: break
                 }
             }
