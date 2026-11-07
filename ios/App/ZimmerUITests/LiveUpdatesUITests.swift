@@ -30,12 +30,14 @@ final class LiveUpdatesUITests: XCTestCase {
         let newest = messages.element(boundBy: messages.count - 1)
         let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: newest)
         XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: timeout), .completed, "the chip lands on the newest message")
-        for _ in 0..<8 where !first.isHittable { app.swipeDown(velocity: .fast) }
+        for _ in 0..<30 where !first.isHittable { readBack(app) }
         XCTAssertTrue(first.isHittable, "scrolled back to the start")
+        let readingAt = first.frame.minY
         // Two polls' worth of new lines arrive while reading back.
-        let later = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "step 2 done")).firstMatch
-        XCTAssertTrue(later.waitForExistence(timeout: timeout))
+        let twoMore = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= %d", messages.count + 2), object: messages)
+        XCTAssertEqual(XCTWaiter().wait(for: [twoMore], timeout: timeout * 2), .completed, "new lines arrive")
         XCTAssertTrue(first.isHittable, "still where the reader left it")
+        XCTAssertEqual(first.frame.minY, readingAt, accuracy: 1, "not moved at all")
     }
 
     func test_the_transcript_opens_at_its_newest_message() throws {
@@ -77,6 +79,15 @@ final class LiveUpdatesUITests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// A third of the screen back up the transcript, held at the end. Not a flick: a flick coasts
+    /// a different distance each time, and from just below the first message one carries on past
+    /// it to the top of the page. A step shorter than the screen cannot jump a message.
+    private func readBack(_ app: XCUIApplication) {
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
+        from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
+    }
 
     private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
