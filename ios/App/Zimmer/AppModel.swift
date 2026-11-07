@@ -645,7 +645,7 @@ final class AppModel: ObservableObject {
     /// what a disconnect does in every order. `left` and `back` are what the CarPlay scene calls.
     /// `other` puts the call on a new conversation, which ends the one before it. `other@0` is done
     /// before `thread` opens, so the thread reads as ended from its first read; any later and it
-    /// ends with the thread on screen.
+    /// ends with the thread on screen, with no call at all until then. Moves are in time order.
     private func runFixtureCarScript(_ script: String, thread: Int?) {
         let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
             let parts = move.split(separator: "@")
