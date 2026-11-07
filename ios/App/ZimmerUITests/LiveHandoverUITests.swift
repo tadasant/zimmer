@@ -79,6 +79,15 @@ final class LiveHandoverUITests: XCTestCase {
         assertStaysOnTheBoard(app, "closing Live was a choice")
     }
 
+    func test_a_thread_that_ends_on_screen_goes_to_the_current_conversation() {
+        let app = launch(["-ZimmerFixtureLiveConversation", "21", "-ZimmerFixtureCarScript", "other@6"])
+        let oldThread = app.descendants(matching: .any)["live.turn.401"].firstMatch
+        XCTAssertTrue(oldThread.waitForExistence(timeout: timeout), "the thread opens while it is open")
+        XCTAssertFalse(callState(app).exists, "with no call on it")
+        XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "ended elsewhere, the screen goes to where Live Mode is now")
+        XCTAssertFalse(oldThread.exists)
+    }
+
     func test_a_sheet_the_model_does_not_know_about_holds_it_too() {
         let app = launch(["-ZimmerFixtureOpenSession", "2", "-ZimmerFixtureCustomSnooze", "-ZimmerFixtureCarScript", "left@8"])
         let picker = app.descendants(matching: .any)["snooze.custom.picker"].firstMatch
