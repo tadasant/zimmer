@@ -895,6 +895,9 @@ class Session < ApplicationRecord
 
   after_create :set_default_title
   after_create_commit :enqueue_session_inference
+  # A session started from CarPlay — the app's CarPlay screen, or a Live Mode
+  # conversation on CarPlay delegating — starts in the driver's view.
+  after_create_commit :record_carplay_engagement_at_creation, if: -> { Sessions::RecordCarplayEngagement.carplay?(initial_turn_source) }
   # Stamp the replaced session with a back-reference the moment a replacement
   # declares itself. `after_save_commit`, not `after_create_commit`: the
   # convention is settable after creation too (`PATCH /api/v1/sessions/:id`
@@ -1954,7 +1957,7 @@ class Session < ApplicationRecord
   # `prompt` as an initial spawn delivers it: with its turn-source note when the
   # creating boundary recorded a source.
   def initial_prompt_for_delivery
-    tag_turn(prompt, initial_turn_source).first
+    tag_turn(prompt, initial_turn_source, record_engagement: false).first
   end
 
   # A follow-up as it should be delivered, and the metadata that records its
@@ -1962,11 +1965,19 @@ class Session < ApplicationRecord
   # #deliver_follow_up! (REST and MCP `follow_up`) call this too, so every path
   # tags the same way.
   #
+  # It is also where a follow-up from CarPlay is recognized, on every one of
+  # those paths: a CarPlay turn records the engagement and keeps the session in
+  # the driver's view (Sessions::RecordCarplayEngagement).
+  #
   # @param prompt [String]
   # @param source [TurnSource, nil]
+  # @param record_engagement [Boolean] false for the initial prompt, whose
+  #   engagement the create already recorded (#record_carplay_engagement_at_creation)
   # @return [Array(String, Hash)] the prompt to deliver, and metadata to merge
-  def tag_turn(prompt, source)
+  def tag_turn(prompt, source, record_engagement: true)
     return [ prompt, {} ] if source.nil? || prompt.blank?
+
+    Sessions::RecordCarplayEngagement.from_source(self, source) if record_engagement && persisted?
 
     # A prompt at the length limit stays untagged rather than growing past it: a
     # spot-gate requeue writes the delivered text back to the queue, whose
@@ -3161,6 +3172,9 @@ class Session < ApplicationRecord
     errors.add(:git_root, "must be a valid URL or git path")
   end
 
+  def record_carplay_engagement_at_creation
+    Sessions::RecordCarplayEngagement.call(self)
+  end
 
   def set_default_title
     # Only set default title if no title was provided

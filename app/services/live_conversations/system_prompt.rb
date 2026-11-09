@@ -72,7 +72,8 @@ module LiveConversations
         "and hands busy. Sessions carry a CarPlay fit (`carplay_ok`, `laptop_only`, or untagged) saying whether " \
         "what they need next can be done by voice; `get_user_view` and `quick_search_sessions` take a " \
         "`carplay_fit` filter (`not_laptop_only` is the driving default) and `action_session` sets it with " \
-        "`set_carplay_fit`."
+        "`set_carplay_fit`. A session you start, follow up or act on from here is marked `carplay_ok` for you " \
+        "and stays in that view; mark it `laptop_only` only when it clearly needs a screen or a keyboard."
     end
 
     def guidance_section

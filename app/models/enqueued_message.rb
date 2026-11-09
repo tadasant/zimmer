@@ -104,6 +104,12 @@ class EnqueuedMessage < ApplicationRecord
   # its own transaction has not committed yet.
   after_create_commit :deliver_if_session_already_idle
 
+  # A message queued from CarPlay is the driver engaging the session now, not
+  # when the queue drains — keep it in their view from this moment
+  # (Sessions::RecordCarplayEngagement). The drain records it again through
+  # Session#tag_turn, which is a no-op on a session already holding the mark.
+  after_create_commit :record_carplay_engagement, if: -> { Sessions::RecordCarplayEngagement.carplay?(turn_source) }
+
   # Scopes
   scope :pending, -> { where(status: "pending") }
   scope :undelivered, -> { where(status: "undelivered") }
@@ -364,6 +370,10 @@ class EnqueuedMessage < ApplicationRecord
   end
 
   private
+
+  def record_carplay_engagement
+    Sessions::RecordCarplayEngagement.call(session)
+  end
 
   # Hand the PR this notice named back to the poller's debounce, so a conflict
   # that turns out to have been real is re-confirmed rather than silently
