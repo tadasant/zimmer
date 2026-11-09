@@ -5998,13 +5998,21 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # create_clone raises TransientGitError once its own in-process retries are
     # exhausted — the exact signal AgentSessionJob keys off to retry job-level.
+    rails_errors = []
     GitCloneService.stub(:create_clone, ->(*args) {
       raise GitCloneService::TransientGitError, "Failed to create clone: error: RPC failed; curl 28 early EOF"
     }) do
-      assert_enqueued_jobs 1, only: AgentSessionJob do
-        assert_nothing_raised { job.perform(@session.id) }
+      Rails.logger.stub(:error, ->(msg = nil, *) { rails_errors << msg }) do
+        assert_enqueued_jobs 1, only: AgentSessionJob do
+          assert_nothing_raised { job.perform(@session.id) }
+        end
       end
     end
+
+    # A clone that will be retried is not a failure anyone needs paging for (#1475).
+    clone_errors = rails_errors.select { |m| m.to_s.match?(/clone/i) }
+    assert_empty clone_errors,
+      "a transient clone failure with retries left must not log at ERROR; got: #{clone_errors.inspect}"
 
     @session.reload
     refute @session.failed?, "a transient clone failure must not fail the session"
@@ -6035,13 +6043,25 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.file_system = MockFileSystemAdapter.new
     job.cli_adapter = MockClaudeCliAdapter.new
 
+    rails_errors = []
     GitCloneService.stub(:create_clone, ->(*args) {
       raise GitCloneService::TransientGitError, "Failed to create clone: fetch-pack: unexpected disconnect"
     }) do
-      assert_no_enqueued_jobs only: AgentSessionJob do
-        assert_nothing_raised { job.perform(@session.id) }
+      Rails.logger.stub(:error, ->(msg = nil, *) { rails_errors << msg }) do
+        assert_no_enqueued_jobs only: AgentSessionJob do
+          assert_nothing_raised { job.perform(@session.id) }
+        end
       end
     end
+
+    # Exactly one ERROR — the page — for a session that really cannot clone (#1475).
+    clone_errors = rails_errors.select { |m| m.to_s.match?(/clone/i) }
+    assert_equal 1, clone_errors.length,
+      "job-level clone exhaustion must log exactly one ERROR; got: #{rails_errors.inspect}"
+    assert_includes clone_errors.first, "Session #{@session.id} exhausted its clone retry budget (startup)"
+    assert_includes clone_errors.first, "after #{AgentSessionJob::MAX_CLONE_JOB_RETRIES} automatic retries"
+    assert_includes clone_errors.first, "repo=#{@session.git_root}"
+    assert_includes clone_errors.first, "fetch-pack: unexpected disconnect"
 
     @session.reload
     assert @session.failed?, "should fail after exhausting the job-level retry budget"

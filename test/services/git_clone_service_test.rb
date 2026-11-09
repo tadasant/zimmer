@@ -773,11 +773,16 @@ class GitCloneServiceTest < ActiveSupport::TestCase
     assert_equal 4, call_count, "expected 1 initial attempt + 3 retries"
     assert_equal [ 5, 10, 20 ], sleep_calls, "expected exponential backoff 5s, 10s, 20s"
 
+    # Transient exhaustion is retried again by AgentSessionJob, so it must not
+    # page: warn here, ERROR only where the session gives up (#1475).
     error_logs = test_logger.records.select { |r| r[:level] == :error }
-    assert(
-      error_logs.any? { |r| r[:message] == "git clone failed after retries" },
-      "expected an .error log after retries exhausted; got: #{error_logs.map { |r| r[:message] }.inspect}"
-    )
+    assert_empty error_logs,
+      "transient in-process exhaustion must not log at .error; got: #{error_logs.map { |r| r[:message] }.inspect}"
+
+    exhausted = test_logger.records.select { |r| r[:message] == "git clone failed after retries" }
+    assert_equal [ :warn ], exhausted.map { |r| r[:level] },
+      "expected exactly one .warn log after retries exhausted"
+    assert_equal 4, exhausted.first[:context][:attempts]
 
     info_logs = test_logger.records.select { |r| r[:level] == :info }
     retry_infos = info_logs.select { |r| r[:message] == "git clone failed transiently, retrying" }
