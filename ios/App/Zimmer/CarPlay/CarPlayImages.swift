@@ -15,8 +15,8 @@ enum CarPlayImages {
         let name: String
         switch identifier {
         case "listening": name = "mic.fill"
-        case "speaking": name = "waveform"
-        case "working": name = "gearshape.2.fill"
+        case "hearing": name = "waveform.and.mic"
+        case "replying": name = "waveform"
         case "muted": name = "mic.slash.fill"
         default: name = "antenna.radiowaves.left.and.right"
         }
@@ -26,6 +26,10 @@ enum CarPlayImages {
     /// One of the voice control template's action buttons (iOS 26.4+): a `CPButton`, which takes
     /// an image and carries its words as a title. `CPTextButton` is a different class and is not
     /// one of these.
+    ///
+    /// CarPlay draws only the symbol, and labels the button for accessibility by the symbol
+    /// alone: the CarPlay drill reads "hang up" for End, and an accessibility label set on the
+    /// image is not carried over. So the symbol is the button's words, and is chosen for them.
     @available(iOS 26.4, *)
     static func actionButton(_ title: String, symbol name: String, handler: @escaping (CPButton) -> Void) -> CPButton {
         let button = CPButton(image: symbol(name, pointSize: 24, weight: .medium), handler: handler)

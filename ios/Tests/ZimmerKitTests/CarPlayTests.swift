@@ -756,7 +756,7 @@ final class CarPlayTests: XCTestCase {
         for line in live where line.contains("{ [weak self] _ in") {
             XCTAssertTrue(line.contains(".sink"), "CarPlayLive: a handler closure written in place inherits the main actor\n\(line)")
         }
-        for control in ["gear", "mute", "end"] {
+        for control in ["gear", "mute", "end", "send_now"] {
             XCTAssertTrue(live.contains { $0.contains("CarPlayImages.tapped(\"\(control)\")") }, "\(control) goes through CarPlayTap")
         }
         let home = code("CarPlayHome.swift")

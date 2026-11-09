@@ -44,7 +44,9 @@ final class CarPlayDrillUITests: XCTestCase {
     /// Mute and End are not pressed. XCUITest finds the voice control template's two action
     /// buttons ("microphone off", "hang up") but computes no hit point for them, and neither an
     /// element tap nor a coordinate tap reaches them, so the drill cannot drive them; the five
-    /// states they switch between are `LiveCallScreenTests`', and the rest is driving.
+    /// states they switch between are `LiveCallScreenTests`', and the rest is driving. Send now,
+    /// in Mute's place on Hearing you, is the same: the fixture shows its state and runs its
+    /// closure off the main thread.
     ///
     /// `-ZimmerFixtureVoiceTurnedUp` starts the Live settings where voice calls left them on the
     /// call that broke, and holds the first call on Connecting…, so the call screen stays up to
@@ -100,9 +102,23 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-call-screen-after-the-car-came-back")
         assertAlive("with the car back")
 
+        // Send now, in its state: the fixture shows Hearing you on this call, which hears nobody,
+        // a few seconds after it goes up, and runs Send now's closure off the main thread a few
+        // seconds after that. With no speech it finds nothing to send, so the screen stays as it
+        // is and Zimmer stays up. XCUITest cannot press it, as it cannot press Mute or End.
+        let hearing = text("Hearing you").waitForExistence(timeout: timeout)
+        photograph("carplay-call-screen-send-now")
+        record("the call screen with Send now", car.debugDescription)
+        // What CarPlay calls the button, which is what VoiceOver reads: the symbol's own words.
+        record("the call screen's button labels", car.buttons.allElementsBoundByIndex.map(\.label).joined(separator: "\n"))
+        XCTAssertTrue(hearing, "Send now's state goes up; the car showed:\n\(car.debugDescription)")
+        Thread.sleep(forTimeInterval: 7)
+        assertAlive("after Send now's closure ran off the main thread")
+        XCTAssertTrue(text("Hearing you").exists, "a Send now with nothing to send leaves the screen as it is; the car showed:\n\(car.debugDescription)")
+
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
-        // gear's own closure, off the main thread, 15 seconds after the call screen goes up.
+        // gear's own closure, off the main thread, 25 seconds after the call screen goes up.
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
@@ -314,7 +330,7 @@ final class CarPlayDrillUITests: XCTestCase {
     ///
     /// With the voice settings up, *Listening* is one of their rows, so it says nothing there.
     private func assertNoCallScreen(_ when: String, panelUp: Bool = false) {
-        var titles = ["Connecting…", "Speaking", "Working on it…", "Muted"]
+        var titles = ["Connecting…", "Hearing you", "Replying", "Muted"]
         if !panelUp { titles.append("Listening") }
         let title = car.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", titles)).firstMatch
         let gone = NSPredicate(format: "exists == false")
