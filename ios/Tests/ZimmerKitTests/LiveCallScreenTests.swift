@@ -1,7 +1,8 @@
 import XCTest
 @testable import ZimmerKit
 
-/// The car's call screen: its five states, and the conductor's opening line.
+/// The car's call screen: its five states, Send now's place among them, and the conductor's
+/// opening line.
 final class LiveCallScreenTests: XCTestCase {
     func testALostMicrophoneReadsAsConnectingWhateverTheCallIsDoing() {
         for state in [LiveVoiceState.listening, .speaking, .working] {
@@ -30,9 +31,29 @@ final class LiveCallScreenTests: XCTestCase {
         for state in [LiveVoiceState.connecting, .listening, .thinking, .speaking, .working] {
             XCTAssertEqual(LiveCallScreen.identifier(for: state, muted: true), "muted")
         }
-        XCTAssertEqual(LiveCallScreen.identifier(for: .thinking, muted: false), "working", "thinking is working, to a driver")
+        for state in [LiveVoiceState.thinking, .working, .speaking] {
+            XCTAssertEqual(LiveCallScreen.identifier(for: state, muted: false), "replying", "\(state) is Zimmer's turn, to a driver")
+        }
         XCTAssertEqual(LiveCallScreen.identifier(for: .idle, muted: false), "connecting")
-        XCTAssertEqual(LiveCallScreen.identifiers.map(LiveCallScreen.title(for:)), ["Connecting…", "Listening", "Speaking", "Working on it…", "Muted"])
+        XCTAssertEqual(LiveCallScreen.identifiers.map(LiveCallScreen.title(for:)), ["Connecting…", "Listening", "Hearing you", "Replying", "Muted"])
+    }
+
+    /// Send now is on the screen only while the driver is heard and turn detection has not ended
+    /// the turn: never during a reply, never muted, never with the microphone lost, never with
+    /// nothing heard.
+    func testSendNowIsOfferedOnlyWhileThereIsSpeechToSend() {
+        XCTAssertTrue(LiveCallScreen.identifiers.contains(LiveCallScreen.sendNowState))
+        XCTAssertEqual(LiveCallScreen.identifier(for: .listening, muted: false, speechHeard: true), "hearing")
+        XCTAssertTrue(LiveCallScreen.offersSendNow(for: .listening, muted: false, microphoneLost: false, speechHeard: true))
+        XCTAssertFalse(LiveCallScreen.offersSendNow(for: .listening, muted: false, microphoneLost: false, speechHeard: false), "nothing heard: nothing to send")
+        for state in [LiveVoiceState.idle, .connecting, .thinking, .speaking, .working] {
+            XCTAssertFalse(LiveCallScreen.offersSendNow(for: state, muted: false, microphoneLost: false, speechHeard: true), "\(state): not while Zimmer has the turn")
+        }
+        XCTAssertFalse(LiveCallScreen.offersSendNow(for: .listening, muted: true, microphoneLost: false, speechHeard: true), "muted")
+        XCTAssertFalse(LiveCallScreen.offersSendNow(for: .listening, muted: false, microphoneLost: true, speechHeard: true), "microphone lost")
+        XCTAssertEqual(LiveCallScreen.title(for: LiveCallScreen.sendNowState), "Hearing you")
+        XCTAssertLessThanOrEqual(LiveCallScreen.sendNowTitle.count, 10, "two short words a driver takes in at a glance")
+        XCTAssertFalse(LiveCallScreen.sendNowHint.isEmpty, "VoiceOver says what it does")
     }
 
     func testTheConductorOpensACallWithALineAndAsksForTheReply() {
