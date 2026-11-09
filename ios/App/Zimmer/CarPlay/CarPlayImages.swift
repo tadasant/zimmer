@@ -31,6 +31,7 @@ enum CarPlayImages {
     /// CarPlay window labels these buttons by their symbol ("hang up"). So the words go on the
     /// image too, as its accessibility label and hint, for whatever the car's VoiceOver reads.
     @available(iOS 26.4, *)
+    @MainActor
     static func actionButton(_ title: String, symbol name: String, hint: String, handler: @escaping (CPButton) -> Void) -> CPButton {
         let image = symbol(name, pointSize: 24, weight: .medium)
         image.accessibilityLabel = title

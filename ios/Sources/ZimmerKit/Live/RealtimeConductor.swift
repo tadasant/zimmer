@@ -229,8 +229,14 @@ public struct RealtimeConductor: Sendable {
             return [.signal(.personStopped), .state(.thinking)] + (gated ? [] : [.signal(.heardPerson)])
         case "input_audio_buffer.committed", "input_audio_buffer.cleared":
             speechOpen = false
+            guard endingTurn else { return [] }
             endingTurn = false
-            return []
+            // The turn Send now ended is the person's line now: ask for its reply, under the
+            // usual rule. Only now, so a commit OpenAI refused never gets a reply to nothing.
+            // Gated, Zimmer decides that (`hear`).
+            guard event["type"]?.string == "input_audio_buffer.committed", !gated else { return [] }
+            pendingResponse = true
+            return sendPendingResponse(eventID: "\(Self.sendNowEventPrefix)\(sendNows)_response")
         case "response.created":
             responseActive = true
             requested = false
@@ -276,13 +282,16 @@ public struct RealtimeConductor: Sendable {
             // A refused `response.create` never gets its `response.created`.
             requested = false
             if let refused = event["error"]?["event_id"]?.string, refused.hasPrefix(Self.sendNowEventPrefix) {
-                // Send now lost a race with turn detection: the turn it ended was already
-                // committed (an empty buffer), or its reply already running. Not a failure:
-                // whatever won is answering. Only with nothing coming is the call back to
-                // listening.
-                endingTurn = false
-                let idle = !responseActive && inFlight.isEmpty && !pendingResponse && playingItem == nil
-                return idle ? [.signal(.noAnswerComing), .state(.listening)] : []
+                // Send now lost a race with turn detection, which is not a failure: turn
+                // detection committed the turn first (an empty buffer), and its own path answers
+                // it; or a reply is already running. Any other refusal is reported like any error.
+                let code = event["error"]?["code"]?.string
+                if refused.hasSuffix("_commit") {
+                    endingTurn = false
+                    if code == "input_audio_buffer_commit_empty" { return [] }
+                } else if code == "conversation_already_has_active_response" {
+                    return []
+                }
             }
             // With nothing running or about to, no answer is coming: back to listening, or the
             // call would read as working on it (and tick) for ever.
@@ -294,9 +303,10 @@ public struct RealtimeConductor: Sendable {
     }
 
     /// Send now: end the turn turn detection is still in, whatever mode it is in. The speech
-    /// heard so far goes up as the person's line, the call moves on to working on an answer, as
-    /// at `speech_stopped`, and the reply is asked for: at once, or after the response the person
-    /// talked over (which turn detection is cancelling) is done. Gated, Zimmer still says whether
+    /// heard so far goes up as the person's line (`input_audio_buffer.commit`), the call moves on
+    /// to working on an answer, as at `speech_stopped`, and once OpenAI says `committed` the reply
+    /// is asked for: at once, or after the response the person talked over (which turn detection
+    /// is cancelling) is done. Gated, Zimmer still says whether
     /// the line gets one (`hear`), as for any other. Once per turn: a second tap, or a tap after
     /// turn detection ended the turn itself, sends nothing.
     public mutating func endTurn() -> EndTurn {
@@ -310,9 +320,7 @@ public struct RealtimeConductor: Sendable {
         var effects: [Effect] = [.send(.object(["type": .string("input_audio_buffer.commit"), "event_id": .string("\(tag)_commit")]))]
         guard playingItem == nil else { return .ended(effects + [.signal(.personStopped)]) }
         effects += [.signal(.personStopped), .state(.thinking)]
-        guard !gated else { return .ended(effects) }
-        pendingResponse = true
-        return .ended(effects + [.signal(.heardPerson)] + sendPendingResponse(eventID: "\(tag)_response"))
+        return .ended(effects + (gated ? [] : [.signal(.heardPerson)]))
     }
 
     /// Zimmer answered a relayed call (`result`), or could not be reached (`failure`).

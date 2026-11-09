@@ -295,7 +295,7 @@ So the cause is not known, and the drill has no retry, because the fault could b
 
 ### A long stall can make the CarPlay drill miss the gear
 
-The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, and before it the drill has to see the gear and Send now's state, which the fixture shows at 4 seconds and holds. Reaching the gear takes 3 to 5 seconds on a normal run, and Send now's check about 8 more, so a stall of about 12 seconds at those steps fails the drill with `no gear on the call screen` and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, and before it the drill has to see the gear and Send now's state, which the fixture shows at 4 seconds and holds. Reaching the gear takes 3 to 5 seconds on a normal run, and Send now's check about 8 more, so a stall of about 12 seconds at those steps fails the drill with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
 
 ### Send now in the car has never ended a real turn
 

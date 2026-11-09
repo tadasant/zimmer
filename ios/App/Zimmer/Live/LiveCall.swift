@@ -391,7 +391,9 @@ final class LiveCall: ObservableObject {
     /// each is logged with what it came to (`LiveSendNow`), never with what was said.
     func sendNow() {
         let now = Self.now
-        guard isActive, health.isConnected else {
+        // A tap CarPlay delivers late, from a screen that has just changed, can find the call
+        // muted or deaf: nothing more to send.
+        guard isActive, health.isConnected, !muted, !microphoneLost else {
             telemetry.track(sendNowLog.record(.ignoredEmpty, surface: surface.rawValue, at: now))
             return
         }

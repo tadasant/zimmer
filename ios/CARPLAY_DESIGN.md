@@ -351,8 +351,9 @@ connects is shown at once.
 
 When turn detection does not hear the driver finish (a noisy cabin, a pause Semantic reads as
 thinking), the driver can end the turn with one tap. Send now sends what was heard as the driver's
-line and asks for the reply (`RealtimeConductor.endTurn`: `input_audio_buffer.commit`, then
-`response.create` under the usual rule).
+line and asks for the reply (`RealtimeConductor.endTurn`: `input_audio_buffer.commit`, then, once
+OpenAI says `committed`, `response.create` under the usual rule, so a refused commit never gets a
+reply to nothing).
 
 - **When it is there.** Only on Hearing you: the call is listening, turn detection has heard speech
   (`speech_started`) and has not ended the turn (`speech_stopped`, `committed`), the microphone is
@@ -363,13 +364,15 @@ line and asks for the reply (`RealtimeConductor.endTurn`: `input_audio_buffer.co
   one, Replying, because the driver already hears which it is (the thinking cue, the tool cue, the
   voice). Send now takes Mute's place, so End never moves under the driver's hand. Muting
   mid-sentence is the one thing given up, for the second or two the driver is talking.
-- **One tap, nothing to read.** No confirmation. The heard cue says it went, and the screen goes
-  to Replying.
+- **One tap, nothing to read.** No confirmation. The heard cue says it went (under a gated
+  Listening mode, once Zimmer says the line gets an answer), and the screen goes to Replying.
 - **Races.** A tap within 0.8 s of the last one that counted is ignored (`LiveSendNow.debounce`). A
   tap after turn detection ended the turn sends nothing. Turn detection's own end of a turn Send
   now already ended, arriving late, is not a second end. What Send now sends is tagged
   (`event_id: zimmer_send_now_…`), so OpenAI refusing it because turn detection got there first
-  (an empty buffer, a reply already running) is not reported as a failure. Pressed while the driver
+  (`input_audio_buffer_commit_empty`, `conversation_already_has_active_response`) is not reported
+  as a failure. Any other refusal is, and the call goes back to Listening. A tap the car delivers
+  late, onto a call now muted or with its microphone lost, sends nothing. Pressed while the driver
   is talking over a reply, the reply is asked for once OpenAI has cancelled the one talked over.
 - **Turn detection settings.** Both, Semantic and Silence, get it: it ends the turn whichever is
   on, and changes nothing about either. There is no manual or push-to-talk mode to reuse. Under a
@@ -446,8 +449,8 @@ It does not press Mute or End. XCUITest finds the voice control template's two a
 and neither an element tap nor a coordinate tap reaches them. The five states they switch between
 are `LiveCallScreenTests`'; pressing them is confirmed only by driving. Send now is the same: on the
 reconnected scene the fixture shows Hearing you 4 seconds after the call screen goes up, which the
-drill photographs, and runs Send now's closure off the main thread 5 seconds later, where it finds
-nothing to send and the screen stays as it is. The gear is the same: its
+drill photographs, and runs Send now's closure off the main thread 5 seconds later. The call is not
+connected, so `LiveCall.sendNow` sends nothing (`ignored_empty`) and the screen stays as it is. The gear is the same: its
 hit point is {-1, -1}, and a click from the Mac at its place in the CarPlay window, tried from
 System Events, did not open the panel. So the fixture runs the gear's closure from a background
 thread 25 seconds after the call screen goes up. The drill proves the gear is on the screen, that its
