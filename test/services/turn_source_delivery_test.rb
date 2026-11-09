@@ -124,11 +124,11 @@ class TurnSourceDeliveryTest < ActiveJob::TestCase
     tagged = TurnSource.new(surface: "ios", modality: "text").annotate("Then deploy")
 
     attrs = EnqueuedMessage.attributes_for_prompt(tagged)
-    assert_equal({ content: "Then deploy", source_context: { "surface" => "ios", "modality" => "text" } }, attrs)
+    assert_equal({ content: "Then deploy", source_context: { "surface" => "ios", "modality" => "text" }, requeued: true }, attrs)
     session.enqueued_messages.create!(**attrs, position: 1)
 
     assert session.enqueued_messages.pending.exists?(content: EnqueuedMessage.contents_matching(tagged))
-    assert_equal({ content: "untagged", source_context: nil }, EnqueuedMessage.attributes_for_prompt("untagged"))
+    assert_equal({ content: "untagged", source_context: nil, requeued: true }, EnqueuedMessage.attributes_for_prompt("untagged"))
   end
 
   test "a web follow-up's sent_message clears when the delivered turn is its words plus the note" do
