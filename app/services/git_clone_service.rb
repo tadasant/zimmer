@@ -378,7 +378,13 @@ class GitCloneService
             # as TransientGitError so the caller (AgentSessionJob) can retry the
             # whole clone on a longer horizon instead of hard-failing the session —
             # a slow-transfer window can outlast our ~5-minute in-process budget.
-            logger.error(
+            #
+            # `warn`, not `error`: the caller still has its own retry budget, so
+            # this is not yet a failure anyone needs paging for. The ERROR — and
+            # the exception-tracker alert — belongs where a session actually gives
+            # up: AgentSessionJob#schedule_transient_clone_retry's exhaustion
+            # branch (#1475). Non-transient failures re-raise below untouched.
+            logger.warn(
               "git clone failed after retries",
               attempts: attempt,
               error: e.message

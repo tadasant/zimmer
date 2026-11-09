@@ -5998,13 +5998,21 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     # create_clone raises TransientGitError once its own in-process retries are
     # exhausted — the exact signal AgentSessionJob keys off to retry job-level.
+    rails_errors = []
     GitCloneService.stub(:create_clone, ->(*args) {
       raise GitCloneService::TransientGitError, "Failed to create clone: error: RPC failed; curl 28 early EOF"
     }) do
-      assert_enqueued_jobs 1, only: AgentSessionJob do
-        assert_nothing_raised { job.perform(@session.id) }
+      Rails.logger.stub(:error, ->(msg = nil, *) { rails_errors << msg }) do
+        assert_enqueued_jobs 1, only: AgentSessionJob do
+          assert_nothing_raised { job.perform(@session.id) }
+        end
       end
     end
+
+    # A clone that will be retried is not a failure anyone needs paging for (#1475).
+    clone_errors = rails_errors.select { |m| m.to_s.match?(/clone/i) }
+    assert_empty clone_errors,
+      "a transient clone failure with retries left must not log at ERROR; got: #{clone_errors.inspect}"
 
     @session.reload
     refute @session.failed?, "a transient clone failure must not fail the session"
@@ -6035,13 +6043,27 @@ class AgentSessionJobTest < ActiveJob::TestCase
     job.file_system = MockFileSystemAdapter.new
     job.cli_adapter = MockClaudeCliAdapter.new
 
+    rails_errors = []
     GitCloneService.stub(:create_clone, ->(*args) {
       raise GitCloneService::TransientGitError, "Failed to create clone: fetch-pack: unexpected disconnect"
     }) do
-      assert_no_enqueued_jobs only: AgentSessionJob do
-        assert_nothing_raised { job.perform(@session.id) }
+      Rails.logger.stub(:error, ->(msg = nil, *) { rails_errors << msg }) do
+        assert_no_enqueued_jobs only: AgentSessionJob do
+          assert_nothing_raised { job.perform(@session.id) }
+        end
       end
     end
+
+    # Exactly one ERROR — the page — for a session that really cannot clone (#1475).
+    clone_errors = rails_errors.select { |m| m.to_s.match?(/clone/i) }
+    assert_equal 1, clone_errors.length,
+      "job-level clone exhaustion must log exactly one ERROR; got: #{rails_errors.inspect}"
+    assert_includes clone_errors.first, "Session #{@session.id} exhausted its clone retry budget (startup)"
+    assert_includes clone_errors.first, "after #{AgentSessionJob::MAX_CLONE_JOB_RETRIES} automatic retries"
+    assert_includes clone_errors.first, "repo=#{@session.git_root}"
+    assert_includes clone_errors.first, "fetch-pack: unexpected disconnect"
+    assert_nil @session.reload.metadata["clone_retry_count"],
+      "giving up hands the budget back, so a restart starts with a full one"
 
     @session.reload
     assert @session.failed?, "should fail after exhausting the job-level retry budget"
@@ -6105,6 +6127,75 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     retry_log = @session.logs.find { |l| l.content.include?("(follow-up)") && l.content.include?("scheduling automatic retry") }
     assert retry_log, "should log the scheduled follow-up retry"
+  end
+
+  test "transient clone failure during follow-up logs one ERROR once the job-level budget is exhausted" do
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone",
+        "clone_retry_count" => AgentSessionJob::MAX_CLONE_JOB_RETRIES
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.file_system = MockFileSystemAdapter.new # clone_path does not exist → recreate
+
+    rails_errors = []
+    GitCloneService.stub(:create_clone, ->(*args) {
+      raise GitCloneService::TransientGitError, "Failed to create clone: Connection reset by peer"
+    }) do
+      Rails.logger.stub(:error, ->(msg = nil, *) { rails_errors << msg }) do
+        assert_no_enqueued_jobs only: AgentSessionJob do
+          assert_nothing_raised { job.perform(@session.id, "Follow up after restore") }
+        end
+      end
+    end
+
+    @session.reload
+    assert @session.failed?
+    assert_equal "git_clone_failed", @session.metadata["failure_reason"]
+    clone_errors = rails_errors.select { |m| m.to_s.match?(/clone/i) }
+    assert_equal 1, clone_errors.length,
+      "follow-up clone exhaustion must log exactly one ERROR; got: #{rails_errors.inspect}"
+    assert_includes clone_errors.first, "exhausted its clone retry budget (follow-up)"
+    assert_nil @session.metadata["clone_retry_count"]
+  end
+
+  test "successful follow-up re-clone clears a clone_retry_count left by earlier transient failures" do
+    @session.update!(
+      session_id: SecureRandom.uuid,
+      status: :running,
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      metadata: {
+        "clone_path" => "/tmp/deleted-clone",
+        "working_directory" => "/tmp/deleted-clone",
+        "clone_retry_count" => 2
+      }
+    )
+
+    job = AgentSessionJob.new
+    job.file_system = MockFileSystemAdapter.new # clone_path does not exist → recreate
+
+    # Stop right after the clone metadata is written; what follows is not under test.
+    @session.class.any_instance.stubs(:adopt_clone_subdirectory!).returns(false)
+    GitCloneService.stub(:create_clone, ->(*args) {
+      { clone_path: "/tmp/new-clone", working_directory: "/tmp/new-clone", subdirectory: nil }
+    }) do
+      job.stub(:restore_regressed_transcript_if_needed, ->(*) { raise "stop here" }) do
+        job.perform(@session.id, "Follow up after restore") rescue nil
+      end
+    end
+
+    @session.reload
+    assert_equal "/tmp/new-clone", @session.metadata["clone_path"]
+    assert_nil @session.metadata["clone_retry_count"],
+      "a successful follow-up re-clone ends the incident, so the budget is handed back"
   end
 
   test "successful clone clears a stale clone_retry_count from a prior transient failure" do
