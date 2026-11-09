@@ -641,6 +641,10 @@ module Mcp
         if (fit = session.carplay_fit_summary)
           lines << "- **CarPlay fit:** #{fit} — presentation and triage only; it does not affect scheduling."
         end
+        if session.carplay_engaged?
+          lines << "- **Engaged from CarPlay:** #{session.carplay_engaged_at.utc.iso8601} — so its CarPlay fit leans " \
+                   "`carplay_ok`, and is demoted only when a later judgement clearly needs a laptop."
+        end
 
         # High in the output, and deliberately: this is the section that answers
         # "has somebody already told this session something?", it is the reason a

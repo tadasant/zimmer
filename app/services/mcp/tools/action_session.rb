@@ -200,7 +200,7 @@ module Mcp
         - **update_notes**: Update the notes on a session (requires "session_notes")
         - **update_title**: Update the title of a session (requires "title")
         - **set_visibility**: Set a session's BOARD VISIBILITY — whether its card is on the human's dashboard (requires "visibility": "visible", "hidden" or "snoozed"; "snoozed" also requires "snoozed_until", with an optional "timezone"). **This is a visual-organization device and nothing else.** It does not start, stop, pause, sleep, wake, reorder or reschedule anything, no scheduler reads it, and a snoozed session runs exactly when it would have run had nobody touched it. Use it when a human asks you to tidy their board; never use it to try to stop or defer work — `pause`, `pause_into_spot_queue` and `change_precedence` are the actions that do that. A snooze ends by itself: once "snoozed_until" passes the session is back on the board with nothing having been written to it.
-        - **set_carplay_fit**: Mark whether what a session needs next from the human can be done BY VOICE, FROM A CAR (requires "carplay_fit": "carplay_ok", "laptop_only" or "clear"; optional "carplay_fit_reason"). Zimmer writes an `auto` mark itself every time a session comes to rest, from the same fork that writes its status summary, so most rows are already marked; set it by hand when a human tells you, or when you have read a summary and the auto mark is missing, stale or wrong. Provenance is taken from this connection — a session-stamped connection writes a `session` mark, any other an `assistant` one — and a standing `human` mark at the same transcript position outranks both, in which case the call reports that it kept the human's mark rather than overwriting it. A mark goes stale on its own once the session says anything new, and the next rest re-derives it. **Presentation and triage only:** it changes which rows `get_user_view` and `quick_search_sessions` return for a `carplay_fit` filter and nothing about scheduling, precedence or execution.
+        - **set_carplay_fit**: Mark whether what a session needs next from the human can be done BY VOICE, FROM A CAR (requires "carplay_fit": "carplay_ok", "laptop_only" or "clear"; optional "carplay_fit_reason"). Zimmer writes an `auto` mark itself every time a session comes to rest, from the same fork that writes its status summary, so most rows are already marked. A session started, followed up or acted on from CarPlay (including by a Live Mode conversation on CarPlay calling this tool, `start_session` or `quick_router`) is marked `carplay_ok` with source `carplay` without being asked: that mark does not go stale, the summary fork is told to lean `carplay_ok` for it, and it is demoted only by a later `laptop_only` judgement — so on CarPlay, call this only to mark `laptop_only` when a session clearly needs a screen or a keyboard. Set it by hand when a human tells you, or when you have read a summary and the auto mark is missing, stale or wrong. Provenance is taken from this connection — a session-stamped connection writes a `session` mark, any other an `assistant` one — and a standing `human` mark at the same transcript position outranks both, in which case the call reports that it kept the human's mark rather than overwriting it. A mark goes stale on its own once the session says anything new (except the `carplay` one), and the next rest re-derives it. **Presentation and triage only:** it changes which rows `get_user_view` and `quick_search_sessions` return for a `carplay_fit` filter and nothing about scheduling, precedence or execution.
         - **remove_uncle**: Detach a session recorded as an additional senior ("uncle") of this one (requires "uncle_session_id"). An uncle edge is written as a SIDE EFFECT of a follow-up or an interrupt, from an `acting_session_id` the caller declares about itself and nothing verifies — so one stale or mistyped id permanently attaches the wrong session as a senior, and because the hierarchy is the scope human messages are gathered over, it permanently widens what context both sessions carry. This is the way back. "session_id" is the JUNIOR (the session whose hierarchy grew) and "uncle_session_id" is the senior being detached; naming the pair the wrong way round is refused with the direction that does exist, rather than removing the opposite claim. It removes exactly that one edge — `parent_session_id` is never touched, no other edge is rewritten — and is recorded on BOTH sessions' timelines with when the edge was written, what entry point wrote it, and who removed it. A non-existent edge is an error rather than a silent success.
         - **bulk_archive**: Archive multiple sessions at once (requires "session_ids", no session_id needed). Sessions with queued messages, or with an agent turn in flight, are reported as errors and left alone unless "force" is set for the batch.
 
@@ -279,10 +279,31 @@ module Mcp
           raise ToolError, "The \"session_id\" parameter is required for the \"#{action}\" action."
         end
 
-        dispatch(action, args)
+        result = dispatch(action, args)
+        record_carplay_engagement(action, args)
+        result
       end
 
       private
+
+      # Actions that do not count as engaging a session from CarPlay: an explicit
+      # mark says what the mark should be, and an archive ends the session.
+      NOT_CARPLAY_ENGAGEMENT = %w[set_carplay_fit archive].freeze
+      private_constant :NOT_CARPLAY_ENGAGEMENT
+
+      # A CarPlay Live Mode conversation acting on a session keeps it in the
+      # driver's view (Sessions::RecordCarplayEngagement). After the action, so
+      # one that raised records nothing. `follow_up` records through
+      # Session#tag_turn as well; the second call is a no-op.
+      def record_carplay_engagement(action, args)
+        return unless Sessions::RecordCarplayEngagement.carplay?(context.turn_source)
+        return if !requires_session_id?(action) || NOT_CARPLAY_ENGAGEMENT.include?(action)
+
+        session = Session.locate(args["session_id"])
+        Sessions::RecordCarplayEngagement.call(session) if session
+      rescue StandardError => e
+        Rails.logger.error("[Mcp::Tools::ActionSession] Could not record CarPlay engagement: #{e.class}: #{e.message}")
+      end
 
       # The action list this variant exposes. SelfSessionActionSession narrows it.
       def allowed_actions

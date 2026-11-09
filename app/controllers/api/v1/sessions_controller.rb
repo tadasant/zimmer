@@ -68,6 +68,17 @@ class Api::V1::SessionsController < Api::BaseController
   # Before the lookup, so a refusal says nothing about which ids exist.
   before_action :require_a_person_on_the_app, only: [ :authorize_merge ]
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :update_visibility, :update_carplay_fit, :update_heartbeat, :authorize_merge ]
+  # A write to a session from the app's CarPlay screen keeps it in the driver's
+  # view (Sessions::RecordCarplayEngagement). Not the reads, not an explicit
+  # CarPlay-fit write, not an archive or a delete; a follow-up records through
+  # Session#tag_turn as well, which is a no-op the second time.
+  CARPLAY_ENGAGEMENT_ACTIONS = %i[
+    update unarchive follow_up pause sleep_session restart start_now force_start
+    reorder_precedence regenerate_status_summary refresh update_mcp_servers update_catalog_skills
+    update_catalog_hooks update_catalog_plugins update_model update_effort update_notes update_visibility
+    update_heartbeat authorize_merge
+  ].freeze
+  after_action :record_carplay_engagement, only: CARPLAY_ENGAGEMENT_ACTIONS
 
   # GET /api/v1/sessions
   # List all sessions with optional filtering and pagination.
@@ -1839,6 +1850,12 @@ class Api::V1::SessionsController < Api::BaseController
 
   def set_session
     @session = Session.locate!(params[:id])
+  end
+
+  def record_carplay_engagement
+    return unless @session&.persisted? && response.successful?
+
+    Sessions::RecordCarplayEngagement.from_source(@session, api_turn_source)
   end
 
   # Who a CarPlay-fit write over REST is from: `human` from the credential alone,

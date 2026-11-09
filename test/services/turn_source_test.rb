@@ -139,7 +139,8 @@ class TurnSourceTest < ActiveSupport::TestCase
   # The guarantee is structural: the value is written at input boundaries and read
   # only to render the note and to report it. A new reader is a new decision, and
   # has to be added here on purpose — and nothing that gates a permission, a merge,
-  # a scope or a spend may be one.
+  # a scope or a spend may be one. Sessions::RecordCarplayEngagement reads the
+  # surface to write a CarPlay-fit mark, which is presentation and triage only.
   READERS = %w[
     app/controllers/api/base_controller.rb
     app/controllers/api/v1/enqueued_messages_controller.rb
@@ -178,6 +179,7 @@ class TurnSourceTest < ActiveSupport::TestCase
     app/services/mcp/tools/start_session.rb
     app/services/orchestrator_system_prompt_builder.rb
     app/services/sessions/message_parent.rb
+    app/services/sessions/record_carplay_engagement.rb
     app/views/sessions/_session_metadata.html.erb
     app/services/process_lifecycle_manager.rb
     app/services/sigterm_retry_service.rb

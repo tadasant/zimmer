@@ -131,6 +131,10 @@ module ApiSessionSerialization
     json[:carplay_fit_set_at] = session.carplay_fit_set_at&.iso8601
     json[:carplay_fit_line_count] = session.carplay_fit_line_count
     json[:carplay_fit_summary] = session.carplay_fit_summary
+    # When a person last started, followed up or acted on this session from
+    # CarPlay. A `carplay_fit_source` of "carplay" is the mark that engagement
+    # wrote: it does not go stale, and is demoted only by a later judgement.
+    json[:carplay_engaged_at] = session.carplay_engaged_at&.iso8601
     json[:transcript] = session.transcript if include_transcript
 
     json
