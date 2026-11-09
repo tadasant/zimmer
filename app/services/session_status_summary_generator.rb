@@ -166,6 +166,24 @@ class SessionStatusSummaryGenerator
       removed; nobody reads it.
   RULE
 
+  # Appended under the trailer rule when the session was started or engaged from
+  # CarPlay (SessionCarplayFit#carplay_engaged?). A driver who touched it wants
+  # to keep it in view, so an ambiguous answer goes to `carplay_ok`; the fork
+  # still demotes when the next step clearly needs a screen or a keyboard.
+  CARPLAY_ENGAGED_BIAS_RULE = <<~RULE.strip
+    - This session was started or engaged from CarPlay, so its reader is
+      probably driving and wants to keep it in their view. Answer
+      `laptop_only` ONLY when the next step clearly needs a screen or a
+      keyboard (a credential, a console or checklist, their own device, a long
+      read). When it is ambiguous, answer `carplay_ok`.
+  RULE
+
+  # The trailer rule for this session: the bias rule rides along for a
+  # CarPlay-engaged one.
+  def self.carplay_fit_rules_for(session)
+    session.carplay_engaged? ? "#{CARPLAY_FIT_TRAILER_RULE}\n#{CARPLAY_ENGAGED_BIAS_RULE}" : CARPLAY_FIT_TRAILER_RULE
+  end
+
   # --- The pool-independent path (see #run_headless) --------------------------
 
   # Wall-clock budget for the one-shot completion. Generous enough for a long
@@ -888,7 +906,7 @@ class SessionStatusSummaryGenerator
 
       Rules:
       #{RECOMMENDATION_FIRST_RULE}
-      #{CARPLAY_FIT_TRAILER_RULE}
+      #{self.class.carplay_fit_rules_for(session)}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no
@@ -920,7 +938,7 @@ class SessionStatusSummaryGenerator
 
       Rules:
       #{RECOMMENDATION_FIRST_RULE}
-      #{CARPLAY_FIT_TRAILER_RULE}
+      #{self.class.carplay_fit_rules_for(session)}
       - Link instead of explaining. If a detail is worth more than a clause, link
         to where it lives rather than spending a sentence on it.
       - Markdown links only, no headings, no bullet lists, no preamble, no

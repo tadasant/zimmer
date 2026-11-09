@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_04_200000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -929,6 +929,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_04_200000) do
     t.datetime "archived_at"
     t.integer "auto_compact_window", default: 1000000, null: false
     t.string "branch", default: "main", null: false
+    t.datetime "carplay_engaged_at"
     t.string "carplay_fit"
     t.integer "carplay_fit_line_count"
     t.string "carplay_fit_reason"

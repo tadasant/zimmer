@@ -64,6 +64,11 @@ no reader sees it, and `StatusSummaryAnswer.apply_carplay_fit` writes it onto th
 stale together. A blurb that arrives without the line is stored exactly as before; the only thing
 missing is the mark.
 
+For a session engaged from CarPlay, `CARPLAY_ENGAGED_BIAS_RULE` rides along: answer `laptop_only`
+only when the next step clearly needs a screen or a keyboard, and `carplay_ok` when it is
+ambiguous. A `carplay_ok` for such a session is written as the sticky `carplay` mark rather than an
+`auto` one. See [CarPlay engagement](/sessions/carplay-fit/#carplay-engagement-is-the-sticky-default).
+
 ## Link, don't explain
 
 The summary is deliberately short and deliberately link-heavy. The rule the generating agent is given

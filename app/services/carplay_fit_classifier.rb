@@ -49,7 +49,8 @@ class CarplayFitClassifier
       session: session,
       fit: mark[:fit],
       reason: mark[:reason],
-      source: SessionCarplayFit::SOURCE_AUTO,
+      source: session.automatic_carplay_fit_source(mark[:fit]),
+      automatic: true,
       line_count: summary.transcript_line_count
     )
     return Result.new(outcome: :kept, message: written.message) unless written.applied?
@@ -58,6 +59,18 @@ class CarplayFitClassifier
   end
 
   private
+
+  # A CarPlay-engaged session leans `carplay_ok` when the panel is ambiguous —
+  # the same bias the status-summary fork is given.
+  def carplay_engaged_bias
+    return "" unless session.carplay_engaged?
+
+    <<~TEXT
+      This session was started or engaged from CarPlay: answer laptop_only only
+      when the next step CLEARLY needs a screen or a keyboard; when it is
+      ambiguous, answer carplay_ok.
+    TEXT
+  end
 
   def prompt(blurb)
     <<~PROMPT
@@ -75,7 +88,7 @@ class CarplayFitClassifier
       checklist to click through (manual_steps), something to run on their own
       machine or phone (local_device), or a long document or diff to read
       (long_read).
-
+      #{carplay_engaged_bias}
       Status panel:
       #{blurb}
     PROMPT

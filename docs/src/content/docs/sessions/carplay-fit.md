@@ -1,6 +1,6 @@
 ---
 title: CarPlay fit
-description: A per-session mark saying whether the next thing a session needs from you can be done by voice from a car, or needs a laptop. Derived from the status summary at every rest, overridable by hand, stale the moment the session moves, and read by nothing that schedules.
+description: A per-session mark saying whether the next thing a session needs from you can be done by voice from a car, or needs a laptop. Derived from the status summary at every rest, sticky for a session you touched from CarPlay, overridable by hand, and read by nothing that schedules.
 sidebar:
   order: 12
 ---
@@ -20,12 +20,14 @@ about when a session runs.
 | --- | --- | --- |
 | `carplay_fit` | `carplay_ok`, `laptop_only`, or none | The decision: can the next human action be taken by voice from a car? |
 | `carplay_fit_reason` | `decision`, `short_answer`, `long_read`, `manual_steps`, `credential`, `local_device`, `nothing_needed` | What kind of action the session is waiting on. |
-| `carplay_fit_source` | `auto`, `human`, `assistant`, `session` | Who wrote the mark. |
+| `carplay_fit_source` | `auto`, `human`, `assistant`, `session`, `carplay` | Who wrote the mark. `carplay` is the CarPlay-engagement default, and is only ever `carplay_ok`. |
 | `carplay_fit_set_at` | a time | When. |
 | `carplay_fit_line_count` | an integer | The session's transcript line count when the mark was written. |
 
 The five travel together through one writer, `Sessions::SetCarplayFit`, which every surface calls:
-the status-summary harvest, the web UI, the REST endpoint and the `set_carplay_fit` MCP action.
+the status-summary harvest, the web UI, the REST endpoint, the `set_carplay_fit` MCP action and
+CarPlay engagement. A sixth column, `carplay_engaged_at`, records when a person last touched the
+session from CarPlay.
 
 ## It decides nothing
 
@@ -74,10 +76,52 @@ Three other writers can override it:
   Unlike `set_visibility`, which that surface excludes, "what I need from the human next" is exactly
   self-knowledge; the `open-pr` skill holding a PR for a merge decision is the obvious caller.
 
+- **`carplay`** — CarPlay engagement, below. Ranks with `assistant` and `session`.
+
 **Precedence** is enforced in the writer. At the same transcript position `human` beats `assistant`
 and `session`, which beat `auto`; equal rank overwrites. A write the rule refuses is reported, not
 raised — the MCP action answers with "CarPlay Fit Kept" and the reason — because the caller that
 loses is usually the summary fork, and a lost precedence contest is not an error.
+
+## CarPlay engagement is the sticky default
+
+A session you start or touch from the car is one you want to keep track of from the car. So whenever
+a person engages a session from CarPlay, `Sessions::RecordCarplayEngagement` stamps
+`carplay_engaged_at` and writes a `carplay_ok` mark with source `carplay`. Every CarPlay entry path
+calls it:
+
+- **Creating** a session with a CarPlay turn source: the app's CarPlay screen over REST, or a Live
+  conversation on CarPlay calling `start_session` or `quick_router`.
+- **Following up**, on every delivery path (`Session#tag_turn`), and **queueing** a message, at the
+  moment it is queued.
+- **Any other `action_session` action** a CarPlay Live conversation takes on a session (unarchive,
+  pause, restart, change_goal, …), and the matching member writes over REST from the CarPlay client.
+
+Reads are not engagement: an assistant triaging the board looks at every row, and marking them all
+would empty the axis. Neither is `set_carplay_fit` (it says what the mark should be), hiding or
+snoozing the card, a refresh, a fork, an archive, or a message Zimmer puts back in the queue.
+
+The `carplay` mark is **sticky**: unlike every other mark it does not go stale when the session says
+something new, so the session stays in the driver's `not_laptop_only` view however long it runs.
+
+**Demotion needs clear evidence.** When an engaged session comes to rest, the status-summary fork is
+told it was engaged from CarPlay and to answer `laptop_only` only when the next step clearly needs a
+screen or a keyboard: a credential, a console or checklist, the person's own device, a long read.
+When it is ambiguous it answers `carplay_ok`. A `laptop_only` answer, written against a later
+transcript position than the engagement, replaces the sticky mark as an ordinary `auto` mark, and
+the session's timeline records the demotion. So does a `laptop_only` from the session itself, an
+assistant, or you. A `human` mark still outranks everything at the same position, and a `carplay_ok`
+from the fork for a session already holding the sticky mark leaves it in place, filling in the
+reason. A current `human` `carplay_ok` is not replaced by engagement (it outranks
+`carplay`), so it goes stale the ordinary way until the next rest re-judges it.
+
+**Re-promotion.** The fork's `carplay_ok` for an engaged session is written as the sticky `carplay`
+mark again. It still ranks as an automatic judgement, so at the same transcript position
+it never overwrites an `assistant`, `session` or `human` mark. That is how a session demoted for a credential gets back into the driver's view once the
+credential is in. Re-engaging from CarPlay does *not* override a **current** `laptop_only`: the
+session has not moved since it was judged, so the requirement still stands. The engagement is still
+recorded. It is usually a follow-up, so the session soon moves past the demotion, and the next rest
+re-judges it with the engagement in mind. A **stale** `laptop_only` is promoted at once.
 
 ## Staleness is counted in transcript lines
 
@@ -88,6 +132,7 @@ before that move was about an earlier state. Every filter treats a stale mark as
 summary line names it as stale, with how many messages have landed since. When the session next comes
 to rest, the fork writes a fresh `auto` mark, and a mark written against a later position always wins
 whoever wrote it.
+The CarPlay-engagement mark (source `carplay`) is the one exception, above: it does not go stale.
 
 There is no sweeper and no expiry job. Staleness is a comparison on read, which is what guarantees
 no background writer can ever race the lifecycle.
@@ -102,7 +147,7 @@ check is looking for.
 | --- | --- |
 | `carplay_ok` | Marked good for a driver, and the mark is current. |
 | `laptop_only` | Marked as needing a screen or a keyboard, and the mark is current. |
-| `untagged` | Never marked, or marked against an earlier transcript. |
+| `untagged` | Never marked, or marked against an earlier transcript (a `carplay` mark never counts). |
 | `not_laptop_only` | `carplay_ok` plus `untagged`. The driving default. |
 
 The filter is on the dashboard's Filters form, the iOS app's Filters sheet, on
@@ -126,6 +171,7 @@ marks are on the board.
 
 When the client driving a Live conversation is CarPlay, `LiveConversations::SystemPrompt` adds one
 line to the mechanics section Zimmer writes: that the person is in a car, that sessions carry a
-CarPlay fit, and which tools filter and set it. Zimmer states the fact; what to do with it belongs to
+CarPlay fit, which tools filter and set it, and that a session it starts, follows up or acts on is
+marked `carplay_ok` on its own. Zimmer states the fact; what to do with it belongs to
 the `live-mode` root's own `modes/voice.md`, which is where the driving guidance lives. See
 [Live Mode](/sessions/live/#the-agent-root-is-the-system-prompt).

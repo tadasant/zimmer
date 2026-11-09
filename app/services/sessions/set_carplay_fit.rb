@@ -3,9 +3,10 @@
 module Sessions
   # Writes a session's CarPlay fit — and nothing else.
   #
-  # Every writer routes through here: the status-summary harvest (`auto`), the
-  # web UI (`human`), the REST endpoint, and the `set_carplay_fit` MCP action on
-  # both the full and the self-session surface. That is what makes the
+  # Every writer routes through here: the status-summary harvest (`auto`, or
+  # `carplay` for an engaged session), the web UI (`human`), the REST endpoint,
+  # the `set_carplay_fit` MCP action on both the full and the self-session
+  # surface, and CarPlay engagement (Sessions::RecordCarplayEngagement). That is what makes the
   # precedence rule a rule rather than a convention: at the same transcript
   # position a `human` mark beats `assistant` and `session`, which beat `auto`,
   # and a mark written against a later position always wins. A write the rule
@@ -33,12 +34,17 @@ module Sessions
     #   and the blurb it came from are stamped alike.
     # @return [Result]
     # @raise [Error] on a value off the lists
-    def self.call(session:, fit:, source:, reason: nil, line_count: nil)
-      new(session: session, fit: fit, source: source, reason: reason, line_count: line_count).call
+    # @param automatic [Boolean] the write is an automatic judgement (the summary
+    #   fork, the backfill classifier) even when its source is `carplay`. It then
+    #   ranks as `auto` in a same-position contest, so restoring the sticky
+    #   default never overwrites an assistant's or a session's mark at that line.
+    def self.call(session:, fit:, source:, reason: nil, line_count: nil, automatic: false)
+      new(session: session, fit: fit, source: source, reason: reason, line_count: line_count, automatic: automatic).call
     end
 
-    def initialize(session:, fit:, source:, reason: nil, line_count: nil)
+    def initialize(session:, fit:, source:, reason: nil, line_count: nil, automatic: false)
       @session = session
+      @automatic = automatic
       @fit = normalize_fit(fit)
       @source = source.to_s.strip
       @reason = reason.to_s.strip.presence
@@ -53,7 +59,9 @@ module Sessions
       if (standing = standing_mark_that_outranks_this_write)
         return Result.new(applied: false, session: session, message: standing)
       end
+      return keep_the_sticky_default if reconfirms_the_sticky_default?
 
+      @replacing_sticky = session.carplay_fit_sticky?
       session.update!(
         carplay_fit: fit,
         carplay_fit_reason: fit.nil? ? nil : reason,
@@ -82,6 +90,9 @@ module Sessions
       unless SessionCarplayFit::SOURCES.include?(source)
         raise Error, "Unknown carplay_fit source \"#{source}\". Valid values: #{SessionCarplayFit::SOURCES.join(', ')}."
       end
+      if source == SessionCarplayFit::SOURCE_CARPLAY && fit != SessionCarplayFit::CARPLAY_OK
+        raise Error, "A carplay-source mark is the CarPlay-engagement default and is only ever carplay_ok."
+      end
       if reason && !SessionCarplayFit::REASONS.include?(reason)
         raise Error, "Unknown carplay_fit reason \"#{reason}\". Valid values: #{SessionCarplayFit::REASONS.join(', ')}."
       end
@@ -98,10 +109,32 @@ module Sessions
       return nil if session.carplay_fit_line_count < line_count
 
       standing_rank = SessionCarplayFit::SOURCE_RANK.fetch(session.carplay_fit_source, -1)
-      return nil if standing_rank <= SessionCarplayFit::SOURCE_RANK.fetch(source)
+      return nil if standing_rank <= incoming_rank
 
       "Kept the standing #{session.carplay_fit_source} mark (#{session.carplay_fit_summary}): it was written " \
-        "against the same or a later transcript position and a #{session.carplay_fit_source} mark outranks a #{source} one."
+        "against the same or a later transcript position and a #{session.carplay_fit_source} mark outranks " \
+        "#{@automatic ? 'an automatic judgement' : "a #{source} one"}."
+    end
+
+    def incoming_rank
+      @automatic ? SessionCarplayFit::SOURCE_RANK.fetch(SessionCarplayFit::SOURCE_AUTO) : SessionCarplayFit::SOURCE_RANK.fetch(source)
+    end
+
+    # An automatic or engagement `carplay_ok` landing on a session that already
+    # holds the sticky CarPlay default agrees with it. Rewriting would restamp
+    # the mark and log a timeline line on every rest for no change, so the
+    # standing mark is kept — gaining the judgement's reason when it had none
+    # or a different one.
+    def reconfirms_the_sticky_default?
+      session.carplay_fit_sticky? &&
+        fit == SessionCarplayFit::CARPLAY_OK &&
+        [ SessionCarplayFit::SOURCE_AUTO, SessionCarplayFit::SOURCE_CARPLAY ].include?(source)
+    end
+
+    def keep_the_sticky_default
+      session.update!(carplay_fit_reason: reason) if reason && reason != session.carplay_fit_reason
+      Result.new(applied: false, session: session,
+                 message: "Kept the standing CarPlay-engagement mark (#{session.carplay_fit_summary}): it already says carplay_ok.")
     end
 
     # One line on the session's own timeline for every write a person or an
@@ -109,11 +142,17 @@ module Sessions
     # The automatic mark is deliberately not logged: it is written at every rest,
     # and a timeline line per rest is noise next to the summary that carries the
     # same judgement. Best-effort — a timeline write must not fail the mark.
+    # The one automatic write that IS logged is a demotion of the sticky CarPlay
+    # default: the driver's view just lost a session they engaged, and the
+    # timeline is where they can see why.
     def note_on_timeline
-      return if source == SessionCarplayFit::SOURCE_AUTO
+      return if source == SessionCarplayFit::SOURCE_AUTO && !@replacing_sticky
 
       content = if fit.nil?
         "CarPlay fit cleared by #{source}"
+      elsif @replacing_sticky && fit == SessionCarplayFit::LAPTOP_ONLY
+        "CarPlay fit demoted from the CarPlay-engagement default to #{SessionCarplayFit::LABELS.fetch(fit)}" \
+          "#{reason ? " (#{SessionCarplayFit::REASON_LABELS.fetch(reason)})" : ''} by #{source}"
       else
         "CarPlay fit set to #{SessionCarplayFit::LABELS.fetch(fit)}#{reason ? " (#{SessionCarplayFit::REASON_LABELS.fetch(reason)})" : ''} by #{source}"
       end

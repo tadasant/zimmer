@@ -314,12 +314,21 @@ can be done by voice from a car. Five fields travel together on every serialized
 
 - `carplay_fit` — `"carplay_ok"`, `"laptop_only"`, or `null` (untagged).
 - `effective_carplay_fit` — that mark with staleness already resolved: `null` once the session has
-  written past `carplay_fit_line_count`. A board filtering for a driver reads this one.
+  written past `carplay_fit_line_count`, except for a `carplay` mark, which does not go stale. A
+  board filtering for a driver reads this one.
 - `carplay_fit_reason` — `decision`, `short_answer`, `long_read`, `manual_steps`, `credential`,
   `local_device`, `nothing_needed`, or `null`.
-- `carplay_fit_source` — `auto` (the status-summary fork at rest), `human`, `assistant` or `session`.
+- `carplay_fit_source` — `auto` (the status-summary fork at rest), `human`, `assistant`, `session`,
+  or `carplay` (the session was started, followed up or acted on from CarPlay; always `carplay_ok`).
 - `carplay_fit_set_at`, `carplay_fit_line_count` — when, and the transcript position it was judged
   against. `carplay_fit_summary` is the one-line English rendering the dashboard and MCP show.
+- `carplay_engaged_at` — when a person last started, followed up or wrote to the session from
+  CarPlay, or `null`. A write over REST from the CarPlay client (`X-Zimmer-Client: carplay/…`) — a
+  create, a follow-up, a queued message, `unarchive`, `pause`, `restart` and the other member
+  writes, but not reads, `visibility`, `refresh`, `fork`, `archive`, `DELETE` or
+  `PATCH …/carplay_fit` — stamps it and marks the
+  session `carplay_ok` with source `carplay`. See
+  [CarPlay engagement](/sessions/carplay-fit/#carplay-engagement-is-the-sticky-default).
 
 `GET /sessions` and `GET /sessions/search` take an **optional** `carplay_fit` filter: `carplay_ok`,
 `laptop_only`, `untagged`, or `not_laptop_only` (the driving default: good plus not yet judged). A

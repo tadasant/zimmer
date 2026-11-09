@@ -41,6 +41,7 @@ class SessionDashboard < Administrate::BaseDashboard
     carplay_fit_source: Field::String,
     carplay_fit_set_at: Field::DateTime,
     carplay_fit_line_count: Field::Number,
+    carplay_engaged_at: Field::DateTime,
     archived_at: Field::DateTime,
     trash_after: Field::DateTime,
     # The scheduling axes. Both are plain strings/integers on the model rather than

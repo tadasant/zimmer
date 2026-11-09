@@ -17,8 +17,9 @@
 #                              waiting on
 # - `carplay_fit_source`     — who wrote it: `auto` (the status-summary fork at
 #                              rest), `human` (the UI), `assistant` (Live Mode
-#                              or another MCP client), or `session` (a session
-#                              about itself)
+#                              or another MCP client), `session` (a session
+#                              about itself), or `carplay` (the session was
+#                              started or engaged from CarPlay — see below)
 # - `carplay_fit_set_at`     — when
 # - `carplay_fit_line_count` — the session's `transcript_line_count` when the
 #                              mark was written
@@ -31,6 +32,19 @@
 # here treats a stale mark as untagged, and every summary names it as stale.
 # When the session next comes to rest, the status-summary fork writes a fresh
 # `auto` mark (SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE).
+#
+# **CarPlay engagement makes `carplay_ok` the sticky default.** A session a
+# person starts, follows up or acts on from CarPlay — directly, or through a
+# Live Mode conversation whose client is CarPlay — is stamped
+# `carplay_engaged_at` and marked `carplay_ok` with source `carplay`
+# (Sessions::RecordCarplayEngagement). A `carplay` mark is the one mark that
+# does NOT go stale: the driver started this, so it stays in their
+# `not_laptop_only` view however much the session says afterwards. It is
+# demoted only by a later `laptop_only` judgement — the status-summary fork at
+# rest (told the session is CarPlay-engaged and to answer `laptop_only` only on
+# clear evidence), the session itself, an assistant, or a human — and the
+# fork's `carplay_ok` for an engaged session writes the sticky mark back
+# (#automatic_carplay_fit_source). A `carplay` mark is only ever `carplay_ok`.
 #
 # **Precedence between writers**, enforced by Sessions::SetCarplayFit: at the
 # same transcript position a `human` mark beats `assistant` and `session`, which
@@ -69,15 +83,20 @@ module SessionCarplayFit
   SOURCE_HUMAN = "human"
   SOURCE_ASSISTANT = "assistant"
   SOURCE_SESSION = "session"
-  SOURCES = [ SOURCE_AUTO, SOURCE_HUMAN, SOURCE_ASSISTANT, SOURCE_SESSION ].freeze
+  SOURCE_CARPLAY = "carplay"
+  SOURCES = [ SOURCE_AUTO, SOURCE_HUMAN, SOURCE_ASSISTANT, SOURCE_SESSION, SOURCE_CARPLAY ].freeze
 
   # Who outranks whom at the same transcript position. `assistant` and `session`
   # tie: an agent reading the summary and the session reading its own state are
-  # the same quality of judgement, and either may correct the other.
+  # the same quality of judgement, and either may correct the other. `carplay`
+  # ties with them too: a person driving the session from the car is at least as
+  # strong a signal as an assistant's read, and weaker than a human's explicit
+  # mark.
   SOURCE_RANK = {
     SOURCE_AUTO => 0,
     SOURCE_SESSION => 1,
     SOURCE_ASSISTANT => 1,
+    SOURCE_CARPLAY => 1,
     SOURCE_HUMAN => 2
   }.freeze
 
@@ -110,16 +129,23 @@ module SessionCarplayFit
   }.freeze
 
   # A mark is current while the session has not written a line past the one it
-  # was written against. Spelled once, as SQL, so the scopes and the predicate
+  # was written against — or, for a `carplay` mark, always: CarPlay engagement
+  # is the sticky default. Spelled once, as SQL, so the scopes and the predicate
   # below cannot drift.
-  CURRENT_SQL = "(sessions.carplay_fit IS NOT NULL AND sessions.carplay_fit_line_count IS NOT NULL " \
-                "AND sessions.carplay_fit_line_count >= sessions.transcript_line_count)"
+  CURRENT_SQL = "(sessions.carplay_fit IS NOT NULL AND ((COALESCE(sessions.carplay_fit_source, '') = '#{SOURCE_CARPLAY}' " \
+                "AND sessions.carplay_fit = '#{CARPLAY_OK}') " \
+                "OR (sessions.carplay_fit_line_count IS NOT NULL " \
+                "AND sessions.carplay_fit_line_count >= sessions.transcript_line_count)))"
   private_constant :CURRENT_SQL
 
   included do
     validates :carplay_fit, inclusion: { in: FITS, message: "%{value} is not a valid CarPlay fit" }, allow_nil: true
     validates :carplay_fit_reason, inclusion: { in: REASONS, message: "%{value} is not a valid CarPlay fit reason" }, allow_nil: true
     validates :carplay_fit_source, inclusion: { in: SOURCES, message: "%{value} is not a valid CarPlay fit source" }, allow_nil: true
+    # The CarPlay-engagement default only ever says `carplay_ok`; a demotion is
+    # written under whoever made it.
+    validates :carplay_fit, inclusion: { in: [ CARPLAY_OK ], message: "must be carplay_ok when its source is carplay" },
+                            if: -> { carplay_fit_source == SOURCE_CARPLAY }
 
     # Sessions whose mark is current, whatever it says.
     scope :carplay_fit_current, -> { where(CURRENT_SQL) }
@@ -144,7 +170,30 @@ module SessionCarplayFit
   # The row-level counterpart of `carplay_fit_current`; keep the two answering
   # identically.
   def carplay_fit_current?
-    carplay_fit.present? && !carplay_fit_line_count.nil? && carplay_fit_line_count >= transcript_line_count.to_i
+    return false if carplay_fit.blank?
+    return true if carplay_fit_sticky?
+
+    !carplay_fit_line_count.nil? && carplay_fit_line_count >= transcript_line_count.to_i
+  end
+
+  # Whether the mark is the CarPlay-engagement default, which does not go stale.
+  def carplay_fit_sticky?
+    carplay_fit_source == SOURCE_CARPLAY && carplay_fit == CARPLAY_OK
+  end
+
+  # Whether a person has started, followed up or acted on this session from
+  # CarPlay. Biases every automatic judgement toward `carplay_ok`.
+  def carplay_engaged?
+    carplay_engaged_at.present?
+  end
+
+  # The source an automatic judgement (the status-summary fork's trailer, the
+  # backfill classifier) is written under. A `carplay_ok` judgement on a
+  # CarPlay-engaged session restores the sticky `carplay` default — the way a
+  # session demoted to `laptop_only` gets back into the driver's view once the
+  # requirement is gone. Everything else is an ordinary `auto` mark.
+  def automatic_carplay_fit_source(fit)
+    carplay_engaged? && fit.to_s == CARPLAY_OK ? SOURCE_CARPLAY : SOURCE_AUTO
   end
 
   # The mark as every read surface should treat it: the stored value while it is
@@ -153,9 +202,10 @@ module SessionCarplayFit
     carplay_fit_current? ? carplay_fit : nil
   end
 
-  # Transcript lines written since the mark. Zero while it is current.
+  # Transcript lines written since the mark. Zero while it is current (always,
+  # for the sticky CarPlay default).
   def carplay_fit_messages_since
-    return 0 if carplay_fit.blank? || carplay_fit_line_count.nil?
+    return 0 if carplay_fit.blank? || carplay_fit_line_count.nil? || carplay_fit_sticky?
 
     [ transcript_line_count.to_i - carplay_fit_line_count, 0 ].max
   end
@@ -166,6 +216,7 @@ module SessionCarplayFit
   # deciding whether to trust it wants to know it was there and that it is old.
   #
   #   "CarPlay-ok (a decision) · auto · current"
+  #   "CarPlay-ok · carplay · engaged from CarPlay, held until demoted"
   #   "Laptop only (a credential) · human · stale, 4 message(s) since"
   def carplay_fit_summary
     return nil if carplay_fit.blank?
@@ -173,7 +224,10 @@ module SessionCarplayFit
     parts = [ LABELS.fetch(carplay_fit, carplay_fit) ]
     parts[0] = "#{parts[0]} (#{REASON_LABELS.fetch(carplay_fit_reason, carplay_fit_reason)})" if carplay_fit_reason.present?
     parts << carplay_fit_source if carplay_fit_source.present?
-    parts << (carplay_fit_current? ? "current" : "stale, #{carplay_fit_messages_since} message(s) since")
+    parts << if carplay_fit_sticky? then "engaged from CarPlay, held until demoted"
+    elsif carplay_fit_current? then "current"
+    else "stale, #{carplay_fit_messages_since} message(s) since"
+    end
     parts.join(" · ")
   end
 
