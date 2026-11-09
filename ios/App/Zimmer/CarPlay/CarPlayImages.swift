@@ -27,16 +27,12 @@ enum CarPlayImages {
     /// an image and carries its words as a title. `CPTextButton` is a different class and is not
     /// one of these.
     ///
-    /// CarPlay draws the button itself and gives Zimmer no view to label, and the Simulator's
-    /// CarPlay window labels these buttons by their symbol ("hang up"). So the words go on the
-    /// image too, as its accessibility label and hint, for whatever the car's VoiceOver reads.
+    /// CarPlay draws only the symbol, and labels the button for accessibility by the symbol
+    /// alone: the CarPlay drill reads "hang up" for End, and an accessibility label set on the
+    /// image is not carried over. So the symbol is the button's words, and is chosen for them.
     @available(iOS 26.4, *)
-    @MainActor
-    static func actionButton(_ title: String, symbol name: String, hint: String, handler: @escaping (CPButton) -> Void) -> CPButton {
-        let image = symbol(name, pointSize: 24, weight: .medium)
-        image.accessibilityLabel = title
-        image.accessibilityHint = hint
-        let button = CPButton(image: image, handler: handler)
+    static func actionButton(_ title: String, symbol name: String, handler: @escaping (CPButton) -> Void) -> CPButton {
+        let button = CPButton(image: symbol(name, pointSize: 24, weight: .medium), handler: handler)
         button.title = title
         return button
     }

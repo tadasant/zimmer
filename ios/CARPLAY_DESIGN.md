@@ -386,10 +386,12 @@ reply to nothing).
   5 s; under Silence the pause still to run at the tap; and `auto_soon` when either is within
   1.5 s. Many sends with `auto_soon` false say turn detection is waiting too long; many with it true
   say the button is saving little. Never what was said.
-- **Accessibility.** Each action button's image carries its title and a hint as its accessibility
-  label and hint ("Ends your turn and sends what you said"). CarPlay draws the button, and the
-  Simulator labels it by its symbol, so what a car's VoiceOver reads is unconfirmed. A rotary knob
-  or touchpad reaches it as it reaches Mute: the template's buttons are the system's to focus.
+- **Accessibility.** CarPlay draws only an action button's symbol, not its title, and labels it
+  for accessibility by the symbol alone: the drill reads "hang up" for End, and "Arrow Up Circle"
+  for the first Send now, whose image carried an accessibility label CarPlay did not use. So the
+  symbol is the label: a paper plane (`paperplane.fill`). The drill records the label it reads. A
+  rotary knob or touchpad reaches it as it reaches Mute: the template's buttons are the system's
+  to focus.
   Siri cannot press a template's button; saying "send" does nothing a pause would not.
 - **Unconfirmed.** OpenAI's documents say a commit under server turn detection is allowed and
   starts no reply. Whether turn detection then stays quiet for the rest of the same speech, or

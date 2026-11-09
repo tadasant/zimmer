@@ -475,11 +475,11 @@ final class CarPlayLive {
             if #available(iOS 26.4, *) {
                 // Send now takes Mute's place, so End stays where the driver's hand knows it.
                 let first = identifier == LiveCallScreen.sendNowState
-                    ? CarPlayImages.actionButton(LiveCallScreen.sendNowTitle, symbol: "arrow.up.circle.fill", hint: LiveCallScreen.sendNowHint, handler: sendNowPressed)
-                    : CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill", hint: "Turns the microphone off or on", handler: CarPlayImages.tapped("mute") { [weak self] in self?.call.toggleMute() })
+                    ? CarPlayImages.actionButton(LiveCallScreen.sendNowTitle, symbol: LiveCallScreen.sendNowSymbol, handler: sendNowPressed)
+                    : CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill", handler: CarPlayImages.tapped("mute") { [weak self] in self?.call.toggleMute() })
                 voiceState.actionButtons = [
                     first,
-                    CarPlayImages.actionButton("End", symbol: "phone.down.fill", hint: "Ends the call", handler: CarPlayImages.tapped("end") { [weak self] in self?.hangUp() }),
+                    CarPlayImages.actionButton("End", symbol: "phone.down.fill", handler: CarPlayImages.tapped("end") { [weak self] in self?.hangUp() }),
                 ]
             }
             return voiceState
@@ -522,7 +522,7 @@ final class CarPlayLive {
             try? await Task.sleep(for: .seconds(5))
             guard let press = self.drillSendNow else { return }
             nonisolated(unsafe) let pressed = press
-            nonisolated(unsafe) let button = CPButton(image: CarPlayImages.bar("arrow.up.circle.fill"), handler: { _ in })
+            nonisolated(unsafe) let button = CPButton(image: CarPlayImages.bar(LiveCallScreen.sendNowSymbol), handler: { _ in })
             DispatchQueue.global().async { pressed(button) }
         }
         Task {

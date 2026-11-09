@@ -53,7 +53,7 @@ final class LiveCallScreenTests: XCTestCase {
         XCTAssertFalse(LiveCallScreen.offersSendNow(for: .listening, muted: false, microphoneLost: true, speechHeard: true), "microphone lost")
         XCTAssertEqual(LiveCallScreen.title(for: LiveCallScreen.sendNowState), "Hearing you")
         XCTAssertLessThanOrEqual(LiveCallScreen.sendNowTitle.count, 10, "two short words a driver takes in at a glance")
-        XCTAssertFalse(LiveCallScreen.sendNowHint.isEmpty, "VoiceOver says what it does")
+        XCTAssertEqual(LiveCallScreen.sendNowSymbol, "paperplane.fill", "the symbol is what CarPlay draws and what VoiceOver reads")
     }
 
     func testTheConductorOpensACallWithALineAndAsksForTheReply() {

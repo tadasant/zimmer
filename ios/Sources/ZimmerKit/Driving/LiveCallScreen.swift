@@ -67,7 +67,9 @@ public enum LiveCallScreen {
         }
     }
 
-    /// The Send now button: its words, and what VoiceOver says it does. Two words, no reading.
+    /// The Send now button. CarPlay draws only its symbol, and labels it for accessibility by
+    /// the symbol alone (the drill reads "hang up" for End's `phone.down.fill`), so the symbol is
+    /// both what the driver sees and what VoiceOver says: a paper plane, the send everyone knows.
     public static let sendNowTitle = "Send now"
-    public static let sendNowHint = "Ends your turn and sends what you said"
+    public static let sendNowSymbol = "paperplane.fill"
 }
