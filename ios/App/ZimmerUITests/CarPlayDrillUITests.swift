@@ -109,6 +109,8 @@ final class CarPlayDrillUITests: XCTestCase {
         let hearing = text("Hearing you").waitForExistence(timeout: timeout)
         photograph("carplay-call-screen-send-now")
         record("the call screen with Send now", car.debugDescription)
+        // What CarPlay calls the button, which is what VoiceOver reads: the symbol's own words.
+        record("the call screen's button labels", car.buttons.allElementsBoundByIndex.map(\.label).joined(separator: "\n"))
         XCTAssertTrue(hearing, "Send now's state goes up; the car showed:\n\(car.debugDescription)")
         Thread.sleep(forTimeInterval: 7)
         assertAlive("after Send now's closure ran off the main thread")

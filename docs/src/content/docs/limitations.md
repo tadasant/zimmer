@@ -299,7 +299,7 @@ The fixture runs the gear's closure 25 seconds after the call screen goes up, on
 
 ### Send now in the car has never ended a real turn
 
-CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by committing the audio buffer and asking for the reply. Its rules are unit-tested (`LiveSendNowTests`), and the CarPlay drill shows its button and runs its handler, but no call in CI connects, so it has never run against OpenAI or in a car. OpenAI documents a commit under server turn detection as allowed. What turn detection does with the rest of the same speech after one is not documented: if it ends that speech again, a short second line can follow the first. `turn.send_now_followup` in the call log says which happens. What a car's VoiceOver reads for the button is also unconfirmed: the Simulator labels CarPlay's action buttons by their symbol.
+CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by committing the audio buffer and asking for the reply. Its rules are unit-tested (`LiveSendNowTests`), and the CarPlay drill shows its button and runs its handler, but no call in CI connects, so it has never run against OpenAI or in a car. OpenAI documents a commit under server turn detection as allowed. What turn detection does with the rest of the same speech after one is not documented: if it ends that speech again, a short second line can follow the first. `turn.send_now_followup` in the call log says which happens. CarPlay labels its action buttons for VoiceOver by their symbol alone, ignoring any label Zimmer sets, so Send now reads as whatever words iOS gives a paper plane symbol, which the CarPlay drill records.
 
 ### A sheet presented from inside a `List` row can reset itself
 
