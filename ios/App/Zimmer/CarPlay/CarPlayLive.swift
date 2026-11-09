@@ -27,11 +27,17 @@ import os
 /// While the call runs the screen is a voice control template, as Apple requires of a
 /// voice-based conversational app while it records, and it is kept minimal:
 ///
-/// - the call's state as its picture and title — Connecting…, Listening, Speaking, Working on
-///   it…, or Muted while the microphone is off: the five states CarPlay keeps
-///   (`LiveCallScreen`);
-/// - Mute and End, the two action buttons iOS 26.4 allows;
+/// - the call's state as its picture and title — Connecting…, Listening, Hearing you, Replying,
+///   or Muted while the microphone is off: the five states CarPlay keeps (`LiveCallScreen`);
+/// - Mute and End, the two action buttons iOS 26.4 allows, with **Send now** in Mute's place
+///   while the driver is heard and turn detection has not ended the turn (Hearing you);
 /// - a gear, the leading bar button, to the voice settings.
+///
+/// **Send now ends the driver's turn when turn detection has not.** One tap, no confirmation:
+/// the speech heard so far goes up and the reply is asked for (`LiveCall.sendNow`,
+/// `RealtimeConductor.endTurn`). It is there only while there is speech to send, so it is never
+/// on screen while Zimmer replies, and a tap that arrives after the turn ended anyway sends
+/// nothing. The heard cue says it went; there is nothing to read.
 ///
 /// **The gear ends the call, and closing the panel brings it back.** CarPlay allows recording only
 /// with the voice control template on screen, and a list cannot be presented over it: it is
@@ -71,6 +77,10 @@ final class CarPlayLive {
     private var drillPressedTheGear = false
     /// What CarPlay runs for a tap on the gear, for the drill to run the same way.
     private var drillGear: (press: (CPBarButton) -> Void, button: CPBarButton)?
+    /// What CarPlay runs for a tap on Send now, for the drill to run the same way.
+    private var drillSendNow: ((CPButton) -> Void)?
+    /// The drill is showing Send now's state on a call that never hears anyone.
+    private var drillHearing = false
     #endif
     /// The panel is closing, waiting for the driver's last write.
     private var settingsClosing = false
@@ -97,6 +107,10 @@ final class CarPlayLive {
             MainActor.assumeIsolated { self?.muteChanged() }
         }.store(in: &watchers)
         call.$microphoneLost.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.activate() }
+        }.store(in: &watchers)
+        // Speech heard, or the turn ended: Send now comes and goes with it.
+        call.$canSendNow.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.activate() }
         }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
@@ -231,6 +245,13 @@ final class CarPlayLive {
         onChange?()
     }
 
+    /// Send now. The screen the tap came from is in the log, because CarPlay may deliver a tap on
+    /// a state that has just been replaced.
+    private func sendNow() {
+        telemetry.track(.carPlay("send_now_tapped", ["screen": .string(screenIdentifier)]))
+        call.sendNow()
+    }
+
     /// The driver ended the call: nothing is retried after it.
     func hangUp() {
         telemetry.track(.carPlay("end_tapped"))
@@ -264,6 +285,9 @@ final class CarPlayLive {
         guard let navigator, settings == nil,
               let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted) else { return }
         telemetry.track(.carPlay("settings_opened", ["state": .string(String(describing: call.state))]))
+        #if DEBUG
+        drillHearing = false
+        #endif
         comeback = ended
         retryWait?.cancel()
         retry.stopped()
@@ -440,6 +464,7 @@ final class CarPlayLive {
     /// Mute included — is one `activate`. Five states: CarPlay ignores any after the fifth. The
     /// gear belongs to the template rather than to a state, and is set here, once.
     private func build() -> CPVoiceControlTemplate {
+        let sendNowPressed: (CPButton) -> Void = CarPlayImages.tapped("send_now") { [weak self] in self?.sendNow() }
         let states = LiveCallScreen.identifiers.map { identifier -> CPVoiceControlState in
             let voiceState = CPVoiceControlState(
                 identifier: identifier,
@@ -448,15 +473,22 @@ final class CarPlayLive {
                 repeats: false
             )
             if #available(iOS 26.4, *) {
+                // Send now takes Mute's place, so End stays where the driver's hand knows it.
+                let first = identifier == LiveCallScreen.sendNowState
+                    ? CarPlayImages.actionButton(LiveCallScreen.sendNowTitle, symbol: "arrow.up.circle.fill", hint: LiveCallScreen.sendNowHint, handler: sendNowPressed)
+                    : CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill", hint: "Turns the microphone off or on", handler: CarPlayImages.tapped("mute") { [weak self] in self?.call.toggleMute() })
                 voiceState.actionButtons = [
-                    CarPlayImages.actionButton("Mute", symbol: "mic.slash.fill", handler: CarPlayImages.tapped("mute") { [weak self] in self?.call.toggleMute() }),
-                    CarPlayImages.actionButton("End", symbol: "phone.down.fill", handler: CarPlayImages.tapped("end") { [weak self] in self?.hangUp() }),
+                    first,
+                    CarPlayImages.actionButton("End", symbol: "phone.down.fill", hint: "Ends the call", handler: CarPlayImages.tapped("end") { [weak self] in self?.hangUp() }),
                 ]
             }
             return voiceState
         }
         let screen = CPVoiceControlTemplate(voiceControlStates: states)
         if #available(iOS 26.4, *) {
+            #if DEBUG
+            drillSendNow = sendNowPressed
+            #endif
             let pressed: (CPBarButton) -> Void = CarPlayImages.tapped("gear") { [weak self] in self?.openSettings() }
             let gear = CPBarButton(image: CarPlayImages.bar("gearshape.fill"), handler: pressed)
             screen.leadingNavigationBarButtons = [gear]
@@ -468,9 +500,10 @@ final class CarPlayLive {
     }
 
     #if DEBUG
-    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: the Swift closure behind the gear,
-    /// once, a while after the call screen goes up on the scene the drill reconnected, and off the
-    /// main thread, the one way a tap can arrive that the Simulator never shows. XCUITest computes
+    /// `-ZimmerFixtureVoiceTurnedUp`, for the CarPlay drill: Send now's state and closure, then the
+    /// Swift closure behind the gear, once, a while after the call screen goes up on the scene the
+    /// drill reconnected, and off the main thread, the one way a tap can arrive that the Simulator
+    /// never shows. XCUITest computes
     /// no hit point for a template's bar button, and a click from the Mac at its place does not
     /// reach it, so this is how the panel is driven.
     private func drillPressesTheGear() {
@@ -479,8 +512,21 @@ final class CarPlayLive {
         drillPressedTheGear = true
         Self.drillScenes += 1
         guard Self.drillScenes == 2 else { return }
+        // Send now's state, shown on a call the fixture holds on Connecting…, which hears nobody:
+        // the drill photographs it, and its closure runs off the main thread, where it finds
+        // nothing to send. Before the gear, which takes the screen down.
         Task {
-            try? await Task.sleep(for: .seconds(15))
+            try? await Task.sleep(for: .seconds(4))
+            self.drillHearing = true
+            self.activate()
+            try? await Task.sleep(for: .seconds(5))
+            guard let press = self.drillSendNow else { return }
+            nonisolated(unsafe) let pressed = press
+            nonisolated(unsafe) let button = CPButton(image: CarPlayImages.bar("arrow.up.circle.fill"), handler: { _ in })
+            DispatchQueue.global().async { pressed(button) }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(25))
             guard let gear = self.drillGear else { return }
             nonisolated(unsafe) let press = gear.press
             nonisolated(unsafe) let button = gear.button
@@ -491,6 +537,14 @@ final class CarPlayLive {
 
     private func activate() {
         guard call.isActive else { return }
-        template?.activateVoiceControlState(withIdentifier: LiveCallScreen.identifier(for: call.state, muted: call.muted, microphoneLost: call.microphoneLost))
+        template?.activateVoiceControlState(withIdentifier: screenIdentifier)
+    }
+
+    /// The state the call screen shows for the call as it is now.
+    private var screenIdentifier: String {
+        #if DEBUG
+        if drillHearing { return LiveCallScreen.sendNowState }
+        #endif
+        return LiveCallScreen.identifier(for: call.state, muted: call.muted, microphoneLost: call.microphoneLost, speechHeard: call.canSendNow)
     }
 }

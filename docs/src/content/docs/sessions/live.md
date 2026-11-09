@@ -486,7 +486,7 @@ voice on, and **New conversation** ends it and calls a fresh one. It is still on
 ended conversation stays readable. With nothing open the tile is only New, and going back is by
 voice, with no screen for it: "go back to my last conversation" needs no list, and the call stays on
 its one call screen, reading Connecting… for the moment it takes to reconnect
-([Going back to a conversation](#going-back-to-a-conversation)). Either way it is the same call, with Mute and End while it runs, and a gear to the
+([Going back to a conversation](#going-back-to-a-conversation)). Either way it is the same call, with Mute and End while it runs, **Send now** in Mute's place while you are talking and turn detection has not ended your turn, and a gear to the
 voice settings by touch, for a call that has stopped working. The car has no other voice: a call
 that isn't up in 15 seconds gives up, the tile says *Live Mode unavailable, retrying…*, and the
 car retries with no voice, playing the falling notes the first time and when it stops. Unplug

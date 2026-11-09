@@ -57,8 +57,16 @@ final class LiveCall: ObservableObject {
     /// The phone's way to a call the car left on it. Here rather than on `AppModel`: CarPlay can
     /// run the app with no phone scene and so no model, and this outlives the car's scene.
     @Published private(set) var handover = LiveHandover()
+    /// Turn detection heard speech it has not ended the turn on: Send now would send it
+    /// (`RealtimeConductor.canEndTurn`). Follows the conductor through every change to it.
+    @Published private(set) var canSendNow = false
 
-    private var conductor = RealtimeConductor()
+    private var conductor = RealtimeConductor() {
+        didSet { if conductor.canEndTurn != canSendNow { canSendNow = conductor.canEndTurn } }
+    }
+    /// Send now's debounce and its timings, for the log (`LiveSendNow`).
+    private var sendNowLog = LiveSendNow()
+    private var sendNowFollowup: Task<Void, Never>?
     /// An opening line given while the call was still connecting: sent once it is up. `recorded`:
     /// the thread carries it, which it does not for the line a call that moved opens with.
     private var pendingOpening: (text: String, recorded: Bool)?
@@ -171,6 +179,8 @@ final class LiveCall: ObservableObject {
         cues = LiveCueDirector()
         timeline = LiveCallTimeline()
         timeline.started(at: Self.now)
+        sendNowLog = LiveSendNow()
+        sendNowFollowup?.cancel()
         watchdog = MicWatchdog()
         health = LiveCallHealth()
         health.started(at: Self.now)
@@ -252,6 +262,8 @@ final class LiveCall: ObservableObject {
         cues = LiveCueDirector()
         timeline = LiveCallTimeline()
         timeline.started(at: Self.now)
+        sendNowLog = LiveSendNow()
+        sendNowFollowup?.cancel()
         health = LiveCallHealth()
         health.started(at: Self.now)
         sessionOpen = false
@@ -340,6 +352,9 @@ final class LiveCall: ObservableObject {
         state = .idle
         muted = false
         pendingOpening = nil
+        // Nothing left to send: the speech the call heard went with it.
+        conductor = RealtimeConductor()
+        sendNowFollowup?.cancel()
         if telemetry.callID != nil {
             telemetry.track(.callEnded(reason: reason, duration: timeline.sinceStart(Self.now), summary: timeline.summary))
             telemetry.endCall()
@@ -367,6 +382,41 @@ final class LiveCall: ObservableObject {
             _ = try? await api.recordLiveTurn(conversation, role: .user, content: text, gated: false)
             guard mine == generation else { return }
             activity += 1
+        }
+    }
+
+    /// Send now: end the turn turn detection is still in and send what was said
+    /// (`RealtimeConductor.endTurn`), whatever the turn detection. A tap within the debounce of
+    /// the last, a tap with nothing heard, and a tap while the last send is still out send nothing;
+    /// each is logged with what it came to (`LiveSendNow`), never with what was said.
+    func sendNow() {
+        let now = Self.now
+        guard isActive, health.isConnected else {
+            telemetry.track(sendNowLog.record(.ignoredEmpty, surface: surface.rawValue, at: now))
+            return
+        }
+        guard sendNowLog.tap(at: now) else {
+            telemetry.track(sendNowLog.record(.ignoredDebounced, surface: surface.rawValue, at: now))
+            return
+        }
+        let outcome: LiveSendNow.Outcome
+        switch conductor.endTurn() {
+        case let .ended(effects):
+            outcome = .submitted
+            apply(effects, generation: generation)
+        case .nothingToSend:
+            outcome = .ignoredEmpty
+        case .alreadySending:
+            outcome = .ignoredInFlight
+        }
+        telemetry.track(sendNowLog.record(outcome, surface: surface.rawValue, at: now))
+        guard outcome == .submitted else { return }
+        let mine = generation
+        sendNowFollowup?.cancel()
+        sendNowFollowup = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(LiveSendNow.followWindow))
+            guard !Task.isCancelled, let self, mine == self.generation else { return }
+            for entry in self.sendNowLog.expire(at: Self.now) { self.telemetry.track(entry) }
         }
     }
 
@@ -461,6 +511,7 @@ final class LiveCall: ObservableObject {
 
     private func sendAudio(_ pcm: Data, microphone: Int) {
         guard microphone == microphoneGeneration, !pcm.isEmpty else { return }
+        if !muted { sendNowLog.heard(pcm16: pcm, at: Self.now) }
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
 
@@ -619,6 +670,7 @@ final class LiveCall: ObservableObject {
                 if let text, let event = JSONValue.parse(text) {
                     self.health.heard(at: Self.now)
                     for entry in self.timeline.observe(event, at: Self.now) { self.telemetry.track(entry) }
+                    for entry in self.sendNowLog.observe(event, at: Self.now) { self.telemetry.track(entry) }
                     let was = self.conductor.listening
                     let effects = self.conductor.handle(event)
                     if self.conductor.listening != was {
