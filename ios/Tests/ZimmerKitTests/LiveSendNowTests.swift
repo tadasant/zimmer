@@ -35,19 +35,22 @@ final class LiveSendNowTests: XCTestCase {
         XCTAssertEqual(conductor.endTurn(), .nothingToSend)
     }
 
-    func testSpeechHeardEndsTheTurnWithACommitAndAsksForTheReply() {
+    func testSpeechHeardEndsTheTurnWithACommitAndAsksForTheReplyOnceItIsCommitted() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(speechStarted))
         XCTAssertTrue(conductor.canEndTurn, "speech heard and the turn still open")
 
         let effects = ended(conductor.endTurn())
-        XCTAssertEqual(types(effects), ["input_audio_buffer.commit", "response.create"])
-        for value in sent(effects) {
-            XCTAssertTrue(value["event_id"]?.string?.hasPrefix(RealtimeConductor.sendNowEventPrefix) == true, "tagged, so a refusal is known for a race")
-        }
+        XCTAssertEqual(types(effects), ["input_audio_buffer.commit"], "no reply asked for until the line exists")
+        XCTAssertEqual(sent(effects)[0]["event_id"]?.string, "\(RealtimeConductor.sendNowEventPrefix)1_commit", "tagged, so a refusal is known for a race")
         XCTAssertTrue(effects.contains(.state(.thinking)), "the screen moves on to Zimmer's turn at once")
         XCTAssertTrue(effects.contains(.signal(.heardPerson)), "the heard cue says it went: nothing to read")
         XCTAssertFalse(conductor.canEndTurn, "Send now goes as soon as it is pressed")
+
+        let reply = conductor.handle(event(committed))
+        XCTAssertEqual(types(reply), ["response.create"])
+        XCTAssertEqual(sent(reply)[0]["event_id"]?.string, "\(RealtimeConductor.sendNowEventPrefix)1_response")
+        XCTAssertTrue(types(conductor.handle(event(#"{"type":"input_audio_buffer.committed","item_id":"u2"}"#))).isEmpty, "a later commit is turn detection's own")
     }
 
     func testASecondTapSendsNothingWhileTheFirstIsOutOrAfterIt() {
@@ -82,18 +85,20 @@ final class LiveSendNowTests: XCTestCase {
         XCTAssertTrue(conductor.handle(event(speechStopped)).contains(.signal(.heardPerson)))
     }
 
-    /// OpenAI refuses what Send now sent because turn detection beat it there: the commit found
-    /// an empty buffer, or the reply was already running. That is the race, not a failure.
-    func testARefusalOfWhatSendNowSentIsNotAFailure() {
+    /// Turn detection beat Send now to the server: its own commit and reply came first, so Send
+    /// now's commit finds an empty buffer, and the `response.create` it sends on the `committed`
+    /// it took for its own finds a reply running. That is the race, not a failure, and the screen
+    /// does not flicker back to Listening.
+    func testLosingTheRaceToTurnDetectionIsNotAFailure() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(speechStarted))
-        let effects = ended(conductor.endTurn())
-        let commitID = sent(effects)[0]["event_id"]!.string!
-        let responseID = sent(effects)[1]["event_id"]!.string!
-        // Turn detection's own reply is running.
+        _ = ended(conductor.endTurn())
+        XCTAssertEqual(conductor.handle(event(speechStopped)), [], "turn detection's end of the same speech, arriving late")
+        let reply = conductor.handle(event(committed))
+        let responseID = sent(reply)[0]["event_id"]!.string!
         _ = conductor.handle(event(#"{"type":"response.created"}"#))
-        let emptyCommit = conductor.handle(event(#"{"type":"error","error":{"code":"input_audio_buffer_commit_empty","event_id":"\#(commitID)"}}"#))
-        XCTAssertFalse(emptyCommit.contains { if case .failure = $0 { return true } else { return false } }, "\(emptyCommit)")
+        let emptyCommit = conductor.handle(event(#"{"type":"error","error":{"code":"input_audio_buffer_commit_empty","event_id":"zimmer_send_now_1_commit"}}"#))
+        XCTAssertEqual(emptyCommit, [])
         let busy = conductor.handle(event(#"{"type":"error","error":{"code":"conversation_already_has_active_response","event_id":"\#(responseID)"}}"#))
         XCTAssertEqual(busy, [], "a reply is running: nothing to say and nothing to change")
         // Anybody else's error is still a failure.
@@ -101,13 +106,27 @@ final class LiveSendNowTests: XCTestCase {
         XCTAssertTrue(other.contains(.failure("boom")))
     }
 
-    func testARefusalWithNothingComingIsBackToListening() {
+    /// Gated, the same race leaves the call where turn detection's own commit put it: Zimmer's
+    /// say on that line is still coming, so no Listening in the meantime.
+    func testGatedLosingTheRaceLeavesTheLineToZimmer() {
+        var conductor = RealtimeConductor(listening: "dynamic")
+        _ = conductor.handle(event(speechStarted))
+        _ = ended(conductor.endTurn())
+        _ = conductor.handle(event(committed))
+        let refused = conductor.handle(event(#"{"type":"error","error":{"code":"input_audio_buffer_commit_empty","event_id":"zimmer_send_now_1_commit"}}"#))
+        XCTAssertEqual(refused, [])
+    }
+
+    /// A commit refused for anything but the race is an error like any other: reported, and the
+    /// call back to listening rather than stuck on Replying. No reply is asked for nothing.
+    func testACommitRefusedForAnotherReasonIsAFailureAndAsksForNoReply() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(speechStarted))
-        let effects = ended(conductor.endTurn())
-        let responseID = sent(effects)[1]["event_id"]!.string!
-        let refused = conductor.handle(event(#"{"type":"error","error":{"event_id":"\#(responseID)"}}"#))
-        XCTAssertEqual(refused, [.signal(.noAnswerComing), .state(.listening)], "not stuck on Working")
+        _ = ended(conductor.endTurn())
+        let refused = conductor.handle(event(#"{"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down","event_id":"zimmer_send_now_1_commit"}}"#))
+        XCTAssertEqual(refused, [.failure("slow down"), .signal(.noAnswerComing), .state(.listening)])
+        XCTAssertFalse(conductor.canEndTurn)
+        XCTAssertEqual(conductor.endTurn(), .nothingToSend)
     }
 
     /// The driver talked over a reply and pressed Send now before OpenAI finished cancelling it:
@@ -121,7 +140,8 @@ final class LiveSendNowTests: XCTestCase {
         XCTAssertTrue(conductor.canEndTurn)
 
         let effects = ended(conductor.endTurn())
-        XCTAssertEqual(types(effects), ["input_audio_buffer.commit"], "not on top of the response being cancelled")
+        XCTAssertEqual(types(effects), ["input_audio_buffer.commit"])
+        XCTAssertEqual(types(conductor.handle(event(committed))), [], "not on top of the response being cancelled")
         let done = conductor.handle(event(#"{"type":"response.done","response":{"status":"cancelled","output":[]}}"#))
         XCTAssertEqual(types(done), ["response.create"])
         let next = conductor.handle(event(#"{"type":"response.created"}"#)) + conductor.handle(event(#"{"type":"response.done","response":{"status":"completed","output":[]}}"#))
@@ -136,6 +156,7 @@ final class LiveSendNowTests: XCTestCase {
         let effects = ended(conductor.endTurn())
         XCTAssertEqual(types(effects), ["input_audio_buffer.commit"])
         XCTAssertFalse(effects.contains(.signal(.heardPerson)), "heard once Zimmer says it gets an answer")
+        XCTAssertEqual(types(conductor.handle(event(committed))), [], "the reply is Zimmer's to ask for, after `hear`")
     }
 
     func testANewTurnCanBeSentAgain() {
@@ -230,6 +251,15 @@ final class LiveSendNowTests: XCTestCase {
         XCTAssertEqual(values["outcome"], .string("ignored_empty"))
         XCTAssertEqual(values["since_turn_ended_ms"], .number(200), "the driver was reaching for it as the call moved on")
         XCTAssertTrue(log.expire(at: 100).isEmpty, "nothing sent, nothing to follow up")
+    }
+
+    func testASessionUpdateThatDoesNotNameTurnDetectionLeavesItAsItWas() {
+        var log = LiveSendNow()
+        _ = log.observe(event(#"{"type":"session.created","session":{"audio":{"input":{"turn_detection":{"type":"server_vad","silence_duration_ms":800}}}}}"#), at: 0)
+        _ = log.observe(event(#"{"type":"session.updated","session":{"tools":[]}}"#), at: 1)
+        let values = fields(log.record(.ignoredEmpty, surface: "carplay", at: 2))
+        XCTAssertEqual(values["turn_detection"], .string("server_vad"))
+        XCTAssertEqual(values["silence_duration_ms"], .number(800))
     }
 
     func testEveryOutcomeHasItsName() {

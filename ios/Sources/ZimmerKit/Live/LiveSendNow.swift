@@ -80,8 +80,9 @@ public struct LiveSendNow: Sendable {
     public mutating func observe(_ event: JSONValue, at: TimeInterval) -> [LiveEvent] {
         switch event["type"]?.string {
         case "session.created", "session.updated":
-            let found = event["session"]?["audio"]?["input"]?["turn_detection"] ?? .null
-            if let type = found["type"]?.string { detection = type }
+            // A `session.updated` that does not name turn detection leaves it as it was.
+            guard let found = event["session"]?["audio"]?["input"]?["turn_detection"], let type = found["type"]?.string else { return [] }
+            detection = type
             eagerness = found["eagerness"] ?? .null
             silenceMs = found["silence_duration_ms"]?.number
             return []
