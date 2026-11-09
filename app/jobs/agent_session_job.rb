@@ -1140,9 +1140,12 @@ class AgentSessionJob < ApplicationJob
           end
 
           session.merge_metadata!(
-            "clone_path" => clone_path,
-            "working_directory" => working_directory,
-            "clone_recreated" => true
+            {
+              "clone_path" => clone_path,
+              "working_directory" => working_directory,
+              "clone_recreated" => true
+            },
+            [ "clone_retry_count" ]
           )
 
           # The transcript is NOT written here. `restore_regressed_transcript_if_needed`
@@ -2993,6 +2996,10 @@ class AgentSessionJob < ApplicationJob
         "after #{attempts} automatic retries: repo=#{session.git_root} " \
         "#{error.class}: #{error.message}"
       )
+      # The budget is per-incident. The caller fails the session next, so hand
+      # it back now: a restart or follow-up starts with a full budget instead
+      # of giving up — and paging — on its first transient failure.
+      session.merge_metadata!({}, [ "clone_retry_count" ])
       return false
     end
 

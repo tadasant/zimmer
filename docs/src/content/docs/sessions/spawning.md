@@ -736,12 +736,17 @@ on a large repo, the clone watchdog's timeout) is retried at two layers:
    WARN and raises `TransientGitError`.
 2. **Job-level.** `AgentSessionJob#schedule_transient_clone_retry` re-enqueues the whole job up
    to `MAX_CLONE_JOB_RETRIES` (5) times, after 30 s, 1 min, 2 min, 5 min and 10 min, counted in
-   `clone_retry_count`. Each retry is an INFO line in the session log.
+   `clone_retry_count`. Each retry is an INFO line in the session log. The count is per incident:
+   a successful clone clears it, and so does giving up, so a restart or follow-up after a failure
+   starts with the full five.
 
 Only the end of the second layer is a failure: the session fails with `git_clone_failed`, and
 `AgentSessionJob` logs one ERROR to `Rails.logger` naming the session, repository, attempt count
-and error. That ERROR is what pages. Layer 1 stays at WARN because the job is still going to retry
-it ([#1475](https://github.com/tadasant/zimmer/issues/1475)). A permanent failure (auth, a missing
+and error. That ERROR record is what pages, through the
+[`zimmer_backend_log_errors` rule](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice).
+It is a plain log line, not a GlitchTip event, the same as the bootstrap retry's give-up. Layer 1
+stays at WARN because the job is still going to retry it
+([#1475](https://github.com/tadasant/zimmer/issues/1475)). A permanent failure (auth, a missing
 repo or branch, a full disk) is not retried at either layer.
 
 ## A copied clone sheds what it cannot relocate
