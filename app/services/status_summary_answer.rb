@@ -103,8 +103,9 @@ module StatusSummaryAnswer
   end
 
   # Writes the answer's CarPlay-fit judgement onto the session as an `auto` mark
-  # — or, for `carplay_ok` on a CarPlay-engaged session, the sticky `carplay`
-  # one (SessionCarplayFit#automatic_carplay_fit_source) — stamped at `line_count` — the line count the blurb itself is stamped with,
+  # (for `carplay_ok` on a CarPlay-engaged session, the sticky `carplay` one —
+  # SessionCarplayFit#automatic_carplay_fit_source — still ranked as automatic),
+  # stamped at `line_count` — the line count the blurb itself is stamped with,
   # so the two go stale together. Best-effort, and silent on the two outcomes
   # that are not failures: an answer with no trailer leaves the session as it
   # was, and a standing human, assistant or session mark at the same position
@@ -124,6 +125,7 @@ module StatusSummaryAnswer
       fit: mark[:fit],
       reason: mark[:reason],
       source: session.automatic_carplay_fit_source(mark[:fit]),
+      automatic: true,
       line_count: line_count
     )
   rescue StandardError => e

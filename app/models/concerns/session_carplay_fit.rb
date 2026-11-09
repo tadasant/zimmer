@@ -132,7 +132,8 @@ module SessionCarplayFit
   # was written against — or, for a `carplay` mark, always: CarPlay engagement
   # is the sticky default. Spelled once, as SQL, so the scopes and the predicate
   # below cannot drift.
-  CURRENT_SQL = "(sessions.carplay_fit IS NOT NULL AND (sessions.carplay_fit_source = '#{SOURCE_CARPLAY}' " \
+  CURRENT_SQL = "(sessions.carplay_fit IS NOT NULL AND ((COALESCE(sessions.carplay_fit_source, '') = '#{SOURCE_CARPLAY}' " \
+                "AND sessions.carplay_fit = '#{CARPLAY_OK}') " \
                 "OR (sessions.carplay_fit_line_count IS NOT NULL " \
                 "AND sessions.carplay_fit_line_count >= sessions.transcript_line_count)))"
   private_constant :CURRENT_SQL

@@ -287,14 +287,20 @@ module Mcp
       private
 
       # Actions that do not count as engaging a session from CarPlay: an explicit
-      # mark says what the mark should be, and an archive ends the session.
-      NOT_CARPLAY_ENGAGEMENT = %w[set_carplay_fit archive].freeze
+      # mark says what the mark should be, hiding or snoozing a card is the
+      # opposite of keeping it in view, an archive ends the session, and the rest
+      # are housekeeping rather than a person working the session. A fork is a
+      # new session with no CarPlay source; the REST fork does not engage either.
+      NOT_CARPLAY_ENGAGEMENT = %w[
+        set_carplay_fit set_visibility archive fork refresh toggle_push_notifications remove_uncle
+      ].freeze
       private_constant :NOT_CARPLAY_ENGAGEMENT
 
       # A CarPlay Live Mode conversation acting on a session keeps it in the
       # driver's view (Sessions::RecordCarplayEngagement). After the action, so
       # one that raised records nothing. `follow_up` records through
-      # Session#tag_turn as well; the second call is a no-op.
+      # Session#tag_turn as well; the second call only restamps
+      # `carplay_engaged_at`.
       def record_carplay_engagement(action, args)
         return unless Sessions::RecordCarplayEngagement.carplay?(context.turn_source)
         return if !requires_session_id?(action) || NOT_CARPLAY_ENGAGEMENT.include?(action)

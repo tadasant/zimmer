@@ -113,8 +113,11 @@ class EnqueuedMessageProcessorService
         message_content = message.content
         message_position = message.position
         # The message's turn-source note goes on the text the agent receives; the
-        # row keeps the caller's words as they wrote them.
-        message_content, source_updates = session.tag_turn(message_content, message.turn_source)
+        # row keeps the caller's words as they wrote them. A CarPlay engagement was
+        # recorded when the row was queued (EnqueuedMessage), not here: a row
+        # Zimmer put back in the queue is delivered through this path too, and
+        # nobody engaged the session when that happened.
+        message_content, source_updates = session.tag_turn(message_content, message.turn_source, record_engagement: false)
         # Capture attachments before deletion. Both columns default to [].
         message_images = Sessions::AttachmentDescriptors.for_a_job(
           message.images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS

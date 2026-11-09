@@ -95,10 +95,11 @@ calls it:
 - **Following up**, on every delivery path (`Session#tag_turn`), and **queueing** a message, at the
   moment it is queued.
 - **Any other `action_session` action** a CarPlay Live conversation takes on a session (unarchive,
-  pause, restart, change_goal, …), and any member write over REST from the CarPlay client.
+  pause, restart, change_goal, …), and the matching member writes over REST from the CarPlay client.
 
 Reads are not engagement: an assistant triaging the board looks at every row, and marking them all
-would empty the axis. Neither is `set_carplay_fit` (it says what the mark should be) or an archive.
+would empty the axis. Neither is `set_carplay_fit` (it says what the mark should be), hiding or
+snoozing the card, a refresh, a fork, an archive, or a message Zimmer puts back in the queue.
 
 The `carplay` mark is **sticky**: unlike every other mark it does not go stale when the session says
 something new, so the session stays in the driver's `not_laptop_only` view however long it runs.
@@ -111,10 +112,12 @@ transcript position than the engagement, replaces the sticky mark as an ordinary
 the session's timeline records the demotion. So does a `laptop_only` from the session itself, an
 assistant, or you. A `human` mark still outranks everything at the same position, and a `carplay_ok`
 from the fork for a session already holding the sticky mark leaves it in place, filling in the
-reason.
+reason. A current `human` `carplay_ok` is not replaced by engagement (it outranks
+`carplay`), so it goes stale the ordinary way until the next rest re-judges it.
 
 **Re-promotion.** The fork's `carplay_ok` for an engaged session is written as the sticky `carplay`
-mark again. That is how a session demoted for a credential gets back into the driver's view once the
+mark again. It still ranks as an automatic judgement, so at the same transcript position
+it never overwrites an `assistant`, `session` or `human` mark. That is how a session demoted for a credential gets back into the driver's view once the
 credential is in. Re-engaging from CarPlay does *not* override a **current** `laptop_only`: the
 session has not moved since it was judged, so the requirement still stands. The engagement is still
 recorded. It is usually a follow-up, so the session soon moves past the demotion, and the next rest
@@ -123,12 +126,13 @@ re-judges it with the engagement in mind. A **stale** `laptop_only` is promoted 
 ## Staleness is counted in transcript lines
 
 A mark is **current** while the session has not written a line past `carplay_fit_line_count`, and
-**stale** once it has. The CarPlay-engagement mark (source `carplay`) is the one exception, above. That is the status summary's own freshness model, reused on purpose: a session
+**stale** once it has. That is the status summary's own freshness model, reused on purpose: a session
 that became laptop-only after opening a PR that needs a diff read has *moved*, and the mark written
 before that move was about an earlier state. Every filter treats a stale mark as untagged; every
 summary line names it as stale, with how many messages have landed since. When the session next comes
 to rest, the fork writes a fresh `auto` mark, and a mark written against a later position always wins
 whoever wrote it.
+The CarPlay-engagement mark (source `carplay`) is the one exception, above: it does not go stale.
 
 There is no sweeper and no expiry job. Staleness is a comparison on read, which is what guarantees
 no background writer can ever race the lifecycle.

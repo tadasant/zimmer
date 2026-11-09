@@ -70,12 +70,14 @@ class Api::V1::SessionsController < Api::BaseController
   before_action :set_session, only: [ :show, :update, :destroy, :archive, :unarchive, :follow_up, :message_parent, :pause, :sleep_session, :restart, :start_now, :force_start, :reorder_precedence, :fork, :regenerate_status_summary, :refresh, :update_mcp_servers, :update_catalog_skills, :update_catalog_hooks, :update_catalog_plugins, :update_model, :update_effort, :transcript, :conversation, :update_notes, :update_visibility, :update_carplay_fit, :update_heartbeat, :authorize_merge ]
   # A write to a session from the app's CarPlay screen keeps it in the driver's
   # view (Sessions::RecordCarplayEngagement). Not the reads, not an explicit
-  # CarPlay-fit write, not an archive or a delete; a follow-up records through
-  # Session#tag_turn as well, which is a no-op the second time.
+  # CarPlay-fit write, not hiding or snoozing the card (the opposite of "keep it
+  # in view"), not a refresh, an archive or a delete. A follow-up is not listed
+  # because Session#tag_turn records it on delivery. Recorded after the action,
+  # so the response itself carries the mark as it stood before.
   CARPLAY_ENGAGEMENT_ACTIONS = %i[
-    update unarchive follow_up pause sleep_session restart start_now force_start
-    reorder_precedence regenerate_status_summary refresh update_mcp_servers update_catalog_skills
-    update_catalog_hooks update_catalog_plugins update_model update_effort update_notes update_visibility
+    update unarchive pause sleep_session restart start_now force_start
+    reorder_precedence regenerate_status_summary update_mcp_servers update_catalog_skills
+    update_catalog_hooks update_catalog_plugins update_model update_effort update_notes
     update_heartbeat authorize_merge
   ].freeze
   after_action :record_carplay_engagement, only: CARPLAY_ENGAGEMENT_ACTIONS

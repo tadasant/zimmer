@@ -325,7 +325,8 @@ can be done by voice from a car. Five fields travel together on every serialized
 - `carplay_engaged_at` — when a person last started, followed up or wrote to the session from
   CarPlay, or `null`. A write over REST from the CarPlay client (`X-Zimmer-Client: carplay/…`) — a
   create, a follow-up, a queued message, `unarchive`, `pause`, `restart` and the other member
-  writes, but not reads, `archive`, `DELETE` or `PATCH …/carplay_fit` — stamps it and marks the
+  writes, but not reads, `visibility`, `refresh`, `fork`, `archive`, `DELETE` or
+  `PATCH …/carplay_fit` — stamps it and marks the
   session `carplay_ok` with source `carplay`. See
   [CarPlay engagement](/sessions/carplay-fit/#carplay-engagement-is-the-sticky-default).
 

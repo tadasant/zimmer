@@ -122,6 +122,30 @@ class Sessions::RecordCarplayEngagementTest < ActiveSupport::TestCase
     assert_not session.reload.carplay_engaged?
   end
 
+  test "hiding a card from CarPlay is not engagement" do
+    session = make_session
+    tool = Mcp::Tools::ActionSession.new(context: Mcp::Context.new(tool_groups: "sessions", turn_source: CARPLAY))
+
+    tool.call({ "action" => "set_visibility", "session_id" => session.id.to_s, "visibility" => "hidden" })
+
+    assert_not session.reload.carplay_engaged?
+  end
+
+  test "a row Zimmer puts back in the queue does not re-record engagement" do
+    session = make_session(status: :running)
+    Sessions::RecordCarplayEngagement.expects(:call).never
+
+    session.enqueued_messages.create!(**EnqueuedMessage.attributes_for_prompt(CARPLAY.annotate("again")), position: 1)
+  end
+
+  test "the queue drain does not record engagement; the enqueue already did" do
+    session = make_session
+    message = EnqueuedMessage.new(session: session, content: "x", position: 1, source_context: CARPLAY.to_h)
+    Sessions::RecordCarplayEngagement.expects(:from_source).never
+
+    session.tag_turn(message.content, message.turn_source, record_engagement: false)
+  end
+
   # --- Stickiness ------------------------------------------------------------
 
   test "the carplay mark does not go stale as the session moves, and every filter agrees" do
@@ -233,6 +257,26 @@ class Sessions::RecordCarplayEngagementTest < ActiveSupport::TestCase
     session = auto(session, "carplay_ok", "decision", line_count: 10)
 
     assert_equal "auto", session.carplay_fit_source
+  end
+
+  test "restoring the sticky mark ranks as automatic: it never overwrites an assistant's mark at the same line" do
+    session = make_session(source_context: CARPLAY.to_h)
+    session.reload.update!(transcript: lines(20))
+    Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", reason: "credential", source: "assistant")
+
+    session = auto(session, "carplay_ok", "decision", line_count: 20)
+
+    assert_equal "laptop_only", session.carplay_fit
+    assert_equal "assistant", session.carplay_fit_source
+  end
+
+  test "a marked row with no source is stale in SQL and in Ruby alike" do
+    session = make_session
+    session.update_columns(carplay_fit: "laptop_only", carplay_fit_source: nil, carplay_fit_line_count: 3)
+
+    assert_not session.reload.carplay_fit_current?
+    assert_includes Session.carplay_fit_filter("untagged"), session
+    assert_includes Session.carplay_fit_filter("not_laptop_only"), session
   end
 
   # --- What the classifier is told -------------------------------------------
