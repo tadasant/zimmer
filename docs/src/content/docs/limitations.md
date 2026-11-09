@@ -295,7 +295,11 @@ So the cause is not known, and the drill has no retry, because the fault could b
 
 ### A long stall can make the CarPlay drill miss the gear
 
-The fixture runs the gear's closure 15 seconds after the call screen goes up, on its own clock, and the drill has to see the gear before that. Reaching the gear takes 3 to 5 seconds on a normal run, so a stall of about 10 seconds at that step fails the drill with `no gear on the call screen` and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, and before it the drill has to see the gear and Send now's state, which the fixture shows at 4 seconds and holds. Reaching the gear takes 3 to 5 seconds on a normal run, and Send now's check about 8 more, so a stall of about 12 seconds at those steps fails the drill with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+
+### Send now in the car has never ended a real turn
+
+CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by committing the audio buffer and asking for the reply. Its rules are unit-tested (`LiveSendNowTests`), and the CarPlay drill shows its button and runs its handler, but no call in CI connects, so it has never run against OpenAI or in a car. OpenAI documents a commit under server turn detection as allowed. What turn detection does with the rest of the same speech after one is not documented: if it ends that speech again, a short second line can follow the first. `turn.send_now_followup` in the call log says which happens. CarPlay labels its action buttons for VoiceOver by their symbol alone, ignoring any label Zimmer sets, so Send now reads as whatever words iOS gives a paper plane symbol, which the CarPlay drill records.
 
 ### A sheet presented from inside a `List` row can reset itself
 
@@ -8415,7 +8419,7 @@ The Simulator is not a car. Its CarPlay window has no audio route of a car's own
 microphone and speaker moving to the car, and the audio engine's restart when they do, are
 confirmed only by driving, or by Apple's CarPlay Simulator app with a physical iPhone over USB,
 which no CI runner has. The drill's call never connects (CI has no microphone and no OpenAI key),
-so a conversation's own states (listening, speaking, working) are not driven either. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
+so a conversation's own states (listening, hearing you, replying) are not driven either, and Send now has never ended a real turn: the drill shows its state on a call that hears nobody and runs its closure, which finds nothing to send. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
 (the window stays blank), so the drill runs in one process; whether a car does the same after
 Zimmer crashes or is killed is untested. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
 GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails the drill rather

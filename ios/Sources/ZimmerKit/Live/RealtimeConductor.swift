@@ -55,7 +55,11 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 ///   a finished user line comes out as `hear`, Zimmer says whether to answer it, and `heard`
 ///   asks for the reply — or deletes the line from the call;
 /// - OpenAI's `error` events, and a response that ended `failed`, come out as `failure` so the
-///   call can say what went wrong instead of sitting in Listening.
+///   call can say what went wrong instead of sitting in Listening;
+/// - Send now (`endTurn()`) ends a turn turn detection has not ended yet: the speech it heard goes
+///   up as the person's line (`input_audio_buffer.commit`), and the reply is asked for under the
+///   usual rule. Only while there is speech to send, once per turn, and turn detection's own end
+///   of the same turn, arriving late, is not a second one.
 public struct RealtimeConductor: Sendable {
     public enum Effect: Equatable, Sendable {
         /// Send this client event to OpenAI.
@@ -124,6 +128,31 @@ public struct RealtimeConductor: Sendable {
     private var cutsInARow = 0
     private static let cutsBeforeGivingUp = 3
 
+    /// Turn detection heard the person start (`speech_started`) and has not ended the turn
+    /// (`speech_stopped`, `committed`): there is speech Send now can send.
+    public private(set) var speechOpen = false
+    /// Send now's commit is out and OpenAI has not answered it: a second tap is the same tap.
+    public private(set) var endingTurn = false
+    /// Send now ended the turn in progress: turn detection's own end of it is not a second end.
+    private var forcedTurn = false
+    private var sendNows = 0
+    /// What every client event Send now sends is tagged with (`event_id`), so an `error` OpenAI
+    /// answers one of them with is known for the race it is, not a failure of the call.
+    public static let sendNowEventPrefix = "zimmer_send_now_"
+
+    /// Send now would send something.
+    public var canEndTurn: Bool { speechOpen && !endingTurn }
+
+    /// What Send now came to.
+    public enum EndTurn: Equatable, Sendable {
+        /// The turn ended here: apply these.
+        case ended([Effect])
+        /// Nothing heard since the last turn ended, whoever ended it.
+        case nothingToSend
+        /// Send now's commit for this turn is still out.
+        case alreadySending
+    }
+
     public init(listening: String? = nil) {
         self.listening = listening
         gated = Self.gates(listening)
@@ -177,6 +206,9 @@ public struct RealtimeConductor: Sendable {
     public mutating func handle(_ event: JSONValue) -> [Effect] {
         switch event["type"]?.string {
         case "input_audio_buffer.speech_started":
+            speechOpen = true
+            forcedTurn = false
+            endingTurn = false
             // Gated, speech does not cut the reply off: it may not be meant for the call at all.
             if gated { return playingItem == nil ? [.signal(.personTalking), .state(.listening)] : [] }
             defer { playingItem = nil }
@@ -187,9 +219,24 @@ public struct RealtimeConductor: Sendable {
             // thinking cue starts and the screen says so — until the reply starts, or (gated)
             // the line turns out not to be one to answer. Not while a reply arrives (gated
             // speech does not cut it off). Gated, the person counts as heard once Zimmer says
-            // the line gets an answer (`heard`).
+            // the line gets an answer (`heard`). Send now already said all of that.
+            speechOpen = false
+            if forcedTurn {
+                forcedTurn = false
+                return []
+            }
             guard playingItem == nil else { return [.signal(.personStopped)] }
             return [.signal(.personStopped), .state(.thinking)] + (gated ? [] : [.signal(.heardPerson)])
+        case "input_audio_buffer.committed", "input_audio_buffer.cleared":
+            speechOpen = false
+            guard endingTurn else { return [] }
+            endingTurn = false
+            // The turn Send now ended is the person's line now: ask for its reply, under the
+            // usual rule. Only now, so a commit OpenAI refused never gets a reply to nothing.
+            // Gated, Zimmer decides that (`hear`).
+            guard event["type"]?.string == "input_audio_buffer.committed", !gated else { return [] }
+            pendingResponse = true
+            return sendPendingResponse(eventID: "\(Self.sendNowEventPrefix)\(sendNows)_response")
         case "response.created":
             responseActive = true
             requested = false
@@ -234,6 +281,18 @@ public struct RealtimeConductor: Sendable {
         case "error":
             // A refused `response.create` never gets its `response.created`.
             requested = false
+            if let refused = event["error"]?["event_id"]?.string, refused.hasPrefix(Self.sendNowEventPrefix) {
+                // Send now lost a race with turn detection, which is not a failure: turn
+                // detection committed the turn first (an empty buffer), and its own path answers
+                // it; or a reply is already running. Any other refusal is reported like any error.
+                let code = event["error"]?["code"]?.string
+                if refused.hasSuffix("_commit") {
+                    endingTurn = false
+                    if code == "input_audio_buffer_commit_empty" { return [] }
+                } else if code == "conversation_already_has_active_response" {
+                    return []
+                }
+            }
             // With nothing running or about to, no answer is coming: back to listening, or the
             // call would read as working on it (and tick) for ever.
             let idle = !responseActive && inFlight.isEmpty && !pendingResponse && playingItem == nil
@@ -241,6 +300,27 @@ public struct RealtimeConductor: Sendable {
         default:
             return []
         }
+    }
+
+    /// Send now: end the turn turn detection is still in, whatever mode it is in. The speech
+    /// heard so far goes up as the person's line (`input_audio_buffer.commit`), the call moves on
+    /// to working on an answer, as at `speech_stopped`, and once OpenAI says `committed` the reply
+    /// is asked for: at once, or after the response the person talked over (which turn detection
+    /// is cancelling) is done. Gated, Zimmer still says whether
+    /// the line gets one (`hear`), as for any other. Once per turn: a second tap, or a tap after
+    /// turn detection ended the turn itself, sends nothing.
+    public mutating func endTurn() -> EndTurn {
+        if endingTurn { return .alreadySending }
+        guard speechOpen else { return .nothingToSend }
+        speechOpen = false
+        endingTurn = true
+        forcedTurn = true
+        sendNows += 1
+        let tag = "\(Self.sendNowEventPrefix)\(sendNows)"
+        var effects: [Effect] = [.send(.object(["type": .string("input_audio_buffer.commit"), "event_id": .string("\(tag)_commit")]))]
+        guard playingItem == nil else { return .ended(effects + [.signal(.personStopped)]) }
+        effects += [.signal(.personStopped), .state(.thinking)]
+        return .ended(effects + (gated ? [] : [.signal(.heardPerson)]))
     }
 
     /// Zimmer answered a relayed call (`result`), or could not be reached (`failure`).
@@ -359,7 +439,7 @@ public struct RealtimeConductor: Sendable {
         return effects
     }
 
-    private mutating func sendPendingResponse() -> [Effect] {
+    private mutating func sendPendingResponse(eventID: String? = nil) -> [Effect] {
         guard pendingResponse, !responseActive, !requested else { return [] }
         pendingResponse = false
         if cutsInARow >= Self.cutsBeforeGivingUp {
@@ -367,7 +447,8 @@ public struct RealtimeConductor: Sendable {
             return [.failure("OpenAI kept cutting that reply short."), .state(.listening)]
         }
         requested = true
-        return [.send(.object(["type": .string("response.create")]))]
+        guard let eventID else { return [.send(.object(["type": .string("response.create")]))] }
+        return [.send(.object(["type": .string("response.create"), "event_id": .string(eventID)]))]
     }
 
     private func record(_ role: LiveTurn.Role, _ text: String?) -> [Effect] {

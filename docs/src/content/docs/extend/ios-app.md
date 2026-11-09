@@ -746,8 +746,12 @@ calls a fresh one, with no confirmation, because the ended conversation stays re
 phone. With nothing open there is only New: an ended conversation can't take a call. If you tap
 Continue and the conversation has ended on the phone since the tiles were drawn, you hear the falling
 notes, no call starts, and the tiles come down to New. While the call runs the screen is the voice control
-template. Its picture and title follow the call (Connecting…, Listening, Speaking, Working on
-it…), or say **Muted** while the microphone is off. Its two buttons are **Mute** and **End**. A call
+template. Its picture and title follow the call (Connecting…, Listening, Hearing you, Replying),
+or say **Muted** while the microphone is off. Its two buttons are **Mute** and **End**. While you are
+talking and turn detection has not decided you finished, the screen says **Hearing you** and Mute
+becomes **Send now**: one tap ends your turn, sends what you said and asks for the reply, whichever
+turn detection is on. It is never there while Zimmer replies, muted, or with nothing heard, and a
+tap after the turn ended anyway sends nothing ([Send now](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md#send-now)). A call
 already running when the car connects is shown at once. There are no tabs, counts, session cards or
 per-session buttons. Going back to an earlier conversation is done by saying so: the call stays on
 that one screen, reads Connecting… while it reconnects, and the model says where it picked up
@@ -905,8 +909,9 @@ it are in ZimmerKit and tested on Linux and macOS (`CarPlayTests`, `LiveCallScre
   async forms, which always give CarPlay a completion. A source guard fails the build on any other
   call.
 - The call screen has five states (`LiveCallScreen`), because CarPlay keeps the first five a voice
-  control template is given: four for the call (connecting, listening, speaking, working) and
-  Muted.
+  control template is given: whose turn it is (connecting, listening, hearing you, replying) and
+  Muted. Hearing you is the one with Send now in Mute's place; Replying is speaking and working
+  together, which the driver tells apart by ear.
 - Source guards fail the build on:
   - any system speech (`AVSpeechSynthesizer`) anywhere in the app;
   - any direct follow-up, merge, restart or archive from the CarPlay scene;
