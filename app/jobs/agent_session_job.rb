@@ -2984,6 +2984,15 @@ class AgentSessionJob < ApplicationJob
         "Git clone failed transiently (#{kind}) after #{attempts} automatic retries — giving up: #{error.message}",
         level: "error"
       )
+      # The one ERROR for a clone that really cannot succeed. GitCloneService
+      # logs its own in-process exhaustion at warn because this job retries it;
+      # the session-failure path that follows writes only to the session log.
+      # Without this line a session that never clones does not page (#1475).
+      Rails.logger.error(
+        "[AgentSessionJob] Session #{session.id} exhausted its clone retry budget (#{kind}) " \
+        "after #{attempts} automatic retries: repo=#{session.git_root} " \
+        "#{error.class}: #{error.message}"
+      )
       return false
     end
 
