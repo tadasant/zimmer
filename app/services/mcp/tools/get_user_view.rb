@@ -51,7 +51,7 @@ module Mcp
 
         **Filters default to the board's own defaults**: status `needs_input`, on-board only. That is the population the view exists for — sessions parked waiting on a human. Widen deliberately.
 
-        **Triaging for a driver:** pass `carplay_fit: "not_laptop_only"` to drop the rows that need a screen or a keyboard, and say how many were dropped rather than reading them out. A row that comes back `untagged` is one nobody has judged — read its summary and mark it with `action_session` → `set_carplay_fit`.
+        **Triaging for a driver:** pass `carplay_fit: "not_laptop_only"` to drop the rows that need a screen or a keyboard, and say how many were dropped rather than reading them out. A row that comes back `untagged` is one nobody has judged — read its summary and mark it with `action_session` → `set_carplay_fit`. A session the driver started, followed up or acted on from CarPlay is marked `carplay_ok` with source `carplay` automatically and stays in this view, without going stale, until a later judgement clearly finds a laptop-only step.
 
         **Write the order back with `reorder_user_view`.** Do not try to reorder with `action_session`/`change_precedence` one session at a time: that is one call per row, and it cannot express "this is the order" — a rank you compute from a board that moved under you lands in the wrong place.
 
@@ -85,7 +85,7 @@ module Mcp
           carplay_fit: {
             type: "string",
             enum: SessionCarplayFit::FILTER_OPTIONS,
-            description: 'Narrow by CARPLAY FIT — whether what a row needs from the human can be done by voice from a car. Omit for the board as drawn. "not_laptop_only" is the driving default: rows marked carplay_ok plus rows nobody has judged yet. "carplay_ok", "laptop_only" and "untagged" are the single buckets; a mark gone stale because the session moved counts as untagged. The order is unchanged — this only decides which rows are listed.'
+            description: 'Narrow by CARPLAY FIT — whether what a row needs from the human can be done by voice from a car. Omit for the board as drawn. "not_laptop_only" is the driving default: rows marked carplay_ok plus rows nobody has judged yet. "carplay_ok", "laptop_only" and "untagged" are the single buckets; a mark gone stale because the session moved counts as untagged, except a `carplay` mark (the session was engaged from CarPlay), which holds until demoted. The order is unchanged — this only decides which rows are listed.'
           },
           summary_chars: {
             type: "number",

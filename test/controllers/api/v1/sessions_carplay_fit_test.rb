@@ -127,4 +127,34 @@ class Api::V1::SessionsCarplayFitTest < ActionDispatch::IntegrationTest
     assert_includes ids, ok.id
     assert_not_includes ids, laptop.id
   end
+
+  test "a write from the app's CarPlay screen marks the session carplay_ok by carplay; a read does not" do
+    session = make_session
+    Api::V1::SessionsController.any_instance.stubs(:native_app_request?).returns(true)
+    carplay = @headers.merge("X-Zimmer-Client" => "carplay/1.4.2")
+
+    get "/api/v1/sessions/#{session.id}", headers: carplay
+    assert_response :success
+    assert_nil session.reload.carplay_engaged_at
+
+    patch "/api/v1/sessions/#{session.id}/notes", params: { session_notes: "from the car" }, headers: carplay
+    assert_response :success
+    session.reload
+    assert session.carplay_engaged?
+    assert_equal "carplay", session.carplay_fit_source
+
+    get "/api/v1/sessions/#{session.id}", headers: carplay
+    json = JSON.parse(response.body)["session"] || JSON.parse(response.body)
+    assert_equal "carplay", json["carplay_fit_source"]
+    assert json["carplay_engaged_at"].present?
+  end
+
+  test "the same write from the phone, or a non-app key claiming CarPlay, records nothing" do
+    session = make_session
+
+    patch "/api/v1/sessions/#{session.id}/notes", params: { session_notes: "x" },
+                                                  headers: @headers.merge("X-Zimmer-Client" => "carplay/1.4.2")
+    assert_response :success
+    assert_nil session.reload.carplay_engaged_at
+  end
 end

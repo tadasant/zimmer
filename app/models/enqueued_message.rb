@@ -104,6 +104,15 @@ class EnqueuedMessage < ApplicationRecord
   # its own transaction has not committed yet.
   after_create_commit :deliver_if_session_already_idle
 
+  # A message queued from CarPlay is the driver engaging the session now, not
+  # when the queue drains — keep it in their view from this moment
+  # (Sessions::RecordCarplayEngagement). The drain does not record it again. A
+  # row Zimmer puts BACK in the queue (.attributes_for_prompt, `requeued`)
+  # carries the original CarPlay source, but nobody engaged the session when it
+  # was put back, so it records nothing.
+  attr_accessor :requeued
+  after_create_commit :record_carplay_engagement, if: -> { !requeued && Sessions::RecordCarplayEngagement.carplay?(turn_source) }
+
   # Scopes
   scope :pending, -> { where(status: "pending") }
   scope :undelivered, -> { where(status: "undelivered") }
@@ -188,7 +197,7 @@ class EnqueuedMessage < ApplicationRecord
   # @return [Hash] `content:` and `source_context:`
   def self.attributes_for_prompt(prompt)
     body, source = TurnSource.extract(prompt)
-    { content: body, source_context: source&.to_h }
+    { content: body, source_context: source&.to_h, requeued: true }
   end
 
   # The `content` values a pending row holding `prompt` could carry: the prompt
@@ -364,6 +373,10 @@ class EnqueuedMessage < ApplicationRecord
   end
 
   private
+
+  def record_carplay_engagement
+    Sessions::RecordCarplayEngagement.call(session)
+  end
 
   # Hand the PR this notice named back to the poller's debounce, so a conflict
   # that turns out to have been real is re-confirmed rather than silently

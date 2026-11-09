@@ -40,7 +40,8 @@
   <% laptop = current && agent_session.carplay_fit == SessionCarplayFit::LAPTOP_ONLY %>
   <% by_human = agent_session.carplay_fit_source == SessionCarplayFit::SOURCE_HUMAN %>
   <% writer = { SessionCarplayFit::SOURCE_HUMAN => "you", SessionCarplayFit::SOURCE_AUTO => "Zimmer",
-                SessionCarplayFit::SOURCE_ASSISTANT => "an assistant", SessionCarplayFit::SOURCE_SESSION => "the session" }[agent_session.carplay_fit_source] %>
+                SessionCarplayFit::SOURCE_ASSISTANT => "an assistant", SessionCarplayFit::SOURCE_SESSION => "the session",
+                SessionCarplayFit::SOURCE_CARPLAY => "CarPlay engagement" }[agent_session.carplay_fit_source] %>
   <% state_text =
        if on then "CarPlay-ok: on#{" (set by #{writer})" if writer} — click to clear"
        elsif laptop then "Laptop only#{" (set by #{writer})" if writer} — click to mark CarPlay-ok"
