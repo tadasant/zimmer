@@ -1140,9 +1140,12 @@ class AgentSessionJob < ApplicationJob
           end
 
           session.merge_metadata!(
-            "clone_path" => clone_path,
-            "working_directory" => working_directory,
-            "clone_recreated" => true
+            {
+              "clone_path" => clone_path,
+              "working_directory" => working_directory,
+              "clone_recreated" => true
+            },
+            [ "clone_retry_count" ]
           )
 
           # The transcript is NOT written here. `restore_regressed_transcript_if_needed`
@@ -2984,6 +2987,19 @@ class AgentSessionJob < ApplicationJob
         "Git clone failed transiently (#{kind}) after #{attempts} automatic retries — giving up: #{error.message}",
         level: "error"
       )
+      # The one ERROR for a clone that really cannot succeed. GitCloneService
+      # logs its own in-process exhaustion at warn because this job retries it;
+      # the session-failure path that follows writes only to the session log.
+      # Without this line a session that never clones does not page (#1475).
+      Rails.logger.error(
+        "[AgentSessionJob] Session #{session.id} exhausted its clone retry budget (#{kind}) " \
+        "after #{attempts} automatic retries: repo=#{session.git_root} " \
+        "#{error.class}: #{error.message}"
+      )
+      # The budget is per-incident. The caller fails the session next, so hand
+      # it back now: a restart or follow-up starts with a full budget instead
+      # of giving up — and paging — on its first transient failure.
+      session.merge_metadata!({}, [ "clone_retry_count" ])
       return false
     end
 
