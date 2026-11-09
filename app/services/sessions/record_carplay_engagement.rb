@@ -11,12 +11,13 @@ module Sessions
   # - a session CREATED with a CarPlay turn source — the iOS app's CarPlay
   #   screen over REST, or a Live Mode conversation on CarPlay calling
   #   `start_session` / `quick_router` (Session's after_create_commit);
-  # - a FOLLOW-UP delivered with a CarPlay turn source, on every delivery path
-  #   (Session#tag_turn) — and a message QUEUED from CarPlay, at the moment it is
-  #   queued (EnqueuedMessage's after_create_commit);
-  # - any other `action_session` action a CarPlay Live Mode conversation takes
-  #   on a session (unarchive, pause, restart, change_goal, …), and any write to a
-  #   session over REST from the CarPlay client.
+  # - a FOLLOW-UP delivered directly with a CarPlay turn source (Session#tag_turn)
+  #   — and a message QUEUED from CarPlay, at the moment it is queued
+  #   (EnqueuedMessage's after_create_commit; never on the drain, and never for
+  #   a row Zimmer puts back in the queue);
+  # - most other `action_session` actions a CarPlay Live Mode conversation takes
+  #   on a session (unarchive, pause, restart, change_goal, …), and the matching
+  #   member writes over REST from the CarPlay client.
   #
   # Reads are not engagement: a driver's assistant listing or reading the board
   # touches every row it looks at, and marking them all would empty the axis of
@@ -76,8 +77,15 @@ module Sessions
 
     attr_reader :session
 
+    # In a savepoint: the follow-up paths call this inside their own
+    # transaction, and a database error here must roll back only this write,
+    # not leave Postgres's transaction aborted under the caller.
     def call
-      record
+      Session.transaction(requires_new: true) { record }
+    rescue StandardError => e
+      Rails.logger.error("[Sessions::RecordCarplayEngagement] Could not record CarPlay engagement on session #{@caller_session&.id}: #{e.class}: #{e.message}")
+      @session = nil
+      Result.new(outcome: :failed, message: e.message)
     ensure
       sync_back
     end
@@ -105,9 +113,6 @@ module Sessions
         reason: carried_reason
       )
       Result.new(outcome: written.applied? ? :marked : :kept, message: written.message)
-    rescue StandardError => e
-      Rails.logger.error("[Sessions::RecordCarplayEngagement] Could not record CarPlay engagement on session #{@caller_session&.id}: #{e.class}: #{e.message}")
-      Result.new(outcome: :failed, message: e.message)
     end
 
     def sync_back

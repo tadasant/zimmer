@@ -50,6 +50,7 @@ class CarplayFitClassifier
       fit: mark[:fit],
       reason: mark[:reason],
       source: session.automatic_carplay_fit_source(mark[:fit]),
+      automatic: true,
       line_count: summary.transcript_line_count
     )
     return Result.new(outcome: :kept, message: written.message) unless written.applied?
