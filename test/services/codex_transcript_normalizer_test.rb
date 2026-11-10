@@ -46,6 +46,21 @@ class CodexTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal [ { "type" => "text", "text" => "List the files." } ], event[:content]
   end
 
+  test "normalize makes a developer-role message a runtime notice, not an AssistantMessage" do
+    raw = wrap("response_item", {
+      "type" => "message", "role" => "developer",
+      "content" => [ { "type" => "input_text", "text" => "<permissions instructions>" } ]
+    })
+
+    event = @normalizer.normalize(raw, session: @session, transcript_index: 2).sole
+
+    assert_equal Types::SYSTEM_EVENT, event[:type]
+    assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, event[:subtype]
+    assert_equal "<permissions instructions>", event[:payload]["text"]
+    assert_equal "role", event[:payload]["markers"].sole["flag"]
+    assert_equal 2, event[:transcript_index]
+  end
+
   test "normalize maps input_image blocks to image ContentParts" do
     raw = wrap("response_item", {
       "type" => "message", "role" => "user",

@@ -185,6 +185,44 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert body["truncated"]
   end
 
+  # Session #27388: a Codex session opened in the app showed no transcript at
+  # all, because this endpoint read the raw lines as Claude Code's and a Codex
+  # rollout has no `user`/`assistant` lines.
+  test "the conversation endpoint returns a Codex session's messages, not an empty page" do
+    tokens = sign_in
+    wrap = ->(ts, type, payload) { { timestamp: ts, type: type, payload: payload }.to_json }
+    lines = [
+      wrap.call("2026-11-10T14:42:08Z", "session_meta", { id: "01a1c5e8" }),
+      wrap.call("2026-11-10T14:42:09Z", "response_item",
+                { type: "message", role: "developer", content: [ { type: "input_text", text: "<permissions instructions>" } ] }),
+      wrap.call("2026-11-10T14:42:10Z", "response_item",
+                { type: "message", role: "user", content: [ { type: "input_text", text: "Could you add Felipe Code?" } ] }),
+      wrap.call("2026-11-10T14:42:10Z", "event_msg", { type: "user_message", message: "Could you add Felipe Code?" }),
+      wrap.call("2026-11-10T14:42:11Z", "response_item", { type: "reasoning", summary: [ { type: "summary_text", text: "Look first." } ] }),
+      wrap.call("2026-11-10T14:42:12Z", "response_item",
+                { type: "custom_tool_call", call_id: "c1", name: "exec", input: "get_session 27253" }),
+      wrap.call("2026-11-10T14:42:13Z", "response_item", { type: "custom_tool_call_output", call_id: "c1", output: "session dump" }),
+      wrap.call("2026-11-10T14:43:18Z", "event_msg", { type: "agent_message", message: "Yes, technically." }),
+      wrap.call("2026-11-10T14:43:18Z", "response_item",
+                { type: "message", role: "assistant", content: [ { type: "output_text", text: "Yes, technically." } ] }),
+      wrap.call("2026-11-10T14:43:19Z", "event_msg", { type: "task_complete" })
+    ]
+    session = build_zimmer_session(status: :needs_input, agent_runtime: "codex", transcript: lines.join("\n") + "\n")
+
+    get "/api/v1/sessions/#{session.id}/conversation", params: { full_content: "true" }, headers: bearer(tokens["access_token"])
+
+    assert_response :success
+    messages = JSON.parse(response.body)["messages"]
+    assert_equal %w[user assistant user assistant], messages.map { |m| m["role"] },
+                 "developer instructions, reasoning and event_msg duplicates are not conversation"
+    assert_equal "Could you add Felipe Code?", messages.first["content"]
+    assert messages[1]["has_tool_use"]
+    assert_includes messages[1]["content"], "**Using tool: exec**"
+    assert messages[2]["has_tool_result"]
+    assert_equal "Yes, technically.", messages.last["content"]
+    assert_equal [ 2, 5, 6, 8 ], messages.map { |m| m["transcript_index"] }
+  end
+
   test "each conversation message names the index fork takes, counted as the fork service counts" do
     tokens = sign_in
     lines = [

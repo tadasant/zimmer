@@ -1335,9 +1335,19 @@ class Session < ApplicationRecord
   # parsed_transcript — the index space ForkSessionService.parsed_messages slices,
   # since both parse one event per non-blank line and drop what does not parse —
   # so a reader can fork at a message it was shown.
+  #
+  # Claude Code's raw lines are already user/assistant messages and are read
+  # directly. Every other runtime (Codex rollouts, Pi session trees) writes
+  # envelopes this method cannot read raw, so those are read through the
+  # runtime's OpenTranscripts normalizer — the same events the web timeline
+  # draws. Reading them raw returned an empty conversation, which is the
+  # endpoint the iOS app renders a session from.
   def formatted_conversation
     entries = parsed_transcript
     return [] if entries.empty?
+
+    normalizer = TranscriptRuntime.normalizer_for(self)
+    return normalized_conversation(entries, normalizer) unless normalizer.is_a?(ClaudeTranscriptNormalizer)
 
     messages = []
 
@@ -1402,6 +1412,67 @@ class Session < ApplicationRecord
     end
 
     messages
+  end
+
+  # formatted_conversation for a runtime whose raw lines are not Claude-shaped.
+  # Each raw line becomes at most one message per role, in the same shape the
+  # Claude path produces: a tool call reads as an assistant message, its output
+  # as a user one (where the Anthropic API puts tool results). Thinking,
+  # runtime notices and bookkeeping are not conversation and are dropped.
+  private def normalized_conversation(entries, normalizer)
+    types = OpenTranscript::Types
+
+    entries.each_with_index.flat_map do |entry, transcript_index|
+      next [] unless entry.is_a?(Hash)
+
+      events = normalizer.normalize(entry, session: self, transcript_index: transcript_index)
+      parts = events.filter_map do |event|
+        case event[:type]
+        when types::USER_MESSAGE, types::ASSISTANT_MESSAGE
+          next if OpenTranscript.blank_message?(event)
+
+          text = TranscriptTextRenderer.content_text(event[:content].reject { |part| part["type"] == "image" }).strip
+          next if text.blank?
+
+          role = event[:type] == types::USER_MESSAGE ? "user" : "assistant"
+          { role: role, type: "text", text: text, timestamp: event[:ts] }
+        when types::TOOL_CALL
+          { role: "assistant", type: "tool_use", text: normalized_tool_call_text(event), timestamp: event[:ts] }
+        when types::TOOL_RESULT
+          output = TranscriptTextRenderer.content_text(event[:output]).strip
+          next if output.blank?
+
+          { role: "user", type: "tool_result", text: "**Tool Result:**\n```\n#{output}\n```", timestamp: event[:ts] }
+        end
+      end
+
+      parts.chunk_while { |a, b| a[:role] == b[:role] }.map do |run|
+        {
+          role: run.first[:role],
+          content: run.map { |p| p[:text] }.join("\n\n"),
+          timestamp: run.first[:timestamp],
+          has_tool_use: run.any? { |p| p[:type] == "tool_use" },
+          has_tool_result: run.any? { |p| p[:type] == "tool_result" },
+          transcript_index: transcript_index
+        }
+      end
+    end
+  end
+
+  # The Claude path's "**Using tool: X**" rendering, for a normalized ToolCall.
+  # Codex's custom tools carry their whole call as one `input` string, which
+  # stands in for the command.
+  private def normalized_tool_call_text(event)
+    arguments = event[:arguments]
+    arguments = {} unless arguments.is_a?(Hash)
+    description = arguments["description"]
+    command = arguments["command"] || arguments["cmd"] || arguments["input"]
+    command = command.join(" ") if command.is_a?(Array)
+
+    text = "**Using tool: #{event[:tool_name].presence || 'unknown'}**"
+    text += "\n#{description}" if description.present?
+    text += "\n```\n#{command}\n```" if command.present?
+    text
   end
 
   # Extract agent root name from git root URL

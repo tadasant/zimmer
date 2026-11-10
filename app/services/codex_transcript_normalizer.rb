@@ -17,6 +17,7 @@
 # Codex events map onto OpenTranscripts events as:
 # - message (role assistant) -> AssistantMessage
 # - message (role user)      -> UserMessage
+# - message (role developer/system) -> SystemEvent (runtime-notice)
 # - function_call / local_shell_call / custom_tool_call -> ToolCall
 # - function_call_output / custom_tool_call_output      -> ToolResult
 # - reasoning -> Thinking
@@ -89,6 +90,10 @@ class CodexTranscriptNormalizer < TranscriptNormalizer
   # so a rollout holding only the two meta lines is a rollout with nothing in it.
   NON_CONVERSATION_TYPES = %w[session_meta turn_context].freeze
 
+  # Message roles Codex uses for its own instructions rather than the model's
+  # words. See #instruction_notice_event.
+  INSTRUCTION_ROLES = %w[developer system].freeze
+
   def conversation_record?(raw_event)
     return false unless raw_event.is_a?(Hash)
 
@@ -147,7 +152,9 @@ class CodexTranscriptNormalizer < TranscriptNormalizer
     parts = content.filter_map { |block| normalize_content_part(block) }
     return nil if parts.empty?
 
-    if payload["role"] == "user"
+    if INSTRUCTION_ROLES.include?(payload["role"])
+      instruction_notice_event(payload, parts, ctx)
+    elsif payload["role"] == "user"
       base_event(ctx, type: OpenTranscript::Types::USER_MESSAGE, provider_raw: payload, content: parts)
     else
       base_event(
@@ -161,6 +168,26 @@ class CodexTranscriptNormalizer < TranscriptNormalizer
         cost_usd: nil
       )
     end
+  end
+
+  # Codex writes its own instructions into the rollout as `developer`-role
+  # messages: sandbox permissions, the agent-team preamble, the AGENTS.md body.
+  # The model did not say them, so they are a runtime notice, the same bucket
+  # Claude Code's CLI-written lines go in (see
+  # OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE), not an AssistantMessage.
+  def instruction_notice_event(payload, parts, ctx)
+    text = parts.filter_map { |part| part["text"] if part["type"] == "text" }.join("\n\n")
+    return nil if text.blank?
+
+    base_event(
+      ctx,
+      type: OpenTranscript::Types::SYSTEM_EVENT,
+      subtype: OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE,
+      payload: payload.merge(
+        "text" => text,
+        "markers" => [ { "flag" => "role", "reason" => "Codex's #{payload['role']} instructions, not written by the model" } ]
+      )
+    )
   end
 
   def normalize_content_part(block)
