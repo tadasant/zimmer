@@ -23,13 +23,13 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "persists a valid runtime + model pairing as the global session default" do
-    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "sol" } }
 
     assert_redirected_to settings_path
     assert_match(/Settings updated/, flash[:notice])
     setting = AppSetting.current
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
   end
 
   test "persists the MCP Apps master switch and its per-server allowlist" do
@@ -64,7 +64,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   test "a form that does not carry the MCP Apps fields leaves them alone" do
     AppSetting.create!(mcp_apps_enabled: true, mcp_apps_allowed_servers: [ "notion" ])
 
-    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "sol" } }
 
     setting = AppSetting.current
     assert setting.mcp_apps_enabled?
@@ -72,7 +72,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "updates the existing singleton row rather than inserting a second" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     patch app_settings_path, params: { app_setting: { default_runtime: "claude_code", default_model: "opus" } }
 
@@ -83,7 +83,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "clears the global default when both fields are blank" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     patch app_settings_path, params: { app_setting: { default_runtime: "", default_model: "" } }
 
@@ -94,7 +94,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "rejects an incompatible runtime + model pairing without persisting it" do
-    patch app_settings_path, params: { app_setting: { default_runtime: "claude_code", default_model: "gpt-5.5" } }
+    patch app_settings_path, params: { app_setting: { default_runtime: "claude_code", default_model: "sol" } }
 
     assert_redirected_to settings_path
     assert_match(/not saved/, flash[:alert])
@@ -105,7 +105,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
 
   test "a change made on the page is recorded as the page's" do
     entries = capture_log_entries do
-      patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+      patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "sol" } }
     end
 
     line = entries.map(&:last).find { |message| message.include?("[AppSettings]") }
@@ -142,7 +142,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "toggling MCP tool search does not clobber runtime + model defaults" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     patch app_settings_path, params: { app_setting: { mcp_tool_search_enabled: "0" } }
 
@@ -150,7 +150,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
     setting = AppSetting.current
     refute setting.mcp_tool_search_enabled?
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
   end
 
   test "enables an extension via the extensions param" do
@@ -170,7 +170,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "toggling an extension does not clobber existing runtime + model defaults" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     patch app_settings_path, params: { app_setting: { extensions: { "fake_experiment" => "1" } } }
 
@@ -178,7 +178,7 @@ class AppSettingsControllerTest < ActionDispatch::IntegrationTest
     setting = AppSetting.current
     assert setting.extension_enabled?("fake_experiment")
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
   end
 
   test "saving runtime + model leaves extension enablement untouched" do

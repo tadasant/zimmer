@@ -35,6 +35,10 @@ require "json"
 class CodexModelResolver
   TIMEOUT = 15
   CACHE_TTL = 10.minutes
+  # How long an unreadable live catalog is remembered: long enough that a burst
+  # of launches does not each wait out the timeout, short enough that a blip
+  # does not decide which model sessions get for the full TTL.
+  FAILED_LIVE_CACHE_TTL = 30.seconds
   CACHE_KEY = "codex_model_resolver/catalog/v1"
 
   # Catalogs to use instead of asking the CLI, in #catalogs' shape. The test
@@ -74,15 +78,21 @@ class CodexModelResolver
     end
 
     # Current (not upgraded-away) slugs from the live catalog and the bundled
-    # one, in that order. An unreadable catalog is an empty list.
+    # one, in that order. An unreadable catalog is an empty list. The bundled one
+    # is only read when the live one could not be, and that answer is cached for
+    # FAILED_LIVE_CACHE_TTL rather than CACHE_TTL.
     #
     # @return [Array(Array<String>, Array<String>)]
     def catalogs
       return catalog_override if catalog_override
 
-      Rails.cache.fetch(CACHE_KEY, expires_in: CACHE_TTL) do
-        [ read_catalog([ "codex", "debug", "models" ]), read_catalog([ "codex", "debug", "models", "--bundled" ]) ]
-      end
+      cached = Rails.cache.read(CACHE_KEY)
+      return cached if cached
+
+      live = read_catalog([ "codex", "debug", "models" ])
+      result = [ live, live.empty? ? read_catalog([ "codex", "debug", "models", "--bundled" ]) : [] ]
+      Rails.cache.write(CACHE_KEY, result, expires_in: live.empty? ? FAILED_LIVE_CACHE_TTL : CACHE_TTL)
+      result
     end
 
     private
