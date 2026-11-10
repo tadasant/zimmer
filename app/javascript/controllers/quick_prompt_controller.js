@@ -17,7 +17,10 @@ import { showToast, showAlert, updateToast } from "lib/toast"
 // - Tappable pill opens full-screen overlay editor
 // - X button or Escape key dismisses the overlay
 // - Dedicated Submit button at the bottom of the screen
-// - Closing the overlay resets the Advanced accordion (harness, model, spot)
+// - Submitting hides the overlay at once, so the toast is not under it; a
+//   start clears it, a refusal leaves the words in it for the next open
+// - Closing the overlay, or a start from either box, resets the Advanced
+//   accordion (harness, model, spot)
 // - Attach buttons mirror the desktop behavior
 // - Double-submit protection
 //
@@ -37,9 +40,9 @@ import { showToast, showAlert, updateToast } from "lib/toast"
 // The photo input accepts everything a phone's library holds, which is wider than
 // the four types ImageStorageService can store. A selection is re-routed before it
 // is ever submitted: JPEG/PNG/GIF/WebP stay on images[], HEIC stills and video are
-// moved onto files[]. The routing has to happen client-side because this form posts
-// natively — an unroutable photo reaches the server, is rejected, and takes the
-// typed prompt with it into a redirect.
+// moved onto files[]. The routing happens client-side so an unroutable photo never
+// reaches the server to be refused — on the fetch path that would cost the start,
+// and on the native fallback the typed prompt with it, into a redirect.
 export default class extends Controller {
   static targets = [
     "textarea",            // desktop textarea
@@ -51,7 +54,7 @@ export default class extends Controller {
     "mobileOverlay",       // full-screen overlay (mobile)
     "mobileTextarea",      // textarea inside overlay
     "mobileForm",          // form inside overlay
-    "mobileSubmit",        // submit button (disabled during submission)
+    "mobileSubmit",        // submit button
     "mobileImageInput",    // mobile photos & videos picker
     "mobileCameraInput",   // mobile camera input
     "mobileFileInput",     // mobile file picker
@@ -72,7 +75,7 @@ export default class extends Controller {
     this.restoreDraft()
   }
 
-  // The words a refused start handed back from the starting page's Edit. Not on
+  // The words a refused start handed back from the chat bubble's starting page's Edit. Not on
   // Turbo's cached preview of the board, which the fresh page replaces a moment
   // later — a draft taken there would be gone before the real box could show it.
   restoreDraft() {
@@ -192,6 +195,9 @@ export default class extends Controller {
   }
 
   closeMobile() {
+    // A start in flight owns the overlay's contents: it clears them on success
+    // and needs them kept on a refusal.
+    if (this.submitting) return
     this.mobileOverlayTarget.classList.add("hidden")
     document.body.style.overflow = ""
     this.mobileTextareaTarget.value = ""
@@ -219,7 +225,13 @@ export default class extends Controller {
     event.preventDefault()
     if (this.submitting) return
     this.submitting = true
-    if (!this.start(this.mobileFormTarget, this.mobileTextareaTarget, () => this.closeMobile())) this.submitting = false
+    if (!this.start(this.mobileFormTarget, this.mobileTextareaTarget, () => this.closeMobile())) {
+      this.submitting = false
+      return
+    }
+    // Out of the way of the toast, contents kept. The pill reopens it.
+    this.mobileOverlayTarget.classList.add("hidden")
+    document.body.style.overflow = ""
   }
 
   openMobileImage() {
@@ -418,8 +430,11 @@ async function requestStart(url, body) {
 // the toast is gone, or a minute has passed. The session is named a couple of
 // minutes in (SessionTitleJob), so a title shows only when it already has one.
 function followStart(toast, data) {
-  const url = data.session_url || data.url
-  const statusUrl = `/sessions/${data.session_id}/start_status`
+  const url = data.url
+  const statusUrl = data.start_status_url
+  // The "Starting…" card can be gone by now — dismissed, timed out on a long
+  // upload, or wiped by a Turbo stream replacing #flash. The answer still gets said.
+  if (!toast.isConnected) toast = showToast({ message: "", duration: FOLLOW_DURATION })
   const caveats = (data.caveats || []).join(" ")
   updateToast(toast, {
     message: describeStart({ session_id: data.session_id, status: "waiting" }, caveats),

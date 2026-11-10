@@ -96,6 +96,22 @@ class OptimisticActionsTest < ApplicationSystemTestCase
       text: "Session ##{session.id} · Rotate the staging deploy key — running.", wait: 10
     assert_equal board_path, current_path
     capture("quick-router-toast-running")
+
+    # Out of the queue, the toast stops following and goes away on its own.
+    assert_no_selector "#flash [data-client-toast='notice']", wait: 15
+  end
+
+  test "a Quick Router start the server refuses with a reason shows that reason" do
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path
+    assert_selector "[data-quick-prompt-target='textarea']"
+    long_prompt = "x" * (Session::PROMPT_MAX_LENGTH + 1)
+    page.execute_script("document.querySelector(\"[data-quick-prompt-target='textarea']\").value = arguments[0]", long_prompt)
+
+    find("[data-quick-prompt-target='textarea']").send_keys([ :control, :enter ])
+
+    assert_selector "#flash [data-client-toast='alert']", text: "Prompt is too long", wait: 10
+    assert_equal long_prompt.length, find("[data-quick-prompt-target='textarea']").value.length
   end
 
   test "a Quick Router start the server refuses keeps the words in the box" do

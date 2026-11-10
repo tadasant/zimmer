@@ -396,7 +396,12 @@ class SessionsController < ApplicationController
       notice += " The model you picked is not available for this harness, so the default applied."
     end
     respond_to do |format|
-      format.json { render json: { session_id: session.id, url: session_path(session), session_url: session_path(session), notice: notice, caveats: caveats } }
+      format.json do
+        render json: {
+          session_id: session.id, url: session_path(session), session_url: session_path(session),
+          start_status_url: start_status_session_path(session), notice: notice, caveats: caveats
+        }
+      end
       format.html { redirect_to session, notice: notice }
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
