@@ -489,6 +489,11 @@ module SessionStateMachine
       # Clean clones are deleted immediately with no retention period.
       event :archive do
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived
+        # Read before the transition rather than off `aasm.from_state` in `after`,
+        # which any `may_*?` call in between would overwrite.
+        before do
+          @status_leaving_for_trash = status
+        end
         after do
           set_archived_at
           record_status_before_archive
@@ -1584,7 +1589,10 @@ module SessionStateMachine
   # `needs_input`, which is the right answer for every session that was not
   # trashed from `failed`.
   def record_status_before_archive
-    merge_metadata!(STATUS_BEFORE_ARCHIVE_KEY => aasm.from_state.to_s)
+    return if @status_leaving_for_trash.blank?
+
+    merge_metadata!(STATUS_BEFORE_ARCHIVE_KEY => @status_leaving_for_trash.to_s)
+    @status_leaving_for_trash = nil
   rescue => e
     report_swallowed_side_effect(__method__, e, alert: false)
   end
