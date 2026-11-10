@@ -957,22 +957,35 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Determine appropriate status to restore to
-    completion_log = @session.logs.find { |log| log.content.include?("completed") || log.content.include?("failed") }
-    new_status = completion_log ? :failed : :waiting
-
+    # Back to the status the session was trashed from, as `archive` recorded it —
+    # see Session#status_to_undo_archive_to.
+    #
+    # Under the row lock, because a second Undo click or a Restore can land
+    # between the check above and the transition. Whichever comes second finds
+    # the session already out of the trash and answers as the first did, rather
+    # than raising on an event that no longer applies.
     result = with_db_retry do
-      @session.update!(archived_at: nil)
-      case new_status
-      when :failed
-        @session.unarchive_to_failed! if @session.may_unarchive_to_failed?
-      when :waiting
-        @session.unarchive_to_waiting! if @session.may_unarchive_to_waiting?
+      @session.with_lock do
+        next unless @session.archived?
+
+        restore_to = @session.status_to_undo_archive_to
+        # What Restore drops on its way to needs_input, and for the same reason:
+        # a session trashed while running still names the process that ran it.
+        if restore_to == :needs_input
+          @session.remove_metadata!("process_pid", "exception_class", Session::STALE_RETRY_METADATA_KEYS)
+        end
+        @session.update!(archived_at: nil)
+        if restore_to == :failed
+          @session.unarchive_to_failed!
+        else
+          @session.unarchive_to_needs_input!
+        end
+        @session.logs.create!(
+          content: "Session restored from trash by user",
+          level: "info"
+        )
       end
-      @session.logs.create!(
-        content: "Session restored from trash by user",
-        level: "info"
-      )
+      true
     end
 
     # Only respond if the operation succeeded
