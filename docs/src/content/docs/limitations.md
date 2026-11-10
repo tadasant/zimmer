@@ -5593,6 +5593,15 @@ that reports failure — so callers cannot get it wrong rather than merely not g
 
 ## API
 
+### Codex's own user-role scaffolding reads as the person's message
+
+A Codex rollout carries some lines Codex wrote itself under the `user` role, such as
+`<environment_context>` and `<recommended_plugins>`. Nothing on the line marks them as
+machine-written. The web timeline, the plain-text export and `GET /api/v1/sessions/:id/conversation`
+(and so the iOS app) all show them as user messages. Codex's `developer`-role instructions are
+recognised and shown as runtime notices. See
+[Who wrote this line](/sessions/transcripts/#who-wrote-this-line).
+
 ### A gateway timeout on a create still arrives as HTML, not as a JSON-RPC error
 
 A request that outruns the reverse proxy's read timeout is answered by the **proxy**, not by Zimmer,
