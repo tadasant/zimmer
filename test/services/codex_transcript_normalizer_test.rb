@@ -61,6 +61,17 @@ class CodexTranscriptNormalizerTest < ActiveSupport::TestCase
     assert_equal 2, event[:transcript_index]
   end
 
+  test "normalize makes a system-role message a runtime notice too" do
+    raw = wrap("response_item", {
+      "type" => "message", "role" => "system",
+      "content" => [ { "type" => "input_text", "text" => "be brief" } ]
+    })
+
+    event = @normalizer.normalize(raw, session: @session).sole
+
+    assert_equal OpenTranscript::SystemEventSubtypes::RUNTIME_NOTICE, event[:subtype]
+  end
+
   test "normalize maps input_image blocks to image ContentParts" do
     raw = wrap("response_item", {
       "type" => "message", "role" => "user",

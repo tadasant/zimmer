@@ -1418,20 +1418,28 @@ class Session < ApplicationRecord
   # Each raw line becomes at most one message per role, in the same shape the
   # Claude path produces: a tool call reads as an assistant message, its output
   # as a user one (where the Anthropic API puts tool results). Thinking,
-  # runtime notices and bookkeeping are not conversation and are dropped.
+  # runtime notices, compaction markers and bookkeeping are not conversation
+  # and are dropped.
   private def normalized_conversation(entries, normalizer)
     types = OpenTranscript::Types
 
     entries.each_with_index.flat_map do |entry, transcript_index|
       next [] unless entry.is_a?(Hash)
 
-      events = normalizer.normalize(entry, session: self, transcript_index: transcript_index)
+      events = begin
+        normalizer.normalize(entry, session: self, transcript_index: transcript_index)
+      rescue StandardError => e
+        # One malformed line drops itself, not the whole conversation.
+        Rails.logger.warn("[Session#formatted_conversation] session #{id} line #{transcript_index}: #{e.class}: #{e.message}")
+        []
+      end
       parts = events.filter_map do |event|
         case event[:type]
         when types::USER_MESSAGE, types::ASSISTANT_MESSAGE
           next if OpenTranscript.blank_message?(event)
 
           text = TranscriptTextRenderer.content_text(event[:content].reject { |part| part["type"] == "image" }).strip
+          text = "[image]" if text.blank? && event[:content].any? { |part| part["type"] == "image" }
           next if text.blank?
 
           role = event[:type] == types::USER_MESSAGE ? "user" : "assistant"
