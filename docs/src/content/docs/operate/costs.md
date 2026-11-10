@@ -237,10 +237,10 @@ reproduces the cost Pi recorded beside the volumes to the cent. Measured across 
 production Pi sessions that existed when this shipped: $0.582929 either way.
 
 :::caution[Pi's non-Anthropic models are unpriced]
-`ModelCatalog` also offers Pi `openrouter/openai/gpt-5.4`, `…/gpt-5.4-mini` and
-`openrouter/google/gemini-3.5-flash`. `TokenPricing` carries Anthropic rates only, and it
+`ModelCatalog` also offers Pi OpenRouter's GPT-mini, Gemini, Grok, Kimi and GLM aliases
+(`openrouter/~openai/gpt-mini-latest` and so on). `TokenPricing` carries Anthropic rates only, and it
 derives its cache rates from a multiplier relationship that holds across the Anthropic line
-and does not hold for those three — OpenAI bills nothing for a cache write, Gemini bills a
+and does not hold for those — OpenAI bills nothing for a cache write, Gemini bills a
 storage rate. So a Pi session on one of them lands with its **tokens** correct and its **cost
 at zero**, and shows up in the Costs page's unpriced-models list. That is the existing honest
 behaviour for a model with no rate, not a Pi-specific bug; pricing them needs `Rate` to carry

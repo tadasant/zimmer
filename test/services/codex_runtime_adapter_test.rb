@@ -224,11 +224,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         prompt: "go",
         session_id: "zimmer-session-uuid",
         working_dir: @test_dir,
-        model: "gpt-5.6-terra"
+        model: "gpt-5.6-terra-pro"
       )
     end
 
-    assert_match(/gpt-5\.6-terra requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_match(/gpt-5\.6-terra-pro requires Codex CLI >= 0\.146\.0/, error.message)
     assert_match(/installed version is 0\.135\.0/, error.message)
     assert_empty @mock_process_manager.spawned_processes,
       "the guard must fail before launching a codex process"
@@ -241,11 +241,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       prompt: "go",
       session_id: "zimmer-session-uuid",
       working_dir: @test_dir,
-      model: "gpt-5.6-terra"
+      model: "gpt-5.6-terra-pro"
     )
 
     command = @mock_process_manager.spawned_processes.last[:command]
-    assert_includes_subsequence command, [ "-m", "gpt-5.6-terra" ]
+    assert_includes_subsequence command, [ "-m", "gpt-5.6-terra-pro" ]
   end
 
   test "resume rejects gpt-5.6 models when the installed Codex CLI is too old" do
@@ -256,11 +256,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         session_id: "codex-session-uuid",
         working_dir: @test_dir,
         prompt: "continue",
-        model: "gpt-5.6-luna"
+        model: "gpt-5.6-luna-pro"
       )
     end
 
-    assert_match(/gpt-5\.6-luna requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_match(/gpt-5\.6-luna-pro requires Codex CLI >= 0\.146\.0/, error.message)
     assert_empty @mock_process_manager.spawned_processes
   end
 
@@ -272,7 +272,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         prompt: "go",
         session_id: "zimmer-session-uuid",
         working_dir: @test_dir,
-        model: "gpt-5.6-sol"
+        model: "gpt-5.6-sol-pro"
       )
     end
 
@@ -280,7 +280,8 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
     assert_empty @mock_process_manager.spawned_processes
   end
 
-  test "older Codex models do not require the gpt-5.6 CLI floor" do
+  test "an operator-added pin passes to -m verbatim and skips the gpt-5.6 CLI floor" do
+    ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-5.5", added_via: "api").save!(validate: false)
     @adapter.expects(:installed_cli_version).never
 
     @adapter.execute(
@@ -292,6 +293,34 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
 
     command = @mock_process_manager.spawned_processes.last[:command]
     assert_includes_subsequence command, [ "-m", "gpt-5.5" ]
+  end
+
+  test "execute launches a family id as the newest model the CLI lists in that family" do
+    @adapter.expects(:installed_cli_version).never
+    CodexModelResolver.catalog_override = [ %w[gpt-5.6-terra gpt-6.1-terra gpt-6.1-sol], [] ]
+
+    @adapter.execute(prompt: "go", session_id: "zimmer-session-uuid", working_dir: @test_dir, model: "terra")
+
+    command = @mock_process_manager.spawned_processes.last[:command]
+    assert_includes_subsequence command, [ "-m", "gpt-6.1-terra" ]
+  end
+
+  test "resume launches a legacy pinned id as its family's newest model" do
+    CodexModelResolver.catalog_override = [ %w[gpt-6-luna gpt-5.6-luna], [] ]
+
+    @adapter.resume(session_id: "codex-session-uuid", working_dir: @test_dir, prompt: "continue", model: "gpt-5.4-mini")
+
+    command = @mock_process_manager.spawned_processes.last[:command]
+    assert_includes_subsequence command, [ "-m", "gpt-6-luna" ]
+  end
+
+  test "a family the live catalog does not offer launches on the CLI's default model" do
+    CodexModelResolver.catalog_override = [ %w[gpt-5.6-terra], %w[gpt-5.6-sol] ]
+
+    @adapter.execute(prompt: "go", session_id: "zimmer-session-uuid", working_dir: @test_dir, model: "sol")
+
+    command = @mock_process_manager.spawned_processes.last[:command]
+    assert_not_includes command, "-m"
   end
 
   test "Dockerfile installs a Codex CLI version compatible with gpt-5.6 models" do

@@ -65,7 +65,7 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
   end
 
   test "rejects an id that is already built in" do
-    entry = ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-5.5", added_via: "api")
+    entry = ModelCatalogEntry.new(runtime: "codex", model_id: "terra", added_via: "api")
     refute entry.valid?
     assert_includes entry.errors[:model_id].join, "already a built-in"
   end
@@ -127,9 +127,9 @@ class ModelCatalogEntryTest < ActiveSupport::TestCase
   end
 
   test "shadowed_by_built_in? is true for a row a later deploy made built in, and such a row can be removed while the default names it" do
-    entry = ModelCatalogEntry.new(runtime: "codex", model_id: "gpt-5.5", added_via: "api")
+    entry = ModelCatalogEntry.new(runtime: "codex", model_id: "luna", added_via: "api")
     entry.save!(validate: false)
-    AppSetting.editable.update!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.editable.update!(default_runtime: "codex", default_model: "luna")
 
     assert entry.shadowed_by_built_in?
     assert entry.destroy

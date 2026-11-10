@@ -34,7 +34,7 @@ class ModelCatalogEffortTest < ActiveSupport::TestCase
   test "effort_error accepts a supported level and a blank one" do
     assert_nil ModelCatalog.effort_error("claude_code", "fable", "xhigh")
     assert_nil ModelCatalog.effort_error("claude_code", "haiku", nil)
-    assert_nil ModelCatalog.effort_error("codex", "gpt-5.6-terra", "")
+    assert_nil ModelCatalog.effort_error("codex", "terra", "")
   end
 
   test "effort_error names the valid levels and the default for an unknown level" do
@@ -53,7 +53,7 @@ class ModelCatalogEffortTest < ActiveSupport::TestCase
   end
 
   test "effort_error on a runtime without effort says so" do
-    assert_match(/not supported on the codex runtime/, ModelCatalog.effort_error("codex", "gpt-5.6-terra", "high"))
+    assert_match(/not supported on the codex runtime/, ModelCatalog.effort_error("codex", "terra", "high"))
     assert_match(/not supported on the pi runtime/, ModelCatalog.effort_error("pi", ModelCatalog.default_for("pi"), "high"))
   end
 

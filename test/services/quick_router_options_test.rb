@@ -153,6 +153,8 @@ class QuickRouterOptionsTest < ActiveSupport::TestCase
     assert_includes options.model_ids_by_runtime["codex"], "gpt-5.7"
     assert_includes options.model_options_for("codex").map(&:last), "gpt-5.7"
     assert_equal "gpt-5.7", options.resolve_model("codex", "gpt-5.7")
+    assert_equal "terra", options.resolve_model("codex", "gpt-5.6-terra"), "a legacy id is taken as its family"
+    assert_nil options.resolve_model("claude_code", "gpt-5.6-terra")
   end
 
   test "default_model_for prefers the root's declared model when the runtime has it" do

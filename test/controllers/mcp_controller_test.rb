@@ -206,9 +206,9 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_includes text.call(before), "**Runtime:** `claude_code` (Claude Code) — shipped default, no override set"
 
     set = rpc("tools/call", { "name" => "action_app_settings",
-                              "arguments" => { "action" => "set_session_defaults", "runtime" => "codex", "model" => "gpt-5.5" } }, path: scoped)
+                              "arguments" => { "action" => "set_session_defaults", "runtime" => "codex", "model" => "sol" } }, path: scoped)
     refute set["result"]["isError"], text.call(set)
-    assert_includes text.call(set), "**After:** runtime `codex` (override), model `gpt-5.5` (override)"
+    assert_includes text.call(set), "**After:** runtime `codex` (override), model `sol` (override)"
 
     toggled = rpc("tools/call", { "name" => "action_app_settings",
                                   "arguments" => { "action" => "set_experimental_setting", "setting" => "mcp_tool_search", "enabled" => false } }, path: scoped)
@@ -216,13 +216,13 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     refute AppSetting.mcp_tool_search_enabled?
 
     refused = rpc("tools/call", { "name" => "action_app_settings",
-                                  "arguments" => { "action" => "set_session_defaults", "runtime" => "claude_code", "model" => "gpt-5.5" } }, path: scoped)
+                                  "arguments" => { "action" => "set_session_defaults", "runtime" => "claude_code", "model" => "sol" } }, path: scoped)
     assert refused["result"]["isError"], "an invalid pair came back as a success"
-    assert_match(/gpt-5.5 is not available for Claude Code/, text.call(refused))
+    assert_match(/sol is not available for Claude Code/, text.call(refused))
 
     after = text.call(rpc("tools/call", { "name" => "get_app_settings", "arguments" => {} }, path: scoped))
     assert_includes after, "**Runtime:** `codex` (Codex) — operator override"
-    assert_includes after, "**Model:** `gpt-5.5` — operator override"
+    assert_includes after, "**Model:** `sol` — operator override"
     assert_match(/`mcp_tool_search`\): \*\*off\*\* — operator override/, after)
   end
 
@@ -394,7 +394,7 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_includes text, "## Runtime Models"
     assert_includes text, "`fable`"
-    assert_includes text, "`gpt-5.6-terra` (default, requires OAuth)"
+    assert_includes text, "`terra` (default, requires OAuth)"
   end
 
   test "tools/call surfaces a tool error as an error result, not a protocol error" do

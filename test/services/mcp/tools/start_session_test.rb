@@ -250,12 +250,12 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
       "agent_root" => "zimmer",
       "agent_runtime" => "codex",
       "title" => "Codex config",
-      "config" => { "model" => "gpt-5.6-luna" }
+      "config" => { "model" => "luna" }
     )
 
     session = Session.order(:id).last
     assert_equal "codex", session.agent_runtime
-    assert_equal "gpt-5.6-luna", session.config["model"]
+    assert_equal "luna", session.config["model"]
   end
 
   test "persists an explicit effort alongside the model" do
@@ -721,18 +721,18 @@ class Mcp::Tools::StartSessionTest < ActiveSupport::TestCase
   # is no root tier, so the chain falls straight through to the Settings page.
   test "a rootless spawn resolves runtime and model through the Settings-page defaults" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
 
     @tool.call("git_root" => "https://github.com/someone/scratch.git", "title" => "Global defaults")
 
     session = Session.order(:id).last
     assert_equal "codex", session.agent_runtime
-    assert_equal "gpt-5.4", session.config["model"]
+    assert_equal "luna", session.config["model"]
   end
 
   test "an explicit runtime and model still beat the global defaults on a rootless spawn" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
 
     @tool.call(
       "git_root" => "https://github.com/someone/scratch.git",

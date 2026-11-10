@@ -34,7 +34,10 @@
 # - `--cd/-C <dir>` sets the working directory. NOTE: only `codex exec` accepts
 #   this; the `codex exec resume` subcommand rejects `--cd`, so resume relies on
 #   the spawned process's chdir instead (see #build_resume_command).
-# - `-m/--model <name>` selects the model.
+# - `-m/--model <name>` selects the model. Zimmer's Codex ids are model
+#   families (`terra`), which #execute/#resume resolve to the newest concrete
+#   slug the CLI lists (`gpt-5.6-terra`) through CodexModelResolver; when nothing
+#   resolves, `-m` is omitted and the CLI's own default applies.
 # - `--output-last-message <path>` writes the final assistant message to a file,
 #   a runtime-independent capture of the response.
 # - `-i/--image <path>` attaches an image (repeatable).
@@ -149,7 +152,8 @@ class CodexRuntimeAdapter
   #   reads MCP servers from ~/.codex/config.toml, so this is not used here (pulsemcp/pulsemcp#3778)
   # @param images [Array<Hash>, nil] Array of image hashes with a :path key
   # @param append_system_prompt [String, nil] Written to AGENTS.md before spawn
-  # @param model [String, nil] Model to use (e.g., "gpt-5.4")
+  # @param model [String, nil] Catalog model id (e.g. "terra"), resolved to a
+  #   concrete slug by CodexModelResolver before it reaches `-m`
   # @param auto_compact_window [Integer, nil] Accepted for contract symmetry with
   #   ClaudeCliAdapter but unused: auto-compaction is a Claude Code concept driven
   #   by the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var, which Codex has no analog for.
@@ -165,7 +169,7 @@ class CodexRuntimeAdapter
     # --output-last-message path both join onto it, so the guard has to run here
     # rather than at spawn time to keep its actionable message.
     self.class.validate_working_dir!(working_dir)
-    validate_model_cli_compatibility!(model)
+    model = resolve_model(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -187,7 +191,7 @@ class CodexRuntimeAdapter
   # @param mcp_config_path [String, nil] Accepted for contract symmetry; not used
   #   (pulsemcp/pulsemcp#3778)
   # @param append_system_prompt [String, nil] Written to AGENTS.md before spawn
-  # @param model [String, nil] Model to use (e.g., "gpt-5.4")
+  # @param model [String, nil] Catalog model id, resolved as in #execute
   # @param auto_compact_window [Integer, nil] Accepted for contract symmetry with
   #   ClaudeCliAdapter but unused (see #execute) — Codex has no auto-compact-window
   #   concept. Continuations and retry services pass it uniformly (pulsemcp/pulsemcp#3884).
@@ -195,7 +199,7 @@ class CodexRuntimeAdapter
   def resume(session_id:, working_dir:, prompt: nil, images: nil, mcp_config_path: nil,
              append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     self.class.validate_working_dir!(working_dir)
-    validate_model_cli_compatibility!(model)
+    model = resolve_model(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -288,6 +292,21 @@ class CodexRuntimeAdapter
 
     images.each do |image|
       cmd << "-i" << image[:path]
+    end
+  end
+
+  # The concrete `-m` slug for a catalog id, logged so the worker log says
+  # which model a family launched as. A slug resolved from a family came from
+  # the installed CLI's own model list, so only an id passed through verbatim
+  # (an operator-added pin) needs the CLI-version check.
+  def resolve_model(model)
+    unless ModelCatalog.codex_family_for(model)
+      validate_model_cli_compatibility!(model)
+      return model.presence
+    end
+
+    CodexModelResolver.resolve(model).tap do |resolved|
+      @logger.info("[CodexRuntimeAdapter] model #{model.inspect} resolved to #{resolved ? resolved.inspect : "the CLI default"}")
     end
   end
 

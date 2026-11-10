@@ -15,7 +15,7 @@ class ModelCatalogEntriesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     ModelCatalog.runtimes.each { |runtime| assert_select "#models-#{runtime}" }
-    assert_select "#models-codex", text: /gpt-5.6-terra/
+    assert_select "#models-codex", text: /terra/
   end
 
   test "create adds a model and it shows up on the new-session form" do

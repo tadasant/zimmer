@@ -47,10 +47,10 @@ class Mcp::Tools::GetConfigsTest < ActiveSupport::TestCase
     assert_includes result, "`fable`"
     assert_includes result, "### Codex"
     assert_includes result, "- **Runtime:** `codex`"
-    assert_includes result, "- **Default Model:** `gpt-5.6-terra`"
-    assert_includes result, "`gpt-5.6-sol` (requires OAuth)"
-    assert_includes result, "`gpt-5.6-terra` (default, requires OAuth)"
-    assert_includes result, "`gpt-5.6-luna` (requires OAuth)"
+    assert_includes result, "- **Default Model:** `terra`"
+    assert_includes result, "`sol` (requires OAuth)"
+    assert_includes result, "`terra` (default, requires OAuth)"
+    assert_includes result, "`luna` (requires OAuth)"
   end
 
   test "lists the effort levels and default for every model that takes one" do

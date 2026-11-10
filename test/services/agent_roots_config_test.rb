@@ -339,27 +339,27 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
 
   test "global app_setting fills in runtime and model when the root declares neither" do
     config = { "url" => "https://github.com/test/repo.git" }
-    app_setting = AppSetting.new(default_runtime: "codex", default_model: "gpt-5.5")
+    app_setting = AppSetting.new(default_runtime: "codex", default_model: "sol")
     agent_root = AgentRootsConfig::AgentRoot.new("test-root", config, app_setting: app_setting)
 
     assert_equal "codex", agent_root.default_runtime
-    assert_equal "gpt-5.5", agent_root.default_model
+    assert_equal "sol", agent_root.default_model
   end
 
   test "explicit roots.json runtime always wins over the global app_setting" do
     config = { "url" => "https://github.com/test/repo.git", "default_runtime" => "claude_code" }
-    app_setting = AppSetting.new(default_runtime: "codex", default_model: "gpt-5.5")
+    app_setting = AppSetting.new(default_runtime: "codex", default_model: "sol")
     agent_root = AgentRootsConfig::AgentRoot.new("test-root", config, app_setting: app_setting)
 
-    # Root pins claude_code; the global codex/gpt-5.5 must not override it, and the
-    # global gpt-5.5 model is invalid for claude_code so it self-heals to opus.
+    # Root pins claude_code; the global codex/sol must not override it, and the
+    # global sol model is invalid for claude_code so it self-heals to opus.
     assert_equal "claude_code", agent_root.default_runtime
     assert_equal "opus", agent_root.default_model
   end
 
   test "explicit roots.json model always wins over the global app_setting" do
     config = { "url" => "https://github.com/test/repo.git", "default_model" => "sonnet" }
-    app_setting = AppSetting.new(default_runtime: "codex", default_model: "gpt-5.5")
+    app_setting = AppSetting.new(default_runtime: "codex", default_model: "sol")
     agent_root = AgentRootsConfig::AgentRoot.new("test-root", config, app_setting: app_setting)
 
     assert_equal "sonnet", agent_root.default_model
