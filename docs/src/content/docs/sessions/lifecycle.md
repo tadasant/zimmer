@@ -2498,6 +2498,30 @@ session *out* of the trash, which is what the ordinary **Restore** action does w
 all. The window scopes the toast affordance; `TRASH_RETENTION_PERIOD` and `EmptyTrashJob` are what
 actually bound the trash.
 
+#### Undo puts the session back where it was
+
+`archive` stamps the status the session left from into `metadata["status_before_archive"]`, and
+Undo reads it back through `Session#status_to_undo_archive_to`:
+
+| Trashed from | Undo restores to |
+| --- | --- |
+| `failed` | `failed` |
+| `needs_input`, `running`, `waiting` | `needs_input` |
+
+`running` and `waiting` come back as `needs_input`, the same resting state **Restore** gives. By the
+time Undo runs, `archive` has already dropped the running job and retired the wakes a waiting
+session was sleeping on, so neither status would have anything behind it. A session with no stamp
+(trashed before the key existed) takes the `needs_input` default.
+
+The status is recorded rather than inferred from the logs because the logs cannot answer it: every
+session that has run a turn logs *"Claude Code CLI completed turn successfully"*, so a scan for
+"completed" or "failed" reads a session waiting on its human as **Failed** — and a Failed session
+drops out of the board's needs-input queue, which reads as an Undo that did nothing.
+
+Undo takes the row lock, so a second click or a **Restore** racing it finds the session already out
+of the trash and answers as the first did. Restoring to `needs_input` drops the same stale process
+metadata (`process_pid`, the retry keys) that **Restore** drops.
+
 ## Side effects are swallowed by design — but no longer silently
 
 Almost every callback in the state machine is wrapped in a bare `rescue` (`preserve_debug_info` is
