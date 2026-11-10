@@ -11,7 +11,7 @@ session gets is the `sessions.agent_runtime` column, and the choice is per sessi
 | CLI | `claude` | `codex exec` | `pi -p` |
 | Vendor | Anthropic | OpenAI | Pi coding agent (`@earendil-works/pi-coding-agent`, pinned to 0.84.4 in `Dockerfile.base`) |
 | Credential | pooled OAuth subscription account | pooled OAuth subscription account | `OPENROUTER_API_KEY`, put in Pi's process environment at spawn |
-| Default model | `opus` | `gpt-5.6-terra` | `openrouter/anthropic/claude-opus-4.6` |
+| Default model | `opus` | `terra` | `openrouter/~anthropic/claude-opus-latest` |
 | MCP, hooks, plugins | all three native | MCP native; no hook lifecycle for AIR to translate into | none native — all three come from [pinned Pi extensions](#pi-brings-no-mcp-hooks-or-plugins-of-its-own) |
 
 `RuntimeRegistry::BUNDLES` is the list, and `RuntimeRegistry::LABELS` is what the UI renders
@@ -53,19 +53,48 @@ and the models an operator added while it runs, which follow them. The built-in 
 | Runtime | Model ids |
 | --- | --- |
 | `claude_code` | `opus` (default), `sonnet`, `haiku`, `fable` |
-| `codex` | `gpt-5.6-terra` (default), `gpt-5.6-sol`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and two deprecated `*-codex` ids |
-| `pi` | `openrouter/anthropic/claude-opus-4.6` (default), `…/claude-sonnet-4.6`, `…/claude-haiku-4.5`, `openrouter/openai/gpt-5.4`, `…/gpt-5.4-mini`, `openrouter/google/gemini-3.5-flash`, plus direct `anthropic/*` and `openai/*` ids |
+| `codex` | `terra` (default), `sol`, `luna` |
+| `pi` | `openrouter/~anthropic/claude-opus-latest` (default), `…/~anthropic/claude-sonnet-latest`, `…/~anthropic/claude-haiku-latest`, `…/~anthropic/claude-fable-latest`, `…/~openai/gpt-mini-latest`, `…/~google/gemini-pro-latest`, `…/~google/gemini-flash-latest`, `…/~x-ai/grok-latest`, `…/~moonshotai/kimi-latest`, `…/~z-ai/glm-latest` |
+
+**No built-in id names a version, on any runtime.** Each one follows the newest model in its
+family, so a model release reaches sessions without a Zimmer change. How each runtime gets there
+differs:
+
+- **Claude Code** — the CLI's own aliases. `opus` is whatever Opus the CLI resolves it to.
+- **Codex** — the CLI has no alias of its own; `-m` takes a concrete slug. So the ids are OpenAI's
+  model families — `sol` (frontier), `terra` (balanced), `luna` (fast) — and `CodexModelResolver`
+  turns one into the newest `gpt-<version>-<family>` slug the installed CLI lists, at every launch
+  and every resume. It reads `codex debug models`, the list the CLI refreshes from OpenAI with the
+  login's credentials, and falls back to the list bundled with the binary only when the live one
+  cannot be read. The live list is filtered to what the login's plan may run, and it is the one
+  that is right about it: a ChatGPT login that is not offered Sol has no `gpt-5.6-sol` in it, and
+  the API refuses that slug with `model_not_found`. A slug the CLI marks as upgraded away never
+  wins. When the family is not on the list, `-m` is left off and the session runs on the CLI's own
+  default rather than failing; the worker log records what each family launched as.
+- **Pi** — OpenRouter's floating `~<vendor>/<family>-latest` aliases, passed to `--model`
+  verbatim. The list is the families that are both in OpenRouter's live listing and in the model
+  catalog bundled with the pinned Pi, so none 404s and Pi knows each one's limits. OpenRouter's GPT
+  tier aliases (`~openai/gpt-terra-latest` and friends) are live but not yet in Pi 0.84.4's
+  catalog, so they are not offered.
+
+`ModelCatalogTest` fails on a version number in a Codex or Pi built-in id. A model that has to stay
+pinned is an [added model](#adding-a-model-without-a-deploy), which every runtime passes through
+verbatim.
+
+**Ids the built-ins used to pin still work.** `ModelCatalog::LEGACY_MODEL_ALIASES` maps each to
+the built-in that replaced it — `gpt-5.6-terra` → `terra`, `gpt-5.4-mini` → `luna`,
+`openrouter/anthropic/claude-opus-4.6` → `openrouter/~anthropic/claude-opus-latest`. A legacy id
+validates everywhere but is offered in no picker; the Settings default, a root's declared
+`default_model` and a model change are stored as the replacement, a Codex legacy id launches as its
+family's newest model, and a one-time post-deploy task moved the Settings default and every open
+Codex and Pi session onto the replacements. The few with no replacement — `openrouter/openai/gpt-5.4`
+and Pi's direct `anthropic/*` and `openai/*` ids — stay valid and run as pinned.
 
 **Pi's ids are provider-qualified, and the other two runtimes' are not.** `pi --model` takes a
 bare id or a `provider/id` pattern, so the catalog stores the qualified form and
 `PiRuntimeAdapter` passes it through verbatim — no separate `--provider` flag. OpenRouter is
 itself a provider, so its ids carry the vendor after it as well:
-`openrouter/anthropic/claude-opus-4.6` is three segments, not two.
-
-The `anthropic/*` and `openai/*` entries at the end of Pi's list go direct to the vendor and need
-`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. They are kept in the catalog so a session pinned to one
-still validates; this deployment feeds neither key, so the `openrouter/*` ids are the ones that
-run.
+`openrouter/~anthropic/claude-opus-latest` is three segments, not two.
 
 All three runtimes have a refresh discipline written into `ModelCatalog`, and Pi's has a
 trap in it: `pi --list-models` only prints providers whose credential currently resolves, so

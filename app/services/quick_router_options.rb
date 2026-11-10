@@ -42,7 +42,7 @@ class QuickRouterOptions
   # @return [String, nil]
   def self.default_model_for(agent_root, runtime, allowed_models: nil)
     allowed = allowed_models || ModelCatalog.model_ids_for(runtime)
-    declared = agent_root&.default_model
+    declared = ModelCatalog.canonical_model_id(runtime, agent_root&.default_model, allowed_models: allowed)
     return declared if allowed.include?(declared.to_s)
 
     AppSetting.current.resolved_default_model_for(runtime, allowed_models: allowed)

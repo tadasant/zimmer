@@ -17,10 +17,22 @@ class AppSettingTest < ActiveSupport::TestCase
     assert AppSetting.new(default_runtime: "claude_code", default_model: "fable").valid?
   end
 
-  test "valid codex + gpt-5.6 series pairing" do
-    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-sol").valid?
-    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-terra").valid?
-    assert AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-luna").valid?
+  test "valid codex family pairing" do
+    assert AppSetting.new(default_runtime: "codex", default_model: "sol").valid?
+    assert AppSetting.new(default_runtime: "codex", default_model: "terra").valid?
+    assert AppSetting.new(default_runtime: "codex", default_model: "luna").valid?
+  end
+
+  test "a legacy pinned codex id is stored as the family that replaced it" do
+    setting = AppSetting.new(default_runtime: "codex", default_model: "gpt-5.6-luna")
+    assert setting.valid?
+    assert_equal "luna", setting.default_model
+  end
+
+  test "resolved_default_model_for follows a legacy id that was never re-saved to its family" do
+    setting = AppSetting.new(default_runtime: "codex")
+    setting.default_model = "gpt-5.4"
+    assert_equal "terra", setting.resolved_default_model_for("codex")
   end
 
   test "rejects an unregistered runtime" do
@@ -48,8 +60,8 @@ class AppSettingTest < ActiveSupport::TestCase
   end
 
   test "resolved_default_model_for returns the configured model when valid for the runtime" do
-    setting = AppSetting.new(default_runtime: "codex", default_model: "gpt-5.4")
-    assert_equal "gpt-5.4", setting.resolved_default_model_for("codex")
+    setting = AppSetting.new(default_runtime: "codex", default_model: "luna")
+    assert_equal "luna", setting.resolved_default_model_for("codex")
   end
 
   test "resolved_default_model_for falls back to the runtime catalog default when model is incompatible" do
@@ -73,11 +85,11 @@ class AppSettingTest < ActiveSupport::TestCase
 
   test "current returns the persisted singleton row when one exists" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
     setting = AppSetting.current
     assert setting.persisted?
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
   end
 
   test "editable returns a persistable record that inserts the first row" do

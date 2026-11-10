@@ -314,6 +314,7 @@ class AppSetting < ApplicationRecord
   validates :default_runtime,
     inclusion: { in: -> { RuntimeRegistry.registered_runtimes }, message: "%{value} is not a registered runtime" },
     allow_blank: true
+  before_validation :canonicalize_default_model
   validate :default_model_valid_for_runtime
   validate :only_one_row, on: :create
   # 0 and 100 are both meaningful and both allowed: 0% reserves nothing and lets
@@ -531,8 +532,8 @@ class AppSetting < ApplicationRecord
   #   this, and the Quick Router's harness picker would otherwise re-read it once
   #   per runtime on every page render. Omitted, it is looked up here as before.
   def resolved_default_model_for(runtime, allowed_models: nil)
-    m = default_model
     allowed = allowed_models || ModelCatalog.model_ids_for(runtime)
+    m = ModelCatalog.canonical_model_id(runtime, default_model, allowed_models: allowed)
     return m if m.present? && allowed.include?(m)
 
     ModelCatalog.default_for(runtime)
@@ -600,6 +601,15 @@ class AppSetting < ApplicationRecord
       errors.add(:genesis_class_overrides, "#{key} is not a known genesis") unless SessionGenesis.valid?(key)
       errors.add(:genesis_class_overrides, "#{klass} is not a valid class") unless SessionGenesis::CLASSES.include?(klass.to_s)
     end
+  end
+
+  # A legacy pinned id (ModelCatalog::LEGACY_MODEL_ALIASES) is stored as the
+  # version-free model that replaced it, so the Settings default follows the
+  # latest model rather than freezing on the version it was set to.
+  def canonicalize_default_model
+    return if default_model.blank?
+
+    self.default_model = ModelCatalog.canonical_model_id(default_runtime.presence || RuntimeRegistry::DEFAULT_RUNTIME, default_model)
   end
 
   def default_model_valid_for_runtime

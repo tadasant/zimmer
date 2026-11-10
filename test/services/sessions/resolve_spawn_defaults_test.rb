@@ -28,13 +28,13 @@ class Sessions::ResolveSpawnDefaultsTest < ActiveSupport::TestCase
 
   test "with no root the chain falls through to the Settings-page defaults" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
     session = Session.new(git_root: "https://github.com/someone/scratch.git")
 
     Sessions::ResolveSpawnDefaults.call(session)
 
     assert_equal "codex", session.agent_runtime
-    assert_equal "gpt-5.4", session.config["model"]
+    assert_equal "luna", session.config["model"]
     assert_nil session.metadata&.dig("agent_root_key")
     assert_equal "https://github.com/someone/scratch.git", session.git_root
   end

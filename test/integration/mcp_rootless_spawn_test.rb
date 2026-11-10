@@ -27,7 +27,7 @@ class McpRootlessSpawnTest < ActionDispatch::IntegrationTest
 
   test "a bare git_root spawns a session, with runtime and model from the global defaults" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
 
     assert_difference "Session.count", 1 do
       @body = call_start_session({
@@ -42,7 +42,7 @@ class McpRootlessSpawnTest < ActionDispatch::IntegrationTest
     assert_equal "https://github.com/someone/scratch.git", session.git_root
     assert_equal "trunk", session.branch
     assert_equal "codex", session.agent_runtime
-    assert_equal "gpt-5.4", session.config["model"]
+    assert_equal "luna", session.config["model"]
     assert_includes text_of(@body), "## Session Started Successfully"
   end
 

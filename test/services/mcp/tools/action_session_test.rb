@@ -1126,15 +1126,15 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "fable", session.reload.config["model"]
   end
 
-  test "change_model accepts GPT 5.6 models for Codex sessions" do
+  test "change_model stores a legacy pinned Codex id as the family that replaced it" do
     session = sessions(:needs_input)
-    session.update!(agent_runtime: "codex", config: { "model" => "gpt-5.5" })
+    session.update!(agent_runtime: "codex", config: { "model" => "sol" })
 
     result = @tool.call("action" => "change_model", "session_id" => session.id, "model" => "gpt-5.6-terra")
 
     assert_includes result, "## Model Updated"
-    assert_includes result, "- **Model:** gpt-5.6-terra"
-    assert_equal "gpt-5.6-terra", session.reload.config["model"]
+    assert_includes result, "- **Model:** terra"
+    assert_equal "terra", session.reload.config["model"]
 
     error = assert_raises(Mcp::ToolError) do
       @tool.call("action" => "change_model", "session_id" => session.id, "model" => "fable")

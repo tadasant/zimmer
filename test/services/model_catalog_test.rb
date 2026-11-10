@@ -28,7 +28,7 @@ class ModelCatalogTest < ActiveSupport::TestCase
   test "runtime with its own catalog entry resolves to itself, not the default" do
     # A runtime is reachable as soon as it has a MODELS entry, even before
     # RuntimeRegistry registers its implementation bundle.
-    assert_equal %w[gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex gpt-5.2-codex],
+    assert_equal %w[sol terra luna],
       ModelCatalog.model_ids_for("codex")
     refute_equal ModelCatalog.model_ids_for("claude_code"), ModelCatalog.model_ids_for("codex")
   end
@@ -41,12 +41,12 @@ class ModelCatalogTest < ActiveSupport::TestCase
   end
 
   test "models_for returns the codex catalog" do
-    assert_equal %w[gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex gpt-5.2-codex],
+    assert_equal %w[sol terra luna],
       ModelCatalog.model_ids_for("codex")
   end
 
-  test "default_for codex is gpt-5.6-terra" do
-    assert_equal "gpt-5.6-terra", ModelCatalog.default_for("codex")
+  test "default_for codex is terra" do
+    assert_equal "terra", ModelCatalog.default_for("codex")
   end
 
   test "valid_model? is true for catalog members and false otherwise" do
@@ -59,23 +59,19 @@ class ModelCatalogTest < ActiveSupport::TestCase
   end
 
   test "valid_model? for codex accepts codex models and rejects cross-runtime models" do
-    assert ModelCatalog.valid_model?("codex", "gpt-5.6-sol")
-    assert ModelCatalog.valid_model?("codex", "gpt-5.6-terra")
-    assert ModelCatalog.valid_model?("codex", "gpt-5.6-luna")
-    assert ModelCatalog.valid_model?("codex", "gpt-5.5")
-    assert ModelCatalog.valid_model?("codex", "gpt-5.2-codex")
+    assert ModelCatalog.valid_model?("codex", "sol")
+    assert ModelCatalog.valid_model?("codex", "terra")
+    assert ModelCatalog.valid_model?("codex", "luna")
     refute ModelCatalog.valid_model?("codex", "opus")
     refute ModelCatalog.valid_model?("codex", "fable")
     refute ModelCatalog.valid_model?("codex", "gpt-9")
   end
 
   test "requires_oauth? reflects the per-model flag" do
-    assert ModelCatalog.requires_oauth?("codex", "gpt-5.6-sol")
-    assert ModelCatalog.requires_oauth?("codex", "gpt-5.6-terra")
-    assert ModelCatalog.requires_oauth?("codex", "gpt-5.6-luna")
-    assert ModelCatalog.requires_oauth?("codex", "gpt-5.5")
-    refute ModelCatalog.requires_oauth?("codex", "gpt-5.4")
-    refute ModelCatalog.requires_oauth?("codex", "gpt-5.4-mini")
+    assert ModelCatalog.requires_oauth?("codex", "sol")
+    assert ModelCatalog.requires_oauth?("codex", "terra")
+    assert ModelCatalog.requires_oauth?("codex", "luna")
+    refute ModelCatalog.requires_oauth?("pi", ModelCatalog.default_for("pi"))
   end
 
   test "requires_oauth? is false for unknown models and runtimes without the flag" do
@@ -127,11 +123,11 @@ class ModelCatalogTest < ActiveSupport::TestCase
   end
 
   test "an added row a deploy made built in is skipped, so the built-in entry wins" do
-    insert_entry("codex", "gpt-5.5", label: "shadow")
+    insert_entry("codex", "luna", label: "shadow")
 
     ids = ModelCatalog.model_ids_for("codex")
-    assert_equal 1, ids.count("gpt-5.5")
-    assert_equal "built_in", ModelCatalog.models_for("codex").find { |m| m[:id] == "gpt-5.5" }[:source]
+    assert_equal 1, ids.count("luna")
+    assert_equal "built_in", ModelCatalog.models_for("codex").find { |m| m[:id] == "luna" }[:source]
   end
 
   test "an unreadable added-models table degrades to the built-in list" do
@@ -158,11 +154,11 @@ class ModelCatalogTest < ActiveSupport::TestCase
   # The two branches a single added row per runtime cannot exercise: the built-in
   # dedup, and the ordering of several added rows within one runtime.
   test "models_by_runtime drops an added row a deploy made built in, like models_for" do
-    insert_entry("codex", "gpt-5.5", label: "shadow")
+    insert_entry("codex", "luna", label: "shadow")
 
     models = ModelCatalog.models_by_runtime(%w[codex])["codex"]
-    assert_equal 1, models.count { |m| m[:id] == "gpt-5.5" }
-    assert_equal "built_in", models.find { |m| m[:id] == "gpt-5.5" }[:source]
+    assert_equal 1, models.count { |m| m[:id] == "luna" }
+    assert_equal "built_in", models.find { |m| m[:id] == "luna" }[:source]
     assert_equal ModelCatalog.models_for("codex"), models
   end
 
@@ -213,6 +209,58 @@ class ModelCatalogTest < ActiveSupport::TestCase
       refute ClaudeModelConfigurationAudit.concrete_model?(id),
         "claude_code id #{id.inspect} pins a model version; use the bare alias"
     end
+  end
+
+  # The Codex and Pi counterpart to the test above: their built-ins are model
+  # families (`terra`) and OpenRouter's floating `~…-latest` aliases, never a
+  # versioned id, so a new release needs no change in Zimmer. A pin that has to
+  # stay is an added model, not a built-in.
+  test "codex built-in ids are version-free model families" do
+    ModelCatalog::MODELS.fetch("codex").each do |model|
+      assert_match(/\A[a-z]+\z/, model[:id], "codex id #{model[:id].inspect} pins a version; use the family name")
+    end
+  end
+
+  test "pi built-in ids are OpenRouter floating aliases with no version number" do
+    ModelCatalog::MODELS.fetch("pi").each do |model|
+      assert_match(%r{\Aopenrouter/~[a-z0-9-]+/[a-z-]+-latest\z}, model[:id],
+        "pi id #{model[:id].inspect} is not a version-free `openrouter/~<vendor>/<family>-latest` alias")
+    end
+  end
+
+  test "legacy ids stay valid without being offered, and map onto a built-in" do
+    ModelCatalog::LEGACY_MODEL_ALIASES.each do |runtime, aliases|
+      offered = ModelCatalog.model_ids_for(runtime)
+      aliases.each do |legacy, replacement|
+        assert ModelCatalog.valid_model?(runtime, legacy), "#{legacy} must stay valid for #{runtime}"
+        refute_includes offered, legacy, "#{legacy} must not be offered in a #{runtime} picker"
+        assert_includes offered, replacement, "#{legacy} must map onto a #{runtime} built-in" if replacement
+      end
+    end
+  end
+
+  test "canonical_model_id moves a legacy id onto its replacement and leaves everything else alone" do
+    assert_equal "terra", ModelCatalog.canonical_model_id("codex", "gpt-5.6-terra")
+    assert_equal "luna", ModelCatalog.canonical_model_id("codex", "gpt-5.4-mini")
+    assert_equal "terra", ModelCatalog.canonical_model_id("codex", "terra")
+    assert_equal "gpt-9", ModelCatalog.canonical_model_id("codex", "gpt-9")
+    assert_nil ModelCatalog.canonical_model_id("codex", nil)
+    assert_equal "openrouter/~anthropic/claude-sonnet-latest",
+      ModelCatalog.canonical_model_id("pi", "openrouter/anthropic/claude-sonnet-4.6")
+    assert_equal "openrouter/openai/gpt-5.4", ModelCatalog.canonical_model_id("pi", "openrouter/openai/gpt-5.4")
+  end
+
+  test "an operator-added model with a legacy id is a deliberate pin" do
+    insert_entry("codex", "gpt-5.5", label: "pinned")
+
+    assert_equal "gpt-5.5", ModelCatalog.canonical_model_id("codex", "gpt-5.5")
+    assert_nil ModelCatalog.codex_family_for("gpt-5.5")
+  end
+
+  test "codex_family_for names the family a codex id launches as" do
+    assert_equal "terra", ModelCatalog.codex_family_for("terra")
+    assert_equal "sol", ModelCatalog.codex_family_for("gpt-5.6-sol")
+    assert_nil ModelCatalog.codex_family_for("gpt-9")
   end
 
   test "each messages_api_id is a Messages API id for its own model, not the bare CLI alias" do
