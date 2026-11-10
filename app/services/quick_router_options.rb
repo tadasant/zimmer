@@ -42,7 +42,7 @@ class QuickRouterOptions
   # @return [String, nil]
   def self.default_model_for(agent_root, runtime, allowed_models: nil)
     allowed = allowed_models || ModelCatalog.model_ids_for(runtime)
-    declared = agent_root&.default_model
+    declared = ModelCatalog.canonical_model_id(runtime, agent_root&.default_model, allowed_models: allowed)
     return declared if allowed.include?(declared.to_s)
 
     AppSetting.current.resolved_default_model_for(runtime, allowed_models: allowed)
@@ -150,7 +150,14 @@ class QuickRouterOptions
     # would accept what the picker never offered, which is the one thing this class
     # exists to prevent. The view and the Stimulus controller both degrade to an
     # empty list on the same miss.
-    model_ids_by_runtime.fetch(runtime, []).include?(id) ? id : nil
+    allowed = model_ids_by_runtime.fetch(runtime, [])
+    return id if allowed.include?(id)
+    return nil unless model_ids_by_runtime.key?(runtime)
+
+    # A legacy pinned id (`gpt-5.6-terra`) every other surface still accepts,
+    # taken as the version-free model that replaced it.
+    canonical = ModelCatalog.canonical_model_id(runtime, id, allowed_models: allowed)
+    allowed.include?(canonical) ? canonical : nil
   end
 
   # @return [Boolean] the caller named a harness and it did not survive validation

@@ -1823,7 +1823,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
       get inference_url(runtime: "pi")
     end
 
-    assert_match "openrouter/anthropic/claude-opus-4.6", response.body
+    assert_match "openrouter/~anthropic/claude-opus-latest", response.body
   end
 
   test "the Pi tab offers no form for the key, and links the configured console with the path to use" do

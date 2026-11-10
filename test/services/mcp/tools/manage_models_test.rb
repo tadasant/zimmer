@@ -21,7 +21,7 @@ class Mcp::Tools::ManageModelsTest < ActiveSupport::TestCase
 
     assert_includes output, "### Claude Code (`claude_code`)"
     assert_includes output, "- `opus` (default, built in)"
-    assert_includes output, "`gpt-5.6-terra`"
+    assert_includes output, "`terra`"
   end
 
   test "add then list shows the model with its CLI check, and start_session validation accepts it" do

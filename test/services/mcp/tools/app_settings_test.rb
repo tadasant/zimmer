@@ -75,12 +75,12 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   end
 
   test "get_app_settings reports an override as one, with the shipped default beside it" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5", mcp_tool_search_enabled: false)
+    AppSetting.create!(default_runtime: "codex", default_model: "sol", mcp_tool_search_enabled: false)
 
     output = get_settings
 
     assert_includes output, "**Runtime:** `codex` (Codex) — operator override"
-    assert_includes output, "**Model:** `gpt-5.5` — operator override"
+    assert_includes output, "**Model:** `sol` — operator override"
     assert_match(/\(`mcp_tool_search`\): \*\*off\*\* — operator override; shipped default is on\./, output)
   end
 
@@ -95,13 +95,13 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   # --- set_session_defaults ---------------------------------------------------
 
   test "set_session_defaults persists a valid pair and echoes before and after" do
-    result = action(action: "set_session_defaults", runtime: "codex", model: "gpt-5.5")
+    result = action(action: "set_session_defaults", runtime: "codex", model: "sol")
 
     setting = AppSetting.current
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
     assert_includes result, "**Before:** runtime `claude_code` (shipped default), model `#{ModelCatalog.default_for('claude_code')}` (runtime default)"
-    assert_includes result, "**After:** runtime `codex` (override), model `gpt-5.5` (override)"
+    assert_includes result, "**After:** runtime `codex` (override), model `sol` (override)"
     assert_equal 1, AppSetting.count
   end
 
@@ -116,7 +116,7 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   end
 
   test "set_session_defaults clears an override with an empty string, as the form's blank input does" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     action(action: "set_session_defaults", runtime: "", model: "")
 
@@ -126,7 +126,7 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   end
 
   test "set_session_defaults clears only the model, keeping the runtime" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     action(action: "set_session_defaults", model: "")
 
@@ -136,12 +136,12 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   end
 
   test "set_session_defaults that moves nothing says so and writes no audit line" do
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.create!(default_runtime: "codex", default_model: "sol")
 
     result = nil
-    entries = capture_log_entries { result = action(action: "set_session_defaults", runtime: "codex", model: "gpt-5.5") }
+    entries = capture_log_entries { result = action(action: "set_session_defaults", runtime: "codex", model: "sol") }
 
-    assert_equal "Session defaults unchanged: runtime `codex` (override), model `gpt-5.5` (override).", result
+    assert_equal "Session defaults unchanged: runtime `codex` (override), model `sol` (override).", result
     assert_empty entries.select { |_severity, message| message.include?("[AppSettings]") }
   end
 
@@ -149,10 +149,10 @@ class Mcp::Tools::AppSettingsTest < ActiveSupport::TestCase
   # refuses is refused here, and nothing is written.
   test "set_session_defaults refuses a model the runtime cannot run, and saves nothing" do
     error = assert_raises(Mcp::ToolError) do
-      action(action: "set_session_defaults", runtime: "claude_code", model: "gpt-5.5")
+      action(action: "set_session_defaults", runtime: "claude_code", model: "sol")
     end
 
-    assert_match(/Session defaults not saved: Default model gpt-5.5 is not available for Claude Code/, error.message)
+    assert_match(/Session defaults not saved: Default model sol is not available for Claude Code/, error.message)
     assert_includes error.message, "Valid models for `claude_code`: #{ModelCatalog.model_ids_for('claude_code').join(', ')}"
     assert_nil AppSetting.current.default_runtime
     assert_nil AppSetting.current.default_model

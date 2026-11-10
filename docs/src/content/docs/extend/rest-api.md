@@ -618,7 +618,12 @@ lists both:
 | Runtime | Models |
 | --- | --- |
 | `claude_code` | `opus` (default) · `sonnet` · `haiku` · `fable` |
-| `codex` | `gpt-5.6-sol` (needs a ChatGPT login) · `gpt-5.6-terra` (default, needs a ChatGPT login) · `gpt-5.6-luna` (needs a ChatGPT login) · `gpt-5.5` (needs a ChatGPT login) · `gpt-5.4` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.4-mini` (retires from ChatGPT sign-in August 31, 2026) · `gpt-5.3-codex` (deprecated) · `gpt-5.2-codex` (deprecated) |
+| `codex` | `sol` · `terra` (default) · `luna` — each the newest model in its family, all need a ChatGPT login |
+| `pi` | OpenRouter's floating `openrouter/~<vendor>/<family>-latest` aliases; `openrouter/~anthropic/claude-opus-latest` is the default |
+
+None of these names a version: each follows the newest model in its family. Ids the built-ins used to
+pin (`gpt-5.6-terra`, `openrouter/anthropic/claude-opus-4.6`, …) are still accepted and stored as the
+alias that replaced them; see [Models](/sessions/runtimes/#models).
 
 `PATCH /sessions/:id/model` validates against the list for the session's own runtime; anything else
 → `422 {"error": "Invalid model"}` with a message naming the valid ones.

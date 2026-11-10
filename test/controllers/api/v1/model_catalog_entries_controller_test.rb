@@ -61,7 +61,7 @@ class Api::V1::ModelCatalogEntriesControllerTest < ActionDispatch::IntegrationTe
   end
 
   test "create rejects an invalid model" do
-    post api_v1_model_catalog_entries_path, params: { runtime: "codex", model_id: "gpt-5.5" }, headers: @headers
+    post api_v1_model_catalog_entries_path, params: { runtime: "codex", model_id: "terra" }, headers: @headers
 
     assert_response :unprocessable_entity
     assert_equal "Validation failed", response.parsed_body["error"]

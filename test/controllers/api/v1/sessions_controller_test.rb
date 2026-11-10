@@ -837,11 +837,23 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "custom/sub", session["subdirectory"]
   end
 
+  test "an explicit legacy pinned config.model is stored as the family that replaced it" do
+    post api_v1_sessions_path, params: {
+      git_root: "https://github.com/someone/scratch.git",
+      agent_runtime: "codex",
+      config: { model: "gpt-5.6-terra" },
+      prompt: "Test prompt"
+    }, headers: @headers
+
+    assert_response :created
+    assert_equal "terra", JSON.parse(response.body).dig("session", "config", "model")
+  end
+
   test "explicit config.model wins over the agent_root's default_model" do
     # Regression for pulsemcp/pulsemcp#3963: an explicit config.model in the create request must
     # be persisted verbatim rather than being clobbered by the agent root's
     # default_model. This blocks selecting a non-default model (e.g. Codex
-    # gpt-5.4) when spawning via the API.
+    # luna) when spawning via the API.
     mock_agent_root = OpenStruct.new(
       name: "test-root",
       url: "https://github.com/test/repo.git",
@@ -858,7 +870,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
         post api_v1_sessions_path, params: {
           agent_root: "test-root",
           agent_runtime: "codex",
-          config: { model: "gpt-5.4" },
+          config: { model: "luna" },
           prompt: "Test prompt"
         }, headers: @headers
       end
@@ -867,7 +879,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
     json = JSON.parse(response.body)
     session = json["session"]
-    assert_equal "gpt-5.4", session["config"]["model"],
+    assert_equal "luna", session["config"]["model"],
       "explicit config.model must not be overwritten by agent_root.default_model"
     assert_equal "codex", session["agent_runtime"]
   end
