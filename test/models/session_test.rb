@@ -1451,6 +1451,54 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "Valid message", formatted[0][:content]
   end
 
+  # A Codex rollout has no `user`/`assistant` lines — every line is a
+  # response_item/event_msg envelope — so it is read through the normalizer.
+  test "formatted_conversation reads a Codex rollout through its normalizer" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "codex")
+    session.transcript = file_fixture("codex_rollout.jsonl").read
+
+    formatted = session.formatted_conversation
+
+    assert_equal %w[user assistant user assistant assistant], formatted.map { |m| m[:role] }
+    assert_equal "List the files in the current directory.", formatted[0][:content]
+    assert_equal "2026-05-29T21:39:11.000Z", formatted[0][:timestamp]
+    assert formatted[1][:has_tool_use]
+    assert_includes formatted[1][:content], "**Using tool: shell**"
+    assert_includes formatted[1][:content], "ls -la"
+    assert formatted[2][:has_tool_result]
+    assert_includes formatted[2][:content], "README.md"
+    assert_equal "The directory contains a single file: `README.md`.", formatted[3][:content]
+    assert_not formatted[3][:has_tool_use]
+    assert_includes formatted[4][:content], "cat README.md"
+    assert_equal [ 2, 4, 6, 7, 9 ], formatted.map { |m| m[:transcript_index] }
+  end
+
+  test "formatted_conversation does not attribute Codex's developer instructions to the assistant" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "codex")
+    session.transcript = [
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "developer",
+                                                  "content" => [ { "type" => "input_text", "text" => "<permissions instructions>" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant",
+                                                  "content" => [ { "type" => "output_text", "text" => "Done." } ] } }
+    ].map(&:to_json).join("\n")
+
+    assert_equal [ [ "assistant", "Done." ] ], session.formatted_conversation.map { |m| [ m[:role], m[:content] ] }
+  end
+
+  test "formatted_conversation reads a Pi session through its normalizer" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "pi")
+    session.transcript = file_fixture("pi_session.jsonl").read
+
+    formatted = session.formatted_conversation
+
+    assert_equal %w[user assistant user assistant], formatted.map { |m| m[:role] }
+    assert_equal "run echo ZIMMER-PI-TOOL-OK", formatted.first[:content]
+    assert formatted[1][:has_tool_use]
+    assert_includes formatted[1][:content], "echo ZIMMER-PI-TOOL-OK"
+    assert formatted[2][:has_tool_result]
+    assert_equal "Ran the command. ZIMMER-PI-DONE", formatted.last[:content]
+  end
+
   test "formatted_conversation should handle empty transcript array" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "claude_code")
     session.transcript = []

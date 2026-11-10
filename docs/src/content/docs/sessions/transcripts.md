@@ -182,10 +182,13 @@ plain-text export behind `GET /api/v1/sessions/:id/transcript` and the `get_sess
 via `ClaudeTranscriptNormalizer.runtime_notice_markers`. Fixing only the normalizer would have left
 an agent reading the text export being told a human typed the line.
 
-Codex gets no equivalent treatment: its rollout `response_item` message payloads carry only `role`
-and `content`, with no per-line marker that distinguishes a machine-written user turn from a typed
-one. There is nothing unambiguous to key off, so `CodexTranscriptNormalizer` is left alone rather
-than given an invented discriminator.
+Codex has one unambiguous case and no other. It writes its own instructions — the sandbox
+permissions, the agent-team preamble, the `AGENTS.md` body — as `developer`-role messages, and
+`CodexTranscriptNormalizer` makes those runtime notices (marker `role`) rather than
+`AssistantMessage`s, which would say the model wrote them. Its machine-written *user* turns get no
+equivalent treatment: a `user`-role payload carries only `role` and `content`, with no per-line
+marker that distinguishes a machine-written turn from a typed one, so there is nothing to key off
+and no discriminator is invented.
 
 #### Large notices render collapsed
 
