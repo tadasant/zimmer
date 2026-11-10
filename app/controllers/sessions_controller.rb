@@ -928,17 +928,16 @@ class SessionsController < ApplicationController
       return
     end
 
-    # Determine appropriate status to restore to
-    completion_log = @session.logs.find { |log| log.content.include?("completed") || log.content.include?("failed") }
-    new_status = completion_log ? :failed : :waiting
+    # Back to the status the session was trashed from, as `archive` recorded it —
+    # see Session#status_to_undo_archive_to.
+    restore_to = @session.status_to_undo_archive_to
 
     result = with_db_retry do
       @session.update!(archived_at: nil)
-      case new_status
-      when :failed
-        @session.unarchive_to_failed! if @session.may_unarchive_to_failed?
-      when :waiting
-        @session.unarchive_to_waiting! if @session.may_unarchive_to_waiting?
+      if restore_to == :failed
+        @session.unarchive_to_failed!
+      else
+        @session.unarchive_to_needs_input!
       end
       @session.logs.create!(
         content: "Session restored from trash by user",
