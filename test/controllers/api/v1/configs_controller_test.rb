@@ -177,7 +177,7 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     terra = runtime_models.dig("codex", "models").find { |model| model["id"] == "terra" }
     fable = runtime_models.dig("claude_code", "models").find { |model| model["id"] == "fable" }
 
-    assert_equal "sol (latest frontier, ChatGPT auth)", sol["label"]
+    assert_equal "sol (latest frontier, ChatGPT plans that offer it)", sol["label"]
     assert_equal false, sol["default"]
     assert_equal true, sol["requires_oauth"]
     assert_equal "terra (latest balanced, default, ChatGPT auth)", terra["label"]

@@ -224,11 +224,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         prompt: "go",
         session_id: "zimmer-session-uuid",
         working_dir: @test_dir,
-        model: "gpt-5.6-terra"
+        model: "gpt-5.6-terra-pro"
       )
     end
 
-    assert_match(/gpt-5\.6-terra requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_match(/gpt-5\.6-terra-pro requires Codex CLI >= 0\.146\.0/, error.message)
     assert_match(/installed version is 0\.135\.0/, error.message)
     assert_empty @mock_process_manager.spawned_processes,
       "the guard must fail before launching a codex process"
@@ -241,11 +241,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
       prompt: "go",
       session_id: "zimmer-session-uuid",
       working_dir: @test_dir,
-      model: "gpt-5.6-terra"
+      model: "gpt-5.6-terra-pro"
     )
 
     command = @mock_process_manager.spawned_processes.last[:command]
-    assert_includes_subsequence command, [ "-m", "gpt-5.6-terra" ]
+    assert_includes_subsequence command, [ "-m", "gpt-5.6-terra-pro" ]
   end
 
   test "resume rejects gpt-5.6 models when the installed Codex CLI is too old" do
@@ -256,11 +256,11 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         session_id: "codex-session-uuid",
         working_dir: @test_dir,
         prompt: "continue",
-        model: "gpt-5.6-luna"
+        model: "gpt-5.6-luna-pro"
       )
     end
 
-    assert_match(/gpt-5\.6-luna requires Codex CLI >= 0\.146\.0/, error.message)
+    assert_match(/gpt-5\.6-luna-pro requires Codex CLI >= 0\.146\.0/, error.message)
     assert_empty @mock_process_manager.spawned_processes
   end
 
@@ -272,7 +272,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
         prompt: "go",
         session_id: "zimmer-session-uuid",
         working_dir: @test_dir,
-        model: "gpt-5.6-sol"
+        model: "gpt-5.6-sol-pro"
       )
     end
 
@@ -296,7 +296,7 @@ class CodexRuntimeAdapterTest < ActiveSupport::TestCase
   end
 
   test "execute launches a family id as the newest model the CLI lists in that family" do
-    @adapter.stubs(:installed_cli_version).returns(Gem::Version.new("0.146.0"))
+    @adapter.expects(:installed_cli_version).never
     CodexModelResolver.catalog_override = [ %w[gpt-5.6-terra gpt-6.1-terra gpt-6.1-sol], [] ]
 
     @adapter.execute(prompt: "go", session_id: "zimmer-session-uuid", working_dir: @test_dir, model: "terra")
