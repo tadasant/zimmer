@@ -6225,6 +6225,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     body = JSON.parse(response.body)
     assert_equal session.id, body["session_id"]
     assert_equal session_path(session), body["url"]
+    assert_equal start_status_session_path(session), body["start_status_url"]
     assert_equal [], body["caveats"]
   end
 
