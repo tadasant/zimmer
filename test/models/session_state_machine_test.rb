@@ -186,6 +186,20 @@ class SessionStateMachineTest < ActiveSupport::TestCase
     assert_not_nil session.trash_after, "trash_after should be set when session is archived"
   end
 
+  # Undo reads this back (Session#status_to_undo_archive_to); only `failed`
+  # survives as itself, everything else rests in needs_input.
+  { waiting: :needs_input, running: :needs_input, needs_input: :needs_input, failed: :failed }.each do |from, undo_to|
+    test "archive from #{from} records it, and Undo returns to #{undo_to}" do
+      session = sessions(:needs_input)
+      session.update_columns(status: Session.statuses.fetch(from.to_s))
+
+      session.archive!
+
+      assert_equal from.to_s, session.reload.metadata[SessionStateMachine::STATUS_BEFORE_ARCHIVE_KEY]
+      assert_equal undo_to, session.status_to_undo_archive_to
+    end
+  end
+
   test "archive names the actor the caller recorded" do
     session = sessions(:waiting)
     session.update!(status: :needs_input)

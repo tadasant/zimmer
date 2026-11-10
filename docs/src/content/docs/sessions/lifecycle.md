@@ -2513,10 +2513,14 @@ time Undo runs, `archive` has already dropped the running job and retired the wa
 session was sleeping on, so neither status would have anything behind it. A session with no stamp
 (trashed before the key existed) takes the `needs_input` default.
 
-Undo used to guess the status from the session's logs: any log line containing "completed" or
-"failed" meant `failed`. Every session that has run a turn logs *"Claude Code CLI completed turn
-successfully"*, so Undo turned a session waiting on its human into a **Failed** one, which then
-dropped out of the board's needs-input queue as though the Undo had done nothing.
+The status is recorded rather than inferred from the logs because the logs cannot answer it: every
+session that has run a turn logs *"Claude Code CLI completed turn successfully"*, so a scan for
+"completed" or "failed" reads a session waiting on its human as **Failed** — and a Failed session
+drops out of the board's needs-input queue, which reads as an Undo that did nothing.
+
+Undo takes the row lock, so a second click or a **Restore** racing it finds the session already out
+of the trash and answers as the first did. Restoring to `needs_input` drops the same stale process
+metadata (`process_pid`, the retry keys) that **Restore** drops.
 
 ## Side effects are swallowed by design — but no longer silently
 

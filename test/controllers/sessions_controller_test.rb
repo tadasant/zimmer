@@ -1611,8 +1611,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Session restored from trash.", flash[:notice]
   end
 
-  # The window is read from the constant on purpose: this test is about the
-  # window closing at all, not about the number it closes at.
   # Undo returns a session to the status it was trashed from, as `archive`
   # recorded it. Every undo test above starts from the `failed` fixture, which is
   # how a log-scanning guess that sent every session that had run a turn to
@@ -1662,6 +1660,34 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "needs_input", session.reload.status
   end
 
+  test "undo of a session another click already restored answers as the first did" do
+    session = sessions(:needs_input)
+    post archive_session_url(session), as: :turbo_stream
+    # The second click's copy, read while the session was still in the trash.
+    stale = Session.find(session.id)
+    post undo_archive_session_url(session), as: :turbo_stream
+    assert_equal "needs_input", session.reload.status
+
+    # Its guard sees the trash; the locked re-read sees the first Undo's result.
+    SessionsController.any_instance.stubs(:find_session).returns(stale)
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_equal "needs_input", session.reload.status
+    assert_nil session.archived_at
+  end
+
+  test "undo of a session trashed while running drops the process it ran with" do
+    session = sessions(:running)
+    session.merge_metadata!("process_pid" => 4242)
+
+    post archive_session_url(session, force: 1), as: :turbo_stream
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_equal "needs_input", session.reload.status
+    assert_nil session.metadata["process_pid"]
+  end
+
   test "undo of a session trashed with no recorded status rests it in needs_input" do
     session = sessions(:needs_input)
     session.logs.create!(content: "Session job completed successfully", level: "info")
@@ -1672,6 +1698,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "needs_input", session.reload.status
   end
 
+  # The window is read from the constant on purpose: this test is about the
+  # window closing at all, not about the number it closes at.
   test "should reject undo archive after the undo window" do
     session = sessions(:failed)
     session.update!(status: :archived, archived_at: (SessionStateMachine::UNDO_ARCHIVE_WINDOW + 1.second).ago)
