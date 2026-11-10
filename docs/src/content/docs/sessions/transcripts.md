@@ -183,10 +183,10 @@ via `ClaudeTranscriptNormalizer.runtime_notice_markers`. Fixing only the normali
 an agent reading the text export being told a human typed the line.
 
 Codex has one unambiguous case and no other. It writes its own instructions — the sandbox
-permissions, the agent-team preamble, the `AGENTS.md` body — as `developer`-role messages, and
+permissions, the agent-team preamble, the multi-agent mode — as `developer`-role messages, and
 `CodexTranscriptNormalizer` makes those runtime notices (marker `role`) rather than
-`AssistantMessage`s, which would say the model wrote them. Its machine-written *user* turns get no
-equivalent treatment: a `user`-role payload carries only `role` and `content`, with no per-line
+`AssistantMessage`s, which would say the model wrote them. Its machine-written *user* turns (`<environment_context>`,
+`<recommended_plugins>`, and in some versions the `AGENTS.md` body) get no equivalent treatment: a `user`-role payload carries only `role` and `content`, with no per-line
 marker that distinguishes a machine-written turn from a typed one, so there is nothing to key off
 and no discriminator is invented.
 

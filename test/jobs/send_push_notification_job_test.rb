@@ -286,6 +286,27 @@ class SendPushNotificationJobTest < ActiveJob::TestCase
     @job.perform(@session.id, :needs_input)
   end
 
+  test "perform summarises a Codex session's last assistant message" do
+    rollout = [
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "developer",
+                                                  "content" => [ { "type" => "input_text", "text" => "<permissions instructions>" } ] } },
+      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant",
+                                                  "content" => [ { "type" => "output_text", "text" => "Which database would you prefer?" } ] } }
+    ]
+    @session.update!(agent_runtime: "codex", transcript: rollout.map(&:to_json).join("\n"))
+
+    @mock_inference_service.expects(:generate).with(includes("Which database would you prefer?"), timeout: 15).returns("Asking which database to use")
+
+    @mock_service.expects(:send_to_all).with(
+      title: @session.title,
+      body: "Asking which database to use",
+      url: "/notifications",
+      data: { session_id: @session.id, notification_type: "needs_input" }
+    ).returns({ sent: 1, failed: 0, expired: 0 })
+
+    @job.perform(@session.id, :needs_input)
+  end
+
   # === Notification badge broadcasting ===
 
   test "perform broadcasts notification badge update after creating notification" do

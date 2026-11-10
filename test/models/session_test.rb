@@ -1476,13 +1476,26 @@ class SessionTest < ActiveSupport::TestCase
   test "formatted_conversation does not attribute Codex's developer instructions to the assistant" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "codex")
     session.transcript = [
-      { "type" => "response_item", "payload" => { "type" => "message", "role" => "developer",
+      { "type" => "response_item", "timestamp" => "2026-11-10T14:42:00Z", "payload" => { "type" => "message", "role" => "developer",
                                                   "content" => [ { "type" => "input_text", "text" => "<permissions instructions>" } ] } },
-      { "type" => "response_item", "payload" => { "type" => "message", "role" => "assistant",
+      { "type" => "response_item", "timestamp" => "2026-11-10T14:42:00Z", "payload" => { "type" => "message", "role" => "assistant",
                                                   "content" => [ { "type" => "output_text", "text" => "Done." } ] } }
     ].map(&:to_json).join("\n")
 
     assert_equal [ [ "assistant", "Done." ] ], session.formatted_conversation.map { |m| [ m[:role], m[:content] ] }
+  end
+
+  test "formatted_conversation drops a line its normalizer cannot read, and keeps the rest" do
+    session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Test", agent_runtime: "codex")
+    session.transcript = [
+      { "type" => "response_item", "timestamp" => "2026-11-10T14:42:00Z", "payload" => { "type" => "function_call", "name" => "shell", "arguments" => [ 1 ] } },
+      { "type" => "response_item", "timestamp" => "2026-11-10T14:42:00Z", "payload" => { "type" => "message", "role" => "user",
+                                                  "content" => [ { "type" => "input_image", "image_url" => "data:image/png;base64,AAAA" } ] } },
+      { "type" => "response_item", "timestamp" => "2026-11-10T14:42:00Z", "payload" => { "type" => "message", "role" => "assistant",
+                                                  "content" => [ { "type" => "output_text", "text" => "Done." } ] } }
+    ].map(&:to_json).join("\n")
+
+    assert_equal [ [ "user", "[image]" ], [ "assistant", "Done." ] ], session.formatted_conversation.map { |m| [ m[:role], m[:content] ] }
   end
 
   test "formatted_conversation reads a Pi session through its normalizer" do
