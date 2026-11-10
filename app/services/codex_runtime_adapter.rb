@@ -170,7 +170,6 @@ class CodexRuntimeAdapter
     # rather than at spawn time to keep its actionable message.
     self.class.validate_working_dir!(working_dir)
     model = resolve_model(model)
-    validate_model_cli_compatibility!(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -201,7 +200,6 @@ class CodexRuntimeAdapter
              append_system_prompt: nil, model: nil, effort: nil, auto_compact_window: nil)
     self.class.validate_working_dir!(working_dir)
     model = resolve_model(model)
-    validate_model_cli_compatibility!(model)
 
     write_system_prompt(working_dir, append_system_prompt)
 
@@ -297,12 +295,17 @@ class CodexRuntimeAdapter
     end
   end
 
-  # The concrete `-m` slug for a catalog id, logged so a session's log says
-  # which model a family launched as.
+  # The concrete `-m` slug for a catalog id, logged so the worker log says
+  # which model a family launched as. A slug resolved from a family came from
+  # the installed CLI's own model list, so only an id passed through verbatim
+  # (an operator-added pin) needs the CLI-version check.
   def resolve_model(model)
-    CodexModelResolver.resolve(model).tap do |resolved|
-      next if model.blank? || resolved == model
+    unless ModelCatalog.codex_family_for(model)
+      validate_model_cli_compatibility!(model)
+      return model.presence
+    end
 
+    CodexModelResolver.resolve(model).tap do |resolved|
       @logger.info("[CodexRuntimeAdapter] model #{model.inspect} resolved to #{resolved ? resolved.inspect : "the CLI default"}")
     end
   end
