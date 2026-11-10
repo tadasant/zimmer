@@ -491,6 +491,7 @@ module SessionStateMachine
         transitions from: [ :waiting, :running, :needs_input, :failed ], to: :archived
         after do
           set_archived_at
+          record_status_before_archive
           # Retired before the log line, which names what was retired.
           log_state_change(archive_log_message(strand_pending_enqueued_messages))
           # Consumed by the line above, and single-use: an instance archived,
@@ -773,6 +774,25 @@ module SessionStateMachine
   # Requires git_root to be present
   def can_start?
     git_root.present?
+  end
+
+  # Where the toast's Undo returns a session: `failed` if it was trashed from
+  # `failed`, `needs_input` otherwise.
+  #
+  # Undo means "as it was a moment ago", so the answer is read from what `archive`
+  # recorded rather than inferred. Inferring it from the logs does not work: every
+  # session that has run a turn logs "Claude Code CLI completed turn successfully",
+  # so a scan for "completed" or "failed" turns a session waiting on its human into
+  # a Failed one, which leaves the board's needs-input queue as though the Undo had
+  # done nothing.
+  #
+  # `running` and `waiting` come back as `needs_input`, the same resting state the
+  # Restore action gives: `archive` already dropped the running job and retired
+  # the wakes a waiting session was sleeping on, so neither status would have
+  # anything left behind it to make it true. A session archived before this key
+  # existed has no record and takes the same default.
+  def status_to_undo_archive_to
+    (metadata || {})[STATUS_BEFORE_ARCHIVE_KEY] == "failed" ? :failed : :needs_input
   end
 
   # Whether this session's needs_input state was caused by a pending MCP
@@ -1556,6 +1576,16 @@ module SessionStateMachine
   rescue => e
     # Log-only: the counter is a display timestamp. A stale "12m" on a freshly
     # started session is cosmetic and the next transition overwrites it.
+    report_swallowed_side_effect(__method__, e, alert: false)
+  end
+
+  # The status `archive` is leaving, for #status_to_undo_archive_to. Best-effort,
+  # like the other archive side effects: without the record, Undo falls back to
+  # `needs_input`, which is the right answer for every session that was not
+  # trashed from `failed`.
+  def record_status_before_archive
+    merge_metadata!(STATUS_BEFORE_ARCHIVE_KEY => aasm.from_state.to_s)
+  rescue => e
     report_swallowed_side_effect(__method__, e, alert: false)
   end
 
@@ -2997,6 +3027,10 @@ module SessionStateMachine
   # all. The window scopes the toast affordance; TRASH_RETENTION_PERIOD and
   # EmptyTrashJob are what actually bound the trash.
   UNDO_ARCHIVE_WINDOW = 30.seconds
+
+  # The status a session left for the trash, stamped by `archive` so the toast's
+  # Undo can put it back where it was. See #status_to_undo_archive_to.
+  STATUS_BEFORE_ARCHIVE_KEY = "status_before_archive"
 
   # Retention period for preserved artifacts (unpushed commits + uncommitted changes).
   # Clean clones have no retention — they are deleted immediately after the undo window.
