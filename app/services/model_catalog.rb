@@ -100,7 +100,7 @@ class ModelCatalog
       { id: "fable", label: "fable", effort_levels: CLAUDE_CODE_EFFORT_LEVELS, default_effort: "high" }
     ],
     "codex" => [
-      { id: "sol", label: "sol (latest frontier, ChatGPT auth)", requires_oauth: true },
+      { id: "sol", label: "sol (latest frontier, ChatGPT plans that offer it)", requires_oauth: true },
       { id: "terra", label: "terra (latest balanced, default, ChatGPT auth)", default: true, requires_oauth: true },
       { id: "luna", label: "luna (latest fast, ChatGPT auth)", requires_oauth: true }
     ],
@@ -297,7 +297,8 @@ class ModelCatalog
     #   (OAuth) login rather than an API key. False for unknown models and for
     #   models whose entry omits the flag.
     def requires_oauth?(runtime, model)
-      entry = models_for(runtime).find { |m| m[:id] == model.to_s }
+      id = canonical_model_id(runtime, model).to_s
+      entry = models_for(runtime).find { |m| m[:id] == id }
       entry ? !!entry[:requires_oauth] : false
     end
 

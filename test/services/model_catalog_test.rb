@@ -71,6 +71,7 @@ class ModelCatalogTest < ActiveSupport::TestCase
     assert ModelCatalog.requires_oauth?("codex", "sol")
     assert ModelCatalog.requires_oauth?("codex", "terra")
     assert ModelCatalog.requires_oauth?("codex", "luna")
+    assert ModelCatalog.requires_oauth?("codex", "gpt-5.6-terra"), "a legacy id answers for the family it maps to"
     refute ModelCatalog.requires_oauth?("pi", ModelCatalog.default_for("pi"))
   end
 

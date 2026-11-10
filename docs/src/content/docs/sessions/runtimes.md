@@ -85,7 +85,7 @@ verbatim.
 the built-in that replaced it — `gpt-5.6-terra` → `terra`, `gpt-5.4-mini` → `luna`,
 `openrouter/anthropic/claude-opus-4.6` → `openrouter/~anthropic/claude-opus-latest`. A legacy id
 validates everywhere but is offered in no picker; the Settings default, a root's declared
-`default_model` and a model change are stored as the replacement, a Codex legacy id launches as its
+`default_model`, a model named at spawn and a model change are stored as the replacement, a Codex legacy id launches as its
 family's newest model, and a one-time post-deploy task moved the Settings default and every open
 Codex and Pi session onto the replacements. The few with no replacement — `openrouter/openai/gpt-5.4`
 and Pi's direct `anthropic/*` and `openai/*` ids — stay valid and run as pinned.

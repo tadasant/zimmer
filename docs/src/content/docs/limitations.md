@@ -1897,6 +1897,15 @@ numbers. The deployment's default Pi model is `openrouter/~anthropic/claude-opus
 is the tail rather than the common case, and an unpriced model is *visibly* unpriced rather
 than silently under-counted.
 
+### `sol` runs as the CLI's default on a ChatGPT plan that does not offer Sol
+
+🟡 The Codex picker offers `sol`, `terra` and `luna` on every deployment, but which of them a login
+may run is up to OpenAI. On a ChatGPT plan that does not offer Sol, the Codex CLI's live model list
+has no `gpt-*-sol`, and the API refuses one with `model_not_found`. `CodexModelResolver` then leaves
+`-m` off, so a `sol` session runs on the CLI's default model (Terra today) rather than failing. The
+substitution is in the worker log, not on the session page. The picker does not filter by plan
+because it would need a CLI call per render.
+
 ### A Codex session records its tokens and no cost at all
 
 🟡 Codex spend **is** in the ledger — `CodexTokenUsageIngestionService`

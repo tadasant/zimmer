@@ -3226,7 +3226,7 @@ class SessionsController < ApplicationController
     # Validated against the runtime just resolved, so it runs after it.
     requested_model = params[:model].to_s.strip.first(100).presence
     if requested_model && ModelCatalog.valid_model?(@session.agent_runtime, requested_model)
-      @session.config = @session.config.merge("model" => requested_model)
+      @session.config = @session.config.merge("model" => ModelCatalog.canonical_model_id(@session.agent_runtime, requested_model))
     end
 
     # Not filtered like the model: an effort the model does not take is a

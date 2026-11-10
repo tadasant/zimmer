@@ -99,7 +99,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
       spot_gating_enabled: true, spot_reserve_five_hour_pct: 65
     )
 
-    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "gpt-5.5" } }
+    patch app_settings_path, params: { app_setting: { default_runtime: "codex", default_model: "sol" } }
 
     setting = AppSetting.current
     assert setting.spot_gating_enabled
@@ -107,7 +107,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "saving the spot policy leaves the session defaults and extensions alone" do
-    AppSetting.editable.update!(default_runtime: "codex", default_model: "gpt-5.5")
+    AppSetting.editable.update!(default_runtime: "codex", default_model: "sol")
     AppSetting.editable.tap { |s| s.set_extension_enabled("some_experiment", true) }.save!
 
     patch spot_policy_path, params: { app_setting: {
@@ -118,7 +118,7 @@ class SpotPoliciesControllerTest < ActionDispatch::IntegrationTest
 
     setting = AppSetting.current
     assert_equal "codex", setting.default_runtime
-    assert_equal "gpt-5.5", setting.default_model
+    assert_equal "sol", setting.default_model
     assert AppSetting.extension_enabled?("some_experiment")
   end
 

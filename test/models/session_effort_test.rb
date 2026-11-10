@@ -49,7 +49,7 @@ class SessionEffortTest < ActiveSupport::TestCase
   end
 
   test "an effort on a Codex session is refused" do
-    session = build_session(runtime: "codex", config: { "model" => "gpt-5.6-terra", "effort" => "high" })
+    session = build_session(runtime: "codex", config: { "model" => "terra", "effort" => "high" })
 
     assert_not session.valid?
     assert_match(/not supported on the codex runtime/, session.errors.full_messages.to_sentence)

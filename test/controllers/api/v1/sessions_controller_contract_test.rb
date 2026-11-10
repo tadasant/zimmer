@@ -106,7 +106,7 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
 
   test "create without agent_root honors the global default runtime and model" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
 
     post api_v1_sessions_path,
       params: { prompt: "hello", git_root: "https://github.com/test/repo.git" },
@@ -116,12 +116,12 @@ class Api::V1::SessionsControllerContractTest < ActionDispatch::IntegrationTest
     json = JSON.parse(response.body)["session"]
 
     assert_equal "codex", json["agent_runtime"]
-    assert_equal "gpt-5.4", json["config"]["model"]
+    assert_equal "luna", json["config"]["model"]
   end
 
   test "an explicit runtime param still beats the global default" do
     AppSetting.delete_all
-    AppSetting.create!(default_runtime: "codex", default_model: "gpt-5.4")
+    AppSetting.create!(default_runtime: "codex", default_model: "luna")
 
     post api_v1_sessions_path,
       params: { prompt: "hello", git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code" },
