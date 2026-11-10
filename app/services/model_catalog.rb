@@ -31,14 +31,16 @@
 #   `POST /api/v1/model_catalog_entries` or with the `manage_models` MCP tool, and
 #   which #models_for appends after the built-in ones. No deploy is needed.
 #
-# Most new models arrive with a CLI bump, because Pi's and Codex's pinned
-# CLIs only know the models their release bundled. An added id can name a model
+# Most new Pi models arrive with a CLI bump, because Pi's pinned CLI only knows
+# the models its release bundled. An added id can name a model
 # the installed CLI does not know, and that would otherwise only show up when a
 # session's first turn fails. So ModelCatalogEntry.add asks the installed CLI
 # first (ModelCatalogCliCheck), refuses an id the CLI does not list unless the
 # caller says to add it anyway, and stores the answer on the row, where each
 # surface that lists added models shows it. The Claude Code ids are floating
-# aliases, so a new Opus or Sonnet release reaches sessions with no change at all.
+# aliases and the Codex ids are model families resolved at launch
+# (CodexModelResolver), so a new Opus, Sonnet or GPT release in an existing
+# family reaches sessions with no change at all.
 class ModelCatalog
   # Claude Code's `--effort` values, lowest to highest.
   CLAUDE_CODE_EFFORT_LEVELS = %w[low medium high xhigh max].freeze
@@ -63,11 +65,14 @@ class ModelCatalog
   # releases the way the bare alias does for the CLI. Only entries something
   # sends to the endpoint carry one; see #messages_api_id_for.
   #
-  # Codex (GPT) model-catalog refresh discipline: this list mirrors the models
-  # OpenAI publishes at https://developers.openai.com/codex/models — bump it when
-  # OpenAI ships new models or retires old ones; see also the `ao-upgrade-codex`
-  # skill. Mark a model `deprecated: true` (in its label) rather than removing it
-  # immediately so sessions pinned to it keep validating.
+  # The Codex ids are model *families*, not versions — `sol` (frontier), `terra`
+  # (balanced) and `luna` (fast) — the Codex counterpart to the Claude Code
+  # aliases. The Codex CLI has no floating alias of its own, so
+  # CodexModelResolver turns a family into the newest `gpt-<version>-<family>`
+  # slug the installed CLI lists, at every launch. A new OpenAI release in an
+  # existing family needs no change here. ModelCatalogTest fails on a version
+  # number in a Codex built-in id; an id that has to stay pinned is an added model
+  # (Settings → Models), which is passed to `-m` verbatim.
   #
   # `effort_levels` and `default_effort` describe the reasoning-effort setting a
   # session can carry in `config["effort"]` (see #effort_levels_for). They are
@@ -95,19 +100,14 @@ class ModelCatalog
       { id: "fable", label: "fable", effort_levels: CLAUDE_CODE_EFFORT_LEVELS, default_effort: "high" }
     ],
     "codex" => [
-      { id: "gpt-5.6-sol", label: "gpt-5.6-sol (ChatGPT auth)", requires_oauth: true },
-      { id: "gpt-5.6-terra", label: "gpt-5.6-terra (default, ChatGPT auth)", default: true, requires_oauth: true },
-      { id: "gpt-5.6-luna", label: "gpt-5.6-luna (fast, ChatGPT auth)", requires_oauth: true },
-      { id: "gpt-5.5", label: "gpt-5.5 (ChatGPT auth)", requires_oauth: true },
-      { id: "gpt-5.4", label: "gpt-5.4 (retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },
-      { id: "gpt-5.4-mini", label: "gpt-5.4-mini (fast, retires from ChatGPT sign-in August 31, 2026)", requires_oauth: false },
-      { id: "gpt-5.3-codex", label: "gpt-5.3-codex (deprecated)", requires_oauth: false },
-      { id: "gpt-5.2-codex", label: "gpt-5.2-codex (deprecated)", requires_oauth: false }
+      { id: "sol", label: "sol (latest frontier, ChatGPT auth)", requires_oauth: true },
+      { id: "terra", label: "terra (latest balanced, default, ChatGPT auth)", default: true, requires_oauth: true },
+      { id: "luna", label: "luna (latest fast, ChatGPT auth)", requires_oauth: true }
     ],
     # Pi model ids are provider-qualified (`provider/id`), which is the form Pi's
     # `--model` flag accepts directly — so no separate `--provider` flag is needed
     # and the id a user picks is passed through verbatim. OpenRouter is itself a
-    # provider, so its ids carry the vendor as well: `openrouter/anthropic/...`.
+    # provider, so its ids carry the vendor as well: `openrouter/~anthropic/...`.
     #
     # **Everything here goes through OpenRouter, and that is one key rather than
     # several.** `openrouter` is a first-class provider in the catalog bundled
@@ -117,35 +117,76 @@ class ModelCatalog
     # paths are not removed, they are simply not what this deployment feeds. The
     # key lives in the secret store; the Inference page's Pi tab says whether it is set.
     #
-    # Every id below is present in the model catalog bundled with the pinned Pi
-    # CLI (see Dockerfile.base), which is the authority for what `--model`
-    # resolves. Refresh discipline: re-check against `pi --list-models` when the
-    # pinned Pi version is bumped, and mark a retired model deprecated in its
-    # label rather than deleting it, so sessions pinned to it keep validating.
-    # Note that `--list-models` only prints providers whose credential currently
-    # resolves, so run it with OPENROUTER_API_KEY set or the openrouter rows are
-    # silently absent.
+    # **Every id below is one of OpenRouter's floating `~<vendor>/<family>-latest`
+    # aliases**, the Pi counterpart to the Claude Code aliases: OpenRouter routes
+    # each to the newest model in its family, so a new Opus, Gemini or Grok
+    # reaches sessions with no change here. ModelCatalogTest fails on a version
+    # number in a Pi built-in id.
+    #
+    # The list is the families that are in BOTH OpenRouter's live listing
+    # (`GET https://openrouter.ai/api/v1/models`, so the id does not 404) and the
+    # model catalog bundled with the pinned Pi CLI (see Dockerfile.base), which is
+    # what `--model` resolves against — an id Pi does not list still runs, but on
+    # metadata Pi borrows from another model. OpenRouter's GPT tier aliases
+    # (`~openai/gpt-terra-latest` and friends) are live but not yet in the pinned
+    # Pi's catalog, so they are not offered; add them when a Pi bump lists them.
+    # Refresh discipline: re-check both lists when the pinned Pi version is bumped.
+    # Note that `pi --list-models` only prints providers whose credential
+    # currently resolves, so run it with OPENROUTER_API_KEY set (any value works
+    # with `--offline`) or the openrouter rows are silently absent.
     #
     # Nothing here requires an interactive login, so `requires_oauth` is
     # uniformly false.
     "pi" => [
-      { id: "openrouter/anthropic/claude-opus-4.6", label: "claude-opus-4.6 (default)", default: true, requires_oauth: false },
-      { id: "openrouter/anthropic/claude-sonnet-4.6", label: "claude-sonnet-4.6", requires_oauth: false },
-      { id: "openrouter/anthropic/claude-haiku-4.5", label: "claude-haiku-4.5 (fast)", requires_oauth: false },
-      { id: "openrouter/openai/gpt-5.4", label: "gpt-5.4", requires_oauth: false },
-      { id: "openrouter/openai/gpt-5.4-mini", label: "gpt-5.4-mini (fast)", requires_oauth: false },
-      { id: "openrouter/google/gemini-3.5-flash", label: "gemini-3.5-flash (fast)", requires_oauth: false },
-      # The direct-to-vendor ids this catalog offered before OpenRouter became
-      # the path. Kept, not deleted: sessions pinned to one of them still have to
-      # validate (this file's own refresh discipline), and the paths still work
-      # wherever ANTHROPIC_API_KEY / OPENAI_API_KEY is set. The label says which
-      # key each needs, because on this deployment neither is.
-      { id: "anthropic/claude-opus-4-6", label: "claude-opus-4-6 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
-      { id: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
-      { id: "anthropic/claude-haiku-4-5", label: "claude-haiku-4-5 (direct, needs ANTHROPIC_API_KEY)", requires_oauth: false },
-      { id: "openai/gpt-5.6-terra", label: "gpt-5.6-terra (direct, needs OPENAI_API_KEY)", requires_oauth: false },
-      { id: "openai/gpt-5.4-mini", label: "gpt-5.4-mini (direct, needs OPENAI_API_KEY)", requires_oauth: false }
+      { id: "openrouter/~anthropic/claude-opus-latest", label: "claude-opus-latest (default)", default: true, requires_oauth: false },
+      { id: "openrouter/~anthropic/claude-sonnet-latest", label: "claude-sonnet-latest", requires_oauth: false },
+      { id: "openrouter/~anthropic/claude-haiku-latest", label: "claude-haiku-latest (fast)", requires_oauth: false },
+      { id: "openrouter/~anthropic/claude-fable-latest", label: "claude-fable-latest", requires_oauth: false },
+      { id: "openrouter/~openai/gpt-mini-latest", label: "gpt-mini-latest (fast)", requires_oauth: false },
+      { id: "openrouter/~google/gemini-pro-latest", label: "gemini-pro-latest", requires_oauth: false },
+      { id: "openrouter/~google/gemini-flash-latest", label: "gemini-flash-latest (fast)", requires_oauth: false },
+      { id: "openrouter/~x-ai/grok-latest", label: "grok-latest", requires_oauth: false },
+      { id: "openrouter/~moonshotai/kimi-latest", label: "kimi-latest", requires_oauth: false },
+      { id: "openrouter/~z-ai/glm-latest", label: "glm-latest", requires_oauth: false }
     ]
+  }.freeze
+
+  # Ids a runtime's built-ins used to pin, mapped to the version-free built-in
+  # that replaces each. Sessions, the Settings default and agent roots' declared
+  # `default_model` stored before the switch still hold them, so they stay valid
+  # (#valid_model?) without being offered in any picker, and are stored as their
+  # replacement wherever Zimmer writes a model (#canonical_model_id). A Codex
+  # legacy id launches as its family's latest model (#codex_family_for); the
+  # replacement for a retired one is what the Codex CLI's own `upgrade` marker
+  # names (gpt-5.4 → terra, gpt-5.4-mini → luna).
+  #
+  # A nil replacement keeps an id valid, launched verbatim, with no family alias
+  # to move it to: OpenRouter's GPT flagship (no alias the pinned Pi lists) and
+  # Pi's direct-to-vendor ids, which need a key this deployment does not feed.
+  LEGACY_MODEL_ALIASES = {
+    "codex" => {
+      "gpt-5.6-sol" => "sol",
+      "gpt-5.6-terra" => "terra",
+      "gpt-5.6-luna" => "luna",
+      "gpt-5.5" => "sol",
+      "gpt-5.4" => "terra",
+      "gpt-5.4-mini" => "luna",
+      "gpt-5.3-codex" => "terra",
+      "gpt-5.2-codex" => "terra"
+    },
+    "pi" => {
+      "openrouter/anthropic/claude-opus-4.6" => "openrouter/~anthropic/claude-opus-latest",
+      "openrouter/anthropic/claude-sonnet-4.6" => "openrouter/~anthropic/claude-sonnet-latest",
+      "openrouter/anthropic/claude-haiku-4.5" => "openrouter/~anthropic/claude-haiku-latest",
+      "openrouter/openai/gpt-5.4-mini" => "openrouter/~openai/gpt-mini-latest",
+      "openrouter/google/gemini-3.5-flash" => "openrouter/~google/gemini-flash-latest",
+      "openrouter/openai/gpt-5.4" => nil,
+      "anthropic/claude-opus-4-6" => nil,
+      "anthropic/claude-sonnet-4-6" => nil,
+      "anthropic/claude-haiku-4-5" => nil,
+      "openai/gpt-5.6-terra" => nil,
+      "openai/gpt-5.4-mini" => nil
+    }
   }.freeze
 
   class << self
@@ -216,8 +257,40 @@ class ModelCatalog
     end
 
     # @return [Boolean] whether `model` is a valid identifier for the runtime
+    #   — one a picker offers, or a legacy id (LEGACY_MODEL_ALIASES) still
+    #   stored on an older session or setting
     def valid_model?(runtime, model)
-      model_ids_for(runtime).include?(model.to_s)
+      model_ids_for(runtime).include?(model.to_s) || legacy_model?(runtime, model)
+    end
+
+    # The id to store for `model`: the version-free built-in that replaced it when
+    # it is a legacy pinned id, otherwise `model` itself. An operator-added model
+    # with a legacy id is a deliberate pin and stays as it is.
+    #
+    # @return [String, nil]
+    def canonical_model_id(runtime, model, allowed_models: nil)
+      return model if model.blank?
+
+      allowed = allowed_models || model_ids_for(runtime)
+      return model.to_s if allowed.include?(model.to_s)
+
+      legacy_alias_for(runtime, model) || model.to_s
+    end
+
+    # The Codex family (`sol`, `terra`, `luna`) a codex model id launches as, or
+    # nil when it is passed to `-m` verbatim: a built-in family id, or a legacy
+    # pinned id that no operator re-added. See CodexModelResolver.
+    #
+    # @return [String, nil]
+    def codex_family_for(model)
+      id = model.to_s
+      return id if MODELS.fetch("codex").any? { |m| m[:id] == id }
+
+      legacy = legacy_alias_for("codex", id)
+      return nil unless legacy
+      return nil if added_entries_for("codex").any? { |entry| entry.model_id == id }
+
+      legacy
     end
 
     # @return [Boolean] whether the model can only be driven via an interactive
@@ -299,6 +372,14 @@ class ModelCatalog
     end
 
     private
+
+    def legacy_model?(runtime, model)
+      LEGACY_MODEL_ALIASES.fetch(resolve(runtime), {}).key?(model.to_s)
+    end
+
+    def legacy_alias_for(runtime, model)
+      LEGACY_MODEL_ALIASES.fetch(resolve(runtime), {})[model.to_s]
+    end
 
     def built_in_entry(runtime, model)
       MODELS.fetch(resolve(runtime), []).find { |m| m[:id] == model.to_s }

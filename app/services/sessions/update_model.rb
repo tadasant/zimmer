@@ -12,7 +12,9 @@ module Sessions
   # - The model must be a non-empty String. It is stripped and capped at 100
   #   characters.
   # - It must be one the session's runtime offers (ModelCatalog.valid_model?).
-  #   Anything else is refused with the valid models in the message.
+  #   Anything else is refused with the valid models in the message. A legacy
+  #   pinned id is stored as the version-free model that replaced it
+  #   (ModelCatalog.canonical_model_id).
   # - The model the session already has is a no-op: no write, no log.
   # - The Session's own validation still applies, so a model that cannot keep the
   #   session's effort raises ActiveRecord::RecordInvalid and writes nothing.
@@ -52,7 +54,7 @@ module Sessions
     def call
       raise InvalidParameter, "model must be a non-empty string" unless model.is_a?(String) && model.present?
 
-      new_model = model.strip.first(MAX_LENGTH)
+      new_model = ModelCatalog.canonical_model_id(session.agent_runtime, model.strip.first(MAX_LENGTH))
 
       unless ModelCatalog.valid_model?(session.agent_runtime, new_model)
         allowed = ModelCatalog.model_ids_for(session.agent_runtime)

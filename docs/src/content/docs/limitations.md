@@ -1886,14 +1886,14 @@ and timestamps all land, and for the Anthropic models on OpenRouter the money la
 list rates `TokenPricing` already carries *are* the rates OpenRouter publishes for them, so
 Zimmer's figure reproduces the cost Pi recorded beside the volumes to the cent.
 
-What does not work is the other half of Pi's model catalog. `openrouter/openai/gpt-5.4`,
-`…/gpt-5.4-mini` and `openrouter/google/gemini-3.5-flash` have no rate in `TokenPricing`, so a
+What does not work is the other half of Pi's model catalog. `openrouter/~openai/gpt-mini-latest`,
+the Gemini, Grok, Kimi and GLM aliases have no rate in `TokenPricing`, so a
 Pi session on one of them lands with correct tokens and **zero cost**, and appears in the
 Costs page's unpriced-models list. `TokenPricing` derives a model's three cache rates from its
 input rate by a multiplier relationship that is uniform across Anthropic's line and simply
 false elsewhere — OpenAI charges nothing for a cache write, Gemini charges a storage rate — so
 pricing them means teaching `Rate` to carry explicit cache rates rather than adding two
-numbers. The deployment's default Pi model is `openrouter/anthropic/claude-opus-4.6`, so this
+numbers. The deployment's default Pi model is `openrouter/~anthropic/claude-opus-latest`, so this
 is the tail rather than the common case, and an unpriced model is *visibly* unpriced rather
 than silently under-counted.
 
@@ -1907,7 +1907,7 @@ land. It closed [#1077](https://github.com/tadasant/zimmer/issues/1077), where t
 absent from the ledger altogether.
 
 What does not land is money. `TokenPricing` carries **Anthropic rates only**, so every Codex model
-— `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` — prices at **$0** and appears in the Costs page's
+— whatever `sol`, `terra` or `luna` resolved to, such as `gpt-5.6-terra` — prices at **$0** and appears in the Costs page's
 unpriced-models list. A Codex session therefore contributes tokens to every volume figure on the
 page and nothing to any dollar figure. This is the same gap Pi's non-Anthropic models sit in, with
 the same fix: `Rate` derives its three cache rates from the input rate by a multiplier relationship

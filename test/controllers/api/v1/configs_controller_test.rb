@@ -143,16 +143,16 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
 
     runtime_models = JSON.parse(response.body)["runtime_models"]
     assert_equal "opus", runtime_models.dig("claude_code", "default")
-    assert_equal "gpt-5.6-terra", runtime_models.dig("codex", "default")
+    assert_equal "terra", runtime_models.dig("codex", "default")
 
     claude_ids = runtime_models.dig("claude_code", "models").map { |model| model["id"] }
     codex_ids = runtime_models.dig("codex", "models").map { |model| model["id"] }
 
     assert_equal %w[opus sonnet haiku fable], claude_ids
-    assert_includes codex_ids, "gpt-5.6-sol"
-    assert_includes codex_ids, "gpt-5.6-terra"
-    assert_includes codex_ids, "gpt-5.6-luna"
-    refute_includes claude_ids, "gpt-5.6-sol"
+    assert_includes codex_ids, "sol"
+    assert_includes codex_ids, "terra"
+    assert_includes codex_ids, "luna"
+    refute_includes claude_ids, "sol"
     refute_includes codex_ids, "fable"
   end
 
@@ -173,14 +173,14 @@ class Api::V1::ConfigsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     runtime_models = JSON.parse(response.body)["runtime_models"]
-    sol = runtime_models.dig("codex", "models").find { |model| model["id"] == "gpt-5.6-sol" }
-    terra = runtime_models.dig("codex", "models").find { |model| model["id"] == "gpt-5.6-terra" }
+    sol = runtime_models.dig("codex", "models").find { |model| model["id"] == "sol" }
+    terra = runtime_models.dig("codex", "models").find { |model| model["id"] == "terra" }
     fable = runtime_models.dig("claude_code", "models").find { |model| model["id"] == "fable" }
 
-    assert_equal "gpt-5.6-sol (ChatGPT auth)", sol["label"]
+    assert_equal "sol (latest frontier, ChatGPT auth)", sol["label"]
     assert_equal false, sol["default"]
     assert_equal true, sol["requires_oauth"]
-    assert_equal "gpt-5.6-terra (default, ChatGPT auth)", terra["label"]
+    assert_equal "terra (latest balanced, default, ChatGPT auth)", terra["label"]
     assert_equal true, terra["default"]
     assert_equal true, terra["requires_oauth"]
     assert_equal "fable", fable["label"]

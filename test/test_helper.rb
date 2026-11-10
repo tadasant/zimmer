@@ -318,6 +318,15 @@ module ActiveSupport
     end
     teardown { AppSettingIsolationGuard.check!(self, @__app_settings_before) }
 
+    # CodexModelResolver asks the installed `codex` CLI — and, for its live list,
+    # OpenAI — which model a Codex family means, at every Codex launch. Tests get
+    # a fixed catalog instead; the resolver's own test clears it to exercise the
+    # CLI path with a stubbed subprocess.
+    setup(prepend: true) do
+      CodexModelResolver.catalog_override = [ [], %w[gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna gpt-5.5] ]
+    end
+    teardown { CodexModelResolver.catalog_override = nil }
+
     # Include test support helpers
     include MockHelpers
     include ProcessStatusHelpers

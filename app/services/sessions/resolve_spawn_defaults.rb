@@ -129,7 +129,7 @@ module Sessions
     def resolve_model!(root, app_setting)
       return if session.config&.dig("model").present?
 
-      model = root&.default_model
+      model = ModelCatalog.canonical_model_id(session.agent_runtime, root&.default_model)
       unless ModelCatalog.valid_model?(session.agent_runtime, model)
         model = app_setting.resolved_default_model_for(session.agent_runtime)
       end

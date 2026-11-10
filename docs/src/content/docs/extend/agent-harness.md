@@ -408,8 +408,8 @@ supplies is `OPENROUTER_API_KEY`: every Pi model in `ModelCatalog` is an
 `openrouter/*` id, so one key covers the whole list rather than one per vendor.
 `openrouter` is a first-class provider in the catalog bundled with the pinned Pi
 — no `models.json` custom-provider entry is needed — and the ids carry the vendor
-after it (`openrouter/anthropic/claude-opus-4.6`). The direct `anthropic/*` and
-`openai/*` ids are kept in the catalog and still work wherever
+after it (`openrouter/~anthropic/claude-opus-latest`, OpenRouter's floating alias for the newest
+Opus). The direct `anthropic/*` and `openai/*` ids a session may still be pinned to stay valid and work wherever
 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` is set; they are simply not what this
 deployment feeds. The key is set in the Parameter Store, through the secrets console the Inference
 page's Pi tab links (see [Secrets Zimmer itself depends

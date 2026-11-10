@@ -51,9 +51,9 @@ export default class extends Controller {
   // runtime's catalog and carrying it over is exactly the mismatch to avoid.
   //
   // Renders the catalog's LABEL, not the bare id. On Codex and Pi the label is the
-  // only place a model says it needs a ChatGPT login or is deprecated
-  // ("gpt-5.6-terra (default, ChatGPT auth)", "gpt-5.3-codex (deprecated)"), and
-  // the harness picker is what makes those two reachable here at all.
+  // only place a model says what it is or that it needs a ChatGPT login
+  // ("terra (latest balanced, default, ChatGPT auth)", "gemini-flash-latest (fast)"),
+  // and the harness picker is what makes those reachable here at all.
   //
   // A runtime the map does not carry offers nothing rather than falling back to
   // another runtime's list — the same answer QuickRouterOptions#resolve_model
