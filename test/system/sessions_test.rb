@@ -264,13 +264,13 @@ class SessionsTest < ApplicationSystemTestCase
 
     assert_difference -> { quick_prompt_sessions.count }, 1 do
       textarea.send_keys([ :control, :enter ])
-      assert_current_path(/\/sessions\/\d+/, wait: 10)
+      assert_selector "#flash", text: /Started session #\d+/, wait: 10
     end
 
-    # Quick prompt creates a router session and redirects to the session page
+    # Quick prompt creates a router session and stays on the board
     session = quick_prompt_sessions.order(:id).last
     assert_equal AgentRootsConfig.router_root_name, session.metadata["agent_root_key"]
-    assert_selector "h1", text: "Session #{session.id}"
+    assert_current_path root_path
   end
 
   # Test session show page

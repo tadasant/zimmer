@@ -1,7 +1,8 @@
 import { Controller } from "@hotwired/stimulus"
 import { partitionMedia } from "lib/media_kinds"
 import { csrfToken } from "lib/csrf"
-import { startSession, DRAFT_KEY } from "lib/session_starts"
+import { DRAFT_KEY } from "lib/session_starts"
+import { showToast, showAlert, updateToast } from "lib/toast"
 
 // Handles the dashboard quick prompt:
 //
@@ -24,12 +25,14 @@ import { startSession, DRAFT_KEY } from "lib/session_starts"
 // posts so the user gets immediate feedback instead of a server-side redirect
 // with a flash. Values are sourced from server-side constants via data attrs.
 //
-// A submit does not wait for the server. The form's fields and files go out as a
-// JSON request (lib/session_starts.js) and the browser visits the starting page
-// at once, with the words on it; the session's page replaces it when the id
-// comes, and a refusal shows there with the words kept for Edit, which puts them
-// back in this box. The forms stay `data-turbo="false"` native forms, so a
-// browser that cannot run this still posts and follows the redirect.
+// A submit keeps the board on screen. The form's fields and files go out as a
+// JSON request and a toast says the session is starting; when the server answers
+// with the id, the box is cleared for the next request and the toast follows the
+// session — queued, running, its title — with an Open link for the rare time the
+// session's page is wanted. Opening it is never the default. A refusal turns the
+// toast into an alert and leaves the words in the box. The forms stay
+// `data-turbo="false"` native forms, so a browser that cannot run this still posts
+// and follows the redirect.
 //
 // The photo input accepts everything a phone's library holds, which is wider than
 // the four types ImageStorageService can store. A selection is re-routed before it
@@ -53,7 +56,8 @@ export default class extends Controller {
     "mobileCameraInput",   // mobile camera input
     "mobileFileInput",     // mobile file picker
     "mobileBadge",         // mobile "N attached" hint
-    "mobileAdvanced"       // mobile <details> holding the harness, model + spot controls
+    "mobileAdvanced",      // mobile <details> holding the harness, model + spot controls
+    "desktopAdvanced"      // desktop <details> holding the same controls
   ]
 
   static values = {
@@ -85,25 +89,35 @@ export default class extends Controller {
     if (this.hasMobileTextareaTarget && !this.mobileTextareaTarget.value) this.mobileTextareaTarget.value = draft
   }
 
-  // Ask for the session and open its page now. The FormData is read before the
-  // visit tears the form down; the prompt rides along for the starting page.
-  start(form, textarea) {
+  // Ask for the session and stay on the board. The FormData is read at the
+  // click, so what goes out is what was in the box; the box is read-only until
+  // the server answers, so nothing typed meanwhile is cleared with it. `onStarted`
+  // resets the surface for the next request.
+  start(form, textarea, onStarted) {
     const prompt = textarea.value.trim()
     if (!prompt) {
       textarea.focus()
       return false
     }
     const body = new FormData(form)
-    const url = form.action
-    startSession({
-      prompt,
-      title: "Quick Router",
-      request: () => fetch(url, {
-        method: "POST",
-        headers: { "X-CSRF-Token": csrfToken(), "Accept": "application/json" },
-        body
-      })
-    })
+    const toast = showToast({ message: "Starting a Quick Router session…", duration: FOLLOW_DURATION })
+    textarea.readOnly = true
+
+    requestStart(form.action, body)
+      .then(
+        (data) => {
+          textarea.readOnly = false
+          this.submitting = false
+          followStart(toast, data)
+          onStarted()
+        },
+        (error) => {
+          textarea.readOnly = false
+          this.submitting = false
+          toast.remove()
+          showAlert(`The session did not start: ${error.message} Your words are still in the box.`)
+        }
+      )
     return true
   }
 
@@ -123,7 +137,21 @@ export default class extends Controller {
   submitDesktop() {
     if (this.submitting) return
     this.submitting = true
-    if (!this.start(this.desktopFormTarget, this.textareaTarget)) this.submitting = false
+    if (!this.start(this.desktopFormTarget, this.textareaTarget, () => this.resetDesktop())) this.submitting = false
+  }
+
+  // Clear the row for the next request: words, attachments, and the Advanced
+  // picks, which are per-submission like the phone overlay's.
+  resetDesktop() {
+    this.textareaTarget.value = ""
+    if (this.hasDesktopImageInputTarget) this.desktopImageInputTarget.value = ""
+    if (this.hasDesktopCameraInputTarget) this.desktopCameraInputTarget.value = ""
+    if (this.hasDesktopFileInputTarget) this.desktopFileInputTarget.value = ""
+    if (this.hasDesktopAdvancedTarget) {
+      this.desktopAdvancedTarget.dispatchEvent(new CustomEvent("quick-router-advanced:reset"))
+    }
+    this.updateDesktopBadge()
+    this.textareaTarget.focus()
   }
 
   // The desktop form's own submit (a click on a submit button, or Enter in a
@@ -191,7 +219,7 @@ export default class extends Controller {
     event.preventDefault()
     if (this.submitting) return
     this.submitting = true
-    if (!this.start(this.mobileFormTarget, this.mobileTextareaTarget)) this.submitting = false
+    if (!this.start(this.mobileFormTarget, this.mobileTextareaTarget, () => this.closeMobile())) this.submitting = false
   }
 
   openMobileImage() {
@@ -348,4 +376,86 @@ export default class extends Controller {
       this.desktopBadgeTarget.textContent = text
     }
   }
+}
+
+// ---- The start and the toast that follows it ----
+
+// The toast stays up while the session is still on its way, and for a few
+// seconds once it has arrived somewhere worth saying.
+const FOLLOW_DURATION = 2 * 60 * 1000
+const SETTLED_DURATION = 8000
+const POLL_INTERVAL_MS = 2000
+const POLL_LIMIT = 30
+
+const STATUS_LABELS = {
+  waiting: "queued for a worker",
+  running: "running",
+  needs_input: "needs input",
+  archived: "done",
+  failed: "failed"
+}
+
+// POST the form as JSON. Resolves with the server's answer; rejects with the
+// reason to show, the server's own when it gave one.
+async function requestStart(url, body) {
+  let response
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken(), "Accept": "application/json" },
+      body
+    })
+  } catch (error) {
+    throw new Error("The server could not be reached.")
+  }
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || `The server answered ${response.status}.`)
+  if (!data.session_id) throw new Error("The server did not say which session it started.")
+  return data
+}
+
+// Say what the server made, then poll the session until it has left the queue,
+// the toast is gone, or a minute has passed. The session is named a couple of
+// minutes in (SessionTitleJob), so a title shows only when it already has one.
+function followStart(toast, data) {
+  const url = data.session_url || data.url
+  const statusUrl = `/sessions/${data.session_id}/start_status`
+  const caveats = (data.caveats || []).join(" ")
+  updateToast(toast, {
+    message: describeStart({ session_id: data.session_id, status: "waiting" }, caveats),
+    actions: [ { label: "Open session", url } ]
+  })
+
+  let polls = 0
+  const poll = async () => {
+    if (!toast.isConnected) return
+    polls += 1
+    let state
+    try {
+      const response = await fetch(statusUrl, { headers: { "Accept": "application/json" } })
+      if (!response.ok) throw new Error(String(response.status))
+      state = await response.json()
+    } catch (error) {
+      updateToast(toast, { duration: SETTLED_DURATION })
+      return
+    }
+    updateToast(toast, { message: describeStart(state, caveats) })
+    if (state.status !== "waiting" || polls >= POLL_LIMIT) {
+      updateToast(toast, { duration: SETTLED_DURATION })
+    } else {
+      setTimeout(poll, POLL_INTERVAL_MS)
+    }
+  }
+  setTimeout(poll, POLL_INTERVAL_MS)
+}
+
+// "Started session #12 — queued for a worker." until it has a title, then
+// "Session #12 · Rotate the staging key — running." The server's caveats (a
+// spot start's wait, a harness or model pick that did not apply) ride along.
+function describeStart(state, caveats) {
+  const label = STATUS_LABELS[state.status] || state.status
+  const line = state.title
+    ? `Session #${state.session_id} · ${state.title} — ${label}.`
+    : `Started session #${state.session_id} — ${label}.`
+  return caveats ? `${line} ${caveats}` : line
 }
