@@ -167,15 +167,17 @@ resolution would live in two places. Picking a harness whose catalog does not ho
 declared model is fine — `ResolveSpawnDefaults` self-heals to that runtime's own default.
 
 **What happens to a value neither picker could have produced differs by surface, and the difference
-is the surface rather than the policy.** `quick_prompt` (the two dashboard forms) redirects, so
-rejecting would throw away the prompt someone just typed — it ignores the value, falls back to the
-default and says so in the flash on the new session. That can happen honestly: an operator removes
+is the surface rather than the policy.** `quick_prompt` (the two dashboard forms) ignores the value, falls back to the default and says so —
+in the toast that follows the new session, or in the flash on the session's page for a browser
+without the script — because a start that has already happened is better than a refusal over a
+stale list. That can happen honestly: an operator removes
 an added model, or a runtime leaves the registry, between the page rendering and the click.
 `chat_bubble` loses nothing on a rejection — its panel stays open with the draft in the textarea —
 so it answers `422` with the reason and the panel shows it.
 
-All three choices are per submission, not sticky preferences: closing the phone overlay or the chat
-bubble resets both pickers and the checkbox and re-collapses the accordion.
+All three choices are per submission, not sticky preferences: a start from the board's prompt box
+(desktop or phone), closing the phone overlay, or closing the chat bubble resets both pickers and the
+checkbox and re-collapses the accordion.
 
 ## Credentials
 

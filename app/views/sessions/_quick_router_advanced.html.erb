@@ -11,11 +11,9 @@
     that are in the DOM at once never collide.
 
     `targets` carries the data attributes the *enclosing* controller needs on
-    each control, keyed by role — the dashboard overlay and the chat bubble each
-    reset this panel when they close, and the chat bubble additionally reads the
-    two selects when it builds its FormData, because it submits by fetch rather
-    than by posting a form. The desktop row submits by navigating away and needs
-    none, so it passes nothing. %>
+    each control, keyed by role — the dashboard's desktop row and phone overlay
+    reset this panel after a start, the chat bubble when it closes, and the chat
+    bubble additionally reads the two selects when it builds its FormData. %>
 <%
   runtime_id = "quick_prompt_#{scope}_agent_runtime"
   model_id = "quick_prompt_#{scope}_model"
@@ -33,7 +31,7 @@
 
     The nested `quick-router-advanced` controller keeps the model list scoped to
     the selected harness, and answers the `quick-router-advanced:reset` event the
-    two closable surfaces fire at it. %>
+    enclosing surfaces fire at it. %>
 <%= tag.details class: "group text-sm",
       data: {
         controller: "quick-router-advanced",

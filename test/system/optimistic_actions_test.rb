@@ -67,40 +67,68 @@ class OptimisticActionsTest < ApplicationSystemTestCase
     capture("hide-at-the-click")
   end
 
-  test "the Quick Router opens the starting page at the click and fills it in when the session exists" do
+  test "the Quick Router keeps the board and follows the new session in a toast" do
     page.driver.browser.manage.window.resize_to(1400, 900)
     AgentSessionJob.stubs(:enqueue_new_session)
     visit root_path
     assert_selector "[data-quick-prompt-target='textarea']"
+    board_path = current_path
 
-    find("[data-quick-prompt-target='textarea']").fill_in(with: "Rotate the staging deploy key")
-    find("[data-quick-prompt-target='textarea']").send_keys([ :control, :enter ])
+    textarea = find("[data-quick-prompt-target='textarea']")
+    textarea.fill_in(with: "Rotate the staging deploy key")
+    textarea.send_keys([ :control, :enter ])
 
-    # The session's page, as soon as the server has made the session: the starting
-    # page is a stop on the way, replaced in history when the id comes.
-    assert_selector "h1, h2", text: /Session \d+/, wait: 10
-    assert_equal "Rotate the staging deploy key", Session.order(:created_at).last.prompt
-    assert_match %r{/sessions/}, current_path
-    assert_no_match %r{/sessions/starting}, current_path
-    capture("quick-router-started")
+    assert_selector "#flash [data-client-toast='notice']", text: /Started session #\d+ — queued for a worker/, wait: 10
+    session = Session.order(:created_at).last
+    assert_equal "Rotate the staging deploy key", session.prompt
+    assert_equal board_path, current_path, "the board stays on screen"
+    assert_equal "", find("[data-quick-prompt-target='textarea']").value, "the box is ready for the next request"
+    within("#flash") { assert_link "Open session", href: session_path(session) }
+    capture("quick-router-toast-queued")
+
+    # The toast follows the session as it moves on.
+    session.update_columns(
+      status: Session.statuses[:running],
+      title: "Rotate the staging deploy key",
+      metadata: session.metadata.except("auto_generated_title")
+    )
+    assert_selector "#flash [data-client-toast='notice']",
+      text: "Session ##{session.id} · Rotate the staging deploy key — running.", wait: 10
+    assert_equal board_path, current_path
+    capture("quick-router-toast-running")
+
+    # Out of the queue, the toast stops following and goes away on its own.
+    assert_no_selector "#flash [data-client-toast='notice']", wait: 15
   end
 
-  test "a Quick Router start the server refuses keeps the words for Edit" do
+  test "a Quick Router start the server refuses with a reason shows that reason" do
     page.driver.browser.manage.window.resize_to(1400, 900)
     visit root_path
     assert_selector "[data-quick-prompt-target='textarea']"
+    long_prompt = "x" * (Session::PROMPT_MAX_LENGTH + 1)
+    page.execute_script("document.querySelector(\"[data-quick-prompt-target='textarea']\").value = arguments[0]", long_prompt)
+
+    find("[data-quick-prompt-target='textarea']").send_keys([ :control, :enter ])
+
+    assert_selector "#flash [data-client-toast='alert']", text: "Prompt is too long", wait: 10
+    assert_equal long_prompt.length, find("[data-quick-prompt-target='textarea']").value.length
+  end
+
+  test "a Quick Router start the server refuses keeps the words in the box" do
+    page.driver.browser.manage.window.resize_to(1400, 900)
+    visit root_path
+    assert_selector "[data-quick-prompt-target='textarea']"
+    board_path = current_path
     reject_fetch_for("/sessions/quick_prompt")
 
     find("[data-quick-prompt-target='textarea']").fill_in(with: "Rotate the staging deploy key")
     find("[data-quick-prompt-target='textarea']").send_keys([ :control, :enter ])
 
-    assert_selector "[data-testid='session-start-failed']", text: "did not start", wait: 5
-    assert_selector "[data-session-start-target='prompt']", text: "Rotate the staging deploy key"
-    capture("quick-router-refused")
-
-    click_on "Edit"
-    assert_selector "[data-quick-prompt-target='textarea']", wait: 5
+    assert_selector "#flash [data-client-toast='alert']", text: "The session did not start: The server could not be reached.", wait: 5
+    assert_no_selector "#flash [data-client-toast='notice']"
+    assert_equal board_path, current_path
     assert_equal "Rotate the staging deploy key", find("[data-quick-prompt-target='textarea']").value
+    capture("quick-router-refused")
   end
 
   test "dismissing a read notification takes its row away at the click" do
