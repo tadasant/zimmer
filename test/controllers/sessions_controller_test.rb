@@ -6213,6 +6213,68 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to session_path(session)
   end
 
+  # The board's prompt box posts as JSON and stays on the board; the toast it
+  # shows needs the id and the session's URL, and the caveats it repeats.
+  test "quick_prompt as JSON answers with the session and no caveats on a plain start" do
+    stub_router_agent_root
+
+    post quick_prompt_sessions_url, params: { prompt: "Fix the login bug" }, as: :json
+
+    assert_response :success
+    session = Session.last
+    body = JSON.parse(response.body)
+    assert_equal session.id, body["session_id"]
+    assert_equal session_path(session), body["url"]
+    assert_equal [], body["caveats"]
+  end
+
+  test "quick_prompt as JSON names the spot wait as a caveat" do
+    stub_router_agent_root
+
+    post quick_prompt_sessions_url, params: { prompt: "Long sweep", scheduling_class: "spot" }, as: :json
+
+    assert_response :success
+    assert_equal [ "It is spot, so it starts when there is quota room." ], JSON.parse(response.body)["caveats"]
+  end
+
+  test "quick_prompt as JSON refuses a blank prompt with a 422 and the reason" do
+    post quick_prompt_sessions_url, params: { prompt: " " }, as: :json
+
+    assert_response :unprocessable_entity
+    assert_equal "Prompt cannot be empty.", JSON.parse(response.body)["error"]
+  end
+
+  test "start_status answers with the session's status and title" do
+    session = sessions(:running)
+    session.update_columns(title: "Rotate the staging key")
+
+    get start_status_session_url(session), as: :json
+
+    assert_response :success
+    assert_equal(
+      { "session_id" => session.id, "status" => "running", "title" => "Rotate the staging key", "url" => session_path(session) },
+      JSON.parse(response.body)
+    )
+  end
+
+  test "start_status answers a null title before the session has one" do
+    session = sessions(:running)
+    session.update_columns(title: nil)
+
+    get start_status_session_url(session), as: :json
+
+    assert_nil JSON.parse(response.body)["title"]
+  end
+
+  test "start_status answers a null title for the Session N placeholder" do
+    session = sessions(:running)
+    session.update_columns(title: "Session #{session.id}", metadata: (session.metadata || {}).merge("auto_generated_title" => true))
+
+    get start_status_session_url(session), as: :json
+
+    assert_nil JSON.parse(response.body)["title"]
+  end
+
   # Exercises the real shipped catalog (no AgentRootsConfig.find! stub): a router
   # root missing from roots.json raises AgentRootNotFoundError here, which the
   # stubbed tests above cannot catch.

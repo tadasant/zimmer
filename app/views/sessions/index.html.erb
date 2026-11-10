@@ -665,7 +665,8 @@
           <div class="mt-2 max-w-xs">
             <%= render "sessions/quick_router_advanced",
                   scope: "desktop",
-                  options: quick_router_options %>
+                  options: quick_router_options,
+                  targets: { advanced: { quick_prompt_target: "desktopAdvanced" } } %>
           </div>
         <% end %>
       </div>

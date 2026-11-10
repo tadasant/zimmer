@@ -1,10 +1,12 @@
 // A session asked for and not yet answered with its id.
 //
-// The Quick Router's native post lands on the new session's page when the server
-// redirects — a full page load, with nothing on screen in between and the typed
-// prompt lost to any refusal. The iOS app opens the session's page the moment
-// the start is asked for, on a placeholder, and fills it in when the id comes.
-// This is the web's version of that.
+// The chat bubble's Submit & Open wants the new session's page. A native post
+// lands there only when the server redirects — a full page load, with nothing on
+// screen in between and the typed prompt lost to any refusal. The iOS app opens
+// the session's page the moment the start is asked for, on a placeholder, and
+// fills it in when the id comes. This is the web's version of that. (The board's
+// own prompt box stays on the board and follows the start in a toast instead —
+// see quick_prompt_controller.)
 //
 // `startSession` fires the request and visits `/sessions/starting` at once. Turbo
 // Drive swaps the body and keeps this module alive, so the request keeps running

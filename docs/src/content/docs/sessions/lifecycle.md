@@ -2813,15 +2813,26 @@ of yours under the conversation the moment a follow-up is sent, which the server
 pause the server refuses says so: the stream branches carry the refusal in `#flash` with a 422,
 rather than redrawing the card and header and saying nothing.
 
-The Quick Router does not wait either. `quick_prompt_controller` posts the form's fields and files
-as a JSON request (`#quick_prompt` answers `{ session_id, url }`, or `{ error }` with a 422) and
-visits `/sessions/starting` at once — a page that shows the words on their way and, when the id
-comes, visits the session, replacing itself in history so Back is the board. A refused start says
-why there, with *Try again* and *Edit*, which puts the words back in the board's prompt box
-(`app/javascript/lib/session_starts.js`). The chat bubble's *Submit & Open* goes the same way.
-Reloading the starting page loses the module's state, and the page then says so and points at
-the board. The forms stay native `data-turbo="false"` forms, so a browser without the script
-posts and follows the redirect as before.
+The board's Quick Router does not wait, and does not leave the board. `quick_prompt_controller`
+posts the form's fields and files as a JSON request (`#quick_prompt` answers `{ session_id, url,
+caveats }`, or `{ error }` with a 422) and shows a toast — *Starting a Quick Router session…* —
+in the same click. When the id comes, the box is cleared (words, attachments and the **Advanced**
+picks; the phone overlay closes) and the toast follows the new session: *Started session #N —
+queued for a worker*, then the status it moves to, polled from `GET /sessions/:id/start_status`
+every two seconds until it leaves the queue or a minute has passed. The title shows only when the
+session already has a real one; the *Session N* placeholder it carries until `SessionTitleJob`
+names it a couple of minutes in is reported as no title. The toast carries an **Open session** link; opening the
+session's page is never the default, because there is almost never anything to do on it while
+it is still queued. A refused start turns the toast into an alert and leaves the words in the
+box. The new session joins the board the way any session does, by broadcast.
+
+The chat bubble's *Submit & Open* still visits `/sessions/starting` at once — a page that shows
+the words on their way and, when the id comes, visits the session, replacing itself in history so
+Back is the board. A refused start says why there, with *Try again* and *Edit*, which puts the
+words back in the board's prompt box (`app/javascript/lib/session_starts.js`). Reloading the
+starting page loses the module's state, and the page then says so and points at the board. The
+board's forms stay native `data-turbo="false"` forms, so a browser without the script posts and
+follows the redirect to the session as before.
 
 ### Trash on a session's own page navigates home
 
