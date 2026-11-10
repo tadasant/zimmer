@@ -786,6 +786,9 @@ Rails.application.routes.draw do
       patch :toggle_heartbeat
       patch :update_heartbeat_interval
       get :timeline_items
+      # The board's Quick Router toast follows the session it started through
+      # this: status and title as JSON (SessionsController#start_status).
+      get :start_status
       # The dashboard drawer's variant of #show: the same detail body, wrapped in
       # <turbo-frame id="session_detail"> and rendered without the layout. It is a
       # distinct PATH rather than a Turbo-Frame-header variant of /sessions/:id so

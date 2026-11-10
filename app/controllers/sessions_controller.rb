@@ -303,9 +303,10 @@ class SessionsController < ApplicationController
   end
 
   # The board's prompt box. Posted by `quick_prompt_controller` as JSON, so the
-  # client can open the session's page at the click and fill it in with the id
-  # (`url`), or keep the words on a refusal (`error`); a browser without the
-  # script posts the form natively and gets the redirects.
+  # board stays where it is: the client clears the box and shows a toast that
+  # follows the new session (`session_id`, `url`) through #start_status, or keeps
+  # the words and shows the refusal (`error`). A browser without the script posts
+  # the form natively and gets the redirects.
   def quick_prompt
     prompt = params[:prompt].to_s.strip
 
@@ -376,6 +377,13 @@ class SessionsController < ApplicationController
     # A spot session may not start at all yet — SpotSessionHold parks it behind the
     # quota gate — so the one place this surface speaks to the user must not promise
     # routing that has not been scheduled.
+    # `caveats` are the parts of the notice the board's toast repeats beside the
+    # session's status: what the user picked that did not happen as they might
+    # assume.
+    caveats = []
+    caveats << "It is spot, so it starts when there is quota room." if scheduling_class == SessionGenesis::SPOT
+    caveats << "The harness you picked is not available, so the default applied." if runtime_ignored
+    caveats << "The model you picked is not available for this harness, so the default applied." if model_ignored
     notice = if scheduling_class == SessionGenesis::SPOT
       "Router session created as spot. It starts when there is quota room, at the top of the spot queue."
     else
@@ -388,7 +396,12 @@ class SessionsController < ApplicationController
       notice += " The model you picked is not available for this harness, so the default applied."
     end
     respond_to do |format|
-      format.json { render json: { session_id: session.id, url: session_path(session), session_url: session_path(session), notice: notice } }
+      format.json do
+        render json: {
+          session_id: session.id, url: session_path(session), session_url: session_path(session),
+          start_status_url: start_status_session_path(session), notice: notice, caveats: caveats
+        }
+      end
       format.html { redirect_to session, notice: notice }
     end
   rescue AgentRootsConfig::AgentRootNotFoundError => e
@@ -397,9 +410,25 @@ class SessionsController < ApplicationController
     quick_prompt_refused("Failed to create session: #{e.message}")
   end
 
+  # GET /sessions/:id/start_status
+  # What the board's Quick Router toast says about a session it just started:
+  # queued, running, the title once it has a real one. Polled for a minute at
+  # most, so it is the few columns the toast reads and nothing else. The
+  # "Session N" placeholder every new session carries until SessionTitleJob names
+  # it is reported as no title, since the toast already says the number.
+  def start_status
+    session = find_session
+    placeholder = session.metadata&.dig("auto_generated_title") == true
+    render json: {
+      session_id: session.id,
+      status: session.status,
+      title: placeholder ? nil : session.title.presence,
+      url: session_path(session)
+    }
+  end
+
   # A Quick Router start the server did not take: the reason as JSON with a 422
-  # for the client that opened the page at the click, a redirect with the alert
-  # for a native post.
+  # for the board's toast, a redirect with the alert for a native post.
   def quick_prompt_refused(message)
     respond_to do |format|
       format.json { render json: { error: message }, status: :unprocessable_entity }

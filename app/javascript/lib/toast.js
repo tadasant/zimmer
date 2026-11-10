@@ -12,7 +12,11 @@
 // `type` is "notice" (green rule) or "alert" (red rule). `actions` are inline
 // buttons under the text, as the server's Undo and "Archive anyway" are:
 // `{ label, onClick }` runs a function; `{ label, href, method }` posts a form
-// through Turbo, as `button_to` does.
+// through Turbo, as `button_to` does; `{ label, url }` is a plain link.
+//
+// A toast that follows something still happening (a session starting) is
+// rewritten in place with `updateToast` rather than replaced, and its timer is
+// re-armed from the new duration.
 
 import { csrfToken } from "lib/csrf"
 
@@ -39,15 +43,11 @@ export function showToast({ type = "notice", message, duration = DEFAULT_DURATIO
   heading.textContent = type === "alert" ? "Alert" : "Notice"
   const text = document.createElement("p")
   text.className = "text-sm text-gray-600 mt-1"
+  text.dataset.toastMessage = ""
   text.textContent = message
   body.append(heading, text)
 
-  if (actions.length > 0) {
-    const bar = document.createElement("div")
-    bar.className = "mt-3 flex flex-wrap gap-2"
-    actions.forEach((action) => bar.appendChild(actionButton(action, card)))
-    body.appendChild(bar)
-  }
+  if (actions.length > 0) body.appendChild(actionBar(actions, card))
 
   const dismiss = document.createElement("button")
   dismiss.type = "button"
@@ -59,6 +59,29 @@ export function showToast({ type = "notice", message, duration = DEFAULT_DURATIO
   card.appendChild(row)
   container.appendChild(card)
   return card
+}
+
+// Rewrite a toast `showToast` drew: its text, its actions, and how long it
+// stays from now — each only when given. A toast already dismissed is left alone.
+export function updateToast(card, { message, actions, duration } = {}) {
+  if (!card?.isConnected) return
+  if (message !== undefined) {
+    const text = card.querySelector("[data-toast-message]")
+    if (text) text.textContent = message
+  }
+  if (actions !== undefined) {
+    card.querySelector("[data-toast-actions]")?.remove()
+    if (actions.length > 0) card.querySelector("[data-toast-message]")?.parentElement.appendChild(actionBar(actions, card))
+  }
+  if (duration !== undefined) card.dataset.flashDurationValue = String(duration)
+}
+
+function actionBar(actions, card) {
+  const bar = document.createElement("div")
+  bar.className = "mt-3 flex flex-wrap gap-2"
+  bar.dataset.toastActions = ""
+  actions.forEach((action) => bar.appendChild(actionButton(action, card)))
+  return bar
 }
 
 export function showAlert(message, options = {}) {
@@ -82,11 +105,19 @@ function flashContainer() {
   return container
 }
 
-function actionButton({ label, onClick, href, method = "post", tone = "indigo", confirm }, card) {
+function actionButton({ label, onClick, href, url, method = "post", tone = "indigo", confirm }, card) {
   const classes = tone === "red"
     ? "text-white bg-red-600 hover:bg-red-700 focus:ring-red-500"
     : "text-white bg-indigo-600 hover:bg-indigo-700 focus:ring-indigo-500"
   const base = `inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 ${classes}`
+
+  if (url) {
+    const link = document.createElement("a")
+    link.href = url
+    link.className = base
+    link.textContent = label
+    return link
+  }
 
   if (href) {
     // The shape `button_to` renders, so Turbo submits it and the server answers
