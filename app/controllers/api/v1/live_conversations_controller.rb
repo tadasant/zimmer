@@ -4,7 +4,7 @@
 # the web page shows, with the same rules (LiveConversations::Actions).
 #
 #   GET  /api/v1/live                              available? why not? each mode's model
-#   GET  /api/v1/live_conversations                recent conversations, and the current one
+#   GET  /api/v1/live_conversations                recent conversations, the current one, and whether the car pre-warms
 #   POST /api/v1/live_conversations                start one (mode=text|voice, default text); ends the open one
 #   GET  /api/v1/live_conversations/:id            one conversation with its turns (?after_turn_id= for new ones)
 #   GET  /api/v1/live_conversations/:id/sessions   the sessions its tool calls have touched, newest first, with board rows
@@ -12,7 +12,7 @@
 #   POST /api/v1/live_conversations/:id/finish     end it
 #   POST /api/v1/live_conversations/:id/mode       switch typed ⇄ spoken (mode=text|voice)
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
-#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret
+#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
 #   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings
@@ -41,13 +41,15 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   # `current` is keyed by the mode the open conversation is in right now, so a
   # client reading it per mode finds it under one of them; `current_id` is the
-  # same conversation without the key.
+  # same conversation without the key. `prewarm` is what the CarPlay app reads
+  # on every refresh of a warm connection, so the flag stops one within a refresh.
   def index
     current = LiveConversation.current
     render json: {
       live_conversations: LiveConversation.recent_first.limit(INDEX_LIMIT).map(&:as_api_json),
       current_id: current&.id,
-      current: current ? { current.mode => current.id } : {}
+      current: current ? { current.mode => current.id } : {},
+      prewarm: { carplay: LiveSetting.current.carplay_prewarm? }
     }
   end
 
@@ -103,8 +105,9 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render json: turn.as_api_json, status: :created
   end
 
+  # `prewarm=1`: the CarPlay app minting ahead of a tap (Actions#client_secret).
   def client_secret
-    render json: actions.client_secret
+    render json: actions.client_secret(prewarm: ActiveModel::Type::Boolean.new.cast(params[:prewarm]) == true)
   end
 
   def tool_calls

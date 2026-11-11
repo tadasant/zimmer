@@ -27,8 +27,10 @@ module LiveConversations
   class RealtimeSession
     SECRET_TTL_SECONDS = 600
 
-    def self.mint(conversation, client: OpenaiClient.new, listening_modes: false)
-      new(conversation, client: client, listening_modes: listening_modes).mint
+    # `record_model`: write the model on the conversation. A prewarm mint does
+    # not — no call is on it yet (Actions#client_secret).
+    def self.mint(conversation, client: OpenaiClient.new, listening_modes: false, record_model: true)
+      new(conversation, client: client, listening_modes: listening_modes).mint(record_model: record_model)
     end
 
     def initialize(conversation, client: nil, setting: LiveSetting.current, listening_modes: false)
@@ -41,7 +43,7 @@ module LiveConversations
     def listening = Listening.mode(@setting, capable: @listening_modes)
 
     # @return [Hash] what the client is handed
-    def mint
+    def mint(record_model: true)
       config = session_config
       warning = nil
       secret = begin
@@ -64,7 +66,7 @@ module LiveConversations
       raise OpenaiClient::Error, "OpenAI returned no client secret" if value.blank?
 
       model = config[:model]
-      @conversation.update_columns(model: model) if @conversation.persisted? && @conversation.model != model
+      @conversation.update_columns(model: model) if record_model && @conversation.persisted? && @conversation.model != model
       {
         client_secret: value,
         expires_at: secret["expires_at"] || secret.dig("client_secret", "expires_at"),

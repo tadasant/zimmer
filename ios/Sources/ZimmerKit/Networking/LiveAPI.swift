@@ -27,6 +27,10 @@ public protocol LiveAPI: Sendable {
     func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn
     /// Voice: the short-lived secret to open the Realtime connection with.
     func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
+    /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
+    /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
+    /// refused (403) while the Live setting `voice_carplay_prewarm` is off.
+    func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret
     /// Voice: run a function call the model made; send back what this returns.
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
     /// Voice: a finished transcript line, so the thread carries what was said. `gated`: the call
@@ -63,6 +67,12 @@ struct LiveIndexResponse: Decodable {
     let live_conversations: [LiveConversation]
     let current_id: Int?
     let current: [String: Int?]?
+    /// Absent from a server from before CarPlay pre-warm: off.
+    let prewarm: Prewarm?
+
+    struct Prewarm: Decodable {
+        let carplay: Bool?
+    }
 
     var currentID: Int? { current_id ?? current?.values.compactMap { $0 }.max() }
 }
@@ -75,7 +85,8 @@ extension ZimmerHTTPClient {
 
     public func liveConversations() async throws -> LiveOverview {
         let response: LiveIndexResponse = try await get("/api/v1/live_conversations")
-        return LiveOverview(conversations: response.live_conversations, current: response.currentID)
+        return LiveOverview(conversations: response.live_conversations, current: response.currentID,
+                            carplayPrewarm: response.prewarm?.carplay ?? false)
     }
 
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {
@@ -113,6 +124,10 @@ extension ZimmerHTTPClient {
 
     public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
         try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes)
+    }
+
+    public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes.merging(["prewarm": "1"]) { $1 })
     }
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {

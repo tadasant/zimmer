@@ -53,8 +53,9 @@ module LiveConversations
     # about calls is for whoever reads the trace, not for the call. The voice
     # output cap cuts a response off wherever it lands, and it counts the tool
     # calls the model would need to undo it: a model that wants shorter replies
-    # has `append_guidance`.
-    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens].freeze
+    # has `append_guidance`. Whether the car pre-warms a connection is a rollout
+    # flag and its kill switch, for whoever runs the deployment, not the call.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_carplay_prewarm].freeze
     SETTINGS_CHANGED = "Changed:"
     SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
     SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."

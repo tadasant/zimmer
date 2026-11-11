@@ -100,6 +100,17 @@ final class LiveCall: ObservableObject {
     /// When *pressed* last went out for a press that has not become a call yet, so the call it
     /// becomes does not play it again.
     private var pressHeard: TimeInterval?
+    /// When Talk was last pressed, heard or not: the startup metric's zero (`call.startup`).
+    private var pressedAt: TimeInterval?
+    /// This call's tap, until `call.startup` and `call.first_audio` have been logged from it.
+    private var tappedAt: TimeInterval?
+    private var firstAudioFrom: TimeInterval?
+    /// How this call got going: on a warm connection from the car, or cold.
+    private var startPath = LiveStartPath.cold
+    /// A call on a warm connection keeps the microphone off the socket until the fresh
+    /// `session.update` has gone up, so nothing said reaches a session still on the warm-up's
+    /// instructions. Cleared before the call is up, so nobody is ever told to talk into it.
+    private var holdingMicrophone = false
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -163,7 +174,12 @@ final class LiveCall: ObservableObject {
     ///
     /// `startsMuted`: the microphone is off from the first frame, for a call coming back from
     /// the car's voice settings to a driver who had muted it.
-    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, startsMuted: Bool = false, from surface: ClientSource.Surface = .ios) async {
+    ///
+    /// `warm`: the car's Continue, which may take the connection CarPlay pre-warm holds for this
+    /// conversation (`LiveWarmKeeper`). A call coming back from the voice settings never does:
+    /// it must be minted from the row the panel wrote.
+    func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, startsMuted: Bool = false,
+               from surface: ClientSource.Surface = .ios, warm allowWarm: Bool = false) async {
         if isActive(for: conversation) {
             await carryOn(on: surface)
             // Hung up, or replaced, while the hand-over was answered.
@@ -176,9 +192,17 @@ final class LiveCall: ObservableObject {
         }
         // A start nobody pressed for just now (the phone's button, a retry) is heard the same way.
         let alreadyHeard = pressHeard.map { Self.now - $0 < LiveCallHealth.connectDeadline } ?? false
+        let tapped = pressedAt.flatMap { Self.now - $0 < LiveCallHealth.connectDeadline ? $0 : nil } ?? Self.now
         end(reason: "hang_up", farewell: cues.hungUp())
         if !alreadyHeard { pressed() }
         pressHeard = nil
+        pressedAt = nil
+        // Before the state moves, which the keeper reads as a call starting and closes what it holds.
+        let warm = allowWarm && surface == .carplay ? LiveWarmKeeper.shared.claim(conversation) : nil
+        tappedAt = tapped
+        firstAudioFrom = tapped
+        startPath = warm == nil ? .cold : .warm
+        holdingMicrophone = false
         generation += 1
         let mine = generation
         self.surface = surface
@@ -206,6 +230,10 @@ final class LiveCall: ObservableObject {
         state = .connecting
         watch(generation: mine)
         do {
+            if let warm {
+                try await startWarm(warm, conversation: conversation, voiceIsOn: voiceIsOn, generation: mine)
+                return
+            }
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
             mintedFor = self.surface
@@ -245,6 +273,82 @@ final class LiveCall: ObservableObject {
         receive(task, generation: mine)
     }
 
+    /// The car's Continue on the connection CarPlay pre-warm held (`LiveWarmKeeper`): OpenAI has
+    /// already said `session.created` on it, so what is left is the microphone and, alongside it,
+    /// voice on and a fresh `session.update` — the warm-up's instructions are as old as the
+    /// warm-up, and this brings them to the conversation as it is now, before anything said goes
+    /// up. If those fail, the call falls back to the cold path on the same microphone: a new
+    /// secret, a new socket, no second tap.
+    private func startWarm(_ warm: LiveWarmLink, conversation: Int, voiceIsOn: Bool, generation mine: Int) async throws {
+        telemetry.adopt(warm.secret.telemetry)
+        conductor = RealtimeConductor(listening: warm.secret.listening)
+        mintedFor = surface
+        socket = warm.task
+        holdingMicrophone = true
+        warm.handOver { [weak self] text, failure in
+            self?.received(text: text, failure: failure, generation: mine)
+        }
+        let readied = Task { await self.readyWarm(conversation, voiceIsOn: voiceIsOn, generation: mine) }
+        health.stage = .microphone
+        microphoneGeneration = mine
+        let audioToken: Int
+        do {
+            audioToken = try await audio.start(
+                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: mine) } },
+                failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
+            )
+        } catch {
+            readied.cancel()
+            throw error
+        }
+        guard mine == generation else {
+            readied.cancel()
+            audio.stop(token: audioToken)
+            return
+        }
+        watchdog.arm(at: Self.now)
+        microphoneOpen = true
+        let failure = await readied.value
+        guard mine == generation else { return }
+        if let failure {
+            log.error("warm call fell back to cold: \(failure, privacy: .public)")
+            telemetry.track(.warmFallback(failure))
+            startPath = .fallback
+            warm.close()
+            socket = nil
+            sessionOpen = false
+            if !voiceIsOn { try await turnVoiceOn(conversation) }
+            guard mine == generation else { return }
+            mintedFor = surface
+            let asked = Self.now
+            let secret = try await mintSecret(conversation)
+            guard mine == generation else { return }
+            telemetry.adopt(secret.telemetry)
+            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            conductor = RealtimeConductor(listening: secret.listening)
+            openSocket(secret, generation: mine)
+        }
+        holdingMicrophone = false
+        health.stage = .session
+        connectIfReady(generation: mine)
+    }
+
+    /// Voice on, then the `session.update` that brings the warm session to the conversation as it
+    /// is now, sent before the microphone is let through. The failure, or nil.
+    private func readyWarm(_ conversation: Int, voiceIsOn: Bool, generation mine: Int) async -> String? {
+        do {
+            if !voiceIsOn { try await turnVoiceOn(conversation) }
+            guard mine == generation else { return nil }
+            let session = try await api.liveSessionUpdate(conversation)
+            guard mine == generation else { return nil }
+            guard sessionOpen else { return "The warm connection had not said session.created." }
+            send(conductor.sessionUpdate(keeping: session))
+            return nil
+        } catch {
+            return Self.describe(error)
+        }
+    }
+
     /// Move this call to `conversation`, which Live Mode has moved to: a new secret, a new socket
     /// and the same microphone. The old socket's late answers are dropped, and what was still
     /// sounding stops. A failure here is a call that dropped, which the car retries on whatever is
@@ -279,6 +383,9 @@ final class LiveCall: ObservableObject {
         // new one says so again.
         microphoneLost = false
         mintedFor = surface
+        tappedAt = nil
+        firstAudioFrom = nil
+        holdingMicrophone = false
         pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
         lookedForMove = Self.now
         lastError = nil
@@ -317,9 +424,13 @@ final class LiveCall: ObservableObject {
 
     /// The call is up once the microphone is open and OpenAI has answered, in either order.
     private func connectIfReady(generation mine: Int) {
-        guard mine == generation, !health.isConnected, microphoneOpen, sessionOpen else { return }
+        guard mine == generation, !health.isConnected, microphoneOpen, sessionOpen, !holdingMicrophone else { return }
         health.connected(at: Self.now)
         telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: conductor.listening, gated: conductor.gated))
+        if let tappedAt {
+            telemetry.track(.callStartup(path: startPath, tapToReady: Self.now - tappedAt, surface: surface.rawValue))
+            self.tappedAt = nil
+        }
         state = .listening
         Task {
             // Handed over while connecting, after the secret was asked for: its instructions
@@ -334,6 +445,7 @@ final class LiveCall: ObservableObject {
 
     func hangUp() {
         pressHeard = nil
+        pressedAt = nil
         end(reason: "hang_up", farewell: cues.hungUp())
     }
 
@@ -345,6 +457,7 @@ final class LiveCall: ObservableObject {
     func pressed() {
         guard !isActive else { return }
         let at = Self.now
+        pressedAt = at
         let telemetry = telemetry
         guard audio.playAlone(.pressed, handBack: false, sounding: {
             telemetry.track(.cue(.pressed))
@@ -377,6 +490,9 @@ final class LiveCall: ObservableObject {
         state = .idle
         muted = false
         pendingOpening = nil
+        holdingMicrophone = false
+        tappedAt = nil
+        firstAudioFrom = nil
         // Nothing left to send: the speech the call heard went with it.
         conductor = RealtimeConductor()
         sendNowFollowup?.cancel()
@@ -540,7 +656,7 @@ final class LiveCall: ObservableObject {
     }
 
     private func sendAudio(_ pcm: Data, microphone: Int) {
-        guard microphone == microphoneGeneration, !pcm.isEmpty else { return }
+        guard microphone == microphoneGeneration, !pcm.isEmpty, !holdingMicrophone else { return }
         if !muted { sendNowLog.heard(pcm16: pcm, at: Self.now) }
         send(RealtimeConductor.appendAudio(pcm, muted: muted))
     }
@@ -576,7 +692,7 @@ final class LiveCall: ObservableObject {
                     self.telemetry.track(.micStalled(afterMs: after))
                     self.audio.recoverIfStopped()
                 }
-                if silence > 0 { self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence))) }
+                if silence > 0, !self.holdingMicrophone { self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence))) }
                 // Nothing else asks again: a restart that came back to a stopped engine, a second
                 // route change, would otherwise sit out the microphone's deadline.
                 if self.watchdog.stalledSince != nil { self.audio.recoverIfStopped() }
@@ -692,28 +808,34 @@ final class LiveCall: ObservableObject {
             let failure: String? = if case let .failure(error) = result { error.localizedDescription } else { nil }
             Task { @MainActor in
                 guard let self, generation == self.generation else { return }
-                if let failure {
-                    self.telemetry.track(.socketClosed(failure))
-                    self.fail("The call dropped: \(failure)", generation: generation)
-                    return
-                }
-                if let text, let event = JSONValue.parse(text) {
-                    self.health.heard(at: Self.now)
-                    for entry in self.timeline.observe(event, at: Self.now) { self.telemetry.track(entry) }
-                    for entry in self.sendNowLog.observe(event, at: Self.now) { self.telemetry.track(entry) }
-                    let was = self.conductor.listening
-                    let effects = self.conductor.handle(event)
-                    if self.conductor.listening != was {
-                        self.telemetry.track(.listeningChanged(from: was, to: self.conductor.listening))
-                    }
-                    self.apply(effects, generation: generation)
-                    if event["type"]?.string == "session.created" {
-                        self.sessionOpen = true
-                        self.connectIfReady(generation: generation)
-                    }
-                }
-                self.receive(task, generation: generation)
+                self.received(text: text, failure: failure, generation: generation)
+                if failure == nil { self.receive(task, generation: generation) }
             }
+        }
+    }
+
+    /// One thing the socket said: an event's text, or the failure that closed it. From this
+    /// call's own socket, or from a warm connection it took over (`LiveWarmLink.handOver`).
+    private func received(text: String?, failure: String?, generation: Int) {
+        guard generation == self.generation else { return }
+        if let failure {
+            telemetry.track(.socketClosed(failure))
+            fail("The call dropped: \(failure)", generation: generation)
+            return
+        }
+        guard let text, let event = JSONValue.parse(text) else { return }
+        health.heard(at: Self.now)
+        for entry in timeline.observe(event, at: Self.now) { telemetry.track(entry) }
+        for entry in sendNowLog.observe(event, at: Self.now) { telemetry.track(entry) }
+        let was = conductor.listening
+        let effects = conductor.handle(event)
+        if conductor.listening != was {
+            telemetry.track(.listeningChanged(from: was, to: conductor.listening))
+        }
+        apply(effects, generation: generation)
+        if event["type"]?.string == "session.created" {
+            sessionOpen = true
+            connectIfReady(generation: generation)
         }
     }
 
@@ -736,6 +858,10 @@ final class LiveCall: ObservableObject {
                 Task { await reattach(to: conversation) }
             case let .play(pcm):
                 audio.play(pcm)
+                if let from = firstAudioFrom {
+                    firstAudioFrom = nil
+                    telemetry.track(.firstAudio(sinceTap: Self.now - from, path: startPath))
+                }
             case let .replyStarted(itemID):
                 audio.replyStarted(itemID: itemID)
             case let .interrupt(arriving):
