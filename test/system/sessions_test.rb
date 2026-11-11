@@ -1067,10 +1067,12 @@ class SessionsTest < ApplicationSystemTestCase
       assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
       assert_no_selector "turbo-frame#session_detail [aria-label='Loading session']"
 
-      # The skeleton's own close control dismisses the drawer before the body
-      # arrives — once the panel has settled, like every other control in it.
       find("body").send_keys(:escape)
       assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+
+      # The skeleton's own close control dismisses the drawer before the body
+      # arrives — once the panel has settled, like every other control in it —
+      # and the body that lands afterwards is not rendered into the closed drawer.
       other = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Other drawer session", status: :running)
       visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
       find("a[aria-label='View session #{other.id}']").click
@@ -1080,9 +1082,41 @@ class SessionsTest < ApplicationSystemTestCase
         find("button[aria-label='Close session details']").click
       end
       assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+      release << true
+      # Give the released response time to land; the closed drawer must not render it.
+      assert_no_selector "turbo-frame#session_detail [data-current-session-id]", visible: :all, wait: 2
+      sleep 1
+      assert_no_selector "turbo-frame#session_detail [data-current-session-id]", visible: :all
     ensure
       release << true
       release << true
+      SessionsController.define_method(:drawer, original)
+    end
+  end
+
+  # A drawer load that fails replaces the skeleton with the failure notice rather
+  # than leaving a "Loading session" placeholder pulsing under it forever.
+  test "a drawer load that fails drops the skeleton for the failure notice" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Vanishing drawer session",
+      status: :running
+    )
+
+    # The session was deleted out of the trash between the dashboard rendering
+    # its card and the click: /drawer answers 404, with no frame in the body.
+    original = SessionsController.instance_method(:drawer)
+    SessionsController.define_method(:drawer) { render html: "<p>Not found</p>".html_safe, status: :not_found, layout: false }
+
+    begin
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+      find("a[aria-label='View session #{session.id}']").click
+
+      within "turbo-frame#session_detail" do
+        assert_selector "[data-frame-missing-fallback]"
+        assert_no_selector "[data-drawer-skeleton]"
+      end
+    ensure
       SessionsController.define_method(:drawer, original)
     end
   end
