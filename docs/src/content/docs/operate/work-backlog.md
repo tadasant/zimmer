@@ -38,7 +38,7 @@ not mirror issue state, and a reader re-checks the issue before acting on it.
 | `started_session_id`, `started_by_session_id`, `started_at` | The session it became, the session that pulled it, and when |
 | `removed_at`, `removed_by`, `removal_reason` | For a removed item, who and why |
 | `liveness_state`, `liveness_checked_at` | What the liveness re-check last observed about a row that left the queue, and when |
-| `held_at`, `held_until`, `held_by`, `held_by_session_id`, `hold_reason`, `held_liveness_state` | A triager's hold of a stranded row for a human decision — see [Held for a human decision](#held-for-a-human-decision) |
+| `held_at`, `held_until`, `held_by`, `held_by_session_id`, `hold_reason`, `held_liveness_state`, `hold_digested_at` | A triager's hold of a stranded row for a human decision — see [Held for a human decision](#held-for-a-human-decision) |
 | `payload` | `ratings`, `prompt`, `notes`, `gate_session`, and whatever the gate adds next |
 
 **A row is never deleted.** The file dropped an item when it was pulled, so the history of what got
@@ -325,17 +325,63 @@ view, `status: "awaiting_decision"` in `get_work_backlog` and the REST index, an
 `counts.awaiting_decision`. The page names how many rows are held, so a reader knows its count is
 not the whole pile.
 
-**A hold lapses after `HOLD_DURATION` (14 days).** The row is then stranded again with its original
-age, and the next pass that can read GitHub pages on the lapse, whatever band the sweep last paged
-for. Only then is the spent hold cleared. That page is the reminder that the decision is still owed.
-It reaches the human on the path every other page takes, once per hold. The alternative was a second, slower reminder for held rows. That would have added an
-alert path to keep alive for a population whose whole problem was that its alert did not reach
-anyone, and a hold that never lapsed would bring back the permanent silence of
-[#1127](https://github.com/tadasant/zimmer/issues/1127) and [#1175](https://github.com/tadasant/zimmer/issues/1175).
-**A hold cannot be extended** while it is in force, and a lapsed hold cannot be renewed until its
+#### The decision digest
+
+**`WorkBacklogDecisionDigestJob` delivers every owed decision to its owner.** It runs daily and
+sends one push through both of Zimmer's push paths, listing rows with their `reason`. A new hold goes
+out on the next tick. After that a decision goes out every `CADENCE` (7 days), for as long as it is
+owed. Tapping the web push opens the Issues view. The list includes holds a moving PR has suspended,
+because the decision is still owed even though those rows are not on that page.
+
+A web push holds about 3,000 bytes and each reason is cut at 160 characters, so a long list does not
+fit in one. The push lists the rows that have waited longest, says how many more there are, and the
+rest lead the next day's push, so a long list goes round over a few days. Each digest has its own
+notification tag, because Zimmer's pushes otherwise share one and each replaces the last.
+
+The iOS push says only "Decisions are waiting on you", because an APNs alert is readable by Apple and
+a reason stays on the server. Tapping it opens the app, not the Issues view.
+
+**A delivery is the only thing that renews a hold.** When a push reaches at least one device, each row
+it listed gets a fresh `HOLD_DURATION` (14 days) and a new `hold_digested_at`, if the sweep has read
+the row in the last 2 days and it reads what it read when the hold was recorded, or a moving PR is
+suspending it. A row that fails any of that is not renewed, stays due, and goes out again on the next
+tick. So an unanswered hold stays in **Awaiting your decision**, stays in the digest and does not
+page. `hold_digested_at` is on each row in `get_work_backlog`, the REST API and `/supervisor`, and
+answers whether this has run and what it covered.
+
+**A hold lapses when that stops.** After `HOLD_DURATION` with no renewal the row is stranded again
+with its original age, and the next pass pages on the lapse, whatever band the sweep last paged for.
+Only then is the spent hold cleared. A digest that crashes, loses its cron entry or reaches nobody
+ends there, and none of those needs the digest to notice. Renewal being the receipt for a delivery is
+what keeps this from being the permanent silence of
+[#1127](https://github.com/tadasant/zimmer/issues/1127) and
+[#1175](https://github.com/tadasant/zimmer/issues/1175).
+
+The lapse page is the one page a pass that could not read a repo still sends. A row in a repo that
+stays unreadable reads `unknown`, so nothing renews it, and the band alert stays deferred for as long
+as the repo is unreadable. The lapse has to get through anyway. That pass leaves the remembered band
+alone.
+
+A failed delivery does not wait for the lapse. A push that reaches no device, which includes no device
+being subscribed or neither path being configured, logs an ERROR. That trips the
+`zimmer_backend_log_errors` rule, so it reaches `#alerts` by a different path from the lapse page. The
+list stays due, so every tick tries again, and a failure that lasts repeats the ERROR once per
+`CADENCE`, with WARN on the ticks between. A channel that is broken while another got through logs
+WARN. A hold lasts two cadences, so delivery can fail for a week before a hold lapses.
+
+**This reverses a decision.** Holds shipped in [#1225](https://github.com/tadasant/zimmer/issues/1225)
+with the lapse page as the only reminder, and this page rejected a second, slower one: it would add an
+alert path for a population whose problem was an alert that reached nobody. Five weeks of production
+evidence went the other way. From 2026-10-02 to 2026-11-05 lapses paged `#alerts` 8 times. Each page
+started a triage chain whose only move was to re-hold, and no decision was answered
+([#1453](https://github.com/tadasant/zimmer/issues/1453)). The page reached agents, who cannot answer
+these. So the two jobs are now separate: the push reaches the person who owes the decision, and the
+page is for the reminder failing, which someone can act on.
+
+**A triager cannot extend a hold** while it is in force, and a lapsed hold cannot be renewed until its
 lapse has paged. Without that second rule, a triager could re-hold the row the minute it lapsed,
 before the hourly sweep ran, and the row would never page again. After the page, a triager may read
-the row again and hold it again.
+the row again, find out why the digest stopped, and hold it again.
 
 **A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
 and the sweep clears it, in the same write, the first time it records a different one: the issue
@@ -352,8 +398,8 @@ what [#1420](https://github.com/tadasant/zimmer/issues/1420) was: one such PR re
 at 48 days. So the hold stays on the row while the PR is moving, and the row sits in neither
 Stranded nor Awaiting your decision, because a moving PR resolves it for the time being. Once the
 PR merges, closes or goes quiet, the hold is judged on what the row reads then: the same verdict
-keeps it, a different one voids it. The hold lapses on its own clock throughout, and a lapse while
-the PR is open pages on the first pass after the row is stranded again.
+keeps it, a different one voids it. The digest keeps delivering and renewing it throughout. A hold
+that does lapse while the PR is open pages on the first pass after the row is stranded again.
 
 `pr_stalled` is not a suspension. A stalled row is unresolved, so a hold kept across it would be a
 silenced row with nothing moving.

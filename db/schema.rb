@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1228,6 +1228,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_120000) do
     t.bigint "held_by_session_id"
     t.string "held_liveness_state"
     t.datetime "held_until"
+    t.datetime "hold_digested_at"
     t.text "hold_reason"
     t.string "issue_url"
     t.string "key", null: false
