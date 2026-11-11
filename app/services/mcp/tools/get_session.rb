@@ -116,12 +116,12 @@ module Mcp
           transcript_tail: {
             type: "integer",
             minimum: 1,
-            description: "Return the last N events (newest), subject to transcript_max_chars. Mutually exclusive with transcript_head and transcript_from/transcript_to. Implies include_transcript."
+            description: "Return the last N events (newest), subject to transcript_max_chars. Counts events, not messages — for the last N messages use transcript_last_messages. Mutually exclusive with transcript_head, transcript_last_messages and transcript_from/transcript_to. Implies include_transcript."
           },
           transcript_head: {
             type: "integer",
             minimum: 1,
-            description: "Return the first N events (oldest), subject to transcript_max_chars. Mutually exclusive with transcript_tail and transcript_from/transcript_to. Implies include_transcript."
+            description: "Return the first N events (oldest), subject to transcript_max_chars. Mutually exclusive with transcript_tail, transcript_last_messages and transcript_from/transcript_to. Implies include_transcript."
           },
           transcript_from: {
             type: "integer",
@@ -143,7 +143,7 @@ module Mcp
             type: "integer",
             minimum: 1,
             maximum: TranscriptSlice::MAX_MESSAGES,
-            description: "Return the last N human and assistant text messages (newest), counting messages rather than events, with each run of tool calls between them folded into one line. Always rendered conversation-only. Subject to transcript_max_chars. Mutually exclusive with transcript_head, transcript_tail and transcript_from/transcript_to. Implies include_transcript. The read to use when the status summary is stale, missing or unclear."
+            description: "Return the last N human and assistant text messages (newest), counting messages rather than events, with each run of tool calls between them folded into one line. Always rendered conversation-only (transcript_format and transcript_conversation_only are ignored). Stops after reading the newest #{TranscriptSlice::MAX_SCAN_EVENTS} events. Subject to transcript_max_chars. Mutually exclusive with transcript_head, transcript_tail and transcript_from/transcript_to. Implies include_transcript. The read to use when the status summary is stale, missing or unclear."
           },
           transcript_conversation_only: {
             type: "boolean",
