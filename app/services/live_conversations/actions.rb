@@ -174,10 +174,12 @@ module LiveConversations
 
     private
 
+    # `surface` is the client this line came from, kept on the line itself so a
+    # human message can say where it was said. Display only.
     def authorship
       return {} if @author.nil?
 
-      { author: @author.key, author_provenance: @author.provenance.merge("client_surface" => @client_surface).compact }
+      { author: @author.key, author_provenance: @author.provenance.merge("surface" => @client_surface).compact }
     end
 
     # Whether this request may gate the call: the client can, and neither it nor

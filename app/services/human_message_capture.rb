@@ -200,9 +200,8 @@ class HumanMessageCapture
           "live_conversation_id" => conversation.id,
           "live_turn_ids" => words.map(&:id),
           "heard" => speaker.source,
-          "client_surface" => speaker.author_provenance.to_h["client_surface"] || conversation.client_surface,
           "relayed_message" => content.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
-        }.merge(speaker.author_provenance.to_h.slice("via", "oauth_grant_id", "grant_user_email")).compact
+        }.merge(speaker.author_provenance.to_h.slice("via", "surface", "oauth_grant_id", "grant_user_email")).compact
       )
     rescue => e
       Rails.logger.error("[HumanMessageCapture] Failed to read live conversation #{conversation&.id}: #{e.class}: #{e.message}")

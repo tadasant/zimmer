@@ -57,7 +57,7 @@ class LiveModeHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     assert_equal RELAYED, message.relayed_message
     assert_equal "live_mode.follow_up", message.entry_point
     assert_equal "ios_app", message.provenance["via"]
-    assert_equal "ios", message.provenance["client_surface"]
+    assert_equal "ios", message.provenance["surface"]
     assert_equal "spoken", message.provenance["heard"]
     assert_equal conversation.id, message.provenance["live_conversation_id"]
     assert_equal "tadas@tadasant.com", message.provenance["grant_user_email"]
@@ -75,7 +75,7 @@ class LiveModeHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     post "/live_conversations/#{conversation.id}/messages", params: { content: "close all nine" }
     turn = conversation.turns.where(role: "user").sole
     assert_equal "tadasant", turn.author
-    assert_equal({ "via" => "web_ui", "client_surface" => "web" }, turn.author_provenance)
+    assert_equal({ "via" => "web_ui", "surface" => "web" }, turn.author_provenance)
 
     # The reply job runs the model's tool calls through the same bridge.
     assert_difference("HumanMessage.count", 1) do
