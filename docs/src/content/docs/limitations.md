@@ -4245,6 +4245,28 @@ a follow-up you send.
 
 Fixed in [#75](https://github.com/tadasant/zimmer/issues/75).
 
+### An app cannot accept with a required yes/no left off
+
+A required boolean in an elicitation form is almost always the question Accept answers ("Create this
+secure note?"), and an accept carrying `false` for it is a refusal. So the web banner keeps **Accept**
+disabled, and the iOS app refuses it, until every required yes/no is ticked
+([Accept, and a required yes/no](/sessions/elicitation/#accept-and-a-required-yesno)). A server whose
+required boolean is a genuine choice ("Include attachments?", where "accept, no" means something
+different from Decline) cannot be given "accept, `false`" from either app. `PATCH
+/api/v1/elicitations/:id/respond` and the `respond_to_elicitation` MCP tool still send whatever they
+are given.
+
+### Claude Code gives up on a prompt longer than the instance window
+
+`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` is set from the instance's elicitation window
+(`ELICITATION_EXPIRATION_MINUTES`, default an hour) plus five minutes
+([a silent tool call outlives the prompt](/sessions/elicitation/#a-silent-tool-call-outlives-the-prompt)).
+An MCP server may name its own, longer `expires-at`, up to `Elicitation::MAX_EXPIRATION` (7 days), and
+Zimmer keeps that prompt open. Claude Code still aborts the call at the instance window plus five
+minutes, so an answer given after that reaches a call the agent has already given up on. Sizing the
+timeout to the seven-day ceiling would cover it, at the price of a hung tool holding a session for
+a week.
+
 ### A session's slug is claimed by retry, not by construction
 
 `Session#generate_slug_from_title!` builds `title-yyyymmdd-hhmm` and, when that is taken, appends

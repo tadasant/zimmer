@@ -72,6 +72,21 @@ final class InteractionTests: XCTestCase {
         XCTAssertTrue(object["tone"] is NSNull)
     }
 
+    /// Session #27239: the 1Password server asks with one required boolean, `confirm`. An
+    /// accept carrying `"confirm": false` is reported back as "declined", so a tap on Accept
+    /// with the toggle left off recorded a decline nobody meant.
+    func testAnAcceptWithARequiredToggleLeftOffIsRefusedNotSentAsFalse() throws {
+        let form = ElicitationForm(fields: [
+            .init(key: "confirm", title: "Create this secure note?", kind: .toggle, required: true),
+        ])
+
+        XCTAssertThrowsError(try form.content(from: [:], toggles: [:])) {
+            XCTAssertEqual($0 as? ElicitationFormError, .unconfirmed("Create this secure note?"))
+        }
+        XCTAssertThrowsError(try form.content(from: [:], toggles: ["confirm": false]))
+        XCTAssertEqual(try form.content(from: [:], toggles: ["confirm": true]), #"{"confirm":true}"#)
+    }
+
     func testAnAcceptMissingARequiredFieldOrANumberIsRefusedByName() {
         let form = ElicitationForm(fields: [
             .init(key: "to", title: "To", kind: .text, required: true),

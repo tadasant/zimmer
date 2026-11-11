@@ -130,6 +130,48 @@ there is nothing for you to act on.
 The marker is dropped the moment the session moves on: a resume, a new elicitation, or an
 elicitation that actually gets answered.
 
+## Telling you a prompt is waiting
+
+Every elicitation, whatever created it, gets a row on `/notifications` and a push (web push and the
+[iOS app](/extend/ios-app/)). `Elicitation#notify_human` enqueues `SendPushNotificationJob` with
+type `elicitation_pending` from an `after_create_commit`, so a new creation path cannot skip it.
+Unlike the `needs_input` push, it does not depend on the session's push opt-in.
+
+The elicitation's id is the notification's `transition_marker`, so each prompt gets one row and one
+push. A retried job finds that row and stops. A second prompt on the same session a few minutes later,
+such as a retry after a decline, gets its own row and push; the 15-minute window the job uses to
+deduplicate unmarked types does not apply. A prompt answered or expired before the job runs gets
+neither.
+
+The row leaves the list once the prompt is answered or expires, when the session unblocks and its
+notifications are marked stale, and it is destroyed if the session is trashed.
+
+## Accept, and a required yes/no
+
+Many servers ask with one required boolean, which is what `@pulsemcp/mcp-elicitation`'s
+`createConfirmationSchema` produces (`confirm`, titled with the question). An `accept` carrying
+`false` for that field is a refusal: the 1Password server reports it as `declined`. So an Accept
+with the box unticked would record a decline nobody meant to give.
+
+**Accept** waits for every required yes/no field. On the web the button stays disabled until the box
+is ticked, with a line saying so. In the app, Accept is refused with a message naming the field.
+**Decline** is how to say no. An optional yes/no is sent as whatever it is. The cost is that neither
+app can send "accept, `false`" for a required boolean that is a genuine choice rather than the
+question; REST and the `respond_to_elicitation` MCP tool still can
+([limitations](/limitations/#an-app-cannot-accept-with-a-required-yesno-left-off)).
+
+## A silent tool call outlives the prompt
+
+While you decide, the MCP server polls Zimmer and sends the agent nothing. By default Claude Code
+aborts an MCP tool call that has been silent for 1800s, which would cut an hour-long prompt off at
+thirty minutes, leaving its banner up with nothing waiting on the answer.
+`ClaudeSpawnEnv#apply_mcp_tool_idle_timeout` sets `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (milliseconds)
+to the elicitation window plus five minutes, so it follows `ELICITATION_EXPIRATION_MINUTES`. A value
+already in the session's `.env` wins. The cost is that a tool hung for some other reason also gets
+that long before Claude Code gives up on it. It covers the instance's window, not a longer
+`expires-at` an MCP server names itself
+([limitations](/limitations/#claude-code-gives-up-on-a-prompt-longer-than-the-instance-window)).
+
 ## Who may raise a prompt
 
 A prompt on a session asks a human for approval, with a push notification to announce it. A forged

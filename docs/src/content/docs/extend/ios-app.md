@@ -319,7 +319,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   *Approval Needed* card above the conversation, as the web UI shows its banner. Tapping it opens the prompt's
   form, one control per field in the banner's order: a switch, a menu of choices, a number or a
   text field. *Accept* sends the fields. A required field left empty is refused in the app, by name,
-  before anything is sent. *Decline* refuses, and *Dismiss Without Answering* tells the server
+  before anything is sent, and so is a required switch left off: an accept carrying `false` there
+  is read by the server as a refusal ([elicitation](/sessions/elicitation/#accept-and-a-required-yesno)). *Decline* refuses, and *Dismiss Without Answering* tells the server
   nobody decided; the sheet closes and the card goes as the answer is given. Only a connection
   that acts on your behalf may answer. A relay-only one gets the server's refusal over the page,
   with the card back.
