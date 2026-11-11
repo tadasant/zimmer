@@ -55,9 +55,12 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 
 - **The poll cursor seeds the first webhook subscribe.** The SEP keeps the two modes' cursors
   separate in principle. Zimmer passes the condition's poll cursor on the first `events/subscribe`,
-  then persists the webhook subscription's own cursor apart from the poll's. A server whose poll
-  cursors mean nothing in webhook mode should answer `truncated` and start from now. The poll catches
-  up either way.
+  then persists the webhook subscription's own cursor apart from the poll's. strad uses one cursor
+  space for both modes, so this is exact there. A server whose poll cursors mean nothing in webhook
+  mode should answer `truncated` and start from now. The poll catches up either way.
+- **Refreshes are hourly, not only before `refreshBefore`.** The SEP has a client refresh before
+  expiry. Zimmer also refreshes every hour, because a suspended subscription resumes only on a
+  refresh and `deliveryStatus` is read only there.
 
 - **The protocol revision.** The extension is defined for 2026-07-28 and `server/discover`. The
   client initializes at 2025-06-18 and reads the extension off `initialize`, because that is where
