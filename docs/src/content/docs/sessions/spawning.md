@@ -1064,7 +1064,10 @@ Shared scrubbing (`CliSpawnEnv`):
 
 Claude adds (`ClaudeSpawnEnv`): `ENABLE_TOOL_SEARCH` (see below),
 `CLAUDE_CODE_DISABLE_CRON=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
-`CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), and when MCP is on: `MCP_TIMEOUT=180000` —
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default 1,000,000), `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT` (the
+elicitation window plus five minutes, so an approval-gated tool call is not aborted while its
+prompt is still open — [elicitation](/sessions/elicitation/#a-silent-tool-call-outlives-the-prompt);
+a value in the clone's `.env` wins), and when MCP is on: `MCP_TIMEOUT=180000` —
 or the longest `startup_timeout_sec` any of the session's servers declares, when that is longer,
 since the variable is one value for the whole process —
 a clone-local `NPM_CONFIG_CACHE`, and one filesystem side effect — `NpxBinExecutableGuard` restores

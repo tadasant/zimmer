@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class ElicitationTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   setup do
     @session = sessions(:elicitation_session)
   end
@@ -580,6 +583,67 @@ class ElicitationTest < ActiveSupport::TestCase
 
     elicitation_ids.each do |id|
       assert_nil Elicitation.find_by(id: id), "Elicitation #{id} should be destroyed"
+    end
+  end
+
+  # === Telling the human ===
+  #
+  # Session #27239: a 1Password write waited on Tadas's approval three times and
+  # he never knew. Whatever path creates an elicitation, a person is now being
+  # asked something, so each one must produce a Notification row and a push.
+
+  test "creating an elicitation enqueues its own elicitation_pending push, keyed by its id" do
+    elicitation = nil
+    assert_enqueued_jobs 1, only: SendPushNotificationJob do
+      elicitation = create_pending_elicitation
+    end
+
+    assert_enqueued_with(
+      job: SendPushNotificationJob,
+      args: [ @session.id, :elicitation_pending, "Confirm sending email to user@example.com", elicitation.id ]
+    )
+  end
+
+  test "two prompts on one session minutes apart each get a notification row and a push" do
+    WebPushService.any_instance.expects(:send_to_all).twice.returns({ sent: 1, failed: 0, expired: 0 })
+
+    first = second = nil
+    perform_enqueued_jobs(only: SendPushNotificationJob) do
+      first = create_pending_elicitation
+      first.resolve!(action: "decline")
+      travel 2.minutes
+      second = create_pending_elicitation
+    end
+
+    rows = @session.notifications.where(notification_type: "elicitation_pending")
+    assert_equal [ first.id, second.id ].sort, rows.pluck(:transition_marker).sort,
+      "the retry after a decline is a new question; the 15-minute dedup for unmarked types must not swallow it"
+  end
+
+  test "a retried push job for the same elicitation does not add a second row" do
+    WebPushService.any_instance.expects(:send_to_all).once.returns({ sent: 1, failed: 0, expired: 0 })
+    elicitation = create_pending_elicitation
+
+    assert_difference -> { @session.notifications.count }, 1 do
+      2.times { SendPushNotificationJob.perform_now(@session.id, :elicitation_pending, elicitation.message, elicitation.id) }
+    end
+  end
+
+  test "a prompt answered before its push job runs gets no row and no push" do
+    WebPushService.any_instance.expects(:send_to_all).never
+    elicitation = create_pending_elicitation
+    elicitation.resolve!(action: "accept", content: { "confirmed" => true })
+
+    assert_no_difference -> { @session.notifications.count } do
+      perform_enqueued_jobs(only: SendPushNotificationJob)
+    end
+  end
+
+  test "a failed push enqueue does not fail the elicitation's creation" do
+    SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue down")
+
+    assert_difference -> { Elicitation.count }, 1 do
+      create_pending_elicitation
     end
   end
 

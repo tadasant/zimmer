@@ -38,6 +38,19 @@ module ClaudeSpawnEnv
   # or this, whichever is larger.
   MCP_TIMEOUT_MS = McpStartupTimeout::MILLISECONDS
 
+  # Claude Code's limit on how long one MCP tool call may go without a response
+  # or a progress notification, in milliseconds. See #apply_mcp_tool_idle_timeout.
+  MCP_TOOL_IDLE_TIMEOUT_ENV = "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"
+
+  # How much longer than the elicitation window Claude Code waits on a silent MCP
+  # tool call: room for the MCP server's last poll interval and its reply.
+  MCP_TOOL_IDLE_TIMEOUT_MARGIN = 5.minutes
+
+  # The elicitation window plus the margin, in milliseconds.
+  def self.mcp_tool_idle_timeout_ms
+    (Elicitation.default_expiration + MCP_TOOL_IDLE_TIMEOUT_MARGIN).to_i * 1000
+  end
+
   private
 
   # Build the env hash for spawning a Claude Code process.
@@ -117,7 +130,28 @@ module ClaudeSpawnEnv
     # Tell MCP servers where to send approval requests (and who is asking).
     apply_elicitation_env(env_vars)
 
+    # Keep Claude Code waiting on a tool call for as long as a human may answer it.
+    apply_mcp_tool_idle_timeout(env_vars)
+
     env_vars
+  end
+
+  # Set CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT past the elicitation window.
+  #
+  # A tool gated on approval sits silent while the human decides: the MCP server
+  # polls Zimmer and sends Claude Code nothing. Claude Code aborts a tool call that
+  # is silent for 1800s by default, so an approval prompt Zimmer keeps open for an
+  # hour (Elicitation.default_expiration, which ELICITATION_TTL_MS also hands the
+  # server) died at thirty minutes. The agent was told the call timed out, the
+  # banner stayed up for another half hour, and an approval given in that half
+  # hour reached a call the agent had already given up on (session #27239).
+  #
+  # A value already in the environment wins — the clone's `.env` or an extension
+  # set it deliberately.
+  def apply_mcp_tool_idle_timeout(env_vars)
+    return if env_vars[MCP_TOOL_IDLE_TIMEOUT_ENV].present?
+
+    env_vars[MCP_TOOL_IDLE_TIMEOUT_ENV] = ClaudeSpawnEnv.mcp_tool_idle_timeout_ms.to_s
   end
 
   # Configure MCP-related environment variables for the spawned process.

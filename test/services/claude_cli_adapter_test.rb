@@ -1688,7 +1688,8 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
       "ELICITATION_POLL_URL" => session_elicitation_url,
       "ELICITATION_PREFER_HTTP_FALLBACK" => "true",
       "ELICITATION_TTL_MS" => (Elicitation::DEFAULT_EXPIRATION.to_i * 1000).to_s,
-      "ELICITATION_SESSION_ID" => "886"
+      "ELICITATION_SESSION_ID" => "886",
+      "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT" => ((Elicitation::DEFAULT_EXPIRATION + 5.minutes).to_i * 1000).to_s
     }, non_nil_vars)
   end
 
@@ -1958,6 +1959,38 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     assert_equal "test", env_vars["RAILS_ENV"]
     assert_equal "/project/vendor/bundle", env_vars["BUNDLE_PATH"]
     assert_equal "secret", env_vars["API_KEY"]
+  end
+
+  # ===== CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT =====
+  # An approval-gated tool call is silent while the human decides. Claude Code's
+  # default 1800s idle abort killed one at thirty minutes while Zimmer kept the
+  # prompt open for an hour (session #27239).
+
+  test "a silent MCP tool call outlives the elicitation window" do
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir, has_mcp: true)
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+
+    idle_timeout_ms = Integer(env_vars["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"])
+    assert_operator idle_timeout_ms, :>, Integer(env_vars["ELICITATION_TTL_MS"]),
+      "Claude Code must not give up on a tool call before the MCP server stops waiting for the human"
+    assert_operator idle_timeout_ms, :>, 1_800_000, "longer than Claude Code's own default"
+  end
+
+  test "the idle timeout follows the operator's elicitation window" do
+    with_expiration_env("180") do
+      @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+      env_vars = @mock_process_manager.spawned_processes.first[:env]
+
+      assert_equal ((180 + 5) * 60 * 1000).to_s, env_vars["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"]
+    end
+  end
+
+  test "an idle timeout the session .env sets wins" do
+    File.write(File.join(@test_dir, ".env"), "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=0")
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+
+    assert_equal "0", env_vars["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"]
   end
 
   # ===== MCP_TIMEOUT TESTS =====
