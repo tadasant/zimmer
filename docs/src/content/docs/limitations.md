@@ -5369,15 +5369,18 @@ what is built, and against which revision, is recorded on the
 - **No push.** There is no `events/stream`, because that needs a long-running listener Zimmer does
   not run. Webhook delivery is built (see [Webhook delivery](/sessions/triggers/#webhook-delivery)),
   but every production path is behind Cloudflare Access. It works only once
-  `/webhooks/mcp_events/*` has an Access bypass rule, which is set by hand in Cloudflare. Without
-  it the server's verification challenge gets the Access login, the subscribe fails, and the
-  condition polls: an event fires about a minute after the server has it, and later if the server
+  `/webhooks/mcp_events/*` has an Access application with a service-token policy (managed in the
+  production edge Terraform, outside this repo), and the server sends that token. Without that, the
+  server's verification challenge gets the Access login, the subscribe fails, and the condition
+  polls: an event fires about a minute after the server has it, and later if the server
   asks for a longer `nextPollMs`.
-- **Webhook health is inferred, not proven per event.** A condition counts as `verified` once one
-  signed request has reached its URL. If the bypass rule is later removed, deliveries fail
-  without Zimmer seeing anything. Only the server's next refresh answer
-  (`deliveryStatus.active: false`, at most six hours later) moves it to `suspended`. Until then
-  the condition is polled only every 15 minutes, so events can arrive up to 15 minutes late.
+- **Webhook health is inferred, not proven per event.** A condition counts as `verified` for
+  seven hours after a signed request reaches its URL. If the Access policy stops admitting the
+  server in that window (a rotated service token, say), deliveries fail without Zimmer seeing
+  anything until the server's next refresh answer reports a `lastError`, or the seven hours run
+  out. Until then the condition is polled only every 15 minutes, so its events can arrive up to 15
+  minutes late. A quiet subscription loses `verified` after seven hours with no delivery and goes
+  back to minute polling, which costs polls, not events.
 - **Only challenge-echo verification.** Of the SEP's four ways a server can confirm the endpoint
   wants deliveries, Zimmer answers only the challenge. It publishes no
   `/.well-known/mcp-webhook-receiver.json` and keeps no allowlist with any server.
@@ -5395,7 +5398,7 @@ what is built, and against which revision, is recorded on the
 - **`compare_trigger_fires` sees 30 days.** It reads `trigger_event_claims`, which
   `InboundEventRetentionJob` deletes after 30 days.
 
-### GitHub is polled, and inbound webhooks need a Cloudflare Access bypass
+### GitHub is polled, and inbound webhooks need a Cloudflare Access policy
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
@@ -5450,10 +5453,12 @@ them a second or two after the message is posted, instead of at the next poll â€
 switching it on in production changes nothing on its own. Slack has to reach the endpoint from the
 public internet. On the production host every path sits behind
 [Cloudflare Access](/operate/deploying/#optional-cloudflare-edge): a webhook POST gets a 302 to the
-Access login, and `/mcp` and `/api/v1/health` get a 401. A provider signing its deliveries cannot
-present an Access service token. So an inbound webhook works only once its path has an Access
-**bypass** rule, with the provider's signature as the real authentication. Only the MCP Events
-receiver has one documented today; see [Webhook delivery](/sessions/triggers/#webhook-delivery).
+Access login, and `/mcp` and `/api/v1/health` get a 401. So an inbound webhook works only once its
+path has an Access application whose policy admits the sender, which in practice means the sender
+can present an Access service token. A sender Zimmer does not control, like Slack or GitHub, cannot
+be made to send one, and no machine path on the domain is an open Bypass. Only the MCP Events
+receiver has such a policy planned, because strad, its sender, is our own code and can add the
+headers; see [Cloudflare Access on the receiver](/sessions/triggers/#cloudflare-access-on-the-receiver).
 
 What the webhook does not cover yet:
 

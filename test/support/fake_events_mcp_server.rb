@@ -41,6 +41,8 @@ class FakeEventsMcpServer
   # Called with the params of each events/subscribe before it is answered — where a test plays the
   # server's verification POST.
   attr_accessor :on_subscribe
+  # Whether events/subscribe answers truncated: true.
+  attr_accessor :subscribe_truncated
   # Live webhook subscriptions, url => params of the subscribe that made it.
   attr_reader :subscriptions
 
@@ -174,7 +176,7 @@ class FakeEventsMcpServer
       ttl = params["ttlMs"] || 3_600_000
       { "id" => "sub_#{Digest::SHA256.hexdigest(params.dig('delivery', 'url').to_s)[0, 16]}",
         "refreshBefore" => (Time.current + (ttl / 1000.0)).utc.iso8601, "cursor" => "seq:#{@events.size}",
-        "truncated" => false, "deliveryStatus" => delivery_status }.compact
+        "truncated" => subscribe_truncated == true, "deliveryStatus" => delivery_status }.compact
     end
   end
 

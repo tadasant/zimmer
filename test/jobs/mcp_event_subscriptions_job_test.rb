@@ -91,8 +91,36 @@ class McpEventSubscriptionsJobTest < ActiveJob::TestCase
 
     row.reload
     assert_equal "suspended", row.state
-    assert_equal "delivery suspended by the server (http_4xx)", row.last_error
+    assert_equal "server reports failing delivery (http_4xx)", row.last_error
     assert_not row.healthy?
+  end
+
+  test "a refresh that reports a lastError while still active is not healthy either" do
+    McpEventSubscriptionsJob.perform_now
+    row = McpEventWebhookSubscription.sole
+    row.update_columns(state: "verified", verified_at: Time.current)
+    @server.delivery_status = { "active" => true, "lastError" => "timeout" }
+
+    travel_to(row.refresh_before - 1.minute) { McpEventSubscriptionsJob.perform_now }
+    assert_equal [ "suspended", "server reports failing delivery (timeout)" ], row.reload.then { |r| [ r.state, r.last_error ] }
+  end
+
+  test "a refresh does not call a subscription verified on a signed request older than the freshness window" do
+    McpEventSubscriptionsJob.perform_now
+    row = McpEventWebhookSubscription.sole
+    row.update_columns(state: "verified", verified_at: 8.hours.ago)
+    assert_equal "subscribed", row.display_state
+    assert_not row.healthy?
+
+    travel_to(row.refresh_before - 1.minute) { McpEventSubscriptionsJob.perform_now }
+    assert_equal "subscribed", row.reload.state
+  end
+
+  test "a truncated subscribe answer is logged and the subscription still stands" do
+    @server.subscribe_truncated = true
+    Rails.logger.expects(:warn).with(regexp_matches(/truncated/)).at_least_once
+    McpEventSubscriptionsJob.perform_now
+    assert_equal "subscribed", McpEventWebhookSubscription.sole.state
   end
 
   test "a failed subscribe backs off as poll-only, naming the error category and not the server's text" do

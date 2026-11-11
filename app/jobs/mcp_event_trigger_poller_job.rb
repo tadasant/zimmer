@@ -60,7 +60,9 @@ class McpEventTriggerPollerJob < ApplicationJob
   # (McpEventWebhookSubscription#healthy?). The poll is then only the catch-up path — for a
   # delivery the server gave up on, one held by burst control, or a subscription that lapsed
   # without Zimmer noticing — so it can afford to be slow. Fifteen minutes is the same ceiling a
-  # server's own `nextPollMs` is clamped to.
+  # server's own `nextPollMs` is clamped to. It assumes the server keeps at least this much poll
+  # history; one that keeps less answers the catch-up poll with `truncated`, which this job reports
+  # as missed events even when push already fired them.
   PUSH_CATCH_UP_INTERVAL = 15.minutes
 
   def perform

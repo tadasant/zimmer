@@ -19,8 +19,9 @@
 #
 #   pending    created, or terminated by the server; the next sweep subscribes
 #   subscribed `events/subscribe` succeeded, and nothing signed has arrived on the URL yet
-#   verified   a signed request — the challenge or a delivery — has arrived on the URL, so the
-#              path through Cloudflare Access works; only here does the poller slow down
+#   verified   a signed request — the challenge or a delivery — has arrived on the URL within
+#              VERIFICATION_FRESHNESS, so the path through Cloudflare Access works; only here does
+#              the poller slow down. Older than that, it reads as `subscribed` again
 #   suspended  the server's last refresh said it had suspended delivery after repeated failures
 #   failed     subscribing failed; retried with backoff, and the condition polls as before
 #
@@ -36,6 +37,14 @@ class McpEventWebhookSubscription < ApplicationRecord
   }.freeze
 
   ENCRYPTION_SALT = "zimmer-mcp-events-webhook-secret-v1"
+
+  # How recent the last signed request on the URL must be for push to count as carrying the
+  # events. A server suspends delivery only after a sustained failure rate over a real sample, so
+  # a quiet subscription whose route broke (an Access token rotated, say) might never report it.
+  # Proof of a working route therefore expires, and the condition falls back to minute polling. A
+  # little over the six-hour grant McpEventSubscriptionsJob asks for, so a subscription with steady
+  # traffic never flaps.
+  VERIFICATION_FRESHNESS = 7.hours
 
   belongs_to :trigger_condition, optional: true
 
@@ -90,11 +99,17 @@ class McpEventWebhookSubscription < ApplicationRecord
   # catch-up cadence: a signed request has arrived on the URL, the server has not reported suspended
   # delivery, and the grant has not run out.
   def healthy?(now = Time.current)
-    state == "verified" && (refresh_before.nil? || refresh_before > now)
+    state == "verified" && recently_verified?(now) && (refresh_before.nil? || refresh_before > now)
   end
 
-  def display_state
-    return "suspended" if state != "failed" && state != "pending" && refresh_before && refresh_before <= Time.current
+  # Whether a signed request has reached the URL within VERIFICATION_FRESHNESS.
+  def recently_verified?(now = Time.current)
+    verified_at.present? && verified_at > now - VERIFICATION_FRESHNESS
+  end
+
+  def display_state(now = Time.current)
+    return "suspended" if state != "failed" && state != "pending" && refresh_before && refresh_before <= now
+    return "subscribed" if state == "verified" && !recently_verified?(now)
 
     DISPLAY_STATES.fetch(state, "poll-only")
   end

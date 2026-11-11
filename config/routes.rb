@@ -203,8 +203,8 @@ Rails.application.routes.draw do
   namespace :webhooks do
     post "slack", to: "slack#create", as: :slack
     post "github", to: "github#create", as: :github
-    # MCP Events webhook delivery: one URL per McpEventWebhookSubscription. The only path meant to
-    # sit behind a Cloudflare Access bypass — see Webhooks::McpEventsController.
+    # MCP Events webhook delivery: one URL per McpEventWebhookSubscription. Production puts the
+    # path behind its own Access service-token policy — see Webhooks::McpEventsController.
     post "mcp_events/:token", to: "mcp_events#create", as: :mcp_events, constraints: { token: /[A-Za-z0-9_-]{16,64}/ }
   end
 
