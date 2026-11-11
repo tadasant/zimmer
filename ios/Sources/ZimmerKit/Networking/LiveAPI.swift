@@ -40,7 +40,10 @@ public protocol LiveAPI: Sendable {
     /// Voice: the `session` of a `session.update` that brings an open call up to the current
     /// Live settings and guidance — sent after they changed somewhere else, such as the settings
     /// screen.
-    func liveSessionUpdate(_ id: Int) async throws -> JSONValue
+    ///
+    /// `recordingModel`: the model the call runs on, for Zimmer to record on the conversation. A
+    /// call on a warm connection (`LiveWarmStart`) sends it, because its prewarm mint recorded nothing.
+    func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue
     /// Voice: what the app's calls did, for the shipped logs (`LiveTelemetry`). The answer
     /// carries the level in force, which the app adopts.
     func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer
@@ -55,6 +58,13 @@ public protocol LiveAPI: Sendable {
     func resetLiveSettings() async throws -> LiveSettings
     /// The guidance as it was before change `changeID`. 422 when that change did not touch it.
     func restoreLiveGuidance(changeID: Int) async throws -> LiveSettings
+}
+
+extension LiveAPI {
+    /// The `session.update` for an open call, recording nothing.
+    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
+        try await liveSessionUpdate(id, recordingModel: nil)
+    }
 }
 
 struct LiveSessionUpdateResponse: Decodable {
@@ -140,8 +150,10 @@ extension ZimmerHTTPClient {
         return try await post("/api/v1/live_conversations/\(id)/turns", json: gated ? line.merging(Self.listeningModes) { $1 } : line)
     }
 
-    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
-        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: Self.listeningModes)
+    public func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue {
+        var body: [String: Any] = Self.listeningModes
+        if let model { body["model"] = model }
+        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: body)
         return response.session
     }
 

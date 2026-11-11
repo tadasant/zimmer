@@ -127,6 +127,7 @@ sequenceDiagram
         A->>Z: POST 7/session_update
         Z-->>A: fresh instructions, tools
         A->>O: session.update
+        O-->>A: session.updated
     and
         A->>A: open microphone (held off the socket)
     end
@@ -135,7 +136,7 @@ sequenceDiagram
     A->>O: input_audio_buffer.append …
 ```
 
-If voice-on or `session_update` fails, the call falls back: it closes the warm socket, mints cold
+If voice-on or `session_update` fails, the warm socket fails, or no `session.updated` comes within 3 s, the call falls back: it closes the warm socket, mints cold
 and opens a new socket on the microphone that is already open. There is no second tap, and
 `call.startup` says `path=fallback`.
 
@@ -163,16 +164,19 @@ Nothing user-originated and nothing billable goes up a warm connection before th
 
 - **Structurally.** `LiveWarmStart.Action` is `refresh`, `mint`, `ping` and `close`, with no case
   that sends. `LiveWarmLink` has no method that sends an event. The only way a warm socket reaches
-  something that can send is `LiveWarmKeeper.claim`, which `LiveCall.start` calls from the
-  driver's tap.
+  something that can send is `LiveWarmKeeper.claim`, which `LiveCall.start` calls for the
+  driver's tap on Continue. The car's quiet retries of that same tap (`LiveRetry`) can claim too.
 - **No microphone.** Nothing in the warm path touches `AVAudioSession` or the engine. The
   microphone opens in `startWarm`, after the tap, exactly as in a cold call.
 - **Held until fresh.** After the tap, microphone frames (and the watchdog's silence) stay off
-  the socket until the fresh `session.update` is sent. The *connected* notes wait for that too,
-  so nobody is told to talk while the session is on the warm-up's instructions.
+  the socket until OpenAI answers the fresh `session.update` with `session.updated`, within 3 s.
+  The *connected* notes wait for that too. Nobody is told to talk while the session is on the
+  warm-up's instructions, or into a socket that died quietly. A socket that fails here, or no
+  `session.updated`, sends the start to the cold fallback rather than dropping the call.
 - **The server agrees.** A prewarm mint notes no client, sets no `car_call`, writes no model, and
   needs no voice on, so the conversation the person sees does not change. Zimmer refuses it while
-  the flag is off. Tested in `live_conversations_controller_test.rb`.
+  the flag is off, and from any client but the car. The tap's `session_update` carries the warm
+  secret's model, so the conversation still records the model the call ran on. Tested in `live_conversations_controller_test.rb`.
 - **No UI.** Nothing is shown, played or asked. The car's screens are unchanged.
 
 ## Reusing a session that is already up

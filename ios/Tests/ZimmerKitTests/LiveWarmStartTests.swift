@@ -281,6 +281,20 @@ final class LiveWarmAPITests: XCTestCase {
         XCTAssertEqual(body["listening_modes"] as? String, "1")
     }
 
+    func testTheTapsSessionUpdateRecordsTheWarmModelAndAPlainOneDoesNot() async throws {
+        let (api, transport) = client([
+            { _ in Fixtures.json(200, ["session": ["type": "realtime"]]) },
+            { _ in Fixtures.json(200, ["session": ["type": "realtime"]]) },
+        ])
+        _ = try await api.liveSessionUpdate(7, recordingModel: "gpt-realtime-2.1-mini")
+        _ = try await api.liveSessionUpdate(7)
+        let warm = try XCTUnwrap(JSONSerialization.jsonObject(with: transport.sent[0].body ?? Data()) as? [String: Any])
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: transport.sent[1].body ?? Data()) as? [String: Any])
+        XCTAssertEqual(warm["model"] as? String, "gpt-realtime-2.1-mini")
+        XCTAssertNil(plain["model"])
+        XCTAssertEqual(plain["listening_modes"] as? String, "1")
+    }
+
     /// The fake keeps the server's rules: refused while the flag is off, and nothing on the
     /// conversation changes when it is on — the mode included.
     func testThePrewarmMintIsRefusedWhileOffAndChangesNothingWhenOn() async throws {

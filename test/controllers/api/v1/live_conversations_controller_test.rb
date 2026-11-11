@@ -244,6 +244,28 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     post "/api/v1/live_conversations/#{conversation.id}/client_secret", headers: car
     assert_response :conflict, "a call's own mint still needs voice on"
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1" }, headers: @headers.merge("X-Zimmer-Client" => "ios/1.6.0")
+    assert_response :unprocessable_entity, "only the car pre-warms"
+  end
+
+  test "the tap's session_update on a warm connection records the model the call runs on" do
+    conversation = create_live_conversation(mode: "voice")
+    conversation.update_columns(model: "gpt-realtime-2")
+    url = "/api/v1/live_conversations/#{conversation.id}/session_update"
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.6.0")
+
+    post url, params: { listening_modes: "1" }, headers: car
+    assert_response :success
+    assert_equal "gpt-realtime-2", conversation.reload.model, "a plain update records nothing"
+
+    post url, params: { listening_modes: "1", model: "gpt-realtime-2.1-mini" }, headers: car
+    assert_response :success
+    assert_equal "gpt-realtime-2.1-mini", conversation.reload.model
+
+    post url, params: { model: "not a model; drop table" }, headers: car
+    assert_response :unprocessable_entity
+    assert_equal "gpt-realtime-2.1-mini", conversation.reload.model
   end
 
   test "a CarPlay prewarm mint is refused on a conversation that has ended" do

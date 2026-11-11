@@ -222,7 +222,7 @@ extension FakeZimmerAPI {
         return LiveHeard(respond: true)
     }
 
-    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
+    public func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue {
         guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation is not active.") }
         let speed = liveState.settingOverrides["voice_speed"] ?? .number(1.0)
         return .object(["type": .string("realtime"), "audio": .object(["output": .object(["speed": speed])])])

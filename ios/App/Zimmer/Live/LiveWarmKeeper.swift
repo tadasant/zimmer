@@ -92,6 +92,9 @@ final class LiveWarmKeeper {
         guard connected else { return nil }
         let claim = start.claim(conversation, at: Self.now)
         if overview?.value.carplayPrewarm == true { telemetry.track(.warmClaim(claim, hold: start.hold)) }
+        // Used once: a retry after this call fails asks Zimmer what is open again, rather than
+        // calling a conversation that may have ended since the read.
+        overview = nil
         guard case .warm = claim, let link else { return nil }
         self.link = nil
         link.detach()

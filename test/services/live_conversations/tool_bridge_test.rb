@@ -273,6 +273,18 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_equal "warn", LiveSetting.current.voice_telemetry, "a reset from the call keeps it"
   end
 
+  test "the live model cannot turn CarPlay pre-warm on or off, nor reset it" do
+    LiveConversations::SettingsUpdate.call({ "voice_carplay_prewarm" => "on" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    schema = @bridge.realtime_tools.find { |t| t[:name] == "update_live_settings" }
+    assert_not schema.dig(:parameters, :properties).key?("voice_carplay_prewarm"), "not offered"
+
+    result = @bridge.execute("update_live_settings", JSON.generate(voice_carplay_prewarm: "off"), call_id: "p1")
+    assert result.error
+
+    @bridge.execute("update_live_settings", JSON.generate(reset_to_defaults: true), call_id: "p2")
+    assert_equal "on", LiveSetting.current.voice_carplay_prewarm, "a reset from the call keeps it"
+  end
+
   test "the live model cannot change the voice output cap, nor reset a person's" do
     LiveConversations::SettingsUpdate.call({ "voice_max_output_tokens" => 2_048 }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
     schema = @bridge.realtime_tools.find { |t| t[:name] == "update_live_settings" }

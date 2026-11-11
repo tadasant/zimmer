@@ -111,6 +111,15 @@ final class LiveCall: ObservableObject {
     /// `session.update` has gone up, so nothing said reaches a session still on the warm-up's
     /// instructions. Cleared before the call is up, so nobody is ever told to talk into it.
     private var holdingMicrophone = false
+    /// The warm connection this call took, kept alive here: its receive loop is what delivers
+    /// OpenAI's events to the call (`LiveWarmLink.handOver`).
+    private var warmLink: LiveWarmLink?
+    /// OpenAI answered the tap's `session.update` on the warm connection.
+    private var warmUpdated = false
+    /// The warm connection failed after the tap, before the call was up: the start falls back.
+    private var warmSocketFailure: String?
+    /// How long the tap waits for `session.updated` on a warm connection before falling back.
+    private static let warmUpdateDeadline: TimeInterval = 3
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -203,6 +212,8 @@ final class LiveCall: ObservableObject {
         firstAudioFrom = tapped
         startPath = warm == nil ? .cold : .warm
         holdingMicrophone = false
+        warmUpdated = false
+        warmSocketFailure = nil
         generation += 1
         let mine = generation
         self.surface = surface
@@ -284,6 +295,7 @@ final class LiveCall: ObservableObject {
         conductor = RealtimeConductor(listening: warm.secret.listening)
         mintedFor = surface
         socket = warm.task
+        warmLink = warm
         holdingMicrophone = true
         warm.handOver { [weak self] text, failure in
             self?.received(text: text, failure: failure, generation: mine)
@@ -315,9 +327,10 @@ final class LiveCall: ObservableObject {
             telemetry.track(.warmFallback(failure))
             startPath = .fallback
             warm.close()
+            warmLink = nil
             socket = nil
             sessionOpen = false
-            if !voiceIsOn { try await turnVoiceOn(conversation) }
+            try await turnVoiceOn(conversation)
             guard mine == generation else { return }
             mintedFor = surface
             let asked = Self.now
@@ -334,19 +347,36 @@ final class LiveCall: ObservableObject {
     }
 
     /// Voice on, then the `session.update` that brings the warm session to the conversation as it
-    /// is now, sent before the microphone is let through. The failure, or nil.
+    /// is now, and OpenAI's `session.updated` for it: the proof the warm socket still works, before
+    /// the microphone is let through and the driver is told to talk. The failure, or nil.
     private func readyWarm(_ conversation: Int, voiceIsOn: Bool, generation mine: Int) async -> String? {
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return nil }
-            let session = try await api.liveSessionUpdate(conversation)
+            let session = try await api.liveSessionUpdate(conversation, recordingModel: warmLink?.secret.model)
             guard mine == generation else { return nil }
+            if let warmSocketFailure { return warmSocketFailure }
             guard sessionOpen else { return "The warm connection had not said session.created." }
             send(conductor.sessionUpdate(keeping: session))
-            return nil
+            let asked = Self.now
+            while Self.now - asked < Self.warmUpdateDeadline {
+                if warmUpdated { return nil }
+                if let warmSocketFailure { return warmSocketFailure }
+                try await Task.sleep(for: .milliseconds(25))
+                guard mine == generation else { return nil }
+            }
+            return "No session.updated on the warm connection within \(Int(Self.warmUpdateDeadline)) s."
         } catch {
             return Self.describe(error)
         }
+    }
+
+    /// The warm connection failed after the tap and before the call was up: the start under way
+    /// falls back to cold rather than dropping the call. Says whether it took the failure.
+    private func warmFailedBeforeUp(_ failure: String) -> Bool {
+        guard startPath == .warm, holdingMicrophone, !health.isConnected else { return false }
+        if warmSocketFailure == nil { warmSocketFailure = failure }
+        return true
     }
 
     /// Move this call to `conversation`, which Live Mode has moved to: a new secret, a new socket
@@ -386,6 +416,7 @@ final class LiveCall: ObservableObject {
         tappedAt = nil
         firstAudioFrom = nil
         holdingMicrophone = false
+        warmLink = nil
         pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
         lookedForMove = Self.now
         lastError = nil
@@ -491,6 +522,7 @@ final class LiveCall: ObservableObject {
         muted = false
         pendingOpening = nil
         holdingMicrophone = false
+        warmLink = nil
         tappedAt = nil
         firstAudioFrom = nil
         // Nothing left to send: the speech the call heard went with it.
@@ -793,6 +825,7 @@ final class LiveCall: ObservableObject {
                 guard let self, mine == self.generation else { return }
                 self.log.error("realtime send failed: \(failure, privacy: .public)")
                 self.telemetry.track(.socketSendFailed(failure))
+                if self.warmFailedBeforeUp(failure) { return }
                 self.fail("The call dropped: \(failure)", generation: mine)
             }
         }
@@ -820,10 +853,12 @@ final class LiveCall: ObservableObject {
         guard generation == self.generation else { return }
         if let failure {
             telemetry.track(.socketClosed(failure))
+            if warmFailedBeforeUp(failure) { return }
             fail("The call dropped: \(failure)", generation: generation)
             return
         }
         guard let text, let event = JSONValue.parse(text) else { return }
+        if holdingMicrophone, event["type"]?.string == "session.updated" { warmUpdated = true }
         health.heard(at: Self.now)
         for entry in timeline.observe(event, at: Self.now) { telemetry.track(entry) }
         for entry in sendNowLog.observe(event, at: Self.now) { telemetry.track(entry) }
