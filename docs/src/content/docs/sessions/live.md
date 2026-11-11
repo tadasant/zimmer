@@ -211,6 +211,19 @@ conversation's mode when the tool runs, and names the client that last drove the
 (`live_conversations.client_surface`: web, ios, carplay or mcp). The background agent can then keep
 what it reports back short enough for the live model to say aloud.
 
+### Answering a session counts as yours
+
+When you answer a session through Live Mode, typed or spoken, the session's
+[human messages](/sessions/hierarchy-and-human-messages/#the-live-mode-channel) record it as yours,
+on channel `live_mode`. A session that only acts on a human's say-so, such as one that closes issues
+or merges, can then act on what you said in the car without you retyping it at a screen.
+
+The record holds what you said, and what the live model sent beside it. Who you are comes from where
+you signed in: each line you type or say is stamped with its author by the web page or by the iOS
+app's connection acting as you (`live_conversation_turns.author`). A line written by
+`action_live_conversation` over MCP has no author, and a delivery that follows one records nothing.
+A delivery more than five minutes after your last line records nothing either.
+
 ### Self-enabling a catalog server
 
 When the live agent keeps reaching the same capability through a background session, it can call
@@ -551,7 +564,8 @@ how those sessions authenticate or bill.
 
 - **MCP:** `get_live_conversations` (whether Live Mode can start, the current and recent
   conversations, what going back would return to, one thread) and `action_live_conversation`
-  (`start`, `switch`, `send_message`, `set_mode`, `finish`); `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
+  (`start`, `switch`, `send_message`, `set_mode`, `finish`). A message sent this way is not
+  anybody's: what the live model then delivers into a session is not recorded as a human message; `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
   for the [Live settings](#live-settings). All four are in the opt-in
   `live_conversations` group, which nothing carries by default: a live model can reach the whole
   catalog, so a session must not be able to steer one just by holding `sessions`. See

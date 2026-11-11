@@ -4840,6 +4840,22 @@ to instructions that name it. A call still connecting asks once its socket is op
 fails, the next relayed tool call records the client for delegations, but the open call keeps the
 instructions it had until the next one. None of this has run in a car yet (below).
 
+### A Live Mode human message can show the person's previous line
+
+A [`live_mode` human message](/sessions/hierarchy-and-human-messages/#the-live-mode-channel) records
+the person's newest line in the Live conversation when the assistant delivers something into a
+session. On a voice call where the model answers by itself (Listening off), it can call a tool
+before the person's line has been transcribed. The record then shows the line before it, as long as
+that one is under five minutes old. What the assistant actually delivered is always shown beside it,
+so a reader can see the mismatch.
+
+The record also trusts the Live Mode model to pick the session. Something that steers the model, such
+as a session's own output read back to it, can make it send a message to a session the person never
+mentioned, with the person's latest words recorded beside it. This is the same trust as the
+[assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel). A conversation
+driven by `action_live_conversation` from an OAuth connection that acts on its approver's behalf
+records nothing either: only the web page and the iOS app stamp an author on a Live turn.
+
 ### An API key is `api`, even when an agent holds it
 
 The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names

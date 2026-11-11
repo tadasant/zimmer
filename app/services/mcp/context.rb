@@ -65,9 +65,16 @@ module Mcp
     #   work done before the wait (authentication, the create) comes out of the caller's
     #   `sync_timeout_seconds` instead of being added to it. Nil for a context that outlives one
     #   request (Live Mode's tool bridge), where the tool call's own start is the clock.
+    # @param live_conversation [LiveConversation, nil] the Live Mode conversation whose
+    #   assistant is calling, set only by LiveConversations::ToolBridge, which runs tools
+    #   in process. McpController never sets it: nothing on POST /mcp — no query
+    #   parameter, header or argument — reaches this. It makes the words a tool
+    #   delivers into a session a candidate `live_mode` HumanMessage, recorded only
+    #   when the conversation's latest `user` turn was authored by a person
+    #   (HumanMessageCapture.record_live_mode_message).
     def initialize(tool_groups: nil, allowed_agent_roots: nil, base_url: nil, caller_fingerprint: nil,
                    session_id: nil, oauth_grant_id: nil, oauth_grant: nil, turn_source: nil,
-                   request_started_at: nil)
+                   request_started_at: nil, live_conversation: nil)
       @tool_groups = Registry.parse_groups(tool_groups)
       @allowed_agent_roots = parse_list(allowed_agent_roots).presence
       @base_url = base_url.presence || SelfSessionInjector.new.self_target[:base_url]
@@ -77,6 +84,7 @@ module Mcp
       @oauth_grant = oauth_grant
       @turn_source = turn_source
       @request_started_at = request_started_at
+      @live_conversation = live_conversation
     end
 
     # Where the words this connection delivers into a session came from, for the
@@ -118,11 +126,21 @@ module Mcp
 
     # Record words this connection delivered into `session` as the human's, when
     # — and only when — it is an OAuth grant its approver let act on their
-    # behalf. Every other connection records nothing, which is the safe outcome.
-    # Called by the tools that carry text into a session, after the text landed.
+    # behalf, or Live Mode's assistant answering a person whose words the
+    # conversation's boundary authenticated. Every other connection records
+    # nothing, which is the safe outcome. Called by the tools that carry text
+    # into a session, after the text landed.
     #
+    # @param entry_point [String] the tool's own, "oauth.<action>"; a Live Mode
+    #   delivery is recorded as "live_mode.<action>"
     # @return [HumanMessage, nil]
     def capture_assistant_message(session, content, entry_point)
+      if @live_conversation
+        return HumanMessageCapture.record_live_mode_message(
+          session: session, conversation: @live_conversation, content: content,
+          entry_point: entry_point.to_s.sub(/\Aoauth\./, "live_mode.")
+        )
+      end
       return nil unless oauth?
 
       HumanMessageCapture.record_assistant_message(
