@@ -551,7 +551,7 @@ session, Zimmer records it only if all of these hold:
 The content is the person's own words: what they typed, or their speech as the voice call
 transcribed it, keeping the lines of that run that are under five minutes old. What the assistant actually sent into the session is kept as `relayed_message` and shown
 under the person's words on every surface. `provenance` also holds `live_conversation_id`,
-`live_turn_ids`, `heard` (`typed` or `spoken`), `client_surface`, `via` (`web_ui` or `ios_app`) and,
+`live_turn_ids`, `heard` (`typed` or `spoken`), `surface` (the client the line came from: `web`, `ios` or `carplay`), `via` (`web_ui` or `ios_app`) and,
 for the app, `oauth_grant_id` and `grant_user_email`.
 
 ```

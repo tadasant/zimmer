@@ -144,7 +144,7 @@ class HumanMessage < ApplicationRecord
 
   def live_mode_label
     heard = provenance["heard"] == "spoken" ? "spoken, as transcribed" : "typed"
-    where = [ LIVE_MODE_SURFACES[provenance["client_surface"]], heard ].compact.join(", ")
+    where = [ LIVE_MODE_SURFACES[provenance["surface"]], heard ].compact.join(", ")
     "Live Mode (#{where}; delivered by the Live Mode assistant)"
   end
 
