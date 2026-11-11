@@ -165,7 +165,7 @@ module Mcp
         [
           "",
           "To follow it, call `get_session` with id `#{session.id}`: when the status is `needs_input` or " \
-          "`archived` it has replied. Pass `transcript_conversation_only: true` and `transcript_tail: 10` " \
+          "`archived` it has replied. Pass `transcript_last_messages: 10` " \
           "for its own words."
         ]
       end

@@ -96,6 +96,7 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
     output = Mcp::Tools::GetSession.new(context: @context).call("id" => @session.id)
 
     assert_includes output, "**Freshness:** STALE — 3 transcript event(s) since it was written"
+    assert_includes output, "call `get_session` with `transcript_last_messages: 10`"
   end
 
   # A failed generation leaves the last real summary in place, so the blurb alone
@@ -119,6 +120,7 @@ class Mcp::Tools::StatusSummaryParityTest < ActiveSupport::TestCase
 
     assert_includes output, "### Status Summary"
     assert_includes output, "_No summary has been generated for this session yet._"
+    assert_includes output, "- **Instead:** call `get_session` with `transcript_last_messages: 10`"
   end
 
   # Reading must never generate — the same rule the session page follows.

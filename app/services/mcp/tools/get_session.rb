@@ -49,6 +49,10 @@ module Mcp
       # call that returns it. `verbose: true` returns this dump exactly as it was
       # before any of these applied.
       MAX_PROMPT_CHARS = 1_000
+
+      # Where a caller who came for the summary and found none goes instead.
+      NO_SUMMARY_HINT = "- **Instead:** call `get_session` with `transcript_last_messages: 10` " \
+                        "to read the last 10 user and assistant messages."
       MAX_METADATA_VALUE_CHARS = 300
 
       tool_name "get_session"
@@ -58,7 +62,7 @@ module Mcp
 
         **Queued messages:** always included — how many messages are already queued for this session and not yet delivered, with a truncated one-line preview of the first few. Read it before you send a follow-up: a session with a non-empty queue has already been told something it has not seen, and anything you send lands behind it. Use `manage_enqueued_messages` to read the queue in full, and its `update` / `delete` / `reorder` actions to consolidate it rather than adding to it.
 
-        **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. Use `action_session` with `regenerate_status_summary` when you need it rewritten.
+        **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. **When the summary is stale, missing, or does not answer your question, read what was actually said instead of guessing:** call this tool again with `transcript_last_messages: 10` (the last 10 user and assistant messages, tool traffic folded away). Use `action_session` with `regenerate_status_summary` when you need the blurb itself rewritten.
 
         **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
         - The session transcript, as a bounded slice (see **Transcript access**)
@@ -75,10 +79,11 @@ module Mcp
 
         **Transcript access:** By default (include_transcript=false), the response includes the transcript file path instead of the content — useful only to a caller on the Zimmer host itself. Any other caller reads the transcript through this tool, in slices:
         - **The unit is an event** — one stored JSONL line — with a 0-based index that stays stable as the transcript grows. Every transcript section states the total event count, the range requested, the range returned, and the exact `transcript_from` / `transcript_to` values that fetch anything it left out, so you can page.
-        - **Pick a window** with at most one of: `transcript_tail: N` (the last N events), `transcript_head: N` (the first N), or `transcript_from` / `transcript_to` (an index range; `transcript_to` is exclusive). Passing any `transcript_*` parameter implies `include_transcript: true`. A session with no transcript yet returns a section saying it has no events.
+        - **Pick a window** with at most one of: `transcript_last_messages: N` (the last N messages — see below), `transcript_tail: N` (the last N events), `transcript_head: N` (the first N), or `transcript_from` / `transcript_to` (an index range; `transcript_to` is exclusive). Passing any `transcript_*` parameter implies `include_transcript: true`. A session with no transcript yet returns a section saying it has no events.
         - **A character cap always applies.** `transcript_max_chars` (#{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)}, ≈4 characters a token) defaults to #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)} even when you pass no slice parameters, so `include_transcript: true` alone returns the NEWEST events that fit, not the whole transcript. A tail (and the default) spends the cap from the newest end; a head or a range spends it from the start. The cap stops at an event boundary and says so in a `Truncated:` line and an in-place `[… events #a–#b not shown …]` marker naming the range to fetch next. A single event larger than the whole cap is cut mid-event, with its own marker.
         - **Conversation only:** `transcript_conversation_only: true` renders just the human and assistant text, each tool call collapsed to one line (`[tool call: Bash] {"command":…}`), with tool output, thinking and bookkeeping omitted. The cheapest way to read what was said; it works the same for every agent runtime.
-        - Good first calls: `transcript_conversation_only: true, transcript_tail: 20` for "what is it doing now"; `transcript_conversation_only: true, transcript_head: 5` for "what was it asked".
+        - **Last N messages:** `transcript_last_messages: N` (1–#{TranscriptSlice::MAX_MESSAGES}) returns the last N human and assistant text messages however many events of tool traffic sit between them — a conversation-only `transcript_tail: N` counts events, so after a burst of tool calls it can come back nearly empty. Each run of tool calls between two messages is folded into one line naming the tools and the events it spans. The character cap still applies. This is the read to ground a decision on when the status summary is stale, missing or unclear.
+        - Good first calls: `transcript_last_messages: 10` for "what has it been saying lately"; `transcript_conversation_only: true, transcript_head: 5` for "what was it asked".
 
         **Use cases:**
         - View detailed session information
@@ -134,6 +139,12 @@ module Mcp
             maximum: TranscriptSlice::MAX_MAX_CHARS,
             description: "Character cap on the events returned (≈4 characters a token); the section's navigation lines add ~1-2k on top. Default: #{TextBudget.delimited(TranscriptSlice::DEFAULT_MAX_CHARS)}. Values outside #{TextBudget.delimited(TranscriptSlice::MIN_MAX_CHARS)}–#{TextBudget.delimited(TranscriptSlice::MAX_MAX_CHARS)} are clamped. Implies include_transcript."
           },
+          transcript_last_messages: {
+            type: "integer",
+            minimum: 1,
+            maximum: TranscriptSlice::MAX_MESSAGES,
+            description: "Return the last N human and assistant text messages (newest), counting messages rather than events, with each run of tool calls between them folded into one line. Always rendered conversation-only. Subject to transcript_max_chars. Mutually exclusive with transcript_head, transcript_tail and transcript_from/transcript_to. Implies include_transcript. The read to use when the status summary is stale, missing or unclear."
+          },
           transcript_conversation_only: {
             type: "boolean",
             description: "Render only human and assistant text, with each tool call collapsed to a one-line stub and tool output, thinking and bookkeeping omitted. Default: false. Overrides transcript_format. Implies include_transcript."
@@ -176,7 +187,7 @@ module Mcp
       # is asking for the transcript, so each implies include_transcript.
       TRANSCRIPT_SLICE_PARAMS = %w[
         transcript_tail transcript_head transcript_from transcript_to
-        transcript_max_chars transcript_format
+        transcript_max_chars transcript_format transcript_last_messages
       ].freeze
 
       def call(args)
@@ -500,6 +511,7 @@ module Mcp
 
         if record.nil?
           lines << "_No summary has been generated for this session yet._"
+          lines << NO_SUMMARY_HINT
           return lines
         end
 
@@ -513,6 +525,7 @@ module Mcp
           else
             "_No summary has been generated for this session yet._"
           end
+          lines << NO_SUMMARY_HINT
           return lines
         end
 
@@ -552,7 +565,8 @@ module Mcp
       def freshness_line(session, record, behind)
         if behind.positive?
           return "- **Freshness:** STALE — #{behind} transcript event(s) since it was written, " \
-                 "so it describes an earlier point in the session"
+                 "so it describes an earlier point in the session. To see what was said since, call " \
+                 "`get_session` with `transcript_last_messages: 10`"
         end
 
         generated_at = record.generated_at
@@ -707,7 +721,7 @@ module Mcp
           lines << "- **Path pattern:** `~/.claude/projects/*/#{session.session_id}.jsonl`"
           lines << "- **Find exact path:** `ls ~/.claude/projects/*/#{session.session_id}.jsonl`"
           lines << "- **Tip:** Once you have the exact path, read the last ~100 lines to see the most recent messages, or grep for specific keywords. This avoids loading the entire transcript into your context window."
-          lines << "- **No access to that disk?** Call this tool again with `transcript_conversation_only: true, transcript_tail: 20` (or any `transcript_*` slice parameter) to read a bounded slice instead."
+          lines << "- **No access to that disk?** Call this tool again with `transcript_last_messages: 10` for the latest conversation, or `transcript_conversation_only: true, transcript_tail: 20` (or any `transcript_*` slice parameter) for a bounded slice of events."
         end
 
         lines.join("\n")
@@ -833,7 +847,8 @@ module Mcp
           tail: args["transcript_tail"],
           from: args["transcript_from"],
           to: args["transcript_to"],
-          max_chars: args["transcript_max_chars"]
+          max_chars: args["transcript_max_chars"],
+          messages: args["transcript_last_messages"]
         )
       rescue TranscriptSlice::InvalidRequest => e
         raise ToolError, e.message
