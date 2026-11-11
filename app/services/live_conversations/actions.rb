@@ -177,7 +177,7 @@ module LiveConversations
     def authorship
       return {} if @author.nil?
 
-      { author: @author.key, author_provenance: @author.provenance }
+      { author: @author.key, author_provenance: @author.provenance.merge("client_surface" => @client_surface).compact }
     end
 
     # Whether this request may gate the call: the client can, and neither it nor

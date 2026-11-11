@@ -161,6 +161,16 @@ class HumanMessageCapture
     # only when the newest thing a person said in the conversation is
     # authenticated, recent, and therefore what the assistant is acting on.
     #
+    # Two things an agent session could write that the live model reads make a
+    # conversation ineligible altogether, because either could tell the model to
+    # deliver something whenever the person next speaks:
+    #
+    # * a `user` turn with no author anywhere in the conversation — text the
+    #   `action_live_conversation` tool typed, which stays in the model's context
+    #   for the rest of the thread (LiveConversation#agent_written?);
+    # * Live mode guidance last written by an agent session, which is in every
+    #   conversation's system prompt (LiveSettingChange.guidance_written_by_an_agent?).
+    #
     # The content is the person's own words — typed, or their speech as
     # transcribed — not the assistant's rewording of them. What the assistant
     # actually delivered rides in provenance as `relayed_message`, and every
@@ -172,6 +182,8 @@ class HumanMessageCapture
     # @param entry_point [String] e.g. "live_mode.follow_up"
     def record_live_mode_message(session:, conversation:, content:, entry_point:, occurred_at: Time.current)
       return nil if conversation.nil?
+      return nil if conversation.agent_written?
+      return nil if LiveSettingChange.guidance_written_by_an_agent?
 
       words = latest_authored_words(conversation, now: occurred_at)
       return nil if words.empty?
@@ -188,7 +200,7 @@ class HumanMessageCapture
           "live_conversation_id" => conversation.id,
           "live_turn_ids" => words.map(&:id),
           "heard" => speaker.source,
-          "client_surface" => conversation.client_surface,
+          "client_surface" => speaker.author_provenance.to_h["client_surface"] || conversation.client_surface,
           "relayed_message" => content.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
         }.merge(speaker.author_provenance.to_h.slice("via", "oauth_grant_id", "grant_user_email")).compact
       )
@@ -200,28 +212,25 @@ class HumanMessageCapture
     private
 
     # The newest run of things a person said in the conversation, oldest first:
-    # the latest `user` turn and the `user` turns just before it by the same
-    # author, back to the assistant's previous answer. Assistant lines after that
-    # latest turn are skipped, not a stop: on a voice call the model often says
-    # "sending that now" before its tool call, and the client records that line
-    # first. Empty when the latest `user` turn has no author — someone the
-    # boundary did not authenticate as a person spoke last — or is older than
-    # LIVE_MODE_WORDS_FRESH_FOR.
+    # the latest `user` turn and the `user` turns just before it, back to the
+    # assistant's previous answer, each under LIVE_MODE_WORDS_FRESH_FOR old.
+    # Assistant lines after that latest turn are skipped, not a stop: on a voice
+    # call the model often says "sending that now" before its tool call, and the
+    # client records that line first. Empty when the run is not one person's
+    # alone (an unauthored line, or two people), or when nothing in it is fresh.
     def latest_authored_words(conversation, now:)
-      words = []
+      run = []
       conversation.turns.where(role: %w[user assistant]).reorder(id: :desc).limit(40).each do |turn|
         if turn.user?
-          break if words.any? && turn.author != words.first.author
-
-          words.unshift(turn)
-        elsif words.any?
+          run.unshift(turn)
+        elsif run.any?
           break
         end
       end
-      latest = words.last
-      return [] if latest.nil? || latest.author.blank? || latest.created_at < now - LIVE_MODE_WORDS_FRESH_FOR
+      authors = run.map(&:author).uniq
+      return [] if authors.size != 1 || authors.first.blank?
 
-      words
+      run.select { |turn| turn.created_at >= now - LIVE_MODE_WORDS_FRESH_FOR }
     end
 
     # @return [HumanMessage, nil] nil whenever the actor could not be

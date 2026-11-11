@@ -221,8 +221,10 @@ or merges, can then act on what you said in the car without you retyping it at a
 The record holds what you said, and what the live model sent beside it. Who you are comes from where
 you signed in: each line you type or say is stamped with its author by the web page or by the iOS
 app's connection acting as you (`live_conversation_turns.author`). A line written by
-`action_live_conversation` over MCP has no author, and a delivery that follows one records nothing.
-A delivery more than five minutes after your last line records nothing either.
+`action_live_conversation` over MCP has no author. A conversation holding such a line never records,
+and neither does any conversation while the Live mode guidance was last written by an agent session.
+A delivery more than five minutes after your last line records nothing either. Conversations from
+before this was recorded have unauthored lines, so start a new one.
 
 ### Self-enabling a catalog server
 

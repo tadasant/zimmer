@@ -4849,9 +4849,12 @@ before the person's line has been transcribed. The record then shows the line be
 that one is under five minutes old. What the assistant actually delivered is always shown beside it,
 so a reader can see the mismatch.
 
-The record also trusts the Live Mode model to pick the session. Something that steers the model, such
-as a session's own output read back to it, can make it send a message to a session the person never
-mentioned, with the person's latest words recorded beside it. This is the same trust as the
+The record also trusts the Live Mode model to pick the session. Text an agent typed into the
+conversation, or agent-written guidance, disqualifies capture. Output the model reads mid-reply does
+not: a session's own `get_session` text read back to it can make it send a message to a session the
+person never mentioned, with the person's latest words recorded beside it. Likewise an agent with the
+`live_conversations` tools can switch back to a conversation, or turn its voice off, and so get a
+person's unanswered line (under five minutes old) answered again without writing anything. This is the same trust as the
 [assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel). A conversation
 driven by `action_live_conversation` from an OAuth connection that acts on its approver's behalf
 records nothing either: only the web page and the iOS app stamp an author on a Live turn.
