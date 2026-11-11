@@ -567,10 +567,12 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
-    /// Talk is heard at once. The car's tap brings the call's audio up before it asks Zimmer which
-    /// conversation to call, and a call brings it up before it turns voice on or mints its secret,
-    /// so *pressed* waits on the engine alone, never on the network.
-    func testThePressIsHeardBeforeAnyNetworkStep() throws {
+    /// Talk is heard at once. The car's tap plays *pressed* before it asks Zimmer which
+    /// conversation to call, and a call nobody pressed for plays it before it turns voice on or
+    /// mints its secret, so the cue never waits on the network. It plays on an engine that never
+    /// opens the microphone: CarPlay records only under the voice control template, which is not
+    /// up yet at the tap.
+    func testThePressIsHeardBeforeAnyNetworkStepAndOpensNoMicrophone() throws {
         func body(_ file: String, from start: String) throws -> String {
             let text = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix(file) }?.text, file)
             let source = Self.code(text).map(\.line).joined(separator: "\n")
@@ -578,18 +580,28 @@ final class CarPlayTests: XCTestCase {
             return String(source[open.lowerBound...])
         }
         let tap = try body("CarPlay/CarPlayLive.swift", from: "func start(_ tile: LiveTalkTile)")
-        let pressed = try XCTUnwrap(tap.range(of: "call.pressed()"), "the tap brings the audio up")
+        let pressed = try XCTUnwrap(tap.range(of: "call.pressed()"), "the tap plays the cue")
         let attempt = try XCTUnwrap(tap.range(of: "attempt()"))
         XCTAssertLessThan(pressed.lowerBound, attempt.lowerBound, "before the conversation is looked up")
 
         let call = try body("Live/LiveCall.swift", from: "func start(_ conversation: Int")
-        let bringUp = try XCTUnwrap(call.range(of: "bringUpAudio()"))
-        for network in ["turnVoiceOn(", "mintSecret(", "openSocket("] {
+        let own = try XCTUnwrap(call.range(of: "pressed()"))
+        for network in ["turnVoiceOn(", "mintSecret(", "openSocket(", "audio.start("] {
             let step = try XCTUnwrap(call.range(of: network), network)
-            XCTAssertLessThan(bringUp.lowerBound, step.lowerBound, "the audio comes up alongside \(network), not after it")
+            XCTAssertLessThan(own.lowerBound, step.lowerBound, "*pressed* before \(network)")
         }
-        let cue = try body("Live/LiveCall.swift", from: "private func bringUpAudio()")
-        XCTAssertTrue(cue.contains("self.audio.play(.pressed)"), "and says so the moment the engine runs")
+
+        let press = try body("Live/LiveCall.swift", from: "func pressed()")
+        let end = try XCTUnwrap(press.range(of: "\n    }\n"))
+        let pressBody = String(press[..<end.upperBound])
+        XCTAssertTrue(pressBody.contains("audio.playAlone(.pressed"), "on the engine that has no input")
+        XCTAssertFalse(pressBody.contains("audio.start("), "never the call's engine, which opens the microphone")
+        let alone = try body("Live/LiveAudioEngine.swift", from: "func playAlone(")
+        let aloneEnd = try XCTUnwrap(alone.range(of: "\n    }\n"))
+        let aloneBody = String(alone[..<aloneEnd.upperBound])
+        for input in ["inputNode", "requestRecordPermission", "installTap"] {
+            XCTAssertFalse(aloneBody.contains(input), "playAlone touches no input: \(input)")
+        }
     }
 
     /// `bda7cf2e` sat 770 s inside the engine's start with the main thread waiting on it, so no

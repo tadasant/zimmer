@@ -812,7 +812,7 @@ browser's call dock makes the same ones at their earlier, quieter levels, withou
 
 | Sound | When | What it tells you |
 | --- | --- | --- |
-| **Pressed**: two quick, bright, level notes | As soon as the call's audio is up after you press Talk, well before the call connects | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
+| **Pressed**: two quick, bright, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
 | **Connected**: two rising notes | Once, when the call is up | Zimmer is listening |
 | **Heard**: one short note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
 | **Thinking**: a bright tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
