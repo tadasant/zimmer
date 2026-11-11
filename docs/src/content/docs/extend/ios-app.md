@@ -806,18 +806,22 @@ its connection.
 **You can hear what the call is doing.** The call makes short sounds besides Zimmer's voice, on
 the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit). They are made to be heard over
 road and engine noise on car audio: near the level of Zimmer's voice, and above 600 Hz, where a
-car's noise is weakest, except Failed and Ended, which stay low and carry a reedier tone instead. The
-browser's call dock makes the same ones at their earlier, quieter levels, without Pressed
-([Voice](/sessions/live/#voice)).
+car's noise is weakest, except Failed and Ended, which stay low and carry their octave instead. They
+are also soft-edged, because you hear them for hours: each note fades in over about 20 ms rather
+than snapping on, nothing is pitched above A5 (880 Hz), and little of any cue's energy is in the
+piercing range above 1.5 kHz. The rules for changing one, and a checklist for listening in a car,
+are in `ios/LIVE_CUES.md`. The
+browser's call dock plays the same events with an older set: quieter, brighter and snapping on,
+without Pressed ([Voice](/sessions/live/#voice)).
 
 | Sound | When | What it tells you |
 | --- | --- | --- |
-| **Pressed**: two quick, bright, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation. Not when New ends a running call: you hear Ended instead | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
+| **Pressed**: two quick, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation. Not when New ends a running call: you hear Ended instead | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
 | **Connected**: two rising notes | Once, when the call is up | Zimmer is listening |
 | **Heard**: one short note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
-| **Thinking**: a bright tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
-| **Working**: a pair of notes every 2.5 seconds, lower and longer than the tick | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the tick |
-| **Failed**: two low, reedy notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
+| **Thinking**: a soft, round tap about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
+| **Working**: a pair of notes every 2.5 seconds, lower and longer than the tap | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the tap |
+| **Failed**: two low notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
 | **Ended**: one low note | You hung up | The call is over |
 | **Disconnected**: the connected notes falling | The call dropped | You did not end it |
 

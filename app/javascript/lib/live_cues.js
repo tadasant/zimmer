@@ -1,7 +1,8 @@
-// The sounds a Live Mode voice call makes besides Zimmer's voice. The same cues,
-// numbers and rules as the phone and the car (`LiveCue` and `LiveCueDirector` in
+// The sounds a Live Mode voice call makes besides Zimmer's voice. The same cues and
+// rules as the phone and the car (`LiveCue` and `LiveCueDirector` in
 // ios/Sources/ZimmerKit/Live/LiveCues.swift, which holds the event-to-cue table):
-// keep the two together.
+// keep the rules together. The sounds themselves are an older set than the phone's
+// (ios/LIVE_CUES.md); see the limitations page.
 const RATE = 24000
 const TAIL = 0.08
 
