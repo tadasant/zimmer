@@ -146,6 +146,10 @@ function buildFallback(frame, status, retrying) {
 
 function renderFallback(frame, status, retrying) {
   frame.querySelectorAll(FALLBACK_SELECTOR).forEach((node) => node.remove())
+  // A loading skeleton (the drawer's, see _drawer_skeleton) is not content to keep:
+  // the load it stood in for has just failed, and leaving it would show the notice
+  // above a placeholder announcing a load that is never going to finish.
+  frame.querySelectorAll(":scope > [data-drawer-skeleton]").forEach((node) => node.remove())
 
   const { box, text } = buildFallback(frame, status, retrying)
   // A frame that still holds content keeps it, with the notice above: a reload that

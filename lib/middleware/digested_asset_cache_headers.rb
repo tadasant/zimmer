@@ -19,11 +19,10 @@
 class DigestedAssetCacheHeaders
   IMMUTABLE = "public, max-age=#{365 * 24 * 60 * 60}, immutable".freeze
 
-  # Propshaft's stamp: "-" then 8 hex characters before the extension, e.g.
-  # /assets/tailwind-153f0432.css, /assets/controllers/foo_controller-1b22bc5a.js,
-  # /assets/turbo.min-8421946c.js.map. Esbuild-style "-[digest].digested" names
-  # carry their own stamp and match too.
-  DIGESTED_PATH = %r{\A/assets/.+-[0-9a-f]{8,}(?:\.digested)?\.[a-z0-9.]+\z}
+  # Propshaft's stamp: "-" then 8 lowercase hex characters before the extension,
+  # e.g. /assets/tailwind-153f0432.css,
+  # /assets/controllers/foo_controller-1b22bc5a.js, /assets/turbo.min-8421946c.js.map.
+  DIGESTED_PATH = %r{\A/assets/.+-[0-9a-f]{8,}\.[a-z0-9.]+\z}
 
   def initialize(app)
     @app = app

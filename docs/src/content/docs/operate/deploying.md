@@ -1381,11 +1381,11 @@ everything `ActionDispatch::Static` serves out of `public/` — `manifest.json`,
 The asset bundle is the exception that gets a year. Its filenames carry a content digest
 (`tailwind-153f0432.css`), so a deploy that changes one changes its URL.
 `DigestedAssetCacheHeaders` (`lib/middleware/`) wraps Static and rewrites `Cache-Control` on any
-digest-stamped `/assets` response to `public, max-age=31536000, immutable`. Without it the bundle
-got the same hour as everything else, and a browser returning after an hour revalidated all ~110
-files — two render-blocking stylesheets and every importmap module Turbo and Stimulus load before
-the dashboard's board frame can start fetching — before it showed anything. With it, a returning
-browser makes no asset requests at all. Propshaft's own dev server sets the same header, so this is
+digest-stamped `/assets` response to `public, max-age=31536000, immutable`, so a returning browser
+makes no asset requests at all. Under the one-hour header, a browser returning after an hour would
+revalidate every one of the ~110 files the layout loads — two render-blocking stylesheets and each
+importmap module Turbo and Stimulus need before the dashboard's board frame can start fetching —
+before it showed anything. Propshaft's own dev server sets the same header, so this is
 only visible in a deployed environment.
 
 Nothing else in `public/` is digest stamped. Each of those files lives at a URL that never changes, so a far-future
