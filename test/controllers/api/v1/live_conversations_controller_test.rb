@@ -206,6 +206,56 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert response.parsed_body["respond"], "no line is dropped in the car"
   end
 
+  test "a CarPlay prewarm mint is refused while the flag is off, and the index says so" do
+    conversation = create_live_conversation(mode: "text")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.6.0")
+    LiveConversations::RealtimeSession.any_instance.expects(:create_secret).never
+
+    get "/api/v1/live_conversations", headers: @key_headers
+    assert_equal({ "carplay" => false }, response.parsed_body["prewarm"], "off by default")
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1", listening_modes: "1" }, headers: car
+    assert_response :forbidden
+    assert_match(/pre-warm is off/, response.body)
+  end
+
+  # The pre-warm's hard rule on the server: minting ahead of a tap changes
+  # nothing a person would see or the live model would be told.
+  test "a CarPlay prewarm mint changes nothing on the conversation and needs no voice" do
+    LiveConversations::SettingsUpdate.call({ "voice_carplay_prewarm" => "on" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "text", client_surface: "ios")
+    conversation.update_columns(model: "gpt-6-luna", car_call: false)
+    before = conversation.reload.attributes
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.6.0")
+    LiveConversations::RealtimeSession.any_instance.stubs(:create_secret).returns({ "value" => "ek_warm", "expires_at" => 1_900_000_000 })
+    OpenaiClient.any_instance.expects(:chat_completion).never
+
+    get "/api/v1/live_conversations", headers: @key_headers
+    assert_equal({ "carplay" => true }, response.parsed_body["prewarm"])
+
+    assert_no_difference -> { conversation.turns.count } do
+      post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1", listening_modes: "1" }, headers: car
+    end
+    assert_response :success
+    assert_equal "ek_warm", response.parsed_body["client_secret"]
+    assert_equal "always", response.parsed_body["listening"], "minted for the car, so it answers every line"
+    assert_equal before.except("updated_at"), conversation.reload.attributes.except("updated_at"),
+                 "no client noted, no car_call, no model written, still typed"
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", headers: car
+    assert_response :conflict, "a call's own mint still needs voice on"
+  end
+
+  test "a CarPlay prewarm mint is refused on a conversation that has ended" do
+    LiveConversations::SettingsUpdate.call({ "voice_carplay_prewarm" => "on" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice")
+    conversation.end!
+    LiveConversations::RealtimeSession.any_instance.expects(:create_secret).never
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1" }, headers: @headers.merge("X-Zimmer-Client" => "carplay/1.6.0")
+    assert_response :conflict
+  end
+
   # What call 90fb7c5f did on a stored gated mode: the car hung up, the call carried
   # on through the phone, and every line was heard and dropped.
   test "a call handed from the car to the phone keeps answering every line until it hangs up" do

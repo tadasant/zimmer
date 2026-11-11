@@ -81,10 +81,32 @@ module LiveConversations
     # Voice: a short-lived secret the client opens its audio connection with.
     # The client asking is the one about to drive the call, so it is noted
     # first and the instructions minted with the secret name it.
-    def client_secret
+    #
+    # `prewarm`: the CarPlay app asking ahead of a tap, for a connection it
+    # holds idle until the driver chooses Continue (ios/CARPLAY_PREWARM_DESIGN.md).
+    # Nobody is driving a call yet, so nothing on the conversation changes: no
+    # client noted, no `car_call`, no model written, and voice need not be on.
+    # The tap turns voice on and sends a fresh `session_update` before any
+    # audio goes up, which brings the warm session's instructions to the
+    # conversation as it is then. Refused unless the Live setting
+    # `voice_carplay_prewarm` is on — the server half of the kill switch.
+    def client_secret(prewarm: false)
+      return prewarm_secret if prewarm
+
       require_voice!
       note_client!(new_call: true)
       RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
+    rescue OpenaiClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    rescue OpenaiClient::Error => e
+      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    def prewarm_secret
+      raise Refused.new("CarPlay pre-warm is off. Turn it on in the Live settings.", status: :forbidden) unless LiveSetting.current.carplay_prewarm?
+
+      require_active!
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e

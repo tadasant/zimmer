@@ -360,6 +360,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Noise reduction | voice | off | `near_field`, `far_field` | mid-call |
 | Transcription model | voice | `gpt-4o-mini-transcribe` | that, `gpt-4o-transcribe` | mid-call |
 | Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
+| CarPlay pre-warm (iOS app) | voice | `off` | `off`, `on` ([CarPlay pre-warm](#carplay-pre-warm)) | the car's next refresh: within 30 s to turn it off, the next car connection or call to turn it on |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
 tools, and OpenAI accepts those from the GPT-6 family only from `gpt-6-luna` and `gpt-6-sol`, only
@@ -499,6 +500,40 @@ makes it reachable.
 The gear on the app's Live screens opens the same [Live settings](#live-settings) over
 `/api/v1/live/settings`, guidance and history included. A save there sends an open phone call a
 fresh `session.update`.
+
+### CarPlay pre-warm
+
+With the Live setting **CarPlay pre-warm** on, the car keeps one Realtime connection ready while
+it is connected and no call is up. **Continue** then starts on it, which skips the client
+secret, the TLS and WebSocket handshakes and OpenAI's session setup. Those are most of the two to
+three seconds a cold call takes before the *connected* notes. The design, its numbers and
+the rollout are in
+[`ios/CARPLAY_PREWARM_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_PREWARM_DESIGN.md).
+
+- **Nothing goes up a warm connection before the tap.** The app opens the socket and pings it,
+  and has no way to send it an event. No microphone, no audio, no message, no `response.create`.
+  OpenAI bills Realtime by tokens, and an idle session makes none.
+- **The prewarm mint changes nothing** (`POST …/client_secret` with `prewarm=1`). No client is
+  noted, the conversation is not flagged as a car call, no model is written, and voice need not
+  be on. The tap turns voice on and sends a fresh `session.update`, both before any audio goes
+  up. The warm-up's instructions are as old as the warm-up, and this brings them to the
+  conversation as it is now.
+- **Bounded.** One connection at most. It is pinged every 20 s and replaced after 5 minutes.
+  After a failure it waits 5 s, then 15, 60 and 120. It stops after 15 mints per car connection.
+  Nothing is warmed on Low Power Mode, a serious thermal state, Low Data Mode or no network.
+- **Everything else is the cold path, unchanged.** New, a tap while a connection is still
+  warming, and a connection not heard from for 45 s all start cold. So does the call that comes
+  back from the gear, which must be minted from the row the panel wrote. A warm start whose
+  voice-on or `session.update` fails falls back to a cold mint on the same microphone, with no
+  second tap.
+- **Off is the kill switch.** A car with it on reads the flag every 30 s and closes its warm
+  connection when it reads off. Zimmer also refuses a prewarm mint while the flag is off. A car
+  with it off reads the flag only when it connects and after each call.
+
+Every call logs `call.startup` with `path` (`warm`, `cold` or `fallback`) and `tap_to_ready_ms`,
+from the tap to the *connected* notes. It also logs `call.first_audio` with `since_tap_ms`. The
+warm connection logs `warm.*`: `claimed` and `missed` (with a reason) on each tap, plus `ready`,
+`closed`, `failed`, `held` and `fallback`. See [the iOS app's call log](/operate/observability/#the-ios-apps-call-log).
 
 ### Call telemetry
 

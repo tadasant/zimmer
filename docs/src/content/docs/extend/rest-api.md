@@ -1180,9 +1180,10 @@ label, model, agent_root, available, key_configured, root_present, reasons}]}` �
 can start, and in words why not (no `LIVE_OPENAI_API_KEY`, or no `live-mode` root in the catalog),
 with each mode's model. Typing and voice share the prerequisites, so every `modes` entry repeats them.
 
-`GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}}`, the
+`GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}, prewarm: {carplay}}`, the
 newest 20 and the open conversation's id (or null). `current` is the same conversation keyed by the
-mode it is in right now, empty when there is none ·
+mode it is in right now, empty when there is none. `prewarm.carplay` is the Live setting
+[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) ·
 `POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
 that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
@@ -1221,7 +1222,10 @@ Voice — the relay a client holding the audio connection makes:
   the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
   Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
   with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
-  voice is off; 502 when OpenAI refuses.
+  voice is off; 502 when OpenAI refuses. With `prewarm=1` it is the CarPlay app minting ahead of a
+  tap ([CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). Voice need not be on, and nothing on
+  the conversation changes: no client noted, no car call, no model written. 403 while the Live
+  setting `voice_carplay_prewarm` is off; 409 when the conversation is not active.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
   `call_id`, and `reattaches` from a client that can move its call; one that does not send it is
   refused `switch_live_conversation`) → `{output, error, tools_changed, turn_id}`, plus `switched_to:
