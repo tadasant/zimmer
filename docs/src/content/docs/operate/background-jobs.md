@@ -105,6 +105,7 @@ From `config.good_job.cron`:
 | hourly :45 | `SlackTriggerHealthCheckJob` | Detect Slack feeds that silently stopped firing — the per-condition freshness half for Slack |
 | daily 06:00 | `ClaudeCodeUpdateJob` | Update the Claude Code CLI to the latest version |
 | daily 08:00 | `MangledCloneReportJob` | One line saying how many clones the archive-side mass-deletion guard defused in the last day — see below |
+| daily 15:10 | `WorkBacklogDecisionDigestJob` | Push the [decisions the work backlog is waiting on](/operate/work-backlog/#the-decision-digest) to their owner, and renew the holds that reached a device. Daily so a new hold is delivered within a day and a failed delivery is retried, though a decision is only re-sent every 7 days. A push that reaches no device logs an ERROR and renews nothing, so the holds lapse and page. |
 | — | `ZombieReaperJob`, `EmptyTrashJob`, `DockerCleanupJob`, `OrphanCloneFilesystemCleanupJob`, `OrphanTranscriptDirectoryCleanupJob`, `SystemHealthMonitorJob`, `CertExpiryMonitorJob`, `EgressHealthCheckJob` | cleanup and monitoring |
 
 :::note[Sub-minute cron works]

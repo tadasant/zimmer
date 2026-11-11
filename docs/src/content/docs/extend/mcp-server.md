@@ -397,8 +397,9 @@ whole-queue position; `append_work_backlog_item` places the item by the band rul
 session and its agent root from the connection, and refuses `prompt`, `precedence`, `pinned` and
 `added_by` outright; `pull_work_backlog_items` spawns a `spot` `zimmer-orchestrator` session per item as a
 child of the caller and records it on the row; `hold_work_backlog_item_for_decision` records that a
-stranded row is waiting on a human decision, which takes it out of the stranded alert until the hold
-lapses or its evidence changes, and moves nothing. What is deliberately absent, on this group or any
+stranded row is waiting on a human decision, which takes it out of the stranded alert and into the
+[decision digest](/operate/work-backlog/#the-decision-digest) until the hold lapses or its evidence
+changes, and moves nothing. What is deliberately absent, on this group or any
 other: no tool pins an item, hand-places it, removes it by judgement, or starts it as a `priority`
 session — those are the human's levers over what the fleet works on next and exist only on the REST
 controller. The one removal an agent may make is on a pull, with a reason from a fixed vocabulary of

@@ -15,11 +15,13 @@ module WorkBacklog
   #   * a row whose evidence has not been read (no liveness state, or `unknown`)
   #     — the hold records the evidence it stands on, and there is none;
   #   * a row a newer row has taken over — its triage already happened;
-  #   * a row already held — a hold is not extended in place;
-  #   * a row whose hold has lapsed but whose lapse has not paged yet. The page
-  #     is the reminder the lapse exists for, so a hold renewed the minute it
-  #     lapsed would skip it and silence the row indefinitely. Once the sweep has
-  #     paged, it clears the spent hold and the row may be held again.
+  #   * a row already held — a triager does not extend a hold. Only a delivered
+  #     WorkBacklog::DecisionDigest does, which is what keeps a human in the loop;
+  #   * a row whose hold has lapsed but whose lapse has not paged yet. A lapse
+  #     means the digest stopped renewing the hold, and the page is how anyone
+  #     finds out, so a hold renewed the minute it lapsed would skip it and silence
+  #     the row indefinitely. Once the sweep has paged, it clears the spent hold
+  #     and the row may be held again.
   class Hold
     class Refused < StandardError; end
 
@@ -51,12 +53,13 @@ module WorkBacklog
         end
         if item.hold_active?(now: now)
           raise Refused, "#{item.key} (row #{item.id}) is already held until #{item.held_until.iso8601}. " \
-                         "A hold is not extended: when it lapses the row pages again, which is the reminder"
+                         "A triager does not extend a hold: the decision digest renews it each time it reaches the owner"
         end
         if item.hold_lapsed?(now: now)
           raise Refused, "#{item.key} (row #{item.id})'s hold lapsed at #{item.held_until.iso8601} and the " \
-                         "sweep has not paged on the lapse yet. That page is the reminder; the row can be " \
-                         "held again once WorkBacklogLivenessSweepJob has sent it"
+                         "sweep has not paged on the lapse yet. A lapse means the decision digest stopped " \
+                         "renewing it, and that page is how anyone finds out; the row can be held again " \
+                         "once WorkBacklogLivenessSweepJob has sent it"
         end
 
         item.hold_for_decision!(reason: reason, by: by, session: session, now: now)

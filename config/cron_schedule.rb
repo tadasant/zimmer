@@ -437,6 +437,14 @@ module CronSchedule
       description: "Re-check backlog rows that left the queue, and record which have outlived the reason they left",
       environments: %i[production staging]
     },
+    # Daily, though a decision is re-sent weekly: the tick bounds how long a new hold
+    # waits to reach its owner, and how soon a failed delivery is tried again.
+    work_backlog_decision_digest: {
+      cron: "10 15 * * *",
+      class: "WorkBacklogDecisionDigestJob",
+      description: "Push the decisions the work backlog is waiting on to their owner, and renew the holds that reached them",
+      environments: %i[production staging]
+    },
     burn_rate_recompute: {
       cron: "*/20 * * * *", # Every 20 minutes — the ledger only lands every 10, so this is not the bound
       class: "BurnRateRecomputeJob",

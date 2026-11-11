@@ -133,8 +133,9 @@ module WorkBacklog
     # population, so a standing set of rows waiting on one person aged into a new
     # week band every ALERT_BAND_TTL and re-paged a triage chain that could only
     # re-confirm them. They are out of `stranded` — both the age and the row band
-    # — until their hold lapses (WorkBacklogItem::HOLD_DURATION), when they come
-    # back with their original age and the next readable pass pages on the lapse
+    # — until their hold lapses (WorkBacklogItem::HOLD_DURATION). A hold lapses only
+    # when WorkBacklog::DecisionDigest has stopped renewing it, so the row comes
+    # back with its original age and the next readable pass pages on the lapse
     # whatever band it last paged for (`lapsed_hold_ids`). The page names how many
     # are held so a reader knows the number is not the whole pile.
 
@@ -351,10 +352,18 @@ module WorkBacklog
         # both halves of the band jump. Defer the reading rather than page on it or
         # let it poison the high-water mark — the unreadable repo is already named
         # at WARN by `report`, and the next pass says something true.
-        return if result.repos_failed.any?
+        #
+        # A lapse is the exception. It is a fact about the row's own clock, not the
+        # census, and it is the only backstop a hold has, so a repo that stays
+        # unreadable must not hold it back. Such a pass pages the lapse and leaves
+        # the band alone.
+        unreadable = result.repos_failed.any?
+        return if unreadable && lapsed_hold_ids(now).empty?
 
         age = result.oldest_stranded_age
         if age.nil? || age < ALERT_AFTER
+          return if unreadable
+
           # The condition is over. Forgetting the band is what makes the NEXT
           # population page from band one instead of being weighed against a worse
           # one that no longer exists.
@@ -366,7 +375,7 @@ module WorkBacklog
 
         rows = WorkBacklogItem.stranded(now: now).count
         band = severity_band(age, rows)
-        worse = worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
+        worse = !unreadable && worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
         lapsed = lapsed_hold_ids(now)
         return unless worse || lapsed.any?
 
@@ -377,9 +386,10 @@ module WorkBacklog
 
       # Stranded rows still carrying a hold that has lapsed: the lapse nobody has
       # been paged about yet. Each one pages, whatever band was last paged for,
-      # because that page is the whole reminder a hold's expiry promises — a
-      # lapsed row that merely rejoined a population already paged at its band
-      # would otherwise come back in silence (see WorkBacklogItem::HOLD_DURATION).
+      # because a lapse means the decision digest stopped renewing the hold, and
+      # this page is the backstop for that. A lapsed row that merely rejoined a
+      # population already paged at its band would otherwise come back in silence
+      # (see WorkBacklogItem::HOLD_DURATION).
       def lapsed_hold_ids(now)
         WorkBacklogItem.stranded(now: now).where.not(held_at: nil).pluck(:id)
       end
@@ -431,7 +441,10 @@ module WorkBacklog
       def page_stranded_rows(band, age, rows, awaiting_decision, lapsed, now)
         days = (age / 86_400.0).round(1)
         held = awaiting_decision.positive? ? " (#{awaiting_decision} more held for a human decision, not counted)" : ""
-        held += "; #{lapsed} hold(s) for a human decision lapsed with the decision still owed" if lapsed.positive?
+        if lapsed.positive?
+          held += "; #{lapsed} hold(s) for a human decision lapsed with the decision still owed, so the " \
+                  "decision digest did not renew them"
+        end
 
         # WARN, not ERROR: the GlitchTip event below is the page, and an ERROR here
         # would trip the `zimmer_backend_log_errors` Grafana rule and page `#alerts`
@@ -464,7 +477,9 @@ module WorkBacklog
                         "with a deliberate remainder needs a judgement per issue. Triage them on the " \
                         "Issues page under Stranded, or with get_work_backlog status: \"stranded\", " \
                         "put the ones with work left back with append_work_backlog_item, and hold the " \
-                        "ones whose remainder is a human's call with hold_work_backlog_item_for_decision."
+                        "ones whose remainder is a human's call with hold_work_backlog_item_for_decision. " \
+                        "A lapsed hold means WorkBacklogDecisionDigestJob did not reach the owner or could " \
+                        "not re-read the row's evidence: find out why before holding it again."
           },
           level: :warning,
           fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}",

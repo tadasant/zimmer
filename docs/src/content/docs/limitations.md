@@ -994,6 +994,26 @@ band until `ALERT_BAND_TTL` (7 days) passes or the population gets worse. The st
 readable on the Issues view and in `get_work_backlog`, and a GlitchTip outage is visible in its own
 right. But this alert does not page it.
 
+The [decision digest](/operate/work-backlog/#the-decision-digest) does not close this. It covers the
+reminder for held rows, on a separate path. A lapse page is its backstop and travels this same single
+path, so a digest failure is also logged at ERROR, which trips the Grafana rule instead.
+
+### The decision digest knows a push was accepted, not that it was read
+
+A digest counts as delivered when a push service accepts it for at least one device. Nothing says a
+person saw it. One old browser subscription that still accepts pushes is enough to keep every hold
+renewing with no page, for as long as it keeps accepting them, and renewal has no ceiling. A decision
+nobody answers is pushed every week indefinitely. That is the design: it stays in front of the owner
+and does not go quiet, but nothing escalates it.
+
+An iOS device counts too, and the iOS push carries no reasons and opens the app rather than the Issues
+view. If iOS is the only device reached, the owner is told decisions are waiting but not which, and
+the holds renew anyway. Counting it was deliberate: the alternative pages a phone-only owner every
+week for a reminder that reached them.
+
+The Issues view is the full list up to its limit of 50 rows, with one exception: a hold a moving PR has
+suspended is in the digest and not on that view until the PR lands.
+
 ### A cron manager that stops inside a live worker is not paged on
 
 The "Cron schedule stale" page comes from `SystemHealthMonitorJob`, which is itself a cron job. If
@@ -5756,8 +5776,9 @@ is void when the sweep records a different one. A moving open PR (`pr_open`) onl
 verdict is coarse, so some changes a human would call new evidence leave it the same. A second PR
 that opens and merges on a `pr_merged_issue_open` row lands back on `pr_merged_issue_open`, so the
 hold stays, whether that PR finished part of the work or only mentioned the issue. So does a new
-comment on the issue, or a label change. The hold still lapses after 14 days, so the most such a
-change can go unflagged is the rest of that window.
+comment on the issue, or a label change. The [decision digest](/operate/work-backlog/#the-decision-digest)
+renews a hold on that same verdict, so no lapse ever flags such a change. What is left is the weekly
+push, which still lists the row and its reason for a person to read.
 
 The reverse also happens. A PR that only mentions a row held at `no_pr` turns it into
 `pr_merged_issue_open` when it merges, and that voids the hold and re-pages the row although
