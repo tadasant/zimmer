@@ -804,20 +804,25 @@ play and the screen says what happened. The Realtime session can't be picked up 
 its connection.
 
 **You can hear what the call is doing.** The call makes short sounds besides Zimmer's voice, on
-the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit). The browser's call dock makes
-the same ones ([Voice](/sessions/live/#voice)).
+the phone and in the car alike (`LiveCue`, synthesized in ZimmerKit). They are made to be heard over
+road and engine noise on car audio: near the level of Zimmer's voice, and above 600 Hz, where a
+car's noise is weakest, except Failed and Ended, which stay low and carry a reedier tone instead. The
+browser's call dock makes the same ones at their earlier, quieter levels, without Pressed
+([Voice](/sessions/live/#voice)).
 
 | Sound | When | What it tells you |
 | --- | --- | --- |
-| **Connected**: two soft rising notes | Once, when the call is up | Zimmer is listening |
-| **Heard**: one short, quiet note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
-| **Thinking**: a quiet low tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
-| **Working**: a soft low pair of notes every 2.5 seconds | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the tick |
-| **Failed**: two low notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
-| **Ended**: one soft low note | You hung up | The call is over |
+| **Pressed**: two quick, bright, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation. Not when New ends a running call: you hear Ended instead | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
+| **Connected**: two rising notes | Once, when the call is up | Zimmer is listening |
+| **Heard**: one short note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
+| **Thinking**: a bright tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
+| **Working**: a pair of notes every 2.5 seconds, lower and longer than the tick | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the tick |
+| **Failed**: two low, reedy notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
+| **Ended**: one low note | You hung up | The call is over |
 | **Disconnected**: the connected notes falling | The call dropped | You did not end it |
 
-Every cue stops the moment you talk or a reply starts, nothing starts while you are talking, and a
+Every cue except Pressed (a fifth of a second, before the call exists) stops the moment you talk
+or a reply starts, nothing starts while you are talking, and a
 cue due while the reply is still playing waits for it to finish. A successful tool has no sound of its own: the next thing you hear is
 the answer. If you talk over a running tool, the working cue comes back when you stop.
 

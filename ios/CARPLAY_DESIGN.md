@@ -205,23 +205,53 @@ listening, working, stuck or finished. Silence alone cannot say which, so the ca
 synthesized cues, which are tones, not a voice (`LiveCue`; `LiveCueDirector` holds the event-to-cue
 table):
 
-| Cue | Sound | Plays |
-| --- | --- | --- |
-| connected | E5, B5, soft and rising | Once, when the call is up |
-| heard | E5, short and quiet | 0.35 s after the driver stops talking, on a line that will be answered |
-| thinking | a 520 Hz tick, once a second | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
-| working | E4, G4, a soft pair, every 2.5 s | While a tool runs, for as long as it runs |
-| failed | F4, D4, low and falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
-| ended | E4, one soft note | The driver hung up |
-| disconnected | B5, E5, falling | The call dropped |
+| Cue | Sound | Peak | Plays |
+| --- | --- | --- | --- |
+| pressed | A5, A5, quick and level | −8 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
+| connected | E5, B5, rising | −7 dBFS | Once, when the call is up |
+| heard | E5, short | −8.5 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
+| thinking | a C6 (1047 Hz) tick, 70 ms, once a second | −10.5 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
+| working | E5, G5, a pair, every 2.5 s | −10 dBFS | While a tool runs, for as long as it runs |
+| failed | F4, D4, low, reedy and falling | −7.5 dBFS | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
+| ended | E4, one low, reedy note | −10 dBFS | The driver hung up |
+| disconnected | B5, E5, falling | −8 dBFS | The call dropped |
 
-Rising is *on*, falling is *off*, and working shares neither pitch, length nor pace with the tick.
-Success has no cue, because the answer follows and a chime on every tool would wear on a long
-drive; so nothing can pass for it. The cues that repeat stay at the tick's level and are mostly
-silence. Every cue stops the instant the driver talks or the reply's audio starts, and a cue
-due during the tail of a reply waits it out. The cues play through the call's voice-processing
-engine, so the echo canceller has them as reference, and while one sounds the microphone is sent as
-silence (`LiveCueGate`), so turn detection never takes a cue for speech.
+**The cues are heard over a car.** Tadas, on the road: the thinking and working sounds were "too
+subtle". They were made quiet on purpose, the tick at a peak of 0.07, and a quiet tone under 500 Hz
+is exactly what road and engine noise covers. So the cues sit near the level of the reply's speech
+(every peak between −11 and −7 dBFS, 8 to 13 dB above where they were, none near full scale), and
+everything that says *on*, *heard* or *busy* is above 600 Hz, where a car's noise is weakest.
+Failed and ended stay low, because low is *not good*, and get a twelfth (the third harmonic) so
+they carry anyway. A test (`LiveDiagnosticsTests`) holds every cue between 0.25 and 0.5 peak.
+
+Rising is *on*, falling is *off*, level is *on its way*, and working shares neither pitch, length
+nor pace with the tick. Success has no cue, because the answer follows and a chime on every tool
+would wear on a long drive; so nothing can pass for it. The cues that repeat are mostly silence:
+under a tenth of each period. Every cue stops the instant the driver talks or the reply's audio
+starts, and a cue due during the tail of a reply waits it out. The cues play through the call's
+voice-processing engine, so the echo canceller has them as reference, and while one sounds the
+microphone is sent as silence (`LiveCueGate`), so turn detection never takes a cue for speech.
+That silence runs 120 ms past each cue, not 80, because a louder cue rings on longer in a cabin.
+
+**The press is heard at once.** Tadas: after pressing Talk he could not tell whether it was going
+to work. The connected notes need the conversation found, voice turned on, a secret minted, the
+socket open and `session.created`, which is 2 to 3 seconds when it works, and nothing sounded
+before them. Now the tap plays *pressed* before any of that (`LiveCall.pressed`), and a call nobody
+pressed for (the phone's button, a car retry) plays it as it starts, before its first request; a
+call that follows a press within the connect deadline does not play it twice. It plays alone, on
+a short-lived engine that never touches the input (`LiveAudioEngine.playAlone`, the one the
+falling notes use when no call is up): no microphone opens and no permission prompt comes up,
+because CarPlay records only under the voice control template and the tiles are still up at the
+tap. The call's own engine still starts after the secret, as before. A source guard in
+`CarPlayTests` holds both: the cue before every network step, and no input on its engine.
+`call.acknowledged` logs how long after the press (or the start) it began to play
+(`since_press_ms`); the route can take a moment more to make it audible. It carries the call's id
+only if the call began before it sounded, so at a car tap look beside `carplay.talk_tapped`. Not
+while a call is up (New over a running call hears *ended* instead), nor over a goodbye still
+sounding. Its engine gives the audio session up without telling the car's music to resume, so the
+music pauses once for the call rather than twice; if the press leads nowhere the falling notes
+hand it back, and a press the driver ends at once leaves the music paused. *pressed* is about a
+fifth of a second and is the one cue that is not stopped by talking.
 
 **A turn always ends.** OpenAI's turn detection over a WebSocket measures silence in the audio it
 receives. A microphone that stops delivering mid-sentence leaves the turn open, and the call sits
@@ -264,7 +294,7 @@ and for as long as they sound (`LiveAudioEngine.playAlone`).
 no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and
 OpenAI has said `session.created`, so *Listening* and the connected notes mean somebody can hear
 you; the socket merely having been asked to open proves nothing. A tap answers at once (the tile
-says *Connecting…*), a second tap is not a second attempt, and finding the conversation has the same
+says *Connecting…*, and *pressed* sounds), a second tap is not a second attempt, and finding the conversation has the same
 deadline. Two calls that each hang to the deadline come to about half a minute, then *Tap to retry*
 (`LiveCallHealth`).
 
@@ -474,7 +504,7 @@ running after every step, and any crash report fails the job.
 | Guideline | How the app follows it |
 | --- | --- |
 | Voice is the primary modality at launch | Each tile is the voice conversation; nothing is heard until one is tapped |
-| Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call |
+| Audio session only while voice is in use | `LiveCall` holds the only audio session, and only for the call, and for the length of a cue around one (*pressed* at the tap, the falling notes when none comes) |
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template. A present CarPlay refuses does not stop the call, so until the next state change presents again the microphone can be open with no screen; the comeback takes that path like any call |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
 | Depth of 3 | One root; one pushed list; the call screen is modal |
