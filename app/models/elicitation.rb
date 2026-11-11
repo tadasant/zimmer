@@ -214,6 +214,8 @@ class Elicitation < ApplicationRecord
   # committed and the MCP server is about to poll it, so a failed enqueue must not
   # turn into a 500 that the server reads as "no approval mechanism".
   def notify_human
+    # `id` lands in notifications.transition_marker, an integer column: fine until
+    # elicitation ids pass 2^31.
     SendPushNotificationJob.perform_later(session_id, :elicitation_pending, message.to_s.truncate(NOTIFICATION_BODY_LIMIT), id)
   rescue => e
     Rails.logger.error "[Elicitation] Failed to enqueue the push for elicitation #{id} on session #{session_id}: #{e.class}: #{e.message}"

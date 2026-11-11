@@ -629,6 +629,16 @@ class ElicitationTest < ActiveSupport::TestCase
     end
   end
 
+  test "a prompt answered before its push job runs gets no row and no push" do
+    WebPushService.any_instance.expects(:send_to_all).never
+    elicitation = create_pending_elicitation
+    elicitation.resolve!(action: "accept", content: { "confirmed" => true })
+
+    assert_no_difference -> { @session.notifications.count } do
+      perform_enqueued_jobs(only: SendPushNotificationJob)
+    end
+  end
+
   test "a failed push enqueue does not fail the elicitation's creation" do
     SendPushNotificationJob.stubs(:perform_later).raises(StandardError, "queue down")
 

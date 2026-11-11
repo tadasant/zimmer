@@ -69,10 +69,12 @@ class SendPushNotificationJob < ApplicationJob
   # @param notification_type [String, Symbol] Type of notification to send
   # @param custom_message [String, nil] Custom message body (used with custom_message type)
   # @param transition_marker [Integer, nil] For needs_input: the
-  #   needs_input_count value captured at enqueue time. For elicitation_pending:
-  #   the elicitation's id, which only keys the Notification row. The job no-ops if the
+  #   needs_input_count value captured at enqueue time. The job no-ops if the
   #   session has transitioned out of needs_input or paused again since (the
   #   counter will no longer match), so brief flaps don't produce notifications.
+  #   For elicitation_pending: the elicitation's id. The job no-ops if that
+  #   elicitation is no longer pending, so a prompt answered before the job ran
+  #   neither pushes nor leaves a row behind.
   def perform(session_id, notification_type = "session_complete", custom_message = nil, transition_marker = nil)
     notification_type = notification_type.to_s
 
@@ -85,6 +87,11 @@ class SendPushNotificationJob < ApplicationJob
 
     if notification_type == "needs_input" && stale_needs_input_transition?(session, transition_marker)
       Rails.logger.info "[SendPushNotificationJob] Skipping stale needs_input notification for session #{session_id} (status=#{session.status}, current_marker=#{session.custom_metadata&.dig('needs_input_count').inspect}, expected=#{transition_marker.inspect})"
+      return
+    end
+
+    if notification_type == "elicitation_pending" && answered_elicitation?(transition_marker)
+      Rails.logger.info "[SendPushNotificationJob] Skipping elicitation_pending notification for session #{session_id}: elicitation #{transition_marker} is no longer pending"
       return
     end
 
@@ -128,6 +135,16 @@ class SendPushNotificationJob < ApplicationJob
     Rails.logger.info "[SendPushNotificationJob] iOS push for session #{session_id}: #{result.inspect}" unless result[:skipped]
   rescue StandardError => e
     Rails.logger.error "[SendPushNotificationJob] iOS push for session #{session_id} failed: #{e.class}: #{e.message}"
+  end
+
+  # Whether the elicitation this push announces has already been answered or has
+  # expired. Its session's notifications were marked stale when it resolved, so a
+  # row created now would sit on /notifications about a question nobody is asking.
+  # A nil marker (an enqueue that named no elicitation) is not gated.
+  def answered_elicitation?(elicitation_id)
+    return false if elicitation_id.nil?
+
+    !Elicitation.find_by(id: elicitation_id)&.pending?
   end
 
   # Determine whether a debounced needs_input job should bail out because the
