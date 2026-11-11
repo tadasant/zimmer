@@ -103,6 +103,21 @@ class Elicitation < ApplicationRecord
   # because Rails dedupes same-named commit callbacks into one entry.
   after_commit :sync_session_elicitation_state, on: [ :create, :update ]
 
+  # Every new elicitation is a human being asked to approve something, so every
+  # one gets a Notification row and a push — whichever path created it. Lives on
+  # the model rather than in a controller so a new creation path cannot forget it.
+  #
+  # Keyed by this elicitation's id as the notification's transition_marker, which
+  # makes it one row and one push per prompt: a job retry finds the row and stops,
+  # and a second prompt on the same session minutes after the first (a retry after
+  # a decline, two gated tools in one turn) gets its own, rather than falling
+  # inside the job's 15-minute dedup window for unmarked types and being dropped.
+  after_create_commit :notify_human
+
+  # The body of the push and the notification row: the MCP server's own words,
+  # bounded for the push payload.
+  NOTIFICATION_BODY_LIMIT = 150
+
   # How long a new elicitation lives when nobody more specific said otherwise.
   #
   # Precedence for the deadline on a given request, highest first:
@@ -194,6 +209,15 @@ class Elicitation < ApplicationRecord
   end
 
   private
+
+  # Enqueue the elicitation_pending push. Never raises: the elicitation is already
+  # committed and the MCP server is about to poll it, so a failed enqueue must not
+  # turn into a 500 that the server reads as "no approval mechanism".
+  def notify_human
+    SendPushNotificationJob.perform_later(session_id, :elicitation_pending, message.to_s.truncate(NOTIFICATION_BODY_LIMIT), id)
+  rescue => e
+    Rails.logger.error "[Elicitation] Failed to enqueue the push for elicitation #{id} on session #{session_id}: #{e.class}: #{e.message}"
+  end
 
   # Reconcile the owning session's blocking state. Reloads the association so the
   # session reflects this elicitation's just-committed status change before the

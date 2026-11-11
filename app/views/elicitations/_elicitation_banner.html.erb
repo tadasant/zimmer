@@ -43,12 +43,17 @@
 
                 <% case field_schema["type"] %>
                 <% when "boolean" %>
+                  <%# A required yes/no is the question Accept answers ("Create this
+                      secure note?"). Unticked, Accept would send `false` — which the
+                      MCP server reads as a decline — so Accept waits for the tick. %>
                   <label class="inline-flex items-center">
                     <input type="checkbox"
                            id="elicitation_field_<%= elicitation.id %>_<%= field_name %>"
                            data-elicitation-form-target="field"
                            data-field-name="<%= field_name %>"
                            data-field-type="boolean"
+                           data-field-required="<%= schema.dig("required")&.include?(field_name) ? "true" : "false" %>"
+                           data-action="change->elicitation-form#refreshAccept"
                            class="rounded border-amber-400 text-amber-600 focus:ring-amber-500">
                     <span class="ml-2 text-sm text-amber-800">Yes</span>
                   </label>
@@ -93,6 +98,10 @@
             <% end %>
           </div>
         <% end %>
+
+        <p class="hidden text-xs text-amber-800 mb-2" data-elicitation-form-target="acceptHint">
+          Tick <strong>Yes</strong> to accept, or press Decline.
+        </p>
 
         <%# Action buttons. Wrapping is load-bearing: three controls do not fit the
             ~327px this banner gets inside a 375px phone screen, and a non-wrapping
