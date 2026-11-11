@@ -74,6 +74,8 @@ Rails.application.routes.draw do
     # already answered.
     resources :trigger_event_claims, only: [ :index, :show ]
     resources :webhook_deliveries, only: [ :index, :show ]
+    # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
+    resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     # Read-only plus destroy: every row records what a remote MCP server answered
