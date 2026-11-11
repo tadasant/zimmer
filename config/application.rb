@@ -38,7 +38,16 @@ module Zimmer
     # `Generators::PostDeployTask::PostDeployTaskGenerator`, which is not the
     # name `bin/rails generate` looks for — and eager loading would fail the boot
     # (and, because test_helper.rb eager loads, the whole suite).
-    config.autoload_lib(ignore: %w[assets tasks generators])
+    config.autoload_lib(ignore: %w[assets tasks generators middleware])
+
+    # `middleware` is on that list because the stack is built before autoloading is
+    # ready, so a middleware class has to be required, not autoloaded.
+    #
+    # Digest-stamped /assets get a year and `immutable` instead of the hour every
+    # other public/ file gets — see DigestedAssetCacheHeaders. It wraps Static,
+    # which is what serves precompiled assets in a deployed environment.
+    require_relative "../lib/middleware/digested_asset_cache_headers"
+    config.middleware.insert_before ActionDispatch::Static, DigestedAssetCacheHeaders
 
     # Zimmer Extensions (see app/services/zimmer/extension.rb) live one directory each
     # under app/extensions/<id>/ so an extension is a single self-contained,

@@ -396,8 +396,11 @@
 
    Turbo sets `busy` on a frame for exactly the duration of its fetch, so this
    needs no JS to arm or disarm. Dim rather than blank: the reader keeps their
-   place, and the content is still the right session. */
-turbo-frame#session_detail[busy] {
+   place, and the content is still the right session.
+
+   Not while the frame holds the loading skeleton (_drawer_skeleton): that is
+   already the loading state, and its Close button has to stay clickable. */
+turbo-frame#session_detail[busy]:not(:has(> [data-drawer-skeleton])) {
   opacity: 0.6;
   pointer-events: none;
   transition: opacity 150ms ease-in-out;
