@@ -26,7 +26,7 @@ import os
 ///
 /// Four things keep a driver from having to look: the cues (`LiveCueDirector` has the whole map:
 /// up, heard, thinking, a tool running, failed, hung up, dropped; and *pressed*, played here the
-/// moment the call's audio is up, which a press brings up at once, `pressed()`); the
+/// moment Talk is pressed, `pressed()`); the
 /// microphone watchdog (`MicWatchdog`), which sends silence when the microphone stops delivering
 /// so OpenAI's turn detection always gets to the end of a turn; the call's health
 /// (`LiveCallHealth`), which gives up on a call that will not connect, or whose socket or
@@ -75,16 +75,9 @@ final class LiveCall: ObservableObject {
     private let audio = LiveAudioEngine()
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
     private var generation = 0
-    /// The microphone whose frames the call sends. Moving to another conversation moves
+    /// The generation the microphone was opened under. Moving to another conversation moves
     /// `generation` to drop the old socket's late answers, and keeps the microphone.
     private var microphoneGeneration: Int?
-    /// Numbers each microphone brought up, which its frames carry.
-    private var microphones = 0
-    /// The call's audio, being brought up or up: the microphone's number and the start under way
-    /// (it returns the engine's token). Brought up at the press, before
-    /// the conversation is known or the secret minted, so the press is heard at once (`pressed`);
-    /// the call that starts takes it over. Gone when a call ends.
-    private var audioUp: (microphone: Int, start: Task<Int, Error>)?
     /// When this call last asked which conversation is current.
     private var lookedForMove: TimeInterval = 0
     private static let followEvery: TimeInterval = 5
@@ -104,6 +97,9 @@ final class LiveCall: ObservableObject {
     /// hang-up's goodbye is not news of a failure and does not count.
     private var saidGoodbye = false
     private var watching: Task<Void, Never>?
+    /// When *pressed* last went out for a press that has not become a call yet, so the call it
+    /// becomes does not play it again.
+    private var pressHeard: TimeInterval?
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -178,8 +174,11 @@ final class LiveCall: ObservableObject {
             }
             return
         }
-        // Idle with the press's audio coming up: nothing to hang up, and that audio is this call's.
-        if isActive || audioUp == nil { hangUp() }
+        hangUp()
+        // A start nobody pressed for just now (the phone's button, a retry) is heard the same way.
+        let alreadyHeard = pressHeard.map { Self.now - $0 < LiveCallHealth.connectDeadline } ?? false
+        if !alreadyHeard { pressed() }
+        pressHeard = nil
         generation += 1
         let mine = generation
         self.surface = surface
@@ -206,10 +205,6 @@ final class LiveCall: ObservableObject {
         telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil))
         state = .connecting
         watch(generation: mine)
-        // The microphone and the player come up while voice is turned on and the secret minted,
-        // not after: the engine's start is the slowest local step, and the press's cue needs it.
-        let audioStart = bringUpAudio()
-        microphoneGeneration = audioStart.microphone
         do {
             if !voiceIsOn { try await turnVoiceOn(conversation) }
             guard mine == generation else { return }
@@ -222,7 +217,11 @@ final class LiveCall: ObservableObject {
             conductor = RealtimeConductor(listening: secret.listening)
             openSocket(secret, generation: mine)
             health.stage = .microphone
-            let audioToken = try await audioStart.start.value
+            microphoneGeneration = mine
+            let audioToken = try await audio.start(
+                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: mine) } },
+                failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
+            )
             // Hung up, or replaced by a newer call, while the microphone was opening: close only
             // what this start opened.
             guard mine == generation else { audio.stop(token: audioToken); return }
@@ -337,68 +336,20 @@ final class LiveCall: ObservableObject {
         end(reason: "hang_up", farewell: cues.hungUp())
     }
 
-    /// Talk was pressed, and which conversation it calls is still being worked out (the car asks
-    /// Zimmer first). The call's audio comes up now and plays *pressed* as soon as it is, so the
-    /// press is heard long before the call connects; `start` takes the audio over. A press that
-    /// leads to no call gives it back: `soundUnavailable`, a hang-up, or the deadline here.
+    /// Talk was pressed: *pressed* sounds now, before the conversation is found, voice turned on or
+    /// the secret minted, so the press is heard seconds before the call connects. It plays alone,
+    /// on an engine that never opens the microphone (`LiveAudioEngine.playAlone`): nothing records
+    /// before the call's screen is up, and no permission prompt comes with it. Not while a call
+    /// is up, nor over a goodbye still sounding.
     func pressed() {
-        guard !isActive, audioUp == nil else { return }
-        let warm = bringUpAudio()
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(LiveCallHealth.connectDeadline + 1))
-            guard let self, !self.isActive, self.audioUp?.microphone == warm.microphone else { return }
-            self.releaseAudio(farewell: nil)
-        }
-    }
-
-    /// Bring the call's audio up, or return what the press already brought up. *pressed* plays the
-    /// moment the engine runs, unless the call has moved on since.
-    private func bringUpAudio() -> (microphone: Int, start: Task<Int, Error>) {
-        if let audioUp { return audioUp }
-        microphones += 1
-        let microphone = microphones
-        let pressedAt = Self.now
-        let start = Task { @MainActor [weak self] () throws -> Int in
-            guard let self else { throw CancellationError() }
-            let token = try await self.audio.start(
-                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: microphone) } },
-                failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: microphone) } }
-            )
-            if self.audioUp?.microphone == microphone, self.audio.play(.pressed) {
-                self.telemetry.track(.cue(.pressed))
-                self.telemetry.track(.acknowledged(sincePress: Self.now - pressedAt))
-            }
-            return token
-        }
-        let up = (microphone: microphone, start: start)
-        audioUp = up
-        return up
-    }
-
-    /// A press that led to no call: its audio goes, with `farewell` as its last sound. An engine
-    /// still coming up is let come up first, so a lookup that failed at once (no network) is
-    /// still heard; one stuck on the way is given up on as any other is.
-    private func releaseAudio(farewell: LiveCue?) {
-        guard let up = audioUp, !isActive else { return }
-        audioUp = nil
-        guard let farewell, !audio.isRunning else {
-            if audio.stop(farewell: farewell), let farewell { telemetry.track(.cue(farewell)) }
-            return
-        }
-        Task { [weak self] in
-            let token: Int
-            do {
-                token = try await up.start.value
-            } catch {
-                // An engine that could not start (the microphone refused) leaves the notes to a
-                // short-lived one; a press or a call since owns the audio, and they are not news.
-                guard !(error is CancellationError), let self, self.audioUp == nil, !self.isActive else { return }
-                if self.audio.playAlone(farewell) { self.telemetry.track(.cue(farewell)) }
-                return
-            }
-            guard let self, self.audioUp == nil, !self.isActive else { return }
-            if self.audio.stop(token: token, farewell: farewell) { self.telemetry.track(.cue(farewell)) }
-        }
+        guard !isActive else { return }
+        let at = Self.now
+        let telemetry = telemetry
+        guard audio.playAlone(.pressed, sounding: {
+            telemetry.track(.cue(.pressed))
+            telemetry.track(.acknowledged(sincePress: ProcessInfo.processInfo.systemUptime - at))
+        }) else { return }
+        pressHeard = at
     }
 
     /// End the call: `reason` is for the log; the `farewell` cue is the engine's last sound.
@@ -409,7 +360,6 @@ final class LiveCall: ObservableObject {
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         microphoneGeneration = nil
-        audioUp = nil
         microphoneLost = false
         // The engine stays up just long enough to play the goodbye.
         var goodbye: LiveCue?
@@ -439,18 +389,10 @@ final class LiveCall: ObservableObject {
     /// Say with the falling notes that a call is not coming, unless the end that said so already
     /// played them. A call that was never up has no engine to play them for it.
     func soundUnavailable() {
-        guard !isActive else {
+        guard !isActive, !saidGoodbye else {
             saidGoodbye = false
             return
         }
-        let said = saidGoodbye
-        saidGoodbye = false
-        // A press whose audio is up, or coming up, plays them on it, and lets it go.
-        if audioUp != nil {
-            releaseAudio(farewell: said ? nil : .disconnected)
-            return
-        }
-        guard !said else { return }
         if audio.playAlone(.disconnected) { telemetry.track(.cue(.disconnected)) }
     }
 
@@ -545,11 +487,7 @@ final class LiveCall: ObservableObject {
     /// goes to it when it can (`LiveHandover`). A call the gear ended stays ended.
     func carLeft() {
         handover.carLeft(conversation: conversationID, callIsActive: isActive, at: Self.now)
-        guard isActive else {
-            // A press the car had not turned into a call yet: nothing will start it now.
-            releaseAudio(farewell: nil)
-            return
-        }
+        guard isActive else { return }
         telemetry.track(.carPlay("handover_armed"))
         Task { await carryOn(on: .ios) }
     }

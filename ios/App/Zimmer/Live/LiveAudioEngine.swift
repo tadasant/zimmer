@@ -393,9 +393,6 @@ final class LiveAudioEngine {
     /// When the microphone last delivered audio (system uptime), or nil before it has.
     var lastMicAudio: TimeInterval? { sink.lastAudio }
 
-    /// The call's engine is up and running here, not out on `queue`.
-    var isRunning: Bool { engine?.isRunning == true }
-
     // MARK: - Cues
 
     /// Play a one-shot cue after `delay`, or once the queued reply has played if that is later,
@@ -433,7 +430,11 @@ final class LiveAudioEngine {
     /// it sounds. Skipped while the audio is someone else's, or while an engine is out on
     /// `queue`, stuck or not: a failure cue that sounds minutes late is worse than none. Says
     /// whether it was asked for: once on `queue`, a failure is only logged.
-    func playAlone(_ cue: LiveCue) -> Bool {
+    ///
+    /// It never touches the input: no microphone opens, and no permission prompt comes up, so it
+    /// can sound before a call (and its CarPlay screen) exists. `sounding` runs on `queue` once
+    /// the cue is playing.
+    func playAlone(_ cue: LiveCue, sounding: (@Sendable () -> Void)? = nil) -> Bool {
         guard engine == nil, farewell == nil, bringingUp == 0, !interrupted else { return false }
         let samples = cue.samples()
         Self.queue.async {
@@ -447,6 +448,7 @@ final class LiveAudioEngine {
                 try engine.start()
                 player.scheduleBuffer(buffer, completionHandler: nil)
                 player.play()
+                sounding?()
                 Thread.sleep(forTimeInterval: cue.duration + 0.05)
                 player.stop()
                 engine.stop()
