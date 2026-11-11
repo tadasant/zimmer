@@ -4816,8 +4816,9 @@ signal that it has fallen behind, and it is an accurate one.
 ### CarPlay pre-warm has not run against OpenAI or in a car
 
 [CarPlay pre-warm](/sessions/live/#carplay-pre-warm) ships with its flag off. Its rules are tested
-on Linux (`LiveWarmStart`, `LiveWarmStartTests`), Zimmer's prewarm mint is tested, and the app
-compiles, but CI holds no Realtime key and drives no car. Four things are unproven until the
+on Linux (`LiveWarmStart`, `LiveWarmStartTests`) and Zimmer's prewarm mint is tested. CI compiles
+the app, but the app's half (`LiveWarmKeeper`, `LiveWarmLink`, `LiveCall.startWarm`) has never
+run: CI holds no Realtime key and drives no car. Four things are unproven until the
 internal rollout: that OpenAI keeps an idle Realtime WebSocket open for 5 minutes on 20 s pings;
 that the idle session bills nothing (check the usage page against `warm.ready` counts); that
 iOS keeps the socket while the CarPlay scene is behind another app (a tap after a suspension

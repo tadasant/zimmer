@@ -102,17 +102,6 @@ module LiveConversations
       raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
     end
 
-    def prewarm_secret
-      raise Refused.new("CarPlay pre-warm is off. Turn it on in the Live settings.", status: :forbidden) unless LiveSetting.current.carplay_prewarm?
-
-      require_active!
-      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
-    rescue OpenaiClient::NotConfiguredError => e
-      raise Refused.new(e.message, status: :service_unavailable)
-    rescue OpenaiClient::Error => e
-      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
-    end
-
     # Voice: run a function call the model made, return what to send back.
     #
     # This and record_turn need an active conversation, not voice mode: a call
@@ -144,9 +133,14 @@ module LiveConversations
     # reason as tool_call below. Noted first, like the secret: a call that moves
     # between the phone and the car asks for this to bring its instructions up
     # to the client now driving it.
-    def session_update
+    #
+    # `model`: the model the call runs on, recorded on the conversation. A call
+    # that started on a CarPlay pre-warm connection sends it with the tap's
+    # update, because its prewarm mint recorded nothing.
+    def session_update(model: nil)
       require_active!
       note_client!
+      record_model!(model)
       realtime_session(@conversation).session_update
     end
 
@@ -189,6 +183,18 @@ module LiveConversations
 
     private
 
+    def prewarm_secret
+      raise Refused.new("CarPlay pre-warm is off. Turn it on in the Live settings.", status: :forbidden) unless LiveSetting.current.carplay_prewarm?
+      raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
+
+      require_active!
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
+    rescue OpenaiClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    rescue OpenaiClient::Error => e
+      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
     # Whether this request may gate the call: the client can, and neither it nor
     # anything earlier in this call is the car.
     def listening_modes? = @listening_modes && @client_surface != "carplay" && !@conversation.car_call
@@ -203,6 +209,16 @@ module LiveConversations
       columns[:client_surface] = @client_surface if @client_surface
       columns.reject! { |column, value| @conversation[column] == value }
       @conversation.update_columns(columns) if columns.any?
+    end
+
+    MODEL_NAME = /\A[a-z0-9][a-z0-9.\-]{0,63}\z/
+
+    def record_model!(model)
+      model = model.to_s
+      return if model.empty? || @conversation.model == model
+      raise Refused, "model is not a model name." unless MODEL_NAME.match?(model)
+
+      @conversation.update_columns(model: model)
     end
 
     def require_open!

@@ -15,7 +15,7 @@
 #   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
-#   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings
+#   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings (model: record the call's)
 #
 # The Live settings themselves are Api::V1::LiveSettingsController's.
 #
@@ -115,7 +115,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
   end
 
   def session_update
-    render json: { session: actions.session_update }
+    render json: { session: actions.session_update(model: params[:model].presence) }
   end
 
   def turns
