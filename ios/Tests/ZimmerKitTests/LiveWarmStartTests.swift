@@ -219,7 +219,8 @@ final class LiveWarmStartTests: XCTestCase {
     func testAWarmConnectionNeverSendsAnythingAndOnlyATapHandsItToACall() {
         var start = LiveWarmStart()
         var actions = start.carConnected(at: 0)
-        var generator = SystemRandomNumberGenerator()
+        // Seeded, so a failure reproduces: the same drive every run.
+        var generator = SeededGenerator(seed: 0x5EED_CA2)
         var now: TimeInterval = 0
         var conversation = 7
         while now < 3_600 {
@@ -239,9 +240,22 @@ final class LiveWarmStartTests: XCTestCase {
             case .refresh, .ping, .close, .mint: continue
             }
         }
-        XCTAssertTrue(actions.contains(.ping))
+        XCTAssertTrue(actions.contains { if case .mint = $0 { return true } else { return false } }, "the drive did warm")
         XCTAssertLessThanOrEqual(actions.filter { if case .mint = $0 { return true } else { return false } }.count, LiveWarmStart.warmsPerDrive,
                                  "however eventful the drive, the mints stay within the budget")
+    }
+}
+
+/// SplitMix64: a small deterministic generator for the randomized drive.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
     }
 }
 
