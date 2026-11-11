@@ -39,6 +39,9 @@ class McpEventSubscriptionsJob < ApplicationJob
   # Backoff after a failed subscribe or unsubscribe: a minute, doubling, to this.
   MAX_BACKOFF = 6.hours
 
+  # How the receiver marks a row the server terminated (Webhooks::McpEventsController).
+  TERMINATED_PREFIX = "terminated by the server"
+
   def perform
     base_url = McpEvents.webhook_base_url
     retire_stale(base_url)
@@ -108,22 +111,40 @@ class McpEventSubscriptionsJob < ApplicationJob
     # A first subscribe starts from where the condition's poll is; a refresh hands back the last
     # cursor the server gave this row, as the SEP has every refresh do.
     cursor = row.subscribed_at ? row.cursor : condition.mcp_event_cursor
+    error_before = row.last_error
     result = client.subscribe(
       name: row.event_name, arguments: row.arguments, url: row.callback_url, secret: row.secret,
       cursor: cursor, ttl_ms: REQUESTED_TTL.in_milliseconds.to_i
     )
-    row.reload
-    active = result.delivery_status.nil? || result.delivery_status["active"] != false
-    state = if !active then "suspended"
-    elsif row.verified_at then "verified"
-    else "subscribed"
+    if result.truncated
+      Rails.logger.warn "[McpEventSubscriptionsJob] #{row.server} started subscription #{row.id} (#{row.event_name}) later than its cursor " \
+                        "(truncated); the condition's poll catches up on what the server still holds"
     end
-    row.update!(
-      state: state, remote_id: result.id.truncate(255), subscribed_at: Time.current, refresh_before: result.refresh_before,
-      cursor: result.cursor || row.cursor, delivery_status: result.delivery_status, failures: 0, next_attempt_at: nil,
-      last_error: active ? nil : "delivery suspended by the server (#{delivery_error_category(result.delivery_status['lastError'])})"
-    )
-    Rails.logger.info "[McpEventSubscriptionsJob] Subscription #{row.id} (condition #{condition.id}) #{state} until #{result.refresh_before&.iso8601 || 'no expiry'}"
+
+    status = result.delivery_status || {}
+    # `active: false` is a suspension the refresh has just lifted; a `lastError` with `active: true`
+    # is a server still failing to deliver. Either way push is not proven, so the poller keeps its
+    # minute cadence until a signed request arrives again.
+    failing = status["active"] == false || status["lastError"].present?
+    row.with_lock do
+      # A `terminated` envelope that landed while the call was in flight wins: the server has
+      # dropped what this answer describes, so writing it would make a dead subscription look live.
+      if row.state == "pending" && row.last_error.to_s.start_with?(TERMINATED_PREFIX) && row.last_error != error_before
+        Rails.logger.info "[McpEventSubscriptionsJob] Subscription #{row.id} was terminated during its subscribe; leaving it to the next sweep"
+        next
+      end
+
+      state = if failing then "suspended"
+      elsif row.recently_verified? then "verified"
+      else "subscribed"
+      end
+      row.update!(
+        state: state, remote_id: result.id.truncate(255), subscribed_at: Time.current, refresh_before: result.refresh_before,
+        cursor: result.cursor || row.cursor, delivery_status: result.delivery_status, failures: 0, next_attempt_at: nil,
+        last_error: failing ? "server reports failing delivery (#{delivery_error_category(status['lastError'])})" : nil
+      )
+      Rails.logger.info "[McpEventSubscriptionsJob] Subscription #{row.id} (condition #{condition.id}) #{state} until #{result.refresh_before&.iso8601 || 'no expiry'}"
+    end
   rescue McpEvents::Sources::Unavailable, McpApps::Client::Error => e
     back_off(row, "subscribe failed: #{describe_error(e)}", state: row.subscribed_at && row.refresh_before&.future? ? row.state : "failed")
   end

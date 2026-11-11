@@ -180,8 +180,22 @@ class Webhooks::McpEventsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "poll-only", @condition.reload.mcp_event_delivery["state"]
 
     McpEventSubscriptionsJob.perform_now
+    assert_equal 1, @server.calls_to("events/subscribe").size, "re-subscribing waits ten minutes"
+
+    travel_to(11.minutes.from_now) { McpEventSubscriptionsJob.perform_now }
     assert_equal 2, @server.calls_to("events/subscribe").size
     assert_equal "verified", @row.reload.state, "the terminated envelope was itself a signed request on the URL"
+  end
+
+  test "an event without a cursor keeps the stored one; an explicit null clears it" do
+    @row.update_columns(cursor: "seq:5")
+    @server.publish(channel_id: "C0NOCUR", ts: "1793400000.000600")
+    deliver(@server.last_event.except("cursor"))
+    assert_equal "seq:5", @row.reload.cursor
+
+    @server.publish(channel_id: "C0NULL", ts: "1793400000.000700")
+    deliver(@server.last_event.merge("cursor" => nil))
+    assert_nil @row.reload.cursor
   end
 
   test "a gap envelope keeps the fresh cursor" do

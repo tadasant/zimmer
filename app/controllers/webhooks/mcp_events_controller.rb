@@ -4,10 +4,11 @@ module Webhooks
   # The MCP Events webhook receiver: `POST /webhooks/mcp_events/:token`, one URL per
   # McpEventWebhookSubscription (SEP-3415 @ b08e4f9, "Webhook event delivery").
   #
-  # The only route into Zimmer that is meant to be reachable without Cloudflare Access: the server
-  # delivering is a machine signing with Standard Webhooks, which cannot present an Access service
-  # token, so the path carries an Access bypass rule and the HMAC is the whole of its
-  # authentication. That is why every refusal here looks the same. An unknown token, a bad or stale
+  # In production the path sits behind a Cloudflare Access service-token policy of its own, which
+  # the delivering server satisfies with CF-Access-Client-Id / -Secret headers. Nothing here reads
+  # those: the Standard Webhooks HMAC is checked on every request regardless, and it is what says
+  # which subscription a delivery belongs to. The receiver is written to be safe even if the Access
+  # policy were ever opened up. That is why every refusal here looks the same. An unknown token, a bad or stale
   # signature and a missing header all get an empty 401, with an HMAC computed either way, so a
   # caller cannot tell a real subscription URL from a made-up one. A caller is also rate-limited per
   # address before any of that, so it cannot make the action do unbounded HMAC work.
@@ -33,8 +34,12 @@ module Webhooks
     RATE_LIMIT = 600
     RATE_LIMIT_WINDOW = 1.minute
 
-    # A well-formed secret nobody holds, so an unknown token costs the same HMAC as a known one.
+    # A well-formed secret nobody holds, so an unknown token still pays for an HMAC (a known one
+    # also pays for decrypting its secret, which with a 192-bit token says nothing useful).
     DECOY_SECRET = "whsec_#{Base64.strict_encode64('zimmer-mcp-events-decoy-secret!!')}".freeze
+
+    # How long after a `terminated` envelope the sweep subscribes again.
+    TERMINATION_RETRY = 10.minutes
 
     # The SEP's routing header, carrying the server's subscription id.
     SUBSCRIPTION_ID_HEADER = "X-MCP-Subscription-Id"
@@ -82,7 +87,7 @@ module Webhooks
     end
 
     def accept_gap(subscription, payload, remote_id)
-      subscription.note_signed_request!(remote_id: remote_id, cursor: string_or_nil(payload["cursor"]))
+      subscription.note_signed_request!(remote_id: remote_id, cursor: cursor_from(payload))
       Rails.logger.warn("[Webhooks::McpEventsController] #{subscription.server} reported a gap on subscription #{subscription.id} " \
                         "(#{subscription.event_name}); the condition's poll catches up on what it can")
       head :ok
@@ -94,8 +99,11 @@ module Webhooks
       subscription.note_signed_request!(remote_id: remote_id)
       # The subscription no longer exists on the server; the next sweep subscribes afresh, which
       # fails the same way if the cause still holds.
-      subscription.update_columns(state: "pending", refresh_before: nil, last_error: "terminated by the server (#{code_name})",
-                                  next_attempt_at: nil, updated_at: Time.current)
+      # Ten minutes before subscribing again, so a server that terminates every subscription it
+      # grants is asked six times an hour rather than sixty.
+      subscription.update_columns(state: "pending", refresh_before: nil,
+                                  last_error: "#{McpEventSubscriptionsJob::TERMINATED_PREFIX} (#{code_name})",
+                                  next_attempt_at: TERMINATION_RETRY.from_now, updated_at: Time.current)
       Rails.logger.warn("[Webhooks::McpEventsController] #{subscription.server} terminated subscription #{subscription.id} (#{code_name})")
       head :ok
     end
@@ -120,14 +128,23 @@ module Webhooks
         McpEventWebhookJob.perform_later(subscription.id, payload.slice("eventId", "name", "timestamp", "data")) if recorded
         recorded
       end
-      subscription.note_signed_request!(remote_id: remote_id, cursor: string_or_nil(payload["cursor"]), delivered: true)
+      subscription.note_signed_request!(remote_id: remote_id, cursor: cursor_from(payload), delivered: true)
 
       Rails.logger.info("[Webhooks::McpEventsController] Redelivery of #{request.headers['webhook-id']} on subscription #{subscription.id}; already accepted") unless first
       render json: { ok: true }
     end
 
-    def string_or_nil(value)
-      value.is_a?(String) && value.length <= 4096 ? value.presence : nil
+    # The cursor to persist, or :unchanged. By the SEP an absent cursor means null, but persisting
+    # null would make the next refresh "start from now", so only an explicit null clears the stored
+    # one; a value Zimmer would not store (not a string, or over 4 KB) leaves it as it was.
+    def cursor_from(payload)
+      return :unchanged unless payload.key?("cursor")
+
+      value = payload["cursor"]
+      return nil if value.nil?
+      return :unchanged unless value.is_a?(String) && value.length <= 4096
+
+      value.presence
     end
 
     # One counter per client address per window, as Api::V1::QuickRouterController keeps. A store

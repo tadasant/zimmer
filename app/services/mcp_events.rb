@@ -14,8 +14,9 @@
 #            both ways fires once.
 #
 # Push (`events/stream`) needs a long-lived listener Zimmer does not run. Every path on the
-# production host is behind Cloudflare Access, so the webhook receiver's path needs an Access bypass
-# rule, with the HMAC as its real authentication (see limitations.md and triggers.md).
+# production host is behind Cloudflare Access, so inbound webhooks need an Access policy that admits
+# the sender: the receiver's path gets a service-token policy the delivering server presents, and the
+# per-subscription HMAC is checked behind it (see limitations.md and triggers.md).
 #
 # The extension is an unmerged draft. SPEC_REVISION is the head commit this implementation was
 # written against; docs/src/content/docs/sessions/mcp-events-spec-pin.md records what it covers and

@@ -1821,8 +1821,8 @@ provider's delivery is switched on — see
 
 `POST /webhooks/mcp_events/:token` is not part of this API either. It is the callback URL of one MCP
 Events webhook subscription, authenticated by a Standard Webhooks signature with that subscription's
-secret, and it answers every failure with an empty 401. It is the one path meant to have a
-Cloudflare Access bypass. See [Webhook delivery](/sessions/triggers/#webhook-delivery).
+secret, and it answers every failure with an empty 401. In production it also sits behind a
+Cloudflare Access service-token policy of its own. See [Webhook delivery](/sessions/triggers/#webhook-delivery).
 
 ### Transcript content is redacted
 

@@ -462,7 +462,7 @@ it on, both read from encrypted credentials first and ENV second:
 With both set, `POST /webhooks/slack` is the request URL for the app's Event Subscriptions. With
 either missing it answers every request with a 404 and reads nothing. Production cannot receive
 deliveries yet, because nothing on the public internet can reach it — see
-[the limitation](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-bypass).
+[the limitation](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy).
 
 A delivery goes through these checks in order, and nothing further down runs for a request that
 fails one:
@@ -606,7 +606,7 @@ the same server's `whatsapp_send_message`. That means the poller and the agent s
 view of one chat.
 
 Zimmer polls the bridge because nothing can push to it: `/webhooks/*` has
-[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-bypass) unless its path has a bypass rule.
+[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy) unless its path has an Access policy that admits it.
 
 #### What fires
 
@@ -703,7 +703,7 @@ answers in markdown, and `EmailService` reads the fields it prints (`**ID:**`, `
 in its MCP servers. The poller never sends anything.
 
 Zimmer polls because nothing can push to it: `/webhooks/*` has
-[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-bypass) unless its path has a bypass rule.
+[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy) unless its path has an Access policy that admits it.
 
 #### What fires
 
@@ -887,8 +887,13 @@ The receiver, `POST /webhooks/mcp_events/:token`:
   `200` in the same transaction. The job fires through the poller's claim. An event that is held
   (burst control, a pending session) gives its claim back and the poll fires it later;
 - answers `410` to an event for a trigger that is disabled or edited, and is not yet unsubscribed;
-- keeps the cursor from each delivery and `gap` envelope. A `terminated` envelope sends the condition
-  back to subscribing.
+- keeps the cursor from each delivery and `gap` envelope; a body without a `cursor` leaves the
+  stored one alone. A `terminated` envelope sends the condition back to subscribing, ten minutes
+  later.
+
+Push does not keep the poll's order. The poll stops at the first event it cannot fire, so later
+events wait behind it; a webhook delivery fires on its own. So an event that arrives by push can
+fire before an earlier one held by burst control, which the catch-up poll fires afterwards.
 
 The trigger page, `GET /api/v1/triggers/:id` (`conditions[].mcp_event_delivery`) and
 `search_triggers` show each condition's delivery state:
@@ -897,25 +902,32 @@ The trigger page, `GET /api/v1/triggers/:id` (`conditions[].mcp_event_delivery`)
 | --- | --- | --- |
 | `poll-only` | The event type offers no webhook, or subscribing failed or has not happened yet. `last_error` says which, as an error name or one of the SEP's categories, never the server's text | every minute |
 | `subscribed` | `events/subscribe` succeeded, and no signed request has reached the URL yet | every minute |
-| `verified` | A signed request (the challenge or a delivery) has reached the URL, so the route through Cloudflare works | every 15 minutes, as catch-up |
-| `suspended` | The server's last refresh said it had suspended delivery after repeated failures, or the grant ran out | every minute |
+| `verified` | A signed request (the challenge or a delivery) reached the URL within the last seven hours, so the route through Cloudflare works. Older proof reads as `subscribed` again | every 15 minutes, as catch-up |
+| `suspended` | The server's last refresh reported a delivery `lastError`, or that it had suspended delivery after repeated failures, or the grant ran out | every minute |
 
-##### The Cloudflare Access bypass
+##### Cloudflare Access on the receiver
 
 Every path on the production host is behind
-[Cloudflare Access](/operate/deploying/#optional-cloudflare-edge). A webhook POST gets a 302 to the
-Access login, and the server signing it cannot present an Access service token. The receiver's path
-therefore needs an Access **bypass** rule, set by hand in Cloudflare Zero Trust:
+[Cloudflare Access](/operate/deploying/#optional-cloudflare-edge), and a request without Access
+credentials gets a 302 to the Access login. The receiver is no exception. Its path has an Access
+application of its own with a **service-token policy**, like every other machine path on the
+domain. No path is an open Bypass:
 
-- **Application:** a self-hosted application on the Zimmer hostname, path `webhooks/mcp_events/*`.
-  Access matches the most specific path, so this one overrides the hostname-wide application for
-  that path only.
-- **Policy:** action **Bypass**, include **Everyone**.
+- **Application:** self-hosted, on the Zimmer hostname, path `webhooks/mcp_events/*`. Access
+  matches the most specific path, so this one replaces the hostname-wide browser policy for that
+  path only.
+- **Policy:** a Service Auth policy admitting the service token the delivering server holds. strad
+  sends it as `CF-Access-Client-Id` / `CF-Access-Client-Secret` on every webhook POST, including the
+  verification challenge, alongside the Standard Webhooks headers.
 
-Nothing else on the host gets a bypass. The HMAC is the receiver's real authentication, and it is
-checked before anything parses the body. Without the rule the server's challenge gets the Access
-login page, `events/subscribe` fails with `callback_endpoint_error`, and the condition stays
-`poll-only`. Once the rule exists, the next retry (within six hours of backoff) succeeds.
+The application is managed in the production deployment's edge Terraform, not in this repo. That
+makes two layers. Access decides who may reach the path at all; the per-subscription HMAC decides
+whether a delivery is genuine and which subscription it belongs to. Zimmer never reads the Access
+headers. The HMAC is checked whatever Access did, before anything parses the body.
+
+Until the application exists, the server's challenge gets the Access login page,
+`events/subscribe` fails with `callback_endpoint_error`, and the condition stays `poll-only`. Once
+it exists, the next retry (within six hours of backoff) succeeds.
 
 #### The payload is untrusted
 
