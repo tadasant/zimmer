@@ -1108,13 +1108,14 @@ disk. So `get_session` always returns the transcript as a bounded slice (`Mcp::T
 
 | Parameter | What it does |
 | --- | --- |
+| `transcript_last_messages: N` | The last N human and assistant **messages** (1–200), however many events of tool traffic sit between them. Always conversation-only. See below. |
 | `transcript_tail: N` / `transcript_head: N` | The last / first N events. |
 | `transcript_from` / `transcript_to` | An index range; `transcript_to` is exclusive. |
 | `transcript_max_chars` | The character cap, 1,000–400,000 (≈4 characters a token). **Defaults to 40,000** when not given. |
 | `transcript_conversation_only: true` | Human and assistant text only, each tool call collapsed to one line; tool output, thinking and bookkeeping are left out. Works the same for every runtime, because it renders the normalized events. |
 | `transcript_format: "text"` | Readable text with each event prefixed `[#index]`, instead of raw JSONL. |
 
-Pass at most one of head, tail, or a range. Passing any `transcript_*` parameter implies
+Pass at most one of last-messages, head, tail, or a range. Passing any `transcript_*` parameter implies
 `include_transcript: true`. A session with no transcript yet gets a section saying so, not an error.
 
 An **event** is one stored JSONL line. Its 0-based index stays the same as the transcript grows,
@@ -1128,6 +1129,25 @@ fetch the rest. A tail, and the default with no selector, spends the cap from th
 "what is it doing now" is the usual question. A head or a range spends it from the oldest end. A
 single event bigger than the whole cap is cut mid-event, with its own marker, so a page always makes
 progress.
+
+**`transcript_last_messages` counts messages, not events.** Most events in a working session are
+tool traffic: a call and its output are two events, and neither is a message. So a conversation-only
+`transcript_tail: 20` taken after a burst of tool calls can come back with one assistant line, or
+none. `transcript_last_messages: N` walks back from the newest event until it has N user or assistant
+text messages, or the cap is spent, and folds each run of tool calls between two messages into one
+line such as `[… 40 tool calls (Bash ×20, Edit ×20) in events #1–#79 …]`, so the reader still sees
+that work happened and where to page for it. A compaction marker is shown but does not count. When
+the cap stops it short of N the section says how many it got and how to read further back; when the
+whole transcript has fewer than N messages it says that instead. The walk may parse a long stretch of
+tool traffic to find N messages; only what it returns counts against the cap.
+
+This is the read for grounding a decision when the status summary is not enough. `get_session` says
+so where the summary falls short: a `STALE` freshness line, and a missing summary, both name
+`transcript_last_messages: 10` as the next call. The same selector is on every surface `get_session`
+is on — the full `zimmer` server, `sessions_readonly`, and the `self_session` server every session
+gets — and it reads only what the rest of `get_session` already returns on that connection: the
+transcript text, from the chunk store, so it works for archived sessions whose clone is gone and for
+every runtime.
 
 **The default cap is deliberate.** `include_transcript: true` with no other parameter returns the
 newest ~40,000 characters rather than everything. Returning everything cannot work for any
