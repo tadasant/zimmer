@@ -33,7 +33,7 @@ import { Controller } from "@hotwired/stimulus"
  * restated as a constant here.
  */
 export default class extends Controller {
-  static targets = ["panel", "overlay", "frame", "resizeHandle"]
+  static targets = ["panel", "overlay", "frame", "resizeHandle", "skeleton"]
 
   // Resize bounds. The drawer never gets narrower than MIN_WIDTH or wider than
   // the viewport (less a small gutter so the overlay stays grabbable to close).
@@ -62,6 +62,21 @@ export default class extends Controller {
     this.boundDelegatedClose = this.handleDelegatedClose.bind(this)
     this.element.addEventListener("click", this.boundDelegatedClose)
 
+    // A drawer closed while its body is still in flight — from the skeleton's
+    // Close button, or Escape — must not have that body rendered into it when the
+    // response lands. Removing `src` does not cancel Turbo's fetch, and a rendered
+    // body would connect its Turbo Stream subscriptions to a session nobody is
+    // looking at, which is what clearing the frame on close exists to prevent.
+    this.boundBeforeFrameRender = this.handleBeforeFrameRender.bind(this)
+    this.frameTarget.addEventListener("turbo:before-frame-render", this.boundBeforeFrameRender)
+
+    // A network-level failure (no response at all) is not something
+    // frame_missing_recovery sees — that handles responses without a matching
+    // frame. Without this, the skeleton would keep pulsing over a load that is
+    // never going to finish.
+    this.boundFetchError = this.handleFetchError.bind(this)
+    this.frameTarget.addEventListener("turbo:fetch-request-error", this.boundFetchError)
+
     // Bound once so add/removeEventListener pair up during a drag.
     this.boundDoResize = this.doResize.bind(this)
     this.boundEndResize = this.endResize.bind(this)
@@ -79,6 +94,8 @@ export default class extends Controller {
   disconnect() {
     document.removeEventListener("keydown", this.boundKeydown)
     this.element.removeEventListener("click", this.boundDelegatedClose)
+    this.frameTarget.removeEventListener("turbo:before-frame-render", this.boundBeforeFrameRender)
+    this.frameTarget.removeEventListener("turbo:fetch-request-error", this.boundFetchError)
     window.removeEventListener("resize", this.boundViewportResize)
     this.stopResizeListeners()
     this.stopSettling()
@@ -139,11 +156,14 @@ export default class extends Controller {
     }
 
     // If a different session is being opened than the one still loaded in the
-    // frame, blank the frame first so the previous session's content doesn't
-    // flash while the new fetch is in flight.
+    // frame, replace the frame's content first so the previous session's doesn't
+    // flash while the new fetch is in flight. What replaces it is the loading
+    // skeleton, not nothing: the detail body is the heaviest response the
+    // dashboard asks for, and an empty panel for the length of that fetch reads
+    // as a hung page.
     if (this.frameTarget.getAttribute("src") !== url) {
       this.frameTarget.removeAttribute("src")
-      this.frameTarget.innerHTML = ""
+      this.showSkeleton()
     }
 
     // Setting src triggers a Turbo Frame fetch; the matching
@@ -153,8 +173,8 @@ export default class extends Controller {
     if (wasClosed) {
       this.show()
     } else {
-      // Already out, so no slide to replay — but blanking the frame above just
-      // destroyed the link that had focus, dropping it to <body>, outside this
+      // Already out, so no slide to replay — but replacing the frame's content
+      // above just destroyed the link that had focus, dropping it to <body>, outside this
       // aria-modal panel. Tab from there walks into the dashboard behind the
       // open drawer. Put focus back on the panel, as show() would have.
       this.panelTarget.focus({ preventScroll: true })
@@ -283,6 +303,34 @@ export default class extends Controller {
     const amount = parseFloat(trimmed)
     if (!Number.isFinite(amount)) return 0
     return trimmed.endsWith("ms") ? amount : amount * 1000
+  }
+
+  // Fill the frame with the server-rendered loading skeleton (the dashboard's
+  // <template data-session-drawer-target="skeleton">). Turbo replaces it with the
+  // detail body when the frame's fetch lands. A page without the template gets
+  // the empty frame it always had.
+  showSkeleton() {
+    if (this.hasSkeletonTarget) {
+      this.frameTarget.replaceChildren(this.skeletonTarget.content.cloneNode(true))
+    } else {
+      this.frameTarget.innerHTML = ""
+    }
+  }
+
+  handleBeforeFrameRender(event) {
+    if (event.target !== this.frameTarget || !this.isClosed) return
+    event.detail.render = () => {}
+  }
+
+  handleFetchError(event) {
+    if (event.target !== this.frameTarget) return
+    if (!this.frameTarget.querySelector(":scope > [data-drawer-skeleton]")) return
+
+    const message = document.createElement("p")
+    message.setAttribute("role", "status")
+    message.className = "m-4 sm:m-6 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+    message.textContent = "Couldn't load this session. Check the connection, then open it again."
+    this.frameTarget.replaceChildren(message)
   }
 
   // Eagerly-bound delegated handler for close controls inside the lazy-loaded
