@@ -207,11 +207,11 @@ table):
 
 | Cue | Sound | Peak | Plays |
 | --- | --- | --- | --- |
-| pressed | G5, G5, quick and level | −10.7 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
-| connected | E5, A5, rising | −8.9 dBFS | Once, when the call is up |
-| heard | E5, short | −9.6 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
+| pressed | G5, G5, quick and level | −10.6 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
+| connected | E5, A5, rising | −8.8 dBFS | Once, when the call is up |
+| heard | E5, short | −9.5 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
 | thinking | an A5 (880 Hz) tap, 75 ms, once a second | −9.9 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
-| working | E5, G5, a pair, every 2.5 s | −10 dBFS | While a tool runs, for as long as it runs |
+| working | E5, G5, a pair, every 2.5 s | −9.9 dBFS | While a tool runs, for as long as it runs |
 | failed | F4, D4, low and falling, with a strong octave | −8.6 dBFS | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
 | ended | E4, one low note with its octave | −10.2 dBFS | The driver hung up |
 | disconnected | A5, E5, falling | −8.6 dBFS | The call dropped |
@@ -227,8 +227,8 @@ is exactly what road and engine noise covers. So the cues sit near the level of 
 **And they are easy on the ears.** Loud and bright together wore on a long drive: Tadas asked for
 the cues to be "softer and less shrill". Softness here is shape and timbre, not level, so the
 loudness #1485 bought stays. Every note has a rounded 20 ms attack and a 25 ms release instead of a
-5 ms snap, no fundamental is above A5 (the tick was C6, the connected notes reached B5), less than
-−18 dB of any cue's energy is above 1.5 kHz, and the low notes lost the twelfth that made them buzz.
+5 ms snap, no note is above A5 (the tick was C6, the connected notes reached B5), every cue keeps
+its energy above 1.5 kHz under −18 dB of its total, and the low notes lost the twelfth that made them buzz.
 `testTheCuesAreSoftEdgedAndNotShrill` holds all of it. The numbers, before and after, and how to
 change a cue and test it in a car, are in [LIVE_CUES.md](LIVE_CUES.md).
 

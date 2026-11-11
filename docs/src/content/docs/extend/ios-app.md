@@ -811,8 +811,8 @@ are also soft-edged, because you hear them for hours: each note fades in over ab
 than snapping on, nothing is pitched above A5 (880 Hz), and little of any cue's energy is in the
 piercing range above 1.5 kHz. The rules for changing one, and a checklist for listening in a car,
 are in `ios/LIVE_CUES.md`. The
-browser's call dock makes the same ones at their earlier, quieter levels, without Pressed
-([Voice](/sessions/live/#voice)).
+browser's call dock plays the same events with an older set: quieter, brighter and snapping on,
+without Pressed ([Voice](/sessions/live/#voice)).
 
 | Sound | When | What it tells you |
 | --- | --- | --- |

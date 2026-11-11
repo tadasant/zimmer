@@ -475,9 +475,8 @@ final class LiveDiagnosticsTests: XCTestCase {
     }
 
     /// Soft, not shrill: heard many times an hour on a long drive, so no cue snaps on, none ends
-    /// on a click, none has a fundamental above A5, and little of any cue's energy is above
-    /// 1.5 kHz, where a tone turns piercing. The set before these failed the attack on every
-    /// note and the brightness on pressed, connected, thinking and disconnected (`ios/LIVE_CUES.md`).
+    /// on a click, no note in it is above A5, and little of any cue's energy is above 1.5 kHz,
+    /// where a tone turns piercing (`ios/LIVE_CUES.md`).
     func testTheCuesAreSoftEdgedAndNotShrill() {
         for cue in LiveCue.allCases {
             let samples = cue.samples()
@@ -485,7 +484,13 @@ final class LiveDiagnosticsTests: XCTestCase {
             let onset = samples.prefix(Int(0.005 * RealtimeAudio.sampleRate)).map(abs).max()!
             XCTAssertLessThan(onset, 0.3 * peak, "\(cue.rawValue): a rounded attack, not a snap")
             XCTAssertEqual(samples.last!, 0, accuracy: 0.01, "\(cue.rawValue): no click at the end")
-            XCTAssertLessThanOrEqual(Self.pitch(samples) * RealtimeAudio.sampleRate / 2, 900, "\(cue.rawValue): nothing above A5")
+            // Note by note: over a whole two-note cue the pitch is their average, which a high
+            // second note can hide under.
+            let window = Int(0.04 * RealtimeAudio.sampleRate)
+            let highest = stride(from: 0, through: samples.count - window, by: window / 4)
+                .map { Self.pitch(Array(samples[$0 ..< $0 + window])) * RealtimeAudio.sampleRate / 2 }
+                .max()!
+            XCTAssertLessThanOrEqual(highest, 900, "\(cue.rawValue): no note above A5")
             XCTAssertLessThan(Self.energyAbove(1_500, in: samples), -18, "\(cue.rawValue): little energy above 1.5 kHz")
         }
     }
@@ -523,8 +528,10 @@ final class LiveDiagnosticsTests: XCTestCase {
         return 10 * log10(mean)
     }
 
-    /// How much of a sound's energy is above `cutoff` Hz, in dB: a fourth-order Butterworth
-    /// high-pass (two biquads), then the energy that is left against the energy that went in.
+    /// How much of a sound's energy is above `cutoff` Hz, in dB: a fourth-order Linkwitz-Riley
+    /// high-pass (two Butterworth biquads, −6 dB at the cutoff), then the energy that is left
+    /// against the energy that went in. For these cues most of what passes is the fundamental's
+    /// skirt, so it caps how high a cue sits as much as how bright its harmonics are.
     private static func energyAbove(_ cutoff: Double, in samples: [Float]) -> Double {
         func highPass(_ input: [Double]) -> [Double] {
             let w = 2 * Double.pi * cutoff / RealtimeAudio.sampleRate
