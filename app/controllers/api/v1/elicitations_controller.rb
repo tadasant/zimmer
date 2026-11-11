@@ -75,8 +75,8 @@ class Api::V1::ElicitationsController < Api::BaseController
       expires_at: expires_at
     )
 
-    # Send push notification
-    SendPushNotificationJob.perform_later(session.id, :elicitation_pending, elicitation.message.truncate(150))
+    # The push and the Notification row are the model's (Elicitation#notify_human),
+    # so every creation path gets them.
 
     # Broadcast elicitation banner to session detail page
     broadcast_elicitation_created(session, elicitation)

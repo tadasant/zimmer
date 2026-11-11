@@ -19,6 +19,10 @@
 #   :needs_input      - Session requires user input (debounced via transition_marker)
 #   :session_failed   - Session encountered an error
 #   :custom_message   - Custom message (body text passed as third argument)
+#   :elicitation_pending - An MCP server is waiting on a human's approval. Enqueued
+#                       by Elicitation#notify_human with the elicitation's message as
+#                       the body and its id as the transition_marker, so each
+#                       prompt gets exactly one Notification row and one push.
 #
 # Debouncing:
 #   needs_input notifications are typically scheduled with a wait (e.g., 60s).
@@ -65,7 +69,8 @@ class SendPushNotificationJob < ApplicationJob
   # @param notification_type [String, Symbol] Type of notification to send
   # @param custom_message [String, nil] Custom message body (used with custom_message type)
   # @param transition_marker [Integer, nil] For needs_input: the
-  #   needs_input_count value captured at enqueue time. The job no-ops if the
+  #   needs_input_count value captured at enqueue time. For elicitation_pending:
+  #   the elicitation's id, which only keys the Notification row. The job no-ops if the
   #   session has transitioned out of needs_input or paused again since (the
   #   counter will no longer match), so brief flaps don't produce notifications.
   def perform(session_id, notification_type = "session_complete", custom_message = nil, transition_marker = nil)
@@ -141,7 +146,7 @@ class SendPushNotificationJob < ApplicationJob
   # Idempotently locate-or-create a Notification for this (session, type, marker).
   #
   # Returns [notification, created?]:
-  # - For marker-bearing types (currently needs_input): uses find_or_create_by!
+  # - For marker-bearing types (needs_input, elicitation_pending): uses find_or_create_by!
   #   against the partial unique index on
   #   (session_id, notification_type, transition_marker). Idempotent at the DB
   #   level even under concurrent retries — a RecordNotUnique race resolves to

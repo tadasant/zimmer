@@ -8,13 +8,45 @@ import { showAlert } from "lib/toast"
 // Collects field values from the dynamically-rendered form based on the JSON Schema,
 // then submits the response via fetch with Turbo Stream accept header.
 export default class extends Controller {
-  static targets = ["field", "fieldsContainer", "acceptButton", "declineButton", "cancelButton"]
+  static targets = ["field", "fieldsContainer", "acceptButton", "declineButton", "cancelButton", "acceptHint"]
   static values = {
     respondUrl: String,
     schema: Object
   }
 
+  connect() {
+    this.refreshAccept()
+  }
+
+  // A required yes/no field is the question Accept answers. Sent unticked it is an
+  // explicit `false`, which an MCP server reads as a refusal — the 1Password
+  // server reports it as "declined" — so a click meant as approval would record a
+  // decline (session #27239). Accept stays off until every such box is ticked;
+  // Decline is how to say no.
+  refreshAccept() {
+    if (!this.hasAcceptButtonTarget) return
+
+    const ready = this.unansweredRequiredBooleans().length === 0
+    this.acceptButtonTarget.disabled = !ready
+    this.acceptButtonTarget.classList.toggle("opacity-50", !ready)
+    this.acceptButtonTarget.classList.toggle("cursor-not-allowed", !ready)
+    if (this.hasAcceptHintTarget) this.acceptHintTarget.classList.toggle("hidden", ready)
+  }
+
+  unansweredRequiredBooleans() {
+    if (!this.hasFieldTarget) return []
+
+    return this.fieldTargets.filter(field =>
+      field.dataset.fieldType === "boolean" && field.dataset.fieldRequired === "true" && !field.checked
+    )
+  }
+
   accept() {
+    if (this.unansweredRequiredBooleans().length > 0) {
+      this.refreshAccept()
+      return
+    }
+
     const content = this.collectFieldValues()
     this.submitResponse("accept", content)
   }
@@ -95,6 +127,7 @@ export default class extends Controller {
 
   putBack(banner, place) {
     this.enableButtons()
+    this.refreshAccept()
     if (!place.parent || !place.parent.isConnected) return
     const next = place.next && place.next.parentNode === place.parent ? place.next : null
     place.parent.insertBefore(banner, next)

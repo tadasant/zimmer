@@ -104,13 +104,20 @@ public struct ElicitationForm: Hashable, Sendable {
     /// What an `accept` carries, as the web banner builds it: every field, an empty one as
     /// `null`, a toggle as `true`/`false`. A required field left empty is refused here, naming
     /// it, rather than sent for the MCP server to reject.
+    ///
+    /// A required toggle left off is refused too. It is the question Accept answers ("Create
+    /// this secure note?"), and an accept carrying `false` for it is a refusal: the 1Password
+    /// MCP server reports it as "declined". Sending it would record a decline for a tap meant
+    /// as approval. Decline is how to say no.
     public func content(from entries: [String: String], toggles: [String: Bool]) throws -> String {
         var object: [String: Any] = [:]
         for field in fields {
             let raw = (entries[field.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             switch field.kind {
             case .toggle:
-                object[field.key] = toggles[field.key] ?? false
+                let on = toggles[field.key] ?? false
+                if field.required, !on { throw ElicitationFormError.unconfirmed(field.title) }
+                object[field.key] = on
                 continue
             case let .number(integer):
                 if raw.isEmpty {
@@ -135,11 +142,13 @@ public struct ElicitationForm: Hashable, Sendable {
 public enum ElicitationFormError: Error, Equatable, Sendable {
     case missing(String)
     case notANumber(String)
+    case unconfirmed(String)
 
     public var message: String {
         switch self {
         case let .missing(title): return "\(title) is required."
         case let .notANumber(title): return "\(title) needs a number."
+        case let .unconfirmed(title): return "Turn on Yes for \(title) to accept, or Decline."
         }
     }
 }
