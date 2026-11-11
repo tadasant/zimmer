@@ -393,6 +393,9 @@ final class LiveAudioEngine {
     /// When the microphone last delivered audio (system uptime), or nil before it has.
     var lastMicAudio: TimeInterval? { sink.lastAudio }
 
+    /// The call's engine is up and running here, not out on `queue`.
+    var isRunning: Bool { engine?.isRunning == true }
+
     // MARK: - Cues
 
     /// Play a one-shot cue after `delay`, or once the queued reply has played if that is later,

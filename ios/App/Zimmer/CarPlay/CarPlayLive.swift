@@ -153,6 +153,8 @@ final class CarPlayLive {
         telemetry.track(.carPlay("talk_tapped", ["call_active": .bool(call.isActive), "tile": .string(String(describing: tile))]))
         comeback?.talkTapped()
         guard !retry.lookingUp else { return }
+        // Heard at once: the call's audio comes up and says so while the conversation is found.
+        call.pressed()
         wish.tapped(tile, callIsActive: call.isActive)
         // A fresh start is asked for out loud: a mute left over from the call it replaces would
         // open a new conversation on a microphone that hears nothing. Retry keeps it.
