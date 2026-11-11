@@ -33,7 +33,7 @@ import { Controller } from "@hotwired/stimulus"
  * restated as a constant here.
  */
 export default class extends Controller {
-  static targets = ["panel", "overlay", "frame", "resizeHandle"]
+  static targets = ["panel", "overlay", "frame", "resizeHandle", "skeleton"]
 
   // Resize bounds. The drawer never gets narrower than MIN_WIDTH or wider than
   // the viewport (less a small gutter so the overlay stays grabbable to close).
@@ -139,11 +139,14 @@ export default class extends Controller {
     }
 
     // If a different session is being opened than the one still loaded in the
-    // frame, blank the frame first so the previous session's content doesn't
-    // flash while the new fetch is in flight.
+    // frame, replace the frame's content first so the previous session's doesn't
+    // flash while the new fetch is in flight. What replaces it is the loading
+    // skeleton, not nothing: the detail body is the heaviest response the
+    // dashboard asks for, and an empty panel for the length of that fetch reads
+    // as a hung page.
     if (this.frameTarget.getAttribute("src") !== url) {
       this.frameTarget.removeAttribute("src")
-      this.frameTarget.innerHTML = ""
+      this.showSkeleton()
     }
 
     // Setting src triggers a Turbo Frame fetch; the matching
@@ -283,6 +286,18 @@ export default class extends Controller {
     const amount = parseFloat(trimmed)
     if (!Number.isFinite(amount)) return 0
     return trimmed.endsWith("ms") ? amount : amount * 1000
+  }
+
+  // Fill the frame with the server-rendered loading skeleton (the dashboard's
+  // <template data-session-drawer-target="skeleton">). Turbo replaces it with the
+  // detail body when the frame's fetch lands. A page without the template gets
+  // the empty frame it always had.
+  showSkeleton() {
+    if (this.hasSkeletonTarget) {
+      this.frameTarget.replaceChildren(this.skeletonTarget.content.cloneNode(true))
+    } else {
+      this.frameTarget.innerHTML = ""
+    }
   }
 
   // Eagerly-bound delegated handler for close controls inside the lazy-loaded

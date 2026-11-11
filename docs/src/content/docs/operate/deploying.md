@@ -1375,11 +1375,20 @@ registers nothing and every seam is native.
 ### Static files in `public/` are not digest stamped
 
 `config.public_file_server.headers` in `production.rb` and `staging.rb` sets the cache header for
-everything under `public/` — `manifest.json`, `service-worker.js`, `404.html`, and the icons. It does
-**not** cover the compiled asset bundle: Propshaft serves that under `/assets` with its own
-far-future headers, and those filenames carry a content digest.
+everything `ActionDispatch::Static` serves out of `public/` — `manifest.json`, `service-worker.js`,
+`404.html`, the icons, and the precompiled asset bundle under `public/assets`.
 
-Nothing in `public/` does. Each of those files lives at a URL that never changes, so a far-future
+The asset bundle is the exception that gets a year. Its filenames carry a content digest
+(`tailwind-153f0432.css`), so a deploy that changes one changes its URL.
+`DigestedAssetCacheHeaders` (`lib/middleware/`) wraps Static and rewrites `Cache-Control` on any
+digest-stamped `/assets` response to `public, max-age=31536000, immutable`. Without it the bundle
+got the same hour as everything else, and a browser returning after an hour revalidated all ~110
+files — two render-blocking stylesheets and every importmap module Turbo and Stimulus load before
+the dashboard's board frame can start fetching — before it showed anything. With it, a returning
+browser makes no asset requests at all. Propshaft's own dev server sets the same header, so this is
+only visible in a deployed environment.
+
+Nothing else in `public/` is digest stamped. Each of those files lives at a URL that never changes, so a far-future
 `max-age` there pins whatever a browser fetched first — replace an icon or edit the manifest and the
 change reaches nobody who already loaded the old one. The header is therefore one hour, not one year.
 

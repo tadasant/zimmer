@@ -1033,6 +1033,60 @@ class SessionsTest < ApplicationSystemTestCase
     end
   end
 
+  # The drawer slides in on a loading skeleton, not an empty panel, for the whole
+  # time the detail body is in flight — and the skeleton's close control works
+  # before the body arrives.
+  test "the session detail drawer shows a skeleton while the detail loads" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Slow drawer session",
+      status: :running
+    )
+
+    # Hold the drawer response until the test has seen the skeleton. The app
+    # server runs in this process, so a queue is enough to gate it.
+    release = Queue.new
+    original = SessionsController.instance_method(:drawer)
+    SessionsController.define_method(:drawer) do
+      release.pop(timeout: 15)
+      original.bind_call(self)
+    end
+
+    begin
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+      find("a[aria-label='View session #{session.id}']").click
+
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']"
+      within "turbo-frame#session_detail" do
+        assert_selector "[role='status'][aria-label='Loading session']"
+      end
+
+      release << true
+
+      # The real body replaces the skeleton.
+      assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+      assert_no_selector "turbo-frame#session_detail [aria-label='Loading session']"
+
+      # The skeleton's own close control dismisses the drawer before the body
+      # arrives — once the panel has settled, like every other control in it.
+      find("body").send_keys(:escape)
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+      other = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Other drawer session", status: :running)
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+      find("a[aria-label='View session #{other.id}']").click
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
+      within "turbo-frame#session_detail" do
+        assert_selector "[aria-label='Loading session']"
+        find("button[aria-label='Close session details']").click
+      end
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='true']", visible: :all
+    ensure
+      release << true
+      release << true
+      SessionsController.define_method(:drawer, original)
+    end
+  end
+
   test "the session detail drawer closes via the close button and Escape" do
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",
