@@ -290,8 +290,9 @@
             <p>No message anywhere in this hierarchy was authored by a named human.</p>
           <% end %>
           <p class="mt-1 text-xs text-gray-400">
-            Zimmer records a message only when it can establish the human at the input boundary — the web UI, or a Slack
-            message from a mapped user. Everything else that arrives as a user turn (an agent's follow-up over the API, a
+            Zimmer records a message only when it can establish the human at the input boundary — the web UI, a Slack
+            message from a mapped user, an assistant connection allowed to act on its approver's behalf, or Live Mode
+            answering a person signed in on the web or the iOS app. Everything else that arrives as a user turn (an agent's follow-up over the API, a
             router-written spawn prompt, a scheduled or self-scheduled wake-up, a heartbeat nudge, a resumption, a GitHub
             comment) is machine-authored and records nothing.
           </p>
@@ -324,6 +325,12 @@
                 <% end %>
               </div>
               <p class="mt-1.5 text-sm text-gray-800 whitespace-pre-wrap break-words"><%= entry.content %></p>
+              <% if entry.relayed_message.present? %>
+                <div class="mt-1.5 border-l-2 border-gray-200 pl-3" data-live-mode-relayed>
+                  <p class="text-xs text-gray-500">Delivered by the Live Mode assistant on the strength of it:</p>
+                  <p class="mt-0.5 text-sm text-gray-600 whitespace-pre-wrap break-words"><%= entry.relayed_message %></p>
+                </div>
+              <% end %>
             </li>
           <% end %>
         </ul>

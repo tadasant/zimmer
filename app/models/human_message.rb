@@ -27,11 +27,17 @@ class HumanMessage < ApplicationRecord
   # delivered, which the human may have spoken to that assistant rather than
   # typed — and which anything that steered the assistant could also have
   # written. The provenance names the grant and the client, so a reader can
-  # weigh it differently from the other two.
+  # weigh it differently from the other two. `live_mode` is the person's own
+  # words in a Live Mode conversation — typed, or their speech as transcribed —
+  # whose turn was authenticated as theirs by the web UI or by the iOS app's
+  # grant acting as them, recorded on the session the Live Mode assistant then
+  # delivered a message into. The assistant chose that session and wrote what
+  # it delivered (`relayed_message`), so the record carries both.
   WEB_UI = "web_ui"
   SLACK = "slack"
   ASSISTANT = "assistant"
-  CHANNELS = [ WEB_UI, SLACK, ASSISTANT ].freeze
+  LIVE_MODE = "live_mode"
+  CHANNELS = [ WEB_UI, SLACK, ASSISTANT, LIVE_MODE ].freeze
 
   MAX_CONTENT_LENGTH = Session::PROMPT_MAX_LENGTH
 
@@ -113,6 +119,14 @@ class HumanMessage < ApplicationRecord
     provenance["oauth_client_name"]
   end
 
+  # What the Live Mode assistant actually delivered into the session, beside
+  # the person's own words in `content`. nil on every other channel.
+  def relayed_message
+    provenance["relayed_message"].presence if channel == LIVE_MODE
+  end
+
+  LIVE_MODE_SURFACES = { "web" => "web", "ios" => "iOS app", "carplay" => "CarPlay" }.freeze
+
   # Where this message reached Zimmer, in words a reader can weigh.
   def channel_label
     case channel
@@ -121,11 +135,18 @@ class HumanMessage < ApplicationRecord
       slack_channel_name.present? ? "Slack (#{slack_channel_name})" : "Slack"
     when ASSISTANT
       "#{oauth_client_name.presence || 'an assistant'} (OAuth grant ##{oauth_grant_id}, acting on their behalf)"
+    when LIVE_MODE then live_mode_label
     else channel
     end
   end
 
   private
+
+  def live_mode_label
+    heard = provenance["heard"] == "spoken" ? "spoken, as transcribed" : "typed"
+    where = [ LIVE_MODE_SURFACES[provenance["client_surface"]], heard ].compact.join(", ")
+    "Live Mode (#{where}; delivered by the Live Mode assistant)"
+  end
 
   def author_must_be_a_known_human
     return if author.present? && User.for_key(author).present?

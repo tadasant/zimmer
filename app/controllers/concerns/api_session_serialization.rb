@@ -223,6 +223,7 @@ module ApiSessionSerialization
         authored_in: entry.authored_in,
         entry_point: entry.entry_point,
         content: entry.content,
+        relayed_message: entry.relayed_message,
         occurred_at: entry.occurred_at.iso8601
       }
     end

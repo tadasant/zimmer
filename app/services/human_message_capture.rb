@@ -33,6 +33,13 @@
 #         at /oauth/authorize behind the web sign-in wall and chose, there or on
 #         the connections page, to let it act on their behalf. A grant without
 #         that scope is "relay only" and records nothing.
+#   * The same MCP tools called by the Live Mode assistant, through
+#     LiveConversations::ToolBridge (in process — never POST /mcp)
+#       → the author stamped on the conversation's latest `user` turn by the
+#         boundary that accepted it: the web UI (User.admin) or the iOS app on a
+#         grant acting as its person (User.for_email). Channel `live_mode`. A turn
+#         the `action_live_conversation` MCP tool wrote has no author, and a
+#         delivery that follows one records nothing.
 #   * Api::V1::SessionsController#follow_up and #authorize_merge, and
 #     Api::V1::QuickRouterController, on the iOS app's bearer token
 #     (`accepts_native_app_tokens`)
@@ -136,7 +143,86 @@ class HumanMessageCapture
       )
     end
 
+    # How recent the person's words have to be for a Live Mode delivery to be
+    # recorded as theirs. A live model acts within seconds of being spoken to;
+    # one acting long after the person last said anything is acting on its own.
+    LIVE_MODE_WORDS_FRESH_FOR = 5.minutes
+    # Characters of the assistant's relayed text kept beside the person's words.
+    LIVE_MODE_RELAYED_LIMIT = 4_000
+
+    # Record a message the Live Mode assistant delivered into a session, as the
+    # words of the person it was talking to.
+    #
+    # The author comes from the conversation's own `user` turns, never from the
+    # tool call: each one is stamped at the boundary that accepted it
+    # (LiveConversations::Author — the web UI's sign-in, or the iOS app's grant
+    # acting as its person), and a turn written any other way (the
+    # `action_live_conversation` MCP tool) carries no author. So this records
+    # only when the newest thing a person said in the conversation is
+    # authenticated, recent, and therefore what the assistant is acting on.
+    #
+    # The content is the person's own words — typed, or their speech as
+    # transcribed — not the assistant's rewording of them. What the assistant
+    # actually delivered rides in provenance as `relayed_message`, and every
+    # rendering shows both, so a reader can see what was said and what the
+    # session was told.
+    #
+    # @param conversation [LiveConversation] the conversation whose tool call delivered it
+    # @param content [String] what the assistant delivered into the session
+    # @param entry_point [String] e.g. "live_mode.follow_up"
+    def record_live_mode_message(session:, conversation:, content:, entry_point:, occurred_at: Time.current)
+      return nil if conversation.nil?
+
+      words = latest_authored_words(conversation, now: occurred_at)
+      return nil if words.empty?
+
+      speaker = words.last
+      record(
+        session: session,
+        author: User.for_key(speaker.author),
+        channel: HumanMessage::LIVE_MODE,
+        content: words.map(&:content).join("\n"),
+        occurred_at: occurred_at,
+        provenance: {
+          "entry_point" => entry_point,
+          "live_conversation_id" => conversation.id,
+          "live_turn_ids" => words.map(&:id),
+          "heard" => speaker.source,
+          "client_surface" => conversation.client_surface,
+          "relayed_message" => content.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
+        }.merge(speaker.author_provenance.to_h.slice("via", "oauth_grant_id", "grant_user_email")).compact
+      )
+    rescue => e
+      Rails.logger.error("[HumanMessageCapture] Failed to read live conversation #{conversation&.id}: #{e.class}: #{e.message}")
+      nil
+    end
+
     private
+
+    # The newest run of things a person said in the conversation, oldest first:
+    # the latest `user` turn and the `user` turns just before it by the same
+    # author, back to the assistant's previous answer. Assistant lines after that
+    # latest turn are skipped, not a stop: on a voice call the model often says
+    # "sending that now" before its tool call, and the client records that line
+    # first. Empty when the latest `user` turn has no author — someone the
+    # boundary did not authenticate as a person spoke last — or is older than
+    # LIVE_MODE_WORDS_FRESH_FOR.
+    def latest_authored_words(conversation, now:)
+      words = []
+      conversation.turns.where(role: %w[user assistant]).reorder(id: :desc).limit(40).each do |turn|
+        if turn.user?
+          break if words.any? && turn.author != words.first.author
+
+          words.unshift(turn)
+        elsif words.any?
+          break
+        end
+      end
+      latest = words.last
+      return [] if latest.nil? || latest.author.blank? || latest.created_at < now - LIVE_MODE_WORDS_FRESH_FOR
+
+      words
+    end
 
     # @return [HumanMessage, nil] nil whenever the actor could not be
     #   established, the content is empty, or the write failed.

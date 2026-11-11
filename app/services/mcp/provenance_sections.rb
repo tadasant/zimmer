@@ -210,11 +210,32 @@ module Mcp
           lines << "  #{TextBudget.truncation_note(shown: content_limit, total: content.length,
             restore: 'Full text: `get_session_provenance` on this session, or `get_session` with `verbose: true`.')}"
         end
+        lines.concat(relayed_lines(entry, content_limit))
       end
 
       lines.concat(omission_footer(omitted, unretrievable))
 
       lines.concat(people_lines(record, shown))
+    end
+
+    # A `live_mode` entry's content is what the person said; the Live Mode
+    # assistant chose the session and wrote what it delivered, which is shown
+    # beneath it so a reader can check the one against the other.
+    def relayed_lines(entry, content_limit)
+      relayed = entry.relayed_message
+      return [] if relayed.blank?
+
+      relayed = Sanitize.sanitize_for_fence(relayed)
+      cut = content_limit && TextBudget.over?(relayed, content_limit)
+      lines = [ "  The content above is what the person said. The Live Mode assistant delivered this into the session on the strength of it:" ]
+      lines << "  ```"
+      (cut ? TextBudget.hard_truncate(relayed, content_limit) : relayed).each_line { |line| lines << "  #{line.chomp}" }
+      lines << "  ```"
+      if cut
+        lines << "  #{TextBudget.truncation_note(shown: content_limit, total: relayed.length,
+          restore: 'Full text: `get_session_provenance` on this session, or `get_session` with `verbose: true`.')}"
+      end
+      lines
     end
 
     # The channels this hierarchy came in through that capture cannot write for.
