@@ -532,14 +532,24 @@ conversation is stamped with an author by the boundary that accepted it:
 - the iOS app, on a connection that acts on its approver's behalf: the roster row matching that
   approver's email. A relay-only connection cannot reach Live Mode at all.
 
-A turn written by `action_live_conversation send_message` carries no author, whoever called it. When
-the assistant delivers a message into a session, Zimmer reads the conversation's newest `user` turn
-(skipping any lines the assistant said after it). It records a message only if that turn has an
-author and is less than five minutes old. Otherwise nothing is recorded.
+A turn written by `action_live_conversation send_message` carries no author, whoever called it, and
+so does every turn from before authors were recorded. When the assistant delivers a message into a
+session, Zimmer records it only if all of these hold:
+
+- **Nothing in the conversation is unauthored.** The model reads the whole thread, so one line an
+  agent typed into it can tell the model to deliver something whenever the person next speaks. A
+  conversation with such a line never records. Start a new one.
+- **The Live mode guidance was not last written by an agent session.** The guidance is in every
+  conversation's system prompt, so the same steering works from there. A change made through
+  `action_live_settings`, or by the live model in a conversation an agent typed into, stops Live
+  Mode capture everywhere until a person changes the guidance on the settings page or in the app. A
+  change the live model makes at the person's request in a clean conversation does not.
+- **The person spoke last, alone and recently.** The `user` lines since the assistant's previous
+  answer (skipping lines the assistant said after them) all have the same author, and at least one is
+  under five minutes old.
 
 The content is the person's own words: what they typed, or their speech as the voice call
-transcribed it, including the lines just before it by the same person since the assistant last
-answered. What the assistant actually sent into the session is kept as `relayed_message` and shown
+transcribed it, keeping the lines of that run that are under five minutes old. What the assistant actually sent into the session is kept as `relayed_message` and shown
 under the person's words on every surface. `provenance` also holds `live_conversation_id`,
 `live_turn_ids`, `heard` (`typed` or `spoken`), `client_surface`, `via` (`web_ui` or `ios_app`) and,
 for the app, `oauth_grant_id` and `grant_user_email`.
@@ -557,13 +567,14 @@ for the app, `oauth_grant_id` and `grant_user_email`.
 
 What this establishes, and what it does not:
 
-- **A person said these words**, signed in. An agent session cannot make a `live_mode` record: the
-  fleet's API keys reach Live Mode only through `action_live_conversation`, whose turns have no
-  author, and nothing on `POST /mcp` can mark a call as Live Mode's.
+- **A person said these words**, signed in, and no agent session wrote into what the model was
+  reading. The fleet's API keys reach Live Mode only through `action_live_conversation`, whose turns
+  have no author and disqualify the conversation, and `action_live_settings`, whose guidance
+  disqualifies capture. Nothing on `POST /mcp` can mark a call as Live Mode's.
 - **The assistant chose the session and wrote the message.** As with the
-  [assistant channel](#the-assistant-channel), anything that steers the Live Mode model (a tool's
-  output, a session's reply) can send a message to some session while the person's latest words sit
-  beside it. That is why the record keeps both. A session acting on a `live_mode` record should check
+  [assistant channel](#the-assistant-channel), output the model reads in the middle of a reply (a
+  tool's result, a session's `get_session` text) can still steer it to send a message to some session
+  while the person's latest words sit beside it. That is why the record keeps both. A session acting on a `live_mode` record should check
   that the person's words answer what it asked.
 - **On a voice call the words can be one line behind.** The model can call a tool before the
   person's latest line has been transcribed, so the record shows the line before it. The five-minute
