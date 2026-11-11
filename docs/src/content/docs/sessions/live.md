@@ -325,8 +325,9 @@ the conversation page. A Turbo navigation replaces the page body, and a peer con
 would drop on every click. The dock keeps the call, its mute and hang-up buttons, and a link back to
 the thread while you look around Zimmer.
 
-The dock makes the same sounds as the phone and the car: heard, thinking, a tool working, failed,
-ended ([the table](/extend/ios-app/#carplay)), from `lib/live_cues.js`. While a cue sounds the
+The dock plays a cue for the same events as the phone and the car: heard, thinking, a tool working,
+failed, ended ([the table](/extend/ios-app/#carplay)), from `lib/live_cues.js`. Its sounds are an
+older set than the phone's, quieter and brighter. While a cue sounds the
 microphone track is disabled, which sends silence. A browser that blocks audio has a call with no
 cues, and the call still works.
 
