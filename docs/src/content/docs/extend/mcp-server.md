@@ -1136,10 +1136,13 @@ tool traffic: a call and its output are two events, and neither is a message. So
 none. `transcript_last_messages: N` walks back from the newest event until it has N user or assistant
 text messages, or the cap is spent, and folds each run of tool calls between two messages into one
 line such as `[… 40 tool calls (Bash ×20, Edit ×20) in events #1–#79 …]`, so the reader still sees
-that work happened and where to page for it. A compaction marker is shown but does not count. When
-the cap stops it short of N the section says how many it got and how to read further back; when the
-whole transcript has fewer than N messages it says that instead. The walk may parse a long stretch of
-tool traffic to find N messages; only what it returns counts against the cap.
+that work happened and where to page for it. A compaction is shown as a marker and does not count, and
+neither does the summary Claude Code writes after one, which wears a user role but is not a person
+speaking. A stored line is always read to its end, so a window boundary never splits one. When the cap
+stops the walk short of N, the section says how many it got and how to read further back. When the
+whole transcript has fewer than N messages, it says that instead. Tool traffic costs nothing against
+the cap, so the walk reads back at most 20,000 events (`TranscriptSlice::MAX_SCAN_EVENTS`) and says so
+if it stopped there.
 
 This is the read for grounding a decision when the status summary is not enough. `get_session` says
 so where the summary falls short: a `STALE` freshness line, and a missing summary, both name

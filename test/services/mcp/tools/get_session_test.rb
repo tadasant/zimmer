@@ -517,7 +517,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes section, "- **Returned:** 2 messages from events #0–#81"
     assert_equal [
       "[#0] User: please fix the build",
-      "[… 40 tool calls (Bash ×20, Edit ×20) in events #1–#79 …]",
+      "[… 40 tool calls (Bash ×20, Edit ×20) in events #1–#80 …]",
       "[#81] Assistant: the build is fixed"
     ], section[/```\n(.*)```/m, 1].lines.map(&:chomp)
     refute_includes section, "BURST-OUTPUT"
@@ -532,7 +532,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_equal [
       "[#6] User: question 2",
       "[#7] Assistant: answer 2",
-      "[… 1 tool call (Bash) in event #7 …]"
+      "[… 1 tool call (Bash) in events #7–#8 …]"
     ], section[/```\n(.*)```/m, 1].lines.map(&:chomp)
     assert_includes section, "- **Outside the returned window:** earlier: events #0–#5 (`transcript_from: 0, transcript_to: 6`)."
     refute_includes section, "Truncated"
@@ -584,9 +584,50 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
 
     section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
 
-    assert_equal [ "[#1] User: fix the build", "[… 1 tool call (shell) in event #2 …]", "[#4] Assistant: build fixed" ],
+    assert_equal [ "[#1] User: fix the build", "[… 1 tool call (shell) in events #2–#3 …]", "[#4] Assistant: build fixed" ],
       section[/```\n(.*)```/m, 1].lines.map(&:chomp)
     refute_includes section, "CODEX-TOOL-OUTPUT"
+  end
+
+  test "transcript_last_messages shows a compaction, and neither it nor the summary after it counts as a message" do
+    session = session_with_transcript([
+      { "type" => "user", "message" => { "role" => "user", "content" => "before the compaction" } },
+      { "type" => "system", "subtype" => "compact_boundary", "content" => "Conversation compacted" },
+      { "type" => "user", "isCompactSummary" => true, "message" => { "role" => "user", "content" => "This session is being continued. SUMMARY-TEXT" } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "carrying on" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 2))
+
+    assert_includes section, "[#0] User: before the compaction"
+    assert_includes section, "[#2] [context compacted — the summary it left is omitted]"
+    assert_includes section, "[#3] Assistant: carrying on"
+    refute_includes section, "SUMMARY-TEXT"
+    assert_includes section, "- **Returned:** 2 messages from events #0–#3"
+  end
+
+  test "transcript_last_messages counts an Agent spawn as one tool call" do
+    session = session_with_transcript([
+      { "type" => "user", "message" => { "role" => "user", "content" => "go" } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [
+        { "type" => "tool_use", "id" => "a1", "name" => "Agent", "input" => { "description" => "review", "prompt" => "x" } }
+      ] } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "reviewed" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
+
+    assert_includes section, "[… 1 tool call (Agent) in event #1 …]"
+  end
+
+  test "transcript_last_messages on a transcript of only tool traffic folds it and says there are no messages" do
+    session = session_with_transcript(burst_transcript(3).lines[1..-2].join) # the six tool events, no messages
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
+
+    assert_includes section, "- **Returned:** 0 messages from events #0–#5"
+    assert_includes section, "[… 3 tool calls (Bash ×2, Edit) in events #0–#5 …]"
+    assert_includes section, "- **Not truncated:** the whole transcript holds only 0 messages"
   end
 
   test "transcript_last_messages on an empty transcript says it has nothing" do
