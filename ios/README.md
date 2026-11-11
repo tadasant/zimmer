@@ -333,5 +333,6 @@ Each unblocks the next:
   `LiveCueGate`, `LiveCueDirector`; the web's `lib/live_cues.js` is in `LiveVoiceCuesTest`), its
   microphone watchdog (`MicWatchdog`) and its call log
   (`LiveTelemetry`, `LiveCallTimeline`), in `LiveDiagnosticsTests`. The sounds themselves have not
-  been heard on a device. When a call goes wrong on a real phone or in the car, its trace is in
+  been heard on a device; how they should sound, and a checklist for hearing them in a car, is
+  [LIVE_CUES.md](LIVE_CUES.md). When a call goes wrong on a real phone or in the car, its trace is in
   VictoriaLogs under `scope.name:="ios.live"` (docs: Operate → Observability → The iOS app's call log).
