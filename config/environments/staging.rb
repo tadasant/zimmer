@@ -79,9 +79,10 @@ Rails.application.configure do
   # Full error reports are disabled.
   config.consider_all_requests_local = false
 
-  # Matches production: these headers cover public/, which is not digest stamped,
-  # so a far-future max-age would pin a stale icon or manifest at a URL that never
-  # changes. Propshaft serves the digested build output under /assets separately.
+  # Matches production: these headers are for public/'s own files, which are not
+  # digest stamped, so a far-future max-age would pin a stale icon or manifest at a
+  # URL that never changes. The digested build output under public/assets gets a
+  # year from DigestedAssetCacheHeaders (config/application.rb) instead.
   config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.hour.to_i}" }
 
   # Enable serving of images, stylesheets, and JavaScripts from an asset server.

@@ -145,7 +145,17 @@ frame shows grey placeholder rows shaped like the real ones.
 
 `/board` is its own path rather than a frame variant of `/` for the reason the session drawer's is:
 Turbo's prefetch cache is keyed on the URL alone. Links and buttons inside the board navigate the
-whole page, never just the frame. The *tucked away* count in the Filters legend
+whole page, never just the frame.
+
+Opening a session in the drawer is a third request, `GET /sessions/:id/drawer`. That body is the
+heaviest thing the dashboard asks for, so the drawer does not wait for it with an empty panel: it
+slides in on a grey skeleton shaped like the session header, and the skeleton's Close button already
+works. The real body replaces it when it lands.
+
+A browser that has loaded Zimmer before downloads none of the page's scripts or stylesheets again.
+They are digest-stamped and cached for a year (see
+[Static files in `public/`](/operate/deploying/#static-files-in-public-are-not-digest-stamped)), so
+the board's fetch starts as soon as the shell arrives. The *tucked away* count in the Filters legend
 arrives with the board, because it is counted through every filter the board applies. After a
 phone wakes the page, the reconnect backfill re-fetches `/board` to bring its rows up to date.
 

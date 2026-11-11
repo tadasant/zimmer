@@ -797,4 +797,10 @@
       <% end %>
     </div>
   </div>
+
+  <%# What session-drawer#open puts in the frame while the detail body is in
+      flight, so the drawer never slides in empty. %>
+  <template data-session-drawer-target="skeleton">
+    <%= render "sessions/drawer_skeleton" %>
+  </template>
 </div>
