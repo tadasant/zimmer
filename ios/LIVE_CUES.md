@@ -32,9 +32,9 @@ Each one is held by a test in `Tests/ZimmerKitTests/LiveDiagnosticsTests.swift`,
 | Loudness | RMS ≥ −23 dBFS over the whole cue | Loud for its length, not one spike | same |
 | Length | Under 0.45 s; the thinking tap under 80 ms | Information, not music | same, `testTheCuesAreShortAndTellOnFromOff` |
 | Loop duty | Under 10% of the period | The microphone is closed while a cue sounds | `testEveryCueIsLoudEnoughForACarAndStillBrief` |
-| Fundamental, *on / heard / busy* cues | 600 – 900 Hz (D5 to A5) | Above the car's noise, below shrill | `testTheCuesSitAboveTheRoadNoise`, `testTheCuesAreSoftEdgedAndNotShrill` |
+| Fundamental, *on / heard / busy* cues | 600 – 900 Hz (about E5 to A5), each note checked on its own | Above the car's noise, below shrill | `testTheCuesSitAboveTheRoadNoise`, `testTheCuesAreSoftEdgedAndNotShrill` |
 | Fundamental, *failed / ended* | Below 0.7× the happy cues (about 290–350 Hz) | Low means *not good* | `testWorkingCannotPassForThinkingNorFailedForAnythingHappy` |
-| Energy above 1.5 kHz | Below −18 dB of the cue's total | This is where a tone gets piercing | `testTheCuesAreSoftEdgedAndNotShrill` |
+| Energy above 1.5 kHz | Below −18 dB of the cue's total, through a 4th-order high-pass at 1.5 kHz | This is where a tone gets piercing. For these cues most of what passes is the fundamental's skirt, so it is a second ceiling on pitch as much as a harmonics budget: a pure A5 scores −19.8 dB | `testTheCuesAreSoftEdgedAndNotShrill` |
 | Attack | In the first 5 ms, under 30% of the peak; a note reaches full level in about 20 ms | A snap on is what makes a tone sound harsh | same |
 | Release | Fades to zero by the last sample, over about 25 ms | No click at the end | same |
 | Harmonics | Fundamental plus a trace of its octave (0.12) on high notes; up to 0.45 octave on low notes; **no odd harmonics** | The octave is warm and carries a low note into the 600–700 Hz band; a twelfth (3rd harmonic) buzzes | *(guideline)* |
@@ -89,8 +89,8 @@ keep in step between the phone and the car, and no resampling.
    PCM in a WAV) and play them back on a phone speaker and on headphones, then in a car (the
    checklist below). The levels in the tables are the synthesized samples; what the driver hears
    also goes through the voice-processing engine and the car's own processing.
-5. Keep the web dock (`app/javascript/lib/live_cues.js`) in mind. It has its own, older levels,
-   and nothing forces it to follow.
+5. Keep the web dock (`app/javascript/lib/live_cues.js`) in mind. It has its own, older set (the
+   quieter levels, a 5 ms attack, connected reaching B5), and nothing forces it to follow.
 
 ## Testing
 

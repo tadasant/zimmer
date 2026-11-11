@@ -9,8 +9,8 @@ import Foundation
 ///
 /// They are also heard many times an hour on a long drive, so they are soft-edged rather than
 /// bright: a rounded 20 ms attack and a 25 ms release on every note, no fundamental above A5
-/// (880 Hz), only a trace of the octave on the high notes, and no odd harmonics, which are what
-/// made the old low notes buzz. The rules, and how to add or change a cue, are in
+/// (880 Hz), only a trace of the octave on the high notes, and no odd harmonics, which make a low
+/// note buzz. The rules, and how to add or change a cue, are in
 /// `ios/LIVE_CUES.md`.
 ///
 /// - **pressed**: two quick, level notes (G5, G5), the moment Talk is pressed, before any
