@@ -207,7 +207,7 @@ table):
 
 | Cue | Sound | Peak | Plays |
 | --- | --- | --- | --- |
-| pressed | A5, A5, quick and level | −8 dBFS | Once, the moment the call's audio is up after Talk, long before the call connects |
+| pressed | A5, A5, quick and level | −8 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
 | connected | E5, B5, rising | −7 dBFS | Once, when the call is up |
 | heard | E5, short | −8.5 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
 | thinking | a C6 (1047 Hz) tick, 70 ms, once a second | −10.5 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
@@ -244,9 +244,14 @@ falling notes use when no call is up): no microphone opens and no permission pro
 because CarPlay records only under the voice control template and the tiles are still up at the
 tap. The call's own engine still starts after the secret, as before. A source guard in
 `CarPlayTests` holds both: the cue before every network step, and no input on its engine.
-`call.acknowledged` logs how long it took to sound (`since_press_ms`); at the tap the car's call
-has no id yet, so it sits beside `carplay.talk_tapped`. Not while a call is up (New over a running
-call hears *ended* instead), nor over a goodbye still sounding.
+`call.acknowledged` logs how long after the press (or the start) it began to play
+(`since_press_ms`); the route can take a moment more to make it audible. It carries the call's id
+only if the call began before it sounded, so at a car tap look beside `carplay.talk_tapped`. Not
+while a call is up (New over a running call hears *ended* instead), nor over a goodbye still
+sounding. Its engine gives the audio session up without telling the car's music to resume, so the
+music pauses once for the call rather than twice; if the press leads nowhere the falling notes
+hand it back, and a press the driver ends at once leaves the music paused. *pressed* is about a
+fifth of a second and is the one cue that is not stopped by talking.
 
 **A turn always ends.** OpenAI's turn detection over a WebSocket measures silence in the audio it
 receives. A microphone that stops delivering mid-sentence leaves the turn open, and the call sits

@@ -6,8 +6,9 @@ import Foundation
 /// of the reply's speech and mostly above 600 Hz, where a car's noise is weakest; only *failed* and
 /// *ended* stay low, because low means *not good*, and they get a reedier tone to carry instead:
 ///
-/// - **pressed**: two quick, bright, level notes (A5, A5), the moment Talk is pressed and the
-///   call's audio is up, long before the call connects. Level, not rising: the call is not on yet;
+/// - **pressed**: two quick, bright, level notes (A5, A5), the moment Talk is pressed, before
+///   any request is made, on an engine with no microphone. Level, not rising: the call is not on
+///   yet;
 /// - **connected**: two rising notes (E5 then B5), once, when the call is up and listening;
 /// - **heard**: one short note (E5, the first note of *connected*), when the person stops
 ///   talking and Zimmer takes the line on. It waits `heardLead`, so an answer that starts within
@@ -173,7 +174,7 @@ public struct LiveCueGate: Sendable, Equatable {
 ///
 /// | What happened | Cue |
 /// | --- | --- |
-/// | Talk was pressed and the call's audio is up, before it connects (`LiveCall`, not this type) | *pressed*, once |
+/// | Talk was pressed, or a call starts that nobody pressed for (`LiveCall`, not this type) | *pressed*, once |
 /// | The call is up | *connected*, once |
 /// | The person stopped talking and the line will be answered | *heard* |
 /// | The model is working on an answer, no tool running | *thinking* loop |

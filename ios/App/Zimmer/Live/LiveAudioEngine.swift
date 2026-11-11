@@ -434,7 +434,11 @@ final class LiveAudioEngine {
     /// It never touches the input: no microphone opens, and no permission prompt comes up, so it
     /// can sound before a call (and its CarPlay screen) exists. `sounding` runs on `queue` once
     /// the cue is playing.
-    func playAlone(_ cue: LiveCue, sounding: (@Sendable () -> Void)? = nil) -> Bool {
+    ///
+    /// `handBack`: tell other audio (the car's music) it can resume when the cue ends. Off for
+    /// *pressed*, which a call's engine follows within seconds, so the music pauses once, not
+    /// twice; the falling notes that end a press leading nowhere hand it back.
+    func playAlone(_ cue: LiveCue, handBack: Bool = true, sounding: (@Sendable () -> Void)? = nil) -> Bool {
         guard engine == nil, farewell == nil, bringingUp == 0, !interrupted else { return false }
         let samples = cue.samples()
         Self.queue.async {
@@ -455,7 +459,7 @@ final class LiveAudioEngine {
             } catch {
                 Self.log.error("cue with no call could not play: \(error.localizedDescription, privacy: .public)")
             }
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try? AVAudioSession.sharedInstance().setActive(false, options: handBack ? .notifyOthersOnDeactivation : [])
         }
         return true
     }
@@ -573,6 +577,9 @@ final class LiveAudioEngine {
     private func abandon() {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
+        // With the observers gone no `.ended` can arrive, so a flag left set would silence the
+        // next press for good. The next start or cue finds out for itself.
+        interrupted = false
         token += 1
         playout = LiveReplyPlayout()
         engine = nil

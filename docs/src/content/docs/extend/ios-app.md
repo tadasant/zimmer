@@ -812,7 +812,7 @@ browser's call dock makes the same ones at their earlier, quieter levels, withou
 
 | Sound | When | What it tells you |
 | --- | --- | --- |
-| **Pressed**: two quick, bright, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
+| **Pressed**: two quick, bright, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation. Not when New ends a running call: you hear Ended instead | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
 | **Connected**: two rising notes | Once, when the call is up | Zimmer is listening |
 | **Heard**: one short note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
 | **Thinking**: a bright tick about once a second | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
@@ -821,7 +821,8 @@ browser's call dock makes the same ones at their earlier, quieter levels, withou
 | **Ended**: one low note | You hung up | The call is over |
 | **Disconnected**: the connected notes falling | The call dropped | You did not end it |
 
-Every cue stops the moment you talk or a reply starts, nothing starts while you are talking, and a
+Every cue except Pressed (a fifth of a second, before the call exists) stops the moment you talk
+or a reply starts, nothing starts while you are talking, and a
 cue due while the reply is still playing waits for it to finish. A successful tool has no sound of its own: the next thing you hear is
 the answer. If you talk over a running tool, the working cue comes back when you stop.
 

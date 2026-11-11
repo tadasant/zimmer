@@ -174,9 +174,9 @@ final class LiveCall: ObservableObject {
             }
             return
         }
-        hangUp()
         // A start nobody pressed for just now (the phone's button, a retry) is heard the same way.
         let alreadyHeard = pressHeard.map { Self.now - $0 < LiveCallHealth.connectDeadline } ?? false
+        end(reason: "hang_up", farewell: cues.hungUp())
         if !alreadyHeard { pressed() }
         pressHeard = nil
         generation += 1
@@ -333,6 +333,7 @@ final class LiveCall: ObservableObject {
     }
 
     func hangUp() {
+        pressHeard = nil
         end(reason: "hang_up", farewell: cues.hungUp())
     }
 
@@ -345,7 +346,7 @@ final class LiveCall: ObservableObject {
         guard !isActive else { return }
         let at = Self.now
         let telemetry = telemetry
-        guard audio.playAlone(.pressed, sounding: {
+        guard audio.playAlone(.pressed, handBack: false, sounding: {
             telemetry.track(.cue(.pressed))
             telemetry.track(.acknowledged(sincePress: ProcessInfo.processInfo.systemUptime - at))
         }) else { return }
@@ -389,6 +390,8 @@ final class LiveCall: ObservableObject {
     /// Say with the falling notes that a call is not coming, unless the end that said so already
     /// played them. A call that was never up has no engine to play them for it.
     func soundUnavailable() {
+        // The press this answers led nowhere: the next start was not pressed for.
+        pressHeard = nil
         guard !isActive, !saidGoodbye else {
             saidGoodbye = false
             return
@@ -486,6 +489,7 @@ final class LiveCall: ObservableObject {
     /// The CarPlay scene went away: a call that is up carries on as the phone's, and the phone
     /// goes to it when it can (`LiveHandover`). A call the gear ended stays ended.
     func carLeft() {
+        pressHeard = nil
         handover.carLeft(conversation: conversationID, callIsActive: isActive, at: Self.now)
         guard isActive else { return }
         telemetry.track(.carPlay("handover_armed"))
