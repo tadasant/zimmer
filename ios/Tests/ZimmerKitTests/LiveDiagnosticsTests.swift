@@ -474,6 +474,22 @@ final class LiveDiagnosticsTests: XCTestCase {
         }
     }
 
+    /// Soft, not shrill: heard many times an hour on a long drive, so no cue snaps on, none ends
+    /// on a click, none has a fundamental above A5, and little of any cue's energy is above
+    /// 1.5 kHz, where a tone turns piercing. The set before these failed the attack on every
+    /// note and the brightness on pressed, connected, thinking and disconnected (`ios/LIVE_CUES.md`).
+    func testTheCuesAreSoftEdgedAndNotShrill() {
+        for cue in LiveCue.allCases {
+            let samples = cue.samples()
+            let peak = samples.map(abs).max()!
+            let onset = samples.prefix(Int(0.005 * RealtimeAudio.sampleRate)).map(abs).max()!
+            XCTAssertLessThan(onset, 0.3 * peak, "\(cue.rawValue): a rounded attack, not a snap")
+            XCTAssertEqual(samples.last!, 0, accuracy: 0.01, "\(cue.rawValue): no click at the end")
+            XCTAssertLessThanOrEqual(Self.pitch(samples) * RealtimeAudio.sampleRate / 2, 900, "\(cue.rawValue): nothing above A5")
+            XCTAssertLessThan(Self.energyAbove(1_500, in: samples), -18, "\(cue.rawValue): little energy above 1.5 kHz")
+        }
+    }
+
     /// The press is heard at once and cannot pass for the call being up.
     func testPressedIsItsOwnSoundAndNotConnected() {
         let pressed = LiveCue.pressed.samples()
@@ -482,8 +498,8 @@ final class LiveDiagnosticsTests: XCTestCase {
                        "level, where connected rises: the call is not on yet")
         XCTAssertLessThan(LiveCue.pressed.duration, LiveCue.connected.duration, "and quicker")
         XCTAssertNotEqual(Self.pitch(pressed), Self.pitch(LiveCue.heard.samples()), accuracy: 0.005, "nor heard's single note")
-        XCTAssertGreaterThan(Self.pitch(pressed), Self.pitch(LiveCue.thinking.samples()) * 0.75, "bright, like the tick")
-        XCTAssertGreaterThan(LiveCue.pressed.duration, 2 * LiveCue.thinking.duration, "but two notes, not one tick")
+        XCTAssertGreaterThan(Self.pitch(pressed), Self.pitch(LiveCue.thinking.samples()) * 0.75, "near the tap's pitch")
+        XCTAssertGreaterThan(LiveCue.pressed.duration, 2 * LiveCue.thinking.duration, "but two notes, not one tap")
     }
 
     func testWorkingCannotPassForThinkingNorFailedForAnythingHappy() {
@@ -505,6 +521,28 @@ final class LiveDiagnosticsTests: XCTestCase {
     private static func rmsDBFS(_ samples: [Float]) -> Double {
         let mean = samples.reduce(0) { $0 + Double($1) * Double($1) } / Double(samples.count)
         return 10 * log10(mean)
+    }
+
+    /// How much of a sound's energy is above `cutoff` Hz, in dB: a fourth-order Butterworth
+    /// high-pass (two biquads), then the energy that is left against the energy that went in.
+    private static func energyAbove(_ cutoff: Double, in samples: [Float]) -> Double {
+        func highPass(_ input: [Double]) -> [Double] {
+            let w = 2 * Double.pi * cutoff / RealtimeAudio.sampleRate
+            let alpha = sin(w) / 2.0.squareRoot() // Q = 1/√2
+            let c = cos(w)
+            let (b0, b1, b2) = ((1 + c) / 2, -(1 + c), (1 + c) / 2)
+            let (a0, a1, a2) = (1 + alpha, -2 * c, 1 - alpha)
+            var (x1, x2, y1, y2) = (0.0, 0.0, 0.0, 0.0)
+            return input.map { x in
+                let y = (b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0
+                (x2, x1, y2, y1) = (x1, x, y1, y)
+                return y
+            }
+        }
+        let input = samples.map(Double.init)
+        let output = highPass(highPass(input))
+        let energy = { (values: [Double]) in values.reduce(0) { $0 + $1 * $1 } }
+        return 10 * log10(energy(output) / energy(input))
     }
 
     /// Zero crossings per sample: enough to tell a higher note from a lower one.
