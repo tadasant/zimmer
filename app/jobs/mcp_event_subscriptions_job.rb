@@ -36,6 +36,14 @@ class McpEventSubscriptionsJob < ApplicationJob
   # `deliveryStatus` stay current.
   NO_EXPIRY_REFRESH = REQUESTED_TTL
 
+  # The longest a live subscription goes without a refresh, whatever its grant. A server that
+  # suspended delivery after a run of failures (Zimmer down, the Access policy refusing it) resumes
+  # only on a refresh, and the refresh is also the one place `deliveryStatus` is read. So an hourly
+  # refresh bounds both how long a recovered endpoint waits for its backlog and how long a failing
+  # route goes unnoticed. The server caches verification per URL, so this costs one call, not a
+  # challenge.
+  HEALTH_REFRESH = 1.hour
+
   # Backoff after a failed subscribe or unsubscribe: a minute, doubling, to this.
   MAX_BACKOFF = 6.hours
 
@@ -99,6 +107,7 @@ class McpEventSubscriptionsJob < ApplicationJob
   def due?(row, now = Time.current)
     return false if row.next_attempt_at && row.next_attempt_at > now
     return true if %w[pending failed].include?(row.state)
+    return true if row.subscribed_at && now >= row.subscribed_at + HEALTH_REFRESH
     return now >= row.subscribed_at + NO_EXPIRY_REFRESH if row.refresh_before.nil?
 
     granted = row.subscribed_at ? row.refresh_before - row.subscribed_at : REQUESTED_TTL
@@ -122,10 +131,11 @@ class McpEventSubscriptionsJob < ApplicationJob
     end
 
     status = result.delivery_status || {}
-    # `active: false` is a suspension the refresh has just lifted; a `lastError` with `active: true`
-    # is a server still failing to deliver. Either way push is not proven, so the poller keeps its
-    # minute cadence until a signed request arrives again.
-    failing = status["active"] == false || status["lastError"].present?
+    # `active: false` is a suspension the refresh has just lifted; `lastError` with `failedSince` is
+    # a server still failing to deliver. Either way push is not proven, so the poller keeps its
+    # minute cadence until a signed request arrives again. A `lastError` without `failedSince` is a
+    # past failure the server merely still reports, which is not one.
+    failing = status["active"] == false || (status["lastError"].present? && status["failedSince"].present?)
     row.with_lock do
       # A `terminated` envelope that landed while the call was in flight wins: the server has
       # dropped what this answer describes, so writing it would make a dead subscription look live.

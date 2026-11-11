@@ -865,9 +865,11 @@ arrives both ways fires one session.
    It calls `events/subscribe` with them, the condition's poll cursor and `ttlMs` of six hours. The
    server answers only after it has POSTed a signed `verification` challenge to the URL and Zimmer
    has echoed it. **Challenge echo is the one verification method Zimmer supports.**
-2. **Refresh.** It calls `events/subscribe` again before the server's `refreshBefore`: 30 minutes
-   ahead, or at half the grant if that is shorter. The call sends the last cursor the server gave
-   this subscription.
+2. **Refresh.** It calls `events/subscribe` again at least hourly, and always before the server's
+   `refreshBefore` (30 minutes ahead, or at half the grant if that is shorter). The call sends the
+   last cursor the server gave this subscription. The hourly refresh is what reactivates a
+   subscription the server suspended after a run of failed deliveries, and the refresh answer's
+   `deliveryStatus` is where Zimmer learns of failures at all.
 3. **Unsubscribe.** When the trigger is disabled or deleted, or the condition's `server`,
    `event_name` or `arguments` change, it calls `events/unsubscribe` and deletes the row. An edit
    then subscribes again at a new URL. Editing the template or the filters keeps the subscription.
@@ -903,7 +905,7 @@ The trigger page, `GET /api/v1/triggers/:id` (`conditions[].mcp_event_delivery`)
 | `poll-only` | The event type offers no webhook, or subscribing failed or has not happened yet. `last_error` says which, as an error name or one of the SEP's categories, never the server's text | every minute |
 | `subscribed` | `events/subscribe` succeeded, and no signed request has reached the URL yet | every minute |
 | `verified` | A signed request (the challenge or a delivery) reached the URL within the last seven hours, so the route through Cloudflare works. Older proof reads as `subscribed` again | every 15 minutes, as catch-up |
-| `suspended` | The server's last refresh reported a delivery `lastError`, or that it had suspended delivery after repeated failures, or the grant ran out | every minute |
+| `suspended` | The server's last refresh reported an ongoing delivery failure (`lastError` with `failedSince`), or that it had suspended delivery after repeated failures, or the grant ran out | every minute |
 
 ##### Cloudflare Access on the receiver
 

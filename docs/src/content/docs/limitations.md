@@ -5377,7 +5377,7 @@ what is built, and against which revision, is recorded on the
 - **Webhook health is inferred, not proven per event.** A condition counts as `verified` for
   seven hours after a signed request reaches its URL. If the Access policy stops admitting the
   server in that window (a rotated service token, say), deliveries fail without Zimmer seeing
-  anything until the server's next refresh answer reports a `lastError`, or the seven hours run
+  anything until the next hourly refresh answer reports the failure, or the seven hours run
   out. Until then the condition is polled only every 15 minutes, so its events can arrive up to 15
   minutes late. A quiet subscription loses `verified` after seven hours with no delivery and goes
   back to minute polling, which costs polls, not events.

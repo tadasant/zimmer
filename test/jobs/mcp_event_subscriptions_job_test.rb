@@ -95,14 +95,29 @@ class McpEventSubscriptionsJobTest < ActiveJob::TestCase
     assert_not row.healthy?
   end
 
-  test "a refresh that reports a lastError while still active is not healthy either" do
+  test "a refresh that reports an ongoing failure while still active is not healthy; a stale lastError is" do
     McpEventSubscriptionsJob.perform_now
     row = McpEventWebhookSubscription.sole
     row.update_columns(state: "verified", verified_at: Time.current)
-    @server.delivery_status = { "active" => true, "lastError" => "timeout" }
+    @server.delivery_status = { "active" => true, "lastError" => "timeout", "failedSince" => 5.minutes.ago.iso8601 }
 
     travel_to(row.refresh_before - 1.minute) { McpEventSubscriptionsJob.perform_now }
     assert_equal [ "suspended", "server reports failing delivery (timeout)" ], row.reload.then { |r| [ r.state, r.last_error ] }
+
+    @server.delivery_status = { "active" => true, "lastError" => "timeout" }
+    travel_to(row.reload.subscribed_at + 61.minutes) do
+      row.update_columns(state: "verified", verified_at: Time.current, last_error: nil)
+      McpEventSubscriptionsJob.perform_now
+    end
+    assert_equal [ "verified", nil ], row.reload.then { |r| [ r.state, r.last_error ] }
+  end
+
+  test "a live subscription is refreshed at least hourly, so a suspension is lifted within the hour" do
+    McpEventSubscriptionsJob.perform_now
+    travel_to(30.minutes.from_now) { McpEventSubscriptionsJob.perform_now }
+    assert_equal 1, subscribes.size
+    travel_to(61.minutes.from_now) { McpEventSubscriptionsJob.perform_now }
+    assert_equal 2, subscribes.size
   end
 
   test "a refresh does not call a subscription verified on a signed request older than the freshness window" do
