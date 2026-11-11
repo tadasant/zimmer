@@ -898,7 +898,9 @@ events wait behind it; a webhook delivery fires on its own. So an event that arr
 fire before an earlier one held by burst control, which the catch-up poll fires afterwards.
 
 The trigger page, `GET /api/v1/triggers/:id` (`conditions[].mcp_event_delivery`) and
-`search_triggers` show each condition's delivery state:
+`search_triggers` show each condition's delivery state. `/supervisor/mcp_event_webhook_subscriptions`
+lists every subscription row read-only, with its grant, cursor, last signed request and last error,
+and never its secret:
 
 | State | Meaning | Poll cadence |
 | --- | --- | --- |
