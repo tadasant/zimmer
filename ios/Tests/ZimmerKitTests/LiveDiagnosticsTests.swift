@@ -430,15 +430,13 @@ final class LiveDiagnosticsTests: XCTestCase {
 
     // MARK: - Cues
 
-    func testTheCuesAreShortSoftAndTellOnFromOff() {
+    func testTheCuesAreShortAndTellOnFromOff() {
         let connected = LiveCue.connected.samples()
         let disconnected = LiveCue.disconnected.samples()
         let tick = LiveCue.thinking.samples()
         XCTAssertLessThan(LiveCue.connected.duration, 0.35)
         XCTAssertLessThan(LiveCue.disconnected.duration, 0.35)
-        XCTAssertLessThan(LiveCue.thinking.duration, 0.06)
-        XCTAssertLessThanOrEqual(connected.map(abs).max()!, 0.25, "well under full scale: a cue, not an alarm")
-        XCTAssertLessThanOrEqual(tick.map(abs).max()!, 0.08, "the tick is quieter still: it repeats")
+        XCTAssertLessThan(LiveCue.thinking.duration, 0.08)
         XCTAssertEqual(tick.first!, 0, accuracy: 0.001, "no click at the start")
         XCTAssertEqual(tick.last!, 0, accuracy: 0.01, "nor at the end")
         XCTAssertNotEqual(connected, disconnected)
@@ -448,30 +446,65 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(LiveCue.working.loop().count, Int(LiveCue.working.period * RealtimeAudio.sampleRate))
     }
 
-    func testEveryCueStaysQuietAndBrief() {
+    /// Heard over road and engine noise on car audio: every cue is near the reply's speech level,
+    /// and none is near full scale.
+    func testEveryCueIsLoudEnoughForACarAndStillBrief() {
         for cue in LiveCue.allCases {
-            XCTAssertLessThanOrEqual(cue.samples().map(abs).max()!, 0.25, cue.rawValue)
+            let samples = cue.samples()
+            XCTAssertLessThanOrEqual(samples.map(abs).max()!, 0.5, "\(cue.rawValue): a cue, not an alarm")
+            XCTAssertGreaterThanOrEqual(samples.map(abs).max()!, 0.25, "\(cue.rawValue): heard over a car")
+            XCTAssertGreaterThanOrEqual(Self.rmsDBFS(samples), -23, "\(cue.rawValue): loud for its whole length, not one spike")
             XCTAssertLessThan(cue.duration, 0.45, cue.rawValue)
         }
-        XCTAssertLessThanOrEqual(LiveCue.heard.samples().map(abs).max()!, 0.13, "said every turn, so softer than the one-time notes")
-        XCTAssertLessThanOrEqual(LiveCue.working.samples().map(abs).max()!, 0.09, "repeats, so as quiet as the tick")
+        // The cues that were too quiet to hear on the road, against what they were (#1448).
+        XCTAssertGreaterThanOrEqual(LiveCue.thinking.samples().map(abs).max()!, 0.07 * 4, "the tick, at least four times louder")
+        XCTAssertGreaterThanOrEqual(LiveCue.working.samples().map(abs).max()!, 0.08 * 3.5, "the tool pulse, at least three and a half times")
+        XCTAssertGreaterThanOrEqual(LiveCue.heard.samples().map(abs).max()!, 0.12 * 2.5, "heard")
+        XCTAssertGreaterThanOrEqual(LiveCue.failed.samples().map(abs).max()!, 0.18 * 2, "failed")
         XCTAssertLessThan(LiveCue.working.duration / LiveCue.working.period, 0.1, "mostly silence, and the microphone open")
+        XCTAssertLessThan(LiveCue.thinking.duration / LiveCue.thinking.period, 0.1, "the tick too")
         XCTAssertEqual(LiveCue.working.samples().first!, 0, accuracy: 0.001, "no click")
+    }
+
+    /// Above the band a car's noise fills: the repeating cues and the acknowledgements sit at 600 Hz
+    /// or higher. Only failed and ended are low, on purpose, and they carry a twelfth to be heard.
+    func testTheCuesSitAboveTheRoadNoise() {
+        for cue in [LiveCue.pressed, .connected, .heard, .thinking, .working, .disconnected] {
+            XCTAssertGreaterThan(Self.pitch(cue.samples()) * RealtimeAudio.sampleRate / 2, 600, cue.rawValue)
+        }
+    }
+
+    /// The press is heard at once and cannot pass for the call being up.
+    func testPressedIsItsOwnSoundAndNotConnected() {
+        let pressed = LiveCue.pressed.samples()
+        let half = pressed.count / 2
+        XCTAssertEqual(Self.pitch(Array(pressed.prefix(half))), Self.pitch(Array(pressed.suffix(half))), accuracy: 0.003,
+                       "level, where connected rises: the call is not on yet")
+        XCTAssertLessThan(LiveCue.pressed.duration, LiveCue.connected.duration, "and quicker")
+        XCTAssertNotEqual(Self.pitch(pressed), Self.pitch(LiveCue.heard.samples()), accuracy: 0.005, "nor heard's single note")
+        XCTAssertGreaterThan(Self.pitch(pressed), Self.pitch(LiveCue.thinking.samples()) * 0.75, "bright, like the tick")
+        XCTAssertGreaterThan(LiveCue.pressed.duration, 2 * LiveCue.thinking.duration, "but two notes, not one tick")
     }
 
     func testWorkingCannotPassForThinkingNorFailedForAnythingHappy() {
         XCTAssertGreaterThan(LiveCue.working.period, 2 * LiveCue.thinking.period, "a slower pulse")
-        XCTAssertGreaterThan(LiveCue.working.duration, 3 * LiveCue.thinking.duration, "a longer one")
+        XCTAssertGreaterThan(LiveCue.working.duration, 2.5 * LiveCue.thinking.duration, "a longer one")
         XCTAssertLessThan(Self.pitch(LiveCue.working.samples()), Self.pitch(LiveCue.thinking.samples()), "and lower")
 
         let failed = LiveCue.failed.samples()
         XCTAssertLessThan(Self.pitch(Array(failed.suffix(2_000))), Self.pitch(Array(failed.prefix(2_000))), "failed falls")
-        for happy in [LiveCue.connected, .heard] {
+        for happy in [LiveCue.connected, .heard, .pressed] {
             XCTAssertLessThan(Self.pitch(failed), Self.pitch(happy.samples()) * 0.7, "well below \(happy.rawValue)")
         }
         XCTAssertLessThan(Self.pitch(failed), Self.pitch(LiveCue.disconnected.samples()) * 0.7, "and below a dropped call")
         XCTAssertLessThan(Self.pitch(LiveCue.ended.samples()), Self.pitch(LiveCue.heard.samples()) * 0.7, "a hang-up is no acknowledgement")
         XCTAssertEqual(Set(LiveCue.allCases.map { $0.samples() }).count, LiveCue.allCases.count, "no two alike")
+    }
+
+    /// The level of a sound over its whole length, in dB below full scale.
+    private static func rmsDBFS(_ samples: [Float]) -> Double {
+        let mean = samples.reduce(0) { $0 + Double($1) * Double($1) } / Double(samples.count)
+        return 10 * log10(mean)
     }
 
     /// Zero crossings per sample: enough to tell a higher note from a lower one.

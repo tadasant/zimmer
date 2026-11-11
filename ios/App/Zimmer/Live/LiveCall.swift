@@ -25,7 +25,8 @@ import os
 /// before: *Listening* and the connected notes both mean somebody can hear you.
 ///
 /// Four things keep a driver from having to look: the cues (`LiveCueDirector` has the whole map:
-/// up, heard, thinking, a tool running, failed, hung up, dropped); the
+/// up, heard, thinking, a tool running, failed, hung up, dropped; and *pressed*, played here the
+/// moment Talk is pressed, `pressed()`); the
 /// microphone watchdog (`MicWatchdog`), which sends silence when the microphone stops delivering
 /// so OpenAI's turn detection always gets to the end of a turn; the call's health
 /// (`LiveCallHealth`), which gives up on a call that will not connect, or whose socket or
@@ -96,6 +97,9 @@ final class LiveCall: ObservableObject {
     /// hang-up's goodbye is not news of a failure and does not count.
     private var saidGoodbye = false
     private var watching: Task<Void, Never>?
+    /// When *pressed* last went out for a press that has not become a call yet, so the call it
+    /// becomes does not play it again.
+    private var pressHeard: TimeInterval?
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -170,7 +174,11 @@ final class LiveCall: ObservableObject {
             }
             return
         }
-        hangUp()
+        // A start nobody pressed for just now (the phone's button, a retry) is heard the same way.
+        let alreadyHeard = pressHeard.map { Self.now - $0 < LiveCallHealth.connectDeadline } ?? false
+        end(reason: "hang_up", farewell: cues.hungUp())
+        if !alreadyHeard { pressed() }
+        pressHeard = nil
         generation += 1
         let mine = generation
         self.surface = surface
@@ -325,7 +333,24 @@ final class LiveCall: ObservableObject {
     }
 
     func hangUp() {
+        pressHeard = nil
         end(reason: "hang_up", farewell: cues.hungUp())
+    }
+
+    /// Talk was pressed: *pressed* sounds now, before the conversation is found, voice turned on or
+    /// the secret minted, so the press is heard seconds before the call connects. It plays alone,
+    /// on an engine that never opens the microphone (`LiveAudioEngine.playAlone`): nothing records
+    /// before the call's screen is up, and no permission prompt comes with it. Not while a call
+    /// is up, nor over a goodbye still sounding.
+    func pressed() {
+        guard !isActive else { return }
+        let at = Self.now
+        let telemetry = telemetry
+        guard audio.playAlone(.pressed, handBack: false, sounding: {
+            telemetry.track(.cue(.pressed))
+            telemetry.track(.acknowledged(sincePress: ProcessInfo.processInfo.systemUptime - at))
+        }) else { return }
+        pressHeard = at
     }
 
     /// End the call: `reason` is for the log; the `farewell` cue is the engine's last sound.
@@ -365,6 +390,8 @@ final class LiveCall: ObservableObject {
     /// Say with the falling notes that a call is not coming, unless the end that said so already
     /// played them. A call that was never up has no engine to play them for it.
     func soundUnavailable() {
+        // The press this answers led nowhere: the next start was not pressed for.
+        pressHeard = nil
         guard !isActive, !saidGoodbye else {
             saidGoodbye = false
             return
@@ -462,6 +489,7 @@ final class LiveCall: ObservableObject {
     /// The CarPlay scene went away: a call that is up carries on as the phone's, and the phone
     /// goes to it when it can (`LiveHandover`). A call the gear ended stays ended.
     func carLeft() {
+        pressHeard = nil
         handover.carLeft(conversation: conversationID, callIsActive: isActive, at: Self.now)
         guard isActive else { return }
         telemetry.track(.carPlay("handover_armed"))

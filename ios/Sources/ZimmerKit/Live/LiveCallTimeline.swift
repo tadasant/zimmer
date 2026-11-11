@@ -153,6 +153,13 @@ public extension LiveEvent {
         LiveEvent(.info, "call.connected") { ["since_start_ms": .ms(sinceStart), "listening": .text(listening), "gated": .bool(gated)] }
     }
 
+    /// The press was heard: *pressed* started playing this long after Talk was pressed (or, for a
+    /// call nobody pressed for, after it started), on its own engine. The route may take a moment
+    /// more to make it audible. Compare `call.connected`'s `since_start_ms`.
+    static func acknowledged(sincePress: TimeInterval) -> LiveEvent {
+        LiveEvent(.info, "call.acknowledged") { ["since_press_ms": .ms(sincePress)] }
+    }
+
     static func handedOver(to surface: String) -> LiveEvent {
         LiveEvent(.info, "call.handed_over") { ["surface": .string(surface)] }
     }

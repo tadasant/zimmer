@@ -430,7 +430,15 @@ final class LiveAudioEngine {
     /// it sounds. Skipped while the audio is someone else's, or while an engine is out on
     /// `queue`, stuck or not: a failure cue that sounds minutes late is worse than none. Says
     /// whether it was asked for: once on `queue`, a failure is only logged.
-    func playAlone(_ cue: LiveCue) -> Bool {
+    ///
+    /// It never touches the input: no microphone opens, and no permission prompt comes up, so it
+    /// can sound before a call (and its CarPlay screen) exists. `sounding` runs on `queue` once
+    /// the cue is playing.
+    ///
+    /// `handBack`: tell other audio (the car's music) it can resume when the cue ends. Off for
+    /// *pressed*, which a call's engine follows within seconds, so the music pauses once, not
+    /// twice; the falling notes that end a press leading nowhere hand it back.
+    func playAlone(_ cue: LiveCue, handBack: Bool = true, sounding: (@Sendable () -> Void)? = nil) -> Bool {
         guard engine == nil, farewell == nil, bringingUp == 0, !interrupted else { return false }
         let samples = cue.samples()
         Self.queue.async {
@@ -444,13 +452,14 @@ final class LiveAudioEngine {
                 try engine.start()
                 player.scheduleBuffer(buffer, completionHandler: nil)
                 player.play()
+                sounding?()
                 Thread.sleep(forTimeInterval: cue.duration + 0.05)
                 player.stop()
                 engine.stop()
             } catch {
                 Self.log.error("cue with no call could not play: \(error.localizedDescription, privacy: .public)")
             }
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try? AVAudioSession.sharedInstance().setActive(false, options: handBack ? .notifyOthersOnDeactivation : [])
         }
         return true
     }
@@ -568,6 +577,9 @@ final class LiveAudioEngine {
     private func abandon() {
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
+        // With the observers gone no `.ended` can arrive, so a flag left set would silence the
+        // next press for good. The next start or cue finds out for itself.
+        interrupted = false
         token += 1
         playout = LiveReplyPlayout()
         engine = nil

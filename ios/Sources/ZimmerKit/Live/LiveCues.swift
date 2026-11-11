@@ -2,20 +2,24 @@ import Foundation
 
 /// The sounds a Live voice call makes besides Zimmer's voice, so a driver knows what the call is
 /// doing without looking. Silence on a call can mean working, stuck or not heard; these tell them
-/// apart:
+/// apart. They have to carry over road and engine noise on car audio, so they sit near the level
+/// of the reply's speech and mostly above 600 Hz, where a car's noise is weakest; only *failed* and
+/// *ended* stay low, because low means *not good*, and they get a reedier tone to carry instead:
 ///
-/// - **connected**: two soft rising notes (E5 then B5, bell-like and quick to fade), once, when
-///   the call is up and listening;
-/// - **heard**: one short, quiet note (E5, the first note of *connected*), when the person stops
+/// - **pressed**: two quick, bright, level notes (A5, A5), the moment Talk is pressed, before
+///   any request is made, on an engine with no microphone. Level, not rising: the call is not on
+///   yet;
+/// - **connected**: two rising notes (E5 then B5), once, when the call is up and listening;
+/// - **heard**: one short note (E5, the first note of *connected*), when the person stops
 ///   talking and Zimmer takes the line on. It waits `heardLead`, so an answer that starts within
 ///   it gets none;
-/// - **thinking**: one quiet, low, rounded tick (a 520 Hz tap, 45 ms) about once a second, while
-///   the model works on an answer and no tool is running. It gives up after `ceiling`;
-/// - **working**: a soft low pair (E4 then G4) every 2.5 seconds, while a tool runs, for as long
-///   as one runs. Lower, longer and slower than the tick, so the two never pass for each other;
-/// - **failed**: two low notes falling a minor third (F4 then D4): a tool failed, a reply failed or
-///   was cut short, or no answer came;
-/// - **ended**: one soft low note (E4), when the person hangs up;
+/// - **thinking**: one bright tick (C6, 70 ms) once a second, while the model works on an answer
+///   and no tool is running. It gives up after `ceiling`;
+/// - **working**: a pair (E5 then G5) every 2.5 seconds, while a tool runs, for as long as one
+///   runs. Lower, longer and slower than the tick, so the two never pass for each other;
+/// - **failed**: two low, reedy notes falling a minor third (F4 then D4): a tool failed, a reply
+///   failed or was cut short, or no answer came;
+/// - **ended**: one low note (E4), when the person hangs up;
 /// - **disconnected**: the connected notes falling (B5 then E5), once, when a call drops.
 ///
 /// Rising means *on*, falling means *off*. Each is synthesized here at the reply's 24 kHz rate: no
@@ -25,25 +29,27 @@ import Foundation
 /// engine as the reply, so the echo canceller has them as reference, and while a cue sounds the
 /// microphone is sent as silence (`LiveCueGate`).
 public enum LiveCue: String, Sendable, CaseIterable {
-    case connected, heard, thinking, working, failed, ended, disconnected
+    case pressed, connected, heard, thinking, working, failed, ended, disconnected
 
     /// The sound itself: mono float samples in -1…1.
     public func samples(sampleRate: Double = RealtimeAudio.sampleRate) -> [Float] {
         switch self {
+        case .pressed:
+            return Self.note(880, length: 0.07, peak: 0.55, rate: sampleRate) + Self.note(880, length: 0.09, peak: 0.55, rate: sampleRate)
         case .connected:
-            return Self.note(659.25, length: 0.11, peak: 0.22, rate: sampleRate) + Self.note(987.77, length: 0.16, peak: 0.22, rate: sampleRate)
+            return Self.note(659.25, length: 0.11, peak: 0.55, rate: sampleRate) + Self.note(987.77, length: 0.16, peak: 0.55, rate: sampleRate)
         case .heard:
-            return Self.note(659.25, length: 0.1, peak: 0.12, rate: sampleRate)
+            return Self.note(659.25, length: 0.12, peak: 0.5, rate: sampleRate)
         case .disconnected:
-            return Self.note(987.77, length: 0.11, peak: 0.2, rate: sampleRate) + Self.note(659.25, length: 0.18, peak: 0.2, rate: sampleRate)
+            return Self.note(987.77, length: 0.11, peak: 0.5, rate: sampleRate) + Self.note(659.25, length: 0.18, peak: 0.5, rate: sampleRate)
         case .thinking:
-            return Self.tap(520, length: 0.045, peak: 0.07, rate: sampleRate)
+            return Self.tap(1046.5, length: 0.07, peak: 0.3, rate: sampleRate)
         case .working:
-            return Self.tap(329.63, length: 0.09, peak: 0.08, rate: sampleRate) + Self.tap(392, length: 0.09, peak: 0.08, rate: sampleRate)
+            return Self.tap(659.25, length: 0.1, peak: 0.32, rate: sampleRate) + Self.tap(783.99, length: 0.1, peak: 0.32, rate: sampleRate)
         case .failed:
-            return Self.note(349.23, length: 0.14, peak: 0.18, rate: sampleRate) + Self.note(293.66, length: 0.24, peak: 0.18, rate: sampleRate)
+            return Self.note(349.23, length: 0.14, peak: 0.6, reed: 0.3, rate: sampleRate) + Self.note(293.66, length: 0.24, peak: 0.6, reed: 0.3, rate: sampleRate)
         case .ended:
-            return Self.note(329.63, length: 0.22, peak: 0.14, rate: sampleRate)
+            return Self.note(329.63, length: 0.22, peak: 0.45, reed: 0.3, rate: sampleRate)
         }
     }
 
@@ -76,20 +82,23 @@ public enum LiveCue: String, Sendable, CaseIterable {
         return sound + [Float](repeating: 0, count: max(0, Int(period * sampleRate) - sound.count))
     }
 
-    /// A bell-ish note: the fundamental and a little of its octave, a 5 ms attack, an exponential fade.
-    static func note(_ frequency: Double, length: TimeInterval, peak: Float, rate: Double) -> [Float] {
+    /// A bell-ish note: the fundamental, a little of its octave and, with `reed`, of its twelfth,
+    /// which gives a low note something in the range a car's noise leaves clear. A 5 ms attack,
+    /// an exponential fade.
+    static func note(_ frequency: Double, length: TimeInterval, peak: Float, reed: Double = 0, rate: Double) -> [Float] {
         let count = Int(length * rate)
         let attack = 0.005 * rate
+        let scale = 1.25 + reed
         return (0..<count).map { index in
             let t = Double(index) / rate
             let rise = min(1, Double(index) / attack)
             let fade = exp(-t / (length / 3.2))
-            let tone = sin(2 * .pi * frequency * t) + 0.25 * sin(4 * .pi * frequency * t)
-            return Float(tone / 1.25 * rise * fade) * peak
+            let tone = sin(2 * .pi * frequency * t) + 0.25 * sin(4 * .pi * frequency * t) + reed * sin(6 * .pi * frequency * t)
+            return Float(tone / scale * rise * fade) * peak
         }
     }
 
-    /// A soft, low tap: a sine burst with a raised-cosine envelope, so it has no click at either end.
+    /// A tap: a sine burst with a raised-cosine envelope, so it has no click at either end.
     static func tap(_ frequency: Double, length: TimeInterval, peak: Float, rate: Double) -> [Float] {
         let count = Int(length * rate)
         return (0..<count).map { index in
@@ -104,8 +113,9 @@ public enum LiveCue: String, Sendable, CaseIterable {
 /// their length plus a tail; a loop closes it for each repeat plus a tail. Read on the audio
 /// thread for every microphone buffer, so it is a value the engine swaps whole.
 public struct LiveCueGate: Sendable, Equatable {
-    /// Room after the sound for the room's echo to die and the canceller to settle.
-    public static let tail: TimeInterval = 0.08
+    /// Room after the sound for the room's echo to die and the canceller to settle. The cues are
+    /// near speech level, so a car's cabin rings on after them for longer than a quiet tone's.
+    public static let tail: TimeInterval = 0.12
 
     /// A one-shot cue's window: closed from `closedFrom` until `closedUntil`. A cue waiting its
     /// turn leaves the microphone open until it sounds.
@@ -159,10 +169,12 @@ public struct LiveCueGate: Sendable, Equatable {
 
 /// Which cue a call's state change or signal calls for.
 ///
-/// The event-to-cue map, the same on the phone, in the car and on the web (`lib/live_cues.js`):
+/// The event-to-cue map, the same on the phone and in the car. The web (`lib/live_cues.js`) has
+/// the same map without *pressed*, at its own levels:
 ///
 /// | What happened | Cue |
 /// | --- | --- |
+/// | Talk was pressed, or a call starts that nobody pressed for (`LiveCall`, not this type) | *pressed*, once |
 /// | The call is up | *connected*, once |
 /// | The person stopped talking and the line will be answered | *heard* |
 /// | The model is working on an answer, no tool running | *thinking* loop |
