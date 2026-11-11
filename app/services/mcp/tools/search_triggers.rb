@@ -180,6 +180,7 @@ module Mcp
             # The id is what action_trigger's `conditions` array addresses when
             # editing one condition of a multi-condition trigger.
             lines << "- **[id #{condition.id}] #{condition.condition_type}** — #{condition.description}"
+            lines << "  #{mcp_event_delivery_line(condition)}" if condition.condition_type == "mcp_event"
             next if condition.configuration.blank?
 
             rendered, summaries = render_configuration(condition.configuration)
@@ -363,6 +364,13 @@ module Mcp
 
         sample = value.is_a?(Hash) ? "#{value.keys.first}: #{value.values.first}" : value.first
         "#{value.size} entries, e.g. #{sample.to_s.truncate(MAX_SAMPLE_LENGTH)}"
+      end
+
+      # How an mcp_event condition's events arrive, the same fact the trigger page shows.
+      def mcp_event_delivery_line(condition)
+        delivery = condition.mcp_event_delivery
+        details = delivery.except("state").map { |key, value| "#{key} #{value}" }
+        "*Delivery:* `#{delivery['state']}`#{details.any? ? " (#{details.join(', ')})" : ''} — polling runs in every state"
       end
 
       def condition_types_summary(trigger)

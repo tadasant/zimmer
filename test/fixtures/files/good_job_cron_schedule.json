@@ -95,6 +95,11 @@
       "class": "McpEventTriggerPollerJob",
       "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
     },
+    "mcp_event_subscriptions": {
+      "cron": "* * * * *",
+      "class": "McpEventSubscriptionsJob",
+      "description": "Hold MCP Events webhook subscriptions for mcp_event conditions: subscribe, refresh before expiry, unsubscribe when retired"
+    },
     "mcp_event_sources_refresh": {
       "cron": "17 */6 * * *",
       "class": "McpEventSourcesRefreshJob",
@@ -427,6 +432,11 @@
       "class": "McpEventTriggerPollerJob",
       "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
     },
+    "mcp_event_subscriptions": {
+      "cron": "* * * * *",
+      "class": "McpEventSubscriptionsJob",
+      "description": "Hold MCP Events webhook subscriptions for mcp_event conditions: subscribe, refresh before expiry, unsubscribe when retired"
+    },
     "mcp_event_sources_refresh": {
       "cron": "17 */6 * * *",
       "class": "McpEventSourcesRefreshJob",
@@ -743,6 +753,11 @@
       "cron": "* * * * *",
       "class": "McpEventTriggerPollerJob",
       "description": "Poll MCP servers that publish events (the MCP Events extension) and create a session per event"
+    },
+    "mcp_event_subscriptions": {
+      "cron": "* * * * *",
+      "class": "McpEventSubscriptionsJob",
+      "description": "Hold MCP Events webhook subscriptions for mcp_event conditions: subscribe, refresh before expiry, unsubscribe when retired"
     },
     "mcp_event_sources_refresh": {
       "cron": "17 */6 * * *",

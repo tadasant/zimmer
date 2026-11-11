@@ -307,6 +307,12 @@ In `db/schema.rb`:
 - `x_oauth_pending_flows.code_verifier` — plain, until the consent is finished, replaced, or swept by the next start after its 30 minutes run out
 - `runtime_login_attempts.pasted_code` — plain `string`
 
+One secret column is the exception: `mcp_event_webhook_subscriptions.secret_ciphertext`, the `whsec_`
+secret an MCP Events server signs webhook deliveries with, is sealed with `ActiveSupport::MessageEncryptor`
+under a key derived from `secret_key_base`. It is not `encrypts`. Rotating `secret_key_base` makes
+every stored secret unreadable. `McpEventSubscriptionsJob` then retires those subscriptions and
+subscribes again with fresh secrets on its next pass.
+
 `XOauthCredential`'s own header admits it: *"access_token / refresh_token are stored as plain text…
 Security relies on database access controls."*
 

@@ -1012,7 +1012,12 @@ the bridge cannot be reached) · `GET /triggers/mcp_event_sources` (the catalog 
 events and their event types, as of the last six-hourly sweep; with `?server=<name>`, that one server
 asked now, 503 when it cannot be asked. For an [`mcp_event` condition](/sessions/triggers/#mcp_event)).
 
-Conditions are nested via `trigger_conditions_attributes`.
+Conditions are nested via `trigger_conditions_attributes`. A trigger's `conditions[]` in a response
+carries `id`, `condition_type`, `configuration`, `description`, `last_triggered_at` and
+`last_polled_at`. An `mcp_event` condition also carries `mcp_event_delivery`: `state` is
+`poll-only`, `subscribed`, `verified` or `suspended`, and `subscribed_at`, `refresh_before`,
+`verified_at`, `last_delivery_at` and `last_error` appear when set. See
+[Webhook delivery](/sessions/triggers/#webhook-delivery).
 
 `toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
 page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
@@ -1813,6 +1818,11 @@ authenticated by the provider's own signature over the request body, and each an
 provider's delivery is switched on — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) and
 [GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery).
+
+`POST /webhooks/mcp_events/:token` is not part of this API either. It is the callback URL of one MCP
+Events webhook subscription, authenticated by a Standard Webhooks signature with that subscription's
+secret, and it answers every failure with an empty 401. It is the one path meant to have a
+Cloudflare Access bypass. See [Webhook delivery](/sessions/triggers/#webhook-delivery).
 
 ### Transcript content is redacted
 

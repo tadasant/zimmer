@@ -5,7 +5,8 @@
 # request from Rails, with the credentials a session would get for the server (McpServerEndpoint).
 #
 # Every minute, for every `mcp_event` condition on an enabled trigger whose server has not asked
-# to be polled later (`nextPollMs`):
+# to be polled later (`nextPollMs`), and — once a verified webhook subscription carries the
+# condition's events — every PUSH_CATCH_UP_INTERVAL instead:
 #
 #   1. a condition with no cursor is BASELINED: one `events/poll` with a null cursor, which by the
 #      SEP returns no events and a cursor to poll from. Nothing fires, so turning a trigger on
@@ -13,8 +14,9 @@
 #   2. otherwise `events/poll` from the stored cursor, following `hasMore` for up to MAX_PAGES;
 #   3. each event whose payload passes the condition's `payload_filters` is claimed in
 #      TriggerEventClaim under `mcp:<server>:<eventId>` and fires the trigger, in one transaction —
-#      ONE SESSION PER EVENT. A claim the condition already holds fires nothing, so a page polled
-#      twice fires each event once;
+#      ONE SESSION PER EVENT (McpEvents::Firing, shared with the webhook receiver). A claim the
+#      condition already holds fires nothing, so a page polled twice fires each event once, and an
+#      event the server also POSTed to Zimmer's webhook receiver fires once;
 #   4. the cursor moves to the page's cursor only when every event on the page was settled. An event
 #      whose fire raised, was held (`skip_if_pending_session`, a reused session that would not take
 #      it, burst control) or fell past MAX_FIRES_PER_TICK keeps the cursor where it was; the next
@@ -54,16 +56,18 @@ class McpEventTriggerPollerJob < ApplicationJob
 
   TRUNCATION_REPORT_INTERVAL = 1.hour
 
-  # A trigger the poller must not fire for, whatever its conditions say: the form, the API and MCP
-  # refuse to save a template that writes a payload field bare, but /supervisor edits conditions on
-  # their own, so the poller checks again rather than trust the row.
-  class UnfireableTrigger < StandardError; end
+  # How often a condition is polled while a verified webhook subscription carries its events
+  # (McpEventWebhookSubscription#healthy?). The poll is then only the catch-up path — for a
+  # delivery the server gave up on, one held by burst control, or a subscription that lapsed
+  # without Zimmer noticing — so it can afford to be slow. Fifteen minutes is the same ceiling a
+  # server's own `nextPollMs` is clamped to.
+  PUSH_CATCH_UP_INTERVAL = 15.minutes
 
   def perform
     conditions = TriggerCondition.mcp_event
       .joins(:trigger)
       .where(triggers: { status: "enabled" })
-      .includes(:trigger)
+      .includes(:trigger, :mcp_event_webhook_subscriptions)
 
     # Nothing to poll is still liveness — see SlackTriggerPollerJob#perform for why.
     unless conditions.exists?
@@ -98,19 +102,19 @@ class McpEventTriggerPollerJob < ApplicationJob
 
   def due?(condition)
     next_at = Time.zone.parse(condition.configuration["next_poll_at"].to_s)
-    next_at.nil? || next_at <= Time.current
-  end
+    return false unless next_at.nil? || next_at <= Time.current
 
-  def ensure_fireable!(trigger)
-    raise UnfireableTrigger, "trigger #{trigger.id} runs a workflow; an mcp_event condition fires only templates" if trigger.workflow_backed?
+    # A verified webhook subscription is carrying the events; poll only to catch up.
+    if condition.mcp_event_cursor && condition.last_polled_at && condition.mcp_event_push_healthy?
+      return condition.last_polled_at <= PUSH_CATCH_UP_INTERVAL.ago
+    end
 
-    bare = trigger.unfenced_mcp_event_fields
-    raise UnfireableTrigger, "trigger #{trigger.id} writes event field(s) #{bare.join(', ')} unfenced; write them |untrusted or |id" if bare.any?
+    true
   end
 
   # Returns true when the server answered.
   def process_condition(condition)
-    ensure_fireable!(condition.trigger)
+    McpEvents::Firing.ensure_fireable!(condition.trigger)
 
     subscription = condition.mcp_event_subscription
     client = McpEvents::Sources.client_for(condition.mcp_event_server)
@@ -138,7 +142,8 @@ class McpEventTriggerPollerJob < ApplicationJob
           break
         end
 
-        outcome = settle(condition, subscription, cursor, occurrence)
+        outcome = McpEvents::Firing.settle(condition, subscription, occurrence,
+          via: "mcp_event", cursor: cursor, log_tag: "McpEventTriggerPollerJob")
         fires += 1 if outcome.is_a?(Session)
         next unless %i[held rolled_back failed].include?(outcome)
 
@@ -170,69 +175,6 @@ class McpEventTriggerPollerJob < ApplicationJob
       )
     end
     Rails.logger.info "[McpEventTriggerPollerJob] Condition #{condition.id} baselined"
-  end
-
-  # Claim and fire one event. Returns a Session, :filtered, :duplicate, :held, :rolled_back (the
-  # condition was edited mid-poll) or :failed.
-  def settle(condition, subscription, cursor, occurrence)
-    return :filtered unless condition.mcp_event_payload_allowed?(occurrence.data)
-
-    key = TriggerEventClaim.mcp_event_key(condition.mcp_event_server, occurrence.event_id)
-    outcome = :rolled_back
-    ActiveRecord::Base.transaction do
-      # Re-read the row under a lock: an edit that landed while this tick was polling must not be
-      # written over, and one that changed the subscription makes this page moot.
-      condition.lock!
-      raise ActiveRecord::Rollback if condition.mcp_event_subscription != subscription || condition.mcp_event_cursor != cursor
-
-      if TriggerEventClaim.claim!(condition, [ key ], via: "mcp_event").empty?
-        outcome = :duplicate
-        next
-      end
-
-      outcome = fire!(condition, occurrence)
-      if outcome.is_a?(Session)
-        TriggerEventClaim.attach_session!(condition, [ key ], outcome)
-        condition.update!(last_triggered_at: Time.current)
-      else
-        # Nothing was spawned, so the event is not fired: give the claim back, and the next tick
-        # tries again from the same cursor. What the trigger recorded about the fire it missed
-        # (Trigger#record_missed_fire!) still commits.
-        TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: key).delete_all
-        outcome = :held
-      end
-    end
-
-    Rails.logger.info "[McpEventTriggerPollerJob] Condition #{condition.id}: event #{key} #{describe(outcome)}" unless outcome == :duplicate
-    outcome
-  rescue => e
-    # One event's failure — a spawn that raised — is that event's, and is retried next tick.
-    report(condition, e)
-    :failed
-  end
-
-  def fire!(condition, occurrence)
-    trigger = condition.trigger
-    prompt = trigger.interpolate_prompt(event: "mcp_event", event_id: occurrence.event_id, event_data: occurrence.data)
-
-    # The transaction-scoped spawn lock the other pollers take: a manual invoke, or a second
-    # condition on this trigger, must not race this fire's skip and burst checks.
-    Trigger.lock_spawn_for_transaction!(trigger.id)
-    session = trigger.create_session!(
-      prompt: prompt,
-      session_metadata: {
-        "mcp_event_server" => condition.mcp_event_server,
-        "mcp_event_name" => condition.mcp_event_name,
-        "mcp_event_id" => occurrence.event_id
-      }
-    )
-
-    return :held if session.nil?
-    return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
-    # The fire that opened a burst spawns the notice about it, not a session for this event.
-    return :held if session.metadata.to_h["burst_notice"]
-
-    session
   end
 
   # Moves the cursor (or leaves it, when +new_cursor+ is the old one) and records the poll. Returns
@@ -320,15 +262,5 @@ class McpEventTriggerPollerJob < ApplicationJob
         trigger_id: condition.trigger_id
       }
     )
-  end
-
-  def describe(outcome)
-    case outcome
-    when Session then "fired session #{outcome.id}"
-    when :held then "not fired yet (burst control, a pending session, or a busy reused session); retried on a later tick"
-    when :rolled_back then "rolled back (the condition was edited mid-poll)"
-    when :filtered then "filtered out by payload_filters"
-    else outcome.to_s
-    end
   end
 end
