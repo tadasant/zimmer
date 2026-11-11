@@ -567,6 +567,31 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
+    /// Talk is heard at once. The car's tap brings the call's audio up before it asks Zimmer which
+    /// conversation to call, and a call brings it up before it turns voice on or mints its secret,
+    /// so *pressed* waits on the engine alone, never on the network.
+    func testThePressIsHeardBeforeAnyNetworkStep() throws {
+        func body(_ file: String, from start: String) throws -> String {
+            let text = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix(file) }?.text, file)
+            let source = Self.code(text).map(\.line).joined(separator: "\n")
+            let open = try XCTUnwrap(source.range(of: start), start)
+            return String(source[open.lowerBound...])
+        }
+        let tap = try body("CarPlay/CarPlayLive.swift", from: "func start(_ tile: LiveTalkTile)")
+        let pressed = try XCTUnwrap(tap.range(of: "call.pressed()"), "the tap brings the audio up")
+        let attempt = try XCTUnwrap(tap.range(of: "attempt()"))
+        XCTAssertLessThan(pressed.lowerBound, attempt.lowerBound, "before the conversation is looked up")
+
+        let call = try body("Live/LiveCall.swift", from: "func start(_ conversation: Int")
+        let bringUp = try XCTUnwrap(call.range(of: "bringUpAudio()"))
+        for network in ["turnVoiceOn(", "mintSecret(", "openSocket("] {
+            let step = try XCTUnwrap(call.range(of: network), network)
+            XCTAssertLessThan(bringUp.lowerBound, step.lowerBound, "the audio comes up alongside \(network), not after it")
+        }
+        let cue = try body("Live/LiveCall.swift", from: "private func bringUpAudio()")
+        XCTAssertTrue(cue.contains("self.audio.play(.pressed)"), "and says so the moment the engine runs")
+    }
+
     /// `bda7cf2e` sat 770 s inside the engine's start with the main thread waiting on it, so no
     /// deadline could fire, End could not be pressed and the screen could not change. The calls
     /// that can block run on the audio queue; this is what keeps them there.
