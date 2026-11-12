@@ -396,7 +396,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
 
     with_alerts do |alerts|
-      result = sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK + 1.day).ago) ]) })
+      result = sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK - 1.day).ago) ]) })
 
       assert_empty alerts.pages
       assert_equal 1, result.count(WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE)
@@ -416,6 +416,58 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     sweep(probes: { 1 => probe(state: "CLOSED") })
 
     assert_equal WorkBacklogItem::LIVENESS_ISSUE_CLOSED, item.reload.liveness_state
+  end
+
+  # The hard constraint again: a PR an earlier row merged says nothing about
+  # whether this row's session did anything.
+  test "an awaiting_recurrence row whose only merged PR predates it strands and pages" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK + 1.day).ago) ]) })
+
+      assert_equal 1, alerts.pages.size
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  test "a multi_slice row with a merged slice and a moving open PR is in flight, and queues nothing yet" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago),
+                                             reference(state: "OPEN", updated_at: 1.hour.ago, number: 501) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, item.reload.liveness_state
+    assert_empty WorkBacklogItem.queued.where(key: item.key)
+  end
+
+  test "a multi_slice row whose next slice someone already queued is superseded without a second row" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+    WorkBacklog::Append.call(append_attributes(key: item.key), added_via: WorkBacklogItem::MCP)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+    assert_equal 1, WorkBacklogItem.queued.where(key: item.key).count
+  end
+
+  test "a multi_slice row whose next slice the ranking refuses stays stranded and pages" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+    log = StringIO.new
+
+    WorkBacklog::Append.stub(:call, ->(*, **) { raise WorkBacklog::Append::InvalidItem, "band full" }) do
+      with_alerts do |alerts|
+        sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) }, logger: Logger.new(log))
+
+        assert_equal 1, alerts.pages.size
+      end
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+    assert_match(/could not queue the next slice of zimmer#1 .*band full/, log.string)
   end
 
   test "an awaiting_recurrence row whose session produced no PR strands and pages" do

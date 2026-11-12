@@ -211,9 +211,13 @@ module WorkBacklog
 
         if probe.merged_references.any?
           # The one place a row's own declaration changes the verdict, and only
-          # in the ambiguous case it was declared for. See
+          # in the ambiguous case it was declared for, and only when this row's
+          # own work merged. An older merged PR says nothing about whether the
+          # session this row started did anything. See
           # WorkBacklogItem::CONTINUATIONS.
-          return WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE if item.awaiting_recurrence?
+          if item.awaiting_recurrence? && merged_since_left(item, probe)
+            return WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE
+          end
 
           return WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN
         end
@@ -221,12 +225,14 @@ module WorkBacklog
         WorkBacklogItem::LIVENESS_NO_PR
       end
 
-      # The slice a `multi_slice` row landed: the latest merged reference that
-      # merged after the row left the queue, or nil. A merged PR from before the
-      # row left is the PREVIOUS slice, so a session that ended with nothing finds
-      # nil here and the row strands and pages like any other. A reference with no
-      # `merged_at` is not counted: a time that could not be read is not evidence.
-      def landed_slice(item, probe)
+      # The latest merged reference that merged after the row left the queue, or
+      # nil: the slice a `multi_slice` row landed, or the work an
+      # `awaiting_recurrence` row's session merged. A merged PR from before the
+      # row left belongs to an earlier row, so a session that ended with nothing
+      # finds nil here and the row strands and pages like any other. A reference
+      # with no `merged_at` is not counted: a time that could not be read is not
+      # evidence.
+      def merged_since_left(item, probe)
         left = item.left_queue_at
         return nil if left.nil? || probe.nil?
 
@@ -289,7 +295,7 @@ module WorkBacklog
       # without this every slice stranded for a week, paged `#alerts`, and was
       # re-queued by hand (zimmer#321, fifteen times). That is not the judgement
       # the class comment refuses to make — the row's author made it — and it is
-      # gated on the evidence that a slice actually landed (`landed_slice`).
+      # gated on the evidence that a slice actually landed (`merged_since_left`).
       #
       # The fresh row is an ordinary append, carrying the old row's fields, its
       # marker, and the merged PR, and the old row is recorded superseded. True
@@ -298,7 +304,7 @@ module WorkBacklog
       def continue_slice(item, state, probe, now, logger)
         return false unless item.multi_slice? && state == WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN
 
-        slice = landed_slice(item, probe)
+        slice = merged_since_left(item, probe)
         return false unless slice
 
         result = Append.call(next_slice_attributes(item, slice), added_via: WorkBacklogItem::SWEEP)
@@ -558,7 +564,7 @@ module WorkBacklog
                         "with a deliberate remainder needs a judgement per issue. Triage them on the " \
                         "Issues page under Stranded, or with get_work_backlog status: \"stranded\", " \
                         "put the ones with work left back with append_work_backlog_item (with continuation: " \
-                        "multi_slice or awaiting_recurrence when the issue stays open by design), and hold the " \
+                        "multi_slice when each session lands one slice of an issue that stays open), and hold the " \
                         "ones whose remainder is a human's call with hold_work_backlog_item_for_decision. " \
                         "A lapsed hold means WorkBacklogDecisionDigestJob did not reach the owner or could " \
                         "not re-read the row's evidence: find out why before holding it again."

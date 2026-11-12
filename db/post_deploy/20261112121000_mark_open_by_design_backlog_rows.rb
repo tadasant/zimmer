@@ -22,14 +22,16 @@
 # `GET /api/v1/health`, from `get_system_health` and at
 # /supervisor/post_deploy_task_runs) as the ids it marked.
 class MarkOpenByDesignBacklogRows < PostDeployTask
+  # Keyed on the issue URL as well as the key, so another deployment's own
+  # `zimmer#321` is not marked.
   MARKERS = {
-    "zimmer#321" => WorkBacklogItem::CONTINUATION_MULTI_SLICE,
-    "zimmer#1463" => WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE
+    [ "zimmer#321", "https://github.com/tadasant/zimmer/issues/321" ] => WorkBacklogItem::CONTINUATION_MULTI_SLICE,
+    [ "zimmer#1463", "https://github.com/tadasant/zimmer/issues/1463" ] => WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE
   }.freeze
 
   def up
-    marked = MARKERS.filter_map do |key, continuation|
-      row = WorkBacklogItem.where(key: key).order(id: :desc).first
+    marked = MARKERS.filter_map do |(key, issue_url), continuation|
+      row = WorkBacklogItem.where(key: key, issue_url: issue_url).order(id: :desc).first
       next unless row && row.continuation.nil?
 
       row.update_columns(continuation: continuation, updated_at: Time.current)

@@ -52,7 +52,8 @@ in both cases with the issue still open. Before it existed, these rendered only 
 below, as ordinary un-triaged issues, so a pile of work the fleet had started and dropped read as
 work nobody had rated yet. `WorkBacklogLivenessSweepJob` re-checks them hourly and puts the evidence
 on each row — whether a PR references the issue, whether it merged, and whether an open one has
-gone quiet — but **puts nothing back**, because a merged PR with no closing keyword is either
+gone quiet — but **puts nothing back** (except a `multi_slice` row's next slice; see
+[Issues that stay open by design](/operate/work-backlog/#issues-that-stay-open-by-design)), because a merged PR with no closing keyword is either
 finished work or a deliberate remainder and no mechanical signal separates them. This is a triage
 list: decide per row, and re-queue the ones with work left. See [When a row leaves the queue and
 goes nowhere](/operate/work-backlog/#when-a-row-leaves-the-queue-and-goes-nowhere). The stored

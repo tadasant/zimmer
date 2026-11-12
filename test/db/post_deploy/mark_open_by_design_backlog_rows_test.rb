@@ -16,6 +16,7 @@ class MarkOpenByDesignBacklogRowsTest < ActiveSupport::TestCase
     slice = backlog_item(key: "zimmer#321", status: WorkBacklogItem::STARTED, started_at: 8.days.ago)
     flake = backlog_item(key: "zimmer#1463", status: WorkBacklogItem::STARTED, started_at: 7.days.ago)
     other = backlog_item(key: "zimmer#999")
+    elsewhere = backlog_item(key: "zimmer#1463", issue_url: "https://github.com/someone-else/zimmer/issues/1463")
 
     run = run_task
 
@@ -23,6 +24,7 @@ class MarkOpenByDesignBacklogRowsTest < ActiveSupport::TestCase
     assert_equal "awaiting_recurrence", flake.reload.continuation
     assert_nil old_slice.reload.continuation, "a superseded row is not marked"
     assert_nil other.reload.continuation
+    assert_nil elsewhere.reload.continuation, "another deployment's zimmer#1463 is not this one"
     assert_equal [ slice.id, flake.id ], run.stats["marked"]
 
     assert_empty run_task.stats["marked"], "a second run writes nothing"

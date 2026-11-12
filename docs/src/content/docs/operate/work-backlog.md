@@ -292,20 +292,22 @@ and the issue is still open:
 | `continuation` | What the sweep does |
 | --- | --- |
 | `multi_slice` | If a referencing PR merged **after the row left the queue**, it appends a fresh `queued` row for the next slice and records the old row `superseded`. The new row carries the old row's fields and its marker (`added_via: liveness_sweep`, `added_by: liveness-sweep`). Its `prompt` names the merged PR and says to pick the next slice from the issue and that PR's "Noticed, not filed" section. `previous_slice_pr` and `continued_from_item` in `payload` record where it came from. When the last slice closes the issue, the row reads `issue_closed` like any other |
-| `awaiting_recurrence` | It records `awaiting_recurrence`, which is resolved: the row leaves `stranded` and does not page. The row is still re-checked every pass, so a closed issue reads `issue_closed`. A recurrence comes back the ordinary way: the issue is rated again and appended, which supersedes this row |
+| `awaiting_recurrence` | If a referencing PR merged **after the row left the queue**, it records `awaiting_recurrence`, which is resolved: the row leaves `stranded` and does not page. The row is still re-checked every pass, so a closed issue reads `issue_closed`. A recurrence comes back the ordinary way: the issue is rated again and appended, which supersedes this row |
 | none | `pr_merged_issue_open`, stranded, exactly as above |
 
 **Neither marker hides a row whose work stopped.** A `multi_slice` row is re-queued only for a
 slice that merged after its own `started_at` (or `removed_at`). If its session ended with nothing
 merged, the only merged PRs are earlier slices, and the row strands at `pr_merged_issue_open` and
-pages. A PR whose merge time GitHub did not return does not count. An `awaiting_recurrence` row with
-no merged PR reads `no_pr` and strands. An open PR that has gone quiet reads `pr_stalled` either
+pages. The same rule holds for `awaiting_recurrence`: with only earlier merged PRs the row reads
+`pr_merged_issue_open` and pages, and with no PR at all it reads `no_pr`. A PR whose merge time
+GitHub did not return does not count. An open PR that has gone quiet reads `pr_stalled` either
 way. If the ranking refuses the next slice (a full band), the sweep logs a WARN and the row stays
 stranded, so it still pages.
 
 The marker is set on append, and an append on a key that already has a queued row writes nothing,
 so no agent surface marks a row that already exists. The two rows #1489 was filed about were marked
-once by the post-deploy task `MarkOpenByDesignBacklogRows`.
+once by the post-deploy task `MarkOpenByDesignBacklogRows`. See
+[Limitations](/limitations/#work-stranded-with-no-backlog-row-at-all-is-invisible-to-the-liveness-re-check) for what the marker cannot tell apart.
 
 ### The three ways a row strands, and the one this misses
 
