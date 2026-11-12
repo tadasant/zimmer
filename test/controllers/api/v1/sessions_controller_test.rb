@@ -1534,6 +1534,31 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "pending", enqueued.status
   end
 
+  test "follow_up to a running session queues through Sessions::QueueFollowUp" do
+    session = sessions(:running)
+    queued = session.enqueued_messages.create!(content: "Stand-in", position: 7, status: "pending")
+    Sessions::QueueFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:images] == [] && kwargs[:files] == []
+    end.returns(queued)
+
+    post follow_up_api_v1_session_path(session.id), params: { prompt: "Through the service" }, headers: @headers
+
+    assert_response :accepted
+    json = JSON.parse(response.body)
+    assert_equal({ "id" => queued.id, "position" => 7, "status" => "pending" }, json["enqueued_message"])
+    assert_equal "Message queued (session is running). It will be sent when the agent completes its current task.", json["message"]
+  end
+
+  test "follow_up to a running session logs the shared queued wording" do
+    session = sessions(:running)
+
+    post follow_up_api_v1_session_path(session.id), params: { prompt: "Queued" }, headers: @headers
+
+    assert_response :accepted
+    assert session.logs.exists?(content: "Message queued at position 1 (a turn is already underway)")
+  end
+
   # An accepted follow-up has to exist somewhere a resume path can read it, not
   # only as the argument of the job this branch enqueues. A worker shutdown
   # discards that job, `handle_interrupt_error` resumes the session on a
