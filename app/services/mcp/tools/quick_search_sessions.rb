@@ -337,7 +337,7 @@ module Mcp
           loose = search_count(args.merge("show_archived" => true).except("carplay_fit"), query, MATCH_ALL_WORDS)
           if loose.positive?
             notes << "**Note:** no session has this exact phrase, but #{loose} session(s) contain every one " \
-                     "of its words (archived included, carplay_fit ignored). Pass match: \"all_words\" to see them."
+                     "of its words (counting archived sessions, ignoring carplay_fit, keeping your other filters). Pass match: \"all_words\" to see them."
           end
         end
 

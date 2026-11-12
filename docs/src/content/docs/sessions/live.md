@@ -232,18 +232,17 @@ before this was recorded have unauthored lines, so start a new one.
 People ask for a session the way they remember it: "the one where we diagnosed the live mode
 failure". That is usually finished work, and finished work has archived itself. `quick_search_sessions`
 defaults suit an agent's duplicate check instead: archived sessions are left out, and the query is
-one literal phrase. So a spoken lookup missed twice over: "live mode voice" found nothing until
-archived sessions were included, and "diagnose live mode" never matched "Diagnose failed Zimmer
-live mode voice session".
+one literal phrase, so "diagnose live mode" does not match "Diagnose failed Zimmer live mode voice
+session".
 
 The tool bridge gives a search from Live Mode its own defaults, filled in only where the model left
 the argument out (`ToolBridge#with_live_search_defaults`):
 
-- `show_archived: true`, unless the call names a `status` or passes `show_archived` itself;
+- `show_archived: true`, unless the call names a non-empty `status` or passes `show_archived` itself;
 - `match: "all_words"`, which needs every word somewhere in the title or metadata in any order,
   unless the call passes `match` or `search_contents: true` (the transcript scan matches one phrase).
 
-A listing with no `query` and an `id` lookup are left alone. The answer starts with a line naming
+A listing with no `query` and an `id` lookup get neither default. The answer starts with a line naming
 the defaults it used, so the model can tell the person that archived sessions were included. The
 turn records the model's own arguments. Every other caller of the tool keeps its defaults.
 

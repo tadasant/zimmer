@@ -444,7 +444,7 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
 
     output = @tool.call("query" => "diagnose quokka")
 
-    assert_includes output, "no session has this exact phrase, but 1 session(s) contain every one of its words"
+    assert_includes output, "no session has this exact phrase, but 1 session(s) contain every one of its words (counting archived"
     assert_includes output, 'match: "all_words"'
   end
 
