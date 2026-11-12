@@ -18,6 +18,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     added_at: Field::DateTime,
     added_by: Field::String,
     added_via: Field::String,
+    continuation: Field::String,
     precedence: Field::Number,
     pinned: Field::Boolean,
     status: Field::String,
@@ -71,6 +72,7 @@ class WorkBacklogItemDashboard < Administrate::BaseDashboard
     added_at
     added_by
     added_via
+    continuation
     precedence
     pinned
     status

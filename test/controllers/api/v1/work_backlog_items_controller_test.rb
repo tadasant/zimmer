@@ -107,6 +107,20 @@ class Api::V1::WorkBacklogItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "n", item["notes"]
   end
 
+  test "create takes the same continuation marker the MCP tool does" do
+    post api_v1_work_backlog_items_path,
+      params: append_attributes(key: "zimmer#1463", "continuation" => "awaiting_recurrence"),
+      headers: @headers, as: :json
+
+    assert_response :created
+    assert_equal "awaiting_recurrence", body.dig("work_backlog_item", "continuation")
+    assert WorkBacklogItem.find_by!(key: "zimmer#1463").awaiting_recurrence?
+
+    post api_v1_work_backlog_items_path,
+      params: append_attributes(key: "zimmer#10", "continuation" => "forever"), headers: @headers, as: :json
+    assert_response :unprocessable_entity
+  end
+
   test "create keeps an unknown key in payload and accepts writing_session_id like the gate ledger does" do
     post api_v1_work_backlog_items_path,
       params: append_attributes(key: "zimmer#9", "new_gate_field" => { "x" => 1 }, "writing_session_id" => sessions(:running).id),

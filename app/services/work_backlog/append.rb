@@ -33,7 +33,7 @@ module WorkBacklog
 
     # The item fields a caller may set. Everything else on the row is stamped.
     ATTRIBUTE_KEYS = %w[key issue_url repo surface title kind scope_direction estimated_cost
-                        gate_verdict decided_at added_by].freeze
+                        gate_verdict decided_at added_by continuation].freeze
 
     class << self
       # @param attributes [Hash] string-keyed: the ATTRIBUTE_KEYS plus the payload

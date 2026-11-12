@@ -46,6 +46,12 @@ module WorkBacklog
   # directions destroy something, so this makes the call that a cron job is
   # entitled to make: none of them.
   #
+  # The exception is a row whose AUTHOR made that call when appending it: a
+  # `continuation` marker (WorkBacklogItem::CONTINUATIONS) says the issue stays
+  # open by design. A `multi_slice` row whose slice merged is re-queued for the
+  # next slice (`continue_slice`); an `awaiting_recurrence` row with a merged PR
+  # reads resolved. A row with no marker is still never acted on (#1489).
+  #
   # What it does instead is name the population and put the evidence beside each
   # row, so the triage that must happen can happen — by a human on the Issues
   # page, or by an agent reading `status: "stranded"`. Putting an item back is
@@ -203,9 +209,29 @@ module WorkBacklog
           return moving.any? ? WorkBacklogItem::LIVENESS_PR_OPEN : WorkBacklogItem::LIVENESS_PR_STALLED
         end
 
-        return WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN if probe.merged_references.any?
+        if probe.merged_references.any?
+          # The one place a row's own declaration changes the verdict, and only
+          # in the ambiguous case it was declared for. See
+          # WorkBacklogItem::CONTINUATIONS.
+          return WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE if item.awaiting_recurrence?
+
+          return WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN
+        end
 
         WorkBacklogItem::LIVENESS_NO_PR
+      end
+
+      # The slice a `multi_slice` row landed: the latest merged reference that
+      # merged after the row left the queue, or nil. A merged PR from before the
+      # row left is the PREVIOUS slice, so a session that ended with nothing finds
+      # nil here and the row strands and pages like any other. A reference with no
+      # `merged_at` is not counted: a time that could not be read is not evidence.
+      def landed_slice(item, probe)
+        left = item.left_queue_at
+        return nil if left.nil? || probe.nil?
+
+        probe.merged_references.select { |reference| reference.merged_at && reference.merged_at >= left }
+             .max_by(&:merged_at)
       end
 
       private
@@ -232,9 +258,11 @@ module WorkBacklog
         rows.group_by { |item| item.issue_repo || item.repo }.each do |repo, repo_rows|
           probes = probe(repo, repo_rows, logger) { failed << repo }
           repo_rows.each do |item|
-            state = classify(item, probes && probes[item.issue_number], now)
-            outcomes[state] += 1
+            row_probe = probes && probes[item.issue_number]
+            state = classify(item, row_probe, now)
             record(item, state, now, logger)
+            state = WorkBacklogItem::LIVENESS_SUPERSEDED if continue_slice(item, state, row_probe, now, logger)
+            outcomes[state] += 1
           end
         end
 
@@ -253,6 +281,59 @@ module WorkBacklog
       rescue ActiveRecord::ActiveRecordError => e
         logger.warn("[WorkBacklog::LivenessSweep] could not record #{state} on item #{item.id} " \
                     "(#{item.key}): #{e.class}: #{e.message}")
+      end
+
+      # THE ONE THING THIS PUTS BACK, and only because the row asked for it on
+      # append (#1489). A `multi_slice` row whose slice merged while it was out
+      # is the next slice, waiting: each session lands one and closes nothing, so
+      # without this every slice stranded for a week, paged `#alerts`, and was
+      # re-queued by hand (zimmer#321, fifteen times). That is not the judgement
+      # the class comment refuses to make — the row's author made it — and it is
+      # gated on the evidence that a slice actually landed (`landed_slice`).
+      #
+      # The fresh row is an ordinary append, carrying the old row's fields, its
+      # marker, and the merged PR, and the old row is recorded superseded. True
+      # when a fresh row now carries the key. An append the ranking refuses (a
+      # full band) leaves the row stranded, which pages: honest, and not silent.
+      def continue_slice(item, state, probe, now, logger)
+        return false unless item.multi_slice? && state == WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN
+
+        slice = landed_slice(item, probe)
+        return false unless slice
+
+        result = Append.call(next_slice_attributes(item, slice), added_via: WorkBacklogItem::SWEEP)
+        record(item, WorkBacklogItem::LIVENESS_SUPERSEDED, now, logger)
+        logger.info("[WorkBacklog::LivenessSweep] #{item.key}: slice #{slice.url || "##{slice.number}"} merged; " \
+                    "#{result.created? ? "queued the next slice as item #{result.item.id}" : "the next slice was already queued"}")
+        true
+      rescue Append::InvalidItem => e
+        logger.warn("[WorkBacklog::LivenessSweep] could not queue the next slice of #{item.key} " \
+                    "(item #{item.id}): #{e.message}")
+        false
+      end
+
+      # The old row's item, as its gate appended it, plus where the last slice
+      # landed. The pointer goes in `prompt`, which a session spawned for an
+      # issue receives after the issue URL; the row's original prompt, if a
+      # human gave it one, is kept as `slice_base_prompt` so it does not grow a
+      # line per slice.
+      def next_slice_attributes(item, slice)
+        payload = item.payload.is_a?(Hash) ? item.payload : {}
+        base = payload.key?("slice_base_prompt") ? payload["slice_base_prompt"] : payload["prompt"]
+        pr = slice.url || "##{slice.number}"
+        pointer = "This issue is multi-slice: each session lands one slice and leaves the issue open. " \
+                  "The previous slice merged in #{pr}. Pick the next slice from the issue and that PR's " \
+                  "\"Noticed, not filed\" section, land it, and keep this row's continuation."
+
+        payload.except("prompt").merge(
+          item.attributes.slice(*Append::ATTRIBUTE_KEYS),
+          "decided_at" => item.decided_at&.iso8601,
+          "added_by" => "liveness-sweep",
+          "slice_base_prompt" => base,
+          "prompt" => [ base.presence, pointer ].compact.join("\n\n"),
+          "previous_slice_pr" => pr,
+          "continued_from_item" => item.id
+        )
       end
 
       # `nil` when the repo could not be read at all — which the caller turns into
@@ -476,7 +557,8 @@ module WorkBacklog
             what_to_do: "Nothing re-queues these automatically — telling a finished issue from one " \
                         "with a deliberate remainder needs a judgement per issue. Triage them on the " \
                         "Issues page under Stranded, or with get_work_backlog status: \"stranded\", " \
-                        "put the ones with work left back with append_work_backlog_item, and hold the " \
+                        "put the ones with work left back with append_work_backlog_item (with continuation: " \
+                        "multi_slice or awaiting_recurrence when the issue stays open by design), and hold the " \
                         "ones whose remainder is a human's call with hold_work_backlog_item_for_decision. " \
                         "A lapsed hold means WorkBacklogDecisionDigestJob did not reach the owner or could " \
                         "not re-read the row's evidence: find out why before holding it again."
