@@ -2673,6 +2673,50 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match /queued/i, flash[:notice]
   end
 
+  test "follow_up on a running session queues through Sessions::QueueFollowUp" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Ahead of you", position: 1, status: "pending")
+    Sessions::QueueFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "All tests pass" && kwargs[:source_context].is_a?(Hash) &&
+        kwargs[:source_context].present?
+    end.returns(EnqueuedMessage.new)
+
+    post follow_up_session_url(session), params: { follow_up_prompt: "Through the service", goal: "All tests pass" }
+
+    assert_redirected_to session_path(session)
+    assert_equal "Message queued. It will be sent when the agent completes its current task.", flash[:notice]
+  end
+
+  test "a deadlock after the queue write retries without queuing the follow-up twice" do
+    session = sessions(:running)
+    calls = 0
+    Session.any_instance.stubs(:touch_user_activity!).with do
+      calls += 1
+      raise ActiveRecord::Deadlocked, "deadlock detected" if calls == 1
+
+      true
+    end
+    SessionsController.any_instance.stubs(:sleep)
+
+    post follow_up_session_url(session), params: { follow_up_prompt: "Exactly once" }
+
+    assert_redirected_to session_path(session)
+    assert_equal 2, calls
+    assert_equal [ [ "Exactly once", 1 ] ], session.enqueued_messages.pluck(:content, :position)
+    assert_equal 1, session.logs.where("content LIKE ?", "Message queued at position%").count
+  end
+
+  test "follow_up on a running session logs the shared queued wording" do
+    session = sessions(:running)
+    session.enqueued_messages.create!(content: "Ahead of you", position: 1, status: "pending")
+
+    post follow_up_session_url(session), params: { follow_up_prompt: "Second in line" }
+
+    assert_equal 2, session.enqueued_messages.order(:position).last.position
+    assert session.logs.exists?(content: "Message queued at position 2 (a turn is already underway)")
+  end
+
   test "follow_up should queue message with goal when session is running" do
     session = sessions(:running)
 

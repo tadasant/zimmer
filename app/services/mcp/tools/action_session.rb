@@ -600,19 +600,13 @@ module Mcp
       # A running session queues the message rather than rejecting it, so a caller
       # that raced the end of a turn does not lose the prompt.
       def queue_follow_up(session, prompt, goal)
-        max_position = session.enqueued_messages.maximum(:position) || 0
-        enqueued_message = session.enqueued_messages.create!(
-          content: prompt,
+        enqueued_message = Sessions::QueueFollowUp.call(
+          session: session,
+          prompt: prompt,
           goal: goal,
-          position: max_position + 1,
-          status: "pending",
           source_context: context.turn_source.to_h
         )
         @queued_follow_up = enqueued_message
-        session.logs.create!(
-          content: "Message queued at position #{enqueued_message.position} (session is running)",
-          level: "info"
-        )
         context.capture_assistant_message(session, prompt, "oauth.follow_up_queued")
 
         follow_up_result(
