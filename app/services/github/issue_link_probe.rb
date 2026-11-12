@@ -32,8 +32,12 @@ module Github
   # `repository` node, so a repo's whole candidate set costs a handful of calls
   # rather than one per row.
   class IssueLinkProbe
-    # A pull request that references the issue.
-    Reference = Data.define(:number, :state, :updated_at) do
+    # A pull request that references the issue. `merged_at` and `url` are what a
+    # `multi_slice` row's re-queue needs: whether a slice merged since the row
+    # left the queue, and which PR the next slice starts from.
+    Reference = Data.define(:number, :state, :updated_at, :merged_at, :url) do
+      def initialize(number:, state:, updated_at:, merged_at: nil, url: nil) = super
+
       def open? = state == "OPEN"
       def merged? = state == "MERGED"
 
@@ -126,7 +130,8 @@ module Github
           next unless source.is_a?(Hash) && source["number"].is_a?(Integer) && source["state"].present?
 
           Reference.new(number: source["number"], state: source["state"],
-                        updated_at: parse_time(source["updatedAt"]))
+                        updated_at: parse_time(source["updatedAt"]),
+                        merged_at: parse_time(source["mergedAt"]), url: source["url"].presence)
         end
 
         Probe.new(repo: repo, number: number, state: node["state"].to_s, references: references)
@@ -148,7 +153,7 @@ module Github
               number
               state
               timelineItems(last: 30, itemTypes: [CROSS_REFERENCED_EVENT]) {
-                nodes { ... on CrossReferencedEvent { source { ... on PullRequest { number state updatedAt } } } }
+                nodes { ... on CrossReferencedEvent { source { ... on PullRequest { number state updatedAt mergedAt url } } } }
               }
             }
           GRAPHQL

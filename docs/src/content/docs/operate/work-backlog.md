@@ -31,7 +31,8 @@ not mirror issue state, and a reader re-checks the issue before acting on it.
 | `key` | `zimmer#498`, or `manual-<slug>` for an item with no issue |
 | `issue_url`, `repo`, `surface`, `title`, `kind`, `scope_direction` | The issue and how the gate classified it |
 | `estimated_cost` | `small` / `medium` / `large` — **the ranking input**, rated by the gate |
-| `gate_verdict`, `decided_at`, `added_at`, `added_by`, `added_via` | The gate's decision and when and how the row arrived |
+| `gate_verdict`, `decided_at`, `added_at`, `added_by`, `added_via` | The gate's decision and when and how the row arrived. `added_via` is `mcp`, `api`, `import`, or `liveness_sweep` for a next slice the sweep queued |
+| `continuation` | `multi_slice`, `awaiting_recurrence`, or empty: whether the issue stays open by design after a merged PR — see [Issues that stay open by design](#issues-that-stay-open-by-design) |
 | `precedence`, `pinned` | Where it sits, and whether a human put it there |
 | `status` | `queued` → `started` or `removed`. Nothing moves a row back; see below |
 | `writing_session_id` | The session that appended it — stamped from the MCP connection, self-declared on REST |
@@ -247,6 +248,7 @@ number points at a pull request, a 404, or an unrelated issue with the same numb
 | An open PR referencing it moved within `STALE_PR_AFTER` (14 days) | `pr_open` | No — someone is on it |
 | The only open PRs referencing it have gone quiet | `pr_stalled` | Yes |
 | A merged PR references it, but the issue is still open | `pr_merged_issue_open` | Yes — **ambiguous**, see below |
+| The same, on a row appended with `continuation: awaiting_recurrence` | `awaiting_recurrence` | No — open by design, see [below](#issues-that-stay-open-by-design) |
 | No PR has ever referenced it | `no_pr` | Yes |
 | GitHub could not be read | `unknown` | Yes — re-checked next pass |
 | A newer row carries the same key | `superseded` | No — someone already re-queued it |
@@ -265,11 +267,45 @@ merged PR references it, no closing keyword". Separating them took reading each 
 and checking whether the defect still existed in `main` — a judgement per issue. A sweep keyed on
 "session archived and issue still open" re-queues the finished four; one keyed on "a merged PR
 references the issue" closes the six with a remainder. Both destroy something, so the sweep makes
-the only call a cron job is entitled to make: it classifies, and a human or an agent decides.
+the only call a cron job is entitled to make: it classifies, and a human or an agent decides. The one
+exception is a row whose author already decided, on append: see
+[Issues that stay open by design](#issues-that-stay-open-by-design).
 
 Putting an item back is then an ordinary `append_work_backlog_item`. Appending on a key whose only
 row is `started` creates a fresh `queued` row and leaves the old one as history — confirmed 6 of 6
 on 2026-09-11.
+
+### Issues that stay open by design
+
+Two shapes of `pr_merged_issue_open` are not ambiguous, and before
+[#1489](https://github.com/tadasant/zimmer/issues/1489) both paged `#alerts` every week:
+
+- **Multi-slice work.** Each session lands one slice and closes nothing. `zimmer#321` was re-queued
+  by hand 15 times, once per page.
+- **Waiting on a recurrence.** The work is done until a failure comes back. `zimmer#1463`
+  instrumented a flake, found no recurrence, and stays open until it fails again.
+
+Whoever appends the row can say so, with `continuation` on `append_work_backlog_item` or
+`POST /api/v1/work_backlog_items`. The marker only matters when a merged PR references the issue
+and the issue is still open:
+
+| `continuation` | What the sweep does |
+| --- | --- |
+| `multi_slice` | If a referencing PR merged **after the row left the queue**, it appends a fresh `queued` row for the next slice and records the old row `superseded`. The new row carries the old row's fields and its marker (`added_via: liveness_sweep`, `added_by: liveness-sweep`). Its `prompt` names the merged PR and says to pick the next slice from the issue and that PR's "Noticed, not filed" section. `previous_slice_pr` and `continued_from_item` in `payload` record where it came from. When the last slice closes the issue, the row reads `issue_closed` like any other |
+| `awaiting_recurrence` | It records `awaiting_recurrence`, which is resolved: the row leaves `stranded` and does not page. The row is still re-checked every pass, so a closed issue reads `issue_closed`. A recurrence comes back the ordinary way: the issue is rated again and appended, which supersedes this row |
+| none | `pr_merged_issue_open`, stranded, exactly as above |
+
+**Neither marker hides a row whose work stopped.** A `multi_slice` row is re-queued only for a
+slice that merged after its own `started_at` (or `removed_at`). If its session ended with nothing
+merged, the only merged PRs are earlier slices, and the row strands at `pr_merged_issue_open` and
+pages. A PR whose merge time GitHub did not return does not count. An `awaiting_recurrence` row with
+no merged PR reads `no_pr` and strands. An open PR that has gone quiet reads `pr_stalled` either
+way. If the ranking refuses the next slice (a full band), the sweep logs a WARN and the row stays
+stranded, so it still pages.
+
+The marker is set on append, and an append on a key that already has a queued row writes nothing,
+so no agent surface marks a row that already exists. The two rows #1489 was filed about were marked
+once by the post-deploy task `MarkOpenByDesignBacklogRows`.
 
 ### The three ways a row strands, and the one this misses
 

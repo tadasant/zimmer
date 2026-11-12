@@ -184,6 +184,22 @@ class Mcp::Tools::WorkBacklogToolsTest < ActiveSupport::TestCase
     assert_equal 0, WorkBacklogItem.count
   end
 
+  test "append records a continuation marker as a column, and refuses one outside the vocabulary" do
+    schema = Mcp::Tools::AppendWorkBacklogItem.input_schema.to_h.deep_stringify_keys
+    assert_equal WorkBacklogItem::CONTINUATIONS, schema.dig("properties", "continuation", "enum")
+
+    output = @append.call(append_attributes(key: "zimmer#321", "continuation" => "multi_slice"))
+
+    assert_equal "multi_slice", output.dig(:item, :continuation)
+    item = WorkBacklogItem.find_by!(key: "zimmer#321")
+    assert item.multi_slice?
+    assert_not item.payload.key?("continuation"), "a column, not payload"
+
+    error = assert_raises(Mcp::ToolError) { @append.call(append_attributes(key: "zimmer#9", "continuation" => "forever")) }
+    assert_match(/Continuation is not included/, error.message)
+    assert_not WorkBacklogItem.exists?(key: "zimmer#9")
+  end
+
   test "append works for a connection with no session: writer nil, added_by mcp" do
     tool = Mcp::Tools::AppendWorkBacklogItem.new(context: Mcp::Context.new(tool_groups: "work_backlog"))
 

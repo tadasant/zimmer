@@ -54,7 +54,34 @@ class WorkBacklogItem < ApplicationRecord
   IMPORT = "import"
   MCP = "mcp"
   API = "api"
-  ADDED_VIA = [ IMPORT, MCP, API ].freeze
+  # WorkBacklog::LivenessSweep re-queuing the next slice of a `multi_slice` row.
+  SWEEP = "liveness_sweep"
+  ADDED_VIA = [ IMPORT, MCP, API, SWEEP ].freeze
+
+  # AN ISSUE THAT STAYS OPEN BY DESIGN AFTER A MERGED PR (#1489), declared on the
+  # row when it is appended. Without one, `pr_merged_issue_open` is ambiguous —
+  # a finished issue whose PR forgot its closing keyword, or a partial with a
+  # remainder — and the row strands until a person triages it. Two shapes are
+  # not ambiguous at all, and before this each paged `#alerts` every week:
+  #
+  #   multi_slice          every session lands ONE slice and closes nothing
+  #                        (zimmer#321). When a slice merges while the row is
+  #                        out, WorkBacklog::LivenessSweep appends a fresh
+  #                        `queued` row for the next slice, pointing at the
+  #                        merged PR, and the old row is superseded.
+  #   awaiting_recurrence  the work is done until a failure recurs (zimmer#1463,
+  #                        a flake that was instrumented and has not failed
+  #                        again). A merged PR with the issue still open reads
+  #                        LIVENESS_AWAITING_RECURRENCE, which is resolved.
+  #
+  # NEITHER MARKER SILENCES A ROW WHOSE WORK STOPPED. A `multi_slice` row is
+  # re-queued only for a slice that merged AFTER the row left the queue, so a
+  # session that ended with nothing strands and pages as any row does. An
+  # `awaiting_recurrence` row with no merged PR at all reads `no_pr` and
+  # strands. A row with no marker is exactly as before.
+  CONTINUATION_MULTI_SLICE = "multi_slice"
+  CONTINUATION_AWAITING_RECURRENCE = "awaiting_recurrence"
+  CONTINUATIONS = [ CONTINUATION_MULTI_SLICE, CONTINUATION_AWAITING_RECURRENCE ].freeze
 
   # The two writers that may create an item with no issue behind it. The groomer
   # spawns a session straight from `prompt`, with no issue to re-check and no gate
@@ -129,16 +156,23 @@ class WorkBacklogItem < ApplicationRecord
   #                         below it could never be cleared by the action it asks
   #                         for.
   LIVENESS_SUPERSEDED = "superseded"
+  #   awaiting_recurrence   a merged PR references it, the issue is still open,
+  #                         and the row declared CONTINUATION_AWAITING_RECURRENCE:
+  #                         the issue is open on purpose until the failure comes
+  #                         back. Resolved but not settled, so the row is still
+  #                         re-checked and a closed issue still reads as closed.
+  LIVENESS_AWAITING_RECURRENCE = "awaiting_recurrence"
 
   LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_PR_STALLED,
                       LIVENESS_PR_MERGED_ISSUE_OPEN, LIVENESS_NO_PR, LIVENESS_UNKNOWN,
-                      LIVENESS_SUPERSEDED ].freeze
+                      LIVENESS_SUPERSEDED, LIVENESS_AWAITING_RECURRENCE ].freeze
 
   # The two verdicts that mean "nothing for a person to do here". Everything else
   # — including a row nothing has checked yet — is stranded until shown otherwise,
   # which is the honest default for a population whose whole problem was that
   # nobody was looking.
-  RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_SUPERSEDED ].freeze
+  RESOLVED_LIVENESS_STATES = [ LIVENESS_ISSUE_CLOSED, LIVENESS_PR_OPEN, LIVENESS_SUPERSEDED,
+                               LIVENESS_AWAITING_RECURRENCE ].freeze
 
   # The resolved verdicts that are not expected to change. `pr_open` is resolved
   # but not settled: the PR can go quiet or merge with the issue still open, and
@@ -249,6 +283,7 @@ class WorkBacklogItem < ApplicationRecord
   validates :issue_url, length: { maximum: MAX_URL_LENGTH }, allow_nil: true
   validates :precedence, numericality: { only_integer: true, in: PRECEDENCE_RANGE }
   validates :liveness_state, inclusion: { in: LIVENESS_STATES }, allow_nil: true
+  validates :continuation, inclusion: { in: CONTINUATIONS }, allow_nil: true
   validates :removal_reason, presence: true, if: :removed?
   validates :hold_reason, presence: true, length: { maximum: HOLD_REASON_MAX }, if: :held_at?
   validate :issueless_items_need_a_prompt_and_a_human
@@ -477,6 +512,11 @@ class WorkBacklogItem < ApplicationRecord
   def started? = status == STARTED
   def removed? = status == REMOVED
   def issueless? = issue_url.blank?
+  def multi_slice? = continuation == CONTINUATION_MULTI_SLICE
+  def awaiting_recurrence? = continuation == CONTINUATION_AWAITING_RECURRENCE
+
+  # When the row left the queue: started, or removed provisionally.
+  def left_queue_at = started_at || removed_at
 
   # --- payload readers ------------------------------------------------------
 
@@ -629,6 +669,7 @@ class WorkBacklogItem < ApplicationRecord
       added_at: added_at&.iso8601,
       added_by: added_by,
       added_via: added_via,
+      continuation: continuation,
       precedence: precedence,
       pinned: pinned,
       status: status,
