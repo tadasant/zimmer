@@ -4815,8 +4815,8 @@ signal that it has fallen behind, and it is an accurate one.
 
 ### CarPlay pre-warm has not run against OpenAI or in a car
 
-[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) is on in every car, with no switch to turn it
-off short of a revert and a new app build. Its rules are tested
+[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) is on in every car, with no setting to turn it
+off. A server deploy that refuses prewarm mints stops it; so does a new app build. Its rules are tested
 on Linux (`LiveWarmStart`, `LiveWarmStartTests`) and Zimmer's prewarm mint is tested. CI compiles
 the app, but the app's half (`LiveWarmKeeper`, `LiveWarmLink`, `LiveCall.startWarm`) has never
 run: CI holds no Realtime key and drives no car. Four things are unproven until the first

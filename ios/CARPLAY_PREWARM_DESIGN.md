@@ -62,7 +62,8 @@ App (iOS)
   LiveWarmLink         one warm socket: open, read, ping, close. No way to send an event
   LiveCall.startWarm   the tap: adopt the socket, voice on + session.update, open the microphone
   CarPlaySceneDelegate carConnected / carDisconnected
-  CarPlayLive          Continue uses the fresh read of what is open, and asks for a warm start
+  CarPlayLive          Continue skips the lookup only when a warm connection is held for the
+                       open conversation, and asks for a warm start
 
 Rails
   POST /api/v1/live_conversations/:id/client_secret  prewarm=1: mint, change nothing (CarPlay only)
@@ -214,7 +215,8 @@ the car still connected, it reads what is open and warms for the next tap.
 
 ## Caching
 
-- **In memory only.** The last read of what is open (for 30 s), and the warm socket.
+- **In memory only.** The last read of what is open (for 30 s; it skips a tap's lookup only
+  when it names the conversation a warm connection is held for), and the warm socket.
   The warm socket *is* the cached model and voice config: OpenAI has already applied the session
   config Zimmer chose, which is why `maxAge` bounds its staleness. **Nothing new is written to
   disk.** The secret is never persisted.
@@ -277,7 +279,8 @@ on by default. His words, by CarPlay voice, relayed through router session 27704
 > and propose the closest compliant approach."
 
 **The risk this leaves.** The warm path has never run in a car or against OpenAI. With no flag,
-nothing turns it off without a revert and a new app build. What bounds the damage in the meantime:
+nothing turns it off without a code change: a server deploy that refuses prewarm mints, or a
+new app build (see "Turning it off" below). What bounds the damage in the meantime:
 
 - **Every failure already falls back to cold.** A mint, a socket or a `session.updated` that fails
   sends the tap down the old path on the same microphone, with no second tap. The worst a broken
@@ -292,9 +295,17 @@ nothing turns it off without a revert and a new app build. What bounds the damag
 tap-to-ready **< 1.0 s** and p95 **< 2.0 s**, a warm-hit rate **≥ 70 %**, fallbacks **< 5 %**, no
 rise in `call.failed`, and no idle-session cost on the OpenAI usage page.
 
-**Turning it off** means reverting the change and shipping a new TestFlight build. The cold path
-never changed shape: it is the `allowWarm == false` path of `LiveCall.start`, and `CarPlayLive`
-asking with `warm: false` is the smallest revert.
+**Turning it off.** There are two levers, and neither is a setting:
+
+- **Stop the mints, with a server deploy and no app build.** Make
+  `LiveConversations::Actions#prewarm_secret` refuse every request. Each car's mints then fail.
+  Each failure costs one request and backs off (5, 15, 60, 120 s), and the per-drive budget caps
+  them at 15. With no warm connection, `freshCurrent` answers nil and every tap takes the cold
+  path exactly as before. This is the emergency lever.
+- **Stop it in the app, with a new build.** Remove the `LiveWarmKeeper.shared.carConnected()`
+  call in `CarPlaySceneDelegate`. The keeper then never starts, and `freshCurrent` and `claim`
+  both answer nil. The cold path never changed shape: it is the `allowWarm == false` path of
+  `LiveCall.start`.
 
 ## Later
 
