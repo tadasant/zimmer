@@ -129,6 +129,18 @@ final class LiveAPITests: XCTestCase {
         XCTAssertEqual(result.switchedTo, LiveSwitchTarget(id: 8, title: "the poller test"))
     }
 
+    func testAToolCallSaysThisClientCanHangUpAndReadsWhenToHangUp() async throws {
+        let (api, transport) = client([
+            { _ in Fixtures.json(200, ["output": "Hanging up.", "error": false, "tools_changed": false, "hang_up": true]) },
+            { _ in Fixtures.json(200, ["output": "[]", "error": false, "tools_changed": false]) },
+        ])
+        let hangUp = try await api.relayLiveToolCall(7, name: "hang_up", arguments: "{}", callID: "h1")
+        XCTAssertEqual(try body(try XCTUnwrap(transport.sent.first))["hangs_up"] as? String, "1")
+        XCTAssertTrue(hangUp.hangUp)
+        let other = try await api.relayLiveToolCall(7, name: "list_mcp_servers", arguments: "{}", callID: "c2")
+        XCTAssertFalse(other.hangUp, "a result that does not say hang_up is not one")
+    }
+
     func testACallFollowsASpokenConversationAndEndsRatherThanTurnVoiceOnOverATypedOne() {
         let spoken = LiveConversation(id: 8, mode: .voice, status: .active, title: "", agentRoot: "", model: "")
         let typed = LiveConversation(id: 9, mode: .text, status: .active, title: "", agentRoot: "", model: "")
@@ -381,6 +393,68 @@ final class RealtimeConductorTests: XCTestCase {
         _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"switch_live_conversation","arguments":"{}"}"#))
         let effects = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Switched", switchedTo: LiveSwitchTarget(id: 8, title: "the poller test")))
         XCTAssertEqual(effects, [.reattach(conversation: 8)], "no function_call_output and no response.create: that session is over")
+    }
+
+    private let hangUpDone = #"{"type":"response.done","response":{"status":"completed","output":[{"type":"function_call","call_id":"h1","name":"hang_up","arguments":"{}"}]}}"#
+
+    func testAHangUpAnsweredMidResponseIsAnsweredAndEndsTheCallOnceTheResponseIsDone() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        let answered = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        XCTAssertEqual(sent(answered), ["conversation.item.create:h1"])
+        XCTAssertFalse(answered.contains(.hangUp), "not while the goodbye is still being said")
+        XCTAssertTrue(conductor.hangingUp)
+
+        let done = conductor.handle(event(hangUpDone))
+        XCTAssertEqual(sent(done), [], "no reply is asked for after a hang-up")
+        XCTAssertEqual(done.last, .hangUp)
+        XCTAssertFalse(done.contains(.state(.listening)), "the call is ending, not listening")
+        XCTAssertFalse(conductor.handle(event(hangUpDone)).contains(.hangUp), "said once")
+    }
+
+    func testAHangUpAnsweredAfterTheResponseEndedHangsUpAtOnceAndNothingAsksForAReplyAfter() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"a1","name":"list_mcp_servers","arguments":"{}"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        let both = #"{"type":"response.done","response":{"status":"completed","output":[{"type":"function_call","call_id":"a1","name":"list_mcp_servers","arguments":"{}"},{"type":"function_call","call_id":"h1","name":"hang_up","arguments":"{}"}]}}"#
+        XCTAssertEqual(sent(conductor.handle(event(both))), [])
+        let hangUp = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        XCTAssertEqual(sent(hangUp), ["conversation.item.create:h1"])
+        XCTAssertEqual(hangUp.last, .hangUp)
+        XCTAssertEqual(sent(conductor.relayed(callID: "a1", result: LiveToolResult(output: "[]"))), ["conversation.item.create:a1"],
+                       "a call already running is still answered, and asks for no reply")
+    }
+
+    func testAHangUpInAResponseThePersonTalkedOverStillEndsTheCall() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        let cancelled = #"{"type":"response.done","response":{"status":"cancelled","output":[{"type":"function_call","call_id":"h1","name":"hang_up","arguments":"{}"}]}}"#
+        _ = conductor.handle(event(cancelled))
+        let effects = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        XCTAssertEqual(sent(effects), ["conversation.item.create:h1"])
+        XCTAssertEqual(effects.last, .hangUp, "the person asked; talking over the goodbye does not take it back")
+    }
+
+    func testASwitchAnsweredWhileHangingUpIsNotFollowed() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"switch_live_conversation","arguments":"{}"}"#))
+        _ = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        let switched = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Switched", switchedTo: LiveSwitchTarget(id: 8, title: "x")))
+        XCTAssertFalse(switched.contains(.reattach(conversation: 8)), "the hang-up wins")
+        XCTAssertEqual(sent(switched), ["conversation.item.create:s1"])
+    }
+
+    func testARefusedHangUpIsAnsweredLikeAnyOtherCall() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        let effects = conductor.relayed(callID: "h1", result: LiveToolResult(output: "This app cannot hang up by voice.", error: true))
+        XCTAssertFalse(effects.contains(.hangUp))
+        XCTAssertFalse(conductor.hangingUp)
     }
 
     func testARefusedSwitchIsAnsweredLikeAnyOtherCall() {

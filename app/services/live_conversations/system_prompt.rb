@@ -54,6 +54,7 @@ module LiveConversations
         "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
         "- `#{ToolBridge::SWITCH_CONVERSATION}` goes back to an earlier conversation when the person asks; on its own it means the one they were in last, so \"go back\" needs no list. `#{ToolBridge::LIST_CONVERSATIONS}` is for when they ask what there is. Say at most three names, never ids. Starting a new conversation does not lose this one: it can be gone back to.",
+        hang_up_line(mode),
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ]
       lines.compact.join("\n")
@@ -77,6 +78,19 @@ module LiveConversations
         "marked `laptop_only` still exists, and the person may only want to hear how it went. A session you " \
         "start, follow up or act on from here is marked `carplay_ok` for you and stays in that view; mark it " \
         "`laptop_only` only when it clearly needs a screen or a keyboard."
+    end
+
+    # Spoken only: a typed reply has no call to end, and no `hang_up` function.
+    # Here as well as in the function's description so the model can answer
+    # "how do I make you stop listening?" — the person cannot see a tool list.
+    def hang_up_line(mode)
+      return nil unless mode.voice?
+
+      "- `#{ToolBridge::HANG_UP}` ends this call when the person asks you to: \"hang up\", \"end the call\", " \
+        "\"stop listening\", \"pause\". There is no pause that keeps the microphone open: hanging up is the pause, " \
+        "and calling again carries on in this same conversation, with anything you started still running. When " \
+        "they ask how to stop you listening, tell them to say \"hang up\" (\"Zimmer, hang up\" if you only answer " \
+        "your name), or to tap End."
     end
 
     def guidance_section
