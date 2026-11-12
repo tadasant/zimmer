@@ -23,6 +23,21 @@ class LiveSettingChange < ApplicationRecord
 
   def agent? = actor_kind == AGENT
 
+  # Whether the Live mode guidance in effect was last written by an agent
+  # session rather than a person: through MCP (`action_live_settings`), or by a
+  # live conversation whose own thread an agent wrote into. The guidance is in
+  # every conversation's system prompt, so text an agent put there can tell the
+  # live model to deliver something whenever the person speaks;
+  # HumanMessageCapture records no Live Mode message while this is true. A person
+  # saving the guidance (settings page or iOS app) clears it. A change the live
+  # model made at a person's request in a clean conversation does not set it.
+  def self.guidance_written_by_an_agent?
+    latest = touching(:guidance).recent_first.first
+    return false if latest.nil? || !latest.agent?
+
+    latest.live_conversation.nil? || latest.live_conversation.agent_written?
+  end
+
   def keys = changeset.keys
 
   def before(key) = changeset.dig(key.to_s, 0)

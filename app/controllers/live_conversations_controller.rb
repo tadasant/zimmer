@@ -100,9 +100,11 @@ class LiveConversationsController < ApplicationController
   end
 
   # `listening_modes`: the dock asks for each reply itself when Listening is
-  # gated. `reattaches`: it can move a call to another conversation.
+  # gated. `reattaches`: it can move a call to another conversation. The author
+  # is the web UI's human, as for every other message typed here.
   def actions
     LiveConversations::Actions.new(@conversation, client_surface: "web", listening_modes: params[:listening_modes].present?,
-                                                  reattaches: params[:reattaches].present?)
+                                                  reattaches: params[:reattaches].present?,
+                                                  author: LiveConversations::Author.web_ui)
   end
 end

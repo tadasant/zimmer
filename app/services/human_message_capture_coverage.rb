@@ -46,12 +46,13 @@
 # say" on nearly every hierarchy in the fleet, which destroys the signal the
 # record exists to carry.
 #
-# The third channel, `assistant`, has no genesis of its own. A session an OAuth
-# client starts is `api` like any other parentless API spawn, and an `api`
-# session's empty record stays an affirmative answer: a grant acting on its
-# approver's behalf records what it sends, and a relay-only grant records
-# nothing by design — the human chose that. The channel still has its own arms
-# below, so a gap is never reported for it by the generic fallback.
+# The other two channels, `assistant` and `live_mode`, have no genesis of their
+# own. A session an OAuth client or Live Mode starts is `api` like any other
+# parentless API spawn, and an `api` session's empty record stays an
+# affirmative answer: a grant acting on its approver's behalf, or Live Mode
+# answering an authenticated person, records what it sends, and a relay-only
+# grant records nothing by design — the human chose that. Both channels still
+# have their own arms below, so a gap is never reported for them by the generic fallback.
 class HumanMessageCaptureCoverage
   # Session genesis => the HumanMessage channel its input boundary writes.
   CHANNEL_BY_GENESIS = {
@@ -72,6 +73,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::WEB_UI then "the Zimmer web UI"
       when HumanMessage::SLACK then "Slack"
       when HumanMessage::ASSISTANT then "an assistant acting on a human's behalf"
+      when HumanMessage::LIVE_MODE then "Live Mode"
       else channel
       end
     end
@@ -91,6 +93,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::WEB_UI then User.admin.present?
       when HumanMessage::SLACK then User.with_slack_mapping.exists?
       when HumanMessage::ASSISTANT then assistant_grant_resolves?
+      when HumanMessage::LIVE_MODE then User.admin.present? || assistant_grant_resolves?
       else false
       end
     end
@@ -106,6 +109,9 @@ class HumanMessageCaptureCoverage
       when HumanMessage::ASSISTANT
         "No live OAuth connection both acts on its approver's behalf and was approved by an email in this " \
         "deployment's roster, so nothing an assistant relayed was recorded as a human's."
+      when HumanMessage::LIVE_MODE
+        "Neither the configured admin key (#{User::ADMIN_ENV_KEY}) nor the approver of any OAuth connection acting " \
+        "on its approver's behalf names a row in this deployment's roster, so nothing said in Live Mode was recorded."
       else
         "Zimmer has no configuration check for this channel, so it cannot say whether a message on it would have " \
         "been recorded."
@@ -121,6 +127,8 @@ class HumanMessageCaptureCoverage
       when HumanMessage::ASSISTANT
         "Let the connection act on your behalf on Settings → API keys, and make sure its approver's email is " \
         "on their row at /supervisor/users."
+      when HumanMessage::LIVE_MODE
+        "Add the admin's row at /supervisor/users, or sign the iOS app in again allowing it to act as you."
       else
         "Give this channel a check in HumanMessageCaptureCoverage.configured?."
       end

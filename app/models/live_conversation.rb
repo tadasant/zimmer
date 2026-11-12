@@ -118,6 +118,15 @@ class LiveConversation < ApplicationRecord
 
   def enabled_mcp_servers = Array(mcp_servers)
 
+  # Whether anything in this thread was said by someone no boundary established
+  # as a person: a `user` turn with no author, which the `action_live_conversation`
+  # MCP tool writes (and every turn from before authors were recorded has). The
+  # model reads the whole thread, so such a line can steer every later reply;
+  # HumanMessageCapture records nothing for a conversation where this is true.
+  def agent_written?
+    turns.where(role: "user", author: nil).exists?
+  end
+
   # The sessions this conversation has touched through its tool calls — started,
   # checked on, followed up, searched for — newest first. Read off the tool turns:
   # the session named in a call's arguments, and the ids its output writes the

@@ -232,7 +232,12 @@ module LiveConversations
         # A session this conversation starts or messages is told it came out of
         # Live Mode, typed or spoken, and from which client — so a background agent
         # can keep what it reports back short enough to be said aloud.
-        turn_source: TurnSource.for_live_conversation(@conversation)
+        turn_source: TurnSource.for_live_conversation(@conversation),
+        # What a tool delivers into a session is recorded as the person's words
+        # when the conversation's latest `user` turn is theirs (HumanMessage
+        # channel `live_mode`). The turn's author was stamped where the person
+        # authenticated, so nothing the model writes into a call decides it.
+        live_conversation: @conversation
       )
     end
 
