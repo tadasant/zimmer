@@ -171,7 +171,11 @@ marks are on the board.
 
 When the client driving a Live conversation is CarPlay, `LiveConversations::SystemPrompt` adds one
 line to the mechanics section Zimmer writes: that the person is in a car, that sessions carry a
-CarPlay fit, which tools filter and set it, and that a session it starts, follows up or acts on is
-marked `carplay_ok` on its own. Zimmer states the fact; what to do with it belongs to
+CarPlay fit, that `get_user_view` filters on it and `action_session` sets it, and that a session it
+starts, follows up or acts on is marked `carplay_ok` on its own. The line also says to leave
+`carplay_fit` off a search for a particular session. The filter is for going through what needs the
+driver, and a lookup is not that: a session auto-marked `laptop_only` is still the one they asked
+about. When a `quick_search_sessions` call does pass the filter and it hides a match, the result says
+how many it left out ([Finding an earlier session](/sessions/live/#finding-an-earlier-session)). Zimmer states the fact; what to do with it belongs to
 the `live-mode` root's own `modes/voice.md`, which is where the driving guidance lives. See
 [Live Mode](/sessions/live/#the-agent-root-is-the-system-prompt).

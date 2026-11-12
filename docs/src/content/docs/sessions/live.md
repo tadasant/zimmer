@@ -125,7 +125,8 @@ The model is told, in this order:
 
 1. the root's AGENTS.md;
 2. a short section Zimmer writes about mechanics only it knows: that the conversation can be typed
-   or spoken and which it is now, the functions, the conversation's URL — and, when the client that
+   or spoken and which it is now, the functions, how to [find an earlier session](#finding-an-earlier-session),
+   the conversation's URL — and, when the client that
    last drove the conversation is CarPlay, one line saying the person is in a car and naming the
    [CarPlay fit](/sessions/carplay-fit/) filter and action. Zimmer states the fact; the root's
    `modes/voice.md` is where what to do about it lives;
@@ -225,6 +226,34 @@ app's connection acting as you (`live_conversation_turns.author`). A line writte
 and neither does any conversation while the Live mode guidance was last written by an agent session.
 A delivery more than five minutes after your last line records nothing either. Conversations from
 before this was recorded have unauthored lines, so start a new one.
+
+### Finding an earlier session
+
+People ask for a session the way they remember it: "the one where we diagnosed the live mode
+failure". That is usually finished work, and finished work has archived itself. `quick_search_sessions`
+defaults suit an agent's duplicate check instead: archived sessions are left out, and the query is
+one literal phrase. So a spoken lookup missed twice over: "live mode voice" found nothing until
+archived sessions were included, and "diagnose live mode" never matched "Diagnose failed Zimmer
+live mode voice session".
+
+The tool bridge gives a search from Live Mode its own defaults, filled in only where the model left
+the argument out (`ToolBridge#with_live_search_defaults`):
+
+- `show_archived: true`, unless the call names a `status` or passes `show_archived` itself;
+- `match: "all_words"`, which needs every word somewhere in the title or metadata in any order,
+  unless the call passes `match` or `search_contents: true` (the transcript scan matches one phrase).
+
+A listing with no `query` and an `id` lookup are left alone. The answer starts with a line naming
+the defaults it used, so the model can tell the person that archived sessions were included. The
+turn records the model's own arguments. Every other caller of the tool keeps its defaults.
+
+Zimmer's mechanics section says this in one line, and adds that an empty answer is not proof: read
+the notes in the result, try other words, then `search_contents: true`. Those notes are the tool's,
+on every surface: a title/metadata search with a query says how many more sessions match but were
+kept out by the archived default or by `carplay_fit`, and a phrase that found nothing says how many
+sessions contain all of its words. On CarPlay, the [CarPlay fit](/sessions/carplay-fit/) line points
+the filter at `get_user_view` triage and tells the model to leave it off a search for a particular
+session, because a session marked `laptop_only` still exists.
 
 ### Self-enabling a catalog server
 

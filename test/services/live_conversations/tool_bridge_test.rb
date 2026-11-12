@@ -469,4 +469,40 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
     assert_includes LiveConversations::ToolBridge.new(target).functions.map(&:name), "test-clock__now"
   end
+
+  # --- Live Mode's defaults for a session search -----------------------------
+
+  def search(arguments)
+    @bridge.execute("zimmer", { tool: "quick_search_sessions", arguments: arguments }.to_json, call_id: "s#{SecureRandom.hex(3)}")
+  end
+
+  test "a search from Live Mode includes archived sessions and matches the words in any order" do
+    target = Session.create!(title: "Diagnose failed Zimmer quokka voice session", prompt: "p", status: :archived,
+                             git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code")
+
+    result = search(query: "diagnose quokka")
+
+    assert_not result.error, result.output
+    assert_includes result.output, "(ID: #{target.id})"
+    assert_includes result.output, 'show_archived: true, match: "all_words"'
+    # The turn records what the model asked for, not what Zimmer filled in.
+    assert_equal({ "query" => "diagnose quokka" }, @conversation.turns.last.tool_arguments["arguments"])
+  end
+
+  test "an argument the model passed wins over Live Mode's default" do
+    target = Session.create!(title: "Quokka archived explicit", prompt: "p", status: :archived,
+                             git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code")
+
+    result = search(query: "Quokka archived explicit", show_archived: false)
+
+    assert_not_includes result.output, "(ID: #{target.id})"
+    assert_includes result.output, "1 more archived session(s) match"
+    assert_not_includes result.output, "show_archived: true,"
+  end
+
+  test "a listing, an id lookup and a transcript scan get no search defaults" do
+    assert_not_includes search({}).output, "Live Mode searched with"
+    assert_not_includes search(query: "quokka", search_contents: true).output, "match:"
+    assert_includes search(query: "quokka", search_contents: true).output, "show_archived: true"
+  end
 end

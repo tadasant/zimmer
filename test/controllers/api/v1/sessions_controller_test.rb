@@ -2649,6 +2649,25 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     session&.destroy
   end
 
+  test "search with match=all_words finds every word in any order, and refuses search_contents" do
+    session = Session.create!(agent_runtime: "claude_code", git_root: "https://github.com/test/repo.git",
+                              branch: "main", title: "Diagnose failed quokka voice session")
+
+    get search_api_v1_sessions_path, params: { q: "diagnose quokka" }, headers: @headers
+    assert_not_includes JSON.parse(response.body)["sessions"].map { |s| s["id"] }, session.id
+
+    get search_api_v1_sessions_path, params: { q: "diagnose quokka", match: "all_words" }, headers: @headers
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "all_words", json["match"]
+    assert_includes json["sessions"].map { |s| s["id"] }, session.id
+
+    get search_api_v1_sessions_path, params: { q: "a b", match: "all_words", search_contents: "true" }, headers: @headers
+    assert_response :bad_request
+    get search_api_v1_sessions_path, params: { q: "a", match: "fuzzy" }, headers: @headers
+    assert_response :bad_request
+  end
+
   test "search should find sessions by metadata" do
     # Create a session with searchable metadata
     session = Session.create!(
