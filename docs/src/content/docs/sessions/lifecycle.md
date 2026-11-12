@@ -59,6 +59,12 @@ routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`, `Sessions::Mess
 `Session#claim_system_recovery_turn!`, which is what stops a recovery sweep enqueuing a second turn
 against a session that already has one queued.
 
+When the three follow-up routes do queue, they queue through one service, `Sessions::QueueFollowUp`.
+It reads the tail of the queue under a row lock on the session, so two follow-ups sent at once land
+at consecutive positions rather than colliding on the queue's unique position. It also writes the
+one timeline row all three leave behind, *"Message queued at position N (a turn is already
+underway)"*. Each route still writes its own response.
+
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as
 *awaiting* a worker, exactly as a first start was before the change. What moved is which status the
