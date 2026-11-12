@@ -12,7 +12,7 @@ don't watch it*) and in the docs site's iOS page.
 1. **Heard over a car.** On the 2026-11-04 drive the thinking and working sounds were "too subtle"
    (#1485). Road and engine noise covers quiet tones and anything low. So the cues sit near the
    level of Zimmer's speech, and everything that says *on*, *heard* or *busy* has its fundamental
-   above 600 Hz.
+   above 430 Hz, clear of the low band where a car's noise is loudest.
 2. **Easy on the ears.** A driver hears the thinking pulse through every slow answer, for hours.
    A cue that is loud *and* bright, or that snaps on, turns from information into irritation.
    Tadas asked for the CarPlay sounds to be "softer and less shrill", and then, after the first
@@ -33,7 +33,7 @@ Each one is held by a test in `Tests/ZimmerKitTests/LiveDiagnosticsTests.swift`,
 | Peak | 0.25 – 0.5 of full scale (−12 to −6 dBFS) | Near speech level, never an alarm | `testEveryCueIsLoudEnoughForACarAndStillBrief` |
 | Loudness | RMS ≥ −23 dBFS over the whole cue | Loud for its length, not one spike | same |
 | Length | Under 0.45 s; the thinking pulse under 100 ms | Information, not music | same, `testTheCuesAreShortAndTellOnFromOff` |
-| Loudness held | Each cue's RMS within 1 dB of #1485's road level (as #1486 measured it) | Softer is shape and pitch, never level; quieter was "too subtle" on the road | `testSofterCuesKeepTheirLoudness` |
+| Loudness held | Each cue's RMS within 1 dB of its road level (the #1486 set, below) | Softer is shape and pitch, never level; quieter was "too subtle" on the road | `testSofterCuesKeepTheirLoudness` |
 | Loop duty | Under 10% of the period | The microphone is closed while a cue sounds | `testEveryCueIsLoudEnoughForACarAndStillBrief` |
 | Fundamental, *on / heard / busy* cues | 430 – 800 Hz (about A4 to G5), each note checked on its own | Above the band where a car's noise is loudest, below shrill | `testTheCuesSitAboveTheRoadNoise`, `testTheCuesAreSoftEdgedAndNotShrill` |
 | The loops (*thinking*, *working*) | Every note 400 – 660 Hz; a pure sine (energy above 1.5 kHz under −35 dB); half level no sooner than 15 ms in; thinking slower than once a second | The sounds heard most: a soft pulse, not a tick | `testTheLoopsAreMellowPulses` |
@@ -73,7 +73,7 @@ this set, measured from the synthesized samples:
 | ended | 0.31 → 0.31 → 0.29 | −21.6 → −20.6 → −20.4 | −27.1 → −36.9 → −36.9 | 2.5 → 9.5 → 14.5 | 220 → 230 → 230 |
 | disconnected | 0.40 → 0.37 → 0.35 | −19.4 → −18.1 → −17.7 | −15.8 → −21.1 → −26.2 | 2.8 → 10.0 → 15.0 | 290 → 310 → 330 |
 
-Loudness held within a decibel of #1485's road level. The thinking and working loops are 0.7 dB
+Loudness held within a decibel of #1486's set, and is 1–2 dB above #1485's on most cues. The thinking and working loops are 0.7 dB
 louder by RMS on purpose: they moved down (thinking a sixth, A5 to C5; working a fifth, E5–G5 to
 A4–C5), where the ear is a little less sensitive and road noise a little stronger, and the extra
 level keeps them as easy to hear as before. The edge came off instead: the loops are pure sines
@@ -145,16 +145,15 @@ your usual level:
 
 ## After release: what to watch
 
-The cues changed only in their samples. Timing, the gate, the director and the audio engine paths
-did not change. In particular the change does not touch `LiveAudioEngine.playAlone`, where #1485's
+Only the samples and the thinking loop's period (1.0 s to 1.2 s; the gate reads it from
+`LiveCue.period`) changed. The gate, the director and the audio engine paths did not. In particular the change does not touch `LiveAudioEngine.playAlone`, where #1485's
 CarPlay drill once saw a CoreAudio RPC timeout on its first audio setup; the buffers it schedules
-are only slightly longer (pressed 185 ms against #1485's 160 ms). The one timing change is the
-thinking loop's period, 1.0 s to 1.2 s; the gate reads it from `LiveCue.period`. Regressions therefore come from how the
+are only slightly longer (pressed 185 ms against #1485's 160 ms). Regressions therefore come from how the
 cues sound, not from crashes. In the call log (VictoriaLogs, `scope.name:="ios.live"`) watch:
 
 - **A cue taken for speech.** After a `cue.played`, a `call.state` move into listening or speaking
   within about half a second with nobody talking means the cue reached turn detection. The low
-  notes carry energy at 600–700 Hz, and the loops now sit at 440–523 Hz, both inside the speech
+  notes carry energy at 600–700 Hz, and the loops sit at 440–523 Hz, both inside the speech
   band. The echo canceller and the
   120 ms gate tail should still cover them.
 - **A driver who could not hear the call.** The loops are lower than before, so this is the risk

@@ -77,7 +77,7 @@ public enum LiveCue: String, Sendable, CaseIterable {
     public var period: TimeInterval { self == .working ? 2.5 : 1.2 }
 
     /// How long after it is asked for the loop's first sound comes. Thinking leaves room for the
-    /// *heard* note before its first tap.
+    /// *heard* note before its first pulse.
     public var lead: TimeInterval { self == .working ? 0.35 : 1.0 }
 
     /// How long the loop may run before it gives up. Thinking: a reply that never comes (a refused
