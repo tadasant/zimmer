@@ -1484,12 +1484,26 @@ class Api::V1::SessionsController < Api::BaseController
     # Apply search filter
     include_contents = SessionSearchable.search_contents?(params[:search_contents])
 
+    # `match` is the MCP tool's parameter of the same name: "phrase" (default) or
+    # "all_words", which is title/metadata only.
+    match = params[:match].presence || "phrase"
+    unless %w[phrase all_words].include?(match)
+      render_api_error("Invalid match", "match must be phrase or all_words", status: :bad_request)
+      return
+    end
+    if include_contents && match == "all_words"
+      render_api_error("Invalid match", "match=all_words searches title and metadata only; drop search_contents", status: :bad_request)
+      return
+    end
+
     unless include_contents
-      result = paginate(filter_sessions_by_search(scope, query))
+      filtered = match == "all_words" ? filter_sessions_by_all_words(scope, query) : filter_sessions_by_search(scope, query)
+      result = paginate(filtered)
       delegates = goal_check_delegates_for(result[:records])
 
       render json: {
         query: query,
+        match: match,
         search_contents: false,
         sessions: result[:records].map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
         pagination: result[:pagination],
@@ -1505,6 +1519,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       query: query,
+      match: match,
       search_contents: true,
       sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       **board_rows(sessions),

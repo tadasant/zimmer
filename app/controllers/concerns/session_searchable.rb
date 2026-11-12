@@ -148,6 +148,16 @@ module SessionSearchable
     { q: pattern, q_json: pattern.gsub(JSON_KEY_COLON, '": ').gsub(JSON_COMMA, ", ") }
   end
 
+  # How many words an all-words search honours. Each word is one more pass of the
+  # metadata predicate, so a pasted paragraph must not become forty of them.
+  MAX_ALL_WORDS = 8
+
+  # The words of a query, for an all-words search: whitespace-split, de-duplicated
+  # case-insensitively, and capped. A one-word query is its own phrase.
+  def self.query_words(query)
+    query.to_s.split(/\s+/).reject(&:empty?).uniq(&:downcase).first(MAX_ALL_WORDS)
+  end
+
   # Does this parameter value mean "yes, search transcript contents"?
   #
   # The dashboard's checkbox posts "1" and the REST API documented "true", and the two
@@ -167,6 +177,21 @@ module SessionSearchable
   # @return [ActiveRecord::Relation] Filtered sessions
   def filter_sessions_by_search(sessions, query)
     sessions.where(METADATA_PREDICATE, SessionSearchable.search_binds(query))
+  end
+
+  # Filter sessions to those where EVERY word of the query appears somewhere in the
+  # title, metadata or custom_metadata — in any order, not necessarily adjacent, and
+  # not necessarily in the same field. An AND of words, never an OR: each extra word
+  # narrows the set, so the answer stays a short list of real matches rather than the
+  # shortlist #405 rejected. It exists for callers whose query is a paraphrase — a
+  # spoken "diagnose live mode" for a session titled "Diagnose failed Zimmer live mode
+  # voice session" — and is opt-in; the phrase search above stays the default.
+  #
+  # @return [ActiveRecord::Relation] Filtered sessions
+  def filter_sessions_by_all_words(sessions, query)
+    SessionSearchable.query_words(query).reduce(sessions) do |scope, word|
+      scope.where(METADATA_PREDICATE, SessionSearchable.search_binds(word))
+    end
   end
 
   # Filter sessions by search query, transcript contents included.

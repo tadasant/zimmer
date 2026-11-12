@@ -297,6 +297,8 @@ module LiveConversations
       arguments = {} if arguments.nil?
       raise ToolFailure, "\"arguments\" must be an object." unless arguments.is_a?(Hash)
 
+      arguments, defaulted = with_live_search_defaults(tool, arguments)
+
       # Through a real MCP server's `tools/call`, the path POST /mcp takes, so a
       # model's arguments meet the same required-argument and schema checks an
       # agent's do before any tool runs.
@@ -311,7 +313,34 @@ module LiveConversations
 
       result = response[:result] || {}
       text = Array(result[:content]).map { |part| part[:text] || part["text"] }.compact.join("\n")
+      if defaulted.any? && !result[:isError]
+        text = "_Live Mode searched with #{defaulted.map { |k, v| "#{k}: #{v.to_json}" }.join(', ')} " \
+               "(its defaults for finding a session; pass #{defaulted.size == 1 ? 'it' : 'either'} to override)._\n\n#{text}"
+      end
       [ text, result[:isError] ? true : false ]
+    end
+
+    # Defaults for a session search from Live Mode, applied only where the model
+    # left the argument out. Somebody asking out loud for a session is looking for one
+    # they remember, which is usually finished work — and finished work has archived
+    # itself — named in their own words rather than as an exact title fragment. The
+    # tool's own defaults (no archived sessions, one literal phrase) suit an agent's
+    # duplicate check and stay as they are for every other caller; this is the Live
+    # Mode path only. A listing with no query and an `id` lookup get neither default;
+    # a status filter suppresses only the archived default, and a transcript scan only
+    # the `match` one (it matches a phrase). Returns the arguments and what was
+    # defaulted, so the answer can say so.
+    def with_live_search_defaults(tool, arguments)
+      return [ arguments, {} ] unless tool == Mcp::Tools::QuickSearchSessions
+      return [ arguments, {} ] if arguments["query"].to_s.strip.empty? || !arguments["id"].nil?
+
+      defaults = {}
+      statuses = Array(arguments["status"]).map { |s| s.to_s.strip }.reject(&:empty?)
+      defaults["show_archived"] = true unless arguments.key?("show_archived") || statuses.any?
+      unless arguments.key?("match") || SessionSearchable.search_contents?(arguments["search_contents"])
+        defaults["match"] = Mcp::Tools::QuickSearchSessions::MATCH_ALL_WORDS
+      end
+      [ arguments.merge(defaults), defaults ]
     end
 
     def mcp_server
