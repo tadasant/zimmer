@@ -34,8 +34,14 @@ module LiveConversations
     # @param reattaches [Boolean] whether the client can move its call to another
     #   conversation when a tool call answers `switched_to`. One that cannot is
     #   refused the switch rather than left talking on a conversation that ended.
-    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false)
+    # @param author [Author, nil] the human this request authenticated as, from
+    #   the controller that accepted it. Stamped on the `user` turns this call
+    #   writes, and the only thing HumanMessageCapture.record_live_mode_message
+    #   attributes from. nil — the MCP tool's — writes turns nobody is said to
+    #   have authored.
+    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false, author: nil)
       @conversation = conversation
+      @author = author
       @reattaches = reattaches
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
       @listening_modes = listening_modes
@@ -56,7 +62,7 @@ module LiveConversations
       raise Refused, "Message is too long (maximum #{MESSAGE_MAX_LENGTH} characters)." if text.length > MESSAGE_MAX_LENGTH
 
       note_client!
-      turn = @conversation.turns.create!(role: "user", source: "typed", content: text)
+      turn = @conversation.turns.create!(role: "user", source: "typed", content: text, **authorship)
       @conversation.touch_activity!
       LiveConversationReplyJob.perform_later(@conversation.id)
       turn
@@ -170,7 +176,8 @@ module LiveConversations
       respond = role.to_s != "user" || Listening.new(@conversation, mode: mode, setting: setting).respond?(content)
       return Heard.new(turn: nil, respond: false, listening: mode) unless respond
 
-      turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH))
+      turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH),
+                                         **(role.to_s == "user" ? authorship : {}))
       @conversation.touch_activity!
       Heard.new(turn: turn, respond: true, listening: mode)
     end
@@ -191,6 +198,14 @@ module LiveConversations
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
       raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    # `surface` is the client this line came from, kept on the line itself so a
+    # human message can say where it was said. Display only.
+    def authorship
+      return {} if @author.nil?
+
+      { author: @author.key, author_provenance: @author.provenance.merge("surface" => @client_surface).compact }
     end
 
     # Whether this request may gate the call: the client can, and neither it nor
