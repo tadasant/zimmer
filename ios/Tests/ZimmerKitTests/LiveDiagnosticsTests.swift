@@ -462,7 +462,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(LiveCue.heard.samples().map(abs).max()!, 0.12 * 2.5, "heard")
         XCTAssertGreaterThanOrEqual(LiveCue.failed.samples().map(abs).max()!, 0.18 * 2, "failed")
         XCTAssertLessThan(LiveCue.working.duration / LiveCue.working.period, 0.1, "mostly silence, and the microphone open")
-        XCTAssertLessThan(LiveCue.thinking.duration / LiveCue.thinking.period, 0.1, "the tick too")
+        XCTAssertLessThan(LiveCue.thinking.duration / LiveCue.thinking.period, 0.1, "the thinking pulse too")
         XCTAssertEqual(LiveCue.working.samples().first!, 0, accuracy: 0.001, "no click")
     }
 
@@ -471,7 +471,8 @@ final class LiveDiagnosticsTests: XCTestCase {
     /// octave to be heard.
     func testTheCuesSitAboveTheRoadNoise() {
         for cue in [LiveCue.pressed, .connected, .heard, .thinking, .working, .disconnected] {
-            XCTAssertGreaterThan(Self.pitch(cue.samples()) * RealtimeAudio.sampleRate / 2, 430, cue.rawValue)
+            // Note by note, as in the soft-edged test: a low first note can hide under a high second.
+            XCTAssertGreaterThan(Self.notePitches(cue.samples()).min()!, 430, cue.rawValue)
         }
     }
 
@@ -480,9 +481,7 @@ final class LiveDiagnosticsTests: XCTestCase {
     func testTheLoopsAreMellowPulses() {
         for cue in [LiveCue.thinking, .working] {
             let samples = cue.samples()
-            let window = Int(0.04 * RealtimeAudio.sampleRate)
-            let pitches = stride(from: 0, through: samples.count - window, by: window / 4)
-                .map { Self.pitch(Array(samples[$0 ..< $0 + window])) * RealtimeAudio.sampleRate / 2 }
+            let pitches = Self.notePitches(samples)
             XCTAssertLessThanOrEqual(pitches.max()!, 660, "\(cue.rawValue): no note above E5")
             XCTAssertGreaterThanOrEqual(pitches.min()!, 400, "\(cue.rawValue): nor low enough to sound like failed")
             XCTAssertLessThan(Self.energyAbove(1_500, in: samples), -35, "\(cue.rawValue): a pure sine")
@@ -493,8 +492,8 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertGreaterThan(LiveCue.thinking.period, 1, "a pulse slower than once a second")
     }
 
-    /// Softer is shape and pitch, never level: each cue stays within 1 dB of the loudness #1485
-    /// set for the road (as #1486 measured it), so none turns too subtle to hear in a car again.
+    /// Softer is shape and pitch, never level: each cue stays within 1 dB of its road level
+    /// (`ios/LIVE_CUES.md`), so none turns too subtle to hear in a car.
     func testSofterCuesKeepTheirLoudness() {
         let carLevel: [LiveCue: Double] = [
             .pressed: -19.6, .connected: -18.3, .heard: -18.5, .thinking: -17.2,
@@ -517,10 +516,7 @@ final class LiveDiagnosticsTests: XCTestCase {
             XCTAssertEqual(samples.last!, 0, accuracy: 0.01, "\(cue.rawValue): no click at the end")
             // Note by note: over a whole two-note cue the pitch is their average, which a high
             // second note can hide under.
-            let window = Int(0.04 * RealtimeAudio.sampleRate)
-            let highest = stride(from: 0, through: samples.count - window, by: window / 4)
-                .map { Self.pitch(Array(samples[$0 ..< $0 + window])) * RealtimeAudio.sampleRate / 2 }
-                .max()!
+            let highest = Self.notePitches(samples).max()!
             XCTAssertLessThanOrEqual(highest, 800, "\(cue.rawValue): no note above G5")
             XCTAssertLessThan(Self.energyAbove(1_500, in: samples), -23, "\(cue.rawValue): little energy above 1.5 kHz")
         }
@@ -583,6 +579,14 @@ final class LiveDiagnosticsTests: XCTestCase {
         return 10 * log10(energy(output) / energy(input))
     }
 
+    /// The pitch in Hz of each 40 ms window, a quarter-window apart: short enough that each note
+    /// of a two-note cue is measured on its own.
+    private static func notePitches(_ samples: [Float]) -> [Double] {
+        let window = Int(0.04 * RealtimeAudio.sampleRate)
+        return stride(from: 0, through: samples.count - window, by: window / 4)
+            .map { pitch(Array(samples[$0 ..< $0 + window])) * RealtimeAudio.sampleRate / 2 }
+    }
+
     /// Zero crossings per sample: enough to tell a higher note from a lower one.
     private static func pitch(_ samples: [Float]) -> Double {
         Double(zip(samples, samples.dropFirst()).filter { ($0 < 0) != ($1 < 0) }.count) / Double(samples.count)
@@ -595,10 +599,10 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertFalse(gate.closes(10 + LiveCue.connected.duration + LiveCueGate.tail + 0.01, length: 0.02))
 
         gate.startLoop(.thinking, at: 20)
-        XCTAssertFalse(gate.closes(19.9, length: 0.02), "nothing before the first tick")
+        XCTAssertFalse(gate.closes(19.9, length: 0.02), "nothing before the first pulse")
         XCTAssertTrue(gate.closes(20.01, length: 0.02))
-        XCTAssertFalse(gate.closes(20.5, length: 0.02), "open between ticks: the person can still talk over")
-        XCTAssertTrue(gate.closes(20 + LiveCue.thinking.period - 0.01, length: 0.02), "a buffer that runs into the next tick")
+        XCTAssertFalse(gate.closes(20.5, length: 0.02), "open between pulses: the person can still talk over")
+        XCTAssertTrue(gate.closes(20 + LiveCue.thinking.period - 0.01, length: 0.02), "a buffer that runs into the next pulse")
         gate.stopLoop()
         XCTAssertFalse(gate.closes(23.01, length: 0.02))
 

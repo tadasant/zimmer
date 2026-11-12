@@ -217,8 +217,8 @@ table):
 | disconnected | G5, D5, falling | −9.0 dBFS | The call dropped |
 
 **The cues are heard over a car.** Tadas, on the road: the thinking and working sounds were "too
-subtle". They were made quiet on purpose, the tick at a peak of 0.07, and a quiet tone under 500 Hz
-is exactly what road and engine noise covers. So the cues sit near the level of the reply's speech
+subtle". They were made quiet on purpose, the tick at a peak of 0.07, and a quiet, low tone is exactly
+what road and engine noise covers. So the cues sit near the level of the reply's speech
 (RMS between −21 and −16 dBFS, none near full scale), and everything that says *on*, *heard* or
 *busy* is above 430 Hz, clear of the low band where a car's noise is loudest. Failed and ended stay low, because low is
 *not good*, and carry a strong octave so their energy reaches the 600–700 Hz band. A test
