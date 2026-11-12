@@ -36,6 +36,15 @@ module LiveConversations
   #    undone with another. A call relayed by a voice client answers with
   #    `switched_to`, and the client reconnects onto that conversation.
   #
+  # 6. **Hanging up** — `hang_up`, so "hang up" or "stop listening" ends a voice
+  #    call without a hand on the screen. Voice only: `realtime_tools` carries
+  #    it and `chat_tools` does not, because a typed reply has no call to end. A
+  #    call relayed by a client that can act on it answers with `hung_up`, and
+  #    the client closes the call once the reply that asked for it has finished
+  #    sounding. Nothing else stops: the conversation stays open, and a
+  #    background session or a tool call already running carries on, because
+  #    Zimmer runs it whether the call is still up or not.
+  #
   # Every call is recorded as a `tool` turn on the conversation.
   class ToolBridge
     ZIMMER_TOOL = "zimmer"
@@ -47,6 +56,7 @@ module LiveConversations
     UPDATE_SETTINGS = "update_live_settings"
     LIST_CONVERSATIONS = "list_live_conversations"
     SWITCH_CONVERSATION = "switch_live_conversation"
+    HANG_UP = "hang_up"
     # Few, because they are read aloud to someone who cannot look at a list.
     LISTED_CONVERSATIONS = 3
     # Settings the live model may not change itself: how much the app reports
@@ -79,18 +89,30 @@ module LiveConversations
     CANNOT_REATTACH = "Nothing changed: this app cannot move a call to another conversation. Tell the person to update " \
                       "the app, or to hang up and go back to that conversation from the Live list."
 
+    # Said to the model on a call whose app cannot end a call it was asked to.
+    CANNOT_HANG_UP = "Nothing changed: this app cannot hang up by voice. Tell the person to tap End to hang up, " \
+                     "or to update the app."
+    # What the model hears back once the call is ending: it gets no reply after
+    # this, so it is the thread's record, not an instruction.
+    HANGING_UP = "Hanging up. The conversation stays open, and anything already running carries on."
+
     # `session_changed`: the call changed a setting an open voice call can take
     # mid-call, so the client should send a fresh `session.update`.
     # `switched_to`: the call moved Live Mode to this conversation.
-    Result = Data.define(:turn, :output, :error, :tools_changed, :session_changed, :switched_to)
+    # `hung_up`: the person asked to end the call, and the client should close it
+    # once the reply that asked has finished sounding.
+    Result = Data.define(:turn, :output, :error, :tools_changed, :session_changed, :switched_to, :hung_up)
 
     class ToolFailure < StandardError; end
 
     # @param can_reattach [Boolean] whether the client relaying these calls can
     #   move its call to another conversation. A typed reply has no call to move.
-    def initialize(conversation, can_reattach: true)
+    # @param can_hang_up [Boolean] whether the client relaying these calls closes
+    #   its call when a call answers `hung_up`. A typed reply has no call to end.
+    def initialize(conversation, can_reattach: true, can_hang_up: false)
       @conversation = conversation
       @can_reattach = can_reattach
+      @can_hang_up = can_hang_up
     end
 
     # @return [Array<Function>]
@@ -109,9 +131,10 @@ module LiveConversations
       functions.map { |f| { type: "function", function: { name: f.name, description: f.description, parameters: f.parameters } } }
     end
 
-    # The Realtime API's tool shape (flat, no `function` wrapper).
+    # The Realtime API's tool shape (flat, no `function` wrapper), with the
+    # functions only a voice call has.
     def realtime_tools
-      functions.map { |f| { type: "function", name: f.name, description: f.description, parameters: f.parameters } }
+      (functions + call_functions).map { |f| { type: "function", name: f.name, description: f.description, parameters: f.parameters } }
     end
 
     # Run one call and record it.
@@ -124,6 +147,7 @@ module LiveConversations
       args = nil
       @session_changed = false
       @switched_to = nil
+      @hung_up = false
       begin
         args = parse_arguments(arguments)
         output, error, tools_changed = dispatch(name.to_s, args)
@@ -146,7 +170,8 @@ module LiveConversations
       )
       @conversation.touch_activity!
       Result.new(turn: turn, output: turn.model_output, error: turn.tool_error, tools_changed: tools_changed ? true : false,
-                 session_changed: @session_changed && !turn.tool_error, switched_to: @switched_to)
+                 session_changed: @session_changed && !turn.tool_error, switched_to: @switched_to,
+                 hung_up: @hung_up && !turn.tool_error)
     end
 
     private
@@ -179,6 +204,7 @@ module LiveConversations
       when UPDATE_SETTINGS then [ update_settings(args), false, false ]
       when LIST_CONVERSATIONS then [ conversation_listing, false, false ]
       when SWITCH_CONVERSATION then [ switch_conversation(args), false, false ]
+      when HANG_UP then [ hang_up, false, false ]
       else
         server_name, tool_name = direct_lookup[name]
         raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
@@ -558,6 +584,34 @@ module LiveConversations
       "Switched to \"#{name}\". This conversation has ended and can be gone back to."
     rescue Actions::Refused => e
       raise ToolFailure, e.message
+    end
+
+    # --- The call itself --------------------------------------------------------
+
+    # The words that trigger it are the model's to recognise, so the description
+    # carries both halves: the phrases that mean it, and the ones that do not. No
+    # confirmation: hanging up loses nothing, and calling again is one tap.
+    def call_functions
+      [
+        Function.new(
+          name: HANG_UP,
+          description: "End this voice call: hang up and stop listening. Only when the person clearly asks you to, as " \
+                       "a request of its own — \"hang up\", \"end the call\", \"stop listening\", \"pause\", " \
+                       "\"that's all, bye\". Never for those words quoted, asked about, or said in passing to someone " \
+                       "else, never for a lull, and never on your own initiative. Do not ask them to confirm. In the same " \
+                       "reply, first say a few words such as \"Okay, hanging up\", then call this; the call closes once " \
+                       "you have finished speaking. Nothing is lost: the conversation stays open, background sessions " \
+                       "keep running, and the person calls again to carry on.",
+          parameters: { type: "object", properties: {} }
+        )
+      ]
+    end
+
+    def hang_up
+      raise ToolFailure, CANNOT_HANG_UP unless @can_hang_up
+
+      @hung_up = true
+      HANGING_UP
     end
 
     # --- Direct tools ----------------------------------------------------------

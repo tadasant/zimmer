@@ -98,4 +98,16 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_includes prompt, "#1101"
     assert_not_includes LiveConversations::SystemPrompt.build(conversation), "## Sessions this conversation has touched"
   end
+
+  test "spoken, the model is told how the person hangs up, so it can say so when asked" do
+    prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "voice"))
+
+    assert_includes prompt, "`hang_up` ends this call when the person asks you to"
+    assert_includes prompt, "hanging up is the pause"
+    assert_includes prompt, "\"Zimmer, hang up\""
+  end
+
+  test "typed, there is no call to hang up" do
+    assert_not_includes LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text")), "hang_up"
+  end
 end

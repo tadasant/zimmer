@@ -34,12 +34,22 @@ import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 //                   conversation: a Realtime session cannot forget what it heard,
 //                   and a fresh one starts from that conversation's own recap. A
 //                   conversation someone is typing in ends the call instead.
+//   hanging up      a tool call the person asked to hang up with ("hang up", "stop
+//                   listening") answers hang_up: its output goes back, no reply is
+//                   asked for after it, and the call ends the way End does once the
+//                   response that asked is done and its goodbye has stopped sounding
+//                   (output_audio_buffer.stopped) — or after HANG_UP_GRACE_MS, whatever
+//                   is still sounding. The conversation stays open; tool calls already
+//                   relayed run to the end on Zimmer's side.
 
 // How often a call looks for a switch made somewhere else.
 const FOLLOW_INTERVAL_MS = 5000
 // Put to the model on a call that has just moved, so it speaks first. Not on the
 // thread: the person did not say it. The same words as RealtimeConductor's.
 const SWITCHED_OPENING = "(We have just switched to this conversation. In one short sentence, say so and where it left off, then stop.)"
+// The longest a hang-up the person asked for waits for the goodbye to finish:
+// a call must never stay open because an event did not come.
+const HANG_UP_GRACE_MS = 8000
 
 export default class extends Controller {
   static targets = ["panel", "status", "title", "link", "mute", "error"]
@@ -256,6 +266,17 @@ export default class extends Controller {
       case "response.done":
         this.responseActive = false
         this.finishResponse(event.response, generation)
+        this.hangUpOnceSaid()
+        break
+      // What the person hears, not what OpenAI has sent: a reply sounds on well
+      // after its response.done.
+      case "output_audio_buffer.started":
+        this.replySounding = true
+        break
+      case "output_audio_buffer.stopped":
+      case "output_audio_buffer.cleared":
+        this.replySounding = false
+        this.hangUpOnceSaid()
         break
       case "conversation.item.input_audio_transcription.completed":
         if (this.gated) {
@@ -291,7 +312,7 @@ export default class extends Controller {
     this.runningTools += 1
     this.cues.perform(this.director.toolsRunning(this.runningTools))
     this.setState("working")
-    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1, reattaches: 1 })
+    const pending = this.post(this.call.toolCallsUrl, { call_id: callId, name, arguments: args, listening_modes: 1, reattaches: 1, hangs_up: 1 })
       .then(async (response) => {
         const body = await response.json().catch(() => ({}))
         if (generation !== this.generation) return
@@ -302,6 +323,11 @@ export default class extends Controller {
         }
         const output = response.ok ? body.output : `Zimmer could not run ${name}: ${body.error || response.status}`
         this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output: String(output ?? "") } })
+        if (response.ok && body.hang_up) {
+          this.toolFinished(false)
+          this.hangUpWhenSaid(generation)
+          return
+        }
         if (response.ok && body.session) {
           this.sendSession(body.session)
         } else if (response.ok && body.tools_changed && Array.isArray(body.tools)) {
@@ -315,6 +341,21 @@ export default class extends Controller {
         this.toolFinished(true)
       })
     this.pendingCalls.set(callId, pending)
+  }
+
+  // The person asked to hang up: ask for nothing more, and end the call once
+  // the goodbye has been said and heard.
+  hangUpWhenSaid(generation) {
+    this.hangingUp = true
+    clearTimeout(this.hangUpTimer)
+    this.hangUpTimer = setTimeout(() => {
+      if (generation === this.generation && this.hangingUp) this.hangUp()
+    }, HANG_UP_GRACE_MS)
+    this.hangUpOnceSaid()
+  }
+
+  hangUpOnceSaid() {
+    if (this.hangingUp && !this.responseActive && !this.replySounding) this.hangUp()
   }
 
   toolFinished(failed) {
@@ -392,7 +433,7 @@ export default class extends Controller {
   }
 
   sendPendingResponse() {
-    if (!this.pendingResponse || this.responseActive || this.requested) return
+    if (!this.pendingResponse || this.responseActive || this.requested || this.hangingUp) return
     this.pendingResponse = false
     if (this.cutsInARow >= 3) {
       this.cutsInARow = 0
@@ -513,6 +554,9 @@ export default class extends Controller {
     this.gated = false
     this.capLifted = false
     this.cutsInARow = 0
+    this.hangingUp = false
+    this.replySounding = false
+    clearTimeout(this.hangUpTimer)
     if (!keepError) this.showError(null)
     this.setState("idle")
   }

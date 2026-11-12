@@ -39,8 +39,8 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_match(/enable_mcp_server with name "zimmer"/, result.output)
   end
 
-  test "the realtime and chat shapes carry the same functions" do
-    assert_equal @bridge.realtime_tools.map { |t| t[:name] }, @bridge.chat_tools.map { |t| t[:function][:name] }
+  test "the realtime and chat shapes carry the same functions, and only a call can hang up" do
+    assert_equal @bridge.realtime_tools.map { |t| t[:name] }, @bridge.chat_tools.map { |t| t[:function][:name] } + [ "hang_up" ]
     assert_equal "function", @bridge.realtime_tools.first[:type]
     assert @bridge.realtime_tools.first.key?(:parameters)
   end
@@ -512,5 +512,43 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "a status filter suppresses the archived default, an empty one does not" do
     assert_includes search(query: "quokka", status: "running").output, 'Live Mode searched with match: "all_words"'
     assert_includes search(query: "quokka", status: []).output, "show_archived: true, match"
+  end
+
+  test "hang_up is a voice call's, whatever servers are enabled, and says when to use it and when not" do
+    @conversation.update!(mcp_servers: [])
+    tool = LiveConversations::ToolBridge.new(@conversation).realtime_tools.find { |t| t[:name] == "hang_up" }
+
+    assert tool
+    assert_equal({ type: "object", properties: {} }, tool[:parameters])
+    assert_match(/"stop listening"/, tool[:description])
+    assert_match(/Never for those words quoted/, tool[:description])
+    assert_match(/Do not ask them to confirm/, tool[:description])
+    assert_match(/"Okay, hanging up"/, tool[:description])
+    assert_not_includes LiveConversations::ToolBridge.new(@conversation).chat_tools.map { |t| t[:function][:name] }, "hang_up"
+  end
+
+  test "hanging up from a client that can is recorded and answers hung_up, and the conversation stays open" do
+    result = LiveConversations::ToolBridge.new(@conversation, can_hang_up: true).execute("hang_up", "{}", call_id: "h1")
+
+    assert result.hung_up
+    assert_not result.error
+    assert_match(/Hanging up/, result.output)
+    assert_equal "hang_up", result.turn.tool_name
+    assert @conversation.reload.active?
+    assert @conversation.voice?
+  end
+
+  test "a client that cannot hang up is refused, and the model is told to send the person to End" do
+    result = @bridge.execute("hang_up", "{}", call_id: "h1")
+
+    assert_not result.hung_up
+    assert result.error
+    assert_match(/cannot hang up by voice.*tap End/, result.output)
+  end
+
+  test "no other function answers hung_up" do
+    result = LiveConversations::ToolBridge.new(@conversation, can_hang_up: true).execute("list_live_conversations", "{}", call_id: "c1")
+
+    assert_not result.hung_up
   end
 end

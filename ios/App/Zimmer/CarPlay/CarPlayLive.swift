@@ -264,6 +264,16 @@ final class CarPlayLive {
         onChange?()
     }
 
+    /// The driver said "hang up" and the call ended (`LiveCall.endedByVoice`): the same as End,
+    /// nothing is retried after it. The tiles come back with Continue, one tap from the same
+    /// conversation.
+    private func voiceHungUp() {
+        telemetry.track(.carPlay("voice_hang_up"))
+        comeback = nil
+        retryWait?.cancel()
+        retry.stopped()
+    }
+
     /// The scene is going away: the call carries on on the phone; only the screen is dropped. A
     /// call the gear ended stays ended: there is no car left to bring it back to.
     func disconnect() {
@@ -422,6 +432,7 @@ final class CarPlayLive {
         if comeback?.isSpent(by: call.state) == true { comeback = nil }
         onChange?()
         if state == .idle {
+            if call.endedByVoice { voiceHungUp() }
             dismiss()
             readWhatIsOpen()
         } else if template == nil {

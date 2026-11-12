@@ -173,6 +173,16 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "spoken", conversation.turns.last.source
   end
 
+  test "the dock's hang-up is answered with hang_up" do
+    conversation = create_live_conversation(mode: "voice")
+
+    post tool_calls_live_conversation_path(conversation), params: { name: "hang_up", arguments: "{}", call_id: "call_h", hangs_up: 1 }, as: :json
+
+    assert_response :success
+    assert_equal true, response.parsed_body["hang_up"]
+    assert_equal "hang_up", conversation.turns.last.tool_name
+  end
+
   test "voice relay refuses a secret while voice is off, and anything on an ended conversation" do
     text = create_live_conversation(mode: "text")
     post client_secret_live_conversation_path(text), as: :json

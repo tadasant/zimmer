@@ -1234,9 +1234,12 @@ Voice — the relay a client holding the audio connection makes:
   voice is off; 502 when OpenAI refuses.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
   `call_id`, and `reattaches` from a client that can move its call; one that does not send it is
-  refused `switch_live_conversation`) → `{output, error, tools_changed, turn_id}`, plus `switched_to:
+  refused `switch_live_conversation`; and `hangs_up` from a client that closes its call when asked,
+  one that does not is refused `hang_up`) → `{output, error, tools_changed, turn_id}`, plus `switched_to:
   {id, title}` when the call moved Live Mode, in which case that is all and the client reconnects
-  there, `tools` when `tools_changed`, and
+  there, `hang_up: true` when the person asked to hang up, in which case the client sends `output`
+  back, asks for no reply, and ends the call once the reply still sounding has finished
+  ([Hanging up by voice](/sessions/live/#hanging-up-by-voice)), `tools` when `tools_changed`, and
   `session` when the call changed a Live setting an open call can take. Send `session` as a
   `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
   `function_call_output` item.
