@@ -1404,24 +1404,27 @@ class SessionsController < ApplicationController
     # should be queued when the agent is running — or when its turn is sitting in the
     # `agents` queue, which since #1040 reads `waiting` rather than `running`.
     if Sessions::LiveTurn.underway?(@session)
-      # Queue instead of interrupting. The position is read inside the retried
-      # block, so a retry after a deadlock queues at the tail as it stands then.
+      # Queue instead of interrupting. One transaction around all three writes,
+      # so a deadlock in any of them rolls the queued message back with it and
+      # the retry queues it once rather than twice.
       result = with_db_retry do
-        Sessions::QueueFollowUp.call(
-          session: @session,
-          prompt: follow_up_prompt,
-          goal: goal,
-          source_context: web_turn_source.to_h
-        )
+        ActiveRecord::Base.transaction do
+          Sessions::QueueFollowUp.call(
+            session: @session,
+            prompt: follow_up_prompt,
+            goal: goal,
+            source_context: web_turn_source.to_h
+          )
 
-        # Recorded at the moment the human typed it, not at delivery: the
-        # record is of what was said and when, and a queued message
-        # may sit for a whole turn before it reaches the agent.
-        capture_web_ui_human_message(@session, follow_up_prompt, "web_ui.follow_up_queued")
+          # Recorded at the moment the human typed it, not at delivery: the
+          # record is of what was said and when, and a queued message
+          # may sit for a whole turn before it reaches the agent.
+          capture_web_ui_human_message(@session, follow_up_prompt, "web_ui.follow_up_queued")
 
-        # Reset PollBackoff: an enqueue from a follow-up form submit is direct
-        # user engagement with the session.
-        @session.touch_user_activity!
+          # Reset PollBackoff: an enqueue from a follow-up form submit is direct
+          # user engagement with the session.
+          @session.touch_user_activity!
+        end
       end
 
       return if performed?

@@ -1539,10 +1539,11 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     queued = session.enqueued_messages.create!(content: "Stand-in", position: 7, status: "pending")
     Sessions::QueueFollowUp.expects(:call).with do |**kwargs|
       kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "All tests pass" && kwargs[:source_context].present? &&
         kwargs[:images] == [] && kwargs[:files] == []
     end.returns(queued)
 
-    post follow_up_api_v1_session_path(session.id), params: { prompt: "Through the service" }, headers: @headers
+    post follow_up_api_v1_session_path(session.id), params: { prompt: "Through the service", goal: "All tests pass" }, headers: @headers
 
     assert_response :accepted
     json = JSON.parse(response.body)
