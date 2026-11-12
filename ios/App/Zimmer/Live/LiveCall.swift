@@ -41,6 +41,14 @@ import os
 /// starts from the new conversation's own recap. It is the same call to everyone watching: the
 /// microphone stays open, mute stays as it was, and the state goes to Connecting… and never idle,
 /// so the car's one template stays up.
+///
+/// **A call can be hung up by voice.** "Hang up" or "stop listening" makes the live model call
+/// `hang_up`; Zimmer answers `hang_up`, the conductor asks for nothing more and says `hangUp` once
+/// the response that asked is done, and the call ends the way End ends it — hung-up cue and all —
+/// as soon as the goodbye has finished sounding — or `hangUpGrace` after Zimmer answered, whatever
+/// is still sounding or still to come. Talking over the goodbye stops it, so the call ends sooner.
+/// A move to another conversation is not followed meanwhile. `endedByVoice` says so, so the car
+/// treats it as the driver's End and not as a drop to retry.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
@@ -100,6 +108,12 @@ final class LiveCall: ObservableObject {
     /// When *pressed* last went out for a press that has not become a call yet, so the call it
     /// becomes does not play it again.
     private var pressHeard: TimeInterval?
+    /// The last call ended because the person asked it to by voice (`hang_up`), not by a tap or
+    /// a failure.
+    private(set) var endedByVoice = false
+    /// The longest a voice hang-up waits for the goodbye to finish sounding: a call must never
+    /// stay open because the playout model is off.
+    private static let hangUpGrace: TimeInterval = 8
 
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -353,8 +367,36 @@ final class LiveCall: ObservableObject {
         pressHeard = at
     }
 
+    /// The person asked to hang up (`RealtimeConductor.Effect.hangUp`): let the goodbye finish
+    /// sounding, then end the call as End would. A newer call, or a tap on End meanwhile, makes
+    /// this nothing.
+    private func hangUpWhenSaid(generation mine: Int) {
+        Task {
+            while mine == generation, audio.replyRemaining > 0 {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            hangUpByVoice(generation: mine)
+        }
+    }
+
+    /// Zimmer answered `hang_up`: whatever happens next — a `response.done` that never comes, a
+    /// reply that will not stop — the call ends `hangUpGrace` from now.
+    private func armHangUpDeadline(generation mine: Int) {
+        Task {
+            try? await Task.sleep(for: .seconds(Self.hangUpGrace))
+            hangUpByVoice(generation: mine)
+        }
+    }
+
+    private func hangUpByVoice(generation mine: Int) {
+        guard mine == generation else { return }
+        pressHeard = nil
+        end(reason: "voice_hang_up", farewell: cues.hungUp(), byVoice: true)
+    }
+
     /// End the call: `reason` is for the log; the `farewell` cue is the engine's last sound.
-    private func end(reason: String, farewell: [LiveCueDirector.Action]) {
+    private func end(reason: String, farewell: [LiveCueDirector.Action], byVoice: Bool = false) {
+        endedByVoice = byVoice
         generation += 1
         watching?.cancel()
         watching = nil
@@ -587,7 +629,8 @@ final class LiveCall: ObservableObject {
                 // The CarPlay drill holds its call on Connecting… on purpose, for the gear.
                 if Self.drillHoldsTheCall { self.health.started(at: Self.now) }
                 #endif
-                if self.health.isConnected, Self.now - self.lookedForMove >= Self.followEvery {
+                // Hanging up: the call is over in a moment, wherever Live Mode has gone.
+                if self.health.isConnected, !self.conductor.hangingUp, Self.now - self.lookedForMove >= Self.followEvery {
                     self.lookedForMove = Self.now
                     self.followCurrent(generation: generation)
                 }
@@ -734,6 +777,8 @@ final class LiveCall: ObservableObject {
                 hear(itemID: itemID, text: text, generation: generation)
             case let .reattach(conversation):
                 Task { await reattach(to: conversation) }
+            case .hangUp:
+                hangUpWhenSaid(generation: generation)
             case let .play(pcm):
                 audio.play(pcm)
             case let .replyStarted(itemID):
@@ -788,6 +833,7 @@ final class LiveCall: ObservableObject {
             telemetry.track(.toolCall(name, ms: Self.now - asked, ok: failure == nil && result?.error != true))
             activity += 1
             let effects = conductor.relayed(callID: callID, result: result, failure: failure)
+            if result?.hangUp == true, conductor.hangingUp { armHangUpDeadline(generation: generation) }
             apply(effects, generation: generation)
         }
     }

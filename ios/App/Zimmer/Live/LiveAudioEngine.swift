@@ -486,7 +486,7 @@ final class LiveAudioEngine {
     }
 
     /// How much of the reply is still to come out of the speaker.
-    private var replyRemaining: TimeInterval {
+    var replyRemaining: TimeInterval {
         playout.remaining(at: ProcessInfo.processInfo.systemUptime)
     }
 

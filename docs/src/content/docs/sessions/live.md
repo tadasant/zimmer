@@ -150,7 +150,7 @@ root, so a `live-voice` root left in a catalog is ignored.
 
 ## The tool bridge
 
-The model can call five kinds of function (`LiveConversations::ToolBridge`):
+The model can call six kinds of function (`LiveConversations::ToolBridge`):
 
 - **`zimmer(tool, arguments)`**, which calls one of Zimmer's own MCP tools in-process. This is the
   delegation path: `quick_router` or `start_session` to start work, `get_session` to check on it,
@@ -170,6 +170,8 @@ The model can call five kinds of function (`LiveConversations::ToolBridge`):
   taken from the first thing said in each thread, because nothing sets a conversation's `title`.
   These are functions of their own because `action_live_conversation` is opt-in and withheld from
   the `zimmer` gateway: a model holding it could also end its own conversation for good.
+- **`hang_up`**: [hanging up by voice](#hanging-up-by-voice). Voice only: a call's tool list carries
+  it and a typed reply's does not, because there is no call to end.
 
 ```mermaid
 flowchart LR
@@ -378,6 +380,44 @@ cues, and the call still works.
 conversation page offers **Talk** to reconnect or **Type instead**. When another device switches the
 mode, the header changes over Turbo Streams and the page re-renders its composer or call controls,
 unless a message is half-typed.
+
+### Hanging up by voice
+
+Say **"hang up"** and the call ends, with no hand on the screen. "End the call", "stop listening",
+"pause" and "that's all, bye" do the same. The live model recognises the request, says a few
+words such as "Okay, hanging up" and calls `hang_up`, and the call ends the way End ends it,
+hung-up cue and all, once those words have finished sounding. Talking over them ends it straight
+away. There is no confirmation: hanging up
+loses nothing, and calling again is one tap.
+
+- **What it is not.** The model is told to call it only for a request of its own: never for the
+  words quoted or asked about ("what happens if I say hang up?"), said in passing to someone else,
+  for a lull, or on its own initiative. It is a decision the model makes on a whole line, so the
+  assistant's own voice saying "hang up" is not a trigger. In the gated
+  [Listening](#listening-which-lines-get-an-answer) modes a line still has to reach the model first:
+  "Zimmer, hang up", unless it follows within ten seconds of the last line. The car always answers,
+  so there plain "hang up" works.
+- **Nothing is lost.** Hanging up ends the call, not the conversation: voice stays on and the thread
+  stays open. A background session the call started keeps running, and a tool call already relayed
+  runs to the end, because Zimmer runs it whether the call is still up or not. Calling again
+  (**Talk**, the waveform button, the car's **Continue**) carries on in the same conversation.
+- **How the client ends it.** `POST tool_calls` answers `hang_up: true` to a client that says it can
+  act on it (`hangs_up`). The client sends the output back, asks for no reply after it, and ends the
+  call once the response that asked is done and its audio has stopped. The browser waits for
+  `output_audio_buffer.stopped`; the phone waits for its own playout (`LiveReplyPlayout`) to drain.
+  Either gives up waiting eight seconds after Zimmer answered, so a call never stays open because
+  an event did not come. A move to another conversation is not followed while a hang-up is pending,
+  and a `switch_live_conversation` in the same reply is answered but not acted on: the hang-up wins. A client that does not say `hangs_up`, an iOS build from before it for instance, gets
+  `hang_up` refused, and the model tells the person to tap End.
+- **In the car** a voice hang-up counts as the driver's End: nothing is retried, the call screen
+  comes down with the hung-up cue, and the tiles come back with **Continue**.
+- **Why no pause.** A pause that kept the call open would keep the microphone open, which is what
+  "stop listening" asks to end, and resuming it by voice would need the microphone listening anyway.
+  Hanging up is the pause. Mute is still there by touch for a call you want to keep but not be heard
+  on.
+
+The model is told all this in Zimmer's own section of its instructions, while the conversation is
+spoken (`SystemPrompt`), so "how do I make you stop listening?" gets a straight answer.
 
 ## Live settings
 

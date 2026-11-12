@@ -33,6 +33,10 @@ public enum LiveVoiceState: String, Sendable, Equatable {
 ///   sent one, otherwise just the tools);
 /// - a call that moved Live Mode to another conversation (`LiveToolResult.switchedTo`) sends
 ///   nothing more: its session is over, and `reattach` says where the call goes;
+/// - a call the person asked to hang up with (`LiveToolResult.hangUp`) is answered, asks for no
+///   reply after it — nor does anything else from then on — and once the response that asked is
+///   done, `hangUp` says to end the call when the reply has finished sounding. Calls already
+///   relayed are not taken back: Zimmer runs them whether the call is still up or not;
 /// - once the response that asked for them is done and every result is in, exactly one
 ///   `response.create` — and never on top of a response already running (the user speaking
 ///   mid-tool starts one), in which case it waits for that response to finish;
@@ -73,6 +77,9 @@ public struct RealtimeConductor: Sendable {
         case hear(itemID: String?, text: String)
         /// A tool call moved Live Mode to this conversation: reconnect onto it.
         case reattach(conversation: Int)
+        /// The person asked to hang up, and the response that asked is done: end the call once
+        /// the reply still sounding has finished. Said once per call.
+        case hangUp
         /// Play this reply audio: 16-bit mono PCM at 24 kHz.
         case play(Data)
         /// A new reply item's audio started arriving: count it from here.
@@ -114,6 +121,9 @@ public struct RealtimeConductor: Sendable {
     /// would be refused for the response already on its way.
     private var requested = false
     private var pendingResponse = false
+    /// The person asked to hang up: nothing more is asked of the model.
+    public private(set) var hangingUp = false
+    private var saidHangUp = false
     /// The call asks for its own replies (Listening is wake word or dynamic).
     public private(set) var gated = false
     /// The Listening mode in force, for the call log. Follows what OpenAI applied: `always` once
@@ -261,6 +271,10 @@ public struct RealtimeConductor: Sendable {
         case "response.done":
             responseActive = false
             playingItem = nil
+            if hangingUp {
+                // Its calls are still relayed, never followed up: the call is ending.
+                return finish(event["response"]).filter { $0 != .state(.listening) } + hangUpIfDone()
+            }
             let status = event["response"]?["status"]?.string
             if status == "failed" {
                 let message = event["response"]?["status_details"]?["error"]?["message"]?.string
@@ -326,7 +340,19 @@ public struct RealtimeConductor: Sendable {
     /// Zimmer answered a relayed call (`result`), or could not be reached (`failure`).
     public mutating func relayed(callID: String, result: LiveToolResult?, failure: String? = nil) -> [Effect] {
         guard inFlight.remove(callID) != nil else { return [] }
-        if let target = result?.switchedTo { return [.reattach(conversation: target.id)] }
+        // The person also asked to hang up: that wins, and the switch is answered like any call.
+        if let target = result?.switchedTo, !hangingUp { return [.reattach(conversation: target.id)] }
+        if result?.hangUp == true {
+            hangingUp = true
+            dropped.remove(callID)
+            awaiting.remove(callID)
+            answered.remove(callID)
+            let output: Effect = .send(.object([
+                "type": .string("conversation.item.create"),
+                "item": .object(["type": .string("function_call_output"), "call_id": .string(callID), "output": .string(result?.output ?? "")]),
+            ]))
+            return [output, .signal(.toolsRunning(inFlight.count))] + hangUpIfDone()
+        }
         var effects: [Effect] = []
         if let session = result?.session {
             effects.append(.send(sessionUpdate(keeping: session)))
@@ -439,8 +465,14 @@ public struct RealtimeConductor: Sendable {
         return effects
     }
 
+    private mutating func hangUpIfDone() -> [Effect] {
+        guard hangingUp, !responseActive, !saidHangUp else { return [] }
+        saidHangUp = true
+        return [.hangUp]
+    }
+
     private mutating func sendPendingResponse(eventID: String? = nil) -> [Effect] {
-        guard pendingResponse, !responseActive, !requested else { return [] }
+        guard pendingResponse, !responseActive, !requested, !hangingUp else { return [] }
         pendingResponse = false
         if cutsInARow >= Self.cutsBeforeGivingUp {
             cutsInARow = 0
