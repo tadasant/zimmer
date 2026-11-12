@@ -497,12 +497,20 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
     assert_not_includes result.output, "(ID: #{target.id})"
     assert_includes result.output, "1 more archived session(s) match"
-    assert_not_includes result.output, "show_archived: true,"
+    assert_includes result.output, 'Live Mode searched with match: "all_words" (its defaults for finding a session; pass it'
   end
 
-  test "a listing, an id lookup and a transcript scan get no search defaults" do
+  test "a listing and an id lookup get no defaults; a transcript scan gets show_archived but not match" do
     assert_not_includes search({}).output, "Live Mode searched with"
-    assert_not_includes search(query: "quokka", search_contents: true).output, "match:"
-    assert_includes search(query: "quokka", search_contents: true).output, "show_archived: true"
+    assert_not_includes search(id: sessions(:router_child_running).id, query: "quokka").output, "Live Mode searched with"
+
+    scan = search(query: "quokka", search_contents: true).output
+    assert_includes scan, "Live Mode searched with show_archived: true (its defaults"
+    assert_not_includes scan, "match:"
+  end
+
+  test "a status filter suppresses the archived default, an empty one does not" do
+    assert_includes search(query: "quokka", status: "running").output, 'Live Mode searched with match: "all_words"'
+    assert_includes search(query: "quokka", status: []).output, "show_archived: true, match"
   end
 end

@@ -315,7 +315,7 @@ module LiveConversations
       text = Array(result[:content]).map { |part| part[:text] || part["text"] }.compact.join("\n")
       if defaulted.any? && !result[:isError]
         text = "_Live Mode searched with #{defaulted.map { |k, v| "#{k}: #{v.to_json}" }.join(', ')} " \
-               "(its defaults for finding a session; pass either to override)._\n\n#{text}"
+               "(its defaults for finding a session; pass #{defaulted.size == 1 ? 'it' : 'either'} to override)._\n\n#{text}"
       end
       [ text, result[:isError] ? true : false ]
     end
@@ -326,15 +326,17 @@ module LiveConversations
     # itself — named in their own words rather than as an exact title fragment. The
     # tool's own defaults (no archived sessions, one literal phrase) suit an agent's
     # duplicate check and stay as they are for every other caller; this is the Live
-    # Mode path only. A listing with no query, an `id` lookup, a status filter and a
-    # transcript scan are left alone. Returns the arguments and what was defaulted, so
-    # the answer can say so.
+    # Mode path only. A listing with no query and an `id` lookup get neither default;
+    # a status filter suppresses only the archived default, and a transcript scan only
+    # the `match` one (it matches a phrase). Returns the arguments and what was
+    # defaulted, so the answer can say so.
     def with_live_search_defaults(tool, arguments)
       return [ arguments, {} ] unless tool == Mcp::Tools::QuickSearchSessions
       return [ arguments, {} ] if arguments["query"].to_s.strip.empty? || !arguments["id"].nil?
 
       defaults = {}
-      defaults["show_archived"] = true unless arguments.key?("show_archived") || arguments.key?("status")
+      statuses = Array(arguments["status"]).map { |s| s.to_s.strip }.reject(&:empty?)
+      defaults["show_archived"] = true unless arguments.key?("show_archived") || statuses.any?
       unless arguments.key?("match") || SessionSearchable.search_contents?(arguments["search_contents"])
         defaults["match"] = Mcp::Tools::QuickSearchSessions::MATCH_ALL_WORDS
       end

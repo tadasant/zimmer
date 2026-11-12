@@ -1519,6 +1519,7 @@ class Api::V1::SessionsController < Api::BaseController
 
     render json: {
       query: query,
+      match: match,
       search_contents: true,
       sessions: sessions.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       **board_rows(sessions),
