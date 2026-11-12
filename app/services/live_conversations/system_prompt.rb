@@ -49,6 +49,7 @@ module LiveConversations
         "and switch between the two at any time; spoken turns in the thread are transcripts. Right now it is #{mode.voice? ? 'spoken' : 'typed'}.",
         client_line,
         "- Anything that takes more than about five seconds belongs in a background session: start it through the `#{ToolBridge::ZIMMER_TOOL}` function, say that you have, and keep talking. Check on it later with the same function.",
+        "- To find an earlier session the person remembers, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_search_sessions` and a `query` of two or three distinctive words. From here it includes archived sessions, which is where finished work goes, and matches the words in any order. If nothing comes back, read the notes in the result, then try other words or `search_contents: true` to search what was said. Never say a session does not exist because one search missed it.",
         "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you. Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`.",
         "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
@@ -70,10 +71,12 @@ module LiveConversations
 
       "- The client driving this conversation right now is CarPlay: the person is in a car, with their eyes " \
         "and hands busy. Sessions carry a CarPlay fit (`carplay_ok`, `laptop_only`, or untagged) saying whether " \
-        "what they need next can be done by voice; `get_user_view` and `quick_search_sessions` take a " \
-        "`carplay_fit` filter (`not_laptop_only` is the driving default) and `action_session` sets it with " \
-        "`set_carplay_fit`. A session you start, follow up or act on from here is marked `carplay_ok` for you " \
-        "and stays in that view; mark it `laptop_only` only when it clearly needs a screen or a keyboard."
+        "what they need next can be done by voice; `get_user_view` takes a `carplay_fit` filter " \
+        "(`not_laptop_only` is the driving default for going through what needs them) and `action_session` " \
+        "sets it with `set_carplay_fit`. Leave `carplay_fit` off a search for a particular session: a session " \
+        "marked `laptop_only` still exists, and the person may only want to hear how it went. A session you " \
+        "start, follow up or act on from here is marked `carplay_ok` for you and stays in that view; mark it " \
+        "`laptop_only` only when it clearly needs a screen or a keyboard."
     end
 
     def guidance_section
