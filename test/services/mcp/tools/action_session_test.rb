@@ -438,6 +438,26 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "running", session.reload.status
   end
 
+  test "follow_up to a running session queues through Sessions::QueueFollowUp" do
+    session = sessions(:running)
+    queued = session.enqueued_messages.create!(content: "Stand-in", position: 1, status: "pending")
+    Sessions::QueueFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" && kwargs[:goal].nil?
+    end.returns(queued)
+
+    result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Through the service")
+
+    assert_includes result, "Message queued (session is running)"
+  end
+
+  test "follow_up to a running session logs the shared queued wording" do
+    session = sessions(:running)
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Queued work")
+
+    assert session.logs.exists?(content: "Message queued at position 1 (a turn is already underway)")
+  end
+
   test "follow_up reports the queue depth its own message landed in" do
     session = sessions(:running)
     session.enqueued_messages.create!(content: "Ahead of you", position: 1, status: "pending")
