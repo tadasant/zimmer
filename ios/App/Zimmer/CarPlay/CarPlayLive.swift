@@ -264,9 +264,10 @@ final class CarPlayLive {
         onChange?()
     }
 
-    /// The driver said "hang up" and the call ended (`LiveCall.endedByVoice`): the same as End,
-    /// nothing is retried after it. The tiles come back with Continue, one tap from the same
-    /// conversation.
+    /// The driver said "hang up" and the call ended (`LiveCall.endedByVoice`): the same as End.
+    /// A voice hang-up sets no error, so nothing would retry it anyway; this drops a pending
+    /// comeback, stands the retry down and logs it. The tiles come back with Continue, one tap
+    /// from the same conversation.
     private func voiceHungUp() {
         telemetry.track(.carPlay("voice_hang_up"))
         comeback = nil

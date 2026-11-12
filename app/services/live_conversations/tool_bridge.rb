@@ -39,7 +39,7 @@ module LiveConversations
   # 6. **Hanging up** — `hang_up`, so "hang up" or "stop listening" ends a voice
   #    call without a hand on the screen. Voice only: `realtime_tools` carries
   #    it and `chat_tools` does not, because a typed reply has no call to end. A
-  #    call relayed by a client that can act on it answers with `hung_up`, and
+  #    call relayed by a client that can act on it answers `hang_up: true`, and
   #    the client closes the call once the reply that asked for it has finished
   #    sounding. Nothing else stops: the conversation stays open, and a
   #    background session or a tool call already running carries on, because

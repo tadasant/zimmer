@@ -38,9 +38,11 @@ import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 //                   listening") answers hang_up: its output goes back, no reply is
 //                   asked for after it, and the call ends the way End does once the
 //                   response that asked is done and its goodbye has stopped sounding
-//                   (output_audio_buffer.stopped) — or after HANG_UP_GRACE_MS, whatever
-//                   is still sounding. The conversation stays open; tool calls already
-//                   relayed run to the end on Zimmer's side.
+//                   (output_audio_buffer.stopped) — or HANG_UP_GRACE_MS after Zimmer
+//                   answered, whatever is still sounding. Talking over the goodbye
+//                   ends it sooner (output_audio_buffer.cleared). A move to another
+//                   conversation is not followed meanwhile. The conversation stays
+//                   open; tool calls already relayed run to the end on Zimmer's side.
 
 // How often a call looks for a switch made somewhere else.
 const FOLLOW_INTERVAL_MS = 5000
@@ -169,6 +171,8 @@ export default class extends Controller {
   // Live Mode moved while this call was on the old conversation. A failed look
   // changes nothing: the next one will do.
   async followCurrent(generation) {
+    // Hanging up: the call is over in a moment, wherever Live Mode has gone.
+    if (this.hangingUp) return
     try {
       const response = await fetch("/live/current.json", { credentials: "same-origin", headers: { Accept: "application/json" } })
       if (!response.ok || generation !== this.generation) return
@@ -318,7 +322,12 @@ export default class extends Controller {
         if (generation !== this.generation) return
         // This session is over: nothing more goes down it.
         if (response.ok && body.switched_to) {
-          this.reattach(body.switched_to.id)
+          // The person also asked to hang up: that wins, and the call ends here.
+          if (this.hangingUp) {
+            this.hangUp()
+          } else {
+            this.reattach(body.switched_to.id)
+          }
           return
         }
         const output = response.ok ? body.output : `Zimmer could not run ${name}: ${body.error || response.status}`
