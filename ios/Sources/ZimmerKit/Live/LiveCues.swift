@@ -3,31 +3,31 @@ import Foundation
 /// The sounds a Live voice call makes besides Zimmer's voice, so a driver knows what the call is
 /// doing without looking. Silence on a call can mean working, stuck or not heard; these tell them
 /// apart. They have to carry over road and engine noise on car audio, so they sit near the level
-/// of the reply's speech and their fundamentals mostly between 600 and 900 Hz, above the band a
-/// car's noise fills; only *failed* and *ended* stay low, because low means *not good*, and they
-/// carry on their octave instead.
+/// of the reply's speech and their fundamentals between 430 and 800 Hz, above the band where a
+/// car's noise is loudest; only *failed* and *ended* stay low, because low means *not good*, and
+/// they carry on their octave instead.
 ///
-/// They are also heard many times an hour on a long drive, so they are soft-edged rather than
-/// bright: a rounded 20 ms attack and a 25 ms release on every note, no fundamental above A5
-/// (880 Hz), only a trace of the octave on the high notes, and no odd harmonics, which make a low
-/// note buzz. The rules, and how to add or change a cue, are in
-/// `ios/LIVE_CUES.md`.
+/// They are also heard many times an hour on a long drive, so they are mellow rather than
+/// bright: a rounded 30 ms attack and a 30 ms release on every note, no fundamental above G5
+/// (784 Hz), only a trace of the octave on the high notes, and no odd harmonics, which make a low
+/// note buzz. The two loops, the sounds heard most, are pure sine pulses in the C5 range. The
+/// rules, and how to add or change a cue, are in `ios/LIVE_CUES.md`.
 ///
-/// - **pressed**: two quick, level notes (G5, G5), the moment Talk is pressed, before any
+/// - **pressed**: two quick, level notes (F5, F5), the moment Talk is pressed, before any
 ///   request is made, on an engine with no microphone. Level, not rising: the call is not on
 ///   yet;
-/// - **connected**: two rising notes (E5 then A5), once, when the call is up and listening;
-/// - **heard**: one short note (E5, the first note of *connected*), when the person stops
+/// - **connected**: two rising notes (D5 then G5), once, when the call is up and listening;
+/// - **heard**: one short note (D5, the first note of *connected*), when the person stops
 ///   talking and Zimmer takes the line on. It waits `heardLead`, so an answer that starts within
 ///   it gets none;
-/// - **thinking**: one round tap (A5, 75 ms) once a second, while the model works on an answer
-///   and no tool is running. It gives up after `ceiling`;
-/// - **working**: a pair (E5 then G5) every 2.5 seconds, while a tool runs, for as long as one
-///   runs. Lower, longer and slower than the tap, so the two never pass for each other;
+/// - **thinking**: one soft sine pulse (C5, 90 ms) every 1.2 seconds, while the model works on
+///   an answer and no tool is running. It gives up after `ceiling`;
+/// - **working**: a pair (A4 then C5) every 2.5 seconds, while a tool runs, for as long as one
+///   runs. Lower, longer and slower than the thinking pulse, so the two never pass for each other;
 /// - **failed**: two low notes falling a minor third (F4 then D4), each with a strong octave:
 ///   a tool failed, a reply failed or was cut short, or no answer came;
 /// - **ended**: one low note (E4), with its octave, when the person hangs up;
-/// - **disconnected**: the connected notes falling (A5 then E5), once, when a call drops.
+/// - **disconnected**: the connected notes falling (G5 then D5), once, when a call drops.
 ///
 /// Rising means *on*, falling means *off*. Each is synthesized here at the reply's 24 kHz rate: no
 /// audio files.
@@ -42,22 +42,22 @@ public enum LiveCue: String, Sendable, CaseIterable {
     public func samples(sampleRate: Double = RealtimeAudio.sampleRate) -> [Float] {
         switch self {
         case .pressed:
-            return Self.note(783.99, length: 0.075, peak: 0.52, rate: sampleRate) + Self.note(783.99, length: 0.095, peak: 0.52, rate: sampleRate)
+            return Self.note(698.46, length: 0.085, peak: 0.5, rate: sampleRate) + Self.note(698.46, length: 0.1, peak: 0.5, rate: sampleRate)
         case .connected:
-            return Self.note(659.25, length: 0.12, peak: 0.52, rate: sampleRate) + Self.note(880, length: 0.17, peak: 0.52, rate: sampleRate)
+            return Self.note(587.33, length: 0.13, peak: 0.5, rate: sampleRate) + Self.note(783.99, length: 0.18, peak: 0.5, rate: sampleRate)
         case .heard:
-            return Self.note(659.25, length: 0.13, peak: 0.52, rate: sampleRate)
+            return Self.note(587.33, length: 0.14, peak: 0.52, rate: sampleRate)
         case .disconnected:
-            return Self.note(880, length: 0.12, peak: 0.52, rate: sampleRate) + Self.note(659.25, length: 0.19, peak: 0.52, rate: sampleRate)
+            return Self.note(783.99, length: 0.13, peak: 0.5, rate: sampleRate) + Self.note(587.33, length: 0.2, peak: 0.5, rate: sampleRate)
         case .thinking:
-            return Self.tap(880, length: 0.075, peak: 0.32, rate: sampleRate)
+            return Self.tap(523.25, length: 0.09, peak: 0.345, rate: sampleRate)
         case .working:
-            return Self.tap(659.25, length: 0.1, peak: 0.32, rate: sampleRate) + Self.tap(783.99, length: 0.1, peak: 0.32, rate: sampleRate)
+            return Self.tap(440, length: 0.12, peak: 0.345, rate: sampleRate) + Self.tap(523.25, length: 0.12, peak: 0.345, rate: sampleRate)
         case .failed:
-            return Self.note(349.23, length: 0.15, peak: 0.52, octave: Self.lowOctave, rate: sampleRate)
-                + Self.note(293.66, length: 0.25, peak: 0.52, octave: Self.lowOctave, rate: sampleRate)
+            return Self.note(349.23, length: 0.15, peak: 0.53, octave: Self.lowOctave, rate: sampleRate)
+                + Self.note(293.66, length: 0.25, peak: 0.53, octave: Self.lowOctave, rate: sampleRate)
         case .ended:
-            return Self.note(329.63, length: 0.23, peak: 0.44, octave: Self.lowOctave, rate: sampleRate)
+            return Self.note(329.63, length: 0.23, peak: 0.425, octave: Self.lowOctave, rate: sampleRate)
         }
     }
 
@@ -72,10 +72,12 @@ public enum LiveCue: String, Sendable, CaseIterable {
     public static let heardLead: TimeInterval = 0.35
 
     /// How often the cue repeats, for the two that loop.
-    public var period: TimeInterval { self == .working ? 2.5 : 1.0 }
+    /// Thinking pulses a little slower than once a second: often enough to say the call is alive,
+    /// not so often that a long answer turns into a metronome.
+    public var period: TimeInterval { self == .working ? 2.5 : 1.2 }
 
     /// How long after it is asked for the loop's first sound comes. Thinking leaves room for the
-    /// *heard* note before its first tap.
+    /// *heard* note before its first pulse.
     public var lead: TimeInterval { self == .working ? 0.35 : 1.0 }
 
     /// How long the loop may run before it gives up. Thinking: a reply that never comes (a refused
@@ -94,13 +96,13 @@ public enum LiveCue: String, Sendable, CaseIterable {
     /// car's noise leaves it heard, while it still reads as low.
     static let lowOctave = 0.45
     /// How long a note takes to reach full level, and to fade to nothing at its end.
-    static let attack: TimeInterval = 0.02
-    static let release: TimeInterval = 0.025
+    static let attack: TimeInterval = 0.03
+    static let release: TimeInterval = 0.03
 
-    /// A soft, round note: the fundamental and a little of its octave (more for the low notes),
+    /// A soft, round note: the fundamental and a trace of its octave (more for the low notes),
     /// never an odd harmonic. A raised-cosine `attack` and `release`, so it neither clicks nor
-    /// snaps on, and an exponential fade between them.
-    static func note(_ frequency: Double, length: TimeInterval, peak: Float, octave: Double = 0.12, rate: Double) -> [Float] {
+    /// snaps on, and an exponential fade between them, like a soft mallet on a wooden bar.
+    static func note(_ frequency: Double, length: TimeInterval, peak: Float, octave: Double = 0.06, rate: Double) -> [Float] {
         let count = Int(length * rate)
         let attack = Self.attack * rate
         let release = Self.release * rate
@@ -108,13 +110,14 @@ public enum LiveCue: String, Sendable, CaseIterable {
             let t = Double(index) / rate
             let rise = 0.5 - 0.5 * cos(.pi * min(1, Double(index) / attack))
             let end = 0.5 - 0.5 * cos(.pi * min(1, Double(count - 1 - index) / release))
-            let fade = exp(-t / (length / 2.4))
+            let fade = exp(-t / (length / 2))
             let tone = sin(2 * .pi * frequency * t) + octave * sin(4 * .pi * frequency * t)
             return Float(tone / (1 + octave) * rise * end * fade) * peak
         }
     }
 
-    /// A tap: a sine burst with a raised-cosine envelope, so it has no click at either end.
+    /// A pulse: a pure sine with a raised-cosine envelope, half of it rising, so it swells in and
+    /// out with no click at either end and no partial above its own pitch.
     static func tap(_ frequency: Double, length: TimeInterval, peak: Float, rate: Double) -> [Float] {
         let count = Int(length * rate)
         return (0..<count).map { index in

@@ -303,7 +303,7 @@ CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by com
 
 ### The web call dock's cues are an older set than the phone's
 
-The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 20 ms attack, no note above A5, and near speech level. The browser's call dock (`lib/live_cues.js`) still plays the earlier set: quieter, with a 5 ms attack, and with connected and disconnected reaching B5. The events and rules are the same, and `LiveVoiceCuesTest` holds the web's levels under its own ceiling, but nothing makes the two sets sound alike.
+The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 30 ms attack, no note above G5, sine pulses for thinking and working, and near speech level. The browser's call dock (`lib/live_cues.js`) still plays the earlier set: quieter, with a 5 ms attack, and with connected and disconnected reaching B5. The events and rules are the same, though its thinking tick still comes once a second rather than every 1.2 s, and `LiveVoiceCuesTest` holds the web's levels under its own ceiling, but nothing makes the two sets sound alike.
 
 ### The Live cues have not been heard in a car
 
