@@ -552,9 +552,9 @@ running after every step, and any crash report fails the job.
 
 ## Startup latency: CarPlay pre-warm
 
-Behind the Live setting `voice_carplay_prewarm`, off by default, the car holds one idle Realtime
+While it is connected, the car holds one idle Realtime
 connection ready for Continue while it is connected. The tap starts the call on it. It sends
-nothing before the tap and opens no microphone. The design, the numbers and the rollout are in
+nothing before the tap and opens no microphone. The design and the numbers are in
 [`CARPLAY_PREWARM_DESIGN.md`](CARPLAY_PREWARM_DESIGN.md).
 
 ## Follow-ups

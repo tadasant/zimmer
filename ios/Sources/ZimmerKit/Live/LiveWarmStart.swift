@@ -9,7 +9,7 @@ import Foundation
 /// happened, and it answers what to do. **What it can ask for is the whole of what a warm
 /// connection ever does**, and none of it is a Realtime event:
 ///
-/// - `refresh`: read the flag and the open conversation from Zimmer (`GET /api/v1/live_conversations`);
+/// - `refresh`: read the open conversation from Zimmer (`GET /api/v1/live_conversations`);
 /// - `mint`: a prewarm secret (`LiveAPI.livePrewarmSecret`), which changes nothing on the
 ///   conversation, and a WebSocket opened with it;
 /// - `ping`: a WebSocket control frame. Not a Realtime event: OpenAI bills nothing for it;
@@ -32,9 +32,7 @@ public struct LiveWarmStart: Sendable, Equatable {
 
     /// How often the app ticks this.
     public static let tickEvery: TimeInterval = 1
-    /// How often the flag and the open conversation are read again while the flag is on. Also the
-    /// kill switch's reach: turning the flag off closes a warm connection within this. With it
-    /// off, the flag is read only when the car connects and after each call.
+    /// How often the open conversation is read again, so the warm connection follows it.
     public static let refreshEvery: TimeInterval = 30
     /// How often a warm connection is pinged. Well inside the idle timeouts of carrier NATs, which
     /// drop a quiet TCP flow after 30 s to a few minutes.
@@ -54,15 +52,14 @@ public struct LiveWarmStart: Sendable, Equatable {
     /// at `maxAge` each. Past it the car starts cold.
     public static let warmsPerDrive = 15
     /// A gap between ticks longer than this means iOS suspended the app: nothing heard can be
-    /// trusted, so the connection is pinged and the flag read at once.
+    /// trusted, so the connection is pinged and the open conversation read at once.
     public static let longestTickGap: TimeInterval = 5
 
     // MARK: - Inputs and outputs
 
-    /// What the app knows when it asks: the flag and the open conversation from the last refresh,
+    /// What the app knows when it asks: the open conversation from the last refresh,
     /// the call, and the phone.
     public struct Conditions: Sendable, Equatable {
-        public var flagOn: Bool
         public var callActive: Bool
         /// The conversation Continue would call: the open one.
         public var conversation: Int?
@@ -75,9 +72,8 @@ public struct LiveWarmStart: Sendable, Equatable {
         public var constrained: Bool
         public var online: Bool
 
-        public init(flagOn: Bool, callActive: Bool = false, conversation: Int?, conversationReady: Bool = true, lowPower: Bool = false,
+        public init(callActive: Bool = false, conversation: Int?, conversationReady: Bool = true, lowPower: Bool = false,
                     hot: Bool = false, constrained: Bool = false, online: Bool = true) {
-            self.flagOn = flagOn
             self.callActive = callActive
             self.conversation = conversation
             self.conversationReady = conversationReady
@@ -87,10 +83,8 @@ public struct LiveWarmStart: Sendable, Equatable {
             self.online = online
         }
 
-        /// Why nothing is warmed, or nil when a connection may be. In order: the flag first, so a
-        /// kill switch is what the log says.
+        /// Why nothing is warmed, or nil when a connection may be.
         public var hold: Hold? {
-            if !flagOn { return .flagOff }
             if callActive { return .callActive }
             if lowPower { return .lowPower }
             if hot { return .thermal }
@@ -104,7 +98,6 @@ public struct LiveWarmStart: Sendable, Equatable {
 
     /// Why no connection is being warmed.
     public enum Hold: String, Sendable, Equatable {
-        case flagOff = "flag_off"
         case callActive = "call_active"
         case lowPower = "low_power"
         case thermal
@@ -154,7 +147,7 @@ public struct LiveWarmStart: Sendable, Equatable {
 
     /// Why a tap started cold.
     public enum Miss: String, Sendable, Equatable {
-        /// The car never warmed one: the flag is off, or something holds it (`hold`).
+        /// The car never warmed one: something holds it (`hold`).
         case none
         /// One was on its way and not yet up.
         case warming
@@ -237,9 +230,7 @@ public struct LiveWarmStart: Sendable, Equatable {
         var actions: [Action] = []
         let slept = lastTick.map { now - $0 > Self.longestTickGap } ?? false
         lastTick = now
-        // Off is close to inert: the flag is read when the car connects and after each call,
-        // and only a car with it on reads again every `refreshEvery`.
-        if conditions?.flagOn != false, slept || now - lastRefresh >= Self.refreshEvery {
+        if slept || now - lastRefresh >= Self.refreshEvery {
             lastRefresh = now
             actions.append(.refresh)
         }

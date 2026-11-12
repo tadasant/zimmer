@@ -9,8 +9,9 @@ import os
 /// is `LiveWarmStart`'s (ZimmerKit, tested on Linux); this does it — reads Zimmer, mints, opens
 /// and pings the socket, closes it — and hands the connection to `LiveCall` when the driver taps.
 ///
-/// Behind the Live setting `voice_carplay_prewarm`, off by default. Off, the car reads the flag
-/// when it connects and after each call, and does nothing else.
+/// On for every car connection. There is no flag: what stops it is a hold (`LiveWarmStart.Hold`)
+/// — a call up, Low Power Mode, heat, Low Data Mode, no network, nothing open — or the per-drive
+/// budget.
 ///
 /// **Nothing goes up a warm connection.** `LiveWarmLink` has no way to send an event: it opens the
 /// socket, reads what OpenAI says, and pings. The microphone is not touched, the audio session is
@@ -43,7 +44,7 @@ final class LiveWarmKeeper {
 
     // MARK: - The car
 
-    /// The CarPlay scene connected: read the flag and what is open, and warm if it says to.
+    /// The CarPlay scene connected: read what is open, and warm it.
     func carConnected() {
         carDisconnected()
         connected = true
@@ -79,10 +80,10 @@ final class LiveWarmKeeper {
 
     // MARK: - The tap
 
-    /// The open conversation, as read within the last `refreshEvery` with the flag on: Continue
+    /// The open conversation, as read within the last `refreshEvery`: Continue
     /// calls it without asking Zimmer again. Nil sends the tap the old way.
     func freshCurrent() -> Int? {
-        guard connected, let overview, overview.value.carplayPrewarm, Self.now - overview.at < LiveWarmStart.refreshEvery else { return nil }
+        guard connected, let overview, Self.now - overview.at < LiveWarmStart.refreshEvery else { return nil }
         return overview.value.current
     }
 
@@ -91,7 +92,7 @@ final class LiveWarmKeeper {
     func claim(_ conversation: Int) -> LiveWarmLink? {
         guard connected else { return nil }
         let claim = start.claim(conversation, at: Self.now)
-        if overview?.value.carplayPrewarm == true { telemetry.track(.warmClaim(claim, hold: start.hold)) }
+        telemetry.track(.warmClaim(claim, hold: start.hold))
         // Used once: a retry after this call fails asks Zimmer what is open again, rather than
         // calling a conversation that may have ended since the read.
         overview = nil
@@ -121,7 +122,7 @@ final class LiveWarmKeeper {
     private func conditions(_ overview: LiveOverview) -> LiveWarmStart.Conditions {
         let thermal = ProcessInfo.processInfo.thermalState
         return LiveWarmStart.Conditions(
-            flagOn: overview.carplayPrewarm, callActive: LiveCall.shared.isActive, conversation: overview.current,
+            callActive: LiveCall.shared.isActive, conversation: overview.current,
             conversationReady: overview.currentIsReady, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
             hot: thermal == .serious || thermal == .critical, constrained: constrained, online: online
         )

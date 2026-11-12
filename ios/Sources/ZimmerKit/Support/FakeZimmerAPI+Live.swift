@@ -95,8 +95,7 @@ extension FakeZimmerAPI {
 
     public func liveConversations() async throws -> LiveOverview {
         let all = liveState.conversations.values.sorted { $0.id > $1.id }
-        return LiveOverview(conversations: all, current: all.first { $0.status.isOpen }?.id,
-                            carplayPrewarm: liveState.settingOverrides["voice_carplay_prewarm"] == .string("on"))
+        return LiveOverview(conversations: all, current: all.first { $0.status.isOpen }?.id)
     }
 
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {
@@ -186,12 +185,9 @@ extension FakeZimmerAPI {
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }
 
-    /// As the server: refused while the flag is off, and on a conversation that is not active;
+    /// As the server: refused on a conversation that is not active;
     /// changes nothing on the conversation, and is counted so a test can see it happened.
     public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
-        guard liveState.settingOverrides["voice_carplay_prewarm"] == .string("on") else {
-            throw ZimmerError.http(status: 403, message: "CarPlay pre-warm is off. Turn it on in the Live settings.")
-        }
         guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.") }
         liveState.prewarmMints += 1
         return LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
@@ -200,12 +196,6 @@ extension FakeZimmerAPI {
 
     /// How many prewarm secrets were minted.
     public var prewarmMints: Int { liveState.prewarmMints }
-
-    /// The Live setting `voice_carplay_prewarm`, as the settings page writes it. Not one of the
-    /// fields the fake's settings screen shows, so the screen's photographs stay as they are.
-    public func setCarplayPrewarm(_ on: Bool) {
-        liveState.settingOverrides["voice_carplay_prewarm"] = on ? .string("on") : nil
-    }
 
     public func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer {
         liveState.telemetryBatches.append(batch)

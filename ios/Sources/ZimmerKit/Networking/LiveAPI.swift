@@ -29,7 +29,7 @@ public protocol LiveAPI: Sendable {
     func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
     /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
     /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
-    /// refused (403) while the Live setting `voice_carplay_prewarm` is off.
+    /// refused (422) from any client but CarPlay.
     func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret
     /// Voice: run a function call the model made; send back what this returns.
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
@@ -77,12 +77,6 @@ struct LiveIndexResponse: Decodable {
     let live_conversations: [LiveConversation]
     let current_id: Int?
     let current: [String: Int?]?
-    /// Absent from a server from before CarPlay pre-warm: off.
-    let prewarm: Prewarm?
-
-    struct Prewarm: Decodable {
-        let carplay: Bool?
-    }
 
     var currentID: Int? { current_id ?? current?.values.compactMap { $0 }.max() }
 }
@@ -95,8 +89,7 @@ extension ZimmerHTTPClient {
 
     public func liveConversations() async throws -> LiveOverview {
         let response: LiveIndexResponse = try await get("/api/v1/live_conversations")
-        return LiveOverview(conversations: response.live_conversations, current: response.currentID,
-                            carplayPrewarm: response.prewarm?.carplay ?? false)
+        return LiveOverview(conversations: response.live_conversations, current: response.currentID)
     }
 
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {

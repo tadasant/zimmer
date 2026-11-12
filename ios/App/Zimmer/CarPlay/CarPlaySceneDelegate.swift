@@ -18,7 +18,7 @@ import os
 /// asked to fix itself (`CarPlayVoiceSettings`).
 ///
 /// Silent until asked. The car opens on its tiles and says nothing; the call starts only when
-/// the driver taps one. CarPlay pre-warm, when its flag is on, may hold a connection ready from
+/// the driver taps one. CarPlay pre-warm holds a connection ready from
 /// the moment the scene connects (`LiveWarmKeeper`), but it sends nothing, opens no microphone and
 /// shows nothing: the tap is still where the call begins.
 ///
@@ -41,7 +41,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         LiveCall.shared.carCameBack()
         log.notice("carplay scene connected")
         LiveTelemetry.shared.track(.carPlay("scene_connected"))
-        // CarPlay pre-warm, behind its flag: reads it, and holds a connection ready for Continue.
+        // CarPlay pre-warm: holds a connection ready for Continue.
         LiveWarmKeeper.shared.carConnected()
 
         interfaceController.delegate = self
