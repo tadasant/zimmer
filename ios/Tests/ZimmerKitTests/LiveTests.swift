@@ -427,6 +427,28 @@ final class RealtimeConductorTests: XCTestCase {
                        "a call already running is still answered, and asks for no reply")
     }
 
+    func testAHangUpInAResponseThePersonTalkedOverStillEndsTheCall() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        let cancelled = #"{"type":"response.done","response":{"status":"cancelled","output":[{"type":"function_call","call_id":"h1","name":"hang_up","arguments":"{}"}]}}"#
+        _ = conductor.handle(event(cancelled))
+        let effects = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        XCTAssertEqual(sent(effects), ["conversation.item.create:h1"])
+        XCTAssertEqual(effects.last, .hangUp, "the person asked; talking over the goodbye does not take it back")
+    }
+
+    func testASwitchAnsweredWhileHangingUpIsNotFollowed() {
+        var conductor = RealtimeConductor()
+        _ = conductor.handle(event(#"{"type":"response.created"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))
+        _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"s1","name":"switch_live_conversation","arguments":"{}"}"#))
+        _ = conductor.relayed(callID: "h1", result: LiveToolResult(output: "Hanging up.", hangUp: true))
+        let switched = conductor.relayed(callID: "s1", result: LiveToolResult(output: "Switched", switchedTo: LiveSwitchTarget(id: 8, title: "x")))
+        XCTAssertFalse(switched.contains(.reattach(conversation: 8)), "the hang-up wins")
+        XCTAssertEqual(sent(switched), ["conversation.item.create:s1"])
+    }
+
     func testARefusedHangUpIsAnsweredLikeAnyOtherCall() {
         var conductor = RealtimeConductor()
         _ = conductor.handle(event(#"{"type":"response.function_call_arguments.done","call_id":"h1","name":"hang_up","arguments":"{}"}"#))

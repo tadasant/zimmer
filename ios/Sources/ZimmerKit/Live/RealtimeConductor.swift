@@ -340,7 +340,8 @@ public struct RealtimeConductor: Sendable {
     /// Zimmer answered a relayed call (`result`), or could not be reached (`failure`).
     public mutating func relayed(callID: String, result: LiveToolResult?, failure: String? = nil) -> [Effect] {
         guard inFlight.remove(callID) != nil else { return [] }
-        if let target = result?.switchedTo { return [.reattach(conversation: target.id)] }
+        // The person also asked to hang up: that wins, and the switch is answered like any call.
+        if let target = result?.switchedTo, !hangingUp { return [.reattach(conversation: target.id)] }
         if result?.hangUp == true {
             hangingUp = true
             dropped.remove(callID)

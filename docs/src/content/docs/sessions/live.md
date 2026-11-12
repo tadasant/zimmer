@@ -384,9 +384,10 @@ unless a message is half-typed.
 ### Hanging up by voice
 
 Say **"hang up"** and the call ends, with no hand on the screen. "End the call", "stop listening",
-"pause" and "that's all, bye" do the same. The live model recognises the request and calls
-`hang_up`, says a few words such as "Okay, hanging up", and the call ends the way End ends it,
-hung-up cue and all, once those words have finished sounding. There is no confirmation: hanging up
+"pause" and "that's all, bye" do the same. The live model recognises the request, says a few
+words such as "Okay, hanging up" and calls `hang_up`, and the call ends the way End ends it,
+hung-up cue and all, once those words have finished sounding. Talking over them ends it straight
+away. There is no confirmation: hanging up
 loses nothing, and calling again is one tap.
 
 - **What it is not.** The model is told to call it only for a request of its own: never for the
@@ -404,8 +405,9 @@ loses nothing, and calling again is one tap.
   act on it (`hangs_up`). The client sends the output back, asks for no reply after it, and ends the
   call once the response that asked is done and its audio has stopped. The browser waits for
   `output_audio_buffer.stopped`; the phone waits for its own playout (`LiveReplyPlayout`) to drain.
-  Either gives up waiting after eight seconds, so a call never stays open because an event did not
-  come. A client that does not say `hangs_up`, an iOS build from before it for instance, gets
+  Either gives up waiting eight seconds after Zimmer answered, so a call never stays open because
+  an event did not come. A move to another conversation is not followed while a hang-up is pending,
+  and a `switch_live_conversation` in the same reply is answered but not acted on: the hang-up wins. A client that does not say `hangs_up`, an iOS build from before it for instance, gets
   `hang_up` refused, and the model tells the person to tap End.
 - **In the car** a voice hang-up counts as the driver's End: nothing is retried, the call screen
   comes down with the hung-up cue, and the tiles come back with **Continue**.

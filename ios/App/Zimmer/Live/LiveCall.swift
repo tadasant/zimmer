@@ -45,8 +45,10 @@ import os
 /// **A call can be hung up by voice.** "Hang up" or "stop listening" makes the live model call
 /// `hang_up`; Zimmer answers `hang_up`, the conductor asks for nothing more and says `hangUp` once
 /// the response that asked is done, and the call ends the way End ends it — hung-up cue and all —
-/// as soon as the goodbye has finished sounding (`hangUpGrace` at most). `endedByVoice` says so,
-/// so the car treats it as the driver's End and not as a drop to retry.
+/// as soon as the goodbye has finished sounding — or `hangUpGrace` after Zimmer answered, whatever
+/// is still sounding or still to come. Talking over the goodbye stops it, so the call ends sooner.
+/// A move to another conversation is not followed meanwhile. `endedByVoice` says so, so the car
+/// treats it as the driver's End and not as a drop to retry.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
@@ -370,14 +372,26 @@ final class LiveCall: ObservableObject {
     /// this nothing.
     private func hangUpWhenSaid(generation mine: Int) {
         Task {
-            let deadline = Self.now + Self.hangUpGrace
-            while mine == generation, audio.replyRemaining > 0, Self.now < deadline {
+            while mine == generation, audio.replyRemaining > 0 {
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            guard mine == generation else { return }
-            pressHeard = nil
-            end(reason: "voice_hang_up", farewell: cues.hungUp(), byVoice: true)
+            hangUpByVoice(generation: mine)
         }
+    }
+
+    /// Zimmer answered `hang_up`: whatever happens next — a `response.done` that never comes, a
+    /// reply that will not stop — the call ends `hangUpGrace` from now.
+    private func armHangUpDeadline(generation mine: Int) {
+        Task {
+            try? await Task.sleep(for: .seconds(Self.hangUpGrace))
+            hangUpByVoice(generation: mine)
+        }
+    }
+
+    private func hangUpByVoice(generation mine: Int) {
+        guard mine == generation else { return }
+        pressHeard = nil
+        end(reason: "voice_hang_up", farewell: cues.hungUp(), byVoice: true)
     }
 
     /// End the call: `reason` is for the log; the `farewell` cue is the engine's last sound.
@@ -615,7 +629,8 @@ final class LiveCall: ObservableObject {
                 // The CarPlay drill holds its call on Connecting… on purpose, for the gear.
                 if Self.drillHoldsTheCall { self.health.started(at: Self.now) }
                 #endif
-                if self.health.isConnected, Self.now - self.lookedForMove >= Self.followEvery {
+                // Hanging up: the call is over in a moment, wherever Live Mode has gone.
+                if self.health.isConnected, !self.conductor.hangingUp, Self.now - self.lookedForMove >= Self.followEvery {
                     self.lookedForMove = Self.now
                     self.followCurrent(generation: generation)
                 }
@@ -818,6 +833,7 @@ final class LiveCall: ObservableObject {
             telemetry.track(.toolCall(name, ms: Self.now - asked, ok: failure == nil && result?.error != true))
             activity += 1
             let effects = conductor.relayed(callID: callID, result: result, failure: failure)
+            if result?.hangUp == true, conductor.hangingUp { armHangUpDeadline(generation: generation) }
             apply(effects, generation: generation)
         }
     }
