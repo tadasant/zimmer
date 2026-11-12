@@ -9,6 +9,8 @@ class LiveConversationTurnDashboard < Administrate::BaseDashboard
     role: Field::String,
     source: Field::String,
     content: Field::Text,
+    author: Field::String,
+    author_provenance: Field::String.with_options(searchable: false),
     tool_name: Field::String,
     call_id: Field::String,
     tool_arguments: Field::String.with_options(searchable: false),
@@ -21,7 +23,7 @@ class LiveConversationTurnDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[id live_conversation role tool_name created_at].freeze
 
   SHOW_PAGE_ATTRIBUTES = %i[
-    id live_conversation role source content tool_name call_id tool_arguments tool_output tool_error created_at updated_at
+    id live_conversation role source author author_provenance content tool_name call_id tool_arguments tool_output tool_error created_at updated_at
   ].freeze
 
   FORM_ATTRIBUTES = %i[].freeze

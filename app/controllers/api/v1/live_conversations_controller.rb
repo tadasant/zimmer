@@ -133,9 +133,12 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   # `listening_modes`: the client asks for each reply itself when Listening is
   # gated (LiveConversations::Listening); an app from before that is answered as
-  # `always`. `reattaches`: it can move a call to another conversation.
+  # `always`. `reattaches`: it can move a call to another conversation. The
+  # author is the person the app's grant acts as; every action that writes a
+  # turn is behind require_a_person_on_the_app, so an API key never gets here.
   def actions
     LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface, listening_modes: params[:listening_modes].present?,
-                                                  reattaches: params[:reattaches].present?)
+                                                  reattaches: params[:reattaches].present?,
+                                                  author: LiveConversations::Author.native_app(native_app_grant))
   end
 end

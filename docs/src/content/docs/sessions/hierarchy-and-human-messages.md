@@ -430,6 +430,8 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | A follow-up, Quick Router request or Merge from [Zimmer's iOS app](/extend/ios-app/) | ✅ `ios_app.follow_up` / `ios_app.quick_router` / `ios_app.authorize_merge`, when the app's connection acts on its approver's behalf | recorded on the [`assistant` channel](#the-assistant-channel) with the same fences as any OAuth client: the author is the approver's roster row, the grant is in the provenance, and a relay-only connection records nothing. The app sends exactly what was typed, a quick reply included |
+| A `follow_up`, `send_now`, enqueue, `start_session` or `quick_router` the [Live Mode](/sessions/live/) assistant makes while talking to a person signed in on the web or the iOS app | ✅ `live_mode.follow_up` / `live_mode.start_session` / … | recorded on the [`live_mode` channel](#the-live-mode-channel): the content is what the person typed or said, and the assistant's own message rides beside it |
+| The same calls when the last thing said in the Live conversation came from `action_live_conversation` over MCP | ❌ | an API key wrote that turn, so no person is established |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
 | `follow_up`, `send_now`, an enqueue or its edit, a `start_session` prompt, or a [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) prompt, from an OAuth connection that **acts on its approver's behalf** | ✅ `oauth.follow_up` / `oauth.follow_up_queued` / `oauth.send_now` / `oauth.enqueued_message` / `oauth.enqueued_message_edited` / `oauth.start_session` / `oauth.quick_router` | the approver chose this level for the connection (see [below](#the-assistant-channel)). Only the caller's words are recorded: `quick_router`'s page context is not |
 | The same calls from a **relay only** OAuth connection, or `quick_router` on an API key | ❌ | the calling model wrote the words, and the grant names who approved the client, not who wrote them |
@@ -514,6 +516,71 @@ A session an OAuth client starts still has genesis `api`. The `assistant` channe
 its own, so it never appears as a capture gap. An `api` session's empty record stays an affirmative
 answer: an elevated connection records what it sends, and a relay-only one records nothing by the
 approver's choice.
+
+### The Live Mode channel
+
+When a person answers a session through [Live Mode](/sessions/live/), typed or spoken, on the web,
+the iOS app or CarPlay, the Live Mode assistant passes it on with a Zimmer tool call:
+`action_session follow_up`, `start_session`, `quick_router` or a queued message. That call runs inside
+Zimmer (`LiveConversations::ToolBridge`), not over `POST /mcp`, and it is recorded on channel
+`live_mode` when the person is known.
+
+Who the person is comes from the conversation, never from the call. Each `user` turn of a Live
+conversation is stamped with an author by the boundary that accepted it:
+
+- the web page, behind the sign-in wall: the admin (`User.admin`), as for anything typed in the web UI;
+- the iOS app, on a connection that acts on its approver's behalf: the roster row matching that
+  approver's email. A relay-only connection cannot reach Live Mode at all.
+
+A turn written by `action_live_conversation send_message` carries no author, whoever called it, and
+so does every turn from before authors were recorded. When the assistant delivers a message into a
+session, Zimmer records it only if all of these hold:
+
+- **Nothing in the conversation is unauthored.** The model reads the whole thread, so one line an
+  agent typed into it can tell the model to deliver something whenever the person next speaks. A
+  conversation with such a line never records. Start a new one.
+- **The Live mode guidance was not last written by an agent session.** The guidance is in every
+  conversation's system prompt, so the same steering works from there. A change made through
+  `action_live_settings`, or by the live model in a conversation an agent typed into, stops Live
+  Mode capture everywhere until a person changes the guidance on the settings page or in the app. A
+  change the live model makes at the person's request in a clean conversation does not.
+- **The person spoke last, alone and recently.** The `user` lines since the assistant's previous
+  answer (skipping lines the assistant said after them) all have the same author, and at least one is
+  under five minutes old.
+
+The content is the person's own words: what they typed, or their speech as the voice call
+transcribed it, keeping the lines of that run that are under five minutes old. What the assistant actually sent into the session is kept as `relayed_message` and shown
+under the person's words on every surface. `provenance` also holds `live_conversation_id`,
+`live_turn_ids`, `heard` (`typed` or `spoken`), `surface` (the client the line came from: `web`, `ios` or `carplay`), `via` (`web_ui` or `ios_app`) and,
+for the app, `oauth_grant_id` and `grant_user_email`.
+
+```
+- **[here]** Tadas (`tadasant`) via Live Mode (CarPlay, spoken, as transcribed; delivered by the Live Mode assistant), in this session (#26900), at 2026-11-11T03:10:02Z
+  ```
+  all recommended
+  ```
+  The content above is what the person said. The Live Mode assistant delivered this into the session on the strength of it:
+  ```
+  Tadas says: all recommended.
+  ```
+```
+
+What this establishes, and what it does not:
+
+- **A person said these words**, signed in, and no agent session wrote into what the model was
+  reading. The fleet's API keys reach Live Mode only through `action_live_conversation`, whose turns
+  have no author and disqualify the conversation, and `action_live_settings`, whose guidance
+  disqualifies capture. Nothing on `POST /mcp` can mark a call as Live Mode's.
+- **The assistant chose the session and wrote the message.** As with the
+  [assistant channel](#the-assistant-channel), output the model reads in the middle of a reply (a
+  tool's result, a session's `get_session` text) can still steer it to send a message to some session
+  while the person's latest words sit beside it. That is why the record keeps both. A session acting on a `live_mode` record should check
+  that the person's words answer what it asked.
+- **On a voice call the words can be one line behind.** The model can call a tool before the
+  person's latest line has been transcribed, so the record shows the line before it. The five-minute
+  window bounds how far behind. See [Limitations](/limitations/).
+
+A session Live Mode starts still has genesis `api`, so `live_mode` never appears as a capture gap.
 
 ### The GitHub attribution trap
 
