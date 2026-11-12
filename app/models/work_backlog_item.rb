@@ -71,14 +71,14 @@ class WorkBacklogItem < ApplicationRecord
   #                        merged PR, and the old row is superseded.
   #   awaiting_recurrence  the work is done until a failure recurs (zimmer#1463,
   #                        a flake that was instrumented and has not failed
-  #                        again). A merged PR with the issue still open reads
+  #                        again). A PR that merged after the row left the
+  #                        queue, with the issue still open, reads
   #                        LIVENESS_AWAITING_RECURRENCE, which is resolved.
   #
-  # NEITHER MARKER SILENCES A ROW WHOSE WORK STOPPED. A `multi_slice` row is
-  # re-queued only for a slice that merged AFTER the row left the queue, so a
-  # session that ended with nothing strands and pages as any row does. An
-  # `awaiting_recurrence` row with no merged PR at all reads `no_pr` and
-  # strands. A row with no marker is exactly as before.
+  # NEITHER MARKER SILENCES A ROW WHOSE WORK STOPPED. Both act only on a PR
+  # that merged AFTER the row left the queue, so a session that ended with
+  # nothing merged strands and pages as any row does, whatever earlier PRs
+  # merged. A row with no marker is exactly as before.
   CONTINUATION_MULTI_SLICE = "multi_slice"
   CONTINUATION_AWAITING_RECURRENCE = "awaiting_recurrence"
   CONTINUATIONS = [ CONTINUATION_MULTI_SLICE, CONTINUATION_AWAITING_RECURRENCE ].freeze
@@ -156,8 +156,9 @@ class WorkBacklogItem < ApplicationRecord
   #                         below it could never be cleared by the action it asks
   #                         for.
   LIVENESS_SUPERSEDED = "superseded"
-  #   awaiting_recurrence   a merged PR references it, the issue is still open,
-  #                         and the row declared CONTINUATION_AWAITING_RECURRENCE:
+  #   awaiting_recurrence   a PR that merged after the row left the queue
+  #                         references it, the issue is still open, and the
+  #                         row declared CONTINUATION_AWAITING_RECURRENCE:
   #                         the issue is open on purpose until the failure comes
   #                         back. Resolved but not settled, so the row is still
   #                         re-checked and a closed issue still reads as closed.

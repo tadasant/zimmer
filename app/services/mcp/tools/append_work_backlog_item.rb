@@ -76,9 +76,9 @@ module Mcp
             description: "Optional. Declares that the issue stays OPEN BY DESIGN after a merged PR, so the stranded-row " \
                          "sweep does not page on it. `multi_slice`: every session lands one slice and closes nothing — " \
                          "when a slice merges, the server queues the next slice automatically, pointing at the merged PR. " \
-                         "`awaiting_recurrence`: the work is done until a failure recurs, so a merged PR with the issue " \
-                         "still open counts as resolved. Omit it for ordinary work. Neither hides a row whose session " \
-                         "ended with nothing merged: that still strands and pages."
+                         "`awaiting_recurrence`: the work is done until a failure recurs, so a PR merged by the started " \
+                         "session, with the issue still open, counts as resolved. Omit it for ordinary work. Neither " \
+                         "hides a row whose session ended with nothing merged: that still strands and pages."
           }
         },
         required: %w[key issue_url repo surface title kind scope_direction estimated_cost]

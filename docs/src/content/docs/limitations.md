@@ -5913,7 +5913,21 @@ gate-cleared issues with no live row — rather than over the table.
 why it re-queues nothing. A PR that merged without a closing keyword leaves the issue open whether
 it finished the work or deliberately fixed part of it, and both land on `pr_merged_issue_open`.
 Separating them means reading the PR's scope and the current code, per issue. The sweep records the
-evidence; a human or an agent decides.
+evidence; a human or an agent decides. A row appended with a `continuation` marker is the exception
+(see [Issues that stay open by design](/operate/work-backlog/#issues-that-stay-open-by-design)),
+and the marker has limits of its own:
+
+- **Any merged PR that mentions the issue counts as the row's work.** The evidence is the issue's
+  cross-reference timeline, which cannot tell a slice that came from the row's session apart from an
+  unrelated PR that says "part of #321". If such a PR merges after the row left the queue, a
+  `multi_slice` row is re-queued, or an `awaiting_recurrence` row resolves, even though the row's own
+  session landed nothing. It cannot loop: each re-queue needs another merge after the new row starts.
+- **An open PR is read first.** A `multi_slice` row with a merged slice and a quiet open PR reads
+  `pr_stalled` and pages rather than queuing the next slice.
+- **A row that already exists cannot be marked.** The marker is set on append, and an append on a
+  key with a queued row writes nothing. Appending `awaiting_recurrence` on a stranded key queues a
+  session for work that is done. Marking an existing row takes a post-deploy task, as zimmer#321 and
+  zimmer#1463 got.
 
 ### A hold for a decision is voided by a change of verdict, not by every change
 
