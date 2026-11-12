@@ -756,9 +756,9 @@ tap after the turn ended anyway sends nothing ([Send now](https://github.com/tad
 already running when the car connects is shown at once. There are no tabs, counts, session cards or
 per-session buttons. Going back to an earlier conversation is done by saying so: the call stays on
 that one screen, reads Connecting… while it reconnects, and the model says where it picked up
-([Going back to a conversation](/sessions/live/#going-back-to-a-conversation)). With the Live setting
-[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) on (it is off by default), the car holds an
-idle connection ready for Continue while it is connected. It sends nothing and shows nothing until
+([Going back to a conversation](/sessions/live/#going-back-to-a-conversation)). With
+[CarPlay pre-warm](/sessions/live/#carplay-pre-warm), the car holds an idle connection ready for
+Continue while it is connected. It sends nothing and shows nothing until
 you tap.
 
 **Unplug with a call up and the phone goes to it.** The call carries on, and the phone lands on its

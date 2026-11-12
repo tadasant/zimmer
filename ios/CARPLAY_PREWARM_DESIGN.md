@@ -4,8 +4,9 @@ The goal is to start a Live Mode call from the car in under a second instead of 
 CarPlay is connected and no call is up, the app holds one Realtime connection ready for **Continue**.
 The tap starts the call on that connection.
 
-It ships behind the Live setting **CarPlay pre-warm** (`voice_carplay_prewarm`), **off by default**.
-This file is the design, the numbers behind each constant, and the rollout. The user-facing prose is
+It is **on by default, with no flag**: Tadas asked for the flag to come out (see
+[Rollout and the missing off switch](#rollout-and-the-missing-off-switch)). This file is the design
+and the numbers behind each constant. The user-facing prose is
 [docs: CarPlay pre-warm](https://docs.zimmer.tadasant.com/sessions/live/#carplay-pre-warm). The rest
 of the car is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
@@ -41,8 +42,8 @@ text out. A session with no `input_audio_buffer.append`, no `conversation.item.c
 runs. Minting a client secret is free.
 
 What a warm connection costs is one mint every 5 minutes, one socket, and a WebSocket ping every
-20 s. **This has not yet been checked against a real bill.** The internal rollout's first job is to
-compare the OpenAI usage page with the `warm.ready` count (see [Rollout](#rollout)). If the idle
+20 s. **This has not yet been checked against a real bill.** The first drives should compare the
+OpenAI usage page with the `warm.ready` count. If the idle
 session turns out to cost something, the fallback is the token-free subset, which needs no code
 change: cut `maxAge` to the secret's own lifetime and keep the socket closed. That keeps only the
 pre-read lookup.
@@ -53,7 +54,7 @@ pre-read lookup.
 ZimmerKit (Foundation only, tested on Linux)
   LiveWarmStart        the state machine: what to do and when; no I/O
   LiveEvent.warm*      the telemetry events; call.startup, call.first_audio
-  LiveAPI              livePrewarmSecret(id); LiveOverview.carplayPrewarm, currentIsReady
+  LiveAPI              livePrewarmSecret(id); LiveOverview.currentIsReady
 
 App (iOS)
   LiveWarmKeeper       drives LiveWarmStart: ticks, reads Zimmer, mints, pings, closes;
@@ -64,14 +65,13 @@ App (iOS)
   CarPlayLive          Continue uses the fresh read of what is open, and asks for a warm start
 
 Rails
-  LiveSetting voice_carplay_prewarm     the flag, on the settings page, REST and MCP
-  GET  /api/v1/live_conversations       … prewarm: {carplay}
-  POST /api/v1/live_conversations/:id/client_secret  prewarm=1: mint, change nothing
+  POST /api/v1/live_conversations/:id/client_secret  prewarm=1: mint, change nothing (CarPlay only)
+  POST /api/v1/live_conversations/:id/session_update model=: record the warm call's model
 ```
 
 ## Sequences
 
-### Cold start (flag off, or no warm hit)
+### Cold start (no warm hit)
 
 ```mermaid
 sequenceDiagram
@@ -107,9 +107,9 @@ sequenceDiagram
     participant A as App
     participant Z as Zimmer
     participant O as OpenAI
-    Note over A: CarPlay connects (flag on)
+    Note over A: CarPlay connects
     A->>Z: GET live_conversations
-    Z-->>A: current = 7, prewarm.carplay = true
+    Z-->>A: current = 7 (active)
     A->>Z: POST 7/client_secret prewarm=1
     Z->>O: POST realtime/client_secrets
     Z-->>A: secret (nothing on the conversation changed)
@@ -152,7 +152,7 @@ stateDiagram-v2
     warm --> idle: tap claims it → the call owns the socket
     warm --> idle: 5 min old → close, mint again
     warm --> idle: 70 s unheard, or socket/ping fails → close, backoff
-    warm --> idle: flag off · call up · Low Power · hot · Low Data · offline · conversation moved
+    warm --> idle: call up · Low Power · hot · Low Data · offline · conversation moved
     idle --> [*]: car disconnects (close)
 ```
 
@@ -174,8 +174,8 @@ Nothing user-originated and nothing billable goes up a warm connection before th
   warm-up's instructions, or into a socket that died quietly. A socket that fails here, or no
   `session.updated`, sends the start to the cold fallback rather than dropping the call.
 - **The server agrees.** A prewarm mint notes no client, sets no `car_call`, writes no model, and
-  needs no voice on, so the conversation the person sees does not change. Zimmer refuses it while
-  the flag is off, and from any client but the car. The tap's `session_update` carries the warm
+  needs no voice on, so the conversation the person sees does not change. Zimmer refuses it from
+  any client but the car. The tap's `session_update` carries the warm
   secret's model, so the conversation still records the model the call ran on. Tested in `live_conversations_controller_test.rb`.
 - **No UI.** Nothing is shown, played or asked. The car's screens are unchanged.
 
@@ -190,7 +190,7 @@ the car still connected, it reads what is open and warms for the next tap.
 | | Value | Why |
 | --- | --- | --- |
 | Tick | 1 s | Cheap; every rule is a comparison |
-| Refresh | 30 s, flag on only | The kill switch's reach; also follows the open conversation |
+| Refresh | 30 s | Follows the open conversation |
 | Heartbeat | 20 s ping | Inside carrier NAT idle timeouts (30 s to minutes) |
 | Warming deadline | 10 s | A cold call does all of it in 2–3 s |
 | Stale | 45 s unheard | Not handed to a call; it starts cold |
@@ -211,12 +211,10 @@ the car still connected, it reads what is open and warms for the next tap.
   has. If iOS suspends the app while the CarPlay scene is behind another app, the socket may die.
   The tick gap makes the keeper ping and refresh on waking, and a tap more than 45 s after
   anything was heard starts cold.
-- **Off is close to inert.** With the flag off, the car reads it once when it connects and once
-  after each call. That is one small GET, and nothing else.
 
 ## Caching
 
-- **In memory only.** The last read of what is open (for 30 s), the flag, and the warm socket.
+- **In memory only.** The last read of what is open (for 30 s), and the warm socket.
   The warm socket *is* the cached model and voice config: OpenAI has already applied the session
   config Zimmer chose, which is why `maxAge` bounds its staleness. **Nothing new is written to
   disk.** The secret is never persisted.
@@ -227,7 +225,7 @@ the car still connected, it reads what is open and warms for the next tap.
 
 The cold path is unchanged and remains the default. A tap is cold when:
 
-- the flag is off, or a hold applies;
+- a hold applies;
 - the choice is **New**, because a conversation that does not exist yet cannot be warmed;
 - the tap comes while the connection is still warming;
 - the warm connection is for another conversation, stale, or too old;
@@ -251,8 +249,8 @@ Every call logs these to the shipped call log (`scope.name:="ios.live"`). The Lo
 | Cost exposure | `warm.ready` count, `warm.closed` `age_ms` | warm minutes per drive |
 | Why nothing warmed | `warm.held` | `hold` |
 
-`call.startup` is logged for cold calls too, from the phone and the car. The flag-off fleet is
-the baseline.
+`call.startup` is logged for cold calls too, from the phone and the car. Phone calls and cold
+car calls are the baseline.
 
 ## Privacy and security
 
@@ -267,19 +265,36 @@ the baseline.
 - **Nothing at rest.** No new on-disk state.
 - **Telemetry** carries names, reasons and timings, never content, as the call log always has.
 
-## Rollout
+## Rollout and the missing off switch
 
-| Stage | Who | How | Move on when |
-| --- | --- | --- | --- |
-| 0. Ship | nobody | Merged with the flag off (the default). The app reads it and does nothing | CI green; TestFlight build installed |
-| 1. Internal | the operator's own drives | Settings → Live settings → **CarPlay pre-warm: On** (or `PATCH /api/v1/live/settings {"voice_carplay_prewarm":"on"}`) | One week, ≥ 20 car calls. Warm p50 tap-to-ready **< 1.0 s** and p95 **< 2.0 s**. Warm-hit rate **≥ 70 %**. Fallback rate **< 5 %**. No increase in `call.failed`. OpenAI usage shows no idle-session cost |
-| 2. Default on | every deployment | A follow-up PR flips `default_for(:voice_carplay_prewarm)` to `on` | Stage 1 thresholds held for two weeks |
+There is no flag. The first version of this change put it behind a Live setting, off by default, with a rollout
+from internal use to default-on. Tadas then asked for the flag to come out and the feature to be
+on by default. His words, by CarPlay voice, relayed through router session 27704:
 
-**Kill switch.** Set the setting to **Off**. Every car with it on closes its warm connection
-within 30 s, and Zimmer refuses prewarm mints at once. No deploy and no app release are needed.
+> "remove the feature flag for this CarPlay pre-warm work, enable the feature by default, and
+> proceed to merge when implementation and checks are complete. Do not wait for an approval gate
+> unless the system requires it. If any blocking risk or policy constraint prevents this, report it
+> and propose the closest compliant approach."
 
-**Roll back further** by reverting the PR. The cold path never changed shape: it is the
-`allowWarm == false` path of `LiveCall.start`.
+**The risk this leaves.** The warm path has never run in a car or against OpenAI. With no flag,
+nothing turns it off without a revert and a new app build. What bounds the damage in the meantime:
+
+- **Every failure already falls back to cold.** A mint, a socket or a `session.updated` that fails
+  sends the tap down the old path on the same microphone, with no second tap. The worst a broken
+  warm path should cost is the latency it was meant to save, plus up to 3 s waiting for
+  `session.updated`.
+- **The holds and the budget still apply.** One connection at most, backoff after failures, 15
+  mints per drive, and nothing on Low Power Mode, heat, Low Data Mode or no network.
+- **The telemetry says so at once.** `call.startup` by `path`, `warm.fallback` and `warm.failed`
+  show within a drive whether the warm path is helping or hurting.
+
+**How to judge the first drives.** Over the first week or about 20 car calls, look for: warm p50
+tap-to-ready **< 1.0 s** and p95 **< 2.0 s**, a warm-hit rate **≥ 70 %**, fallbacks **< 5 %**, no
+rise in `call.failed`, and no idle-session cost on the OpenAI usage page.
+
+**Turning it off** means reverting the change and shipping a new TestFlight build. The cold path
+never changed shape: it is the `allowWarm == false` path of `LiveCall.start`, and `CarPlayLive`
+asking with `warm: false` is the smallest revert.
 
 ## Later
 

@@ -88,8 +88,7 @@ module LiveConversations
     # client noted, no `car_call`, no model written, and voice need not be on.
     # The tap turns voice on and sends a fresh `session_update` before any
     # audio goes up, which brings the warm session's instructions to the
-    # conversation as it is then. Refused unless the Live setting
-    # `voice_carplay_prewarm` is on — the server half of the kill switch.
+    # conversation as it is then. Only the car pre-warms.
     def client_secret(prewarm: false)
       return prewarm_secret if prewarm
 
@@ -184,7 +183,6 @@ module LiveConversations
     private
 
     def prewarm_secret
-      raise Refused.new("CarPlay pre-warm is off. Turn it on in the Live settings.", status: :forbidden) unless LiveSetting.current.carplay_prewarm?
       raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
 
       require_active!

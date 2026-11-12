@@ -120,16 +120,6 @@ class LiveSetting < ApplicationRecord
     "off" => "Off — the app reports nothing"
   }.freeze
 
-  # Whether the iOS app pre-warms a Realtime connection while CarPlay is
-  # connected, so a tap on Continue skips the secret, the TLS handshake and
-  # OpenAI's session setup (ios/CARPLAY_PREWARM_DESIGN.md). A rollout flag and
-  # its kill switch: off stops every warm connection within one refresh, and a
-  # prewarm mint is refused while it is off.
-  CARPLAY_PREWARM = {
-    "off" => "Off — every call from the car starts cold (today's default)",
-    "on" => "On — while CarPlay is connected, keep one idle connection ready for Continue"
-  }.freeze
-
   GUIDANCE_MAX_LENGTH = 8_000
 
   FIELDS = [
@@ -183,11 +173,7 @@ class LiveSetting < ApplicationRecord
               options: TRANSCRIPTION_MODELS, min: nil, max: nil),
     Field.new(key: :voice_telemetry, path: :voice, type: :enum, label: "Call telemetry (iOS app)",
               help: "How much the phone and the car report about each voice call, to the shipped logs. Takes effect on the next call.",
-              options: TELEMETRY, min: nil, max: nil),
-    Field.new(key: :voice_carplay_prewarm, path: :voice, type: :enum, label: "CarPlay pre-warm (iOS app)",
-              help: "Keeps one idle Realtime connection open while the car is connected, so Continue starts in a fraction of the time. " \
-                    "It sends nothing — no audio, no message, no response — until the driver taps. Off is the kill switch: the app drops its warm connection within 30 seconds.",
-              options: CARPLAY_PREWARM, min: nil, max: nil)
+              options: TELEMETRY, min: nil, max: nil)
   ].freeze
 
   FIELDS_BY_KEY = FIELDS.index_by(&:key).freeze
@@ -222,8 +208,6 @@ class LiveSetting < ApplicationRecord
     # Verbose: everything a call does is reported. Turned down on the Live
     # settings page, without a deploy.
     when :voice_telemetry then "debug"
-    # Off until the rollout turns it on (ios/CARPLAY_PREWARM_DESIGN.md).
-    when :voice_carplay_prewarm then "off"
     end
   end
 
@@ -282,8 +266,6 @@ class LiveSetting < ApplicationRecord
   end
 
   def guidance_text = guidance.to_s.strip
-
-  def carplay_prewarm? = effective(:voice_carplay_prewarm) == "on"
 
   # Every setting with its value, whether that is the default, and its choices
   # or range; then the guidance. What `get_live_settings` answers, for the live

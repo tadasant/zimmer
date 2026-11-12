@@ -5,7 +5,7 @@ import XCTest
 /// dropped, what a tap gets, and the rule the whole feature stands on — nothing goes up a warm
 /// connection before the driver taps.
 final class LiveWarmStartTests: XCTestCase {
-    private let ready = LiveWarmStart.Conditions(flagOn: true, conversation: 7)
+    private let ready = LiveWarmStart.Conditions(conversation: 7)
 
     /// Connected, refreshed with `conditions`, and (unless `warm` is false) warm at `at`.
     private func started(_ conditions: LiveWarmStart.Conditions? = nil, at: TimeInterval = 0, warm: Bool = true) -> LiveWarmStart {
@@ -44,37 +44,21 @@ final class LiveWarmStartTests: XCTestCase {
         XCTAssertEqual(start.update(ready, at: 2), [], "a refresh that changes nothing changes nothing")
     }
 
-    func testTheFlagOffWarmsNothingAndTurningItOffClosesTheWarmConnection() {
-        var off = LiveWarmStart()
-        _ = off.carConnected(at: 0)
-        XCTAssertEqual(off.update(.init(flagOn: false, conversation: 7), at: 0), [])
-        XCTAssertEqual(off.hold, .flagOff)
-        XCTAssertEqual(off.claim(7, at: 5), .cold(.none))
-        XCTAssertEqual(run(&off, from: 1, to: 600).count, 0, "off reads nothing more until the car reconnects or a call ends")
-        XCTAssertEqual(off.callEnded(at: 601), [.refresh])
-
+    func testTheOpenConversationIsReadAgainEveryRefresh() {
         var start = started()
-        XCTAssertEqual(start.update(.init(flagOn: false, conversation: 7), at: 40), [.close(.held)], "the kill switch")
-        XCTAssertEqual(start.phase, .idle)
-        XCTAssertEqual(start.hold, .flagOff)
-    }
-
-    func testTheKillSwitchReachesAWarmConnectionWithinOneRefresh() {
-        var start = started()
-        let refreshes = run(&start, from: 1, to: 31).filter { $0.1 == .refresh }.map(\.0)
-        XCTAssertEqual(refreshes, [30], "read again every refreshEvery")
-        XCTAssertEqual(start.update(.init(flagOn: false, conversation: 7), at: 30.2), [.close(.held)])
+        let refreshes = run(&start, from: 1, to: 61).filter { $0.1 == .refresh }.map(\.0)
+        XCTAssertEqual(refreshes, [30, 60], "read again every refreshEvery")
     }
 
     func testNothingIsWarmedOnBatteryHeatLowDataModeOrNoNetwork() {
         let held: [(LiveWarmStart.Conditions, LiveWarmStart.Hold)] = [
-            (.init(flagOn: true, conversation: 7, lowPower: true), .lowPower),
-            (.init(flagOn: true, conversation: 7, hot: true), .thermal),
-            (.init(flagOn: true, conversation: 7, constrained: true), .constrained),
-            (.init(flagOn: true, conversation: 7, online: false), .offline),
-            (.init(flagOn: true, conversation: nil), .noConversation),
-            (.init(flagOn: true, conversation: 7, conversationReady: false), .conversationNotReady),
-            (.init(flagOn: true, callActive: true, conversation: 7), .callActive),
+            (.init(conversation: 7, lowPower: true), .lowPower),
+            (.init(conversation: 7, hot: true), .thermal),
+            (.init(conversation: 7, constrained: true), .constrained),
+            (.init(conversation: 7, online: false), .offline),
+            (.init(conversation: nil), .noConversation),
+            (.init(conversation: 7, conversationReady: false), .conversationNotReady),
+            (.init(callActive: true, conversation: 7), .callActive),
         ]
         for (conditions, hold) in held {
             var start = LiveWarmStart()
@@ -88,7 +72,7 @@ final class LiveWarmStartTests: XCTestCase {
 
     func testTheOpenConversationMovingWarmsTheNewOne() {
         var start = started()
-        XCTAssertEqual(start.update(.init(flagOn: true, conversation: 9), at: 30), [.close(.conversationMoved), .mint(conversation: 9)])
+        XCTAssertEqual(start.update(.init(conversation: 9), at: 30), [.close(.conversationMoved), .mint(conversation: 9)])
         XCTAssertEqual(start.conversation, 9)
         XCTAssertEqual(start.phase, .warming)
     }
@@ -228,8 +212,8 @@ final class LiveWarmStartTests: XCTestCase {
             actions += start.tick(at: now)
             switch Int.random(in: 0..<40, using: &generator) {
             case 0: actions += start.failed(at: now)
-            case 1: conversation += 1; actions += start.update(.init(flagOn: true, conversation: conversation), at: now)
-            case 2: actions += start.update(.init(flagOn: Bool.random(using: &generator), conversation: conversation, lowPower: Bool.random(using: &generator)), at: now)
+            case 1: conversation += 1; actions += start.update(.init(conversation: conversation), at: now)
+            case 2: actions += start.update(.init(conversation: conversation, lowPower: Bool.random(using: &generator), online: Bool.random(using: &generator)), at: now)
             case 3...9: if start.phase == .warming { start.ready(at: now) }
             default: start.heard(at: now)
             }
@@ -266,20 +250,19 @@ final class LiveWarmAPITests: XCTestCase {
         return (ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport), transport)
     }
 
-    func testTheIndexCarriesTheFlagAndAnOlderServerReadsAsOff() async throws {
-        @Sendable func conversation() -> [String: Any] { [
-            "id": 7, "mode": "text", "voice": false, "label": "Live Mode", "mode_label": "Typed", "status": "active", "title": "Live Mode",
+    func testTheIndexSaysWhetherTheOpenConversationCanBeMintedOnNow() async throws {
+        @Sendable func conversation(_ status: String) -> [String: Any] { [
+            "id": 7, "mode": "text", "voice": false, "label": "Live Mode", "mode_label": "Typed", "status": status, "title": "Live Mode",
             "agent_root": "live-mode", "model": "gpt-6-luna", "mcp_servers": ["zimmer"], "responding": false,
         ] }
         let (api, _) = client([
-            { _ in Fixtures.json(200, ["live_conversations": [conversation()], "current_id": 7, "prewarm": ["carplay": true]]) },
-            { _ in Fixtures.json(200, ["live_conversations": [conversation()], "current_id": 7]) },
+            { _ in Fixtures.json(200, ["live_conversations": [conversation("active")], "current_id": 7]) },
+            { _ in Fixtures.json(200, ["live_conversations": [conversation("preparing")], "current_id": 7]) },
         ])
-        let on = try await api.liveConversations()
-        XCTAssertTrue(on.carplayPrewarm)
-        XCTAssertTrue(on.currentIsReady, "active, so a secret can be minted on it")
-        let older = try await api.liveConversations()
-        XCTAssertFalse(older.carplayPrewarm)
+        let active = try await api.liveConversations()
+        XCTAssertTrue(active.currentIsReady, "active, so a secret can be minted on it")
+        let preparing = try await api.liveConversations()
+        XCTAssertFalse(preparing.currentIsReady, "still reading its instructions")
     }
 
     func testThePrewarmMintSaysSoAndAsksForItsOwnReplies() async throws {
@@ -309,22 +292,13 @@ final class LiveWarmAPITests: XCTestCase {
         XCTAssertEqual(plain["listening_modes"] as? String, "1")
     }
 
-    /// The fake keeps the server's rules: refused while the flag is off, and nothing on the
-    /// conversation changes when it is on — the mode included.
-    func testThePrewarmMintIsRefusedWhileOffAndChangesNothingWhenOn() async throws {
+    /// The fake keeps the server's rules: nothing on the conversation changes, the mode included,
+    /// and an ended conversation is refused.
+    func testThePrewarmMintChangesNothingOnTheConversation() async throws {
         let fake = FakeZimmerAPI()
         let overview = try await fake.liveConversations()
         let current = try XCTUnwrap(overview.current)
-        do {
-            _ = try await fake.livePrewarmSecret(current)
-            XCTFail("refused while off")
-        } catch let ZimmerError.http(status, _) {
-            XCTAssertEqual(status, 403)
-        }
-        await fake.setCarplayPrewarm(true)
         let before = try await fake.liveConversation(current, afterTurn: nil)
-        let flagged = try await fake.liveConversations()
-        XCTAssertTrue(flagged.carplayPrewarm)
         _ = try await fake.livePrewarmSecret(current)
         let after = try await fake.liveConversation(current, afterTurn: nil)
         XCTAssertEqual(after, before)

@@ -4,7 +4,7 @@
 # the web page shows, with the same rules (LiveConversations::Actions).
 #
 #   GET  /api/v1/live                              available? why not? each mode's model
-#   GET  /api/v1/live_conversations                recent conversations, the current one, and whether the car pre-warms
+#   GET  /api/v1/live_conversations                recent conversations, and the current one
 #   POST /api/v1/live_conversations                start one (mode=text|voice, default text); ends the open one
 #   GET  /api/v1/live_conversations/:id            one conversation with its turns (?after_turn_id= for new ones)
 #   GET  /api/v1/live_conversations/:id/sessions   the sessions its tool calls have touched, newest first, with board rows
@@ -41,15 +41,13 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
   # `current` is keyed by the mode the open conversation is in right now, so a
   # client reading it per mode finds it under one of them; `current_id` is the
-  # same conversation without the key. `prewarm` is what the CarPlay app reads
-  # on every refresh of a warm connection, so the flag stops one within a refresh.
+  # same conversation without the key.
   def index
     current = LiveConversation.current
     render json: {
       live_conversations: LiveConversation.recent_first.limit(INDEX_LIMIT).map(&:as_api_json),
       current_id: current&.id,
-      current: current ? { current.mode => current.id } : {},
-      prewarm: { carplay: LiveSetting.current.carplay_prewarm? }
+      current: current ? { current.mode => current.id } : {}
     }
   end
 

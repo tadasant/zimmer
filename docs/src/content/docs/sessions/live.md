@@ -360,7 +360,6 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Noise reduction | voice | off | `near_field`, `far_field` | mid-call |
 | Transcription model | voice | `gpt-4o-mini-transcribe` | that, `gpt-4o-transcribe` | mid-call |
 | Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
-| CarPlay pre-warm (iOS app) | voice | `off` | `off`, `on` ([CarPlay pre-warm](#carplay-pre-warm)) | the car's next refresh: within 30 s to turn it off, the next car connection or call to turn it on |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
 tools, and OpenAI accepts those from the GPT-6 family only from `gpt-6-luna` and `gpt-6-sol`, only
@@ -503,11 +502,9 @@ fresh `session.update`.
 
 ### CarPlay pre-warm
 
-With the Live setting **CarPlay pre-warm** on, the car keeps one Realtime connection ready while
-it is connected and no call is up. **Continue** then starts on it, which skips the client
+The car keeps one Realtime connection ready while it is connected and no call is up. **Continue** then starts on it, which skips the client
 secret, the TLS and WebSocket handshakes and OpenAI's session setup. Those are most of the two to
-three seconds a cold call takes before the *connected* notes. The design, its numbers and
-the rollout are in
+three seconds a cold call takes before the *connected* notes. The design and its numbers are in
 [`ios/CARPLAY_PREWARM_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_PREWARM_DESIGN.md).
 
 - **Nothing goes up a warm connection before the tap.** The app opens the socket and pings it,
@@ -526,9 +523,9 @@ the rollout are in
   back from the gear, which must be minted from the row the panel wrote. A warm start whose
   voice-on or `session.update` fails falls back to a cold mint on the same microphone, with no
   second tap.
-- **Off is the kill switch.** A car with it on reads the flag every 30 s and closes its warm
-  connection when it reads off. Zimmer also refuses a prewarm mint while the flag is off. A car
-  with it off reads the flag only when it connects and after each call.
+- **There is no switch to turn it off.** It is always on in the car. What stops it is one of the
+  holds above, a call being up, or the per-drive budget. Turning it off means reverting the
+  change and shipping a new app build.
 
 Every call logs `call.startup` with `path` (`warm`, `cold` or `fallback`) and `tap_to_ready_ms`,
 from the tap to the *connected* notes. It also logs `call.first_audio` with `since_tap_ms`. The

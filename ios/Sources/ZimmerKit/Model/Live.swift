@@ -237,14 +237,9 @@ public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
     /// The one open conversation, typed or spoken.
     public let current: Int?
-    /// The Live setting `voice_carplay_prewarm`: whether the car keeps a warm connection
-    /// (`LiveWarmStart`). Read on every refresh, so turning it off stops one within a refresh.
-    public let carplayPrewarm: Bool
-
-    public init(conversations: [LiveConversation], current: Int?, carplayPrewarm: Bool = false) {
+    public init(conversations: [LiveConversation], current: Int?) {
         self.conversations = conversations
         self.current = current
-        self.carplayPrewarm = carplayPrewarm
     }
 
     /// The open conversation is active, not still reading its instructions: a secret can be
