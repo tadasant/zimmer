@@ -14,13 +14,16 @@ module Sessions
   #
   # Position assignment is serialized per session. The read of
   # `maximum(:position)` and the insert run in one transaction under a row lock
-  # on the session (`SELECT … FOR UPDATE`, taken without reloading the caller's
-  # instance), so two follow-ups queued at once land at N+1 and N+2 instead of
-  # both reading N and the second dying on the deferred
-  # `(session_id, position)` unique constraint at COMMIT. The lock only orders
-  # callers of this service: the other writers of the queue still compute their
-  # own `maximum + 1`, and a collision with one of them still surfaces as
-  # `ActiveRecord::RecordNotUnique`, which the caller handles as it always has.
+  # on the session (`SELECT … FOR NO KEY UPDATE`, taken without reloading the
+  # caller's instance), so two follow-ups queued at once land at N+1 and N+2
+  # instead of both reading N and the second dying on the deferred
+  # `(session_id, position)` unique constraint at COMMIT. `NO KEY` because the
+  # lock only has to exclude other callers of this service: it leaves alone the
+  # `KEY SHARE` lock every insert of a child row (a log, a transcript line) takes
+  # on the session through its foreign key. The lock only orders callers of this
+  # service. The other writers of the queue compute their own `maximum + 1`, and
+  # a collision with one of them surfaces as `ActiveRecord::RecordNotUnique`:
+  # REST answers 409, while the web route and MCP let it raise.
   #
   # Scope: one EnqueuedMessage and one Log row, committed together. It does not
   # decide whether a turn is underway (the caller asked `LiveTurn` first), does
@@ -57,7 +60,7 @@ module Sessions
 
     def call
       session.transaction do
-        Session.where(id: session.id).lock.pick(:id)
+        Session.where(id: session.id).lock("FOR NO KEY UPDATE").pick(:id)
         position = (session.enqueued_messages.maximum(:position) || 0) + 1
 
         enqueued_message = session.enqueued_messages.create!(

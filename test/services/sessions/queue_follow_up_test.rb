@@ -91,12 +91,14 @@ class Sessions::QueueFollowUpTest < ActiveSupport::TestCase
       statements << payload[:sql]
     end
 
-    queue(session)
-
-    ActiveSupport::Notifications.unsubscribe(subscriber)
-    lock_index = statements.index { |sql| sql.include?('FROM "sessions"') && sql.include?("FOR UPDATE") }
+    begin
+      queue(session)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber)
+    end
+    lock_index = statements.index { |sql| sql.include?('FROM "sessions"') && sql.include?("FOR NO KEY UPDATE") }
     max_index = statements.index { |sql| sql.include?("MAX(") && sql.include?("enqueued_messages") }
-    assert lock_index, "expected a SELECT ... FOR UPDATE on the session"
+    assert lock_index, "expected a SELECT ... FOR NO KEY UPDATE on the session"
     assert max_index, "expected the MAX(position) read"
     assert_operator lock_index, :<, max_index, "the lock must be taken before the tail is read"
   end
@@ -117,6 +119,15 @@ class Sessions::QueueFollowUpTest < ActiveSupport::TestCase
       assert_raises(ActiveRecord::RecordInvalid) do
         queue(session, prompt: "x" * (Session::PROMPT_MAX_LENGTH + 1))
       end
+    end
+  end
+
+  test "a log row that fails to write takes the queued message back with it" do
+    session = make_session
+    Log.any_instance.stubs(:save!).raises(ActiveRecord::RecordInvalid.new(Log.new))
+
+    assert_no_difference "EnqueuedMessage.count" do
+      assert_raises(ActiveRecord::RecordInvalid) { queue(session) }
     end
   end
 end
