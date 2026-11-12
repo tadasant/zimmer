@@ -524,8 +524,9 @@ three seconds a cold call takes before the *connected* notes. The design and its
   voice-on or `session.update` fails falls back to a cold mint on the same microphone, with no
   second tap.
 - **There is no switch to turn it off.** It is always on in the car. What stops it is one of the
-  holds above, a call being up, or the per-drive budget. Turning it off means reverting the
-  change and shipping a new app build.
+  holds above, a call being up, or the per-drive budget. Turning it off takes a code change. A
+  server deploy that refuses prewarm mints stops the warm connections, and the car falls back to
+  the cold path. A new app build stops the keeper entirely.
 
 Every call logs `call.startup` with `path` (`warm`, `cold` or `fallback`) and `tap_to_ready_ms`,
 from the tap to the *connected* notes. It also logs `call.first_audio` with `since_tap_ms`. The

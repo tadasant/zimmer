@@ -80,11 +80,14 @@ final class LiveWarmKeeper {
 
     // MARK: - The tap
 
-    /// The open conversation, as read within the last `refreshEvery`: Continue
-    /// calls it without asking Zimmer again. Nil sends the tap the old way.
+    /// The conversation a warm connection is held for, when the last read (within `refreshEvery`)
+    /// still says it is the open one: Continue calls it without asking Zimmer again. Nil — no warm
+    /// connection, or a read that says otherwise — sends the tap the old way, lookup and all, so
+    /// the cold path is exactly what it was.
     func freshCurrent() -> Int? {
-        guard connected, let overview, Self.now - overview.at < LiveWarmStart.refreshEvery else { return nil }
-        return overview.value.current
+        guard connected, start.phase == .warm, let warm = start.conversation, let overview,
+              Self.now - overview.at < LiveWarmStart.refreshEvery, overview.value.current == warm else { return nil }
+        return warm
     }
 
     /// The driver tapped, and the call is starting on `conversation`: the warm connection, if
@@ -220,6 +223,8 @@ final class LiveWarmKeeper {
         LiveCall.shared.$state.map { $0 != .idle }.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] active in
             MainActor.assumeIsolated {
                 guard let self, self.connected else { return }
+                // Any call, warm or not, can change what is open (New ends it): read again after.
+                if active { self.overview = nil }
                 self.perform(active ? self.start.callStarted(at: Self.now) : self.start.callEnded(at: Self.now))
             }
         }.store(in: &watchers)

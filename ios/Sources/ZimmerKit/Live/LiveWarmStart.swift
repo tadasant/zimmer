@@ -2,8 +2,8 @@ import Foundation
 
 /// CarPlay pre-warm: while the car is connected and no call is up, keep one Realtime connection
 /// ready for Continue, so the tap skips the secret, the TLS and WebSocket handshakes and OpenAI's
-/// session setup. The design, the numbers behind every constant here and the rollout are
-/// `ios/CARPLAY_PREWARM_DESIGN.md`.
+/// session setup. The design, the numbers behind every constant here and the missing off switch
+/// are `ios/CARPLAY_PREWARM_DESIGN.md`.
 ///
 /// Pure, so it is tested on Linux: the app (`LiveWarmLink`, `LiveWarmKeeper`) tells it what
 /// happened, and it answers what to do. **What it can ask for is the whole of what a warm

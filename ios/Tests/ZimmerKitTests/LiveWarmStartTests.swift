@@ -302,6 +302,13 @@ final class LiveWarmAPITests: XCTestCase {
         _ = try await fake.livePrewarmSecret(current)
         let after = try await fake.liveConversation(current, afterTurn: nil)
         XCTAssertEqual(after, before)
+        _ = try await fake.finishLiveConversation(current)
+        do {
+            _ = try await fake.livePrewarmSecret(current)
+            XCTFail("an ended conversation is refused")
+        } catch let ZimmerError.http(status, _) {
+            XCTAssertEqual(status, 409)
+        }
         let mints = await fake.prewarmMints
         XCTAssertEqual(mints, 1)
     }
