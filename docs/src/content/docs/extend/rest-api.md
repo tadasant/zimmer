@@ -880,7 +880,10 @@ per card:
 - `human_messages` — the messages Zimmer knows a named human authored anywhere in that tree, each
   with `origin` (`here` — a human spoke to this session — or `elsewhere` — a human spoke to another
   session in the hierarchy), `author`, `author_display_name`, `channel`, `channel_label`,
-  `authored_in_session_id`, `authored_in`, `entry_point`, `content` and `occurred_at`.
+  `authored_in_session_id`, `authored_in`, `entry_point`, `content`, `relayed_message` and
+  `occurred_at`. `channel` is `web_ui`, `slack`, `assistant` or `live_mode`. `relayed_message` is
+  null except on `live_mode`, where `content` is what the person said in Live Mode and
+  `relayed_message` is what the Live Mode assistant delivered into the session.
 - `human_message_capture_gaps` — the input channels this hierarchy came in through that capture
   cannot write for, each with `channel`, `channel_label`, `genesis`, `session_ids`, `reason` and
   `remedy`. Normally empty.

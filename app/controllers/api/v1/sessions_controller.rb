@@ -613,18 +613,12 @@ class Api::V1::SessionsController < Api::BaseController
     # handed over but still queued for a worker reads `waiting`, and delivering into
     # that would start a second turn against one clone.
     if Sessions::LiveTurn.underway?(@session)
-      max_position = @session.enqueued_messages.maximum(:position) || 0
-      enqueued_message = @session.enqueued_messages.create!(
-        content: prompt,
+      enqueued_message = Sessions::QueueFollowUp.call(
+        session: @session,
+        prompt: prompt,
         goal: goal,
-        position: max_position + 1,
-        status: "pending",
         source_context: api_turn_source.to_h,
         **attachments_for_the_record(attachments)
-      )
-      @session.logs.create!(
-        content: "Message queued at position #{enqueued_message.position} (a turn is already underway)",
-        level: "info"
       )
       log_follow_up_attachments(attachments)
       record_uncle_edge(@session, "api_v1:sessions.follow_up")

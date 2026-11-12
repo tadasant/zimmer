@@ -301,6 +301,14 @@ The fixture runs the gear's closure 25 seconds after the call screen goes up, on
 
 CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by committing the audio buffer and asking for the reply. Its rules are unit-tested (`LiveSendNowTests`), and the CarPlay drill shows its button and runs its handler, but no call in CI connects, so it has never run against OpenAI or in a car. OpenAI documents a commit under server turn detection as allowed. What turn detection does with the rest of the same speech after one is not documented: if it ends that speech again, a short second line can follow the first. `turn.send_now_followup` in the call log says which happens. CarPlay labels its action buttons for VoiceOver by their symbol alone, ignoring any label Zimmer sets, so Send now reads as whatever words iOS gives a paper plane symbol, which the CarPlay drill records.
 
+### The web call dock's cues are an older set than the phone's
+
+The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 20 ms attack, no note above A5, and near speech level. The browser's call dock (`lib/live_cues.js`) still plays the earlier set: quieter, with a 5 ms attack, and with connected and disconnected reaching B5. The events and rules are the same, and `LiveVoiceCuesTest` holds the web's levels under its own ceiling, but nothing makes the two sets sound alike.
+
+### The Live cues have not been heard in a car
+
+The cues are tested as samples: level, pitch, attack, brightness and length (`LiveDiagnosticsTests`). What a driver hears also passes through the voice-processing engine, the CarPlay route and the car's own processing, and none of that runs in CI. Whether each cue carries over road noise without sounding harsh is checked by ear on a drive, with the checklist in `ios/LIVE_CUES.md`.
+
 ### A sheet presented from inside a `List` row can reset itself
 
 A `.sheet` attached to a view inside a `List` row can get a new identity in place when the model publishes. The sheet stays up, but its scroll position, open menus and `@State` are gone. It happened to the board's Filters sheet, which is now presented from the view that owns the `List` ([#1458](https://github.com/tadasant/zimmer/issues/1458)). Why it happens is not known, and neither is why only some launches do it. Moving the sheet stopped it in every test. Attach sheets to the view that owns the `List`, not to a row.
@@ -4880,6 +4888,25 @@ the call up — asks for a `session.update`, which records the new client and br
 to instructions that name it. A call still connecting asks once its socket is open. If that request
 fails, the next relayed tool call records the client for delegations, but the open call keeps the
 instructions it had until the next one. None of this has run in a car yet (below).
+
+### A Live Mode human message can show the person's previous line
+
+A [`live_mode` human message](/sessions/hierarchy-and-human-messages/#the-live-mode-channel) records
+the person's newest line in the Live conversation when the assistant delivers something into a
+session. On a voice call where the model answers by itself (Listening off), it can call a tool
+before the person's line has been transcribed. The record then shows the line before it, as long as
+that one is under five minutes old. What the assistant actually delivered is always shown beside it,
+so a reader can see the mismatch.
+
+The record also trusts the Live Mode model to pick the session. Text an agent typed into the
+conversation, or agent-written guidance, disqualifies capture. Output the model reads mid-reply does
+not: a session's own `get_session` text read back to it can make it send a message to a session the
+person never mentioned, with the person's latest words recorded beside it. Likewise an agent with the
+`live_conversations` tools can switch back to a conversation, or turn its voice off, and so get a
+person's unanswered line (under five minutes old) answered again without writing anything. This is the same trust as the
+[assistant channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel). A conversation
+driven by `action_live_conversation` from an OAuth connection that acts on its approver's behalf
+records nothing either: only the web page and the iOS app stamp an author on a Live turn.
 
 ### An API key is `api`, even when an agent holds it
 
