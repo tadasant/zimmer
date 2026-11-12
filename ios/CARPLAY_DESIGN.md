@@ -207,33 +207,35 @@ table):
 
 | Cue | Sound | Peak | Plays |
 | --- | --- | --- | --- |
-| pressed | G5, G5, quick and level | −10.6 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
-| connected | E5, A5, rising | −8.8 dBFS | Once, when the call is up |
-| heard | E5, short | −9.5 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
-| thinking | an A5 (880 Hz) tap, 75 ms, once a second | −9.9 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
-| working | E5, G5, a pair, every 2.5 s | −9.9 dBFS | While a tool runs, for as long as it runs |
-| failed | F4, D4, low and falling, with a strong octave | −8.6 dBFS | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
-| ended | E4, one low note with its octave | −10.2 dBFS | The driver hung up |
-| disconnected | A5, E5, falling | −8.6 dBFS | The call dropped |
+| pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
+| connected | D5, G5, rising | −9.3 dBFS | Once, when the call is up |
+| heard | D5, short | −9.7 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
+| thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | −9.3 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
+| working | A4, C5, a pair of pulses, every 2.5 s | −9.2 dBFS | While a tool runs, for as long as it runs |
+| failed | F4, D4, low and falling, with a strong octave | −8.8 dBFS | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
+| ended | E4, one low note with its octave | −10.9 dBFS | The driver hung up |
+| disconnected | G5, D5, falling | −9.0 dBFS | The call dropped |
 
 **The cues are heard over a car.** Tadas, on the road: the thinking and working sounds were "too
 subtle". They were made quiet on purpose, the tick at a peak of 0.07, and a quiet tone under 500 Hz
 is exactly what road and engine noise covers. So the cues sit near the level of the reply's speech
-(RMS between −21 and −17 dBFS, none near full scale), and everything that says *on*, *heard* or
-*busy* is above 600 Hz, where a car's noise is weakest. Failed and ended stay low, because low is
+(RMS between −21 and −16 dBFS, none near full scale), and everything that says *on*, *heard* or
+*busy* is above 430 Hz, clear of the low band where a car's noise is loudest. Failed and ended stay low, because low is
 *not good*, and carry a strong octave so their energy reaches the 600–700 Hz band. A test
 (`LiveDiagnosticsTests`) holds every cue between 0.25 and 0.5 peak.
 
 **And they are easy on the ears.** Loud and bright together wore on a long drive: Tadas asked for
 the cues to be "softer and less shrill". Softness here is shape and timbre, not level, so the
-loudness #1485 bought stays. Every note has a rounded 20 ms attack and a 25 ms release instead of a
-5 ms snap, no note is above A5 (the tick was C6, the connected notes reached B5), every cue keeps
-its energy above 1.5 kHz under −18 dB of its total, and the low notes lost the twelfth that made them buzz.
-`testTheCuesAreSoftEdgedAndNotShrill` holds all of it. The numbers, before and after, and how to
+loudness #1485 bought stays, each cue within 1 dB (`testSofterCuesKeepTheirLoudness`). Every note
+has a rounded 30 ms attack and release instead of a 5 ms snap, no note is above G5 (the tick was
+C6, then A5), every cue keeps its energy above 1.5 kHz under −23 dB of its total, and the low notes
+lost the twelfth that made them buzz. The thinking and working loops, heard most, are pure sine
+pulses at A4–C5, and thinking comes every 1.2 s rather than every second.
+`testTheCuesAreSoftEdgedAndNotShrill` and `testTheLoopsAreMellowPulses` hold all of it. The numbers, before and after, and how to
 change a cue and test it in a car, are in [LIVE_CUES.md](LIVE_CUES.md).
 
 Rising is *on*, falling is *off*, level is *on its way*, and working shares neither pitch, length
-nor pace with the tap. Success has no cue, because the answer follows and a chime on every tool
+nor pace with the thinking pulse. Success has no cue, because the answer follows and a chime on every tool
 would wear on a long drive; so nothing can pass for it. The cues that repeat are mostly silence:
 under a tenth of each period. Every cue stops the instant the driver talks or the reply's audio
 starts, and a cue due during the tail of a reply waits it out. The cues play through the call's
