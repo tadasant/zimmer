@@ -158,6 +158,31 @@ class ApiErrorRetryService
     /tool call was malformed/i
   ].freeze
 
+  # An edge or WAF block in front of the Anthropic API: Cloudflare answering the
+  # request with its own HTML page instead of the API answering it.
+  #
+  # Claude Code prefixes ANY 403 with "Failed to authenticate", so the entry reads
+  # like an OAuth rejection when nothing about the credential was judged at all.
+  #
+  # Known message format from production (sessions 27596 and 27839, 2026-11-13,
+  # tadasant/zimmer#1502):
+  #   "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"
+  #
+  # Routed to auth recovery, that line re-injected, rotated, found no other
+  # account, and parked both sessions `auth_unrecoverable` on an account that kept
+  # serving every other session. It is transient — the block clears on its own,
+  # and the credential is fine — so it belongs on this service's backoff ladder,
+  # and AuthRecoveryService.auth_error? refuses it whatever its type or prose.
+  #
+  # Three shapes: Cloudflare's challenge title, Cloudflare named anywhere (the
+  # Anthropic API never names its CDN in an error it means), and an HTML document
+  # under a 403 — an API that answers in HTML is not the API answering.
+  EDGE_BLOCK_PATTERNS = [
+    /attention required/i,
+    /\bcloudflare\b/i,
+    /\b403\b[\s\S]{0,500}<(?:!doctype\s+html|html)\b/i
+  ].freeze
+
   # Anthropic's safeguards refusing the request a turn made.
   #
   # A 400 +invalid_request+ on that exact request, which the CLI records as a
@@ -272,6 +297,16 @@ class ApiErrorRetryService
     SAFEGUARDS_FLAGGED_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
   end
 
+  # Whether some error text is an edge/WAF block page rather than the API (see
+  # EDGE_BLOCK_PATTERNS). A class method because AuthRecoveryService asks it
+  # before it claims a "Failed to authenticate" entry as an auth failure.
+  #
+  # @param message_text [String] the message text from a transcript entry
+  # @return [Boolean] true if the error is an edge block
+  def self.edge_block?(message_text)
+    EDGE_BLOCK_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
+  end
+
   # Whether a transcript's API-error entry is the provider being unavailable: a server error or a
   # transient rate limit. Not an account quota wall (hours, not minutes), not a malformed tool call
   # (the model was reached), not a safeguards rejection (the request, not the API). SlackOutageMarker
@@ -285,6 +320,7 @@ class ApiErrorRetryService
     message_text = message_text.to_s
     return false if message_text.match?(ACCOUNT_QUOTA_LIMIT_PATTERN)
     return false if malformed_tool_call?(message_text) || safeguards_flagged?(message_text)
+    return true if edge_block?(message_text)
     return true if RETRYABLE_ERROR_TYPES.include?(error_type)
 
     (API_SERVER_ERROR_PATTERNS + RATE_LIMIT_ERROR_PATTERNS).any? do |pattern|
@@ -303,6 +339,7 @@ class ApiErrorRetryService
     @detected_rate_limit = false
     @detected_quota_limit = false
     @detected_malformed_tool_call = false
+    @detected_edge_block = false
   end
 
   # Attempt to retry the session after a retryable API error (server error or rate limit)
@@ -409,6 +446,10 @@ class ApiErrorRetryService
             is_rate_limit: is_rate_limit,
             is_quota_limit: is_quota_limit,
             is_malformed_tool_call: self.class.malformed_tool_call?(message_text),
+            # A Cloudflare 5xx page is the origin failing, not a block; it keeps
+            # the server-error category and its warning.
+            is_edge_block: self.class.edge_block?(message_text) &&
+              API_SERVER_ERROR_PATTERNS.none? { |pattern| message_text.match?(pattern) },
             message_text: message_text
           }
         end
@@ -424,6 +465,8 @@ class ApiErrorRetryService
         "rate_limit"
       elsif last_match[:is_malformed_tool_call]
         "malformed_tool_call"
+      elsif last_match[:is_edge_block]
+        "edge_block"
       else
         "server_error"
       end
@@ -433,6 +476,7 @@ class ApiErrorRetryService
       @detected_rate_limit = last_match[:is_rate_limit] && !last_match[:is_quota_limit]
       @detected_quota_limit = last_match[:is_quota_limit]
       @detected_malformed_tool_call = last_match[:is_malformed_tool_call] && !last_match[:is_quota_limit]
+      @detected_edge_block = last_match[:is_edge_block] && !last_match[:is_quota_limit]
       @detected_quota_message = last_match[:message_text] if last_match[:is_quota_limit]
       return true
     end
@@ -754,6 +798,8 @@ class ApiErrorRetryService
       "Rate limit"
     elsif @detected_malformed_tool_call
       "Malformed tool call"
+    elsif @detected_edge_block
+      "Edge block (Cloudflare)"
     else
       "API server error"
     end
@@ -767,10 +813,13 @@ class ApiErrorRetryService
       )
     end
 
+    # An edge block is expected to clear on its own and says nothing about the
+    # session, so its intermediate attempts log at info; running out of retries
+    # is what warns (the "retry limit reached" line above).
     add_log(
       "#{error_category} detected - attempting auto-retry #{retry_attempt}/#{BUDGET.max}" \
         " after #{retry_delay}s delay",
-      level: "warning"
+      level: @detected_edge_block ? "info" : "warning"
     )
     log_buffer.flush
 
@@ -807,6 +856,10 @@ class ApiErrorRetryService
     # Check rate limit patterns in message or error type
     return true if RATE_LIMIT_ERROR_PATTERNS.any? { |pattern| message_text.match?(pattern) }
     return true if RATE_LIMIT_ERROR_PATTERNS.any? { |pattern| error_type.match?(pattern) }
+
+    # An edge/WAF block page — whatever the runtime typed the entry as, since it
+    # is the page, not the type, that says the API never saw the request.
+    return true if self.class.edge_block?(message_text)
 
     # The CLI's own untyped report of a tool call it could not parse. Prose only,
     # because the entry it is written on carries no error type at all.

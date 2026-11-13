@@ -190,6 +190,13 @@ class AuthRecoveryService
   # @param error_type [String, nil] the entry's `error` field
   # @param message_text [String, nil] the entry's rendered text content
   def self.auth_error?(error_type, message_text)
+    # An edge/WAF block page outranks everything below, the structured type
+    # included. Claude Code writes "Failed to authenticate" in front of any 403,
+    # and a Cloudflare challenge is a 403 the API never saw: no credential was
+    # judged, so rotating away from one spends an account on nothing and, with no
+    # account to rotate into, parks a session on a pool that is serving
+    # (tadasant/zimmer#1502). ApiErrorRetryService retries it with backoff.
+    return false if ApiErrorRetryService.edge_block?(message_text)
     return true if AUTH_ERROR_TYPES.include?(error_type.to_s.strip.downcase)
 
     # The structured type wins both ways. An entry the API typed as retryable is

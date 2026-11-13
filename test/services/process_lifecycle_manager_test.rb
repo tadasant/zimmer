@@ -3360,6 +3360,36 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       "waking is the quota_available fleet event's job now, not a per-session timer"
   end
 
+  # tadasant/zimmer#1502, end to end. The production shape: a Cloudflare 403 the
+  # runtime prefixed with "Failed to authenticate", on a pool with no other
+  # account to rotate into. It goes to the API-error backoff ladder and resumes;
+  # it never runs auth recovery or parks `auth_unrecoverable`.
+  test "handle_exit retries a Cloudflare 403 instead of running auth recovery and parking" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+
+    setup_transcript_with_auth_error("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare")
+    stub_auth_provider_returning(nil)
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 54321, stderr_log_path: "/tmp/stderr2.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :continue, decision.action
+    assert_equal 1, @mock_cli_adapter.resumed_sessions.length
+    @session.reload
+    assert_nil @session.metadata["auth_outage_reason"], "an edge block must never park the session"
+    assert_equal 1, @session.metadata["api_error_retry_count"]
+    assert_nil @session.metadata["auth_recovery_count"]
+
+    @log_buffer.flush
+    assert_match(/Edge block \(Cloudflare\) detected - attempting auto-retry 1\//,
+      @session.logs.pluck(:content).join("\n"))
+  end
+
   test "handle_exit parks the session for retry when auth recovery is exhausted" do
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 

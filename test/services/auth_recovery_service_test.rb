@@ -282,6 +282,42 @@ class AuthRecoveryServiceTest < ActiveSupport::TestCase
     assert service.auth_error_detected?("/tmp/test-clone")
   end
 
+  # tadasant/zimmer#1502: Claude Code prefixes any 403 with "Failed to
+  # authenticate", including Cloudflare's block page in front of the API. No
+  # credential was judged, so it must not rotate or park — ApiErrorRetryService
+  # retries it. Typed or untyped, the page decides.
+  test "does not detect a Cloudflare 403 edge block as an auth error" do
+    [ "", "authentication_failed" ].each do |error_type|
+      setup_transcript_directory
+      @mock_file_system.write(@transcript_file, <<~JSONL)
+        {"type": "user", "message": {"content": [{"type": "text", "text": "Hello"}]}}
+        #{api_error_json("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare", error_type: error_type)}
+      JSONL
+
+      assert_not create_service.auth_error_detected?("/tmp/test-clone"),
+        "a Cloudflare 403 typed #{error_type.inspect} must not route to auth recovery"
+    end
+    assert_not AuthRecoveryService.auth_error?("", "API Error: 403 <!DOCTYPE html><html><title>Access denied</title>")
+  end
+
+  test "attempt_recovery leaves a Cloudflare 403 alone and never consults the coordinator" do
+    setup_transcript_with_auth_error("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare")
+    coordinator = FakeCoordinator.new(plan(:unusable, email: nil))
+
+    assert_equal :not_applicable, create_service(coordinator: coordinator).attempt_recovery("/tmp/test-clone")
+    assert_empty coordinator.calls, "no rotation, no park"
+  end
+
+  # The real OAuth failures keep their path: the Cloudflare carve-out is the
+  # page, not the "Failed to authenticate" prefix or the 403.
+  test "real OAuth failures are still auth errors alongside the Cloudflare carve-out" do
+    assert AuthRecoveryService.auth_error?("authentication_failed",
+      "Failed to authenticate: OAuth session expired and could not be refreshed")
+    assert AuthRecoveryService.auth_error?("", "Not logged in · Please run /login")
+    assert AuthRecoveryService.auth_error?("", "Failed to authenticate. API Error: 401 OAuth token has expired")
+    assert AuthRecoveryService.auth_error?("oauth_org_not_allowed", "anything")
+  end
+
   test "skips already-checked lines using auth_error_last_checked_line" do
     setup_transcript_with_auth_error
 
