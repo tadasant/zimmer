@@ -1,0 +1,13 @@
+<%# How an mcp_event condition's events arrive — TriggerCondition#mcp_event_delivery, the same
+    fact GET /api/v1/triggers/:id and search_triggers report. Polling runs in every state; the
+    chip says whether a webhook subscription carries the events as well. %>
+<% delivery = condition.mcp_event_delivery %>
+<% css = { "verified" => "bg-green-100 text-green-800", "subscribed" => "bg-blue-100 text-blue-800",
+           "suspended" => "bg-amber-100 text-amber-800" }.fetch(delivery["state"], "bg-gray-100 text-gray-700") %>
+<% tip = delivery.except("state").map { |key, value| "#{key.humanize}: #{value}" }.join("\n").presence || "Events arrive by polling alone" %>
+<span class="inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium <%= css %>" title="<%= tip %>" data-testid="mcp-event-delivery">
+  push: <%= delivery["state"] %>
+</span>
+<% if delivery["last_error"].present? %>
+  <span class="basis-full min-w-0 break-words text-xs text-amber-700"><%= delivery["last_error"] %></span>
+<% end %>

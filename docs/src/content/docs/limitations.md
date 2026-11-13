@@ -247,8 +247,9 @@ for a system alert in the way. On a loaded CI simulator that one call has hung f
 with the row on screen
 ([run 41371175993](https://github.com/tadasant/zimmer/actions/runs/41371175993), session-page shard).
 `pressForMenu` in `ios/App/ZimmerUITests/RowLongPress.swift` records the first such timeout in a
-call as an expected failure and presses again. A second timeout in the same call, or any other
-error, still fails the test. Only that helper does this. Every other XCUITest action runs the same
+call as an expected failure and presses again, and so does `pressForMenuInPlace` beside it. A
+second timeout in the same call, or any other error, still fails the test. Only those two helpers
+do this. Every other XCUITest action runs the same
 check unprotected, so the same hang anywhere else in the suite still fails its test, and a failure
 reading "Failed to get list of active applications" means a re-run, not a code change.
 
@@ -264,6 +265,19 @@ a trigger's row and an inbox notification. It helps only if the tap never reache
 if the action ran and the page still did not open, a second tap changes nothing and the test fails.
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
+
+### A link's long press in the iOS UI tests presses again if no menu comes
+
+A long press XCUITest reports as delivered can bring nothing. On
+[run 43330313836](https://github.com/tadasant/zimmer/actions/runs/43330313836) (session-page shard),
+the status summary's paragraph was on screen with the app idle, the 1.5-second press was
+synthesised on it, and the run's recording shows no change at all from the press to the end of the
+20-second wait: no lift, no menu. The test took 82 seconds against 29 on a green run, so the runner
+was loaded. Why the press was lost is not known. `pressForMenuInPlace` in
+`ios/App/ZimmerUITests/RowLongPress.swift` presses again after 5 seconds, three presses at most, and
+the link-menu tests in `TranscriptParityUITests` and `InAppLinksUITests` use it. Other long presses that open a menu in
+place still have one try, so the same loss there still fails its test, and a menu that never came
+behind a press that succeeded means a re-run first.
 
 ### Dragging the iOS trigger form back up can stall
 
@@ -293,9 +307,14 @@ The failed run did stand out in one way. XCTest's steps stalled for 14.5 seconds
 
 So the cause is not known, and the drill has no retry, because the fault could be the app's. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
 
-### A long stall can make the CarPlay drill miss the gear
+### CarPlay's host can stop answering in the drill
 
-The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, and before it the drill has to see the gear and Send now's state, which the fixture shows at 4 seconds and holds. Reaching the gear takes 3 to 5 seconds on a normal run, and Send now's check about 8 more, so a stall of about 12 seconds at those steps fails the drill with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+On GitHub's macOS runners, CarPlay's host process (`CarPlayTemplateUIHost`) sometimes stops answering, both the app and XCUITest, for half a minute or more. Nothing in Zimmer has been found that causes it, and nothing was measured on a real device. The drill is built to wait one out rather than fail on it:
+
+- **Right after the car is plugged back in**, the drill asks only the car's dashboard for the home button and Zimmer's icon, and asks the host nothing until the icon is tapped. Twice a look at the host there ([run 43321204934](https://github.com/tadasant/zimmer/actions/runs/43321204934), [run 43355109091](https://github.com/tadasant/zimmer/actions/runs/43355109091)) hung XCUITest's query for 90 seconds and failed the drill with `Failed to get matching snapshots`. That look never found anything: in all 12 green drills sampled, the scene came back only from the icon. Whether the host still stalls when it is left alone in those seconds is not known. If it does, the next step's query fails the same way.
+- **The gear's panel.** The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, so the drill's wait for the panel runs to 45 seconds past that press. In [run 43346062519](https://github.com/tadasant/zimmer/actions/runs/43346062519) the closure ran on time, the host answered nothing for 30 seconds, and the panel came up 33 seconds after the press, about 26 seconds after a 20-second wait would have run out.
+
+The other steps wait 20 seconds or less, apart from the retries' 30 and 90. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
 
@@ -5427,17 +5446,34 @@ the raw headers. Two things follow:
 - A message the mailbox server will not return five ticks running (a body past the MCP client's
   2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
 
-### MCP event triggers follow an unmerged draft, poll only
+### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 
 [`mcp_event` triggers](/sessions/triggers/#mcp_event) implement the poll mode of the MCP Events
 extension, SEP-3415, which is still an open draft. Its wire format can change without a release, so
 what is built, and against which revision, is recorded on the
 [spec pin](/sessions/mcp-events-spec-pin/) page. What this costs:
 
-- **Poll only.** There is no push (`events/stream`), because that needs a long-running listener
-  Zimmer does not run. There is no webhook either, because Zimmer has no public way in. An event
-  fires about a minute after the server has it, and later if the server asks for a longer
-  `nextPollMs`.
+- **No push.** There is no `events/stream`, because that needs a long-running listener Zimmer does
+  not run. Webhook delivery is built (see [Webhook delivery](/sessions/triggers/#webhook-delivery)),
+  but every production path is behind Cloudflare Access. It works only once
+  `/webhooks/mcp_events/*` has an Access application with a service-token policy (managed in the
+  production edge Terraform, outside this repo), and the server sends that token. Without that, the
+  server's verification challenge gets the Access login, the subscribe fails, and the condition
+  polls: an event fires about a minute after the server has it, and later if the server
+  asks for a longer `nextPollMs`.
+- **Webhook health is inferred, not proven per event.** A condition counts as `verified` for
+  seven hours after a signed request reaches its URL. If the Access policy stops admitting the
+  server in that window (a rotated service token, say), deliveries fail without Zimmer seeing
+  anything until the next hourly refresh answer reports the failure, or the seven hours run
+  out. Until then the condition is polled only every 15 minutes, so its events can arrive up to 15
+  minutes late. A quiet subscription loses `verified` after seven hours with no delivery and goes
+  back to minute polling, which costs polls, not events.
+- **Only challenge-echo verification.** Of the SEP's four ways a server can confirm the endpoint
+  wants deliveries, Zimmer answers only the challenge. It publishes no
+  `/.well-known/mcp-webhook-receiver.json` and keeps no allowlist with any server.
+- **A held push event waits for the catch-up poll.** A delivery that burst control or a pending
+  session stops gives its claim back, and the poll fires it, which can be up to 15 minutes later on
+  a verified condition.
 - **The protocol version is the old one.** The extension is defined for the 2026-07-28 revision and
   its `server/discover`. Zimmer's MCP client still speaks 2025-06-18 and reads the extension off the
   `initialize` result. That works against strad, which answers it there. A server that declares the
@@ -5449,7 +5485,7 @@ what is built, and against which revision, is recorded on the
 - **`compare_trigger_fires` sees 30 days.** It reads `trigger_event_claims`, which
   `InboundEventRetentionJob` deletes after 30 days.
 
-### GitHub is polled, and the webhooks have no public way in
+### GitHub is polled, and inbound webhooks need a Cloudflare Access policy
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
@@ -5501,10 +5537,15 @@ it does not cover yet:
 Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
-switching it on in production changes nothing on its own: Slack has to reach the endpoint from the
-public internet, and Zimmer's tailnet posture offers no public ingress. Until something does — a scoped
-public route, a tunnel, or a relay into the tailnet — the endpoint works only where the app is
-publicly reachable, or locally with a signed request.
+switching it on in production changes nothing on its own. Slack has to reach the endpoint from the
+public internet. On the production host every path sits behind
+[Cloudflare Access](/operate/deploying/#optional-cloudflare-edge): a webhook POST gets a 302 to the
+Access login, and `/mcp` and `/api/v1/health` get a 401. So an inbound webhook works only once its
+path has an Access application whose policy admits the sender, which in practice means the sender
+can present an Access service token. A sender Zimmer does not control, like Slack or GitHub, cannot
+be made to send one, and no machine path on the domain is an open Bypass. Only the MCP Events
+receiver has such a policy planned, because strad, its sender, is our own code and can add the
+headers; see [Cloudflare Access on the receiver](/sessions/triggers/#cloudflare-access-on-the-receiver).
 
 What the webhook does not cover yet:
 
@@ -8901,6 +8942,18 @@ result, a session's output) could talk it into rewriting its standing instructio
 conversation. Nothing prevents that. What bounds it is that it is visible: every agent write is in
 the settings history with its conversation, shows in the thread as a settings-change note, and can
 be undone with **Restore the guidance from before this edit**.
+
+## The Live Mode scratchpad has no screen in the iOS app yet
+
+The [scratchpad](/sessions/live/#the-scratchpad) can be read and edited on the web page, over MCP,
+and through `/api/v1/live_conversations/:id/scratchpad_entries` with the app's sign-in. The iOS app
+does not call those routes yet. On the phone, the live agent still reads and writes its own notes,
+but you cannot see them there. A person's edit from another browser or over REST reaches an open
+voice call the same way a settings change does, described in the next entry.
+
+Two edits to the same note at the same moment are last-writer-wins: nothing locks a note while it
+is open on the edit page. Each note can also only be as true as what the agent heard. A note the
+agent wrote from a misheard line stays until someone edits or removes it.
 
 ## A settings change reaches an open voice call only through the client holding it
 

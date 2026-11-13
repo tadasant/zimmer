@@ -1,0 +1,61 @@
+<% conversation = @conversation %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <%= render "live/back_header", title: "Scratchpad", back_path: live_conversation_path(conversation),
+        subtitle: "#{conversation.display_title}. Live Mode keeps these notes for this conversation and reads them before every answer, typed or spoken — what not to bring up again, what is settled. They stay with this conversation; a new one starts with an empty pad. At most #{LiveConversations::Scratchpad::MAX_ENTRIES} notes of #{LiveScratchpadEntry::MAX_BODY_CHARS} characters each." %>
+
+    <% if params[:saved].present? %>
+      <%# Asks the call dock to push the notes into an open voice call. %>
+      <div data-controller="live-settings-saved" hidden></div>
+    <% end %>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">
+      <div class="px-4 py-3 sm:px-6 border-b border-gray-200 flex items-center justify-between gap-2">
+        <h2 class="text-lg font-medium text-gray-900">Notes</h2>
+        <span class="text-sm text-gray-500" data-live-scratchpad-count><%= @entries.size %> of <%= LiveConversations::Scratchpad::MAX_ENTRIES %></span>
+      </div>
+      <div class="divide-y divide-gray-100">
+        <% if @entries.empty? %>
+          <p class="px-4 py-4 sm:px-6 text-sm text-gray-400">No notes yet. Live Mode adds one when you settle something or ask it to stop bringing something up; you can add your own below.</p>
+        <% end %>
+        <% @entries.each do |entry| %>
+          <div class="px-4 py-3 sm:px-6" data-live-scratchpad-entry="<%= entry.id %>">
+            <%= form_with url: live_conversation_scratchpad_entry_path(conversation, entry), method: :patch, class: "flex flex-col gap-2" do |form| %>
+              <label for="scratchpad_entry_<%= entry.id %>" class="text-xs text-gray-500">
+                Note <%= entry.id %> · by <%= entry.writer_label %> · <%= entry.updated_at.in_time_zone.strftime("%b %-d %H:%M") %>
+              </label>
+              <%= form.text_area :body, value: entry.body, id: "scratchpad_entry_#{entry.id}", rows: 3, required: true, maxlength: LiveScratchpadEntry::MAX_BODY_CHARS,
+                  class: "w-full min-w-0 rounded-md border border-gray-300 px-3 py-2 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500" %>
+              <div class="flex justify-end gap-2">
+                <%# Submits the remove form below: forms do not nest. %>
+                <button type="submit" form="remove_scratchpad_entry_<%= entry.id %>" class="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50">Remove</button>
+                <%= form.submit "Save", class: "inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50" %>
+              </div>
+            <% end %>
+            <%= form_with url: live_conversation_scratchpad_entry_path(conversation, entry), method: :delete, id: "remove_scratchpad_entry_#{entry.id}", html: { hidden: true } do %><% end %>
+          </div>
+        <% end %>
+      </div>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">
+      <div class="px-4 py-4 sm:px-6">
+        <%= form_with url: live_conversation_scratchpad_entries_path(conversation), method: :post, class: "flex flex-col gap-2" do |form| %>
+          <label for="scratchpad_new" class="text-sm font-medium text-gray-700">Add a note</label>
+          <%= form.text_area :body, id: "scratchpad_new", rows: 2, required: true, maxlength: LiveScratchpadEntry::MAX_BODY_CHARS,
+              placeholder: "e.g. Session 1234 can't merge until the API ships — don't bring it up.",
+              class: "w-full min-w-0 rounded-md border border-gray-300 px-3 py-2 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500" %>
+          <div class="flex justify-end">
+            <%= form.submit "Add", class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700" %>
+          </div>
+        <% end %>
+      </div>
+    </section>
+
+    <% if @entries.any? %>
+      <%= button_to "Clear all notes", clear_live_conversation_scratchpad_entries_path(conversation), method: :delete,
+          form: { data: { turbo_confirm: "Remove every note on this scratchpad?" } },
+          class: "inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50" %>
+    <% end %>
+  </div>
+</div>

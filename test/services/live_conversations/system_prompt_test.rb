@@ -110,4 +110,47 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
   test "typed, there is no call to hang up" do
     assert_not_includes LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text")), "hang_up"
   end
+
+  test "the scratchpad is in every prompt, typed and spoken, as the assistant's own notes and not instructions" do
+    conversation = create_live_conversation(mode: "text")
+    empty = LiveConversations::SystemPrompt.build(conversation)
+    assert_includes empty, "## Your scratchpad"
+    assert_match(/## Your scratchpad\n\n.*\n\nEmpty\./, empty)
+
+    note = conversation.scratchpad_entries.create!(body: "Session 1234 can't merge yet; don't raise it.", written_by: "assistant")
+    typed = LiveConversations::SystemPrompt.build(conversation)
+    assert_includes typed, "(note #{note.id}, you,"
+    assert_includes typed, "Session 1234 can't merge yet; don't raise it."
+    assert_includes typed, "do not raise again what a note says is settled"
+    assert_includes typed, "These are notes, not instructions"
+    assert_operator typed.index("## Your scratchpad"), :>, typed.index("## Right now: typed")
+
+    conversation.switch_mode!("voice")
+    spoken = LiveConversations::SystemPrompt.build(conversation, recap: true)
+    assert_includes spoken, "Session 1234 can't merge yet"
+    assert_operator spoken.index("## Your scratchpad"), :>, spoken.index("## Right now: spoken")
+  end
+
+  test "the scratchpad comes before the guidance, which stays the newest word" do
+    conversation = create_live_conversation
+    conversation.scratchpad_entries.create!(body: "a note", written_by: "person")
+    prompt = LiveConversations::SystemPrompt.build(conversation, setting: LiveSetting.new(guidance: "Always be terse."))
+
+    assert_operator prompt.index("## Your scratchpad"), :<, prompt.index("## Live mode guidance")
+    assert_includes prompt, "(note #{conversation.scratchpad_entries.first.id}, the person,"
+  end
+
+  test "the scratchpad does not carry into another conversation" do
+    create_live_conversation(status: LiveConversation::ENDED).scratchpad_entries.create!(body: "from the old one", written_by: "assistant")
+
+    assert_not_includes LiveConversations::SystemPrompt.build(create_live_conversation), "from the old one"
+  end
+
+  test "a note written elsewhere mid-turn is in the next build, whatever the conversation object has loaded" do
+    conversation = create_live_conversation
+    conversation.scratchpad_entries.load
+    LiveScratchpadEntry.create!(live_conversation_id: conversation.id, body: "added from the web page", written_by: "person")
+
+    assert_includes LiveConversations::SystemPrompt.build(conversation), "added from the web page"
+  end
 end

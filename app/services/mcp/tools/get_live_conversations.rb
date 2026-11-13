@@ -16,7 +16,7 @@ module Mcp
         Read Live Mode conversations: one continuous thread between the human and a fast OpenAI model that hands slow work to background sessions. A conversation is typed or spoken (voice on) at any moment and can switch mid-thread.
 
         - No "id": whether Live Mode can start (and why not), the current conversation, the one "go back" would return to, and the most recent conversations, each with a short name to say aloud.
-        - With "id": that conversation's details, the sessions its tool calls have touched (newest first), and its newest turns — what was said, and every tool call it made with its output. Pass "after_turn_id" to read only turns newer than one you have seen.
+        - With "id": that conversation's details, the sessions its tool calls have touched (newest first), its scratchpad (the notes its assistant keeps and reads every turn), and its newest turns — what was said, and every tool call it made with its output. Pass "after_turn_id" to read only turns newer than one you have seen.
       DESC
 
       input_schema({
@@ -82,6 +82,7 @@ module Mcp
         # /api/v1/live_conversations/:id/sessions gives a client.
         referenced = conversation.referenced_session_ids
         lines << "- **Sessions it has touched:** #{referenced.map { |id| "##{id}" }.join(', ')}" if referenced.any?
+        lines += [ "", "## Scratchpad", "", LiveConversations::Scratchpad.new(conversation, written_by: "mcp").listing ]
         lines += [ "", "## Turns", "" ]
         lines << "None." if turns.empty?
         turns.each { |turn| lines << render_turn(turn) }
