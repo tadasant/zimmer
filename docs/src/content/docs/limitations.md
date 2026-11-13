@@ -241,14 +241,13 @@ build and the login.
 
 ### A PR can still merge a migration version `main` claimed after its last check
 
-The duplicate-version checks re-ask every open PR when `main` gains a migration, and take
-`ready to merge` off one that would collide (see
-[Deploying](/operate/deploying/#checking-a-pr-against-main-as-it-is-now)). They cannot stop a merge
-that ignores the label, or one that happens after the label is put back but before the next
-migration lands on `main`. Only *Require branches to be up to date before merging* or a merge queue
-closes that, and neither is configured. If a collision gets through, the image refuses to boot
-(`bin/migration-version-guard` in the entrypoint), so the deploy fails rather than silently skipping
-a migration. Production stays on the old image until someone renumbers the migration.
+The duplicate-version checks re-ask every open PR when `main` gains a migration. A PR that would
+collide gets its CI re-run, which turns it red, and loses `ready to merge` (see
+[Deploying](/operate/deploying/#checking-a-pr-against-main-as-it-is-now)). They can't stop a merge
+that ignores both, or one that lands in the minutes before the sweep's job gets a runner. Only *Require branches to be up to date before merging* or a merge queue
+closes that, and neither is configured. If a collision gets through, the release build fails, and an image built some other way refuses to
+boot. Either way the deploy fails instead of silently skipping a migration, and production stays on
+the old image until someone renumbers the migration.
 
 ### A row's long press in the iOS UI tests absorbs one accessibility timeout
 

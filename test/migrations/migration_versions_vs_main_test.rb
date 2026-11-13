@@ -44,7 +44,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
 
   test "sweep writes a status to every open PR that adds a migration, and only those" do
     output, status, posted = run_script("sweep", "--main-ref", "HEAD", "--target-url", "https://example.test/run",
-      prs: "1484\taaaa1484\tready to merge,agent-filed\n1490\tbbbb1490\tready to merge\n1491\tcccc1491\t\n",
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge", "agent-filed" ] ], [ 1490, "bbbb1490", [ "ready to merge" ] ], [ 1491, "cccc1491", [] ]),
       files: {
         1484 => "added\tdb/migrate/20261111120000_create_mcp_event_webhook_subscriptions.rb\t\n",
         1490 => "added\tdb/migrate/20261114000000_add_doodad.rb\t\n",
@@ -70,9 +70,9 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
   # The status blocks nothing on its own — the ruleset requires only
   # `all-checks-pass` — so the label the merge gate keys on comes off, and only
   # from the PR that collides.
-  test "sweep takes ready to merge off a colliding PR and says why" do
+  test "sweep re-runs a colliding PR's CI, and takes ready to merge off it with a comment first" do
     output, status, _posted, edits = run_script("sweep", "--main-ref", "HEAD",
-      prs: "1484\taaaa1484\tready to merge\n1490\tbbbb1490\tready to merge\n1492\tdddd1492\t\n",
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ], [ 1490, "bbbb1490", [ "ready to merge" ] ], [ 1492, "dddd1492", [] ]),
       files: {
         1484 => "added\tdb/migrate/20261111120000_create_mcp_event_webhook_subscriptions.rb\t\n",
         1490 => "added\tdb/migrate/20261114000000_add_doodad.rb\t\n",
@@ -81,15 +81,33 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
 
     assert_predicate status, :success?, output
     edits = edits.lines(chomp: true)
-    assert_includes edits, "pr edit 1484 --repo tadasant/zimmer --remove-label ready to merge"
-    assert edits.any? { |line| line.start_with?("pr comment 1484") && line.include?("20261111120000") }, edits.inspect
-    assert_not edits.any? { |line| line.include?(" 1490 ") }, "a clean PR lost its label"
-    assert_not edits.any? { |line| line.include?(" 1492 ") }, "a colliding PR with no label to remove was commented on"
+    comment = edits.index { |line| line.start_with?("pr comment 1484") && line.include?("20261111120000") }
+    unlabel = edits.index("pr edit 1484 --repo tadasant/zimmer --remove-label ready to merge")
+    assert comment && unlabel && comment < unlabel, "expected the comment, then the label removal: #{edits.inspect}"
+
+    # Both colliding PRs get CI re-run, labelled or not; the clean one does not.
+    assert_includes edits, "run rerun run-aaaa1484 --repo tadasant/zimmer"
+    assert_includes edits, "run rerun run-dddd1492 --repo tadasant/zimmer"
+    assert_not edits.any? { |line| line.include?("bbbb1490") || line.include?(" 1490 ") }, "a clean PR was touched"
+    assert_not edits.any? { |line| line.start_with?("pr ") && line.include?(" 1492 ") },
+      "a colliding PR with no label to remove was commented on"
+  end
+
+  # One unreadable PR must not leave the rest unchecked — that is the gap this
+  # workflow exists to close — but the job still goes red for it.
+  test "sweep checks every PR even when one cannot be read, and then fails" do
+    output, status, posted = run_script("sweep", "--main-ref", "HEAD",
+      prs: prs_json([ 1, "aaaa0001", [] ], [ 1490, "bbbb1490", [] ]),
+      files: { 1490 => "added\tdb/migrate/20261114000000_add_doodad.rb\t\n" })
+
+    assert_not_predicate status, :success?
+    assert_includes output, "#1: could not check"
+    assert_includes posted, "statuses/bbbb1490"
   end
 
   test "sweep --dry-run posts nothing" do
     output, status, posted, edits = run_script("sweep", "--main-ref", "HEAD", "--dry-run",
-      prs: "1484\taaaa1484\tready to merge\n",
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]),
       files: { 1484 => "added\tdb/migrate/20261111120000_create_x.rb\t\n" })
 
     assert_predicate status, :success?, output
@@ -99,6 +117,12 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
   end
 
   private
+
+  def prs_json(*prs)
+    JSON.generate(prs.map do |number, sha, labels|
+      { number: number, headRefOid: sha, labels: labels.map { |name| { name: name } } }
+    end)
+  end
 
   # Returns [combined output, process status, posted statuses, `gh pr edit` /
   # `gh pr comment` calls] — the last two one call per line.
@@ -136,14 +160,19 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
   end
 
   # `gh api …/pulls/N/files` prints files-N.tsv (or fails, if there is none);
-  # `gh pr list` prints prs.txt; `gh api -X POST …/statuses/SHA` and `gh pr
-  # edit|comment` record their arguments, newlines folded, on one line.
+  # `gh pr list` prints prs.txt; `gh run list --commit SHA` prints `run-SHA`;
+  # `gh api -X POST …/statuses/SHA`, `gh pr edit|comment` and `gh run rerun`
+  # record their arguments, newlines folded, one call per line.
   def write_gh_stub(stubs, dir, posted, edits)
     path = File.join(stubs, "gh")
     File.write(path, <<~SH)
       #!/bin/bash
       if [ "$1 $2" = "pr list" ]; then cat "#{dir}/prs.txt"; exit 0; fi
-      if [ "$1" = "pr" ]; then printf '%s' "$*" | tr '\n' ' ' >> "#{edits}"; echo >> "#{edits}"; exit 0; fi
+      if [ "$1 $2" = "run list" ]; then
+        while [ $# -gt 0 ]; do [ "$1" = "--commit" ] && { echo "run-$2"; exit 0; }; shift; done
+        exit 1
+      fi
+      if [ "$1" = "pr" ] || [ "$1 $2" = "run rerun" ]; then printf '%s' "$*" | tr '\n' ' ' >> "#{edits}"; echo >> "#{edits}"; exit 0; fi
       if [ "$2" = "-X" ]; then echo "$*" >> "#{posted}"; exit 0; fi
       for arg in "$@"; do
         case "$arg" in

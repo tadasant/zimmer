@@ -863,16 +863,19 @@ that gap:
   `main` that touches `db/migrate/` and asks every open PR that adds a migration the same question.
   It writes the answer to the PR's head commit as the `migration versions vs main` commit status.
   That status blocks nothing by itself, because the `main` ruleset requires `all-checks-pass` and
-  nothing else. So a colliding PR that carries `ready to merge` also loses the label, with a
-  comment showing the collision. The merge gate keys on that label, and the session holding the PR
-  is woken when it comes off.
+  nothing else. So the sweep also re-runs the colliding PR's latest CI run. Its `lint` fetches
+  `main` again and fails, and `all-checks-pass` fails with it. If the PR carries `ready to merge`,
+  the sweep also posts a comment showing the collision and then removes the label. The merge gate
+  keys on that label, and the session holding the PR sees it gone at its next check. If one PR
+  can't be read, the sweep logs it, checks the rest, and fails at the end.
 
 Both run `.github/scripts/migration-versions-vs-main.rb` (`check` and `sweep`), and both compare
 with `MigrationVersionGuard.merge_collisions`. `sweep --dry-run` prints the verdicts without writing
 anything.
 
-One window is still open. A PR that gets the label back after the sweep, and then merges before the
-next migration lands on `main`, is checked only by its last `lint` run. The setting that closes this
+One window is still open. The sweep runs on the shared self-hosted pool, so it can queue for a few
+minutes after the push, and a PR that merges in that time is not stopped. A merge that ignores the
+red `all-checks-pass` or the missing label isn't stopped either. The setting that closes this
 completely is a repository one: turn on *Require branches to be up to date before merging* on the
 `main` ruleset (`strict_required_status_checks_policy`), or put a merge queue in front of `main`.
 Neither is configured. Both change the merge flow for every PR, so they are a human's decision, not
@@ -880,7 +883,11 @@ a diff.
 
 ### A colliding image refuses to boot
 
-If a collision reaches an image anyway, `bin/docker-entrypoint` stops it before Rails starts. It
+If a collision reaches `main` anyway, the release build fails: the `Dockerfile` runs
+`bin/migration-version-guard` in its final stage, so a colliding image is never pushed. That step
+also proves the guard can load from the image. This matters because the entrypoint fails closed.
+
+If a colliding image exists anyway, `bin/docker-entrypoint` stops it before Rails starts. It
 runs `bin/migration-version-guard` first, on every role and every command, and exits 1 on a
 collision. The web container never answers `/up`, so Kamal's health gate keeps the old containers
 serving and the deploy fails where someone can see it.
