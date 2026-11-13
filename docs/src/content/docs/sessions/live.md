@@ -230,8 +230,13 @@ you signed in: each line you type or say is stamped with its author by the web p
 app's connection acting as you (`live_conversation_turns.author`). A line written by
 `action_live_conversation` over MCP has no author. A conversation holding such a line never records,
 and neither does any conversation while the Live mode guidance was last written by an agent session.
-A delivery more than five minutes after your last line records nothing either. Conversations from
-before this was recorded have unauthored lines, so start a new one.
+A delivery more than five minutes after your last line records nothing either. A conversation that
+had a typed line before this was recorded stays barred, so start a new one; old spoken lines do not
+bar it. When a delivery is not recorded as yours, the live model is told why and says so.
+
+To merge, the live model uses `authorize_merge`, the Merge button by voice: Zimmer reads the PR back
+by repository and number, and only your yes to that read-back sends the merge. See
+[Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 
 ### Finding an earlier session
 
@@ -580,6 +585,12 @@ stays in mind, such as "session 1234 can't merge yet, stop bringing it up"
   can read it over REST, just as it can read the thread, which already holds every `scratchpad`
   call the agent made. Only the app's sign-in can write it. Agent sessions, including the ones the conversation starts, are not given
   it: nothing on the default MCP surface reads it, and nothing copies it into a session's prompt.
+- **An MCP write ends human-message capture for the conversation.** A note written over MCP is in
+  every turn's instructions, so it could steer what the live agent sends on your behalf. Once one
+  is written, the conversation records nothing as yours and cannot carry a
+  [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge),
+  even after the note is removed (`live_conversations.agent_wrote_scratchpad_at`). Start a new
+  conversation.
 
 ## On the phone and in the car
 

@@ -149,6 +149,14 @@ class HumanMessageCapture
     LIVE_MODE_WORDS_FRESH_FOR = 5.minutes
     # Characters of the assistant's relayed text kept beside the person's words.
     LIVE_MODE_RELAYED_LIMIT = 4_000
+    # Characters kept of the assistant line a person's words were answering.
+    LIVE_MODE_REPLYING_TO_LIMIT = 1_000
+
+    # What live_mode_words answers. `declined` is a sentence fragment saying why
+    # there are no words to record ("this conversation has …"), or nil.
+    LiveModeWords = Data.define(:turns, :replying_to, :declined) do
+      def self.declined(reason) = new(turns: [], replying_to: nil, declined: reason)
+    end
 
     # Record a message the Live Mode assistant delivered into a session, as the
     # words of the person it was talking to.
@@ -165,9 +173,10 @@ class HumanMessageCapture
     # conversation ineligible altogether, because either could tell the model to
     # deliver something whenever the person next speaks:
     #
-    # * a `user` turn with no author anywhere in the conversation — text the
-    #   `action_live_conversation` tool typed, which stays in the model's context
-    #   for the rest of the thread (LiveConversation#agent_written?);
+    # * a `user` turn anywhere in the conversation that no boundary established
+    #   as a person, such as text the `action_live_conversation` tool typed, which
+    #   stays in the model's context (LiveConversation#agent_written?, which also
+    #   says why a spoken line from before authors were recorded is not one);
     # * Live mode guidance last written by an agent session, which is in every
     #   conversation's system prompt (LiveSettingChange.guidance_written_by_an_agent?).
     #
@@ -182,54 +191,152 @@ class HumanMessageCapture
     # @param entry_point [String] e.g. "live_mode.follow_up"
     def record_live_mode_message(session:, conversation:, content:, entry_point:, occurred_at: Time.current)
       return nil if conversation.nil?
-      return nil if conversation.agent_written?
-      return nil if LiveSettingChange.guidance_written_by_an_agent?
 
-      words = latest_authored_words(conversation, now: occurred_at)
-      return nil if words.empty?
+      words = live_mode_words(conversation, now: occurred_at)
+      return nil if words.declined
 
-      speaker = words.last
+      speaker = words.turns.last
       record(
         session: session,
         author: User.for_key(speaker.author),
         channel: HumanMessage::LIVE_MODE,
-        content: words.map(&:content).join("\n"),
+        content: words.turns.map(&:content).join("\n"),
         occurred_at: occurred_at,
-        provenance: {
-          "entry_point" => entry_point,
-          "live_conversation_id" => conversation.id,
-          "live_turn_ids" => words.map(&:id),
-          "heard" => speaker.source,
+        provenance: live_mode_provenance(conversation, words, entry_point).merge(
           "relayed_message" => content.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
-        }.merge(speaker.author_provenance.to_h.slice("via", "surface", "oauth_grant_id", "grant_user_email")).compact
+        )
       )
     rescue => e
       Rails.logger.error("[HumanMessageCapture] Failed to read live conversation #{conversation&.id}: #{e.class}: #{e.message}")
       nil
     end
 
-    private
+    # Record the person's spoken or typed "yes" to Zimmer's read-back of a pull
+    # request, as the sign-off LiveConversations::AuthorizeMerge delivered on the
+    # strength of it. The voice counterpart of the app's Merge button, and recorded
+    # in the session holding the PR, the way the button's click is.
+    #
+    # The caller has already established `words` (live_mode_words, answering the
+    # read-back) and checked they say yes. This only writes the record, with
+    # what makes a short reply's referent checkable: the PR Zimmer named, the
+    # read-back Zimmer composed, and the line the assistant actually said.
+    #
+    # @param words [LiveModeWords] the person's answer, not declined
+    # @param pr_url [String] the PR Zimmer read back and the session was told to merge
+    # @param read_back [String] the sentence Zimmer composed and told the model to say
+    # @param relayed [String] what was delivered into the session
+    def record_live_mode_merge_approval(session:, conversation:, words:, pr_url:, read_back:, relayed:, occurred_at: Time.current)
+      return nil if conversation.nil? || words.nil? || words.declined
 
-    # The newest run of things a person said in the conversation, oldest first:
-    # the latest `user` turn and the `user` turns just before it, back to the
-    # assistant's previous answer, each under LIVE_MODE_WORDS_FRESH_FOR old.
-    # Assistant lines after that latest turn are skipped, not a stop: on a voice
-    # call the model often says "sending that now" before its tool call, and the
-    # client records that line first. Empty when the run is not one person's
-    # alone (an unauthored line, or two people), or when nothing in it is fresh.
-    def latest_authored_words(conversation, now:)
+      record(
+        session: session,
+        author: User.for_key(words.turns.last.author),
+        channel: HumanMessage::LIVE_MODE,
+        content: words.turns.map(&:content).join("\n"),
+        occurred_at: occurred_at,
+        provenance: live_mode_provenance(conversation, words, "live_mode.authorize_merge").merge(
+          "confirmed_pr_url" => pr_url,
+          "read_back" => read_back.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT),
+          "relayed_message" => relayed.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
+        )
+      )
+    rescue => e
+      Rails.logger.error("[HumanMessageCapture] Failed to record a Live Mode merge approval for session #{session&.id}: #{e.class}: #{e.message}")
+      nil
+    end
+
+    # The person's words a Live Mode delivery would be recorded as, or why there
+    # are none.
+    #
+    # `turns`: the newest run of things a person said, oldest first: the latest
+    # `user` turn and the `user` turns just before it, back to the assistant's
+    # previous answer, each under LIVE_MODE_WORDS_FRESH_FOR old. Assistant lines
+    # after that latest turn are skipped, not a stop: on a voice call the model
+    # often says "sending that now" before its tool call, and the client records
+    # that line first.
+    #
+    # `replying_to`: the assistant line just before that run, which is what a
+    # short reply ("merge it", "yes") was answering. On a voice call it is the
+    # transcript of what the person heard. It is recorded beside their words so a
+    # reader can see what "it" was, and it is the model's text, so it is shown as
+    # that and never as theirs.
+    #
+    # `declined`: a sentence saying why nothing would be recorded, or nil. Two
+    # things an agent session could write that the live model reads make a
+    # conversation ineligible altogether, because either could tell the model to
+    # deliver something whenever the person next speaks: a `user` line no
+    # boundary established as a person, or a scratchpad an agent wrote
+    # (LiveConversation#agent_written?), and
+    # Live mode guidance last written by an agent session
+    # (LiveSettingChange.guidance_written_by_an_agent?). Then the run has to be
+    # one person's alone, and fresh.
+    #
+    # @param after_turn_id [Integer, nil] only turns after this one count as the
+    #   person's words, so an answer to a question is never something said
+    #   before the question
+    # @return [LiveModeWords]
+    def live_mode_words(conversation, now: Time.current, after_turn_id: nil)
+      if (old = conversation.unattributable_user_turns.order(:id).pluck(:id)).any?
+        return LiveModeWords.declined(
+          "this conversation has #{old.size == 1 ? 'a line' : "#{old.size} lines"} that no sign-in vouches for " \
+          "(turn#{'s' if old.size > 1} #{old.first(5).join(', ')}#{', …' if old.size > 5}), written by an agent or " \
+          "typed before Zimmer recorded who typed what, so nothing relayed from it counts as the person's. " \
+          "A new Live conversation does not have this problem"
+        )
+      end
+      if conversation.agent_wrote_scratchpad?
+        return LiveModeWords.declined("an agent wrote this conversation's scratchpad, which the live model reads every " \
+                                      "turn, so nothing relayed from it counts as the person's. A new Live conversation " \
+                                      "does not have this problem")
+      end
+      if LiveSettingChange.guidance_written_by_an_agent?
+        return LiveModeWords.declined("the Live mode guidance was last written by an agent session, so nothing relayed " \
+                                      "counts as the person's until a person saves the guidance again")
+      end
+
       run = []
-      conversation.turns.where(role: %w[user assistant]).reorder(id: :desc).limit(40).each do |turn|
+      replying_to = nil
+      scope = conversation.turns.where(role: %w[user assistant]).reorder(id: :desc).limit(40)
+      scope.each do |turn|
         if turn.user?
           run.unshift(turn)
         elsif run.any?
+          replying_to = turn
           break
         end
       end
-      authors = run.map(&:author).uniq
-      return [] if authors.size != 1 || authors.first.blank?
+      return LiveModeWords.declined("nobody has said anything in this conversation yet") if run.empty?
 
-      run.select { |turn| turn.created_at >= now - LIVE_MODE_WORDS_FRESH_FOR }
+      authors = run.map(&:author).uniq
+      if authors.size != 1 || authors.first.blank?
+        return LiveModeWords.declined("the person's latest words are not one signed-in person's alone")
+      end
+
+      fresh = run.select { |turn| turn.created_at >= now - LIVE_MODE_WORDS_FRESH_FOR }
+      fresh = fresh.select { |turn| turn.id > after_turn_id } if after_turn_id
+      if fresh.empty?
+        return LiveModeWords.declined(after_turn_id ? "the person has not answered since that was said" :
+                                        "the person's latest words are more than #{LIVE_MODE_WORDS_FRESH_FOR.inspect} old")
+      end
+
+      LiveModeWords.new(turns: fresh, replying_to: replying_to, declined: nil)
+    end
+
+    private
+
+    # Who said it, where, and what they were answering: the part of a `live_mode`
+    # record every Live Mode entry point shares.
+    def live_mode_provenance(conversation, words, entry_point)
+      speaker = words.turns.last
+      replying_to = words.replying_to
+      {
+        "entry_point" => entry_point,
+        "live_conversation_id" => conversation.id,
+        "live_turn_ids" => words.turns.map(&:id),
+        "heard" => speaker.source,
+        "replying_to" => replying_to&.content.to_s.strip.truncate(LIVE_MODE_REPLYING_TO_LIMIT).presence,
+        "replying_to_turn_id" => replying_to&.id
+      }.merge(speaker.author_provenance.to_h.slice("via", "surface", "oauth_grant_id", "grant_user_email")).compact
     end
 
     # @return [HumanMessage, nil] nil whenever the actor could not be

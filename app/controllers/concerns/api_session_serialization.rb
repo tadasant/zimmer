@@ -224,6 +224,9 @@ module ApiSessionSerialization
         entry_point: entry.entry_point,
         content: entry.content,
         relayed_message: entry.relayed_message,
+        replying_to: entry.replying_to,
+        confirmed_pr_url: entry.confirmed_pr_url,
+        read_back: entry.read_back,
         occurred_at: entry.occurred_at.iso8601
       }
     end

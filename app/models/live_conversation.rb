@@ -120,13 +120,48 @@ class LiveConversation < ApplicationRecord
 
   def enabled_mcp_servers = Array(mcp_servers)
 
-  # Whether anything in this thread was said by someone no boundary established
-  # as a person: a `user` turn with no author, which the `action_live_conversation`
-  # MCP tool writes (and every turn from before authors were recorded has). The
-  # model reads the whole thread, so such a line can steer every later reply;
-  # HumanMessageCapture records nothing for a conversation where this is true.
+  # When `user` turns started carrying an author: the merge of tadasant/zimmer#1483.
+  # Taken at the merge, which is before the deploy, so a turn written in between is
+  # judged by the stricter rule.
+  AUTHORS_RECORDED_FROM = Time.utc(2026, 11, 12, 20, 23, 20)
+
+  # Whether anything in this thread could have been written by an agent session:
+  # a `user` turn no boundary established as a person. The model reads the
+  # thread, so such a line can steer every later reply; HumanMessageCapture
+  # records nothing for a conversation where this is true.
+  #
+  # That is every unauthored `user` turn except one kind: a `spoken` turn from
+  # before AUTHORS_RECORDED_FROM. Before then no turn carried an author, so the
+  # author is not the evidence for those. Where the line came in is. A `spoken`
+  # turn is only ever written by Actions#record_turn, and since Live Mode shipped
+  # (tadasant/zimmer#1331) that has been reachable only from the web UI behind its
+  # sign-in, or from the iOS app on a grant that acts as its person
+  # (`require_a_person_on_the_app` on `turns`). `action_live_conversation` writes
+  # `typed` turns only. So an old spoken line was a person's, even though no row
+  # says which person. It is not counted as anyone's words
+  # (HumanMessageCapture needs an author for that), but it does not stop the
+  # conversation from ever carrying a person's words again. An old `typed` line
+  # could be either a person or the MCP tool, and nothing on the row tells them
+  # apart, so it still taints the conversation.
+  #
+  # The scratchpad counts too, since every note is in every turn's instructions:
+  # a conversation whose pad an MCP client ever wrote (agent_wrote_scratchpad_at,
+  # kept after the note is removed, because what it said may still be in the
+  # thread) or holds an MCP-written note now (one written before that column
+  # existed) is agent-written. Notes the live model or the person wrote are not.
   def agent_written?
-    turns.where(role: "user", author: nil).exists?
+    agent_wrote_scratchpad? || unattributable_user_turns.exists?
+  end
+
+  def agent_wrote_scratchpad?
+    agent_wrote_scratchpad_at.present? || scratchpad_entries.where(written_by: "mcp").exists?
+  end
+
+  # The `user` turns that make #agent_written? true, oldest first.
+  def unattributable_user_turns
+    unauthored = turns.where(role: "user", author: nil)
+    unauthored.where.not(source: "spoken").or(unauthored.where(source: nil))
+              .or(unauthored.where(created_at: AUTHORS_RECORDED_FROM..))
   end
 
   # The sessions this conversation has touched through its tool calls — started,

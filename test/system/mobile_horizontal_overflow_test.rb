@@ -290,6 +290,34 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("session detail")
   end
 
+  # A voice Merge sign-off shows the PR Zimmer read back (one unbreakable URL)
+  # and the read-back itself under the person's words, and an ordinary Live Mode
+  # answer shows the assistant line it answered.
+  test "a Live Mode sign-off's read-back does not overflow horizontally on a phone" do
+    pr = "https://github.com/a-long-organisation-name/an-even-longer-repository-name/pull/12345"
+    session = create_session(status: :needs_input)
+    session.human_messages.create!(
+      author: "tadasant", channel: HumanMessage::LIVE_MODE, content: "Yes.", occurred_at: Time.utc(2026, 11, 13, 6, 40),
+      provenance: { "entry_point" => "live_mode.authorize_merge", "surface" => "carplay", "heard" => "spoken",
+                    "confirmed_pr_url" => pr, "relayed_message" => "Merge #{pr}",
+                    "read_back" => "Merge an-even-longer-repository-name pull request 12345, from the session \"#{LONG_TOKEN_TITLE}\"?" }
+    )
+    session.human_messages.create!(
+      author: "tadasant", channel: HumanMessage::LIVE_MODE, content: "Merge it.", occurred_at: Time.utc(2026, 11, 13, 6, 30),
+      provenance: { "entry_point" => "live_mode.follow_up", "surface" => "carplay", "heard" => "spoken",
+                    "replying_to" => "#{LONG_TOKEN_TITLE} is held. Should I merge it?", "relayed_message" => "Merge #{pr}" }
+    )
+
+    visit session_path(session)
+    open_provenance_panels
+    assert_selector "[data-live-mode-read-back]", text: "Answering Zimmer's read-back of #{pr}"
+    assert_selector "[data-live-mode-replying-to]", text: "Answering the Live Mode assistant"
+
+    assert_no_horizontal_overflow("session detail with a Live Mode merge sign-off")
+    page.execute_script("document.querySelector('[data-live-mode-read-back]').scrollIntoView({ block: 'center' })")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-live-mode-read-back-375.png").to_s)
+  end
+
   # The goal check panel's details carry PR references — owner/repo#N, one
   # unbreakable token each — and with two live PRs a detail names both. That is
   # the row most likely to set the panel's width.

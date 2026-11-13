@@ -890,7 +890,10 @@ per card:
   `authored_in_session_id`, `authored_in`, `entry_point`, `content`, `relayed_message` and
   `occurred_at`. `channel` is `web_ui`, `slack`, `assistant` or `live_mode`. `relayed_message` is
   null except on `live_mode`, where `content` is what the person said in Live Mode and
-  `relayed_message` is what the Live Mode assistant delivered into the session.
+  `relayed_message` is what the Live Mode assistant delivered into the session. `replying_to` is
+  the Live Mode assistant line the person's words answered, and `confirmed_pr_url` and `read_back`
+  are set on a voice Merge sign-off (`entry_point` `live_mode.authorize_merge`): the PR Zimmer named
+  and the read-back it composed. All three are null otherwise.
 - `human_message_capture_gaps` — the input channels this hierarchy came in through that capture
   cannot write for, each with `channel`, `channel_label`, `genesis`, `session_ids`, `reason` and
   `remedy`. Normally empty.

@@ -51,6 +51,10 @@ module LiveConversations
   #    present, both modes. It takes no conversation id: the pad it reads and
   #    writes is this conversation's and no other. A write mid-call hands a
   #    voice client a `session.update`, so the call's instructions carry it.
+  # 8. **Merging** — `authorize_merge`, the Merge button by voice: Zimmer reads
+  #    the PR back by name, and only a fresh, signed-in yes to that read-back
+  #    sends the same authorization the button sends. Always present. See
+  #    LiveConversations::AuthorizeMerge.
   #
   # Every call is recorded as a `tool` turn on the conversation.
   class ToolBridge
@@ -98,6 +102,13 @@ module LiveConversations
     CANNOT_REATTACH = "Nothing changed: this app cannot move a call to another conversation. Tell the person to update " \
                       "the app, or to hang up and go back to that conversation from the Live list."
 
+    # Said to the model after a delivery Zimmer did not record as the person's
+    # (Mcp::Context#take_live_capture_declines): the words still went, but the
+    # session will not treat them as the person's, so an approval in them will
+    # not count. Until this, a declined capture was silent everywhere.
+    NOT_RECORDED_AS_THEIRS = "Delivered, but Zimmer did NOT record it as the person's own words, so the session will " \
+                             "not treat it as their approval. Tell the person this in one sentence, with the reason:"
+
     # Said to the model on a call whose app cannot end a call it was asked to.
     CANNOT_HANG_UP = "Nothing changed: this app cannot hang up by voice. Tell the person to tap End to hang up, " \
                      "or to update the app."
@@ -132,6 +143,7 @@ module LiveConversations
       list.concat(settings_functions)
       list.concat(conversation_functions)
       list << scratchpad_function
+      list << AuthorizeMerge.function
       list.concat(direct_functions.map(&:first))
       list
     end
@@ -216,6 +228,7 @@ module LiveConversations
       when SWITCH_CONVERSATION then [ switch_conversation(args), false, false ]
       when HANG_UP then [ hang_up, false, false ]
       when SCRATCHPAD then [ scratchpad(args), false, false ]
+      when AuthorizeMerge::NAME then [ authorize_merge(args), false, false ]
       else
         server_name, tool_name = direct_lookup[name]
         raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
@@ -350,6 +363,9 @@ module LiveConversations
 
       result = response[:result] || {}
       text = Array(result[:content]).map { |part| part[:text] || part["text"] }.compact.join("\n")
+      if (declines = mcp_context.take_live_capture_declines).any?
+        text = "#{text}\n\n#{NOT_RECORDED_AS_THEIRS}\n#{declines.map { |line| "- #{line}" }.join("\n")}"
+      end
       if defaulted.any? && !result[:isError]
         text = "_Live Mode searched with #{defaulted.map { |k, v| "#{k}: #{v.to_json}" }.join(', ')} " \
                "(its defaults for finding a session; pass #{defaulted.size == 1 ? 'it' : 'either'} to override)._\n\n#{text}"
@@ -661,6 +677,13 @@ module LiveConversations
           parameters: { type: "object", properties: {} }
         )
       ]
+    end
+
+    # The Merge button, by voice. See LiveConversations::AuthorizeMerge.
+    def authorize_merge(args)
+      AuthorizeMerge.new(@conversation).call(args)
+    rescue AuthorizeMerge::Refused => e
+      raise ToolFailure, e.message
     end
 
     def hang_up
