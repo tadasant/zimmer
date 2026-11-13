@@ -78,8 +78,8 @@ module Mcp
         To follow it:
         - `get_session` with that id. When its status is `needs_input` or `archived` the router has replied,
           and its **Status summary** is the short answer. For the router's own words, call `get_session`
-          with `transcript_conversation_only: true` and `transcript_tail: 10` (the transcript is returned
-          in bounded slices; the response says how to page further back).
+          with `transcript_last_messages: 10` (its last 10 messages, tool traffic folded away; the response
+          says how to page further back).
         - `action_session` with `follow_up` to answer a question the router asked or to add instructions.
 
         On a connection restricted to specific agent roots this is refused unless the router's root is one
@@ -243,7 +243,7 @@ module Mcp
           "To follow up:",
           "- Call `get_session` with id `#{session.id}`. When the status is `needs_input` or `archived`, the " \
           "router has replied; its **Status summary** is the short answer. For the router's own words, pass " \
-          "`transcript_conversation_only: true` and `transcript_tail: 10`.",
+          "`transcript_last_messages: 10`.",
           "- Use `action_session` with `follow_up` to answer the router or add instructions.",
           "- Share the URL with the person you are helping; they can watch the session there."
         ].join("\n")

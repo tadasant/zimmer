@@ -29,6 +29,19 @@ module Mcp
   # nothing, so a conversation-only tail of a session that is almost all tool
   # traffic can parse most of the transcript before its budget fills.
   #
+  # OR THE UNIT IS ONE MESSAGE: `messages: N`
+  #
+  # A conversation-only `tail: N` still counts events, and most events in a
+  # working session are tool traffic — so a tail of 20 taken after a burst of
+  # tool calls can come back with one assistant line or none. `messages: N`
+  # (the `transcript_last_messages` parameter) counts what a reader grounding a
+  # decision actually wants: the last N user and assistant text messages,
+  # however many events of tool traffic sit between them. Each run of tool
+  # calls between two messages is folded into one line that names the tools
+  # and the events it spans, so the reader still sees that work happened and
+  # where to page for it. The walk goes back through the whole transcript if it
+  # has to; it stops at N messages or at the character cap, whichever is first.
+  #
   # NOTHING IS CUT SILENTLY
   #
   # The cap stops the walk at an event boundary and says where, with the range it
@@ -53,6 +66,10 @@ module Mcp
 
     FORMATS = %w[raw text conversation].freeze
 
+    # How many messages `messages: N` may ask for. Past this a caller wants a
+    # range, not a "last few" read.
+    MAX_MESSAGES = 200
+
     FORMAT_LABELS = {
       "raw" => "raw JSONL, one event per line",
       "text" => "plain text, each event prefixed with its [#index]",
@@ -66,11 +83,16 @@ module Mcp
     # @param from [Integer, nil] first index of a range (inclusive)
     # @param to [Integer, nil] end of a range (exclusive)
     # @param max_chars [Integer, nil] the character cap; DEFAULT_MAX_CHARS when nil
-    def initialize(session, format: "raw", head: nil, tail: nil, from: nil, to: nil, max_chars: nil)
+    # @param messages [Integer, nil] the last N user/assistant messages; forces the conversation format
+    def initialize(session, format: "raw", head: nil, tail: nil, from: nil, to: nil, max_chars: nil, messages: nil)
       raise InvalidRequest, "Unknown transcript format #{format.inspect}" unless FORMATS.include?(format)
 
       @session = session
-      @format = format
+      @messages = count_param("transcript_last_messages", messages)
+      if @messages && @messages > MAX_MESSAGES
+        raise InvalidRequest, "transcript_last_messages must be at most #{MAX_MESSAGES}, got #{@messages}"
+      end
+      @format = @messages ? "conversation" : format
       @head = count_param("transcript_head", head)
       @tail = count_param("transcript_tail", tail)
       @from = index_param("transcript_from", from)
@@ -88,6 +110,8 @@ module Mcp
     # The markdown section `get_session` appends. Always begins with a heading and
     # the navigation bullets, then the events in chronological order in a fence.
     def render
+      return render_last_messages if @messages
+
       lo, hi, backward = requested_range
       pieces, covered_lo, covered_hi, cut_event = walk(lo, hi, backward)
 
@@ -106,6 +130,178 @@ module Mcp
     end
 
     private
+
+    # The `messages: N` rendering: walk back from the newest event, keep user and
+    # assistant text (and compaction markers, which explain a gap in memory), and
+    # fold each run of tool calls between them into one line. A stored line is
+    # always read to its end, so a window boundary never falls inside one; the
+    # walk stops at N messages, the cap, or MAX_SCAN_EVENTS. Returns the section
+    # in the same shape as #render.
+    def render_last_messages
+      walk = MessageWalk.new
+      walk.budget = @max_chars
+      walk.covered_lo = total
+      gap_hi = total - 1 # the newest event not yet accounted to a message
+
+      @session.each_transcript_line(0, total, reverse: true) do |index, line|
+        if total - index > MAX_SCAN_EVENTS
+          walk.stop = :scan
+          break
+        end
+
+        source.parse_events(line).reverse_each do |raw|
+          compact_summary = raw.is_a?(Hash) && raw["isCompactSummary"]
+          events = normalizer.normalize(raw, session: @session, transcript_index: index)
+
+          # Within one stored line, newest last — walk it newest first.
+          events.reverse_each do |event|
+            types = OpenTranscript::Types
+            case event[:type]
+            when types::TOOL_CALL
+              walk.pending ||= { lo: index, hi: [ gap_hi, index ].max, names: Hash.new(0) }
+              walk.pending[:lo] = index
+              walk.pending[:names][event[:tool_name] || "unknown"] += 1
+            when types::USER_MESSAGE, types::ASSISTANT_MESSAGE, types::COMPACTION
+              # Past N, the rest of this stored line is still read, so the
+              # window never ends inside a line; any other stop ends the walk.
+              next if walk.stop && walk.stop != :found
+
+              # The summary Claude Code writes after a compaction wears a user role;
+              # it is neither a human's words nor a message worth spending N on.
+              text = compact_summary ? "[##{index}] [context compacted — the summary it left is omitted]" : conversation_line(index, event)
+              next if text.nil?
+
+              keep_message(walk, index, text, counts: !compact_summary && event[:type] != types::COMPACTION)
+              gap_hi = index - 1
+            end
+          end
+        end
+
+        # A capped or cut line was only partly shown, so it stays inside the
+        # "earlier" range the section points at.
+        break if %i[capped cut].include?(walk.stop)
+
+        walk.covered_lo = index
+        break if walk.stop
+      end
+
+      # A run of tool calls older than the oldest message kept: shown when the
+      # walk read through to the start of the transcript.
+      flush_tool_run(walk) if walk.stop.nil?
+
+      last_messages_section(walk)
+    end
+
+    # The walk's state, shared between #render_last_messages and its helpers.
+    # `stop` is nil while walking, then :found (N messages), :cut (one message cut
+    # mid-way), :capped (the cap) or :scan (MAX_SCAN_EVENTS).
+    MessageWalk = Struct.new(:budget, :entries, :pending, :found, :covered_lo, :lowest_shown, :stop, :cut_event) do
+      def initialize(*)
+        super
+        self.entries ||= []
+        self.found ||= 0
+      end
+    end
+
+    def keep_message(walk, index, text, counts:)
+      flush_tool_run(walk)
+      return if walk.stop == :capped
+
+      cost = text.length + 1
+      if cost > walk.budget
+        # Cut rather than skip the newest message, so a caller always gets one.
+        unless walk.found.zero?
+          walk.stop = :capped
+          return
+        end
+
+        text = cut_mid_event(index, text, walk.budget)
+        walk.cut_event = index
+        walk.stop = :cut
+        cost = walk.budget
+      end
+
+      walk.entries << text
+      walk.budget -= cost
+      walk.lowest_shown = index
+      walk.found += 1 if counts || walk.stop == :cut
+      walk.stop = :found if walk.stop.nil? && walk.found >= @messages
+    end
+
+    def flush_tool_run(walk)
+      run = walk.pending
+      return if run.nil?
+
+      walk.pending = nil
+      line = tool_run_line(run)
+      if line.length + 1 > walk.budget
+        walk.stop = :capped
+        return
+      end
+      walk.entries << line
+      walk.budget -= line.length + 1
+    end
+
+    # How many tools a folded run names before it summarises the rest.
+    MAX_TOOL_NAMES = 8
+
+    # How far back the walk reads looking for N messages. Tool traffic costs
+    # nothing against the character cap, so without this a session that is
+    # almost all tool calls would be parsed end to end on every call.
+    MAX_SCAN_EVENTS = 20_000
+
+    def tool_run_line(run)
+      calls = run[:names].values.sum
+      names = run[:names].sort_by { |name, n| [ -n, name ] }.map { |name, n| n > 1 ? "#{name} ×#{n}" : name }
+      names = names.first(MAX_TOOL_NAMES) + [ "+#{names.size - MAX_TOOL_NAMES} more" ] if names.size > MAX_TOOL_NAMES
+      span = run[:lo] == run[:hi] ? "event ##{run[:lo]}" : "events ##{run[:lo]}–##{run[:hi]}"
+      "[… #{calls} tool call#{'s' unless calls == 1} (#{names.join(', ')}) in #{span} …]"
+    end
+
+    def last_messages_section(walk)
+      found = walk.found
+      lines = [
+        "", "### Transcript",
+        "- **Events:** #{TextBudget.delimited(total)} in total. Indices are 0-based, one per stored JSONL line, " \
+        "and stable as the transcript grows (unless Zimmer rewrites it in a recovery merge or carryover)."
+      ]
+      plural = ->(n) { "#{n} message#{'s' unless n == 1}" }
+
+      if walk.entries.empty? && walk.stop != :capped && walk.stop != :scan
+        lines << "- **Returned:** nothing — #{total.zero? ? 'the transcript has no events' : 'the transcript holds no user or assistant messages'}."
+        return lines.join("\n")
+      end
+
+      window_lo = [ walk.covered_lo, walk.lowest_shown || walk.covered_lo ].min
+      lines << "- **Requested:** the last #{plural.(@messages)} (transcript_last_messages: #{@messages})."
+      lines << "- **Returned:** #{plural.(found)} from #{window_lo < total ? range_label(window_lo, total) : 'no events'} " \
+               "as conversation only — human and assistant text, each run of tool calls between two messages folded into " \
+               "one `[… N tool calls …]` line, tool output and thinking omitted."
+      lines << cap_line
+
+      case walk.stop
+      when :capped
+        lines << "- **Truncated:** yes — the #{TextBudget.delimited(@max_chars)}-character cap was reached after #{found} of #{@messages} messages. " \
+                 "Raise `transcript_max_chars`, or read the earlier part with #{range_params(0, walk.covered_lo)} and `transcript_conversation_only: true`."
+      when :scan
+        lines << "- **Truncated:** yes — the walk stopped after reading the newest #{TextBudget.delimited(MAX_SCAN_EVENTS)} events with #{found} of #{@messages} messages found. " \
+                 "Read further back with #{range_params(0, walk.covered_lo)} and `transcript_conversation_only: true`."
+      when :cut
+        lines << "- **Cut mid-event:** event ##{walk.cut_event} alone is larger than the cap and is shown only in part; its marker says how much. " \
+                 "The walk stopped there, at 1 of #{@messages} messages."
+      when nil
+        lines << "- **Not truncated:** the whole transcript holds only #{plural.(found)}, and all of them are returned."
+      end
+      if walk.covered_lo.positive?
+        lines << "- **Outside the returned window:** earlier: #{range_label(0, walk.covered_lo)} (#{range_params(0, walk.covered_lo)})."
+      end
+      return lines.join("\n") if walk.entries.empty?
+
+      lines << "```"
+      lines.concat(walk.entries.reverse)
+      lines << "```"
+      lines.join("\n")
+    end
 
     # [lo, hi, backward]: the half-open range the caller asked for, clamped to the
     # transcript, and which end the budget is spent from. A tail — and the default,
@@ -301,9 +497,9 @@ module Mcp
     end
 
     def validate_selection!
-      groups = [ @head, @tail, (@from || @to) ].compact
+      groups = [ @head, @tail, (@from || @to), @messages ].compact
       if groups.size > 1
-        raise InvalidRequest, "Pass at most one of transcript_head, transcript_tail, or a transcript_from/transcript_to range"
+        raise InvalidRequest, "Pass at most one of transcript_head, transcript_tail, transcript_last_messages, or a transcript_from/transcript_to range"
       end
       if @from && @to && @to <= @from
         raise InvalidRequest, "transcript_to (#{@to}) must be greater than transcript_from (#{@from}); transcript_to is exclusive"

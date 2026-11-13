@@ -395,7 +395,7 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     session = session_with_transcript(slice_transcript(2))
 
     error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_head" => 1, "transcript_tail" => 1) }
-    assert_match(/at most one of transcript_head, transcript_tail/, error.message)
+    assert_match(/at most one of transcript_head, transcript_tail, transcript_last_messages/, error.message)
 
     error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_from" => 5, "transcript_to" => 5) }
     assert_match(/transcript_to \(5\) must be greater than transcript_from \(5\)/, error.message)
@@ -482,7 +482,181 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
   test "the file hint tells a caller without disk access how to read a slice" do
     output = @tool.call("id" => sessions(:archived).id)
 
+    assert_includes output, "transcript_last_messages: 10"
     assert_includes output, "transcript_conversation_only: true, transcript_tail: 20"
+  end
+
+  # --- transcript_last_messages: the last N messages, not N events -----------
+
+  # A question, a burst of `tools` tool-only assistant turns (each a call and its
+  # output — two events), then a final answer. The shape that makes an event
+  # tail come back nearly empty.
+  def burst_transcript(tools)
+    events = [ { "type" => "user", "message" => { "role" => "user", "content" => "please fix the build" } } ]
+    tools.times do |i|
+      events << { "type" => "assistant", "message" => { "role" => "assistant", "content" => [
+        { "type" => "tool_use", "id" => "tu_#{i}", "name" => i.even? ? "Bash" : "Edit", "input" => { "n" => i } }
+      ] } }
+      events << { "type" => "user", "message" => { "role" => "user", "content" => [
+        { "type" => "tool_result", "tool_use_id" => "tu_#{i}", "content" => "BURST-OUTPUT-#{i}" }
+      ] } }
+    end
+    events << { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "the build is fixed" } ] } }
+    events.map { |event| JSON.generate(event) }.join("\n") + "\n"
+  end
+
+  test "transcript_last_messages counts messages, so a burst of tool calls cannot crowd them out" do
+    session = session_with_transcript(burst_transcript(40)) # 82 events
+
+    by_events = transcript_section(@tool.call("id" => session.id, "transcript_conversation_only" => true, "transcript_tail" => 20))
+    refute_includes by_events, "please fix the build", "the premise: an event tail misses the question"
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 2))
+
+    assert_includes section, "- **Requested:** the last 2 messages (transcript_last_messages: 2)."
+    assert_includes section, "- **Returned:** 2 messages from events #0–#81"
+    assert_equal [
+      "[#0] User: please fix the build",
+      "[… 40 tool calls (Bash ×20, Edit ×20) in events #1–#80 …]",
+      "[#81] Assistant: the build is fixed"
+    ], section[/```\n(.*)```/m, 1].lines.map(&:chomp)
+    refute_includes section, "BURST-OUTPUT"
+    refute_includes section, "Outside the returned window"
+  end
+
+  test "transcript_last_messages stops at N and points at everything earlier" do
+    session = session_with_transcript(slice_transcript(3)) # 9 events
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 2))
+
+    assert_equal [
+      "[#6] User: question 2",
+      "[#7] Assistant: answer 2",
+      "[… 1 tool call (Bash) in events #7–#8 …]"
+    ], section[/```\n(.*)```/m, 1].lines.map(&:chomp)
+    assert_includes section, "- **Outside the returned window:** earlier: events #0–#5 (`transcript_from: 0, transcript_to: 6`)."
+    refute_includes section, "Truncated"
+  end
+
+  test "transcript_last_messages says so when the transcript holds fewer messages than asked for" do
+    session = session_with_transcript(slice_transcript(1))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 50))
+
+    assert_includes section, "- **Returned:** 2 messages from events #0–#2"
+    assert_includes section, "- **Not truncated:** the whole transcript holds only 2 messages, and all of them are returned."
+  end
+
+  test "transcript_last_messages stops at the character cap and says how to read the rest" do
+    session = session_with_transcript(slice_transcript(10, answer_pad: 100)) # ~800 characters an answer
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 20, "transcript_max_chars" => 2_000))
+    found = section[/- \*\*Returned:\*\* (\d+) messages/, 1].to_i
+
+    assert_operator found, :<, 20
+    assert_operator found, :>, 0
+    assert_includes section, "- **Truncated:** yes — the 2,000-character cap was reached after #{found} of 20 messages."
+    assert_operator section[/```\n(.*)```/m, 1].length, :<=, 2_000
+  end
+
+  test "transcript_last_messages cuts a single message larger than the cap rather than returning nothing" do
+    session = session_with_transcript(slice_transcript(1, answer_pad: 2_000))
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 3, "transcript_max_chars" => 1_000))
+
+    assert_includes section, "- **Cut mid-event:** event #1 alone is larger than the cap"
+    assert_match(/\[#1\] Assistant: answer 0.*\[… event #1 cut: showing \d+ of/m, section)
+  end
+
+  test "transcript_last_messages reads a Codex rollout through its normalizer" do
+    session = sessions(:archived)
+    session.update!(agent_runtime: "codex", transcript: [
+      { "type" => "session_meta", "timestamp" => "2025-11-12T12:00:00Z", "payload" => { "id" => "codex-1" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:01Z",
+        "payload" => { "type" => "message", "role" => "user", "content" => [ { "type" => "input_text", "text" => "fix the build" } ] } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:02Z",
+        "payload" => { "type" => "function_call", "call_id" => "c1", "name" => "shell", "arguments" => JSON.generate({ "command" => [ "make" ] }) } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:03Z",
+        "payload" => { "type" => "function_call_output", "call_id" => "c1", "output" => "CODEX-TOOL-OUTPUT" } },
+      { "type" => "response_item", "timestamp" => "2025-11-12T12:00:04Z",
+        "payload" => { "type" => "message", "role" => "assistant", "content" => [ { "type" => "output_text", "text" => "build fixed" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
+
+    assert_equal [ "[#1] User: fix the build", "[… 1 tool call (shell) in events #2–#3 …]", "[#4] Assistant: build fixed" ],
+      section[/```\n(.*)```/m, 1].lines.map(&:chomp)
+    refute_includes section, "CODEX-TOOL-OUTPUT"
+  end
+
+  test "transcript_last_messages shows a compaction, and neither it nor the summary after it counts as a message" do
+    session = session_with_transcript([
+      { "type" => "user", "message" => { "role" => "user", "content" => "before the compaction" } },
+      { "type" => "system", "subtype" => "compact_boundary", "content" => "Conversation compacted" },
+      { "type" => "user", "isCompactSummary" => true, "message" => { "role" => "user", "content" => "This session is being continued. SUMMARY-TEXT" } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "carrying on" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 2))
+
+    assert_includes section, "[#0] User: before the compaction"
+    assert_includes section, "[#2] [context compacted — the summary it left is omitted]"
+    assert_includes section, "[#3] Assistant: carrying on"
+    refute_includes section, "SUMMARY-TEXT"
+    assert_includes section, "- **Returned:** 2 messages from events #0–#3"
+  end
+
+  test "transcript_last_messages counts an Agent spawn as one tool call" do
+    session = session_with_transcript([
+      { "type" => "user", "message" => { "role" => "user", "content" => "go" } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [
+        { "type" => "tool_use", "id" => "a1", "name" => "Agent", "input" => { "description" => "review", "prompt" => "x" } }
+      ] } },
+      { "type" => "assistant", "message" => { "role" => "assistant", "content" => [ { "type" => "text", "text" => "reviewed" } ] } }
+    ].map { |event| JSON.generate(event) }.join("\n") + "\n")
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
+
+    assert_includes section, "[… 1 tool call (Agent) in event #1 …]"
+  end
+
+  test "transcript_last_messages on a transcript of only tool traffic folds it and says there are no messages" do
+    session = session_with_transcript(burst_transcript(3).lines[1..-2].join) # the six tool events, no messages
+
+    section = transcript_section(@tool.call("id" => session.id, "transcript_last_messages" => 5))
+
+    assert_includes section, "- **Returned:** 0 messages from events #0–#5"
+    assert_includes section, "[… 3 tool calls (Bash ×2, Edit) in events #0–#5 …]"
+    assert_includes section, "- **Not truncated:** the whole transcript holds only 0 messages"
+  end
+
+  test "transcript_last_messages on an empty transcript says it has nothing" do
+    section = transcript_section(@tool.call("id" => sessions(:running).id, "transcript_last_messages" => 5))
+
+    assert_includes section, "- **Returned:** nothing — the transcript has no events."
+  end
+
+  test "transcript_last_messages is refused alongside another selector, or out of range" do
+    session = session_with_transcript(slice_transcript(1))
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_last_messages" => 2, "transcript_tail" => 2) }
+    assert_match(/at most one of/, error.message)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_last_messages" => 0) }
+    assert_match(/transcript_last_messages must be at least 1/, error.message)
+
+    error = assert_raises(Mcp::ToolError) { @tool.call("id" => session.id, "transcript_last_messages" => 201) }
+    assert_match(/transcript_last_messages must be at most 200/, error.message)
+  end
+
+  # Every session reaches get_session through the auto-injected self_session
+  # surface, and the scoped read-only tier; the selector has to be on both.
+  test "transcript_last_messages is offered on the self-session and read-only surfaces" do
+    [ "self_session", "sessions_readonly" ].each do |group|
+      klass = Mcp::Registry.tools_for([ group ]).find { |tool| tool.tool_name == "get_session" }
+      assert klass, group
+      assert_includes klass.input_schema.to_h[:properties].keys.map(&:to_s), "transcript_last_messages", group
+    end
   end
 
   test "include_logs paginates the session logs" do
