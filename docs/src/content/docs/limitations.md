@@ -2413,7 +2413,8 @@ whole spot wake into one event, and the sharp edges are all about that concentra
 - **An auth park is woken by different evidence than a quota park**, and only the quota one has an
   edge of its own. `accounts.available` never goes false→true for a rejected identity, so a *spot*
   session parked `auth_unrecoverable` is woken only because the fifteen-minute sweep notices its pool
-  fingerprint changed and asks for the wake on its behalf. Between sweeps it waits.
+  fingerprint changed, or a probe verified the pool after the park, and asks for the wake on its
+  behalf. Between sweeps it waits.
 - **A spot park the fleet wake did not reach waits up to an hour, not up to the next outage.** The
   edge is spent once the fleet session has run, and whatever it left behind has no wake path of its
   own. The sweep re-asks every fifteen minutes, but `QuotaAvailabilityMonitor` will only announce an
@@ -2428,9 +2429,11 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   the skill, which is free to restart any `waiting` session through the same MCP surface a human
   uses. A skill that ignores the **Woken by:** line reproduces
   [#617](https://github.com/tadasant/zimmer/issues/617).
-- **The fingerprint is coarse in both directions.** It cannot see an outage that heals on Anthropic's
-  side without touching an account row, and it fires on credential changes that are not repairs at
-  all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves
+- **The fingerprint is coarse in both directions.** On its own it cannot see an outage that heals on
+  Anthropic's side without touching an account row; the sweep covers that with a second piece of
+  evidence, a credential probe Anthropic answered after the park, which waits on the next probe
+  (about fifteen minutes) rather than firing at once. The fingerprint also fires on credential
+  changes that are not repairs at all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves
   the same digest. `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by a
   re-park, is what makes that survivable rather than exact. Past the budget the session stays parked
   until a human resumes it or the pool changes enough for a later sweep to grant one.

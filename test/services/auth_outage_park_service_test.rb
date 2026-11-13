@@ -660,6 +660,67 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
     assert_equal "waiting", @session.reload.status
   end
 
+  # tadasant/zimmer#1502: a Cloudflare 403 parked two sessions on an account that
+  # kept serving everyone else. No credential moved, so the fingerprint never
+  # did, and the parks were stranded. A probe Anthropic answered after the park
+  # is the pool demonstrably serving again, and that is evidence enough to try.
+  test "an auth-outage park is woken on an unchanged fingerprint once its account is verified after the park" do
+    account = create_account(email: "edge-blocked@example.com", status: :active)
+    account.update_columns(credential_verified_at: 1.hour.ago)
+    @session.update!(status: :needs_input,
+      metadata: @session.metadata.merge(AuthRecoveryCoordinator::IDENTITY_KEY => account.email))
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    fingerprint = @session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY]
+
+    assert_equal 0, AuthOutageParkService.wake_parked_sessions!,
+      "A verification from before the park says nothing about whether a resume works now"
+
+    travel 1.minute do
+      account.update_columns(credential_verified_at: Time.current)
+      assert_equal fingerprint, AuthOutageParkService.pool_fingerprint("claude_code"),
+        "The probe must not move the fingerprint — that is the stranding this test is about"
+
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal 1, @session.reload.metadata[AuthOutageParkService::EARLY_WAKE_LOG_KEY].size,
+      "A wake on served-since-park evidence spends the early-wake budget like any other"
+  end
+
+  # Served-since-park evidence is bounded the same way as a fingerprint change:
+  # a session whose CLI keeps refusing a healthy account wakes at most
+  # MAX_EARLY_WAKES times per window, however often the sampler probes.
+  test "served-since-park wakes stop when the early-wake budget is spent" do
+    account = create_account(email: "probed@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    @session.update!(metadata: @session.metadata.merge(
+      AuthOutageParkService::EARLY_WAKE_LOG_KEY =>
+        Array.new(AuthOutageParkService::MAX_EARLY_WAKES) { 1.minute.ago.utc.iso8601 }
+    ))
+
+    travel 1.minute do
+      account.update_columns(credential_verified_at: Time.current)
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "waiting", @session.reload.status
+  end
+
+  # A verification that a later refusal overruled is not the pool serving.
+  test "a verification overruled by a later refusal does not wake an auth-outage park" do
+    account = create_account(email: "refused-again@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+
+    travel 1.minute do
+      account.update_columns(credential_verified_at: Time.current, credential_rejected_at: 1.second.from_now)
+      AuthOutageParkService.stubs(:pool_fingerprint)
+        .returns(@session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY])
+
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
+    assert_equal "waiting", @session.reload.status
+  end
+
   # Parked before the fingerprint existed (or by a park whose pool read failed):
   # there is nothing to compare against, and "wake anyway" is the resume loop.
   # There is nothing to compare against, so there is no evidence either way — and
