@@ -1,0 +1,52 @@
+name: Migration versions vs main
+
+# Re-asks every open PR "would you collide with main?" each time main gains or
+# loses a migration, and writes the answer to the PR's head commit as the
+# `migration versions vs main` commit status. A colliding PR that carries
+# `ready to merge` also loses the label, which is what the merge gate keys on.
+#
+# CI on a PR answers that question once, against main as of the PR's last push.
+# On 2026-11-13 #1484 merged with green CI from two days earlier, after #1483 had
+# claimed the same migration version on main the day before. Nothing re-asked, the
+# image deployed, and `db:prepare` silently skipped #1484's table (zimmer#1500).
+# This workflow is the re-ask; the `lint` job's "Migration versions vs current
+# main" step is the same check at PR time. bin/migration-version-guard in the
+# entrypoint is the last line, at boot.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "db/migrate/**"
+  workflow_dispatch:
+
+concurrency:
+  group: migration-versions-vs-main
+  cancel-in-progress: true
+
+# pull-requests/issues: write is for taking `ready to merge` off a colliding PR
+# and saying why in a comment.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+
+jobs:
+  sweep:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # No bundle: the script and the guard it loads are stdlib-only.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4.6"
+          bundler-cache: false
+          self-hosted: true
+      - name: Check open PRs against main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ruby .github/scripts/migration-versions-vs-main.rb sweep --main-ref HEAD --target-url "$RUN_URL"

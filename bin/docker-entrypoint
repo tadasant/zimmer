@@ -417,6 +417,17 @@ if [ "$(id -u)" = "0" ]; then
   exec setpriv --reuid=1000 --regid=1000 --init-groups "$0" "$@"
 fi
 
+# Refuse to boot an image with two migrations on one version. `db:prepare` below
+# cannot be trusted to: it only builds the Migrator that raises
+# DuplicateMigrationVersionError when something is pending, so against a database
+# that already has the shared version it skips the second migration in silence.
+# That is how #1484's table never reached production on 2026-11-13 (zimmer#1500).
+#
+# Every role, every command, before anything else is started: a container that
+# exits here never answers `/up`, so Kamal's health gate keeps the old containers
+# serving. Plain Ruby, no bundler, no Rails -- it reads filenames.
+"$(dirname "$0")/migration-version-guard" || exit 1
+
 # Enable jemalloc for reduced memory usage and latency.
 if [ -z "${LD_PRELOAD+x}" ]; then
     LD_PRELOAD=$(find /usr/lib -name libjemalloc.so.2 -print -quit)

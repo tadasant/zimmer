@@ -370,8 +370,11 @@ class DockerEntrypointPrivilegeDropTest < ActiveSupport::TestCase
       # This is the one test that runs past the drop into the rest of the script, so it
       # gets a PATH with no `claude`/`gh` and a cwd with no ./bin/ensure-playwright-browsers.
       # Otherwise the entrypoint's background update block really would install Chromium,
-      # and IO.popen would sit on the open pipe until it finished.
-      env = { "PATH" => "#{stubs}:/usr/bin:/bin", "HOME" => Dir.tmpdir }
+      # and IO.popen would sit on the open pipe until it finished. Ruby's own directory is
+      # on it because the migration version guard runs on this path, and the guard reads
+      # an empty directory so this test is about the privilege drop and nothing else.
+      env = { "PATH" => "#{stubs}:#{File.dirname(RbConfig.ruby)}:/usr/bin:/bin", "HOME" => Dir.tmpdir,
+              "MIGRATION_VERSION_GUARD_DIR" => stubs }
       output = Dir.mktmpdir do |cwd|
         IO.popen(env, [ "bash", "-e", ENTRYPOINT, "echo", "ran" ], chdir: cwd, err: %i[child out], &:read)
       end

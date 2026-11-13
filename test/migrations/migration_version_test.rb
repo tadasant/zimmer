@@ -193,6 +193,89 @@ class MigrationVersionTest < ActiveSupport::TestCase
       "the `lint` job in .github/workflows/ci.yml no longer runs MigrationVersionGuard"
   end
 
+  # zimmer#1500, rebuilt: #1483 put 20261111120000 on main a day after #1484
+  # last ran CI with the same version. Each tree was clean on its own; the
+  # merge was not.
+  test "a PR's new migration that shares a version with one main gained since is caught" do
+    collisions = MigrationVersionGuard.merge_collisions(
+      main: [ "20261110000000_add_gadget.rb", "20261111120000_add_author_to_live_conversation_turns.rb" ],
+      added: [ "20261111120000_create_mcp_event_webhook_subscriptions.rb" ],
+      removed: []
+    )
+
+    assert_equal [ :version ], collisions.map(&:kind)
+    assert_equal 20261111120000, collisions.sole.value
+    assert_equal [ "20261111120000_add_author_to_live_conversation_turns.rb",
+      "20261111120000_create_mcp_event_webhook_subscriptions.rb" ], collisions.sole.paths
+  end
+
+  test "a PR's new migration that reuses a class name already on main is caught" do
+    collisions = MigrationVersionGuard.merge_collisions(
+      main: [ "20261110000000_add_widget_to_sessions.rb" ],
+      added: [ "20261112000000_add_widget_to_sessions.rb" ],
+      removed: []
+    )
+
+    assert_equal [ :class_name ], collisions.map(&:kind)
+  end
+
+  # Renumbering is a rename: the PR removes the old path and adds the new one.
+  # That has to clear the very collision it fixes — this is #1499.
+  test "a PR that renumbers a colliding migration away is clean" do
+    collisions = MigrationVersionGuard.merge_collisions(
+      main: [ "20261111120000_add_author_to_live_conversation_turns.rb",
+        "20261111120000_create_mcp_event_webhook_subscriptions.rb" ],
+      added: [ "20261113070000_create_mcp_event_webhook_subscriptions.rb" ],
+      removed: [ "20261111120000_create_mcp_event_webhook_subscriptions.rb" ]
+    )
+
+    assert_empty collisions
+  end
+
+  # A collision already on main is main's to fix, and its own lint run is red.
+  # Failing every open PR over it would bury the one PR that fixes it.
+  test "a collision main already has is not charged to a PR that does not touch it" do
+    collisions = MigrationVersionGuard.merge_collisions(
+      main: [ "20261111120000_add_author_to_live_conversation_turns.rb",
+        "20261111120000_create_mcp_event_webhook_subscriptions.rb" ],
+      added: [ "20261114000000_add_doodad_to_sessions.rb" ],
+      removed: []
+    )
+
+    assert_empty collisions
+  end
+
+  # The PR's own migration is on main once main has merged it, or once main
+  # merged the PR's base — the same path twice is one file, not a collision.
+  test "a migration that is on main under the same path is not a collision with itself" do
+    collisions = MigrationVersionGuard.merge_collisions(
+      main: [ "20261111120000_add_author_to_live_conversation_turns.rb" ],
+      added: [ "20261111120000_add_author_to_live_conversation_turns.rb" ],
+      removed: []
+    )
+
+    assert_empty collisions
+  end
+
+  test "the lint job checks a pull request against current main" do
+    lint = YAML.load_file(Rails.root.join(".github/workflows/ci.yml")).dig("jobs", "lint", "steps")
+
+    assert lint.any? { |step| step["run"].to_s.include?("migration-versions-vs-main.rb check") },
+      "the `lint` job in .github/workflows/ci.yml no longer checks the PR against current main"
+  end
+
+  # The PR-time check cannot see a migration main gains after the PR's last
+  # push. This workflow is what re-asks, so it has to fire when main moves.
+  test "every push to main that touches a migration re-checks the open PRs" do
+    workflow = YAML.load_file(Rails.root.join(".github/workflows/migration-versions-vs-main.yml"))
+    push = workflow.fetch(true).fetch("push") # YAML 1.1 reads the `on:` key as true
+
+    assert_equal [ "main" ], push.fetch("branches")
+    assert_includes push.fetch("paths"), "db/migrate/**"
+    assert_equal "write", workflow.dig("permissions", "statuses")
+    assert workflow.dig("jobs", "sweep", "steps").any? { |step| step["run"].to_s.include?("migration-versions-vs-main.rb sweep") }
+  end
+
   private
 
   # The guard reads filenames, so a fixture is a directory of empty files —
