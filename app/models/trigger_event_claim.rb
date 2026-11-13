@@ -26,15 +26,16 @@
 # and folds it in one pass (SlackTriggerFiring#coalesced_groups); the webhook sees it one message
 # per request, so it finds the burst's open group here instead — see .open_group.
 class TriggerEventClaim < ApplicationRecord
-  # `mcp_event` is McpEventTriggerPollerJob's claim on an event an MCP server published. It is the
-  # only path that fires an `mcp_event` condition, so its claim decides nothing against another
-  # path; it is what makes a replayed `events/poll` page fire nothing twice.
+  # `mcp_event` is McpEventTriggerPollerJob's claim on an event an MCP server published, and
+  # `mcp_event_webhook` McpEventWebhookJob's claim on one the server POSTed to Zimmer. Both take the
+  # same `mcp:<server>:<eventId>` key, so the unique index decides which path fires an event that
+  # arrives both ways, and a replayed `events/poll` page fires nothing twice.
   #
   # `poll_record` is the Slack poller's record of a message it fired while Slack is on `poll`: no
   # webhook runs, so nothing is decided by it. It is its own value so the webhook health counts
   # (Webhooks::IngestSummary), which read a `poll` claim as a message the webhook missed, never
   # count one — not even in the day after the webhook is switched on.
-  VIA = %w[webhook poll poll_record mcp_event].freeze
+  VIA = %w[webhook poll poll_record mcp_event mcp_event_webhook].freeze
 
   # How long a claim must outlive the message it covers. In webhook_with_poll_fallback mode the
   # poller sees a message within a poll or two — a few minutes across Slack deferrals, about

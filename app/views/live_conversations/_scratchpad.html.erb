@@ -1,0 +1,29 @@
+<%# The body of the conversation's Scratchpad panel, read-only: the notes its
+    assistant is shown on every turn (LiveConversations::Scratchpad).
+    Broadcast-replaced on every write, from whichever surface made it. The
+    <details> around it is the page's (show.html.erb), so a note arriving does
+    not close a panel someone has open. It holds no forms — a form rendered
+    outside a request carries an authenticity token no browser session will
+    accept — and editing is on its own page.
+
+    Locals: conversation %>
+<% entries = conversation.scratchpad_entries.to_a %>
+<div id="<%= conversation.scratchpad_dom_id %>" class="px-4 pb-3 border-t border-gray-100">
+  <p class="mt-2 text-xs text-gray-500">
+    <span data-live-scratchpad-count><%= entries.size %> of <%= LiveConversations::Scratchpad::MAX_ENTRIES %> notes</span>.
+    Notes Live Mode keeps for this conversation and reads before every answer — what not to bring up again, what is settled.
+  </p>
+  <% if entries.empty? %>
+    <p class="mt-2 text-sm text-gray-400">No notes yet.</p>
+  <% else %>
+    <ul class="mt-2 space-y-1.5">
+      <% entries.each do |entry| %>
+        <li class="text-sm text-gray-800 break-words" data-live-scratchpad-entry="<%= entry.id %>">
+          <%= entry.body %>
+          <span class="text-xs text-gray-400 whitespace-nowrap">— <%= entry.writer_label %>, <%= entry.updated_at.in_time_zone.strftime("%b %-d %H:%M") %></span>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+  <%= link_to "Edit notes", live_conversation_scratchpad_entries_path(conversation), class: "mt-2 inline-block text-sm text-indigo-700 hover:text-indigo-900 underline", data: { turbo_frame: "_top" } %>
+</div>

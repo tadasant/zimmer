@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_13_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -521,6 +521,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
   end
 
+  create_table "live_scratchpad_entries", force: :cascade do |t|
+    t.text "body", null: false
+    t.datetime "created_at", null: false
+    t.bigint "live_conversation_id", null: false
+    t.datetime "updated_at", null: false
+    t.string "written_by", null: false
+    t.index ["live_conversation_id"], name: "index_live_scratchpad_entries_on_live_conversation_id"
+  end
+
   create_table "live_setting_changes", force: :cascade do |t|
     t.string "actor", null: false
     t.string "actor_kind", null: false
@@ -577,6 +586,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
     t.datetime "updated_at", null: false
     t.string "variable", null: false
     t.index ["variable", "created_at"], name: "index_managed_secret_writes_on_variable_and_created_at"
+  end
+
+  create_table "mcp_event_webhook_subscriptions", force: :cascade do |t|
+    t.jsonb "arguments", default: {}, null: false
+    t.string "callback_url", null: false
+    t.datetime "created_at", null: false
+    t.text "cursor"
+    t.jsonb "delivery_status"
+    t.string "event_name", null: false
+    t.integer "failures", default: 0, null: false
+    t.datetime "last_delivery_at"
+    t.string "last_error"
+    t.datetime "next_attempt_at"
+    t.datetime "refresh_before"
+    t.string "remote_id"
+    t.text "secret_ciphertext", null: false
+    t.string "server", null: false
+    t.string "state", default: "pending", null: false
+    t.datetime "subscribed_at"
+    t.string "token", null: false
+    t.bigint "trigger_condition_id"
+    t.datetime "updated_at", null: false
+    t.datetime "verified_at"
+    t.index ["token"], name: "index_mcp_event_webhook_subscriptions_on_token", unique: true
+    t.index ["trigger_condition_id"], name: "index_mcp_event_webhook_subscriptions_on_trigger_condition_id"
   end
 
   create_table "mcp_oauth_credentials", force: :cascade do |t|
@@ -1339,8 +1373,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
+  add_foreign_key "live_scratchpad_entries", "live_conversations", on_delete: :cascade
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
   add_foreign_key "logs", "sessions", on_delete: :cascade
+  add_foreign_key "mcp_event_webhook_subscriptions", "trigger_conditions", on_delete: :nullify
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "notifications", "sessions", on_delete: :cascade
   add_foreign_key "oauth_server_authorization_codes", "oauth_server_clients", on_delete: :cascade

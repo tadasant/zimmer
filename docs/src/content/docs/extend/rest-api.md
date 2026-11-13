@@ -1022,7 +1022,12 @@ the bridge cannot be reached) · `GET /triggers/mcp_event_sources` (the catalog 
 events and their event types, as of the last six-hourly sweep; with `?server=<name>`, that one server
 asked now, 503 when it cannot be asked. For an [`mcp_event` condition](/sessions/triggers/#mcp_event)).
 
-Conditions are nested via `trigger_conditions_attributes`.
+Conditions are nested via `trigger_conditions_attributes`. A trigger's `conditions[]` in a response
+carries `id`, `condition_type`, `configuration`, `description`, `last_triggered_at` and
+`last_polled_at`. An `mcp_event` condition also carries `mcp_event_delivery`: `state` is
+`poll-only`, `subscribed`, `verified` or `suspended`, and `subscribed_at`, `refresh_before`,
+`verified_at`, `last_delivery_at` and `last_error` appear when set. See
+[Webhook delivery](/sessions/triggers/#webhook-delivery).
 
 `toggle_enqueue_messages` and `toggle_resuscitate_archived` flip the two switches on the trigger
 page and return `{trigger}`. Both flags act only on the session a trigger re-uses, so while
@@ -1178,7 +1183,7 @@ voice on, switching between the two mid-thread. The same rules as the `/live` pa
 (`LiveConversations::Actions`).
 
 An API key may read: `GET /live`, `GET /live_conversations`, `GET /live_conversations/:id` and
-`GET /live_conversations/:id/sessions`.
+`GET /live_conversations/:id/sessions` and `GET /live_conversations/:id/scratchpad_entries`.
 Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
 and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
 sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
@@ -1216,6 +1221,16 @@ voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, creat
 last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
 source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
 created_at}`.
+
+Scratchpad ([the conversation's notes](/sessions/live/#the-scratchpad)) — an API key may read it,
+as it reads the thread; every write takes the app's sign-in acting as you, and an API key gets 403 ·
+`GET /live_conversations/:id/scratchpad_entries` → `{live_conversation_id, entries: [{id, body,
+written_by (assistant|person|mcp), created_at, updated_at}], max_entries, max_entry_chars}`, oldest
+first · `POST …/scratchpad_entries` (`body`) → 201 · `PATCH …/scratchpad_entries/:entry_id` (`body`)
+· `DELETE …/scratchpad_entries/:entry_id` · `DELETE …/scratchpad_entries/clear`. Every write answers
+with the pad as it now is; 422 with the reason when a note is empty, longer than 300 characters, the
+pad already holds 30, or the note is not this conversation's. A voice call on the conversation picks
+the change up from its next `session_update`.
 
 Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
 user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
@@ -1831,6 +1846,11 @@ authenticated by the provider's own signature over the request body, and each an
 provider's delivery is switched on — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) and
 [GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery).
+
+`POST /webhooks/mcp_events/:token` is not part of this API either. It is the callback URL of one MCP
+Events webhook subscription, authenticated by a Standard Webhooks signature with that subscription's
+secret, and it answers every failure with an empty 401. In production it also sits behind a
+Cloudflare Access service-token policy of its own. See [Webhook delivery](/sessions/triggers/#webhook-delivery).
 
 ### Transcript content is redacted
 

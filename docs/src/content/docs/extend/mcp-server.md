@@ -237,7 +237,8 @@ production.
 conversations: whether Live Mode can start, the current conversation and whether voice is on, a
 conversation's thread with its tool calls, what going back would return to, and start / `switch`
 (go back to an earlier conversation, ending the current one) / send a typed message / `set_mode`
-(voice on or off) / end. The voice call's audio relay and the OpenAI key are deliberately not tools — the first
+(voice on or off) / end, and a conversation's [scratchpad](/sessions/live/#the-scratchpad) (shown with
+the thread; `scratchpad_add` / `scratchpad_edit` / `scratchpad_remove` / `scratchpad_clear`). The voice call's audio relay and the OpenAI key are deliberately not tools — the first
 needs a client holding the call, the second is a secret value. `set_mode` to `voice` only says the
 conversation is spoken; a client still has to open the call.
 `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`) read and change

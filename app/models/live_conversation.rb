@@ -33,6 +33,8 @@ class LiveConversation < ApplicationRecord
   RESPONDING_STALE_AFTER = 5.minutes
 
   has_many :turns, -> { order(:id) }, class_name: "LiveConversationTurn", dependent: :delete_all, inverse_of: :live_conversation
+  # The assistant's notes for this conversation (LiveConversations::Scratchpad).
+  has_many :scratchpad_entries, -> { order(:id) }, class_name: "LiveScratchpadEntry", dependent: :delete_all, inverse_of: :live_conversation
 
   validates :mode, inclusion: { in: ->(_) { LiveConversations.mode_keys } }
   validates :status, inclusion: { in: STATUSES }
@@ -219,6 +221,7 @@ class LiveConversation < ApplicationRecord
   def stream_name = "live_conversation_#{id}"
   def turns_dom_id = "live_conversation_#{id}_turns"
   def header_dom_id = "live_conversation_#{id}_header"
+  def scratchpad_dom_id = "live_conversation_#{id}_scratchpad"
 
   def as_api_json(include_turns: false)
     json = {

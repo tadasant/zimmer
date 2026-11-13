@@ -213,6 +213,12 @@ module CronSchedule
       description: "Poll MCP servers that publish events (the MCP Events extension) and create a session per event",
       environments: %i[production staging development]
     },
+    mcp_event_subscriptions: {
+      cron: "* * * * *", # Every minute — DB reads; events/subscribe only when a subscription is new or near its refreshBefore
+      class: "McpEventSubscriptionsJob",
+      description: "Hold MCP Events webhook subscriptions for mcp_event conditions: subscribe, refresh before expiry, unsubscribe when retired",
+      environments: %i[production staging development]
+    },
     mcp_event_sources_refresh: {
       cron: "17 */6 * * *", # Every six hours — one initialize per remote catalog server, plus events/list where declared
       class: "McpEventSourcesRefreshJob",

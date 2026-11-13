@@ -462,7 +462,7 @@ it on, both read from encrypted credentials first and ENV second:
 With both set, `POST /webhooks/slack` is the request URL for the app's Event Subscriptions. With
 either missing it answers every request with a 404 and reads nothing. Production cannot receive
 deliveries yet, because nothing on the public internet can reach it — see
-[the limitation](/limitations/#github-is-polled-and-the-webhooks-have-no-public-way-in).
+[the limitation](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy).
 
 A delivery goes through these checks in order, and nothing further down runs for a request that
 fails one:
@@ -606,7 +606,7 @@ the same server's `whatsapp_send_message`. That means the poller and the agent s
 view of one chat.
 
 Zimmer polls the bridge because nothing can push to it: `/webhooks/*` has
-[no public way in](/limitations/#github-is-polled-and-the-webhooks-have-no-public-way-in).
+[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy) unless its path has an Access policy that admits it.
 
 #### What fires
 
@@ -703,7 +703,7 @@ answers in markdown, and `EmailService` reads the fields it prints (`**ID:**`, `
 in its MCP servers. The poller never sends anything.
 
 Zimmer polls because nothing can push to it: `/webhooks/*` has
-[no public way in](/limitations/#github-is-polled-and-the-webhooks-have-no-public-way-in).
+[no way past Cloudflare Access](/limitations/#github-is-polled-and-inbound-webhooks-need-a-cloudflare-access-policy) unless its path has an Access policy that admits it.
 
 #### What fires
 
@@ -781,7 +781,8 @@ reports through the error reporter on every tick instead.
 ### `mcp_event`
 
 Fires once per event a catalog MCP server publishes through the **MCP Events extension**, the draft
-SEP-3415. Zimmer polls the server itself, from Rails: no agent session is involved, and the
+SEP-3415. Zimmer polls the server itself, from Rails, and also takes webhook deliveries when the event
+type offers them (see [Webhook delivery](#webhook-delivery)). No agent session is involved, and the
 credentials are the ones a session would get for that server. A strad slug is reached at its catalog
 URL with `Bearer ${STRAD_API_KEY}`, resolved by `McpServerEndpoint` exactly as for MCP Apps.
 
@@ -838,7 +839,8 @@ reports.
    is not polled at all, so a backlog cannot hold the burst open by retrying into it.
 
 A server's `nextPollMs` is honoured, clamped to between 15 seconds and 15 minutes. The cron's
-minute is the floor in practice.
+minute is the floor in practice. A condition whose webhook subscription is `verified` is polled
+every 15 minutes instead.
 
 Changing `server`, `event_name` or `arguments` is a different subscription, so the cursor is dropped
 and the condition is baselined again. Editing the template, the filters or anything else on the
@@ -847,6 +849,89 @@ trigger keeps the cursor. That makes it safe to turn a shadow trigger into the r
 A session an `mcp_event` trigger spawns has genesis `mcp_event`, **spot** by default. The metadata
 carries `mcp_event_server`, `mcp_event_name` and `mcp_event_id`. A trigger whose events have a
 person waiting on them sets priority on its own row.
+
+#### Webhook delivery
+
+When the event type lists `webhook` in the server's `events/list`, Zimmer also asks the server to
+POST each event to it as it happens (the SEP's webhook mode). An event then fires a second or two
+after the server has it, not at the next poll. **Polling keeps running**: it is the catch-up path that
+keeps delivery at-least-once. Both paths claim the same `mcp:<server>:<eventId>`, so an event that
+arrives both ways fires one session.
+
+`McpEventSubscriptionsJob` runs every minute and holds one subscription per condition:
+
+1. **Subscribe.** It mints a `whsec_` secret (32 random bytes, stored encrypted with a key derived
+   from `secret_key_base`) and a URL with a random token, `https://<host>/webhooks/mcp_events/<token>`.
+   It calls `events/subscribe` with them, the condition's poll cursor and `ttlMs` of six hours. The
+   server answers only after it has POSTed a signed `verification` challenge to the URL and Zimmer
+   has echoed it. **Challenge echo is the one verification method Zimmer supports.**
+2. **Refresh.** It calls `events/subscribe` again at least hourly, and always before the server's
+   `refreshBefore` (30 minutes ahead, or at half the grant if that is shorter). The call sends the
+   last cursor the server gave this subscription. The hourly refresh is what reactivates a
+   subscription the server suspended after a run of failed deliveries, and the refresh answer's
+   `deliveryStatus` is where Zimmer learns of failures at all.
+3. **Unsubscribe.** When the trigger is disabled or deleted, or the condition's `server`,
+   `event_name` or `arguments` change, it calls `events/unsubscribe` and deletes the row. An edit
+   then subscribes again at a new URL. Editing the template or the filters keeps the subscription.
+
+A failed subscribe or unsubscribe backs off from one minute, doubling, up to six hours. Nothing
+subscribes unless Zimmer's base URL is a real `https` one.
+
+The receiver, `POST /webhooks/mcp_events/:token`:
+
+- is rate-limited to 600 requests a minute per address, before anything else;
+- verifies the Standard Webhooks signature (`webhook-id`, `webhook-timestamp`, `webhook-signature`,
+  HMAC-SHA256 over the raw body) with that subscription's secret, and refuses a timestamp more than
+  five minutes from now;
+- answers every failure (unknown token, bad or stale signature, missing header) with the same empty
+  `401`, and an HMAC is computed either way, so a guessed URL learns nothing;
+- dedupes on `webhook-id` in `webhook_deliveries`, then enqueues `McpEventWebhookJob` and answers
+  `200` in the same transaction. The job fires through the poller's claim. An event that is held
+  (burst control, a pending session) gives its claim back and the poll fires it later;
+- answers `410` to an event for a trigger that is disabled or edited, and is not yet unsubscribed;
+- keeps the cursor from each delivery and `gap` envelope; a body without a `cursor` leaves the
+  stored one alone. A `terminated` envelope sends the condition back to subscribing, ten minutes
+  later.
+
+Push does not keep the poll's order. The poll stops at the first event it cannot fire, so later
+events wait behind it; a webhook delivery fires on its own. So an event that arrives by push can
+fire before an earlier one held by burst control, which the catch-up poll fires afterwards.
+
+The trigger page, `GET /api/v1/triggers/:id` (`conditions[].mcp_event_delivery`) and
+`search_triggers` show each condition's delivery state. `/supervisor/mcp_event_webhook_subscriptions`
+lists every subscription row read-only, with its grant, cursor, last signed request and last error,
+and never its secret:
+
+| State | Meaning | Poll cadence |
+| --- | --- | --- |
+| `poll-only` | The event type offers no webhook, or subscribing failed or has not happened yet. `last_error` says which, as an error name or one of the SEP's categories, never the server's text | every minute |
+| `subscribed` | `events/subscribe` succeeded, and no signed request has reached the URL yet | every minute |
+| `verified` | A signed request (the challenge or a delivery) reached the URL within the last seven hours, so the route through Cloudflare works. Older proof reads as `subscribed` again | every 15 minutes, as catch-up |
+| `suspended` | The server's last refresh reported an ongoing delivery failure (`lastError` with `failedSince`), or that it had suspended delivery after repeated failures, or the grant ran out | every minute |
+
+##### Cloudflare Access on the receiver
+
+Every path on the production host is behind
+[Cloudflare Access](/operate/deploying/#optional-cloudflare-edge), and a request without Access
+credentials gets a 302 to the Access login. The receiver is no exception. Its path has an Access
+application of its own with a **service-token policy**, like every other machine path on the
+domain. No path is an open Bypass:
+
+- **Application:** self-hosted, on the Zimmer hostname, path `webhooks/mcp_events/*`. Access
+  matches the most specific path, so this one replaces the hostname-wide browser policy for that
+  path only.
+- **Policy:** a Service Auth policy admitting the service token the delivering server holds. strad
+  sends it as `CF-Access-Client-Id` / `CF-Access-Client-Secret` on every webhook POST, including the
+  verification challenge, alongside the Standard Webhooks headers.
+
+The application is managed in the production deployment's edge Terraform, not in this repo. That
+makes two layers. Access decides who may reach the path at all; the per-subscription HMAC decides
+whether a delivery is genuine and which subscription it belongs to. Zimmer never reads the Access
+headers. The HMAC is checked whatever Access did, before anything parses the body.
+
+Until the application exists, the server's challenge gets the Access login page,
+`events/subscribe` fails with `callback_endpoint_error`, and the condition stays `poll-only`. Once
+it exists, the next retry (within six hours of backoff) succeeds.
 
 #### The payload is untrusted
 

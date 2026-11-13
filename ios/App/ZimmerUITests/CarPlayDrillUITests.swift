@@ -23,6 +23,13 @@ import XCTest
 @MainActor
 final class CarPlayDrillUITests: XCTestCase {
     private let timeout: TimeInterval = 20
+    /// When the fixture runs the gear's closure after the reconnected call screen goes up:
+    /// `CarPlayLive.drillPressesTheGear`'s 25 seconds.
+    private static let fixtureGearDelay: TimeInterval = 25
+    /// How long CarPlay's host can take to show what the app sent it: a stall of 30 seconds or
+    /// so, in which it answers neither the app nor XCUITest, on top of the time to draw. See
+    /// limitations.md, "CarPlay's host can stop answering in the drill".
+    private static let hostStall: TimeInterval = 45
     private var zimmer: XCUIApplication!
     private let dashboard = XCUIApplication(bundleIdentifier: "com.apple.CarPlayApp")
     private let car = XCUIApplication(bundleIdentifier: "com.apple.CarPlayTemplateUIHost")
@@ -99,6 +106,10 @@ final class CarPlayDrillUITests: XCTestCase {
         plug("CarPlay")
         openInTheCar(callIsUp: true)
         XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "the call goes back to the car; the car showed:\n\(car.debugDescription)")
+        // The fixture presses the gear on its own clock, counted from when the app hears this
+        // call screen went up, about when the drill sees the gear; `hostStall` covers the
+        // difference.
+        let gearPressed = Date().addingTimeInterval(Self.fixtureGearDelay)
         photograph("carplay-call-screen-after-the-car-came-back")
         assertAlive("with the car back")
 
@@ -118,8 +129,10 @@ final class CarPlayDrillUITests: XCTestCase {
 
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
-        // gear's own closure, off the main thread, 25 seconds after the call screen goes up.
-        XCTAssertTrue(row("Back to the call").waitForExistence(timeout: timeout), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
+        // gear's own closure, off the main thread, 25 seconds after the call screen goes up. The
+        // wait runs to `hostStall` past that press.
+        let panelWait = max(0, gearPressed.timeIntervalSinceNow) + Self.hostStall
+        XCTAssertTrue(row("Back to the call").waitForExistence(timeout: panelWait), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
 
@@ -188,10 +201,15 @@ final class CarPlayDrillUITests: XCTestCase {
 
     /// Zimmer's CarPlay scene, from the CarPlay home screen: home first, in case the car is on
     /// another app, then Zimmer's icon. `callIsUp`: the scene opens on the call, not the tiles.
+    ///
+    /// Nothing asks CarPlay's host (`car`) before the icon is tapped: only the dashboard. Just after
+    /// the car is plugged back in, the host can stop answering XCUITest, and a query there fails
+    /// the drill with `Failed to get matching snapshots` once its three 30-second tries run out.
+    /// A look there first would find nothing anyway: the scene comes up from the icon, at launch
+    /// and after the plug.
     private func openInTheCar(callIsUp: Bool = false) {
-        if callIsUp ? car.buttons["gearshape.fill"].waitForExistence(timeout: 5) : text(Self.newTitles[0]).waitForExistence(timeout: 5) || text(Self.newTitles[1]).exists { return }
         let home = dashboard.descendants(matching: .any)["CARStatusBarHomeButton"]
-        if home.exists {
+        if home.waitForExistence(timeout: 5) {
             home.tap()
         }
         let icon = dashboard.descendants(matching: .any).matching(NSPredicate(format: "label == 'Zimmer'")).firstMatch

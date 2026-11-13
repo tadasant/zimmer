@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module McpEvents
-  # The two requests of the events extension's poll mode, over the same bounded Streamable HTTP
+  # The requests of the events extension's poll and webhook modes, over the same bounded Streamable HTTP
   # client MCP Apps uses (timeouts, a response byte cap, no redirects).
   #
   # Everything a server returns is checked for shape before it leaves this class: an occurrence
@@ -20,6 +20,10 @@ module McpEvents
         delivery.include?("poll")
       end
 
+      def webhook?
+        delivery.include?("webhook")
+      end
+
       def to_h
         { "name" => name, "description" => description, "delivery" => delivery,
           "inputSchema" => input_schema, "payloadSchema" => payload_schema }
@@ -31,6 +35,10 @@ module McpEvents
 
     # One `events/poll` result.
     PollResult = Data.define(:events, :cursor, :truncated, :has_more, :next_poll_ms)
+
+    # One `events/subscribe` result. `refresh_before` is nil for a no-expiry grant, which Zimmer
+    # never asks for; `delivery_status` is the server's optional report on a refresh.
+    SubscribeResult = Data.define(:id, :refresh_before, :cursor, :truncated, :delivery_status)
 
     # What an event id may look like: a dedupe key stored per fire, never prose. The same shape
     # Trigger::TRUSTED_IDENTIFIER_FORMATS lets {{event_id}} render.
@@ -81,7 +89,7 @@ module McpEvents
         "arguments" => arguments || {},
         "cursor" => cursor.presence,
         "maxEvents" => max_events,
-        "_meta" => { "io.modelcontextprotocol/clientCapabilities" => { "extensions" => { EXTENSION_ID => {} } } }
+        "_meta" => client_capabilities_meta
       }
       result = request("events/poll", params, headers: { "Mcp-Method" => "events/poll", "Mcp-Name" => name })
 
@@ -97,7 +105,75 @@ module McpEvents
       )
     end
 
+    # One `events/subscribe` — a first subscribe or a refresh, which the SEP makes the same call.
+    # The server verifies +url+ (Zimmer answers the challenge) before it answers.
+    #
+    # @return [SubscribeResult]
+    def subscribe(name:, arguments:, url:, secret:, cursor:, ttl_ms:)
+      raise Error, "event name #{name.inspect} is not one Zimmer subscribes to" unless name.to_s.match?(NAME_FORMAT)
+
+      params = {
+        "name" => name,
+        "arguments" => arguments || {},
+        "delivery" => { "mode" => "webhook", "url" => url, "secret" => secret },
+        "cursor" => cursor.presence,
+        "ttlMs" => ttl_ms,
+        "_meta" => client_capabilities_meta
+      }
+      result = request("events/subscribe", params, headers: { "Mcp-Method" => "events/subscribe", "Mcp-Name" => name })
+
+      id = result["id"]
+      raise Error, "events/subscribe answered without an id" unless id.is_a?(String) && id.present?
+
+      SubscribeResult.new(
+        id: id,
+        refresh_before: result["refreshBefore"].nil? ? nil : (parse_time(result["refreshBefore"]) || raise(Error, "events/subscribe answered an unreadable refreshBefore")),
+        cursor: result["cursor"].is_a?(String) ? result["cursor"].presence : nil,
+        truncated: result["truncated"] == true,
+        delivery_status: result["deliveryStatus"].is_a?(Hash) ? result["deliveryStatus"].slice("active", "lastDeliveryAt", "lastError", "failedSince", "throttled", "retryAfterMs") : nil
+      )
+    end
+
+    # One `events/unsubscribe`. The key is `(principal, url, name, arguments)`; the principal is
+    # whoever the request's credentials say.
+    def unsubscribe(name:, arguments:, url:)
+      request(
+        "events/unsubscribe",
+        { "name" => name, "arguments" => arguments || {}, "delivery" => { "url" => url }, "_meta" => client_capabilities_meta },
+        headers: { "Mcp-Method" => "events/unsubscribe", "Mcp-Name" => name }
+      )
+      nil
+    end
+
+    # An occurrence from a webhook body or a poll result, checked for shape; nil when it fails.
+    def self.occurrence_from(raw)
+      return nil unless raw.is_a?(Hash)
+
+      # The id is the dedupe key, goes into log lines and session metadata, and renders bare as
+      # {{event_id}}, so it must have an identifier's shape; an event without one is dropped.
+      event_id = raw["eventId"]
+      return nil unless event_id.is_a?(String) && event_id.match?(EVENT_ID_FORMAT)
+      return nil unless raw["data"].is_a?(Hash)
+
+      Occurrence.new(
+        event_id: event_id,
+        name: raw["name"].to_s,
+        timestamp: parse_time(raw["timestamp"]),
+        data: raw["data"]
+      )
+    end
+
+    def self.parse_time(value)
+      Time.iso8601(value.to_s)
+    rescue ArgumentError
+      nil
+    end
+
     private
+
+    def client_capabilities_meta
+      { "io.modelcontextprotocol/clientCapabilities" => { "extensions" => { EXTENSION_ID => {} } } }
+    end
 
     def descriptor_from(raw)
       return nil unless raw.is_a?(Hash)
@@ -116,26 +192,11 @@ module McpEvents
     end
 
     def occurrence_from(raw)
-      return nil unless raw.is_a?(Hash)
-
-      # The id is the dedupe key, goes into log lines and session metadata, and renders bare as
-      # {{event_id}}, so it must have an identifier's shape; an event without one is dropped.
-      event_id = raw["eventId"]
-      return nil unless event_id.is_a?(String) && event_id.match?(EVENT_ID_FORMAT)
-      return nil unless raw["data"].is_a?(Hash)
-
-      Occurrence.new(
-        event_id: event_id,
-        name: raw["name"].to_s,
-        timestamp: parse_time(raw["timestamp"]),
-        data: raw["data"]
-      )
+      self.class.occurrence_from(raw)
     end
 
     def parse_time(value)
-      Time.iso8601(value.to_s)
-    rescue ArgumentError
-      nil
+      self.class.parse_time(value)
     end
   end
 end

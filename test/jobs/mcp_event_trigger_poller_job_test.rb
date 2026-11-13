@@ -257,7 +257,7 @@ class McpEventTriggerPollerJobTest < ActiveJob::TestCase
     @trigger.update_columns(prompt_template: "Raw: {{event.text}}")
     @server.publish(channel_id: "C1", ts: "8.000001", mentions_bot: true)
 
-    ErrorReporter.expects(:report_exception).with(instance_of(McpEventTriggerPollerJob::UnfireableTrigger), anything).once
+    ErrorReporter.expects(:report_exception).with(instance_of(McpEvents::Firing::UnfireableTrigger), anything).once
     assert_no_difference -> { spawned_sessions.count } do
       McpEventTriggerPollerJob.perform_now
     end

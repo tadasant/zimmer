@@ -64,6 +64,7 @@ Rails.application.routes.draw do
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    resources :live_scratchpad_entries, only: [ :index, :show ]
     # Read-only too: the Live settings are written through SettingsUpdate, which
     # validates and records every change, on /live/settings, REST and MCP.
     resources :live_settings, only: [ :index, :show ]
@@ -74,6 +75,8 @@ Rails.application.routes.draw do
     # already answered.
     resources :trigger_event_claims, only: [ :index, :show ]
     resources :webhook_deliveries, only: [ :index, :show ]
+    # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
+    resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     # Read-only plus destroy: every row records what a remote MCP server answered
@@ -203,6 +206,9 @@ Rails.application.routes.draw do
   namespace :webhooks do
     post "slack", to: "slack#create", as: :slack
     post "github", to: "github#create", as: :github
+    # MCP Events webhook delivery: one URL per McpEventWebhookSubscription. Production puts the
+    # path behind its own Access service-token policy — see Webhooks::McpEventsController.
+    post "mcp_events/:token", to: "mcp_events#create", as: :mcp_events, constraints: { token: /[A-Za-z0-9_-]{16,64}/ }
   end
 
   namespace :api do
@@ -234,6 +240,10 @@ Rails.application.routes.draw do
           post :tool_calls
           post :turns
           post :session_update
+        end
+        # Its scratchpad (LiveConversations::Scratchpad); every route takes the app's sign-in.
+        resources :scratchpad_entries, only: %i[index create update destroy], controller: "live_scratchpad_entries" do
+          delete :clear, on: :collection
         end
       end
       # The Inference page for the iOS app: the account roster with its quota
@@ -607,6 +617,11 @@ Rails.application.routes.draw do
       post :tool_calls
       post :turns
       post :session_update
+    end
+    # The conversation's scratchpad (LiveConversations::Scratchpad): the index
+    # is the page that edits it.
+    resources :scratchpad_entries, only: %i[index create update destroy], controller: "live_scratchpad_entries" do
+      delete :clear, on: :collection
     end
   end
 

@@ -32,6 +32,19 @@ class FakeEventsMcpServer
   # The most events one poll answer carries, whatever maxEvents asks for — so a test can make
   # the poller follow hasMore.
   attr_accessor :page_size
+  # The delivery modes `events/list` advertises; add "webhook" to exercise webhook mode.
+  attr_accessor :delivery
+  # A JSON-RPC error to answer events/subscribe with, e.g. [-32027, "CallbackEndpointError", {"reason" => "challenge_failed"}].
+  attr_accessor :refuse_subscribe
+  # deliveryStatus on every subscribe answer.
+  attr_accessor :delivery_status
+  # Called with the params of each events/subscribe before it is answered — where a test plays the
+  # server's verification POST.
+  attr_accessor :on_subscribe
+  # Whether events/subscribe answers truncated: true.
+  attr_accessor :subscribe_truncated
+  # Live webhook subscriptions, url => params of the subscribe that made it.
+  attr_reader :subscriptions
 
   def self.start
     new.tap(&:start)
@@ -44,6 +57,8 @@ class FakeEventsMcpServer
     @declares_events = true
     @next_poll_ms = nil
     @retention_floor = 0
+    @delivery = [ "poll" ]
+    @subscriptions = {}
     @mutex = Mutex.new
   end
 
@@ -81,6 +96,15 @@ class FakeEventsMcpServer
     @mutex.synchronize { @calls.select { |call| call.method == "events/poll" } }
   end
 
+  def calls_to(method)
+    @mutex.synchronize { @calls.select { |call| call.method == method } }
+  end
+
+  # The most recently published event, as a webhook would POST it.
+  def last_event
+    @mutex.synchronize { @events.last.merge("cursor" => "seq:#{@events.size}") }
+  end
+
   private
 
   def serve(socket)
@@ -108,6 +132,10 @@ class FakeEventsMcpServer
     if refuse && message["method"].to_s.start_with?("events/")
       return [ 200, { "jsonrpc" => "2.0", "id" => message["id"], "error" => { "code" => refuse[0], "message" => refuse[1] } } ]
     end
+    if refuse_subscribe && message["method"] == "events/subscribe"
+      error = { "code" => refuse_subscribe[0], "message" => refuse_subscribe[1], "data" => refuse_subscribe[2] }.compact
+      return [ 200, { "jsonrpc" => "2.0", "id" => message["id"], "error" => error } ]
+    end
 
     result = case message["method"]
     when "initialize"
@@ -118,6 +146,16 @@ class FakeEventsMcpServer
       { "events" => [ descriptor ] }
     when "events/poll"
       poll(params)
+    when "events/subscribe"
+      on_subscribe&.call(params)
+      subscribe(params)
+    when "events/unsubscribe"
+      url = params.dig("delivery", "url")
+      unless @mutex.synchronize { @subscriptions.delete(url) }
+        return [ 200, { "jsonrpc" => "2.0", "id" => message["id"], "error" => { "code" => -32023, "message" => "NotFound" } } ]
+      end
+
+      {}
     end
     [ 200, { "jsonrpc" => "2.0", "id" => message["id"], "result" => result } ]
   end
@@ -126,10 +164,20 @@ class FakeEventsMcpServer
     {
       "name" => EVENT_NAME,
       "description" => "A message was posted in a conversation the bot is in.",
-      "delivery" => [ "poll" ],
+      "delivery" => delivery,
       "inputSchema" => { "type" => "object", "properties" => { "addressed_to_bot" => { "type" => "boolean" } } },
       "payloadSchema" => { "type" => "object", "properties" => { "channel_id" => { "type" => "string" }, "text" => { "type" => "string" } } }
     }
+  end
+
+  def subscribe(params)
+    @mutex.synchronize do
+      @subscriptions[params.dig("delivery", "url")] = params
+      ttl = params["ttlMs"] || 3_600_000
+      { "id" => "sub_#{Digest::SHA256.hexdigest(params.dig('delivery', 'url').to_s)[0, 16]}",
+        "refreshBefore" => (Time.current + (ttl / 1000.0)).utc.iso8601, "cursor" => "seq:#{@events.size}",
+        "truncated" => subscribe_truncated == true, "deliveryStatus" => delivery_status }.compact
+    end
   end
 
   def poll(params)
