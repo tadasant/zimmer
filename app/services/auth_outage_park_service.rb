@@ -666,12 +666,19 @@ class AuthOutageParkService
   def self.served_since_park?(session, verified_at)
     return false if verified_at.blank?
 
-    parked_at = Time.zone.parse(session.metadata&.dig("auth_outage_parked_at").to_s) rescue nil
+    parked_at = begin
+      Time.zone.parse(session.metadata&.dig("auth_outage_parked_at").to_s)
+    rescue ArgumentError
+      nil
+    end
     return false unless parked_at
 
     identity = session.metadata&.dig(AuthRecoveryCoordinator::IDENTITY_KEY)
     latest = verified_at.key?(identity) ? verified_at[identity] : verified_at.values.max
-    latest.present? && latest > parked_at
+    # The park stamp is whole seconds and the verdict is not, so a probe from
+    # the same second as the park — the coordinator's own, taken just before it
+    # parked — must not read as "after".
+    latest.present? && latest >= parked_at + 1.second
   end
 
   # When Anthropic last served each available account's stored token, by email:

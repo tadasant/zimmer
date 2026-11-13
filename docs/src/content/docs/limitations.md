@@ -2431,12 +2431,19 @@ whole spot wake into one event, and the sharp edges are all about that concentra
   [#617](https://github.com/tadasant/zimmer/issues/617).
 - **The fingerprint is coarse in both directions.** On its own it cannot see an outage that heals on
   Anthropic's side without touching an account row; the sweep covers that with a second piece of
-  evidence, a credential probe Anthropic answered after the park, which waits on the next probe
-  (about fifteen minutes) rather than firing at once. The fingerprint also fires on credential
-  changes that are not repairs at all — the five-minute `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves
-  the same digest. `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by a
-  re-park, is what makes that survivable rather than exact. Past the budget the session stays parked
-  until a human resumes it or the pool changes enough for a later sweep to grant one.
+  evidence, a credential probe Anthropic answered after the park. That waits on the next probe and
+  then the next sweep, so up to about half an hour, rather than firing at once. The fingerprint also
+  fires on credential changes that are not repairs at all — the five-minute
+  `sync_current_account_tokens!` adopting a token the CLI rotated on disk moves the same digest.
+  `MAX_EARLY_WAKES` (3) per `EARLY_WAKE_WINDOW` (6 h), deliberately not reset by a re-park, is what
+  makes that survivable rather than exact. Past the budget the session stays parked until a human
+  resumes it or the pool changes enough for a later sweep to grant one.
+- **A Cloudflare block that outlasts the API-error ladder fails the session.** An edge block
+  ([#1502](https://github.com/tadasant/zimmer/issues/1502)) is retried on the ordinary backoff,
+  about nine minutes in all, and then fails like any exhausted API error. That is deliberate: it
+  says nothing about the credential, so parking it on the auth pool would wait for evidence that
+  never comes. A block that lasts longer, such as an IP-level ban on the droplet, fails every
+  session that hits it, and a human resumes them once it clears.
 - **Codex has no quota API**, so a parked Codex session is never woken by a quota edge at all — its
   pool is read for availability only.
 - **`auth_outage_pool_recovers_at` is an estimate, not a schedule.** It is derived from

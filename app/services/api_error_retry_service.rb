@@ -446,7 +446,10 @@ class ApiErrorRetryService
             is_rate_limit: is_rate_limit,
             is_quota_limit: is_quota_limit,
             is_malformed_tool_call: self.class.malformed_tool_call?(message_text),
-            is_edge_block: self.class.edge_block?(message_text),
+            # A Cloudflare 5xx page is the origin failing, not a block; it keeps
+            # the server-error category and its warning.
+            is_edge_block: self.class.edge_block?(message_text) &&
+              API_SERVER_ERROR_PATTERNS.none? { |pattern| message_text.match?(pattern) },
             message_text: message_text
           }
         end
@@ -796,7 +799,7 @@ class ApiErrorRetryService
     elsif @detected_malformed_tool_call
       "Malformed tool call"
     elsif @detected_edge_block
-      "Edge block (Cloudflare 403)"
+      "Edge block (Cloudflare)"
     else
       "API server error"
     end

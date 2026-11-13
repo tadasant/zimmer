@@ -1051,13 +1051,15 @@ account kept serving every other session. The prose net claimed it anyway, recov
 rotated, found no other account, and parked both `auth_unrecoverable`
 ([#1502](https://github.com/tadasant/zimmer/issues/1502)).
 
-`ApiErrorRetryService.edge_block?` recognises that page — Cloudflare's challenge title, Cloudflare
+`ApiErrorRetryService.edge_block?` recognizes that page — Cloudflare's challenge title, Cloudflare
 named anywhere, or an HTML document under a 403 — and it outranks every other reading, the
 `authentication_failed` type included. `AuthRecoveryService.auth_error?` answers no for it, and
-`ApiErrorRetryService` retries it on the ordinary backoff ladder. Intermediate attempts log at
-`info`; only running out of retries warns. An expired OAuth session, *"Not logged in"*, and the
-structured auth types keep their path, because the carve-out is the block page, not the
-*"Failed to authenticate"* prefix.
+`ApiErrorRetryService` retries it on the ordinary backoff ladder, on the shared API-error budget.
+Intermediate attempts log at `info`; only running out of retries warns, and an exhausted block fails
+the session like any other exhausted API error. A Cloudflare *5xx* page is the origin failing rather
+than a block, and keeps the server-error category and its warning. An expired OAuth session, *"Not
+logged in"*, and the structured auth types keep their path, because the carve-out is the block page,
+not the *"Failed to authenticate"* prefix.
 
 ### An organization refusal benches the account
 
@@ -1621,11 +1623,11 @@ every write, and the one `auth_outage_*` key deliberately kept out of `STALE_RET
 It has to outlive the resume it paid for, or a re-park would hand the session a fresh budget and the
 cap would bound nothing. It is charged inside `resume_parked!`'s transaction, under the same row
 lock as the resume: charging afterwards would race the job that resume enqueues for the metadata
-column, and a failed charge would silently un-bound the cap. Past the budget the session stays parked until a human resumes it or the
-pool changes again.
+column, and a failed charge would silently un-bound the cap. Past the budget the session stays
+parked until a human resumes it or the pool changes again.
 
-The fingerprint is not the only evidence. A park whose failure was never about a credential — the
-Cloudflare block above, before it was recognised — moves nothing the fingerprint hashes, and would
+The fingerprint is not the only evidence. A park whose failure was never about a credential, like
+the Cloudflare block above, moves nothing the fingerprint hashes, and would
 sit with the pool serving everyone else. So the sweep also wakes an auth park when the pool has
 **served since the park**: an available account's `credential_verified_at` is later than
 `auth_outage_parked_at`. The account the session was spawned with (`auth_identity_email`) answers

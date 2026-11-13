@@ -498,7 +498,7 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
       "an edge block is not rate-limit pressure on the API"
 
     @log_buffer.flush
-    log = @session.logs.reload.find_by("content LIKE ?", "Edge block (Cloudflare 403) detected - attempting auto-retry 1/%")
+    log = @session.logs.reload.find_by("content LIKE ?", "Edge block (Cloudflare) detected - attempting auto-retry 1/%")
     assert log, "the retry must name the edge block as its own category"
     assert_equal "info", log.level
   end
@@ -516,6 +516,30 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     @log_buffer.flush
     assert @session.logs.reload.exists?(level: "warning", content: "API error retry limit reached (#{ApiErrorRetryService::BUDGET.max} attempts)"),
       "running out of retries is what warns"
+  end
+
+  # A Cloudflare 5xx page is the origin failing behind the CDN, not a block: it
+  # keeps the server-error category and its warning.
+  test "a Cloudflare 5xx page is retried as a server error, not an edge block" do
+    setup_transcript_with_api_error("API Error: 502 Bad Gateway | Cloudflare", error_type: "")
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+    service.attempt_retry("/tmp/test-clone")
+    @log_buffer.flush
+
+    log = @session.logs.reload.find_by("content LIKE ?", "API server error detected - attempting auto-retry 1/%")
+    assert log
+    assert_equal "warning", log.level
+  end
+
+  test "outage_error? counts a Cloudflare 403 as the provider being unavailable" do
+    assert ApiErrorRetryService.outage_error?("", CLOUDFLARE_403)
+    assert_not ApiErrorRetryService.outage_error?("authentication_failed",
+      "Failed to authenticate: OAuth session expired and could not be refreshed")
   end
 
   test "a Cloudflare 403 is recognized and never reported as an unknown wording" do
