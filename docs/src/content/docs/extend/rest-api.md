@@ -1217,6 +1217,16 @@ last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user
 source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
 created_at}`.
 
+Scratchpad ([the conversation's notes](/sessions/live/#the-scratchpad)) — every route, the read
+included, takes the app's sign-in acting as you; an API key gets 403 ·
+`GET /live_conversations/:id/scratchpad_entries` → `{live_conversation_id, entries: [{id, body,
+written_by (assistant|person|mcp), created_at, updated_at}], max_entries, max_entry_chars}`, oldest
+first · `POST …/scratchpad_entries` (`body`) → 201 · `PATCH …/scratchpad_entries/:entry_id` (`body`)
+· `DELETE …/scratchpad_entries/:entry_id` · `DELETE …/scratchpad_entries/clear`. Every write answers
+with the pad as it now is; 422 with the reason when a note is empty, longer than 300 characters, the
+pad already holds 30, or the note is not this conversation's. A voice call on the conversation picks
+the change up from its next `session_update`.
+
 Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
 user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
 sent while the conversation is still `preparing` is accepted and answered once it is active. 422

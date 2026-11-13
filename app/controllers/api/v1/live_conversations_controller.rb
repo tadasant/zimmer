@@ -16,6 +16,7 @@
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
 #   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings
+#        /api/v1/live_conversations/:id/scratchpad_entries  its scratchpad (Api::V1::LiveScratchpadEntriesController)
 #
 # The Live settings themselves are Api::V1::LiveSettingsController's.
 #

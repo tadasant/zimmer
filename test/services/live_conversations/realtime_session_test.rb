@@ -15,7 +15,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-realtime-2.1-mini", minted[:model]
     assert_equal "https://api.openai.com/v1/realtime/calls", minted[:calls_url]
     assert_equal "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini", minted[:websocket_url]
-    assert_equal minted[:tools].map { |t| t[:name] }, %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation hang_up]
+    assert_equal minted[:tools].map { |t| t[:name] }, %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad hang_up]
 
     body = client.secret_requests.sole
     assert_equal({ "anchor" => "created_at", "seconds" => 600 }, body["expires_after"])
@@ -141,5 +141,14 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert update[:instructions].end_with?("Shorter.")
     assert update.dig(:audio, :input).key?(:noise_reduction)
     assert_includes update[:tools].map { |t| t[:name] }, "update_live_settings"
+  end
+
+  test "a call's instructions and its mid-call update carry the scratchpad" do
+    conversation = create_live_conversation(mode: "voice")
+    conversation.scratchpad_entries.create!(body: "Session 1234 can't merge yet", written_by: "assistant")
+    session = LiveConversations::RealtimeSession.new(conversation)
+
+    assert_includes session.session_config[:instructions], "Session 1234 can't merge yet"
+    assert_includes session.session_update[:instructions], "Session 1234 can't merge yet"
   end
 end

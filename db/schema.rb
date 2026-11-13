@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_13_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -519,6 +519,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
     t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
+  end
+
+  create_table "live_scratchpad_entries", force: :cascade do |t|
+    t.text "body", null: false
+    t.datetime "created_at", null: false
+    t.bigint "live_conversation_id", null: false
+    t.datetime "updated_at", null: false
+    t.string "written_by", null: false
+    t.index ["live_conversation_id"], name: "index_live_scratchpad_entries_on_live_conversation_id"
   end
 
   create_table "live_setting_changes", force: :cascade do |t|
@@ -1339,6 +1348,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_120000) do
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
+  add_foreign_key "live_scratchpad_entries", "live_conversations", on_delete: :cascade
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade

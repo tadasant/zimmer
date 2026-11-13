@@ -11,7 +11,7 @@ module Mcp
     # and the OpenAI key, which Zimmer does not manage on any surface: it is set
     # in the secrets console that administers the store.
     class ActionLiveConversation < Tool
-      ACTIONS = %w[start switch send_message set_mode finish].freeze
+      ACTIONS = %w[start switch send_message set_mode finish scratchpad_add scratchpad_edit scratchpad_remove scratchpad_clear].freeze
 
       tool_name "action_live_conversation"
 
@@ -24,6 +24,7 @@ module Mcp
         - **send_message**: type "content" into a conversation ("id") while it is typed (voice off). The reply is written by a background job; read it with get_live_conversations.
         - **set_mode**: switch a conversation ("id") to "mode" — "voice" turns voice on (a client then opens the call), "text" turns it off. The model's instructions follow the mode: longer, formatted answers when typed; short, conversational ones when spoken.
         - **finish**: end a conversation ("id").
+        - **scratchpad_add** / **scratchpad_edit** / **scratchpad_remove** / **scratchpad_clear**: edit a conversation's ("id") scratchpad, the short notes its assistant reads on every turn — what not to bring up again, what is settled. Add takes "content"; edit takes "note_id" and "content"; remove takes "note_id". At most #{LiveConversations::Scratchpad::MAX_ENTRIES} notes of #{LiveScratchpadEntry::MAX_BODY_CHARS} characters; a write past either is refused. Read it with get_live_conversations.
       DESC
 
       input_schema({
@@ -33,7 +34,8 @@ module Mcp
           mode: { type: "string", enum: LiveConversations::MODES.keys, description: "For set_mode (required), start (default \"text\") and switch (default: the mode of the conversation being left)." },
           id: { type: "number", description: "The live conversation, for send_message, set_mode and finish, and optionally switch." },
           from_id: { type: "number", description: "For switch: the conversation you believe is current, 0 for none." },
-          content: { type: "string", description: "For send_message." }
+          content: { type: "string", description: "For send_message, scratchpad_add and scratchpad_edit." },
+          note_id: { type: "number", description: "For scratchpad_edit and scratchpad_remove: the note's number." }
         },
         required: [ "action" ]
       })
@@ -45,9 +47,10 @@ module Mcp
         when "send_message" then send_message(args)
         when "set_mode" then set_mode(args)
         when "finish" then finish(args)
+        when "scratchpad_add", "scratchpad_edit", "scratchpad_remove", "scratchpad_clear" then scratchpad(args)
         else raise ToolError, "Unknown action \"#{args['action']}\". Valid actions: #{ACTIONS.join(', ')}"
         end
-      rescue LiveConversations::Actions::Refused, LiveConversations::Start::Unavailable => e
+      rescue LiveConversations::Actions::Refused, LiveConversations::Start::Unavailable, LiveConversations::Scratchpad::Refused => e
         raise ToolError, e.message
       end
 
@@ -96,6 +99,20 @@ module Mcp
         conversation = find(args)
         LiveConversations::Actions.new(conversation, client_surface: "mcp").finish
         "## Live conversation ##{conversation.id} ended"
+      end
+
+      # Written as `mcp`: a connection on this group may be the person's assistant
+      # or one of the fleet's, and the pad says which surface wrote a note.
+      def scratchpad(args)
+        conversation = find(args)
+        pad = LiveConversations::Scratchpad.new(conversation, written_by: "mcp")
+        done = case args["action"]
+        when "scratchpad_add" then "Added note #{pad.add(require_arg(args, :content)).id}."
+        when "scratchpad_edit" then "Changed note #{pad.edit(require_arg(args, :note_id), require_arg(args, :content)).id}."
+        when "scratchpad_remove" then "Removed note #{pad.remove(require_arg(args, :note_id)).id}."
+        when "scratchpad_clear" then "Removed #{pad.clear} notes."
+        end
+        "## Scratchpad of live conversation ##{conversation.id}\n\n#{done}\n\n#{pad.listing}"
       end
 
       def find(args)

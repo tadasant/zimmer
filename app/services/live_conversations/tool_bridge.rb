@@ -45,6 +45,13 @@ module LiveConversations
   #    background session or a tool call already running carries on, because
   #    Zimmer runs it whether the call is still up or not.
   #
+  # 7. **Its own scratchpad** — `scratchpad`, short notes for the rest of this
+  #    conversation ("session 1234 cannot merge yet; stop raising it"), which
+  #    SystemPrompt puts in every turn's instructions (Scratchpad). Always
+  #    present, both modes. It takes no conversation id: the pad it reads and
+  #    writes is this conversation's and no other. A write mid-call hands a
+  #    voice client a `session.update`, so the call's instructions carry it.
+  #
   # Every call is recorded as a `tool` turn on the conversation.
   class ToolBridge
     ZIMMER_TOOL = "zimmer"
@@ -57,6 +64,8 @@ module LiveConversations
     LIST_CONVERSATIONS = "list_live_conversations"
     SWITCH_CONVERSATION = "switch_live_conversation"
     HANG_UP = "hang_up"
+    SCRATCHPAD = "scratchpad"
+    SCRATCHPAD_ACTIONS = %w[read add edit remove clear].freeze
     # Few, because they are read aloud to someone who cannot look at a list.
     LISTED_CONVERSATIONS = 3
     # Settings the live model may not change itself: how much the app reports
@@ -122,6 +131,7 @@ module LiveConversations
       list.concat(server_functions)
       list.concat(settings_functions)
       list.concat(conversation_functions)
+      list << scratchpad_function
       list.concat(direct_functions.map(&:first))
       list
     end
@@ -205,6 +215,7 @@ module LiveConversations
       when LIST_CONVERSATIONS then [ conversation_listing, false, false ]
       when SWITCH_CONVERSATION then [ switch_conversation(args), false, false ]
       when HANG_UP then [ hang_up, false, false ]
+      when SCRATCHPAD then [ scratchpad(args), false, false ]
       else
         server_name, tool_name = direct_lookup[name]
         raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
@@ -559,6 +570,51 @@ module LiveConversations
           }
         )
       ]
+    end
+
+    # --- Its own scratchpad ---------------------------------------------------
+
+    def scratchpad_function
+      Function.new(
+        name: SCRATCHPAD,
+        description: "Your notes for the rest of this conversation, which you are shown on every turn under \"Your " \
+                     "scratchpad\". Add one when the person settles something, tells you to stop bringing something up " \
+                     "(\"session 1234 can't merge yet, stop raising it\"), or tells you something you will need later. " \
+                     "One fact per note, at most #{LiveScratchpadEntry::MAX_BODY_CHARS} characters, at most " \
+                     "#{Scratchpad::MAX_ENTRIES} notes. Edit or remove a note once it no longer holds. Actions: read, " \
+                     "add (text), edit (note_id, text), remove (note_id), clear (only when the person asks).",
+        parameters: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: SCRATCHPAD_ACTIONS },
+            text: { type: "string", description: "For add and edit: the note." },
+            note_id: { type: "number", description: "For edit and remove: the note's number, as the scratchpad shows it." }
+          },
+          required: %w[action]
+        }
+      )
+    end
+
+    def scratchpad(args)
+      pad = Scratchpad.new(@conversation, written_by: "assistant")
+      result = case args["action"].to_s
+      when "read" then nil
+      when "add" then "Added note #{pad.add(args['text']).id}."
+      when "edit" then "Changed note #{pad.edit(require_note_id(args), args['text']).id}."
+      when "remove" then "Removed note #{pad.remove(require_note_id(args)).id}."
+      when "clear" then "Removed all #{pad.clear} notes."
+      else raise ToolFailure, "action must be one of: #{SCRATCHPAD_ACTIONS.join(', ')}"
+      end
+      # A call's instructions were sent when it opened: the notes reach it in a
+      # fresh `session.update`.
+      @session_changed = true unless result.nil?
+      [ result, pad.listing ].compact.join("\n")
+    rescue Scratchpad::Refused => e
+      raise ToolFailure, e.message
+    end
+
+    def require_note_id(args)
+      args["note_id"].presence || raise(ToolFailure, "note_id is required for #{args['action']}.")
     end
 
     def conversation_listing
