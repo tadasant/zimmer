@@ -703,6 +703,11 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
       assert_equal 0, AuthOutageParkService.wake_parked_sessions!
     end
     assert_equal "waiting", @session.reload.status
+
+    travel AuthOutageParkService::EARLY_WAKE_WINDOW + 1.minute do
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!,
+        "the same evidence wakes it once the spent wakes age out of the window"
+    end
   end
 
   # A verification that a later refusal overruled is not the pool serving.
@@ -717,8 +722,38 @@ class AuthOutageParkServiceTest < ActiveSupport::TestCase
         .returns(@session.reload.metadata[AuthOutageParkService::POOL_FINGERPRINT_KEY])
 
       assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+
+      account.update_columns(credential_verified_at: 2.seconds.from_now)
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!,
+        "a later verification that overrules the refusal does wake it"
     end
-    assert_equal "waiting", @session.reload.status
+  end
+
+  # No recorded identity: any available account the pool verified after the
+  # park is evidence, since recovery would rotate onto it.
+  test "an auth-outage park with no recorded identity wakes on any account verified after the park" do
+    create_account(email: "stale@example.com", status: :active)
+    spare = create_account(email: "spare@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+    assert_nil @session.reload.metadata[AuthRecoveryCoordinator::IDENTITY_KEY]
+
+    travel 1.minute do
+      spare.update_columns(credential_verified_at: Time.current)
+      assert_equal 1, AuthOutageParkService.wake_parked_sessions!
+    end
+  end
+
+  # The stamp is whole seconds, and the coordinator probes just before it parks.
+  test "a verification from the park's own second is not evidence of serving since" do
+    account = create_account(email: "same-second@example.com", status: :active)
+    @session.update!(status: :needs_input)
+    freeze_time do
+      park!(reason: AuthOutageParkService::AUTH_UNRECOVERABLE)
+      account.update_columns(credential_verified_at: Time.current + 0.5.seconds)
+
+      assert_equal 0, AuthOutageParkService.wake_parked_sessions!
+    end
   end
 
   # Parked before the fingerprint existed (or by a park whose pool read failed):

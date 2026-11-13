@@ -3362,8 +3362,8 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
 
   # tadasant/zimmer#1502, end to end. The production shape: a Cloudflare 403 the
   # runtime prefixed with "Failed to authenticate", on a pool with no other
-  # account to rotate into. It used to park `auth_unrecoverable`; it must go to
-  # the API-error backoff ladder and resume instead.
+  # account to rotate into. It goes to the API-error backoff ladder and resumes;
+  # it never runs auth recovery or parks `auth_unrecoverable`.
   test "handle_exit retries a Cloudflare 403 instead of running auth recovery and parking" do
     @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
 
@@ -3386,7 +3386,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
     assert_nil @session.metadata["auth_recovery_count"]
 
     @log_buffer.flush
-    assert_match(/Edge block \(Cloudflare 403\) detected - attempting auto-retry 1\//,
+    assert_match(/Edge block \(Cloudflare\) detected - attempting auto-retry 1\//,
       @session.logs.pluck(:content).join("\n"))
   end
 
