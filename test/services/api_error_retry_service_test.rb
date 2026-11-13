@@ -445,6 +445,112 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
   end
 
   # ===========================================================================
+  # Edge blocks — a Cloudflare 403 in front of the API (tadasant/zimmer#1502).
+  # Claude Code prefixes any 403 with "Failed to authenticate", so the entry
+  # reads like an auth failure; it is a transient block the API never saw.
+  # ===========================================================================
+
+  CLOUDFLARE_403 = "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"
+
+  test "edge_block? matches the production Cloudflare wording and an HTML page under a 403" do
+    assert ApiErrorRetryService.edge_block?(CLOUDFLARE_403)
+    assert ApiErrorRetryService.edge_block?("API Error: 403 <!DOCTYPE html><html><head><title>Just a moment...</title>")
+    assert ApiErrorRetryService.edge_block?("API Error: 403 <html>blocked</html>")
+  end
+
+  test "edge_block? leaves real OAuth failures and ordinary API errors alone" do
+    assert_not ApiErrorRetryService.edge_block?("Failed to authenticate: OAuth session expired and could not be refreshed")
+    assert_not ApiErrorRetryService.edge_block?("Not logged in · Please run /login")
+    assert_not ApiErrorRetryService.edge_block?("API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\"permission_error\"}}")
+    assert_not ApiErrorRetryService.edge_block?("API Error: 529 Overloaded")
+  end
+
+  # Whatever the runtime typed it as — untyped or authentication_failed — the
+  # page is what decides.
+  test "detects a Cloudflare 403 as a retryable API error, untyped or typed authentication_failed" do
+    [ "", "authentication_failed" ].each do |error_type|
+      @session.update!(metadata: @session.metadata.except("api_error_last_checked_line"))
+      setup_transcript_with_api_error(CLOUDFLARE_403, error_type: error_type)
+
+      assert create_service.retryable_api_error_detected?("/tmp/test-clone"),
+        "a Cloudflare 403 typed #{error_type.inspect} must go to the backoff ladder"
+    end
+  end
+
+  test "retries a Cloudflare 403 with backoff, logging intermediate attempts at info" do
+    setup_transcript_with_api_error(CLOUDFLARE_403, error_type: "")
+
+    resume_count = 0
+    delays = []
+    @mock_cli_adapter.resume_hook = ->(_opts) do
+      resume_count += 1
+      { pid: 12345, stderr_log_path: "/tmp/stderr.log" }
+    end
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:wait_with_status_checks) { |delay, **| delays << delay; nil }
+
+    assert_equal :success, service.attempt_retry("/tmp/test-clone")
+    assert_equal 1, resume_count
+    assert_equal [ ApiErrorRetryService::RETRY_DELAYS.first ], delays
+    assert_empty @mock_rate_limit_tracker.recorded_events,
+      "an edge block is not rate-limit pressure on the API"
+
+    @log_buffer.flush
+    log = @session.logs.reload.find_by("content LIKE ?", "Edge block (Cloudflare) detected - attempting auto-retry 1/%")
+    assert log, "the retry must name the edge block as its own category"
+    assert_equal "info", log.level
+  end
+
+  test "a Cloudflare 403 that survives every retry is exhausted, not parked" do
+    setup_transcript_with_api_error(CLOUDFLARE_403, error_type: "")
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { false }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+
+    assert_equal :exhausted, service.attempt_retry("/tmp/test-clone")
+    @log_buffer.flush
+    assert @session.logs.reload.exists?(level: "warning", content: "API error retry limit reached (#{ApiErrorRetryService::BUDGET.max} attempts)"),
+      "running out of retries is what warns"
+  end
+
+  # A Cloudflare 5xx page is the origin failing behind the CDN, not a block: it
+  # keeps the server-error category and its warning.
+  test "a Cloudflare 5xx page is retried as a server error, not an edge block" do
+    setup_transcript_with_api_error("API Error: 502 Bad Gateway | Cloudflare", error_type: "")
+
+    @mock_cli_adapter.resume_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    @mock_process_manager.running_hook = ->(_pid) { true }
+
+    service = create_service
+    service.define_singleton_method(:sleep) { |_| }
+    service.attempt_retry("/tmp/test-clone")
+    @log_buffer.flush
+
+    log = @session.logs.reload.find_by("content LIKE ?", "API server error detected - attempting auto-retry 1/%")
+    assert log
+    assert_equal "warning", log.level
+  end
+
+  test "outage_error? counts a Cloudflare 403 as the provider being unavailable" do
+    assert ApiErrorRetryService.outage_error?("", CLOUDFLARE_403)
+    assert_not ApiErrorRetryService.outage_error?("authentication_failed",
+      "Failed to authenticate: OAuth session expired and could not be refreshed")
+  end
+
+  test "a Cloudflare 403 is recognized and never reported as an unknown wording" do
+    setup_transcript_with_api_error(CLOUDFLARE_403, error_type: "")
+    service = create_service
+
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+    assert service.terminal_api_error("/tmp/test-clone").recognized?
+  end
+
+  # ===========================================================================
   # Terminal API errors — "this turn DIED on an error", the structural question
   # ProcessLifecycleManager asks last on the normal-completion path.
   # ===========================================================================
