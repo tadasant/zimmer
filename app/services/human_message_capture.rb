@@ -265,7 +265,8 @@ class HumanMessageCapture
     # things an agent session could write that the live model reads make a
     # conversation ineligible altogether, because either could tell the model to
     # deliver something whenever the person next speaks: a `user` line no
-    # boundary established as a person (LiveConversation#agent_written?), and
+    # boundary established as a person, or a scratchpad an agent wrote
+    # (LiveConversation#agent_written?), and
     # Live mode guidance last written by an agent session
     # (LiveSettingChange.guidance_written_by_an_agent?). Then the run has to be
     # one person's alone, and fresh.
@@ -282,6 +283,11 @@ class HumanMessageCapture
           "typed before Zimmer recorded who typed what, so nothing relayed from it counts as the person's. " \
           "A new Live conversation does not have this problem"
         )
+      end
+      if conversation.agent_wrote_scratchpad?
+        return LiveModeWords.declined("an agent wrote this conversation's scratchpad, which the live model reads every " \
+                                      "turn, so nothing relayed from it counts as the person's. A new Live conversation " \
+                                      "does not have this problem")
       end
       if LiveSettingChange.guidance_written_by_an_agent?
         return LiveModeWords.declined("the Live mode guidance was last written by an agent session, so nothing relayed " \

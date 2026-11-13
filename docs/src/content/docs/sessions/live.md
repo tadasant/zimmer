@@ -585,6 +585,12 @@ stays in mind, such as "session 1234 can't merge yet, stop bringing it up"
   can read it over REST, just as it can read the thread, which already holds every `scratchpad`
   call the agent made. Only the app's sign-in can write it. Agent sessions, including the ones the conversation starts, are not given
   it: nothing on the default MCP surface reads it, and nothing copies it into a session's prompt.
+- **An MCP write ends human-message capture for the conversation.** A note written over MCP is in
+  every turn's instructions, so it could steer what the live agent sends on your behalf. Once one
+  is written, the conversation records nothing as yours and cannot carry a
+  [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge),
+  even after the note is removed (`live_conversations.agent_wrote_scratchpad_at`). Start a new
+  conversation.
 
 ## On the phone and in the car
 

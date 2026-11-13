@@ -123,6 +123,9 @@ module LiveConversations
 
     # The conversation page's panel follows every write, wherever it came from.
     def changed!
+      # An agent wrote what the live model reads every turn: the conversation
+      # can no longer carry a person's words (LiveConversation#agent_written?).
+      @conversation.update_column(:agent_wrote_scratchpad_at, Time.current) if @written_by == "mcp"
       @conversation.scratchpad_entries.reset
       BroadcastService.new(error_context: { source: "LiveConversations::Scratchpad##{@conversation.id}" }).broadcast_partial(
         action: :replace,
