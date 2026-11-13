@@ -66,8 +66,7 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "a paragraph with links carries the link menu")
         XCTAssertTrue(paragraph.label.contains(url), "a bare URL is kept whole")
         scrollUntilHittable(app, paragraph)
-        paragraph.press(forDuration: 1.5)
-        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        XCTAssertTrue(pressForMenuInPlace(app, paragraph, offering: "Open Link", timeout: timeout).exists, "the menu opens the link")
         XCTAssertTrue(app.buttons["Share…"].firstMatch.exists, "and shares it")
         let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
@@ -105,8 +104,7 @@ final class TranscriptParityUITests: XCTestCase {
         // The page opens at the newest message; the summary is at the top.
         scrollUntilHittable(app, paragraph)
         attachScreenshot(app, named: "status-summary")
-        paragraph.press(forDuration: 1.5)
-        XCTAssertTrue(app.buttons["Open Link"].firstMatch.waitForExistence(timeout: timeout), "the menu opens the link")
+        XCTAssertTrue(pressForMenuInPlace(app, paragraph, offering: "Open Link", timeout: timeout).exists, "the menu opens the link")
         let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy Link")
         attachScreenshot(app, named: "status-summary-copy-link")
@@ -203,7 +201,10 @@ final class TranscriptParityUITests: XCTestCase {
             return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
                 && element.frame.maxY <= bottom
         }
-        for _ in 0..<8 where !inView() {
+        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view,
+        // and each ask is four queries, which cost the failing run of 43330313836 forty seconds.
+        for _ in 0..<8 {
+            if inView() { break }
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
         }
         XCTAssertTrue(inView(), "scrolled into view")

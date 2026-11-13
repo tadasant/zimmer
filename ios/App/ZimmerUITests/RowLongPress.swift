@@ -60,6 +60,43 @@ extension XCTestCase {
         return button
     }
 
+    /// `pressForMenu` for an element that stays where it is when a press misses: a paragraph
+    /// whose context menu offers its links, say, where a press that lands as a tap opens
+    /// nothing and there is no page to come back from. Presses until the menu offers `item`,
+    /// which it returns.
+    ///
+    /// Under load a synthesised press can bring nothing at all. On main's run 43330313836
+    /// (session-page shard, a test that took 82 seconds against 29 on a green run) the status
+    /// summary's paragraph was on screen and idle, XCUITest synthesised a 1.5-second press on
+    /// it, and the recording shows not a pixel change from the press to the end of the
+    /// 20-second wait: no lift, no menu. A menu that turns up before the next press is taken,
+    /// and the last press waits the whole `timeout` for a menu that is merely slow.
+    ///
+    /// Returns the menu item, which does not exist when every press missed: assert on it.
+    @MainActor
+    func pressForMenuInPlace(_ app: XCUIApplication, _ element: XCUIElement, offering item: String,
+                             duration: TimeInterval = 1.5, timeout: TimeInterval = 20,
+                             prepare: @MainActor () -> Void = {}) -> XCUIElement {
+        let button = app.buttons[item].firstMatch
+        let attempts = 3
+        var presses = 0
+        var timedOut = false
+        while presses < attempts {
+            // A menu that came after the last wait gave up is the menu asked for.
+            if (presses > 0 || timedOut), button.exists { return button }
+            prepare()
+            if timedOut {
+                element.press(forDuration: duration)
+            } else if !absorbingAXIPCTimeout({ element.press(forDuration: duration) }) {
+                timedOut = true
+                continue
+            }
+            presses += 1
+            if button.waitForExistence(timeout: presses == attempts ? timeout : 5) { return button }
+        }
+        return button
+    }
+
     /// Runs `action`, an XCUIElement action, and returns false when XCUITest's own
     /// accessibility IPC timed out under it, recording that as an expected failure rather than
     /// failing the test. Every other issue the action records fails the test as it would have.
