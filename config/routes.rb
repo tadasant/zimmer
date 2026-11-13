@@ -64,6 +64,7 @@ Rails.application.routes.draw do
     # rules (one open per mode, the tool bridge) an edit form would bypass.
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
+    resources :live_scratchpad_entries, only: [ :index, :show ]
     # Read-only too: the Live settings are written through SettingsUpdate, which
     # validates and records every change, on /live/settings, REST and MCP.
     resources :live_settings, only: [ :index, :show ]
@@ -239,6 +240,10 @@ Rails.application.routes.draw do
           post :tool_calls
           post :turns
           post :session_update
+        end
+        # Its scratchpad (LiveConversations::Scratchpad); every route takes the app's sign-in.
+        resources :scratchpad_entries, only: %i[index create update destroy], controller: "live_scratchpad_entries" do
+          delete :clear, on: :collection
         end
       end
       # The Inference page for the iOS app: the account roster with its quota
@@ -612,6 +617,11 @@ Rails.application.routes.draw do
       post :tool_calls
       post :turns
       post :session_update
+    end
+    # The conversation's scratchpad (LiveConversations::Scratchpad): the index
+    # is the page that edits it.
+    resources :scratchpad_entries, only: %i[index create update destroy], controller: "live_scratchpad_entries" do
+      delete :clear, on: :collection
     end
   end
 

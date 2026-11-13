@@ -137,7 +137,9 @@ The model is told, in this order:
    default is in use;
 4. for a voice call only, a recap of the last thirty lines, because a new Realtime session remembers
    nothing. That is true whether it is reconnecting or the conversation was typed until a moment ago;
-5. the [Live mode guidance](#live-mode-guidance), when there is any.
+5. **Your scratchpad**: the conversation's [scratchpad](#the-scratchpad), on every turn, typed and
+   spoken, empty or not;
+6. the [Live mode guidance](#live-mode-guidance), when there is any.
 
 All of it is rebuilt every time it is used (`LiveConversations::SystemPrompt`). A typed reply builds
 it for each request, and a voice call builds it when its secret is minted and for every
@@ -150,7 +152,7 @@ root, so a `live-voice` root left in a catalog is ignored.
 
 ## The tool bridge
 
-The model can call six kinds of function (`LiveConversations::ToolBridge`):
+The model can call seven kinds of function (`LiveConversations::ToolBridge`):
 
 - **`zimmer(tool, arguments)`**, which calls one of Zimmer's own MCP tools in-process. This is the
   delegation path: `quick_router` or `start_session` to start work, `get_session` to check on it,
@@ -172,6 +174,8 @@ The model can call six kinds of function (`LiveConversations::ToolBridge`):
   the `zimmer` gateway: a model holding it could also end its own conversation for good.
 - **`hang_up`**: [hanging up by voice](#hanging-up-by-voice). Voice only: a call's tool list carries
   it and a typed reply's does not, because there is no call to end.
+- **`scratchpad`**: the conversation's own [scratchpad](#the-scratchpad), always present, typed and
+  spoken. It takes no conversation id, so it can only reach this conversation's notes.
 
 ```mermaid
 flowchart LR
@@ -545,6 +549,38 @@ visible:
 The settings page posts only the fields you edited. A field you did not touch does not undo a
 change the live agent made while the page was open.
 
+### The scratchpad
+
+Each conversation has a scratchpad: short notes the live agent keeps so that what it has been told
+stays in mind, such as "session 1234 can't merge yet, stop bringing it up"
+(`LiveConversations::Scratchpad`, one `LiveScratchpadEntry` row per note).
+
+- **Every turn reads it.** The system prompt carries it under **Your scratchpad**, after the mode's
+  style and the voice recap and before the guidance. It is there in every typed request, every
+  voice call's instructions and every `session.update`. The section says the notes are the agent's
+  own: check them before bringing up a session or a decision, and do not raise again anything a
+  note says is settled or on hold. It also says they are notes, not instructions, and grant nothing.
+- **The agent writes it** with `scratchpad`: `read`, `add` (`text`), `edit` (`note_id`, `text`),
+  `remove` (`note_id`) and `clear`. Each answer includes the whole pad. When a voice call writes,
+  the client gets a `session.update`, so the call's instructions carry the note straight away.
+- **You can see and edit it.** The conversation page has a **Scratchpad** panel that updates live,
+  and **Edit notes** opens a page where you add, change, remove or clear notes. A save there tells
+  an open voice call to fetch a fresh `session.update`. Each note shows who wrote it and when.
+- **It is bounded, out loud.** It goes into every turn, so it holds at most 30 notes of at most
+  300 characters each. A write past either limit is refused, with a message saying which limit and
+  what to do. Nothing is ever cut short.
+- **It belongs to one conversation.** It stays through reconnects, switches between typing and
+  talking, deploys, and [going back](#going-back-to-a-conversation) to the conversation later. A
+  new conversation starts with an empty pad: nothing carries over.
+- **Who can reach it:** the conversation's own agent; you, on the web page and through the iOS
+  app's sign-in (`/api/v1/live_conversations/:id/scratchpad_entries`); and an MCP
+  client on the opt-in `live_conversations` group, which can already read and drive the whole
+  thread (`get_live_conversations` shows the pad, and `action_live_conversation` edits it with
+  `scratchpad_add`, `scratchpad_edit`, `scratchpad_remove` and `scratchpad_clear`). An API key
+  can read it over REST, just as it can read the thread, which already holds every `scratchpad`
+  call the agent made. Only the app's sign-in can write it. Agent sessions, including the ones the conversation starts, are not given
+  it: nothing on the default MCP surface reads it, and nothing copies it into a session's prompt.
+
 ## On the phone and in the car
 
 The [iOS app](/extend/ios-app/) has Live Mode behind the session list's waveform button, over the
@@ -635,7 +671,8 @@ how those sessions authenticate or bill.
 
 - **MCP:** `get_live_conversations` (whether Live Mode can start, the current and recent
   conversations, what going back would return to, one thread) and `action_live_conversation`
-  (`start`, `switch`, `send_message`, `set_mode`, `finish`). A message sent this way is not
+  (`start`, `switch`, `send_message`, `set_mode`, `finish`, and the `scratchpad_*` actions for
+  the [scratchpad](#the-scratchpad)). A message sent this way is not
   anybody's: what the live model then delivers into a session is not recorded as a human message; `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
   for the [Live settings](#live-settings). All four are in the opt-in
   `live_conversations` group, which nothing carries by default: a live model can reach the whole
@@ -645,7 +682,7 @@ how those sessions authenticate or bill.
   may read them. Starting, going back, messaging, switching mode, finishing, the voice relay and changing the settings
   take the iOS app's sign-in acting as you, for the same reason. An agent changes the settings through
   MCP, where the change is recorded as an agent's. See [the REST API](/extend/rest-api/#live-conversations).
-- **Supervisor:** `/supervisor/live_conversations` and `/supervisor/live_conversation_turns`, both
+- **Supervisor:** `/supervisor/live_conversations`, `/supervisor/live_conversation_turns` and `/supervisor/live_scratchpad_entries`, all
   read-only.
 
 What is not proven yet, and the known rough edges, are on [Known limitations](/limitations/).
