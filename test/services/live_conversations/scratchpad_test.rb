@@ -34,6 +34,14 @@ class LiveConversations::ScratchpadTest < ActiveSupport::TestCase
     assert_equal 1, other.scratchpad_entries.count
   end
 
+  test "saving a note unchanged leaves its writer and time alone, and broadcasts nothing" do
+    note = @pad.add("unchanged")
+    BroadcastService.any_instance.expects(:broadcast_partial).never
+    LiveConversations::Scratchpad.new(@conversation, written_by: "person").edit(note.id, " unchanged ")
+
+    assert_equal "assistant", note.reload.written_by
+  end
+
   test "a write past either limit is refused and says so, never cut" do
     long = "x" * (LiveScratchpadEntry::MAX_BODY_CHARS + 1)
     error = assert_raises(LiveConversations::Scratchpad::Refused) { @pad.add(long) }

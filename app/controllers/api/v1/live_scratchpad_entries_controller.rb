@@ -9,14 +9,15 @@
 #   DELETE /api/v1/live_conversations/:id/scratchpad_entries/:entry_id  remove a note
 #   DELETE /api/v1/live_conversations/:id/scratchpad_entries/clear      remove every note
 #
-# Every route, the read included, takes only the iOS app's sign-in acting as its
-# person: the notes are the person's and their assistant's, and an API key — the
-# fleet's — is not a person. A write answers with the pad as it now is; a voice
-# call on the conversation picks the notes up from its next `session_update`.
+# The read takes an API key, like the conversation's thread, which already
+# carries every `scratchpad` call the assistant made. Writes take only the iOS
+# app's sign-in acting as its person: an API key — the fleet's — is not a person.
+# A write answers with the pad as it now is; a voice call on the conversation
+# picks the notes up from its next `session_update`.
 class Api::V1::LiveScratchpadEntriesController < Api::BaseController
   accepts_native_app_tokens
 
-  before_action :require_a_person_on_the_app
+  before_action :require_a_person_on_the_app, except: :index
   before_action :set_conversation
 
   def index
@@ -44,7 +45,7 @@ class Api::V1::LiveScratchpadEntriesController < Api::BaseController
   end
 
   rescue_from LiveConversations::Scratchpad::Refused do |error|
-    render_api_error("Unprocessable Entity", error.message, status: :unprocessable_entity)
+    render_api_error("Unprocessable Entity", error.message, status: :unprocessable_content)
   end
 
   private

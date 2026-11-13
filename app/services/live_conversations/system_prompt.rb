@@ -104,7 +104,9 @@ module LiveConversations
     # never what is allowed. Always present, empty or not, so the model knows
     # the pad is there before the root's own guidance says so.
     def scratchpad_section
-      entries = @conversation.scratchpad_entries.to_a
+      # Queried afresh, not the association: a typed reply reuses one conversation
+      # object for every request of its turn, and the person may edit mid-turn.
+      entries = LiveScratchpadEntry.where(live_conversation_id: @conversation.id).order(:id).to_a
       notes = if entries.empty?
         "Empty."
       else

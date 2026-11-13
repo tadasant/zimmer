@@ -42,7 +42,11 @@
     </div>
 
     <%= render "live_conversations/header", conversation: conversation %>
-    <%= render "live_conversations/scratchpad", conversation: conversation %>
+    <%# Outside the broadcast-replaced body, so a note arriving leaves it open. %>
+    <details data-live-scratchpad class="mt-3 bg-white shadow-sm rounded-lg border border-gray-200">
+      <summary class="cursor-pointer select-none px-4 py-2.5 text-sm font-medium text-gray-900">Scratchpad</summary>
+      <%= render "live_conversations/scratchpad", conversation: conversation %>
+    </details>
 
     <div id="<%= conversation.turns_dom_id %>" data-live-thread-target="turns" class="flex-1 mt-4 space-y-3 pb-4">
       <% if @turns.empty? %>

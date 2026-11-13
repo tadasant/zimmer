@@ -145,4 +145,12 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
 
     assert_not_includes LiveConversations::SystemPrompt.build(create_live_conversation), "from the old one"
   end
+
+  test "a note written elsewhere mid-turn is in the next build, whatever the conversation object has loaded" do
+    conversation = create_live_conversation
+    conversation.scratchpad_entries.load
+    LiveScratchpadEntry.create!(live_conversation_id: conversation.id, body: "added from the web page", written_by: "person")
+
+    assert_includes LiveConversations::SystemPrompt.build(conversation), "added from the web page"
+  end
 end

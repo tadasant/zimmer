@@ -289,7 +289,7 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     get live_conversation_path(conversation)
 
     assert_response :success
-    assert_select "##{conversation.scratchpad_dom_id}[data-live-scratchpad]" do
+    assert_select "details[data-live-scratchpad] ##{conversation.scratchpad_dom_id}" do
       assert_select "[data-live-scratchpad-entry]", text: /Session 1234 can't merge yet.*Live Mode/m
       assert_select "[data-live-scratchpad-count]", text: "1 of 30 notes"
       assert_select "form", count: 0
