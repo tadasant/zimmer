@@ -12,7 +12,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "a conversation with the zimmer server gets the gateway, not one function per Zimmer tool" do
     names = @bridge.functions.map(&:name)
 
-    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad], names
+    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad authorize_merge], names
     gateway = @bridge.functions.first
     assert_includes gateway.parameters[:properties][:tool][:enum], "quick_router"
     assert_includes gateway.parameters[:properties][:tool][:enum], "get_system_health"

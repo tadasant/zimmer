@@ -210,12 +210,45 @@ module Mcp
           lines << "  #{TextBudget.truncation_note(shown: content_limit, total: content.length,
             restore: 'Full text: `get_session_provenance` on this session, or `get_session` with `verbose: true`.')}"
         end
+        lines.concat(replying_to_lines(entry, content_limit))
         lines.concat(relayed_lines(entry, content_limit))
       end
 
       lines.concat(omission_footer(omitted, unretrievable))
 
       lines.concat(people_lines(record, shown))
+    end
+
+    # What a short `live_mode` reply was answering. A sign-off through the
+    # voice Merge button (`live_mode.authorize_merge`) carries the PR Zimmer
+    # named and the read-back Zimmer composed; any other entry carries the
+    # assistant line just before the person's words. Both are shown as what
+    # they are — Zimmer's record, or the model's line — and never as the
+    # person's words.
+    def replying_to_lines(entry, content_limit)
+      lines = []
+      if entry.confirmed_pr_url.present?
+        url = Sanitize.sanitize_for_markdown_line(entry.confirmed_pr_url)
+        lines << "  They were answering Zimmer's read-back of #{url} (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, the title from the session, any hold reason from the merge gate):"
+        lines.concat(fenced(entry.read_back.to_s, content_limit))
+      elsif entry.replying_to.present?
+        lines << "  They were answering this line from the Live Mode assistant (the model's words, not theirs):"
+        lines.concat(fenced(entry.replying_to, content_limit))
+      end
+      lines
+    end
+
+    def fenced(text, content_limit)
+      text = Sanitize.sanitize_for_fence(text)
+      cut = content_limit && TextBudget.over?(text, content_limit)
+      lines = [ "  ```" ]
+      (cut ? TextBudget.hard_truncate(text, content_limit) : text).each_line { |line| lines << "  #{line.chomp}" }
+      lines << "  ```"
+      if cut
+        lines << "  #{TextBudget.truncation_note(shown: content_limit, total: text.length,
+          restore: 'Full text: `get_session_provenance` on this session, or `get_session` with `verbose: true`.')}"
+      end
+      lines
     end
 
     # A `live_mode` entry's content is what the person said; the Live Mode

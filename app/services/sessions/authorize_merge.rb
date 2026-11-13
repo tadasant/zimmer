@@ -84,13 +84,16 @@ module Sessions
     # @return [Result]
     # @param surface [String] where the Merge button was pressed, named in the
     #   message to the session and in the log line
-    def self.call(session:, surface: "the Zimmer dashboard")
-      new(session: session, surface: surface).call
+    # @param act [String, nil] how the sign-off was given, when it was not a
+    #   button press (see AutomatedPrompts.merge_authorization_message)
+    def self.call(session:, surface: "the Zimmer dashboard", act: nil)
+      new(session: session, surface: surface, act: act).call
     end
 
-    def initialize(session:, surface: "the Zimmer dashboard")
+    def initialize(session:, surface: "the Zimmer dashboard", act: nil)
       @session = session
       @surface = surface
+      @act = act
     end
 
     def call
@@ -117,8 +120,8 @@ module Sessions
 
       delivered = deliver_automated_message(
         @session,
-        AutomatedPrompts.merge_authorization_message(pr_url, surface: @surface),
-        event_description: "User authorized the merge of #{pr_url} with the Merge button in #{@surface}",
+        AutomatedPrompts.merge_authorization_message(pr_url, surface: @surface, act: @act),
+        event_description: "User authorized the merge of #{pr_url} #{@act.present? ? "in #{@surface}" : "with the Merge button in #{@surface}"}",
         origin: "caller"
       )
 
