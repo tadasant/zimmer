@@ -247,8 +247,9 @@ for a system alert in the way. On a loaded CI simulator that one call has hung f
 with the row on screen
 ([run 41371175993](https://github.com/tadasant/zimmer/actions/runs/41371175993), session-page shard).
 `pressForMenu` in `ios/App/ZimmerUITests/RowLongPress.swift` records the first such timeout in a
-call as an expected failure and presses again. A second timeout in the same call, or any other
-error, still fails the test. Only that helper does this. Every other XCUITest action runs the same
+call as an expected failure and presses again, and so does `pressForMenuInPlace` beside it. A
+second timeout in the same call, or any other error, still fails the test. Only those two helpers
+do this. Every other XCUITest action runs the same
 check unprotected, so the same hang anywhere else in the suite still fails its test, and a failure
 reading "Failed to get list of active applications" means a re-run, not a code change.
 
@@ -264,6 +265,19 @@ a trigger's row and an inbox notification. It helps only if the tap never reache
 if the action ran and the page still did not open, a second tap changes nothing and the test fails.
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
+
+### A link's long press in the iOS UI tests presses again if no menu comes
+
+A long press XCUITest reports as delivered can bring nothing. On
+[run 43330313836](https://github.com/tadasant/zimmer/actions/runs/43330313836) (session-page shard),
+the status summary's paragraph was on screen with the app idle, the 1.5-second press was
+synthesised on it, and the run's recording shows no change at all from the press to the end of the
+20-second wait: no lift, no menu. The test took 82 seconds against 29 on a green run, so the runner
+was loaded. Why the press was lost is not known. `pressForMenuInPlace` in
+`ios/App/ZimmerUITests/RowLongPress.swift` presses again after 5 seconds, three presses at most, and
+the link-menu tests in `TranscriptParityUITests` and `InAppLinksUITests` use it. Other long presses that open a menu in
+place still have one try, so the same loss there still fails its test, and a menu that never came
+behind a press that succeeded means a re-run first.
 
 ### Dragging the iOS trigger form back up can stall
 
