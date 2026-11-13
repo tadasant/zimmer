@@ -101,4 +101,32 @@ class TriggersMcpEventControllerTest < ActionDispatch::IntegrationTest
     get mcp_event_sources_api_v1_triggers_path(server: "no-such-server"), headers: { "X-API-Key" => @api_key }, as: :json
     assert_response :service_unavailable
   end
+
+  test "the trigger page, the API and search_triggers all report how the condition's events arrive" do
+    trigger = Trigger.create!(
+      name: "Delivery state", status: "enabled", agent_root_name: "zimmer", prompt_template: "{{event_id}}",
+      trigger_conditions_attributes: [ { condition_type: "mcp_event",
+                                         configuration: { "server" => "slack-zimmer", "event_name" => FakeEventsMcpServer::EVENT_NAME } } ]
+    )
+    condition = trigger.trigger_conditions.sole
+    search = Mcp::Tools::SearchTriggers.new(context: Mcp::Context.new(tool_groups: "triggers"))
+
+    get trigger_path(trigger)
+    assert_select "[data-testid=mcp-event-delivery]", text: /push: poll-only/
+    get api_v1_trigger_path(trigger), headers: { "X-API-Key" => @api_key }, as: :json
+    assert_equal({ "state" => "poll-only" }, response.parsed_body.dig("trigger", "conditions", 0, "mcp_event_delivery"))
+    assert_includes search.call("id" => trigger.id), "*Delivery:* `poll-only`"
+
+    McpEventWebhookSubscription.build_for(condition, base_url: "https://zimmer.test")
+      .tap { |row| row.assign_attributes(state: "verified", verified_at: Time.current, subscribed_at: Time.current, refresh_before: 6.hours.from_now) }
+      .save!
+
+    get trigger_path(trigger)
+    assert_select "[data-testid=mcp-event-delivery]", text: /push: verified/
+    get api_v1_trigger_path(trigger), headers: { "X-API-Key" => @api_key }, as: :json
+    delivery = response.parsed_body.dig("trigger", "conditions", 0, "mcp_event_delivery")
+    assert_equal "verified", delivery["state"]
+    assert delivery["refresh_before"].present?
+    assert_includes search.call("id" => trigger.id), "*Delivery:* `verified`"
+  end
 end

@@ -10,7 +10,9 @@
 # table also answers "is Slack delivering at all" without a shell: the newest row is the last
 # delivery that verified.
 class WebhookDelivery < ApplicationRecord
-  SOURCES = %w[slack github].freeze
+  # `mcp_events` rows are keyed `<subscription row id>:<webhook-id>` — see
+  # Webhooks::McpEventsController.
+  SOURCES = %w[slack github mcp_events].freeze
 
   # Slack retries a delivery three times, the last about five minutes after the first, so a
   # day would cover redelivery on its own; GitHub does not retry, and a redelivery is someone

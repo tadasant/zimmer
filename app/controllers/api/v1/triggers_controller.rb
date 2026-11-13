@@ -470,7 +470,7 @@ class Api::V1::TriggersController < Api::BaseController
   end
 
   def condition_json(condition)
-    {
+    json = {
       id: condition.id,
       condition_type: condition.condition_type,
       configuration: condition.configuration,
@@ -478,5 +478,8 @@ class Api::V1::TriggersController < Api::BaseController
       last_triggered_at: condition.last_triggered_at&.iso8601,
       last_polled_at: condition.last_polled_at&.iso8601
     }
+    # How an mcp_event condition's events arrive: polling alone, or a webhook subscription as well.
+    json[:mcp_event_delivery] = condition.mcp_event_delivery if condition.condition_type == "mcp_event"
+    json
   end
 end

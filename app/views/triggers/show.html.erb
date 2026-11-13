@@ -212,7 +212,7 @@
           <h3 class="text-sm font-medium text-gray-500 mb-2">Trigger Conditions (OR logic)</h3>
           <div class="space-y-2">
             <% @trigger.trigger_conditions.each do |condition| %>
-              <div class="flex items-center space-x-2 bg-gray-50 rounded-lg p-3">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 bg-gray-50 rounded-lg p-3">
                 <% badge = trigger_condition_badge(condition.condition_type) %>
                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= badge[:css] %>"><%= badge[:label] %></span>
                 <%# Only ao_event needs markup of its own beside the badge — the
@@ -227,6 +227,9 @@
                   </span>
                 <% else %>
                   <span class="min-w-0 break-words text-sm text-gray-900"><%= trigger_condition_detail(condition) %></span>
+                <% end %>
+                <% if condition.condition_type == "mcp_event" %>
+                  <%= render "triggers/mcp_event_delivery", condition: condition %>
                 <% end %>
                 <% if condition.last_triggered_at %>
                   <span class="text-xs text-gray-400">(last: <%= time_ago_in_words(condition.last_triggered_at) %> ago)</span>

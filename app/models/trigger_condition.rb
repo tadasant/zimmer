@@ -221,6 +221,9 @@ class TriggerCondition < ApplicationRecord
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
   has_many :trigger_event_claims, dependent: :delete_all
+  # Webhook subscriptions held on the condition's MCP server (`mcp_event` only). Not destroyed with
+  # the condition: the FK nullifies, and McpEventSubscriptionsJob unsubscribes before it deletes.
+  has_many :mcp_event_webhook_subscriptions, dependent: nil
 
   validates :condition_type, presence: true, inclusion: { in: CONDITION_TYPES }
   validates :configuration, presence: true
@@ -541,6 +544,29 @@ class TriggerCondition < ApplicationRecord
   # What a stream of events this condition reads: changing it is a different subscription.
   def mcp_event_subscription
     [ mcp_event_server, mcp_event_name, mcp_event_arguments ]
+  end
+
+  # The webhook subscription carrying this condition's current subscription, if there is one. A
+  # row left over from before an edit, waiting for McpEventSubscriptionsJob to unsubscribe it, is
+  # not it.
+  def mcp_event_webhook_subscription
+    mcp_event_webhook_subscriptions.detect { |row| row.matches?(self) }
+  end
+
+  # Whether a verified webhook subscription is carrying this condition's events, which lets the
+  # poller fall back to its catch-up cadence.
+  def mcp_event_push_healthy?
+    mcp_event_webhook_subscription&.healthy? || false
+  end
+
+  # How this condition's events arrive, for the trigger page, GET /api/v1/triggers and
+  # search_triggers: `{"state" => "poll-only" | "subscribed" | "verified" | "suspended", ...}`.
+  # Polling runs in every state; the state says whether push is carrying the events as well.
+  def mcp_event_delivery
+    row = mcp_event_webhook_subscription
+    return { "state" => "poll-only" } if row.nil?
+
+    row.status_summary
   end
 
   # Schedule configuration accessors

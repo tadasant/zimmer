@@ -5427,17 +5427,34 @@ the raw headers. Two things follow:
 - A message the mailbox server will not return five ticks running (a body past the MCP client's
   2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
 
-### MCP event triggers follow an unmerged draft, poll only
+### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 
 [`mcp_event` triggers](/sessions/triggers/#mcp_event) implement the poll mode of the MCP Events
 extension, SEP-3415, which is still an open draft. Its wire format can change without a release, so
 what is built, and against which revision, is recorded on the
 [spec pin](/sessions/mcp-events-spec-pin/) page. What this costs:
 
-- **Poll only.** There is no push (`events/stream`), because that needs a long-running listener
-  Zimmer does not run. There is no webhook either, because Zimmer has no public way in. An event
-  fires about a minute after the server has it, and later if the server asks for a longer
-  `nextPollMs`.
+- **No push.** There is no `events/stream`, because that needs a long-running listener Zimmer does
+  not run. Webhook delivery is built (see [Webhook delivery](/sessions/triggers/#webhook-delivery)),
+  but every production path is behind Cloudflare Access. It works only once
+  `/webhooks/mcp_events/*` has an Access application with a service-token policy (managed in the
+  production edge Terraform, outside this repo), and the server sends that token. Without that, the
+  server's verification challenge gets the Access login, the subscribe fails, and the condition
+  polls: an event fires about a minute after the server has it, and later if the server
+  asks for a longer `nextPollMs`.
+- **Webhook health is inferred, not proven per event.** A condition counts as `verified` for
+  seven hours after a signed request reaches its URL. If the Access policy stops admitting the
+  server in that window (a rotated service token, say), deliveries fail without Zimmer seeing
+  anything until the next hourly refresh answer reports the failure, or the seven hours run
+  out. Until then the condition is polled only every 15 minutes, so its events can arrive up to 15
+  minutes late. A quiet subscription loses `verified` after seven hours with no delivery and goes
+  back to minute polling, which costs polls, not events.
+- **Only challenge-echo verification.** Of the SEP's four ways a server can confirm the endpoint
+  wants deliveries, Zimmer answers only the challenge. It publishes no
+  `/.well-known/mcp-webhook-receiver.json` and keeps no allowlist with any server.
+- **A held push event waits for the catch-up poll.** A delivery that burst control or a pending
+  session stops gives its claim back, and the poll fires it, which can be up to 15 minutes later on
+  a verified condition.
 - **The protocol version is the old one.** The extension is defined for the 2026-07-28 revision and
   its `server/discover`. Zimmer's MCP client still speaks 2025-06-18 and reads the extension off the
   `initialize` result. That works against strad, which answers it there. A server that declares the
@@ -5449,7 +5466,7 @@ what is built, and against which revision, is recorded on the
 - **`compare_trigger_fires` sees 30 days.** It reads `trigger_event_claims`, which
   `InboundEventRetentionJob` deletes after 30 days.
 
-### GitHub is polled, and the webhooks have no public way in
+### GitHub is polled, and inbound webhooks need a Cloudflare Access policy
 
 GitHub PR status and comments are polled every 30 seconds per open PR. A 30-second latency floor and
 a steady API burn. The `github_label` and `github_issue` trigger conditions are polled too, once a
@@ -5501,10 +5518,15 @@ it does not cover yet:
 Slack's webhook, `POST /webhooks/slack`, takes Slack Events API deliveries and fires Slack triggers from
 them a second or two after the message is posted, instead of at the next poll — see
 [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). It is off by default, and
-switching it on in production changes nothing on its own: Slack has to reach the endpoint from the
-public internet, and Zimmer's tailnet posture offers no public ingress. Until something does — a scoped
-public route, a tunnel, or a relay into the tailnet — the endpoint works only where the app is
-publicly reachable, or locally with a signed request.
+switching it on in production changes nothing on its own. Slack has to reach the endpoint from the
+public internet. On the production host every path sits behind
+[Cloudflare Access](/operate/deploying/#optional-cloudflare-edge): a webhook POST gets a 302 to the
+Access login, and `/mcp` and `/api/v1/health` get a 401. So an inbound webhook works only once its
+path has an Access application whose policy admits the sender, which in practice means the sender
+can present an Access service token. A sender Zimmer does not control, like Slack or GitHub, cannot
+be made to send one, and no machine path on the domain is an open Bypass. Only the MCP Events
+receiver has such a policy planned, because strad, its sender, is our own code and can add the
+headers; see [Cloudflare Access on the receiver](/sessions/triggers/#cloudflare-access-on-the-receiver).
 
 What the webhook does not cover yet:
 
