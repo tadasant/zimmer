@@ -26,6 +26,10 @@ jobs:
   lint:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: self-hosted
+    # pull-requests: read is for the vs-main step, which lists the PR's files.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -67,6 +71,20 @@ jobs:
         run: |
           bundle exec ruby -r./test/support/migration_version_guard \
             -e 'report = MigrationVersionGuard.report; abort(report) unless report.empty?'
+      # The step above reads the merge with `main` as of this PR's last push. A
+      # PR that merges days later can still collide with a migration `main`
+      # gained in between (#1483/#1484, zimmer#1500), so this re-reads `main` as
+      # it is when the job runs. The other half is migration-versions-vs-main.yml,
+      # which re-asks every open PR each time `main` gains a migration.
+      - name: Migration versions vs current main
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          ruby .github/scripts/migration-versions-vs-main.rb check --pr "$PR_NUMBER" --main-ref origin/main
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
