@@ -8902,6 +8902,18 @@ conversation. Nothing prevents that. What bounds it is that it is visible: every
 the settings history with its conversation, shows in the thread as a settings-change note, and can
 be undone with **Restore the guidance from before this edit**.
 
+## The Live Mode scratchpad has no screen in the iOS app yet
+
+The [scratchpad](/sessions/live/#the-scratchpad) can be read and edited on the web page, over MCP,
+and through `/api/v1/live_conversations/:id/scratchpad_entries` with the app's sign-in. The iOS app
+does not call those routes yet. On the phone, the live agent still reads and writes its own notes,
+but you cannot see them there. A person's edit from another browser or over REST reaches an open
+voice call the same way a settings change does, described in the next entry.
+
+Two edits to the same note at the same moment are last-writer-wins: nothing locks a note while it
+is open on the edit page. Each note can also only be as true as what the agent heard. A note the
+agent wrote from a misheard line stays until someone edits or removes it.
+
 ## A settings change reaches an open voice call only through the client holding it
 
 An open call takes a mid-call change (speed, turn detection, the guidance) as a `session.update`, and

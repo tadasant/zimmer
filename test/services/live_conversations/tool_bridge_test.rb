@@ -12,7 +12,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "a conversation with the zimmer server gets the gateway, not one function per Zimmer tool" do
     names = @bridge.functions.map(&:name)
 
-    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation], names
+    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad], names
     gateway = @bridge.functions.first
     assert_includes gateway.parameters[:properties][:tool][:enum], "quick_router"
     assert_includes gateway.parameters[:properties][:tool][:enum], "get_system_health"
@@ -550,5 +550,56 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     result = LiveConversations::ToolBridge.new(@conversation, can_hang_up: true).execute("list_live_conversations", "{}", call_id: "c1")
 
     assert_not result.hung_up
+  end
+
+  test "scratchpad: the assistant keeps notes on its own conversation, and a write refreshes a call's instructions" do
+    function = @bridge.functions.find { |f| f.name == "scratchpad" }
+    assert_equal %w[action note_id text], function.parameters[:properties].keys.map(&:to_s).sort, "no conversation id: it can only reach its own pad"
+
+    added = @bridge.execute("scratchpad", { action: "add", text: "Session 1234 can't merge yet; stop raising it" }.to_json, call_id: "s1")
+    assert_not added.error
+    assert added.session_changed, "an open call is sent the new instructions"
+    note = @conversation.scratchpad_entries.sole
+    assert_equal "assistant", note.written_by
+    assert_match(/Added note #{note.id}\.\nScratchpad, 1 of 30 notes:/, added.output)
+    assert_equal "scratchpad", added.turn.tool_name
+
+    read = @bridge.execute("scratchpad", { action: "read" }.to_json, call_id: "s2")
+    assert_not read.session_changed
+    assert_includes read.output, "Session 1234 can't merge yet"
+
+    edited = @bridge.execute("scratchpad", { action: "edit", note_id: note.id, text: "Session 1234 merged" }.to_json, call_id: "s3")
+    assert_not edited.error
+    assert_equal "Session 1234 merged", note.reload.body
+
+    @bridge.execute("scratchpad", { action: "remove", note_id: note.id }.to_json, call_id: "s4")
+    assert_empty @conversation.scratchpad_entries.reload
+  end
+
+  test "scratchpad: another conversation's note is out of reach, and refusals are said to the model" do
+    other = create_live_conversation(status: LiveConversation::ENDED)
+    foreign = other.scratchpad_entries.create!(body: "theirs", written_by: "assistant")
+
+    removed = @bridge.execute("scratchpad", { action: "remove", note_id: foreign.id }.to_json, call_id: "s1")
+    assert removed.error
+    assert_not removed.session_changed
+    assert_match(/no note #{foreign.id}/, removed.output)
+    assert LiveScratchpadEntry.exists?(foreign.id)
+
+    too_long = @bridge.execute("scratchpad", { action: "add", text: "x" * 301 }.to_json, call_id: "s2")
+    assert too_long.error
+    assert_match(/at most 300 characters/, too_long.output)
+
+    missing = @bridge.execute("scratchpad", { action: "edit", text: "x" }.to_json, call_id: "s3")
+    assert_match(/note_id is required/, missing.output)
+    assert_match(/action must be one of/, @bridge.execute("scratchpad", { action: "drop" }.to_json, call_id: "s4").output)
+  end
+
+  test "scratchpad is there with no server enabled, typed and spoken" do
+    @conversation.update!(mcp_servers: [])
+    bridge = LiveConversations::ToolBridge.new(@conversation)
+
+    assert_includes bridge.chat_tools.map { |t| t[:function][:name] }, "scratchpad"
+    assert_includes bridge.realtime_tools.map { |t| t[:name] }, "scratchpad"
   end
 end

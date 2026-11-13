@@ -42,6 +42,7 @@
     </div>
 
     <%= render "live_conversations/header", conversation: conversation %>
+    <%= render "live_conversations/scratchpad", conversation: conversation %>
 
     <div id="<%= conversation.turns_dom_id %>" data-live-thread-target="turns" class="flex-1 mt-4 space-y-3 pb-4">
       <% if @turns.empty? %>
