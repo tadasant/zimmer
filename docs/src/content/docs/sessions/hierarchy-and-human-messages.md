@@ -431,6 +431,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | A follow-up, Quick Router request or Merge from [Zimmer's iOS app](/extend/ios-app/) | ✅ `ios_app.follow_up` / `ios_app.quick_router` / `ios_app.authorize_merge`, when the app's connection acts on its approver's behalf | recorded on the [`assistant` channel](#the-assistant-channel) with the same fences as any OAuth client: the author is the approver's roster row, the grant is in the provenance, and a relay-only connection records nothing. The app sends exactly what was typed, a quick reply included |
 | A `follow_up`, `send_now`, enqueue, `start_session` or `quick_router` the [Live Mode](/sessions/live/) assistant makes while talking to a person signed in on the web or the iOS app | ✅ `live_mode.follow_up` / `live_mode.start_session` / … | recorded on the [`live_mode` channel](#the-live-mode-channel): the content is what the person typed or said, and the assistant's own message rides beside it |
+| A person saying yes to Zimmer's read-back of a PR in Live Mode (`authorize_merge`) | ✅ `live_mode.authorize_merge` | recorded in the session holding the PR, with the PR and the read-back; see [Merging by voice](#merging-by-voice-live_modeauthorize_merge) |
 | The same calls when the last thing said in the Live conversation came from `action_live_conversation` over MCP | ❌ | an API key wrote that turn, so no person is established |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
 | `follow_up`, `send_now`, an enqueue or its edit, a `start_session` prompt, or a [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) prompt, from an OAuth connection that **acts on its approver's behalf** | ✅ `oauth.follow_up` / `oauth.follow_up_queued` / `oauth.send_now` / `oauth.enqueued_message` / `oauth.enqueued_message_edited` / `oauth.start_session` / `oauth.quick_router` | the approver chose this level for the connection (see [below](#the-assistant-channel)). Only the caller's words are recorded: `quick_router`'s page context is not |
@@ -533,12 +534,25 @@ conversation is stamped with an author by the boundary that accepted it:
   approver's email. A relay-only connection cannot reach Live Mode at all.
 
 A turn written by `action_live_conversation send_message` carries no author, whoever called it, and
-so does every turn from before authors were recorded. When the assistant delivers a message into a
-session, Zimmer records it only if all of these hold:
+so does every turn from before authors were recorded (tadasant/zimmer#1483, merged
+2026-11-12T20:23Z). When the assistant delivers a message into a session, Zimmer records it only if
+all of these hold:
 
-- **Nothing in the conversation is unauthored.** The model reads the whole thread, so one line an
-  agent typed into it can tell the model to deliver something whenever the person next speaks. A
-  conversation with such a line never records. Start a new one.
+- **Nothing in the conversation could have been written by an agent.** The model reads the thread,
+  so one line an agent typed into it can tell the model to deliver something whenever the person next
+  speaks. A conversation with such a line never records. Start a new one. Such a line is any
+  unauthored `user` turn, with one exception: a `spoken` turn from before authors were recorded.
+  Spoken lines are written only by `record_turn`, which has only ever been reachable from the web
+  page behind its sign-in or from the iOS app on a connection acting as its person, so an old spoken
+  line was a person's even though no row says which one. It is not counted as anybody's words, but it
+  no longer bars a voice conversation from ever recording again. An old `typed` line could have been
+  `action_live_conversation`, and nothing on the row tells the two apart, so it still bars the
+  conversation (`LiveConversation#unattributable_user_turns`).
+- **No agent wrote the conversation's scratchpad.** Every note is in every turn's instructions, so a
+  note written over MCP (`action_live_conversation scratchpad_add` / `scratchpad_edit`) steers the
+  model the same way. Such a write stamps `live_conversations.agent_wrote_scratchpad_at`, which stays
+  set after the note is removed, because what it said may still be in the thread. An MCP-written note
+  still on the pad counts too. Notes the live model or the person wrote do not.
 - **The Live mode guidance was not last written by an agent session.** The guidance is in every
   conversation's system prompt, so the same steering works from there. A change made through
   `action_live_settings`, or by the live model in a conversation an agent typed into, stops Live
@@ -553,6 +567,16 @@ transcribed it, keeping the lines of that run that are under five minutes old. W
 under the person's words on every surface. `provenance` also holds `live_conversation_id`,
 `live_turn_ids`, `heard` (`typed` or `spoken`), `surface` (the client the line came from: `web`, `ios` or `carplay`), `via` (`web_ui` or `ios_app`) and,
 for the app, `oauth_grant_id` and `grant_user_email`.
+
+`replying_to` (and `replying_to_turn_id`) is the assistant line just before the person's words, which
+is what a short reply was answering: the "it" in "merge it". On a voice call it is the transcript of
+what the person heard. It is the model's line, and every surface labels it as that, never as the
+person's words.
+
+**When Zimmer declines, the live model is told why.** A delivery that is not recorded still reaches
+the session, and the tool result the live model gets back says it was not recorded as the person's
+and names the reason (for example, the turn ids of the lines that bar the conversation), so it can
+say so out loud. The same line is logged as `[HumanMessageCapture] live_mode capture declined`.
 
 ```
 - **[here]** Tadas (`tadasant`) via Live Mode (CarPlay, spoken, as transcribed; delivered by the Live Mode assistant), in this session (#26900), at 2026-11-11T03:10:02Z
@@ -581,6 +605,48 @@ What this establishes, and what it does not:
   window bounds how far behind. See [Limitations](/limitations/).
 
 A session Live Mode starts still has genesis `api`, so `live_mode` never appears as a capture gap.
+
+#### Merging by voice: `live_mode.authorize_merge`
+
+The live model has an `authorize_merge` function: the [Merge button](/sessions/user-view/), by
+voice. It is the only Live Mode route to a merge, and it ends in the same
+`Sessions::AuthorizeMerge` the dashboard and the iOS app call, so the session holding the PR gets
+the same `[HUMAN-AUTHORIZED MERGE]` message and the sign-off is recorded `here`, in that session.
+
+A tap carries its referent, and a spoken "yes" does not, so the voice version has two calls and
+Zimmer decides what is being agreed to:
+
+1. `authorize_merge(session_id)` reads the session's PR off Zimmer's own record, refuses anything
+   the button would refuse, and answers with a **read-back Zimmer composed**: the repository, the
+   number, the session's title and, when the merge gate's newest rating of that PR is a hold, the
+   start of its reason. The model says it and asks for a yes.
+2. `authorize_merge(session_id, confirm: true)` merges only if the newest read-back in the
+   conversation was for this session and is under three minutes old, the person's newest words pass
+   every rule above, the assistant line just before them (what the person heard, with nothing they
+   said in between) came after the read-back and names the PR by repository and number, and the words
+   are a plain yes: short, starting with "yes", "yeah", "go ahead", "merge it" or the like, with no
+   question and nothing qualifying it ("not", "wait", "but", "after", "first"…). So a yes to some
+   later question never counts. Anything else merges nothing and the model is told why. The message
+   the merging session gets carries Zimmer's read-back and the person's answer, never the model's
+   words.
+
+The record's content is the person's words ("Yes."), and its provenance adds `confirmed_pr_url`,
+`read_back` (Zimmer's sentence) and `replying_to` (what the model actually said):
+
+```
+- **[here]** Tadas (`tadasant`) via Live Mode (CarPlay, spoken, as transcribed; delivered by the Live Mode assistant), in this session (#27637), at 2026-11-13T06:40:00Z
+  ```
+  Yes.
+  ```
+  They were answering Zimmer's read-back of https://github.com/tadasant/zimmer/pull/1490 (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, the title from the session, any hold reason from the merge gate):
+  ```
+  Merge tadasant/zimmer pull request 1490, from the session "Stop …"? The merge gate held it: Differential: …
+  ```
+  The content above is what the person said. The Live Mode assistant delivered this into the session on the strength of it:
+  ```
+  Merge https://github.com/tadasant/zimmer/pull/1490
+  ```
+```
 
 ### The GitHub attribution trap
 

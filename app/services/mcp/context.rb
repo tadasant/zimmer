@@ -136,10 +136,12 @@ module Mcp
     # @return [HumanMessage, nil]
     def capture_assistant_message(session, content, entry_point)
       if @live_conversation
-        return HumanMessageCapture.record_live_mode_message(
+        message = HumanMessageCapture.record_live_mode_message(
           session: session, conversation: @live_conversation, content: content,
           entry_point: entry_point.to_s.sub(/\Aoauth\./, "live_mode.")
         )
+        note_live_capture_declined(session) if message.nil?
+        return message
       end
       return nil unless oauth?
 
@@ -148,11 +150,35 @@ module Mcp
       )
     end
 
+    # Why a Live Mode delivery this context made was not recorded as the
+    # person's, one sentence per delivery, for the tool bridge to hand back to
+    # the live model so it can say so out loud. Drained by the reader.
+    #
+    # @return [Array<String>]
+    def take_live_capture_declines
+      declines = @live_capture_declines.to_a
+      @live_capture_declines = []
+      declines
+    end
+
     def session_url(session)
       "#{base_url.chomp('/')}/sessions/#{session.id}"
     end
 
     private
+
+    # Said once per delivery, and logged: until this existed a declined capture
+    # left no trace anywhere, and a person could approve the same PR by voice
+    # night after night without anyone being able to say why it never counted.
+    def note_live_capture_declined(session)
+      reason = HumanMessageCapture.live_mode_words(@live_conversation).declined ||
+               "Zimmer could not record it"
+      Rails.logger.info("[HumanMessageCapture] live_mode capture declined: live_conversation=#{@live_conversation.id} " \
+                        "session=#{session&.id} reason=#{reason.truncate(300)}")
+      (@live_capture_declines ||= []) << "Session #{session&.id}: not recorded as the person's own words, because #{reason}."
+    rescue => e
+      Rails.logger.error("[Mcp::Context] could not explain a declined Live Mode capture: #{e.class}: #{e.message}")
+    end
 
     # Positive integers only. A blank, zero, negative or non-numeric value means
     # the connection carries no caller identity, which is the pre-existing

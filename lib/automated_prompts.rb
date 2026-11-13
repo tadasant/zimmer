@@ -475,11 +475,11 @@ module AutomatedPrompts
   MERGE_AUTHORIZATION_TEMPLATE = <<~PROMPT.strip
     #{MERGE_AUTHORIZATION_MARKER}
 
-    The user has hit the Merge button on this PR in %{surface}:
+    The user %{act}:
 
     %{pr_url}
 
-    That click is your explicit permission to execute the merge. It is a human
+    That sign-off is your explicit permission to execute the merge. It is a human
     sign-off, not an agent deciding on its own — Zimmer's standing rule that you
     never merge your own work does not apply to THIS PR, and applies to every
     other one exactly as before.
@@ -510,8 +510,11 @@ module AutomatedPrompts
   # @return [String]
   # @param surface [String] where the button was pressed ("the Zimmer dashboard",
   #   "the Zimmer iOS app")
-  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard")
-    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, surface: surface)
+  # @param act [String, nil] how the human signed off, completing "The user …".
+  #   Defaults to pressing the Merge button in `surface`; Live Mode passes the
+  #   spoken read-back it confirmed (LiveConversations::AuthorizeMerge).
+  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard", act: nil)
+    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, act: act.presence || "has hit the Merge button on this PR in #{surface}")
   end
 
   # Whether a prompt is one of these. Written next to the template for the same

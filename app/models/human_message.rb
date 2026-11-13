@@ -125,6 +125,22 @@ class HumanMessage < ApplicationRecord
     provenance["relayed_message"].presence if channel == LIVE_MODE
   end
 
+  # The assistant line a `live_mode` message was answering — what "it" meant
+  # in "merge it". The model's words, shown as that.
+  def replying_to
+    provenance["replying_to"].presence if channel == LIVE_MODE
+  end
+
+  # On a `live_mode.authorize_merge` sign-off: the PR Zimmer named, and the
+  # read-back Zimmer composed and the person said yes to.
+  def confirmed_pr_url
+    provenance["confirmed_pr_url"].presence if channel == LIVE_MODE
+  end
+
+  def read_back
+    provenance["read_back"].presence if channel == LIVE_MODE
+  end
+
   LIVE_MODE_SURFACES = { "web" => "web", "ios" => "iOS app", "carplay" => "CarPlay" }.freeze
 
   # Where this message reached Zimmer, in words a reader can weigh.
