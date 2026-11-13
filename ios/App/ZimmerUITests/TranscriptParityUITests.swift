@@ -202,7 +202,7 @@ final class TranscriptParityUITests: XCTestCase {
                 && element.frame.maxY <= bottom
         }
         // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view,
-        // and each ask is four queries, which cost the failing run of 43330313836 forty seconds.
+        // and each ask is several queries, which cost the failing run of 43330313836 forty seconds.
         for _ in 0..<8 {
             if inView() { break }
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
