@@ -80,6 +80,14 @@ RUN /rails/scripts/assert-docs-excluded.sh --root /rails
 # pushed.
 RUN /rails/scripts/assert-extensions-shipped.sh --root /rails
 
+# Two migrations on one version must not ship. bin/docker-entrypoint refuses to boot
+# such an image, because `db:prepare` alone would skip one of them in silence against a
+# database that already has the version (zimmer#1500). Running the same guard here fails
+# the BUILD instead, so a colliding image is never pushed. It also proves the guard can
+# load from the image at all: the entrypoint fails closed, so a guard that could not load
+# would stop every container.
+RUN /rails/bin/migration-version-guard
+
 # Fix ownership of runtime directories for the rails user (user already exists in base)
 RUN mkdir -p db log storage tmp && chown -R rails:rails db log storage tmp
 

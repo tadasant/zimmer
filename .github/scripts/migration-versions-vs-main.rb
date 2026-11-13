@@ -19,13 +19,18 @@
 # 13th. A sweep that fires when `main` moves is what re-asks.
 #
 # The status alone blocks nothing: the `main` ruleset requires `all-checks-pass`
-# and only that. So a colliding PR that carries the `ready to merge` label — the
-# label the merge gate keys on — also loses it, with a comment saying why. The
-# session holding the PR is woken by the label coming off.
+# and only that. So for a colliding PR the sweep also re-runs its latest CI run,
+# whose `lint` re-fetches `main` and goes red, taking `all-checks-pass` with it;
+# and if the PR carries `ready to merge` — the label the merge gate keys on — it
+# loses that too, with a comment saying why.
+#
+# One PR's failure does not stop the sweep: it is logged, the rest are still
+# checked, and the job exits non-zero at the end.
 #
 # REPO (owner/name) must be set; `gh` must be authenticated. Rails-free: the
 # comparison is MigrationVersionGuard.merge_collisions, the inputs are `git
 # ls-tree` and the PR files API.
+require "json"
 require "open3"
 require "optparse"
 require_relative "../../test/support/migration_version_guard"
@@ -42,7 +47,12 @@ module MigrationVersionsVsMain
     options = parse_options(argv)
 
     case command
-    when "check" then check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
+    when "check"
+      begin
+        check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
+      rescue CommandFailed => e
+        abort e.message
+      end
     when "sweep"
       sweep(main_ref: options.fetch(:main_ref), target_url: options[:target_url], dry_run: options[:dry_run])
     else abort "usage: #{File.basename($PROGRAM_NAME)} check --pr N --main-ref REF | sweep --main-ref REF"
@@ -67,25 +77,39 @@ module MigrationVersionsVsMain
   def sweep(main_ref:, target_url:, dry_run: false)
     main = main_paths(main_ref)
 
-    open_pull_requests.each do |number, head_sha, labels|
-      changes = migration_changes(number)
-      # A PR that adds no migration cannot collide, and stays without the
-      # status rather than collecting a green one it has no use for.
-      next if changes[:added].empty?
-
-      collisions = MigrationVersionGuard.merge_collisions(main: main, **changes)
-      state, description = collisions.empty? ? [ "success", "No migration version or name collides with main." ] : [ "failure", summary(collisions) ]
-      puts "##{number} #{head_sha[0, 12]}: #{state} — #{description}"
-      next if dry_run
-
-      post_status(head_sha, state, description, target_url)
-      unlabel(number, collisions, target_url) if state == "failure" && labels.include?(READY_LABEL)
+    failed = open_pull_requests.reject do |number, head_sha, labels|
+      sweep_one(number, head_sha, labels, main: main, target_url: target_url, dry_run: dry_run)
+      true
+    rescue CommandFailed => e
+      warn "##{number}: could not check — #{e.message}"
+      false
     end
+
+    abort "Could not check #{failed.map { |number, _| "##{number}" }.join(", ")}; see above." if failed.any?
+  end
+
+  def sweep_one(number, head_sha, labels, main:, target_url:, dry_run:)
+    changes = migration_changes(number)
+    # A PR that adds no migration cannot collide, and stays without the
+    # status rather than collecting a green one it has no use for.
+    return if changes[:added].empty?
+
+    collisions = MigrationVersionGuard.merge_collisions(main: main, **changes)
+    state, description = collisions.empty? ? [ "success", "No migration version or name collides with main." ] : [ "failure", summary(collisions) ]
+    puts "##{number} #{head_sha[0, 12]}: #{state} — #{description}"
+    return if dry_run
+
+    post_status(head_sha, state, description, target_url)
+    return if state == "success"
+
+    rerun_ci(head_sha)
+    unlabel(number, collisions, target_url) if labels.include?(READY_LABEL)
   end
 
   # Paths relative to db/migrate, which is what the guard compares.
   def main_paths(ref)
-    git("ls-tree", "-r", "--name-only", ref, "--", MIGRATE_PREFIX).lines(chomp: true)
+    # -z, because without it git quotes a path with unusual bytes in it.
+    git("ls-tree", "-r", "-z", "--name-only", ref, "--", MIGRATE_PREFIX).split("\0")
       .map { |path| path.delete_prefix(MIGRATE_PREFIX) }
   end
 
@@ -125,20 +149,30 @@ module MigrationVersionsVsMain
     paths.select { |path| path.start_with?(MIGRATE_PREFIX) }.map { |path| path.delete_prefix(MIGRATE_PREFIX) }
   end
 
-  # [number, head sha, label names]. Tab-separated because label names have
-  # spaces in them.
+  # [number, head sha, label names].
   def open_pull_requests
-    gh("pr", "list", "--repo", repo, "--base", "main", "--state", "open", "--limit", "1000",
-      "--json", "number,headRefOid,labels",
-      "--jq", '.[] | [(.number | tostring), .headRefOid, ([.labels[].name] | join(","))] | @tsv')
-      .lines(chomp: true).map do |row|
-        number, sha, labels = row.split("\t", 3)
-        [ number, sha, labels.to_s.split(",") ]
-      end
+    JSON.parse(gh("pr", "list", "--repo", repo, "--base", "main", "--state", "open", "--limit", "1000",
+      "--json", "number,headRefOid,labels")).map do |pr|
+      [ pr.fetch("number"), pr.fetch("headRefOid"), pr.fetch("labels").map { |label| label.fetch("name") } ]
+    end
   end
 
+  # The PR's latest CI run, re-run in full. Its `lint` re-fetches `main`, so
+  # it goes red, and `all-checks-pass` — the one check the ruleset requires —
+  # with it. A run still in progress cannot be re-run; it is reading a `main`
+  # fetched at its own start, which may predate this push, so that is reported
+  # rather than ignored.
+  def rerun_ci(head_sha)
+    run_id = gh("run", "list", "--repo", repo, "--workflow", "ci.yml", "--commit", head_sha,
+      "--event", "pull_request", "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId // empty").strip
+    return warn("  no CI run found for #{head_sha[0, 12]} to re-run") if run_id.empty?
+
+    gh("run", "rerun", run_id, "--repo", repo)
+  end
+
+  # Comment first, so a run cancelled in between never leaves a label gone
+  # with no word about why.
   def unlabel(number, collisions, target_url)
-    gh("pr", "edit", number.to_s, "--repo", repo, "--remove-label", READY_LABEL)
     gh("pr", "comment", number.to_s, "--repo", repo, "--body", <<~BODY)
       `main` gained a migration that collides with one this PR adds, so this PR would
       break `main` if it merged now. `#{READY_LABEL}` is removed until it is fixed.
@@ -150,6 +184,7 @@ module MigrationVersionsVsMain
       Renumber this PR's migration and push; the `lint` job checks it against current
       `main` again. Found by #{target_url || "the migration-versions-vs-main workflow"}.
     BODY
+    gh("pr", "edit", number.to_s, "--repo", repo, "--remove-label", READY_LABEL)
   end
 
   # A commit status description is capped at 140 characters.
@@ -178,10 +213,13 @@ module MigrationVersionsVsMain
     run_command("git", *args)
   end
 
-  # Fail loudly: a check that could not read its inputs has not passed.
+  class CommandFailed < StandardError; end
+
+  # Fail loudly: a check that could not read its inputs has not passed. `check`
+  # lets this escape and exits non-zero; `sweep` catches it per PR.
   def run_command(*command)
     output, error, status = Open3.capture3(*command)
-    abort "#{command.first(3).join(" ")} … failed (#{status.exitstatus}):\n#{error}" unless status.success?
+    raise CommandFailed, "#{command.first(3).join(" ")} … failed (#{status.exitstatus}): #{error.strip}" unless status.success?
 
     output
   end

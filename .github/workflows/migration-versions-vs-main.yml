@@ -2,8 +2,9 @@ name: Migration versions vs main
 
 # Re-asks every open PR "would you collide with main?" each time main gains or
 # loses a migration, and writes the answer to the PR's head commit as the
-# `migration versions vs main` commit status. A colliding PR that carries
-# `ready to merge` also loses the label, which is what the merge gate keys on.
+# `migration versions vs main` commit status. A colliding PR also has its latest
+# CI run re-run, so the required `all-checks-pass` goes red, and loses `ready to
+# merge` if it carries it, which is what the merge gate keys on.
 #
 # CI on a PR answers that question once, against main as of the PR's last push.
 # On 2026-11-13 #1484 merged with green CI from two days earlier, after #1483 had
@@ -21,11 +22,12 @@ on:
 
 concurrency:
   group: migration-versions-vs-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 # pull-requests/issues: write is for taking `ready to merge` off a colliding PR
-# and saying why in a comment.
+# and saying why in a comment; actions: write is for re-running its CI.
 permissions:
+  actions: write
   contents: read
   pull-requests: write
   issues: write
@@ -33,6 +35,8 @@ permissions:
 
 jobs:
   sweep:
+    # A dispatch from another branch would sweep against that branch's tree.
+    if: github.ref == 'refs/heads/main'
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
