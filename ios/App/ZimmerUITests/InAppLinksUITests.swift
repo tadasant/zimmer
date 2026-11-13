@@ -25,9 +25,8 @@ final class InAppLinksUITests: XCTestCase {
         // Through the paragraph's long-press menu, whose Open Link goes through the same handler
         // as a tap on the link: a tap at the centre of a URL that wraps can land on the words
         // beside it. The Zimmer link comes first in the paragraph, so its Open Link is the first.
-        paragraph.press(forDuration: 1.5)
-        let open = app.buttons["Open Link"].firstMatch
-        XCTAssertTrue(open.waitForExistence(timeout: timeout), "the menu opens the link")
+        let open = pressForMenuInPlace(app, paragraph, offering: "Open Link", timeout: timeout)
+        XCTAssertTrue(open.exists, "the menu opens the link")
         open.tap()
 
         XCTAssertTrue(app.navigationBars["#1044"].waitForExistence(timeout: timeout), "the linked session opens in the app")
@@ -58,7 +57,9 @@ final class InAppLinksUITests: XCTestCase {
             return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
                 && element.frame.maxY <= bottom
         }
-        for _ in 0..<8 where !inView() {
+        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view.
+        for _ in 0..<8 {
+            if inView() { break }
             if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
         }
     }
