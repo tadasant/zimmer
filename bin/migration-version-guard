@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Refuses to boot an image whose db/migrate has two migrations claiming one
+# version (or one class name). bin/docker-entrypoint runs it before anything
+# else, on every role, so a colliding image never answers `/up` and Kamal's
+# health gate keeps the old containers serving.
+#
+# Why the entrypoint cannot leave this to Rails: `db:prepare` only builds a
+# Migrator — the thing that raises DuplicateMigrationVersionError — when
+# something is pending. On 2026-11-13 production already had 20261111120000
+# applied from #1483, so nothing was pending, #1484's migration with the same
+# version was silently treated as applied, and its table never existed. Every
+# mcp_event trigger stopped polling (zimmer#1500).
+#
+# Plain `ruby`, no bundler and no Rails: it reads filenames and costs a Ruby
+# startup. MIGRATION_VERSION_GUARD_DIR points it at another directory, which is
+# how test/config/docker_entrypoint_migration_guard_test.rb drives it.
+require_relative "../test/support/migration_version_guard"
+
+dir = ENV.fetch("MIGRATION_VERSION_GUARD_DIR", MigrationVersionGuard::MIGRATION_DIR)
+collisions = MigrationVersionGuard.collisions(dir)
+exit if collisions.empty?
+
+warn "Refusing to start: this image's migrations collide, so `db:prepare` could"
+warn "silently skip one of them against a database that already has the version."
+warn ""
+warn MigrationVersionGuard.report(collisions)
+exit 1

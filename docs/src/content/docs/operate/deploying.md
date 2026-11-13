@@ -840,18 +840,62 @@ independent branches each adding `…180000` each pass, which is exactly how the
 and how it happened again on 2026-09-11, when
 [#1155](https://github.com/tadasant/zimmer/pull/1155) and
 [#1156](https://github.com/tadasant/zimmer/pull/1156) both hand-wrote `20260912120000` and
-[#1163](https://github.com/tadasant/zimmer/pull/1163) renumbered the second one.
+[#1163](https://github.com/tadasant/zimmer/pull/1163) renumbered the second one. The checks below
+exist for that case.
 
-Closing it takes a repository setting, not a check this repo can ship: require branches to be up to
-date with `main` before merging, or put a merge queue in front of it, so the collision is on the
-branch by the time CI runs. Neither is configured here — `main` is not a protected branch and no
-workflow has a `merge_group` trigger.
+### Checking a PR against `main` as it is now
 
-Reading `origin/main`'s migrations alongside the branch's would *narrow* the window, not close it,
-and the 2026-09-11 recurrence is the proof: `lint` last ran on #1156's head at 19:05 UTC, three
-minutes before #1155 put the colliding migration on `main`, and nothing re-ran it in the 59 minutes
-before #1156 merged. A union check catches the second PR only when CI happens to run after the first
-one lands, which is exactly what no setting currently guarantees.
+On a pull request, `actions/checkout` builds the merge with `main` as it was when the PR last
+pushed. Nothing re-runs that check when `main` moves later. On 2026-11-13,
+[#1484](https://github.com/tadasant/zimmer/pull/1484) merged with green CI from two days earlier.
+[#1483](https://github.com/tadasant/zimmer/pull/1483) had put the same version, `20261111120000`,
+on `main` the day before ([#1500](https://github.com/tadasant/zimmer/issues/1500)). Two checks cover
+that gap:
+
+- **At PR time**, `lint`'s *Migration versions vs current main* step fetches `origin/main` and asks
+  whether merging the PR into it now would collide. It builds the merged tree itself: `main`'s
+  migrations, minus the ones the PR deletes or renames away, plus the ones it adds. The PR's
+  changes come from the PR files API, so the step needs no history in its checkout. A rename counts
+  as a delete plus an add, which is how a PR that renumbers a colliding migration clears the
+  collision it fixes. The step only fails on a collision involving a migration the PR adds. A
+  collision already on `main` is `main`'s to fix, and `main`'s own `lint` run is already red.
+- **When `main` moves**, `.github/workflows/migration-versions-vs-main.yml` runs on every push to
+  `main` that touches `db/migrate/` and asks every open PR that adds a migration the same question.
+  It writes the answer to the PR's head commit as the `migration versions vs main` commit status.
+  That status blocks nothing by itself, because the `main` ruleset requires `all-checks-pass` and
+  nothing else. So a colliding PR that carries `ready to merge` also loses the label, with a
+  comment showing the collision. The merge gate keys on that label, and the session holding the PR
+  is woken when it comes off.
+
+Both run `.github/scripts/migration-versions-vs-main.rb` (`check` and `sweep`), and both compare
+with `MigrationVersionGuard.merge_collisions`. `sweep --dry-run` prints the verdicts without writing
+anything.
+
+One window is still open. A PR that gets the label back after the sweep, and then merges before the
+next migration lands on `main`, is checked only by its last `lint` run. The setting that closes this
+completely is a repository one: turn on *Require branches to be up to date before merging* on the
+`main` ruleset (`strict_required_status_checks_policy`), or put a merge queue in front of `main`.
+Neither is configured. Both change the merge flow for every PR, so they are a human's decision, not
+a diff.
+
+### A colliding image refuses to boot
+
+If a collision reaches an image anyway, `bin/docker-entrypoint` stops it before Rails starts. It
+runs `bin/migration-version-guard` first, on every role and every command, and exits 1 on a
+collision. The web container never answers `/up`, so Kamal's health gate keeps the old containers
+serving and the deploy fails where someone can see it.
+
+The entrypoint can't leave this to `db:prepare`. That task builds a `Migrator`, which is what raises
+`DuplicateMigrationVersionError`, only when something is pending. On 2026-11-13 production already
+had `20261111120000` applied from #1483, so nothing was pending. #1484's `create_table` was treated
+as applied and never ran, and the web role booted healthy. From then on the worker raised
+`PG::UndefinedTable` every minute, and every `mcp_event` trigger stopped polling.
+
+The script is plain `ruby` with no bundler and no Rails. It loads the same
+`test/support/migration_version_guard.rb`, which ships in the image because nothing in
+`.dockerignore` excludes `test/`. `MIGRATION_VERSION_GUARD_DIR` points it at another directory,
+which is how `test/config/docker_entrypoint_migration_guard_test.rb` runs the real entrypoint against
+fixture filenames.
 
 ### Renumbering safely
 
