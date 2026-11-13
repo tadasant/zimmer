@@ -79,9 +79,11 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "### Configure Hatchbox deployment (ID: #{sessions(:router_child_running).id})"
   end
 
-  test "archived sessions are excluded unless show_archived" do
-    assert_equal "No sessions found matching the specified criteria.",
-      @tool.call("query" => "Research deployment options")
+  test "archived sessions are excluded unless show_archived, and the response says how many it held back" do
+    hidden = @tool.call("query" => "Research deployment options")
+    assert hidden.start_with?("No sessions found matching the specified criteria.")
+    assert_includes hidden, "1 more archived session(s) match and are not shown"
+    assert_includes hidden, "show_archived: true"
 
     output = @tool.call("query" => "Research deployment options", "show_archived" => true)
     assert_includes output, "### Research deployment options (ID: #{sessions(:router_child_archived).id})"
@@ -391,5 +393,82 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
 
     error = assert_raises(Mcp::ToolError) { @tool.call({ "carplay_fit" => "maybe" }) }
     assert_match(/Invalid carplay_fit/, error.message)
+  end
+
+  # --- match: "all_words" and the narrowing notes ---------------------------
+
+  def create_titled_session(title, status: :needs_input, **attrs)
+    Session.create!(title: title, prompt: "prompt", git_root: "https://github.com/test/repo.git",
+                    agent_runtime: "claude_code", status: status, **attrs)
+  end
+
+  test "all_words finds a paraphrase the phrase search misses" do
+    target = create_titled_session("Diagnose failed Zimmer quokka voice session")
+
+    phrase = @tool.call("query" => "diagnose quokka")
+    assert phrase.start_with?("No sessions found matching the specified criteria.")
+
+    output = @tool.call("query" => "diagnose quokka", "match" => "all_words")
+    assert_includes output, "(ID: #{target.id})"
+  end
+
+  test "all_words ANDs its words: a session missing one of them is not a match" do
+    both = create_titled_session("Quokka harbour survey")
+    one = create_titled_session("Quokka meadow survey")
+
+    output = @tool.call("query" => "harbour quokka", "match" => "all_words")
+
+    assert_includes output, "(ID: #{both.id})"
+    assert_not_includes output, "(ID: #{one.id})", "words are AND-ed, never OR-ed (#405)"
+  end
+
+  test "all_words lets each word land in a different field" do
+    target = create_titled_session("Quokka cleanup", custom_metadata: { "issue" => "tadasant/zimmer#98765" })
+
+    output = @tool.call("query" => "cleanup 98765", "match" => "all_words")
+
+    assert_includes output, "(ID: #{target.id})"
+  end
+
+  test "all_words with search_contents is refused, and an unknown match is refused" do
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("query" => "a b", "match" => "all_words", "search_contents" => true)
+    end
+    assert_match(/title and metadata only/, error.message)
+
+    assert_raises(Mcp::ToolError) { @tool.call("query" => "a", "match" => "fuzzy") }
+  end
+
+  test "a multi-word phrase that finds nothing says how many sessions hold every word" do
+    create_titled_session("Diagnose failed Zimmer quokka voice session", status: :archived)
+
+    output = @tool.call("query" => "diagnose quokka")
+
+    assert_includes output, "no session has this exact phrase, but 1 session(s) contain every one of its words (counting archived"
+    assert_includes output, 'match: "all_words"'
+  end
+
+  test "a carplay_fit filter that hid a match says so" do
+    laptop = create_titled_session("Quokka laptop-only lookup", carplay_fit: "laptop_only", carplay_fit_source: "auto",
+                                   carplay_fit_line_count: 5, carplay_fit_set_at: Time.current)
+
+    output = @tool.call("query" => "Quokka laptop-only", "carplay_fit" => "not_laptop_only")
+
+    assert output.start_with?("No sessions found matching the specified criteria.")
+    assert_includes output, "1 more session(s) match but were left out by carplay_fit: not_laptop_only"
+
+    unfiltered = @tool.call("query" => "Quokka laptop-only")
+    assert_includes unfiltered, "(ID: #{laptop.id})"
+    assert_not_includes unfiltered, "**Note:**"
+  end
+
+  test "notes ride along with results, not only with an empty answer" do
+    create_titled_session("Quokka notes visible")
+    create_titled_session("Quokka notes archived", status: :archived)
+
+    output = @tool.call("query" => "Quokka notes")
+
+    assert_includes output, "Found 1 session(s)"
+    assert_includes output, "1 more archived session(s) match and are not shown"
   end
 end

@@ -187,6 +187,26 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert response.parsed_body["respond"]
   end
 
+  test "a hang-up relayed by an app that closes its call answers hang_up; an older app is refused" do
+    conversation = create_live_conversation(mode: "voice")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.6.0")
+
+    post "/api/v1/live_conversations/#{conversation.id}/tool_calls",
+      params: { name: "hang_up", arguments: "{}", call_id: "call_h", reattaches: "1", hangs_up: "1" }, headers: car
+    assert_response :success
+    assert_equal true, response.parsed_body["hang_up"]
+    assert_equal false, response.parsed_body["error"]
+    assert_nil response.parsed_body["tools"]
+    assert conversation.reload.active?, "hanging up ends the call, not the conversation"
+
+    post "/api/v1/live_conversations/#{conversation.id}/tool_calls",
+      params: { name: "hang_up", arguments: "{}", call_id: "call_h2", reattaches: "1" }, headers: car
+    assert_response :success
+    assert_nil response.parsed_body["hang_up"]
+    assert_equal true, response.parsed_body["error"]
+    assert_match(/tap End/, response.parsed_body["output"])
+  end
+
   test "the car answers every line: a gated Listening setting gates the phone's call, never the car's" do
     LiveConversations::SettingsUpdate.call({ "voice_listening" => "wake_word" }, actor: LiveConversations::SettingsUpdate::Actor.agent("live conversation #1"))
     conversation = create_live_conversation(mode: "voice")
