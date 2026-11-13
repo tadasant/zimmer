@@ -35,11 +35,12 @@ module McpApps
     # the proxy can pass a faithful error back to the view instead of flattening
     # everything to "something went wrong".
     class RpcError < Error
-      attr_reader :code
+      attr_reader :code, :data
 
-      def initialize(message, code: nil)
+      def initialize(message, code: nil, data: nil)
         super(message)
         @code = code
+        @data = data
       end
     end
 
@@ -165,7 +166,7 @@ module McpApps
       raise Error, "no response to #{method}" if message.nil?
 
       if (error = message["error"])
-        raise RpcError.new(error["message"].presence || "#{method} failed", code: error["code"])
+        raise RpcError.new(error["message"].presence || "#{method} failed", code: error["code"], data: error["data"])
       end
 
       result = message["result"]
