@@ -27,6 +27,13 @@
 #     -e 'puts MigrationVersionGuard.report'
 #
 # is the same check by hand.
+#
+# Two more callers lean on it being Rails-free. bin/migration-version-guard runs
+# it from bin/docker-entrypoint, so an image whose migrations collide refuses to
+# boot: `db:prepare` alone would silently skip one of them against a database
+# that already has the version (zimmer#1500). And
+# .github/scripts/migration-versions-vs-main.rb runs `merge_collisions` to check
+# a PR against `main` as it is now, not as it was at the PR's last push.
 class MigrationVersionGuard
   MIGRATION_DIR = File.expand_path("../../db/migrate", __dir__)
 
@@ -69,12 +76,18 @@ class MigrationVersionGuard
     # it is a different error with a different fix, and one file is enough to
     # trigger it, so there is no pair to report.
     def migrations(dir = MIGRATION_DIR)
-      Dir[File.join(dir, GLOB)].sort.filter_map do |path|
-        match = FILENAME.match(File.basename(path))
+      parse(Dir[File.join(dir, GLOB)].sort.map { |path| path.delete_prefix("#{dir}/") })
+    end
+
+    # The same reduction over a list of paths relative to db/migrate, for a
+    # tree that is not on disk — another branch, read out of git.
+    def parse(relative_paths)
+      relative_paths.sort.filter_map do |relative_path|
+        match = FILENAME.match(File.basename(relative_path))
         next unless match
 
         Migration.new(
-          relative_path: path.delete_prefix("#{dir}/"),
+          relative_path: relative_path,
           version: match[1].to_i,
           class_name: camelize(match[2])
         )
@@ -85,9 +98,28 @@ class MigrationVersionGuard
     # itself validates in, so the first message here is the error it would have
     # reported.
     def collisions(dir = MIGRATION_DIR)
-      found = migrations(dir)
+      duplicates_in(migrations(dir))
+    end
 
-      duplicates(found, :class_name) + duplicates(found, :version)
+    # The collisions a pull request would put on `main` if it merged now.
+    #
+    # The check above reads one tree, and on a pull request that tree is the
+    # merge with `main` as of the PR's last push. Nothing re-reads it when
+    # `main` moves afterwards, so two PRs that each passed can still collide
+    # once both merge — #1483 and #1484 each claimed 20261111120000, a day
+    # apart, two days after either last ran CI (zimmer#1500).
+    #
+    # So this rebuilds the merged tree from `main` as it is now plus what the
+    # PR changes: `main`'s migrations, less the ones the PR deletes or renames
+    # away, plus the ones it adds. All three are paths relative to db/migrate.
+    #
+    # Only collisions that include a file the PR adds are reported. One that is
+    # already on `main` is `main`'s to fix — its own `lint` run is red — and
+    # failing every open PR over it would bury the PR that fixes it.
+    def merge_collisions(main:, added:, removed:)
+      merged = (main - removed) | added
+
+      duplicates_in(parse(merged)).select { |collision| collision.paths.intersect?(added) }
     end
 
     # What a contributor reads when the guard fails. Empty string when clean, so
@@ -104,6 +136,10 @@ class MigrationVersionGuard
     # both become `AddWidget2`.
     def camelize(name)
       name.split("_").map(&:capitalize).join
+    end
+
+    def duplicates_in(found)
+      duplicates(found, :class_name) + duplicates(found, :version)
     end
 
     def duplicates(found, attribute)
