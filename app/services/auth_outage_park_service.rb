@@ -506,6 +506,7 @@ class AuthOutageParkService
     # judged against different pools.
     available = {}
     fingerprints = {}
+    served_at = {}
     # Per runtime, not global: the hazard the cap guards is one POOL being
     # re-drained by everything parked on it, so a fleet of claude_code parks
     # must not hold back the codex sessions whose own pool just recovered.
@@ -566,7 +567,8 @@ class AuthOutageParkService
 
       if session.metadata&.dig("auth_outage_reason") == AUTH_UNRECOVERABLE
         current = fingerprints.fetch(runtime) { fingerprints[runtime] = pool_fingerprint(runtime) }
-        next unless auth_park_wakeable?(session, current, logger)
+        verified = served_at.fetch(runtime) { served_at[runtime] = pool_verified_at(runtime) }
+        next unless auth_park_wakeable?(session, current, logger, verified_at: verified)
       end
 
       # Eligible, and not this sweep's to start. Count it — that number is what
@@ -618,8 +620,24 @@ class AuthOutageParkService
   # Has the pool changed for an AUTH_UNRECOVERABLE park since it was parked, and
   # does it still have early-wake budget left?
   #
+  # "Changed" is either of two pieces of evidence. The fingerprint moving is the
+  # first. The second is the pool demonstrably serving after the park: an
+  # account Anthropic verified by probe since the park was taken (.pool_verified_at).
+  # The fingerprint alone strands a park whose failure was never about a
+  # credential — a Cloudflare block in front of the API (tadasant/zimmer#1502)
+  # changes nothing the fingerprint hashes, so the park sat with the pool
+  # serving every other session. A successful probe after the park is a
+  # stronger answer to "would a resume work now?" than a credential write is,
+  # and it costs nothing to read: ClaudeUsageSamplerJob already records it.
+  #
+  # The early-wake budget bounds both, so a session whose identity problem is
+  # its own — the probe passes, its CLI still refuses — wakes at most
+  # MAX_EARLY_WAKES times per EARLY_WAKE_WINDOW. Each re-park restamps
+  # `auth_outage_parked_at`, so every further wake needs a probe newer than that.
+  #
   # @param current [String, nil] the runtime's pool fingerprint right now
-  def self.auth_park_wakeable?(session, current, logger)
+  # @param verified_at [Hash{String => Time}] .pool_verified_at for the runtime
+  def self.auth_park_wakeable?(session, current, logger, verified_at: {})
     parked_fingerprint = session.metadata&.dig(POOL_FINGERPRINT_KEY)
     # Parked before the fingerprint was recorded — an older park, or one whose
     # pool could not be read at the time. There is nothing to compare against, so
@@ -629,9 +647,48 @@ class AuthOutageParkService
     # from becoming a resume loop.
     return within_early_wake_budget?(session, logger) if parked_fingerprint.blank?
 
-    return false if current.blank? || current == parked_fingerprint
+    unless current.present? && current != parked_fingerprint
+      return false unless served_since_park?(session, verified_at)
+
+      logger.info("Auth-outage park's pool has served since the park — waking on an unchanged fingerprint",
+        session_id: session.id)
+    end
 
     within_early_wake_budget?(session, logger)
+  end
+
+  # Whether an account this park could resume onto was verified by Anthropic
+  # after the park was taken. The identity the session failed on is asked first
+  # when it is still available — that is the account a resume re-seeds — and any
+  # available account answers otherwise, since recovery rotates onto it.
+  #
+  # @param verified_at [Hash{String => Time}] .pool_verified_at for the runtime
+  def self.served_since_park?(session, verified_at)
+    return false if verified_at.blank?
+
+    parked_at = Time.zone.parse(session.metadata&.dig("auth_outage_parked_at").to_s) rescue nil
+    return false unless parked_at
+
+    identity = session.metadata&.dig(AuthRecoveryCoordinator::IDENTITY_KEY)
+    latest = verified_at.key?(identity) ? verified_at[identity] : verified_at.values.max
+    latest.present? && latest > parked_at
+  end
+
+  # When Anthropic last served each available account's stored token, by email:
+  # `credential_verified_at` for the accounts whose current verdict is verified.
+  # A runtime whose rows carry no verdict (Codex has no non-consuming probe)
+  # answers empty, and its parks keep waking on the fingerprint alone.
+  #
+  # @return [Hash{String => Time}]
+  def self.pool_verified_at(runtime)
+    RuntimeAuthProvider.for(runtime).accounts.available.each_with_object({}) do |account, map|
+      next unless account.respond_to?(:credential_verified?) && account.credential_verified?
+
+      map[account.email] = account.credential_verified_at
+    end
+  rescue => e
+    Rails.logger.info "[AuthOutageParkService] Could not read #{runtime} credential verdicts: #{e.message}"
+    {}
   end
 
   # Whether this park may spend another sweep-driven wake inside the window. Past
