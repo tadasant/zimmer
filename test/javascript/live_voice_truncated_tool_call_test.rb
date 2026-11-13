@@ -107,4 +107,54 @@ class LiveVoiceTruncatedToolCallTest < ActiveSupport::TestCase
     assert_equal [ "conversation.item.create", "response.create" ], run["sent"]
     assert_empty run["relayed"]
   end
+
+  test "a hang-up the person asked for asks for no reply, and ends the call only once the goodbye has sounded" do
+    run = scenario("hang_up_after_goodbye")
+
+    assert_equal 1, run["hangsUp"], "the dock says it can hang up"
+    assert_equal [ "conversation.item.create" ], run["sent"]
+    assert_equal 0, run["beforeDone"], "not while the response is still running"
+    assert_equal 0, run["beforeStopped"], "not while the goodbye is still sounding"
+    assert_equal 1, run["ended"]
+  end
+
+  test "a hang-up answered with nothing left sounding ends the call at once" do
+    run = scenario("hang_up_nothing_sounding")
+
+    assert_equal [ "conversation.item.create" ], run["sent"]
+    assert_equal 1, run["ended"]
+  end
+
+  test "a hang-up ends the call the way End does, with its cue, and leaves nothing armed" do
+    run = scenario("hang_up_through_real_hang_up")
+
+    assert_equal "idle", run["state"]
+    assert_equal [ "hung_up" ], run["cues"]
+    assert_equal false, run["hangingUp"]
+    assert_equal 2, run["generation"]
+  end
+
+  test "a goodbye that never says it stopped is cut off by the grace timer, which a later call ignores" do
+    run = scenario("hang_up_grace_timer")
+
+    assert_equal 8000, run["ms"]
+    assert_equal 0, run["before"]
+    assert_equal 1, run["fired"]
+    assert_equal 1, run["after"], "the timer of a call that has moved on does nothing"
+  end
+
+  test "talking over the goodbye ends the call then" do
+    run = scenario("hang_up_talked_over")
+
+    assert_equal 0, run["before"]
+    assert_equal 1, run["ended"]
+  end
+
+  test "a hang-up beats a switch in the same reply, and a move made elsewhere is not looked for" do
+    run = scenario("hang_up_beats_switch")
+
+    assert_empty run["moved"]
+    assert_operator run["ended"], :>=, 1
+    assert_equal false, run["polled"]
+  end
 end

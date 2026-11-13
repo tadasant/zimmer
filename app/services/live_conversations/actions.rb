@@ -34,15 +34,19 @@ module LiveConversations
     # @param reattaches [Boolean] whether the client can move its call to another
     #   conversation when a tool call answers `switched_to`. One that cannot is
     #   refused the switch rather than left talking on a conversation that ended.
+    # @param hangs_up [Boolean] whether the client closes its call when a tool
+    #   call answers `hang_up`. One that cannot is refused the hang-up, and the
+    #   model tells the person to tap End.
     # @param author [Author, nil] the human this request authenticated as, from
     #   the controller that accepted it. Stamped on the `user` turns this call
     #   writes, and the only thing HumanMessageCapture.record_live_mode_message
     #   attributes from. nil — the MCP tool's — writes turns nobody is said to
     #   have authored.
-    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false, author: nil)
+    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false, hangs_up: false, author: nil)
       @conversation = conversation
       @author = author
       @reattaches = reattaches
+      @hangs_up = hangs_up
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
       @listening_modes = listening_modes
     end
@@ -118,12 +122,15 @@ module LiveConversations
       raise Refused, "call_id is required." if call_id.blank?
 
       note_client!
-      bridge = ToolBridge.new(@conversation, can_reattach: @reattaches)
+      bridge = ToolBridge.new(@conversation, can_reattach: @reattaches, can_hang_up: @hangs_up)
       result = bridge.execute(name, arguments, call_id: call_id)
       response = { output: result.output, error: result.error, tools_changed: result.tools_changed, turn_id: result.turn.id }
       # Nothing more goes down this socket: the client reconnects onto the
       # conversation this names, with its own instructions and tools.
       return response.merge(switched_to: { id: result.switched_to.id, title: result.switched_to.spoken_title }) if result.switched_to
+      # The person asked to end the call: the client answers this call, asks for
+      # no reply after it, and closes the call once the goodbye has sounded.
+      return response.merge(hang_up: true) if result.hung_up
 
       response[:tools] = ToolBridge.new(@conversation.reload).realtime_tools if result.tools_changed
       # The live model changed its own settings: hand the client the

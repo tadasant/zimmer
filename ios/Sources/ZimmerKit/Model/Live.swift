@@ -336,21 +336,37 @@ public struct LiveToolResult: Decodable, Sendable, Equatable {
     /// The call moved Live Mode to this conversation: this call's session is over, and it
     /// reconnects there.
     public let switchedTo: LiveSwitchTarget?
+    /// The person asked to hang up (`hang_up`): answer the call, ask for no reply after it, and
+    /// end the call once the reply that asked has finished sounding. Absent means no.
+    public let hangUp: Bool
 
     public init(output: String, error: Bool = false, toolsChanged: Bool = false, tools: JSONValue? = nil, session: JSONValue? = nil,
-                switchedTo: LiveSwitchTarget? = nil) {
+                switchedTo: LiveSwitchTarget? = nil, hangUp: Bool = false) {
         self.output = output
         self.error = error
         self.toolsChanged = toolsChanged
         self.tools = tools
         self.session = session
         self.switchedTo = switchedTo
+        self.hangUp = hangUp
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        output = try c.decode(String.self, forKey: .output)
+        error = try c.decode(Bool.self, forKey: .error)
+        toolsChanged = try c.decode(Bool.self, forKey: .toolsChanged)
+        tools = try c.decodeIfPresent(JSONValue.self, forKey: .tools)
+        session = try c.decodeIfPresent(JSONValue.self, forKey: .session)
+        switchedTo = try c.decodeIfPresent(LiveSwitchTarget.self, forKey: .switchedTo)
+        hangUp = try c.decodeIfPresent(Bool.self, forKey: .hangUp) ?? false
     }
 
     enum CodingKeys: String, CodingKey {
         case output, error, tools, session
         case toolsChanged = "tools_changed"
         case switchedTo = "switched_to"
+        case hangUp = "hang_up"
     }
 }
 

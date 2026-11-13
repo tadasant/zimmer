@@ -226,3 +226,116 @@ const cutOff = (output) => ({ status: "incomplete", status_details: { type: "inc
   await drain()
   console.log(JSON.stringify({ name: "reattach_through_start", requests, states, sent: channel.sent, conversation: dock.call.conversationId, muted: dock.muted }))
 }
+
+// The person asked to hang up, and the goodbye is still sounding when Zimmer
+// answers: the output goes back, no reply is asked for, and the call ends only
+// once the response is done and the goodbye has stopped sounding.
+{
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true } })
+  const ended = []
+  dock.hangUp = () => { ended.push(dock.sent.length); dock.generation += 1; dock.hangingUp = false; clearTimeout(dock.hangUpTimer) }
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "output_audio_buffer.started" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "h1", name: "hang_up", arguments: "{}" }, 1)
+  await drain()
+  const beforeDone = ended.length
+  dock.handleEvent({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "h1", name: "hang_up", arguments: "{}" }] } }, 1)
+  await drain()
+  const beforeStopped = ended.length
+  dock.handleEvent({ type: "output_audio_buffer.stopped" }, 1)
+  console.log(JSON.stringify({
+    name: "hang_up_after_goodbye", sent: dock.sent.map((event) => event.type), relayed: dock.relayed, state: dock.state,
+    beforeDone, beforeStopped, ended: ended.length, hangsUp: dock.bodies[0].hangs_up
+  }))
+}
+
+// Zimmer answers after a response with nothing left sounding: the call ends at once.
+{
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true } })
+  let ended = 0
+  dock.hangUp = () => { ended += 1; dock.generation += 1; dock.hangingUp = false; clearTimeout(dock.hangUpTimer) }
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "h1", name: "hang_up", arguments: "{}" }] } }, 1)
+  await drain()
+  await drain()
+  console.log(JSON.stringify({ name: "hang_up_nothing_sounding", sent: dock.sent.map((event) => event.type), relayed: dock.relayed, state: dock.state, ended }))
+}
+
+// The real hangUp, after a hang-up the person asked for: the call is idle, with
+// the hung-up cue, and nothing of the hang-up is left armed for the next call.
+{
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true } })
+  const cues = []
+  dock.director = { hungUp: () => "hung_up", dropped: () => "dropped", toolsRunning: () => [], transition: () => [], actionFailed: () => [] }
+  dock.cues = { perform: (cue) => cues.push(cue) }
+  dock.channel = { close() {} }
+  dock.muteTarget = { setAttribute() {} }
+  dock.showError = () => {}
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "h1", name: "hang_up", arguments: "{}" }, 1)
+  dock.handleEvent({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "h1", name: "hang_up", arguments: "{}" }] } }, 1)
+  await drain()
+  await drain()
+  console.log(JSON.stringify({
+    name: "hang_up_through_real_hang_up", sent: dock.sent.map((event) => event.type), relayed: [], state: dock.state,
+    cues: cues.filter((cue) => typeof cue === "string"), hangingUp: dock.hangingUp, generation: dock.generation
+  }))
+}
+
+// A goodbye that never says it stopped: the grace timer ends the call, and a
+// timer left from a call that has since moved on does nothing.
+{
+  const timers = []
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length }
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true } })
+  let ended = 0
+  dock.hangUp = () => { ended += 1; dock.generation += 1; dock.hangingUp = false }
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "output_audio_buffer.started" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "h1", name: "hang_up", arguments: "{}" }, 1)
+  await new Promise((resolve) => realSetTimeout(resolve, 0))
+  const grace = timers.find((timer) => timer.ms === 8000)
+  const before = ended
+  grace.fn()
+  const fired = ended
+  grace.fn()
+  globalThis.setTimeout = realSetTimeout
+  console.log(JSON.stringify({ name: "hang_up_grace_timer", before, fired, after: ended, ms: grace.ms }))
+}
+
+// The person talks over the goodbye: OpenAI clears the buffer, and the call ends then.
+{
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true } })
+  let ended = 0
+  dock.hangUp = () => { ended += 1; dock.generation += 1; dock.hangingUp = false; clearTimeout(dock.hangUpTimer) }
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "output_audio_buffer.started" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "h1", name: "hang_up", arguments: "{}" }, 1)
+  dock.handleEvent({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", call_id: "h1", name: "hang_up", arguments: "{}" }] } }, 1)
+  await drain()
+  const before = ended
+  dock.handleEvent({ type: "output_audio_buffer.cleared" }, 1)
+  console.log(JSON.stringify({ name: "hang_up_talked_over", before, ended }))
+}
+
+// A switch answered while a hang-up is pending ends the call rather than moving it,
+// and the poll for a move made elsewhere does not look.
+{
+  const dock = call({ h1: { output: "Hanging up.", error: false, hang_up: true }, s1: { output: "Switched", switched_to: { id: 8, title: "x" } } })
+  let ended = 0
+  const moved = []
+  dock.hangUp = () => { ended += 1 }
+  dock.reattach = (id) => moved.push(id)
+  dock.handleEvent({ type: "response.created" }, 1)
+  dock.handleEvent({ type: "output_audio_buffer.started" }, 1)
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "h1", name: "hang_up", arguments: "{}" }, 1)
+  await drain()
+  dock.handleEvent({ type: "response.function_call_arguments.done", call_id: "s1", name: "switch_live_conversation", arguments: "{}" }, 1)
+  await drain()
+  let polled = false
+  globalThis.fetch = async () => { polled = true; return { ok: true, json: async () => ({ current_id: 9, voice: true }) } }
+  await dock.followCurrent(dock.generation)
+  clearTimeout(dock.hangUpTimer)
+  console.log(JSON.stringify({ name: "hang_up_beats_switch", ended, moved, polled }))
+}

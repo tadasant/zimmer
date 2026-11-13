@@ -71,6 +71,23 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_not_includes LiveConversations::SystemPrompt.build(conversation.reload), "is CarPlay"
   end
 
+  # A lookup is not triage: the CarPlay-fit filter that drops laptop-only rows from
+  # "what needs me" must not drop the session the driver is asking about.
+  test "a CarPlay conversation is told to keep carplay_fit off a search for a particular session" do
+    prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "voice", client_surface: "carplay"))
+
+    assert_includes prompt, "Leave `carplay_fit` off a search for a particular session"
+    assert_not_includes prompt, "`get_user_view` and `quick_search_sessions` take a"
+  end
+
+  test "every conversation is told how to find an earlier session, archived ones included" do
+    prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text"))
+
+    assert_includes prompt, "To find an earlier session the person remembers"
+    assert_includes prompt, "includes archived sessions"
+    assert_includes prompt, "search_contents: true"
+  end
+
   test "says how to go back, and a call's recap names the sessions the thread touched" do
     conversation = create_live_conversation(mode: "voice")
     conversation.turns.create!(role: "tool", tool_name: "zimmer", call_id: "c1", tool_arguments: { "tool" => "quick_router" }, tool_output: "Started session #1101")
@@ -80,5 +97,17 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_includes prompt, "`switch_live_conversation`"
     assert_includes prompt, "#1101"
     assert_not_includes LiveConversations::SystemPrompt.build(conversation), "## Sessions this conversation has touched"
+  end
+
+  test "spoken, the model is told how the person hangs up, so it can say so when asked" do
+    prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "voice"))
+
+    assert_includes prompt, "`hang_up` ends this call when the person asks you to"
+    assert_includes prompt, "hanging up is the pause"
+    assert_includes prompt, "\"Zimmer, hang up\""
+  end
+
+  test "typed, there is no call to hang up" do
+    assert_not_includes LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text")), "hang_up"
   end
 end

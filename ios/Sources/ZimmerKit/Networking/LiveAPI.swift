@@ -135,7 +135,7 @@ extension ZimmerHTTPClient {
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         try await post("/api/v1/live_conversations/\(id)/tool_calls",
-                       json: ["name": name, "arguments": arguments, "call_id": callID, "reattaches": "1"].merging(Self.listeningModes) { $1 })
+                       json: ["name": name, "arguments": arguments, "call_id": callID, "reattaches": "1", "hangs_up": "1"].merging(Self.listeningModes) { $1 })
     }
 
     public func recordLiveTurn(_ id: Int, role: LiveTurn.Role, content: String, gated: Bool) async throws -> LiveHeard {
