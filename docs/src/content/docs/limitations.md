@@ -4860,6 +4860,25 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
+### CarPlay pre-warm has not run against OpenAI or in a car
+
+[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) is on in every car, with no setting to turn it
+off. A server deploy that refuses prewarm mints stops it; so does a new app build. Its rules are tested
+on Linux (`LiveWarmStart`, `LiveWarmStartTests`) and Zimmer's prewarm mint is tested. CI compiles
+the app, but the app's half (`LiveWarmKeeper`, `LiveWarmLink`, `LiveCall.startWarm`) has never
+run: CI holds no Realtime key and drives no car. Four things are unproven until the first
+drives: that OpenAI keeps an idle Realtime WebSocket open for 5 minutes on 20 s pings;
+that the idle session bills nothing (check the usage page against `warm.ready` counts); that
+iOS keeps the socket while the CarPlay scene is behind another app (a tap after a suspension
+longer than 45 s starts cold); and the win itself, `call.startup` `tap_to_ready_ms` by `path`.
+
+The warm session's model, voice and reasoning effort are fixed when it is minted, as for any
+call. A change to them reaches a warm connection only when it is replaced, within 5 minutes.
+The call coming back from the car's gear never takes a warm connection, for that reason.
+Only **Continue** is warmed. **New** starts a fresh conversation, which cannot exist before the tap.
+
+---
+
 ### A Live voice reply a person's output cap cuts off is not continued
 
 The voice output cap is a hard stop. When it costs a tool call, or a reply nobody heard, the client

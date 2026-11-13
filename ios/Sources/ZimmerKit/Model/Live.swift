@@ -237,10 +237,16 @@ public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
     /// The one open conversation, typed or spoken.
     public let current: Int?
-
     public init(conversations: [LiveConversation], current: Int?) {
         self.conversations = conversations
         self.current = current
+    }
+
+    /// The open conversation is active, not still reading its instructions: a secret can be
+    /// minted on it now.
+    public var currentIsReady: Bool {
+        guard let current else { return false }
+        return conversations.first { $0.id == current }?.status == .active
     }
 
     /// `call`: the conversation a call is on.

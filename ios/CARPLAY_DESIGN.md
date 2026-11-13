@@ -560,6 +560,13 @@ running after every step, and any crash report fails the job.
   the panel to a voice: CI has no call that connects, so the drill proves it is called again and the
   rest is driving.
 
+## Startup latency: CarPlay pre-warm
+
+While it is connected, the car holds one idle Realtime
+connection ready for Continue. The tap starts the call on it. It sends
+nothing before the tap and opens no microphone. The design and the numbers are in
+[`CARPLAY_PREWARM_DESIGN.md`](CARPLAY_PREWARM_DESIGN.md).
+
 ## Follow-ups
 
 - **Continuing an ended conversation.** Continue offers only what is open, and an ended conversation

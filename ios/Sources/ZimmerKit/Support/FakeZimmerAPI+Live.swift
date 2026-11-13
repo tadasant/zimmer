@@ -15,6 +15,8 @@ struct FakeLiveState: Sendable {
     var nextSettingChangeID = 1
     /// Every call-telemetry batch the app sent.
     var telemetryBatches: [LiveTelemetryBatch] = []
+    /// Every CarPlay prewarm secret minted (`livePrewarmSecret`).
+    var prewarmMints = 0
 
     /// A few of the server's fields, enough for the settings screen to show each kind.
     static let settingFields: [LiveSettingField] = [
@@ -183,6 +185,18 @@ extension FakeZimmerAPI {
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
     }
 
+    /// As the server: refused on a conversation that is not active;
+    /// changes nothing on the conversation, and is counted so a test can see it happened.
+    public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
+        guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.") }
+        liveState.prewarmMints += 1
+        return LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
+                                websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!, listening: "always")
+    }
+
+    /// How many prewarm secrets were minted.
+    public var prewarmMints: Int { liveState.prewarmMints }
+
     public func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer {
         liveState.telemetryBatches.append(batch)
         return LiveTelemetryAnswer(accepted: batch.events.count, telemetry: "debug")
@@ -198,7 +212,7 @@ extension FakeZimmerAPI {
         return LiveHeard(respond: true)
     }
 
-    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
+    public func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue {
         guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation is not active.") }
         let speed = liveState.settingOverrides["voice_speed"] ?? .number(1.0)
         return .object(["type": .string("realtime"), "audio": .object(["output": .object(["speed": speed])])])

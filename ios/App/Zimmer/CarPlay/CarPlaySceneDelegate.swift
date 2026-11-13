@@ -18,7 +18,9 @@ import os
 /// asked to fix itself (`CarPlayVoiceSettings`).
 ///
 /// Silent until asked. The car opens on its tiles and says nothing; the call starts only when
-/// the driver taps one.
+/// the driver taps one. CarPlay pre-warm holds a connection ready from
+/// the moment the scene connects (`LiveWarmKeeper`), but it sends nothing, opens no microphone and
+/// shows nothing: the tap is still where the call begins.
 ///
 /// CarPlay connects the scene declared in Info.plist only in a build that signs in the
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
@@ -39,6 +41,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         LiveCall.shared.carCameBack()
         log.notice("carplay scene connected")
         LiveTelemetry.shared.track(.carPlay("scene_connected"))
+        // CarPlay pre-warm: holds a connection ready for Continue.
+        LiveWarmKeeper.shared.carConnected()
 
         interfaceController.delegate = self
 
@@ -76,6 +80,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         log.notice("carplay scene disconnected")
         LiveTelemetry.shared.track(.carPlay("scene_disconnected"))
         LiveTelemetry.shared.flush()
+        LiveWarmKeeper.shared.carDisconnected()
         tearDown()
     }
 
