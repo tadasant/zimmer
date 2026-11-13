@@ -26,9 +26,9 @@ final class CarPlayDrillUITests: XCTestCase {
     /// When the fixture runs the gear's closure after the reconnected call screen goes up:
     /// `CarPlayLive.drillPressesTheGear`'s 25 seconds.
     private static let fixtureGearDelay: TimeInterval = 25
-    /// How long CarPlay's host can take to show what the app sent it. Once, the gear's closure
-    /// ran on time and the host answered nothing, neither the app nor XCUITest, for 30 seconds:
-    /// the voice settings came up 33 seconds after the press.
+    /// How long CarPlay's host can take to show what the app sent it: a stall of 30 seconds or
+    /// so, in which it answers neither the app nor XCUITest, on top of the time to draw. See
+    /// limitations.md, "CarPlay's host can stop answering in the drill".
     private static let hostStall: TimeInterval = 45
     private var zimmer: XCUIApplication!
     private let dashboard = XCUIApplication(bundleIdentifier: "com.apple.CarPlayApp")
@@ -106,8 +106,9 @@ final class CarPlayDrillUITests: XCTestCase {
         plug("CarPlay")
         openInTheCar(callIsUp: true)
         XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "the call goes back to the car; the car showed:\n\(car.debugDescription)")
-        // The fixture presses the gear on its own clock, counted from when this call screen went
-        // up, which is no later than now.
+        // The fixture presses the gear on its own clock, counted from when the app hears this
+        // call screen went up, about when the drill sees the gear; `hostStall` covers the
+        // difference.
         let gearPressed = Date().addingTimeInterval(Self.fixtureGearDelay)
         photograph("carplay-call-screen-after-the-car-came-back")
         assertAlive("with the car back")
@@ -129,7 +130,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
         // gear's own closure, off the main thread, 25 seconds after the call screen goes up. The
-        // wait runs to a stall's length past that press, not a fixed time from this line.
+        // wait runs to `hostStall` past that press.
         let panelWait = max(0, gearPressed.timeIntervalSinceNow) + Self.hostStall
         XCTAssertTrue(row("Back to the call").waitForExistence(timeout: panelWait), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
