@@ -91,7 +91,17 @@ module LiveConversations
     # Voice: a short-lived secret the client opens its audio connection with.
     # The client asking is the one about to drive the call, so it is noted
     # first and the instructions minted with the secret name it.
-    def client_secret
+    #
+    # `prewarm`: the CarPlay app asking ahead of a tap, for a connection it
+    # holds idle until the driver chooses Continue (ios/CARPLAY_PREWARM_DESIGN.md).
+    # Nobody is driving a call yet, so nothing on the conversation changes: no
+    # client noted, no `car_call`, no model written, and voice need not be on.
+    # The tap turns voice on and sends a fresh `session_update` before any
+    # audio goes up, which brings the warm session's instructions to the
+    # conversation as it is then. Only the car pre-warms.
+    def client_secret(prewarm: false)
+      return prewarm_secret if prewarm
+
       require_voice!
       note_client!(new_call: true)
       RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
@@ -135,9 +145,14 @@ module LiveConversations
     # reason as tool_call below. Noted first, like the secret: a call that moves
     # between the phone and the car asks for this to bring its instructions up
     # to the client now driving it.
-    def session_update
+    #
+    # `model`: the model the call runs on, recorded on the conversation. A call
+    # that started on a CarPlay pre-warm connection sends it with the tap's
+    # update, because its prewarm mint recorded nothing.
+    def session_update(model: nil)
       require_active!
       note_client!
+      record_model!(model)
       realtime_session(@conversation).session_update
     end
 
@@ -181,6 +196,17 @@ module LiveConversations
 
     private
 
+    def prewarm_secret
+      raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
+
+      require_active!
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
+    rescue OpenaiClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    rescue OpenaiClient::Error => e
+      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
     # `surface` is the client this line came from, kept on the line itself so a
     # human message can say where it was said. Display only.
     def authorship
@@ -203,6 +229,16 @@ module LiveConversations
       columns[:client_surface] = @client_surface if @client_surface
       columns.reject! { |column, value| @conversation[column] == value }
       @conversation.update_columns(columns) if columns.any?
+    end
+
+    MODEL_NAME = /\A[a-z0-9][a-z0-9.\-]{0,63}\z/
+
+    def record_model!(model)
+      model = model.to_s
+      return if model.empty? || @conversation.model == model
+      raise Refused, "model is not a model name." unless MODEL_NAME.match?(model)
+
+      @conversation.update_columns(model: model)
     end
 
     def require_open!

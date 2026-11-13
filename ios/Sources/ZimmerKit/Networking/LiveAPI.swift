@@ -27,6 +27,10 @@ public protocol LiveAPI: Sendable {
     func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn
     /// Voice: the short-lived secret to open the Realtime connection with.
     func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
+    /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
+    /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
+    /// refused (422) from any client but CarPlay.
+    func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret
     /// Voice: run a function call the model made; send back what this returns.
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
     /// Voice: a finished transcript line, so the thread carries what was said. `gated`: the call
@@ -36,7 +40,10 @@ public protocol LiveAPI: Sendable {
     /// Voice: the `session` of a `session.update` that brings an open call up to the current
     /// Live settings and guidance — sent after they changed somewhere else, such as the settings
     /// screen.
-    func liveSessionUpdate(_ id: Int) async throws -> JSONValue
+    ///
+    /// `recordingModel`: the model the call runs on, for Zimmer to record on the conversation. A
+    /// call on a warm connection (`LiveWarmStart`) sends it, because its prewarm mint recorded nothing.
+    func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue
     /// Voice: what the app's calls did, for the shipped logs (`LiveTelemetry`). The answer
     /// carries the level in force, which the app adopts.
     func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer
@@ -51,6 +58,13 @@ public protocol LiveAPI: Sendable {
     func resetLiveSettings() async throws -> LiveSettings
     /// The guidance as it was before change `changeID`. 422 when that change did not touch it.
     func restoreLiveGuidance(changeID: Int) async throws -> LiveSettings
+}
+
+extension LiveAPI {
+    /// The `session.update` for an open call, recording nothing.
+    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
+        try await liveSessionUpdate(id, recordingModel: nil)
+    }
 }
 
 struct LiveSessionUpdateResponse: Decodable {
@@ -115,6 +129,10 @@ extension ZimmerHTTPClient {
         try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes)
     }
 
+    public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes.merging(["prewarm": "1"]) { $1 })
+    }
+
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {
         try await post("/api/v1/live_conversations/\(id)/tool_calls",
                        json: ["name": name, "arguments": arguments, "call_id": callID, "reattaches": "1", "hangs_up": "1"].merging(Self.listeningModes) { $1 })
@@ -125,8 +143,10 @@ extension ZimmerHTTPClient {
         return try await post("/api/v1/live_conversations/\(id)/turns", json: gated ? line.merging(Self.listeningModes) { $1 } : line)
     }
 
-    public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
-        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: Self.listeningModes)
+    public func liveSessionUpdate(_ id: Int, recordingModel model: String?) async throws -> JSONValue {
+        var body: [String: Any] = Self.listeningModes
+        if let model { body["model"] = model }
+        let response: LiveSessionUpdateResponse = try await post("/api/v1/live_conversations/\(id)/session_update", json: body)
         return response.session
     }
 

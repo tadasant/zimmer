@@ -92,6 +92,20 @@ events, and `error` drops those too.
 {service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.ended" _time:7d | stats by (reason) count() calls
 ```
 
+How long calls take to start, from the tap to the *connected* notes, by how they started (`warm`,
+`cold` or `fallback` — see [CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). This is the number
+the pre-warm is judged on:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.startup" surface:="carplay" _time:7d | stats by (path) quantile(0.5, tap_to_ready_ms) p50, quantile(0.95, tap_to_ready_ms) p95, count() calls
+```
+
+What each tap found, and why the misses missed. The warm-hit rate is `warm.claimed` over all of these:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:in("warm.claimed","warm.missed") _time:7d | stats by (event, reason) count() taps
+```
+
 Every problem in the last week, which is the question a check-in on whether to turn the logging down asks:
 
 ```logsql

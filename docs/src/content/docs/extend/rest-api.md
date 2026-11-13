@@ -1246,7 +1246,10 @@ Voice — the relay a client holding the audio connection makes:
   the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
   Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
   with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
-  voice is off; 502 when OpenAI refuses.
+  voice is off; 502 when OpenAI refuses. With `prewarm=1` it is the CarPlay app minting ahead of a
+  tap ([CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). Voice need not be on, and nothing on
+  the conversation changes: no client noted, no car call, no model written. 422 from any client but CarPlay; 409 when the conversation
+  is not active.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
   `call_id`, and `reattaches` from a client that can move its call; one that does not send it is
   refused `switch_live_conversation`; and `hangs_up` from a client that closes its call when asked;
@@ -1260,7 +1263,9 @@ Voice — the relay a client holding the audio connection makes:
   `function_call_output` item.
 - `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
   brings an open call up to the current Live settings and guidance. Send it after the settings
-  changed somewhere else, such as the app's own settings screen.
+  changed somewhere else, such as the app's own settings screen. `model` records the model the call
+  runs on, for a call that started on a [CarPlay pre-warm](/sessions/live/#carplay-pre-warm)
+  connection; 422 when it is not a model name.
 - `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201 with the turn,
   `respond: true` and `listening`, the mode that decided. A finished transcript line, so the thread carries what was said. With
   `listening_modes` on a call whose [Listening](/sessions/live/#listening-which-lines-get-an-answer)

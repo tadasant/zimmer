@@ -12,10 +12,10 @@
 #   POST /api/v1/live_conversations/:id/finish     end it
 #   POST /api/v1/live_conversations/:id/mode       switch typed ⇄ spoken (mode=text|voice)
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
-#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret
+#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
-#   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings
+#   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings (model: record the call's)
 #        /api/v1/live_conversations/:id/scratchpad_entries  its scratchpad (Api::V1::LiveScratchpadEntriesController)
 #
 # The Live settings themselves are Api::V1::LiveSettingsController's.
@@ -104,8 +104,9 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render json: turn.as_api_json, status: :created
   end
 
+  # `prewarm=1`: the CarPlay app minting ahead of a tap (Actions#client_secret).
   def client_secret
-    render json: actions.client_secret
+    render json: actions.client_secret(prewarm: ActiveModel::Type::Boolean.new.cast(params[:prewarm]) == true)
   end
 
   def tool_calls
@@ -113,7 +114,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
   end
 
   def session_update
-    render json: { session: actions.session_update }
+    render json: { session: actions.session_update(model: params[:model].presence) }
   end
 
   def turns

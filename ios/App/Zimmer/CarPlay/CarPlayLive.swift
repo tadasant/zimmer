@@ -192,8 +192,18 @@ final class CarPlayLive {
                 await call.start(conversation, startsMuted: comeback?.muted == true, from: .carplay)
                 return
             }
+            // CarPlay pre-warm read what is open moments ago: Continue calls it without asking
+            // again, on the warm connection if one is held for it (`LiveWarmKeeper`).
+            if wish.choice == .continueOpen, let known = LiveWarmKeeper.shared.freshCurrent() {
+                retry.lookedUp()
+                wish.answered()
+                conversationOpen = true
+                await call.start(known, startsMuted: comeback?.muted == true, from: .carplay, warm: true)
+                return
+            }
             onChange?()
             do {
+                let choice = wish.choice
                 let found = try await conversationToCall()
                 retry.lookedUp()
                 wish.answered()
@@ -206,7 +216,7 @@ final class CarPlayLive {
                     onChange?()
                     return
                 }
-                await call.start(found, startsMuted: comeback?.muted == true, from: .carplay)
+                await call.start(found, startsMuted: comeback?.muted == true, from: .carplay, warm: choice == .continueOpen)
             } catch {
                 retry.lookedUp()
                 guard retry.wanted else {
