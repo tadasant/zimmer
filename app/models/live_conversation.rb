@@ -143,8 +143,18 @@ class LiveConversation < ApplicationRecord
   # conversation from ever carrying a person's words again. An old `typed` line
   # could be either a person or the MCP tool, and nothing on the row tells them
   # apart, so it still taints the conversation.
+  #
+  # The scratchpad counts too, since every note is in every turn's instructions:
+  # a conversation whose pad an MCP client ever wrote (agent_wrote_scratchpad_at,
+  # kept after the note is removed, because what it said may still be in the
+  # thread) or holds an MCP-written note now (one written before that column
+  # existed) is agent-written. Notes the live model or the person wrote are not.
   def agent_written?
-    unattributable_user_turns.exists?
+    agent_wrote_scratchpad? || unattributable_user_turns.exists?
+  end
+
+  def agent_wrote_scratchpad?
+    agent_wrote_scratchpad_at.present? || scratchpad_entries.where(written_by: "mcp").exists?
   end
 
   # The `user` turns that make #agent_written? true, oldest first.

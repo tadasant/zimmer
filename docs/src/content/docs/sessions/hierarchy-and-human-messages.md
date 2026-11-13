@@ -548,6 +548,11 @@ all of these hold:
   no longer bars a voice conversation from ever recording again. An old `typed` line could have been
   `action_live_conversation`, and nothing on the row tells the two apart, so it still bars the
   conversation (`LiveConversation#unattributable_user_turns`).
+- **No agent wrote the conversation's scratchpad.** Every note is in every turn's instructions, so a
+  note written over MCP (`action_live_conversation scratchpad_add` / `scratchpad_edit`) steers the
+  model the same way. Such a write stamps `live_conversations.agent_wrote_scratchpad_at`, which stays
+  set after the note is removed, because what it said may still be in the thread. An MCP-written note
+  still on the pad counts too. Notes the live model or the person wrote do not.
 - **The Live mode guidance was not last written by an agent session.** The guidance is in every
   conversation's system prompt, so the same steering works from there. A change made through
   `action_live_settings`, or by the live model in a conversation an agent typed into, stops Live
