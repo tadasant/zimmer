@@ -77,7 +77,11 @@ Three records are written, and they are not equal:
   capture every web-UI input goes through (`web_ui.authorize_merge`). The [iOS app](/extend/ios-app/)'s
   Merge writes it on the [`assistant` channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)
   (`ios_app.authorize_merge`), through `POST /api/v1/sessions/:id/authorize_merge`, which answers
-  only the app's sign-in when it acts as you. An API key and MCP cannot write one. Like every
+  only the app's sign-in when it acts as you. [Live Mode](/sessions/live/) has the same button by
+  voice: its `authorize_merge` reads the PR back by name and records your yes as
+  `live_mode.authorize_merge` (see
+  [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)).
+  An API key and MCP cannot write one. Like every
   capture it is best-effort: a person with no roster row gets the merge without the record.
 - the message itself, marked `[HUMAN-AUTHORIZED MERGE]` and naming the surface. That marker is what
   the merging session reads, but it is not proof on its own — `action_session`'s `follow_up` can

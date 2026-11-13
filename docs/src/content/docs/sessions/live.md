@@ -230,8 +230,13 @@ you signed in: each line you type or say is stamped with its author by the web p
 app's connection acting as you (`live_conversation_turns.author`). A line written by
 `action_live_conversation` over MCP has no author. A conversation holding such a line never records,
 and neither does any conversation while the Live mode guidance was last written by an agent session.
-A delivery more than five minutes after your last line records nothing either. Conversations from
-before this was recorded have unauthored lines, so start a new one.
+A delivery more than five minutes after your last line records nothing either. A conversation that
+had a typed line before this was recorded stays barred, so start a new one; old spoken lines do not
+bar it. When a delivery is not recorded as yours, the live model is told why and says so.
+
+To merge, the live model uses `authorize_merge`, the Merge button by voice: Zimmer reads the PR back
+by repository and number, and only your yes to that read-back sends the merge. See
+[Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 
 ### Finding an earlier session
 

@@ -4908,6 +4908,23 @@ person's unanswered line (under five minutes old) answered again without writing
 driven by `action_live_conversation` from an OAuth connection that acts on its approver's behalf
 records nothing either: only the web page and the iOS app stamp an author on a Live turn.
 
+### A voice Merge trusts a transcript and a word list
+
+The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
+(`authorize_merge`) checks that the assistant line just before the person's answer names the PR's
+repository and number, the number in digits. That line is the call's transcript of what the model
+said, so a model whose transcript spells the number out ("fourteen ninety") is refused and has to
+say it again. Zimmer cannot check the audio itself: a transcript that names the PR while the speech
+said something else would pass. Order is the order lines were recorded, not spoken, so on a voice
+call a "yes" said over the end of the read-back can be recorded after it. Whether the person said
+yes is a word list: a short answer starting with "yes", "yeah", "go ahead", "merge it" and the like,
+with no question and no qualifier, so "yes, why not" and "sure, but after the deploy" are refused.
+All of this fails closed: nothing merges, and the model asks again.
+
+A conversation that had a `typed` line before authors were recorded (2026-11-12T20:23Z) can never
+carry a Live Mode human message or a voice Merge, because nothing on the row says whether a person
+or `action_live_conversation` typed it. Start a new conversation. Old `spoken` lines do not bar it.
+
 ### An API key is `api`, even when an agent holds it
 
 The REST API's full key belongs to the whole fleet. A call is tagged `agent` only when it names

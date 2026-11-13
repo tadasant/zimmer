@@ -45,6 +45,9 @@ class SessionHumanMessages
     def occurred_at = message.occurred_at
     def entry_point = message.entry_point
     def relayed_message = message.relayed_message
+    def replying_to = message.replying_to
+    def confirmed_pr_url = message.confirmed_pr_url
+    def read_back = message.read_back
 
     # Where the human was speaking, named so a reader can weigh it. Deliberately
     # explicit about the elsewhere case rather than leaving it to a subtle
