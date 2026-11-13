@@ -307,9 +307,14 @@ The failed run did stand out in one way. XCTest's steps stalled for 14.5 seconds
 
 So the cause is not known, and the drill has no retry, because the fault could be the app's. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
 
-### A long stall can make the CarPlay drill miss the gear
+### CarPlay's host can stop answering in the drill
 
-The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, and before it the drill has to see the gear and Send now's state, which the fixture shows at 4 seconds and holds. Reaching the gear takes 3 to 5 seconds on a normal run, and Send now's check about 8 more, so a stall of about 12 seconds at those steps fails the drill with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump. That would be the drill's timing, not the app. It has not happened, but the drill has stalled for 14.5 seconds at another step, so it can.
+On GitHub's macOS runners, CarPlay's host process (`CarPlayTemplateUIHost`) sometimes stops answering, both the app and XCUITest, for half a minute or more. Nothing in Zimmer has been found that causes it, and nothing was measured on a real device. The drill is built to wait one out rather than fail on it:
+
+- **Right after the car is plugged back in**, the drill asks only the car's dashboard for the home button and Zimmer's icon, and asks the host nothing until the icon is tapped. Twice a look at the host there ([run 43321204934](https://github.com/tadasant/zimmer/actions/runs/43321204934), [run 43355109091](https://github.com/tadasant/zimmer/actions/runs/43355109091)) hung XCUITest's query for 90 seconds and failed the drill with `Failed to get matching snapshots`. That look never found anything: in all 12 green drills sampled, the scene came back only from the icon. Whether the host still stalls when it is left alone in those seconds is not known. If it does, the next step's query fails the same way.
+- **The gear's panel.** The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, so the drill's wait for the panel runs to 45 seconds past that press, not 20 seconds from wherever the drill had got to. In [run 43346062519](https://github.com/tadasant/zimmer/actions/runs/43346062519) the closure ran on time, the host answered nothing for 30 seconds, and the panel came up 33 seconds after the press, 12 seconds after the old deadline.
+
+Every other step still waits 20 seconds. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
 
