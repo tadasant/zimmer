@@ -62,6 +62,9 @@ module LiveConversations
     def edit(id, text)
       body = checked_body(text)
       entry = find!(id)
+      # Saving a note unchanged leaves it as its writer left it.
+      return entry if entry.body == body
+
       entry.update!(body: body, written_by: @written_by)
       changed!
       entry

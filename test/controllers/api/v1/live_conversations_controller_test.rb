@@ -553,15 +553,17 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_includes [ 401, 403 ], response.status
   end
 
-  test "the scratchpad: only the app's person reads or writes it; an API key and a relay-only sign-in do neither" do
+  test "the scratchpad: an API key reads it, as it reads the thread; only the app's person writes it" do
     conversation = create_live_conversation
     note = conversation.scratchpad_entries.create!(body: "Session 1234 can't merge yet", written_by: "assistant")
     base = "/api/v1/live_conversations/#{conversation.id}/scratchpad_entries"
     relay_only = bearer(app_token(privilege: OauthServer::RELAY_ONLY))
 
+    get base, headers: @key_headers
+    assert_response :success
+    assert_equal [ "Session 1234 can't merge yet" ], response.parsed_body["entries"].map { |entry| entry["body"] }
+
     [ @key_headers, relay_only ].each do |headers|
-      get base, headers: headers
-      assert_response :forbidden
       post base, params: { body: "x" }, headers: headers, as: :json
       assert_response :forbidden
       patch "#{base}/#{note.id}", params: { body: "x" }, headers: headers, as: :json
@@ -572,9 +574,6 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
       assert_response :forbidden
     end
     assert_equal "Session 1234 can't merge yet", note.reload.body
-
-    get "/api/v1/live_conversations/#{conversation.id}", headers: @key_headers
-    assert_not response.parsed_body.key?("scratchpad"), "the API-key read of a conversation does not carry its notes"
   end
 
   test "the scratchpad over the app's sign-in: read, add, edit, remove, clear, with limits stated" do

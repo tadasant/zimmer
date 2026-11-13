@@ -573,11 +573,12 @@ stays in mind, such as "session 1234 can't merge yet, stop bringing it up"
   talking, deploys, and [going back](#going-back-to-a-conversation) to the conversation later. A
   new conversation starts with an empty pad: nothing carries over.
 - **Who can reach it:** the conversation's own agent; you, on the web page and through the iOS
-  app's sign-in (`/api/v1/live_conversations/:id/scratchpad_entries`, read included); and an MCP
+  app's sign-in (`/api/v1/live_conversations/:id/scratchpad_entries`); and an MCP
   client on the opt-in `live_conversations` group, which can already read and drive the whole
   thread (`get_live_conversations` shows the pad, and `action_live_conversation` edits it with
   `scratchpad_add`, `scratchpad_edit`, `scratchpad_remove` and `scratchpad_clear`). An API key
-  cannot read it over REST. Agent sessions, including the ones the conversation starts, are not given
+  can read it over REST, just as it can read the thread, which already holds every `scratchpad`
+  call the agent made. Only the app's sign-in can write it. Agent sessions, including the ones the conversation starts, are not given
   it: nothing on the default MCP surface reads it, and nothing copies it into a session's prompt.
 
 ## On the phone and in the car

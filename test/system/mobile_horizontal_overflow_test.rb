@@ -2372,6 +2372,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_selector "a[data-live-settings-link]"
     assert_no_horizontal_overflow("live overview")
   end
+
   # The thread's Scratchpad panel, opened, and the page that edits it, each with a
   # note holding an unbreakable token.
   test "the Live Mode scratchpad panel and its edit page do not overflow on a phone" do
@@ -2384,7 +2385,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     LiveConversations::Scratchpad.new(conversation, written_by: "person").add("The docs PR is on hold until Monday.")
 
     visit live_conversation_path(conversation)
-    find("##{conversation.scratchpad_dom_id} summary").click
+    find("[data-live-scratchpad] summary").click
     assert_link "Edit notes"
     assert_no_horizontal_overflow("live scratchpad panel")
     page.save_screenshot(Rails.root.join("tmp/screenshots/live-scratchpad-panel-375.png").to_s)
@@ -2400,6 +2401,12 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_text "Note added."
     assert_selector "[data-live-scratchpad-entry]", count: 4
     page.save_screenshot(Rails.root.join("tmp/screenshots/live-scratchpad-added-375.png").to_s)
+
+    # Remove submits a form outside the note's own, through the button's `form` attribute.
+    within("[data-live-scratchpad-entry='#{conversation.scratchpad_entries.first.id}']") { click_button "Remove" }
+    assert_text "Note removed."
+    assert_selector "[data-live-scratchpad-entry]", count: 3
+    assert_no_text "Session 1234 can't merge until the API ships"
   end
 
   # The page a Quick Router start opens on (app/javascript/lib/session_starts.js),

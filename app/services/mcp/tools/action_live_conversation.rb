@@ -32,7 +32,7 @@ module Mcp
         properties: {
           action: { type: "string", enum: ACTIONS },
           mode: { type: "string", enum: LiveConversations::MODES.keys, description: "For set_mode (required), start (default \"text\") and switch (default: the mode of the conversation being left)." },
-          id: { type: "number", description: "The live conversation, for send_message, set_mode and finish, and optionally switch." },
+          id: { type: "number", description: "The live conversation, for send_message, set_mode, finish and the scratchpad_* actions, and optionally switch." },
           from_id: { type: "number", description: "For switch: the conversation you believe is current, 0 for none." },
           content: { type: "string", description: "For send_message, scratchpad_add and scratchpad_edit." },
           note_id: { type: "number", description: "For scratchpad_edit and scratchpad_remove: the note's number." }
