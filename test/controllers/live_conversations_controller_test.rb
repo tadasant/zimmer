@@ -281,4 +281,62 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal current.id, response.parsed_body["current_id"]
     assert_equal false, response.parsed_body["voice"]
   end
+
+  test "the conversation page shows its scratchpad, read-only, with a way to edit it" do
+    conversation = create_live_conversation
+    conversation.scratchpad_entries.create!(body: "Session 1234 can't merge yet", written_by: "assistant")
+
+    get live_conversation_path(conversation)
+
+    assert_response :success
+    assert_select "details[data-live-scratchpad] ##{conversation.scratchpad_dom_id}" do
+      assert_select "[data-live-scratchpad-entry]", text: /Session 1234 can't merge yet.*Live Mode/m
+      assert_select "[data-live-scratchpad-count]", text: "1 of 30 notes"
+      assert_select "form", count: 0
+      assert_select "a[href=?]", live_conversation_scratchpad_entries_path(conversation), text: "Edit notes"
+    end
+  end
+
+  test "the scratchpad page adds, edits, removes and clears notes, and tells an open call" do
+    conversation = create_live_conversation
+
+    get live_conversation_scratchpad_entries_path(conversation)
+    assert_response :success
+    assert_select "[data-controller=live-settings-saved]", count: 0
+
+    post live_conversation_scratchpad_entries_path(conversation), params: { body: "Don't raise the docs PR" }
+    assert_redirected_to live_conversation_scratchpad_entries_path(conversation, saved: 1)
+    note = conversation.scratchpad_entries.sole
+    assert_equal "person", note.written_by
+    follow_redirect!
+    assert_select "[data-controller=live-settings-saved]"
+    assert_select "textarea#scratchpad_entry_#{note.id}", text: "Don't raise the docs PR"
+
+    patch live_conversation_scratchpad_entry_path(conversation, note), params: { body: "Docs PR merged" }
+    assert_equal "Docs PR merged", note.reload.body
+
+    post live_conversation_scratchpad_entries_path(conversation), params: { body: "x" * 301 }
+    follow_redirect!
+    assert_match(/at most 300 characters/, response.body)
+    assert_equal 1, conversation.scratchpad_entries.count
+
+    delete live_conversation_scratchpad_entry_path(conversation, note)
+    assert_empty conversation.scratchpad_entries.reload
+
+    conversation.scratchpad_entries.create!(body: "a", written_by: "assistant")
+    delete clear_live_conversation_scratchpad_entries_path(conversation)
+    assert_empty conversation.scratchpad_entries.reload
+  end
+
+  test "a note id from another conversation is refused on this one's scratchpad page" do
+    conversation = create_live_conversation
+    other = create_live_conversation(status: LiveConversation::ENDED)
+    foreign = other.scratchpad_entries.create!(body: "theirs", written_by: "assistant")
+
+    delete live_conversation_scratchpad_entry_path(conversation, foreign)
+    follow_redirect!
+
+    assert_match(/no note #{foreign.id}/, response.body)
+    assert LiveScratchpadEntry.exists?(foreign.id)
+  end
 end

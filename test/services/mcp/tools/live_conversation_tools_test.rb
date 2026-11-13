@@ -132,4 +132,31 @@ class Mcp::Tools::LiveConversationToolsTest < ActiveSupport::TestCase
 
     assert_includes output, "**Going back would return to:** ##{old.id} \"Is the poller test still failing…\""
   end
+
+  test "the scratchpad: read with the thread, edited through action_live_conversation as mcp" do
+    conversation = create_live_conversation
+
+    added = @action.call({ "action" => "scratchpad_add", "id" => conversation.id, "content" => "Session 1234 can't merge yet" })
+    note = conversation.scratchpad_entries.sole
+    assert_equal "mcp", note.written_by
+    assert_includes added, "Added note #{note.id}."
+    assert_match(/## Scratchpad\n\nScratchpad, 1 of 30 notes:\n- \(note #{note.id}, over MCP, .*\) Session 1234 can't merge yet/, @get.call({ "id" => conversation.id }))
+
+    @action.call({ "action" => "scratchpad_edit", "id" => conversation.id, "note_id" => note.id, "content" => "merged" })
+    assert_equal "merged", note.reload.body
+    @action.call({ "action" => "scratchpad_remove", "id" => conversation.id, "note_id" => note.id })
+    assert_empty conversation.scratchpad_entries.reload
+
+    other = create_live_conversation(status: LiveConversation::ENDED)
+    foreign = other.scratchpad_entries.create!(body: "theirs", written_by: "assistant")
+    error = assert_raises(Mcp::ToolError) { @action.call({ "action" => "scratchpad_remove", "id" => conversation.id, "note_id" => foreign.id }) }
+    assert_match(/no note #{foreign.id}/, error.message)
+    assert_raises(Mcp::ToolError) { @action.call({ "action" => "scratchpad_add", "id" => conversation.id, "content" => "x" * 301 }) }
+  end
+
+  test "no tool on the default surface reads or writes a scratchpad" do
+    names = Mcp::Context.new.tools.map(&:tool_name)
+    assert_not_includes names, "get_live_conversations"
+    assert_not_includes names, "action_live_conversation"
+  end
 end

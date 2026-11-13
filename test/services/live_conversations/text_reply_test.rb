@@ -155,4 +155,18 @@ class LiveConversations::TextReplyTest < ActiveSupport::TestCase
     assert_equal "tool", conversation.turns.reorder(id: :desc).first.role
     assert_equal 1, client.chat_requests.size
   end
+
+  test "a note the model writes is in the system prompt of the very next request" do
+    @conversation.turns.create!(role: "user", source: "typed", content: "1234 can't merge yet, stop bringing it up")
+    client = Fake.new(chat_responses: [
+      Fake.calls([ "scratchpad", { action: "add", text: "Session 1234 can't merge yet; don't raise it" } ]),
+      Fake.text("Noted.")
+    ])
+
+    LiveConversations::TextReply.call(@conversation, client: client)
+
+    assert_not_includes client.chat_requests.first["messages"].first["content"], "Session 1234 can't merge yet"
+    assert_includes client.chat_requests.second["messages"].first["content"], "Session 1234 can't merge yet; don't raise it"
+    assert_equal "assistant", @conversation.scratchpad_entries.sole.written_by
+  end
 end

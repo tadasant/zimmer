@@ -552,4 +552,77 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
 
     assert_includes [ 401, 403 ], response.status
   end
+
+  test "the scratchpad: an API key reads it, as it reads the thread; only the app's person writes it" do
+    conversation = create_live_conversation
+    note = conversation.scratchpad_entries.create!(body: "Session 1234 can't merge yet", written_by: "assistant")
+    base = "/api/v1/live_conversations/#{conversation.id}/scratchpad_entries"
+    relay_only = bearer(app_token(privilege: OauthServer::RELAY_ONLY))
+
+    get base, headers: @key_headers
+    assert_response :success
+    assert_equal [ "Session 1234 can't merge yet" ], response.parsed_body["entries"].map { |entry| entry["body"] }
+
+    [ @key_headers, relay_only ].each do |headers|
+      post base, params: { body: "x" }, headers: headers, as: :json
+      assert_response :forbidden
+      patch "#{base}/#{note.id}", params: { body: "x" }, headers: headers, as: :json
+      assert_response :forbidden
+      delete "#{base}/#{note.id}", headers: headers
+      assert_response :forbidden
+      delete "#{base}/clear", headers: headers
+      assert_response :forbidden
+    end
+    assert_equal "Session 1234 can't merge yet", note.reload.body
+  end
+
+  test "the scratchpad over the app's sign-in: read, add, edit, remove, clear, with limits stated" do
+    conversation = create_live_conversation
+    base = "/api/v1/live_conversations/#{conversation.id}/scratchpad_entries"
+
+    get base, headers: @headers
+    assert_response :success
+    assert_equal({ "live_conversation_id" => conversation.id, "entries" => [], "max_entries" => 30, "max_entry_chars" => 300 }, response.parsed_body)
+
+    post base, params: { body: "Don't raise the docs PR" }, headers: @headers, as: :json
+    assert_response :created
+    entry = response.parsed_body["entries"].sole
+    assert_equal [ "Don't raise the docs PR", "person" ], entry.values_at("body", "written_by")
+
+    patch "#{base}/#{entry['id']}", params: { body: "Docs PR merged" }, headers: @headers, as: :json
+    assert_response :success
+    assert_equal "Docs PR merged", response.parsed_body["entries"].sole["body"]
+
+    post base, params: { body: "x" * 301 }, headers: @headers, as: :json
+    assert_response :unprocessable_entity
+    assert_match(/at most 300 characters/, response.parsed_body["message"])
+
+    other = create_live_conversation(status: LiveConversation::ENDED)
+    foreign = other.scratchpad_entries.create!(body: "theirs", written_by: "assistant")
+    delete "#{base}/#{foreign.id}", headers: @headers
+    assert_response :unprocessable_entity
+    assert LiveScratchpadEntry.exists?(foreign.id)
+
+    delete "#{base}/#{entry['id']}", headers: @headers
+    assert_response :success
+    assert_empty response.parsed_body["entries"]
+
+    post base, params: { body: "one" }, headers: @headers, as: :json
+    delete "#{base}/clear", headers: @headers
+    assert_response :success
+    assert_empty conversation.scratchpad_entries.reload
+
+    get "/api/v1/live_conversations/0/scratchpad_entries", headers: @headers
+    assert_response :not_found
+  end
+
+  test "a scratchpad write over the voice relay hands the app a session.update carrying the note" do
+    conversation = create_live_conversation(mode: "voice")
+
+    post tool_calls_api_v1_live_conversation_url(conversation), params: { name: "scratchpad", arguments: { action: "add", text: "Session 77 is on hold" }.to_json, call_id: "c1" },
+                                                                headers: @headers, as: :json
+
+    assert_response :success
+    assert_includes response.parsed_body.dig("session", "instructions"), "Session 77 is on hold"
+  end
 end

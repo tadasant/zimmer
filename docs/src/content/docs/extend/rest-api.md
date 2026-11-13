@@ -1183,7 +1183,7 @@ voice on, switching between the two mid-thread. The same rules as the `/live` pa
 (`LiveConversations::Actions`).
 
 An API key may read: `GET /live`, `GET /live_conversations`, `GET /live_conversations/:id` and
-`GET /live_conversations/:id/sessions`.
+`GET /live_conversations/:id/sessions` and `GET /live_conversations/:id/scratchpad_entries`.
 Every `POST` below — start, switch, message, finish, and the voice relay — is **403 for an API key
 and for a relay-only app grant**, like `authorize_merge`. It takes the [iOS app](/extend/ios-app/)'s
 sign-in acting as you. A live model can enable any catalog MCP server, and `tool_calls` runs one
@@ -1221,6 +1221,16 @@ voice: agent_root|zimmer_default}, mcp_servers, responding, error_message, creat
 last_activity_at, ended_at}`. `model` follows `mode`. A turn is `{id, role (user|assistant|tool),
 source (typed|spoken), content, tool_name, call_id, tool_arguments, tool_output, tool_error,
 created_at}`.
+
+Scratchpad ([the conversation's notes](/sessions/live/#the-scratchpad)) — an API key may read it,
+as it reads the thread; every write takes the app's sign-in acting as you, and an API key gets 403 ·
+`GET /live_conversations/:id/scratchpad_entries` → `{live_conversation_id, entries: [{id, body,
+written_by (assistant|person|mcp), created_at, updated_at}], max_entries, max_entry_chars}`, oldest
+first · `POST …/scratchpad_entries` (`body`) → 201 · `PATCH …/scratchpad_entries/:entry_id` (`body`)
+· `DELETE …/scratchpad_entries/:entry_id` · `DELETE …/scratchpad_entries/clear`. Every write answers
+with the pad as it now is; 422 with the reason when a note is empty, longer than 300 characters, the
+pad already holds 30, or the note is not this conversation's. A voice call on the conversation picks
+the change up from its next `session_update`.
 
 Typed: `POST /live_conversations/:id/messages` (`content`, at most 8,000 characters) → 201, the
 user turn. The reply is written by a job; poll `GET /live_conversations/:id?after_turn_id=`. A message
