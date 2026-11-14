@@ -9,7 +9,14 @@ const source = readFileSync(process.argv[2], "utf8")
   .replace("export default class extends Controller", "return class extends Controller")
 const LiveCueDirector = class { constructor() { return new Proxy(this, { get: () => () => {} }) } }
 const LiveCuePlayer = class { perform() {} unlock() {} }
-const LiveVoice = new Function("Controller", "csrfHeaders", "LiveCueDirector", "LiveCuePlayer", source)(class {}, () => ({}), LiveCueDirector, LiveCuePlayer)
+// The usage reporter and the GPT-Live call are only built by start(), which no
+// scenario here runs; the Realtime usage parser is the real shape's stand-in.
+const GptLiveCall = class {}
+const LiveUsageReporter = class { add() {} latency() {} flush() {} }
+const realtimeUsage = () => null
+const LiveVoice = new Function("Controller", "csrfHeaders", "LiveCueDirector", "LiveCuePlayer", "GptLiveCall", "LiveUsageReporter", "realtimeUsage", source)(
+  class {}, () => ({}), LiveCueDirector, LiveCuePlayer, GptLiveCall, LiveUsageReporter, realtimeUsage
+)
 
 function call(answers = {}) {
   const dock = new LiveVoice()

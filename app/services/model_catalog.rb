@@ -87,6 +87,19 @@ class ModelCatalog
   # field with no Zimmer deploy. Refresh discipline: re-check both against the
   # CLI's model table whenever a new model lands behind an alias. An entry
   # without `effort_levels` takes no effort setting.
+
+  # The Claude models Live Mode's experimental voice engines reason with, by
+  # their Messages API id, labelled for the Live settings (LiveSetting
+  # `voice_claude_model`; LiveConversations::ClaudeDelegate). The ids are the
+  # keys of the price table's `anthropic` section (config/live_voice_prices.yml),
+  # so a model added here needs a price there or it is recorded unpriced.
+  LIVE_CLAUDE_MODELS = {
+    "claude-sonnet-5-5" => "claude-sonnet-5-5 — fast, $2/$10 per MTok (default)",
+    "claude-opus-5-5" => "claude-opus-5-5 — strongest, $4/$20 per MTok",
+    "claude-haiku-5-5" => "claude-haiku-5-5 — cheapest, $0.10/$0.50 per MTok"
+  }.freeze
+  LIVE_CLAUDE_DEFAULT = LIVE_CLAUDE_MODELS.keys.first
+
   MODELS = {
     "claude_code" => [
       # claude-opus-5-5
