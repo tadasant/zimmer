@@ -929,8 +929,11 @@ struct SessionDetailView: View {
             // from here threads under this one, as the bubble's `parent_session_id` does, and
             // carries this page, as the bubble carries the page it was typed on.
             .quickRouterCorner(parent: model.isPlaceholder ? nil : model.id, page: model.detail.map { QuickRouterPage.session($0.session, url: app.webURL(for: model.id)) })
+            // From the first frame, not after the session's read: a person who already knows
+            // what to say types while the page loads. A placeholder page (a start not yet
+            // answered) has no session to keep a draft for, so it waits for its id.
             .safeAreaInset(edge: .bottom) {
-                if model.detail?.acceptsFollowUp ?? false { composer }
+                if !model.isPlaceholder, SessionDetail.showsComposer(model.detail) { composer }
             }
             .refreshable { await model.load() }
             .task {
@@ -1624,7 +1627,7 @@ struct SessionDetailView: View {
     }
 
     private var canSend: Bool {
-        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        SessionDetail.canSend(model.draft, detail: model.detail)
     }
 }
 

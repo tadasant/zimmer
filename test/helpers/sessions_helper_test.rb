@@ -2,6 +2,23 @@ require "test_helper"
 require "mocha/minitest"
 
 class SessionsHelperTest < ActionView::TestCase
+  test "session_drawer_link_data names the session for the drawer's provisional composer" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :needs_input)
+
+    data = session_drawer_link_data(session, turbo_prefetch: false)
+    assert_equal session.id, data[:session_drawer_session_id]
+    assert_equal drawer_session_path(session), data[:session_drawer_url]
+    assert_not data.key?(:session_drawer_composer), "a live session gets the provisional composer"
+    assert_equal false, data[:turbo_prefetch]
+
+    assert_equal 42, session_drawer_link_data(42)[:session_drawer_session_id]
+    assert_not session_drawer_link_data(42).key?(:session_drawer_composer), "a bare id cannot say, so it gets the composer"
+
+    session.update_column(:status, Session.statuses[:archived])
+    assert_equal false, session_drawer_link_data(session.reload)[:session_drawer_composer],
+                 "an archived session takes no follow-up, so the drawer offers no composer to type into"
+  end
+
   # Tests for goal_display_name
   test "goal_display_name returns name when matching by description" do
     conditions = [
