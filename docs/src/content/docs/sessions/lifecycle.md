@@ -95,8 +95,9 @@ consecutive positions, instead of one failing on the deferred `(session_id, posi
 constraint at commit. The ones that already locked the session with `lock!` were already ordered
 this way, because `FOR UPDATE` conflicts with `FOR NO KEY UPDATE`; the widget, spot-hold and
 skipped-prompt writers took no lock before. `test/services/sessions/queue_tail_writers_test.rb`
-fails on a `maximum(:position)` read anywhere else in `app/`. Reordering a queued message is the
-exception: it renumbers rows already in the queue rather than appending one.
+fails on a `maximum(:position)` read anywhere else in `app/`. Reordering or deleting a queued
+message does not take the lock: it renumbers rows already in the queue rather than appending one,
+and racing an append it can at worst leave a gap in the positions.
 
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as

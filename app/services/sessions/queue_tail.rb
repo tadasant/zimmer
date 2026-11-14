@@ -20,9 +20,10 @@ module Sessions
   # reads its position here; `test/services/sessions/queue_tail_writers_test.rb`
   # fails on a `maximum(:position)` anywhere else in `app/`. Callers that already
   # hold `FOR UPDATE` on the session (`lock!`) lose nothing by calling it: a
-  # transaction never waits on a lock it already holds. The one writer this
-  # does not order is the reorder in `EnqueuedMessage#move_to_position`, which
-  # renumbers existing rows rather than appending.
+  # transaction never waits on a lock it already holds. Writers that renumber
+  # existing rows rather than append — `EnqueuedMessage#reorder_to` and the
+  # delete paths on web, REST and MCP — do not take this lock; racing an append,
+  # they can at worst leave a gap in the positions.
   module QueueTail
     # @param session [Session]
     # @return [Integer] the position the next queued message should take

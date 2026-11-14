@@ -49,37 +49,49 @@ class Sessions::QueueTailConcurrencyTest < ActiveSupport::TestCase
 
   # Holds an append open on one connection, runs the block on another, asserts
   # the block is blocked behind the lock, then commits the first append and
-  # returns what the block returned.
+  # returns what the block returned. The holder is always released, so a failed
+  # assertion cannot leave its lock open for teardown to wait on.
   def race(&writer)
     holding = Queue.new
     release = Queue.new
-    holder = Thread.new do
-      ActiveRecord::Base.connection_pool.with_connection do
-        ActiveRecord::Base.transaction do
-          session = Session.find(@session.id)
-          session.enqueued_messages.create!(
-            content: "first", status: "pending", position: Sessions::QueueTail.next_position!(session)
-          )
-          holding << true
-          release.pop
+    started = Queue.new
+    finished = Queue.new
+    holder = contender = nil
+
+    begin
+      holder = Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          ActiveRecord::Base.transaction do
+            session = Session.find(@session.id)
+            session.enqueued_messages.create!(
+              content: "first", status: "pending", position: Sessions::QueueTail.next_position!(session)
+            )
+            holding << true
+            release.pop
+          end
         end
       end
-    end
-    holding.pop
+      holding.pop
 
-    finished = Queue.new
-    contender = Thread.new do
-      ActiveRecord::Base.connection_pool.with_connection do
-        finished << writer.call(Session.find(@session.id))
+      contender = Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          session = Session.find(@session.id)
+          started << true
+          finished << writer.call(session)
+        end
       end
+
+      # Wait for the contender to be inside the write before asserting it is
+      # stuck, so the assertion cannot pass merely because it had not started.
+      started.pop
+      sleep 0.3
+      assert finished.empty?, "the second writer must wait while another append holds the queue tail"
+    ensure
+      release << true
+      holder&.join(10)
+      contender&.join(10)
     end
 
-    sleep 0.3
-    assert finished.empty?, "the second writer must wait while another append holds the queue tail"
-
-    release << true
-    holder.join(10)
-    contender.join(10)
     finished.pop(true)
   end
 
