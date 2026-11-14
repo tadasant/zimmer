@@ -16,7 +16,8 @@ struct SettingsOpening: Identifiable, Hashable {
 }
 
 /// The web page's Settings, as the app can write them: its Sign-in card and a row into
-/// API keys & connections (`/api/v1/me`, `/oauth_grants`, `/api_keys`), the global session
+/// API keys & connections (`/api/v1/me`, `/oauth_grants`, `/api_keys`), a row into the Live
+/// settings (`/api/v1/live/settings`, the screen behind Live's gear), the global session
 /// defaults, the experimental toggles and MCP Apps (`/api/v1/app_settings`), then the
 /// phone's own rows and the page's Deployment Information. Each section saves on its own,
 /// as each of the page's forms submits on its own: the toggles at once, the defaults and
@@ -74,6 +75,14 @@ struct SettingsView: View {
                             .accessibilityIdentifier("settings.account")
                         } footer: {
                             Text("The deployment's API keys, and every client connected to /mcp over OAuth — this phone among them.")
+                        }
+                        Section {
+                            NavigationLink { LiveSettingsView(api: model.api, showsDone: false) } label: {
+                                Label("Live settings", systemImage: "waveform")
+                            }
+                            .accessibilityIdentifier("settings.live")
+                        } footer: {
+                            Text("The models, voice and turn detection Live Mode runs on, and the Live mode guidance. The same screen as the gear inside Live, without starting a conversation.")
                         }
                         if model.hasEdge {
                             Section {

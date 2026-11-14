@@ -20,7 +20,7 @@ Guide (the 2026-10-13 edition) fixes what such an app can be:
 
 | Rule | What it means here |
 | --- | --- |
-| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses three: a grid (the home's tiles), the voice control template (the call) and a list (the voice settings, behind the call screen's gear) |
+| Templates: action sheet, alert, grid, list, tab bar, information, voice control (26.4+) | Zimmer uses three: a grid (the home's tiles), the voice control template (the call) and a list (the voice settings, behind the call screen's gear and the home's Voice settings tile) |
 | "Primary modality of voice upon launch" | Each tile is a voice conversation, one tap away; the car stays silent until the driver taps one (see Decisions) |
 | "Only hold an audio session open when voice features are actively being used" | The audio session is held only while a call runs, never idle |
 | Recording "only in conjunction with the voice control template" | The microphone is open only while the voice control template is on screen: the call. The gear ends the call before its screen comes down, so the panel never records |
@@ -85,8 +85,23 @@ phone ends a call the car started: there the tap finds out. It is a read, so the
 **Break glass.** Everything else in the car is voice, and that is exactly what fails here: a call the
 live model has mis-tuned cannot be asked to fix itself. Tadas asked for a touch way out, reachable
 from the call. So the call screen has a gear, and behind it one list, the voice settings. This
-reverses *radically simple* below on purpose and only this far: one list, reached only from the
-call, holding only settings.
+reverses *radically simple* below on purpose and only this far: one list, holding only settings,
+reached from the call and (below) from the home.
+
+**The settings before any call.** Tadas, later: *"there should be a settings button present even
+before I'm inside live mode."* Reaching the panel only from the gear meant starting a call to look
+at a setting, and a call that will not connect could not reach it at all. So the home has a third
+tile, **Voice settings**, last, after the Live tiles, so it coming and going never moves the tile a
+finger is reaching for. It pushes the same panel, the same one list, with **Done** at its head in
+place of *Back to the call*: there is no call to end and none to bring back, so closing it calls
+nobody, and a change takes effect on the next call. The tile is there at rest and once the car has
+given up (`LiveRetry.offersSettings`), and not while a call is up, connecting or retrying, when the
+call screen could go up over the panel at any moment; the call screen has its own gear then.
+
+It is the voice settings, not the phone's whole Live settings screen. A list row is a name and a
+value with a few discrete choices; CarPlay has no text field, and the Live mode guidance is a
+paragraph to write, not something to do at a wheel. The models and the voice stay on the phone
+(Settings → Live settings, without entering Live Mode) and on `/live/settings`.
 
 The request was for sensitivity, and there is no such setting. There is no microphone gain, no wake
 sensitivity (the wake word is a regex), and the closest thing, `voice_vad_threshold`, is not what
@@ -337,11 +352,13 @@ make a sound at all, so during one of those this is only shown.
 
 ```mermaid
 flowchart TD
-  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Continue] [New]\nNew alone with nothing open"]
+  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Continue] [New] [Voice settings]\nNew and Voice settings with nothing open;\none tile, no Voice settings, while a call is under way"]
   home -- "Continue: the open conversation" --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Hearing you / Replying / Muted\n[Mute] [End], or [Send now] [End] on Hearing you"]
   home -- "New: ends the open one, starts another" --> call
   home -- "Continue, nothing open: falling notes, no call" --> home
   call -- End --> home
+  home -- "Voice settings: no call" --> homePanel["Voice settings (the same list, pushed)\n[Done] [Reset to defaults]\n[Reply length cap] [Turn detection] …"]
+  homePanel -- "Done, or CarPlay's Back: calls nobody" --> home
   call -- "gear: ends the call" --> panel["Voice settings (list, pushed)\n[Back to the call] [Reset to defaults]\n[Reply length cap] [Turn detection] …"]
   panel -- "Back to the call, or CarPlay's Back: calls again" --> call
   panel -- a row --> choices["The row's choices (the same list, redrawn)"]
@@ -354,7 +371,7 @@ flowchart TD
 
 | Screen | Template | Why this template |
 | --- | --- | --- |
-| Zimmer | Grid, one or two tiles | A grid's buttons are the largest targets CarPlay draws |
+| Zimmer | Grid, one or two Live tiles and Voice settings | A grid's buttons are the largest targets CarPlay draws |
 | The call | Voice control template, presented | The only screen allowed while recording |
 | Voice settings | List, pushed | Text and a value, large rows, and CarPlay's own limits on them. No slider exists, so every value is a few discrete choices |
 
@@ -364,9 +381,10 @@ voice settings are the only thing pushed, also through the navigator. A row's ch
 list with its sections replaced, so opening one is no template change, and nothing is deeper than
 that one push.
 
-Reachable only from the call screen, in any of its states: the home screen has no gear, so while a
-tile says it is retrying there is no way to the settings. The settings are all on the phone's Live settings
-screen too.
+Reachable from the call screen, in any of its states, and from the home's Voice settings tile at
+rest or once the car has given up. While a tile says it is connecting or retrying there is no way
+to the settings: the call screen can go up at any moment. The settings are all on the phone's Live
+settings screen too, reachable from the phone's Settings without entering Live Mode.
 
 ### The call screen
 
@@ -464,7 +482,10 @@ the app signed ad hoc with the CarPlay entitlement — the Simulator's CarPlay w
 without one — and opens that window from the Simulator's I/O menu through System Events. XCUITest
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
 
-- the car opens on Continue and New and nothing else, and Continue is one tap to the call screen;
+- the car opens on Continue, New and Voice settings and nothing else; Voice settings is one tap to
+  the panel, with Done and no Back to the call, showing the cap a voice call left, and Done goes back
+  to the tiles with no call screen;
+- Continue is one tap to the call screen;
 - the gear on the call screen, seen but not pressed, on a call the fixture holds on Connecting…
   (`-ZimmerFixtureVoiceTurnedUp`, with the settings a voice call left);
 - the car unplugged with that call up, by the Simulator's own I/O menu, so the scene truly
@@ -518,7 +539,7 @@ running after every step, and any crash report fails the job.
 | Record only with the voice control template | The microphone is opened only by `LiveCall`, whose screen in the car is the voice control template. A present CarPlay refuses does not stop the call, so until the next state change presents again the microphone can be open with no screen; the comeback takes that path like any call |
 | No text or imagery in answer to queries | Answers are spoken by the model; the call screen shows a state word |
 | Depth of 3 | One root; one pushed list; the call screen is modal |
-| Few, large targets | Two grid tiles at most; two call buttons and the gear; list rows, each a name and a value, with at most five choices |
+| Few, large targets | Three grid tiles at most (two Live tiles and Voice settings); two call buttons and the gear; list rows, each a name and a value, with at most five choices |
 | Destructive actions confirmed | The car has no destructive button; Live Mode confirms a merge or an archive out loud. Reset to defaults does not ask: see *Break glass* |
 | Nothing a driver cannot act on | A call that will not connect gives up in 15 seconds, says so on the tile with the falling notes, and retries |
 
@@ -531,6 +552,8 @@ running after every step, and any crash report fails the job.
   session action, no template but the grid, the call screen and the one list, nothing pushed but
   the panel, the call ended before the panel goes up, every sink on the call deferred, and the call
   screen built from `LiveCallScreen.identifiers`.
+- `CarPlayTests` hold when the home offers Voice settings, and that the home's panel hangs up
+  nothing and calls nobody back when it closes.
 - `CarVoiceSettingsTests` hold the panel's reads, writes and reset against the fake's row, and when
   a comeback exists and ends (`CarCallComeback`); a Rails
   test holds that a cap and a Listening set by voice are read and cleared over the same API, and that

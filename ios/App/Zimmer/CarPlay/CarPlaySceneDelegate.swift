@@ -13,9 +13,10 @@ import os
 /// continues the conversation or starts a new one, and one call screen that goes up when the
 /// call starts and down when it ends. Everything else
 /// — what needs you, what is running, acting on a session — is the Live Mode conversation's,
-/// over the Realtime call, which is the car's only voice. The one exception is the gear on the
-/// call screen: the voice settings, by touch, because a call that has stopped working cannot be
-/// asked to fix itself (`CarPlayVoiceSettings`).
+/// over the Realtime call, which is the car's only voice. The one exception is the voice
+/// settings, by touch, behind the gear on the call screen and the home's Voice settings tile,
+/// because a call that has stopped working cannot be asked to fix itself, and a driver should not
+/// have to start one to look (`CarPlayVoiceSettings`).
 ///
 /// Silent until asked. The car opens on its tiles and says nothing; the call starts only when
 /// the driver taps one. CarPlay pre-warm holds a connection ready from
@@ -48,15 +49,18 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
         let home = CarPlayHome()
         home.onTap = { [weak self] tile in self?.live?.start(tile) }
+        home.onSettings = { [weak self] in self?.live?.openSettingsFromHome() }
         self.home = home
 
         let live = CarPlayLive(interfaceController: interfaceController)
         live.onChange = { [weak self] in
             guard let self, let live = self.live else { return }
             self.home?.tiles = live.tiles
+            self.home?.showsSettings = live.offersSettings
         }
         self.live = live
         home.tiles = live.tiles
+        home.showsSettings = live.offersSettings
 
         Task { [weak self, log] in
             do {

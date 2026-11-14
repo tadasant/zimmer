@@ -242,12 +242,12 @@ A voice-based conversational CarPlay app (`com.apple.developer.carplay-voice-bas
 iOS 26.4+, Apple CarPlay App Programming Guide, 2026-10-13). The other categories don't fit: Zimmer is not
 audio, navigation, communication (SiriKit messaging or VoIP) or a driving task, and what a driver does
 with it is talk. The category allows list, grid, tab bar, alert, action sheet, information and voice
-control templates (Zimmer uses two: a grid and the voice control template), with a depth of three, requires voice as the primary modality at launch, allows
+control templates (Zimmer uses three: a grid, the voice control template and the voice settings list), with a depth of three, requires voice as the primary modality at launch, allows
 recording only under the voice control template, and shows no notifications. The design and every
 decision in it is [`CARPLAY_DESIGN.md`](CARPLAY_DESIGN.md).
 
-- The car is radically simple: **Continue** and **New** tiles, and the Live Mode call screen with
-  Mute, End and a gear to the voice settings. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
+- The car is radically simple: **Continue** and **New** tiles, a **Voice settings** tile while no
+  call is under way, and the Live Mode call screen with Mute, End and a gear to the same voice settings. `ZimmerKit/Driving/` holds its rules, tested on Linux: `LiveCallScreen.swift` (the
   call screen's five states, Muted one of them, and the words for what the call is doing),
   `LiveRetry.swift` (what the tiles say, and the quiet retries when Live Mode can't connect),
   `CarLiveChoice.swift` (which conversation a tap calls, across its retries),

@@ -630,11 +630,14 @@ In the two gated Listening modes speech does not cut a reply off.
 
 In the car you choose with one tap: **Continue conversation** calls the open conversation with
 voice on, and **New conversation** ends it and calls a fresh one. It is still one thread, and the
-ended conversation stays readable. With nothing open the tile is only New, and going back is by
+ended conversation stays readable. With nothing open the only Live tile is New, and going back is by
 voice, with no screen for it: "go back to my last conversation" needs no list, and the call stays on
 its one call screen, reading Connecting… for the moment it takes to reconnect
 ([Going back to a conversation](#going-back-to-a-conversation)). Either way it is the same call, with Mute and End while it runs, **Send now** in Mute's place while you are talking and turn detection has not ended your turn, and a gear to the
-voice settings by touch, for a call that has stopped working. The car has no other voice: a call
+voice settings by touch, for a call that has stopped working. The same voice settings are a
+**Voice settings** tile on the car's home while no call is under way, so you can read or change
+them before calling; closing them calls nobody. The guidance and the models are not there: a car
+has no text field, so they are on the phone. The car has no other voice: a call
 that isn't up in 15 seconds gives up, the tile says *Live Mode unavailable, retrying…*, and the
 car retries with no voice, playing the falling notes the first time and when it stops. Unplug
 with a call up and it carries on on the phone, which [goes to the call's thread](/extend/ios-app/#carplay).
@@ -644,7 +647,9 @@ conversation's tool calls have named, newest first (`LiveConversation#referenced
 makes it reachable.
 
 The gear on the app's Live screens opens the same [Live settings](#live-settings) over
-`/api/v1/live/settings`, guidance and history included. A save there sends an open phone call a
+`/api/v1/live/settings`, guidance and history included. So does **Settings → Live settings**, from
+the gear on the session board, without entering Live Mode: the waveform button lands in a voice
+call, so that is the way to look first. A save there sends an open phone call a
 fresh `session.update`.
 
 ### CarPlay pre-warm
