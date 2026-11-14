@@ -275,6 +275,241 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
                  WorkBacklog::LivenessSweep.candidates(Time.current).size
   end
 
+  # --- issues that stay open by design (#1489) -------------------------------
+
+  OVER_A_WEEK = (WorkBacklog::LivenessSweep::ALERT_AFTER + 2.days)
+
+  # zimmer#321's shape: one slice per session, nothing closed. Before #1489 this
+  # stranded, paged every week, and was re-queued by hand.
+  test "a multi_slice row whose slice merged while it was out queues the next slice and does not page" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE,
+                       payload: { "ratings" => { "estimated_cost" => "small" }, "notes" => "slice by slice" })
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 2.days.ago, number: 610),
+                                               merged_pr(merged_at: 30.days.ago, number: 400) ]) })
+
+      assert_empty alerts.pages
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+    assert item.started?, "the old row stays as history"
+    assert_empty WorkBacklogItem.stranded
+
+    fresh = WorkBacklogItem.queued.find_by!(key: item.key)
+    assert_equal WorkBacklogItem::CONTINUATION_MULTI_SLICE, fresh.continuation
+    assert_equal WorkBacklogItem::SWEEP, fresh.added_via
+    assert_equal "liveness-sweep", fresh.added_by
+    assert_equal [ item.issue_url, item.repo, item.title, item.estimated_cost, item.decided_at ],
+                 [ fresh.issue_url, fresh.repo, fresh.title, fresh.estimated_cost, fresh.decided_at ]
+    assert_equal "slice by slice", fresh.notes
+    assert_equal "https://github.com/tadasant/zimmer/pull/610", fresh.payload["previous_slice_pr"],
+                 "the pointer is the slice that just merged, not an earlier one"
+    assert_equal item.id, fresh.payload["continued_from_item"]
+    assert_includes fresh.session_prompt, "https://github.com/tadasant/zimmer/pull/610"
+    assert fresh.session_prompt.start_with?(item.issue_url)
+  end
+
+  test "the next slice's prompt does not grow a line per slice, and keeps a human's own prompt" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE,
+                       payload: { "prompt" => "Start with the API half." })
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago, number: 610) ]) })
+    second = WorkBacklogItem.queued.find_by!(key: item.key)
+    second.update_columns(status: WorkBacklogItem::STARTED, started_session_id: @dead_session.id,
+                          started_at: 12.hours.ago)
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 8.hours.ago, number: 611),
+                                             merged_pr(merged_at: 1.day.ago, number: 610) ]) })
+    third = WorkBacklogItem.queued.find_by!(key: item.key)
+
+    assert third.prompt.start_with?("Start with the API half.\n\n")
+    assert_includes third.prompt, "/pull/611"
+    assert_not_includes third.prompt, "/pull/610"
+    assert_equal 1, third.prompt.scan("multi-slice").size
+  end
+
+  # The hard constraint: a multi_slice session that ended with nothing merged
+  # stopped working, and the earlier slices' PRs must not make it look otherwise.
+  test "a multi_slice row whose session merged nothing strands and pages like any row" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK + 3.days).ago) ]) })
+
+      assert_equal 1, alerts.pages.size
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+    assert_equal [ item.id ], WorkBacklogItem.where(key: item.key).pluck(:id), "nothing was queued"
+  end
+
+  test "a merged PR whose merge time GitHub did not return is not a landed slice" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: 1.hour.ago) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_empty WorkBacklogItem.queued.where(key: item.key)
+  end
+
+  test "a multi_slice row with no PR at all strands" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(references: []) })
+
+    assert_equal WorkBacklogItem::LIVENESS_NO_PR, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  test "a multi_slice row removed for its open PR is continued once that PR merges" do
+    item = removed_row(reason: "issue_has_open_pr", continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+    assert WorkBacklogItem.queued.exists?(key: item.key)
+  end
+
+  test "a second pass does not queue the same slice twice" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+    probes = { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) }
+
+    sweep(probes: probes)
+    sweep(probes: probes)
+
+    assert_equal 2, WorkBacklogItem.where(key: item.key).count
+    assert_equal 1, WorkBacklogItem.queued.where(key: item.key).count
+  end
+
+  test "a closed multi_slice issue resolves as closed and queues nothing" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(state: "CLOSED", references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_ISSUE_CLOSED, item.reload.liveness_state
+    assert_empty WorkBacklogItem.queued.where(key: item.key)
+  end
+
+  # zimmer#1463's shape: instrumented, no recurrence, open until it fails again.
+  test "an awaiting_recurrence row with a merged PR leaves the stranded population and does not page" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+
+    with_alerts do |alerts|
+      result = sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK - 1.day).ago) ]) })
+
+      assert_empty alerts.pages
+      assert_equal 1, result.count(WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE)
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_AWAITING_RECURRENCE, item.reload.liveness_state
+    assert item.started?, "nothing is moved or queued"
+    assert_empty WorkBacklogItem.stranded
+    assert_empty WorkBacklogItem.awaiting_decision
+    assert_equal 1, WorkBacklogItem.where(key: item.key).count
+  end
+
+  test "an awaiting_recurrence row is still re-checked, and reads closed once its issue closes" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+    sweep(probes: { 1 => probe(state: "CLOSED") })
+
+    assert_equal WorkBacklogItem::LIVENESS_ISSUE_CLOSED, item.reload.liveness_state
+  end
+
+  # The hard constraint again: a PR an earlier row merged says nothing about
+  # whether this row's session did anything.
+  test "an awaiting_recurrence row whose only merged PR predates it strands and pages" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: (OVER_A_WEEK + 1.day).ago) ]) })
+
+      assert_equal 1, alerts.pages.size
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  test "a multi_slice row with a merged slice and a moving open PR is in flight, and queues nothing yet" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago),
+                                             reference(state: "OPEN", updated_at: 1.hour.ago, number: 501) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, item.reload.liveness_state
+    assert_empty WorkBacklogItem.queued.where(key: item.key)
+  end
+
+  test "a multi_slice row whose next slice someone already queued is superseded without a second row" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+    WorkBacklog::Append.call(append_attributes(key: item.key), added_via: WorkBacklogItem::MCP)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+    assert_equal 1, WorkBacklogItem.queued.where(key: item.key).count
+  end
+
+  test "a multi_slice row whose next slice the ranking refuses stays stranded and pages" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_MULTI_SLICE)
+    log = StringIO.new
+
+    WorkBacklog::Append.stub(:call, ->(*, **) { raise WorkBacklog::Append::InvalidItem, "band full" }) do
+      with_alerts do |alerts|
+        sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) }, logger: Logger.new(log))
+
+        assert_equal 1, alerts.pages.size
+      end
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+    assert_match(/could not queue the next slice of zimmer#1 .*band full/, log.string)
+  end
+
+  test "an awaiting_recurrence row whose session produced no PR strands and pages" do
+    item = started_row(started_at: OVER_A_WEEK.ago, continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: []) })
+
+      assert_equal 1, alerts.pages.size
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_NO_PR, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  test "an awaiting_recurrence row whose only open PR went quiet still reads stalled" do
+    item = started_row(continuation: WorkBacklogItem::CONTINUATION_AWAITING_RECURRENCE)
+
+    sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 30.days.ago),
+                                             reference(state: "OPEN", updated_at: 21.days.ago, number: 501) ]) })
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_STALLED, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+  end
+
+  # Not a blanket exclusion of pr_merged_issue_open: a row with no marker, even
+  # with a slice merged while it was out, is the ambiguous case and still pages.
+  test "an unmarked row with a merged PR and the issue open still strands, pages, and is not re-queued" do
+    item = started_row(started_at: OVER_A_WEEK.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
+
+      assert_equal 1, alerts.pages.size
+      assert_match(/stranded for over 1 week\z/, alerts.pages.first[:message])
+    end
+
+    assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+    assert_includes WorkBacklogItem.stranded.pluck(:id), item.id
+    assert_equal 1, WorkBacklogItem.where(key: item.key).count
+  end
+
   # --- what it says ----------------------------------------------------------
 
   test "alerts when the oldest stranded row is past the threshold, through GlitchTip alone" do
@@ -944,8 +1179,14 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
                                       references: references)
   end
 
-  def reference(state:, updated_at:, number: 500)
-    Github::IssueLinkProbe::Reference.new(number: number, state: state, updated_at: updated_at)
+  def reference(state:, updated_at:, number: 500, merged_at: nil, url: nil)
+    Github::IssueLinkProbe::Reference.new(number: number, state: state, updated_at: updated_at,
+                                          merged_at: merged_at, url: url)
+  end
+
+  def merged_pr(merged_at:, number: 500)
+    reference(state: "MERGED", updated_at: merged_at, merged_at: merged_at, number: number,
+              url: "https://github.com/tadasant/zimmer/pull/#{number}")
   end
 
   # What one or more passes said. `pages` are the GlitchTip reports — each opens
