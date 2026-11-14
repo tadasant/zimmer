@@ -65,6 +65,8 @@ Rails.application.routes.draw do
     resources :live_conversations, only: [ :index, :show ]
     resources :live_conversation_turns, only: [ :index, :show ]
     resources :live_scratchpad_entries, only: [ :index, :show ]
+    # Read-only: the voice-engine cost ledger, written by the engines and priced on the way in.
+    resources :live_usage_events, only: [ :index, :show ]
     # Read-only too: the Live settings are written through SettingsUpdate, which
     # validates and records every change, on /live/settings, REST and MCP.
     resources :live_settings, only: [ :index, :show ]
@@ -229,6 +231,9 @@ Rails.application.routes.draw do
       post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance"
       # What the iOS app's voice calls did, onto the shipped logs (Telemetry).
       post "live/telemetry", to: "live_telemetry#create"
+      # The voice-engine cost ledger, rolled up or row by row (LiveConversations::CostReport).
+      get "live/costs", to: "live_costs#show"
+      get "live/usage_events", to: "live_costs#events"
       resources :live_conversations, only: [ :index, :show, :create ] do
         post :switch, on: :collection
         member do
@@ -605,6 +610,9 @@ Rails.application.routes.draw do
   post "live/settings/reset", to: "live_settings#reset", as: :reset_live_settings
   post "live/settings/changes/:id/restore_guidance", to: "live_settings#restore_guidance", as: :restore_live_settings_guidance
   get "live/current", to: "live#show", as: :current_live
+  # What each voice engine has cost, by engine, conversation, day and
+  # operation (LiveConversations::CostReport); `.csv` is every ledger row.
+  get "live/costs", to: "live_costs#show", as: :live_costs
   # The two-mode URLs from before voice folded into Live Mode, for bookmarks.
   get "live/:mode", to: redirect("/live/current"), constraints: { mode: /text|voice/ }
   resources :live_conversations, only: [ :show, :create ] do
@@ -614,6 +622,9 @@ Rails.application.routes.draw do
       post :mode
       post :messages
       post :client_secret
+      post :gpt_live_session
+      post :delegations
+      post :usage
       post :tool_calls
       post :turns
       post :session_update

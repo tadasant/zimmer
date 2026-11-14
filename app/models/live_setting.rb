@@ -20,6 +20,11 @@
 #
 # `guidance` is appended to the system prompt on both paths (SystemPrompt).
 #
+# The `engine` fields pick what runs a voice call (LiveConversations::VoiceEngine)
+# and cap what the experimental engines may spend (SpendGuard). The default
+# engine is the voice path above; the others read the voice name, guidance and
+# Claude model, and none of the Realtime knobs.
+#
 # What is offered is what the paths can actually use. The text path calls Chat
 # Completions with function tools, which OpenAI's GPT-6 family accepts only from
 # `gpt-6-luna` and `gpt-6-sol`, and only at `reasoning_effort: "none"` — so there
@@ -40,6 +45,7 @@ class LiveSetting < ApplicationRecord
   Field = Data.define(:key, :path, :type, :label, :help, :options, :min, :max) do
     def text? = path == :text
     def voice? = path == :voice
+    def engine? = path == :engine
     def enum? = type == :enum
     def numeric? = %i[float integer].include?(type)
     # The turn detection mode this field needs, or nil when it works in every mode.
@@ -120,6 +126,29 @@ class LiveSetting < ApplicationRecord
     "off" => "Off — the app reports nothing"
   }.freeze
 
+  # Which engine runs a voice call (LiveConversations::VoiceEngine). The
+  # experimental two are off until somebody picks one, and a call whose engine
+  # cannot run — a key not set, a client that cannot speak it, a spend cap
+  # reached — runs on `openai_realtime` instead and says why.
+  VOICE_ENGINES = {
+    "openai_realtime" => "OpenAI Realtime — today's engine (default)",
+    "gpt_live_claude" => "GPT-Live front end, Claude reasoning — web only, experimental",
+    "livekit_claude" => "LiveKit cascade with Claude — not built yet, falls back"
+  }.freeze
+
+  # The Claude model the experimental engines reason with.
+  CLAUDE_MODELS = ModelCatalog::LIVE_CLAUDE_MODELS
+
+  # How Claude's use by the experimental engines is billed, which decides what
+  # it costs here: `metered` is money per token, at list price; `subscription`
+  # is a flat plan, so its tokens are recorded at list price but cost nothing at
+  # the margin. Zimmer calls Claude with LIVE_ANTHROPIC_API_KEY either way: this
+  # changes the accounting, not the credential (see ClaudeClient).
+  CLAUDE_BILLING = {
+    "metered" => "Metered API — every token billed at list price (default)",
+    "subscription" => "Subscription — a flat plan: tokens recorded at list price, billed at $0"
+  }.freeze
+
   GUIDANCE_MAX_LENGTH = 8_000
 
   FIELDS = [
@@ -173,7 +202,22 @@ class LiveSetting < ApplicationRecord
               options: TRANSCRIPTION_MODELS, min: nil, max: nil),
     Field.new(key: :voice_telemetry, path: :voice, type: :enum, label: "Call telemetry (iOS app)",
               help: "How much the phone and the car report about each voice call, to the shipped logs. Takes effect on the next call.",
-              options: TELEMETRY, min: nil, max: nil)
+              options: TELEMETRY, min: nil, max: nil),
+    Field.new(key: :voice_engine, path: :engine, type: :enum, label: "Voice engine",
+              help: "What runs a voice call. Takes effect on the next call. An engine that cannot run — a key not set, an app that cannot speak it, a spend cap reached — falls back to OpenAI Realtime, and the call says why.",
+              options: VOICE_ENGINES, min: nil, max: nil),
+    Field.new(key: :voice_claude_model, path: :engine, type: :enum, label: "Claude model",
+              help: "The model the experimental engines reason and run tools with. Takes effect on the next delegation.",
+              options: CLAUDE_MODELS, min: nil, max: nil),
+    Field.new(key: :voice_claude_billing, path: :engine, type: :enum, label: "Claude billing",
+              help: "Whether Claude's tokens count as billed on Live costs, which always shows the list price beside what was billed. This changes the accounting only: until a subscription credential is wired, Zimmer still calls Claude with the API key, which is metered, so the spend caps keep counting Claude at list price either way.",
+              options: CLAUDE_BILLING, min: nil, max: nil),
+    Field.new(key: :voice_engine_conversation_cap_usd, path: :engine, type: :float, label: "Per-conversation cap (USD)",
+              help: "The most an experimental engine may spend on one conversation. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",
+              options: nil, min: 0.1, max: 100.0),
+    Field.new(key: :voice_engine_daily_cap_usd, path: :engine, type: :float, label: "Daily cap per engine (USD)",
+              help: "The most each experimental engine may spend in a day (deployment time zone), across conversations. Same warning and fallback as the per-conversation cap.",
+              options: nil, min: 0.5, max: 500.0)
   ].freeze
 
   FIELDS_BY_KEY = FIELDS.index_by(&:key).freeze
@@ -208,6 +252,11 @@ class LiveSetting < ApplicationRecord
     # Verbose: everything a call does is reported. Turned down on the Live
     # settings page, without a deploy.
     when :voice_telemetry then "debug"
+    when :voice_engine then "openai_realtime"
+    when :voice_claude_model then ModelCatalog::LIVE_CLAUDE_DEFAULT
+    when :voice_claude_billing then "metered"
+    when :voice_engine_conversation_cap_usd then 2.0
+    when :voice_engine_daily_cap_usd then 10.0
     end
   end
 

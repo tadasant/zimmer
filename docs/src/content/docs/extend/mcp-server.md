@@ -231,7 +231,7 @@ production.
 | `settings` (opt-in) | `get_app_settings`, `action_app_settings` |
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
-| `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation`, `get_live_settings`, `action_live_settings` — [Live Mode](/sessions/live/) |
+| `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation`, `get_live_settings`, `action_live_settings`, `get_live_costs` — [Live Mode](/sessions/live/) |
 
 `get_live_conversations` and `action_live_conversation` read and drive [Live Mode](/sessions/live/)
 conversations: whether Live Mode can start, the current conversation and whether voice is on, a

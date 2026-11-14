@@ -1,0 +1,162 @@
+<% report = @report.as_api_json %>
+<% money = ->(value) { value.nil? ? "—" : (value.to_f < 0.01 && value.to_f.positive? ? format("$%.4f", value) : format("$%.2f", value)) } %>
+<% labels = LiveSetting::VOICE_ENGINES %>
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <%= render "live/back_header", title: "Live costs", back_path: live_path,
+        subtitle: "What each voice mode has cost, and how it performed, from the voice-engine ledger. Prices come from the price table (version #{report[:price_version]}); each row keeps the version that priced it." %>
+
+    <div class="flex flex-wrap items-center gap-2 mb-6 text-sm" data-live-costs-window>
+      <% [ 1, 7, 30, 90 ].each do |days| %>
+        <%= link_to "#{days}d", live_costs_path(days: days, engine: @report.engine),
+              class: "px-3 py-1 rounded-md border #{(params[:days].presence || LiveConversations::CostReport::DEFAULT_DAYS).to_i == days ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-300'}" %>
+      <% end %>
+      <span class="text-gray-400 px-1">·</span>
+      <%= link_to "All engines", live_costs_path(days: params[:days]), class: "px-3 py-1 rounded-md border #{@report.engine ? 'bg-white text-gray-700 border-gray-300' : 'bg-indigo-600 text-white border-indigo-600'}" %>
+      <% LiveUsageEvent::ENGINES.each do |engine| %>
+        <%= link_to engine, live_costs_path(days: params[:days], engine: engine),
+              class: "px-3 py-1 rounded-md border font-mono text-xs #{@report.engine == engine ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-300'}" %>
+      <% end %>
+      <%= link_to "Download CSV", live_costs_path(format: :csv, days: params[:days], engine: @report.engine), class: "ml-auto text-indigo-600 hover:underline", data: { turbo: false } %>
+    </div>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6 p-4 grid grid-cols-2 sm:grid-cols-4 gap-4" data-live-costs-totals>
+      <div><p class="text-xs text-gray-500">Billed</p><p class="text-xl font-semibold text-gray-900"><%= money.(report[:totals][:billed_usd]) %></p><p class="text-xs text-gray-500"><%= money.(report[:totals][:list_usd]) %> at list price</p></div>
+      <div><p class="text-xs text-gray-500">Conversations</p><p class="text-xl font-semibold text-gray-900"><%= report[:totals][:conversations] %></p></div>
+      <div><p class="text-xs text-gray-500">Ledger rows</p><p class="text-xl font-semibold text-gray-900"><%= report[:totals][:events] %></p></div>
+      <div><p class="text-xs text-gray-500">Unpriced rows</p><p class="text-xl font-semibold <%= report[:totals][:unpriced_events].positive? ? 'text-amber-600' : 'text-gray-900' %>"><%= report[:totals][:unpriced_events] %></p></div>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-modes>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">By mode: experience against cost</h2>
+        <p class="mt-1 text-sm text-gray-500">Each engine with the models it ran on, side by side. <strong>Billed</strong> is money actually charged; <strong>list</strong> is the same use at list price, which is what a Claude subscription's tokens would have cost on the API. Per minute is per minute of call, as the call dock timed it. Time to first audio is from the end of your line to the first sound of the answer.</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs text-gray-500">
+            <tr><th class="px-4 py-2">Mode</th><th class="px-4 py-2 text-right">Billed / list</th><th class="px-4 py-2 text-right">Per conversation</th><th class="px-4 py-2 text-right">Per call-minute</th><th class="px-4 py-2 text-right">Call minutes</th><th class="px-4 py-2 text-right">First audio p50 / p90</th><th class="px-4 py-2 text-right">Delegations · avg</th><th class="px-4 py-2 text-right">Errors</th><th class="px-4 py-2 text-right">Fallbacks</th></tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% if report[:by_mode].empty? %>
+              <tr><td colspan="9" class="px-4 py-4 text-gray-500">Nothing recorded in this window.</td></tr>
+            <% end %>
+            <% report[:by_mode].each do |row| %>
+              <tr data-live-costs-engine="<%= row[:engine] %>" data-live-costs-mode="<%= row[:mode] %>">
+                <td class="px-4 py-2"><code class="font-mono text-xs"><%= row[:engine] %></code><div class="text-xs text-gray-500 whitespace-nowrap"><%= row[:mode] %></div></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><span class="font-medium"><%= money.(row[:billed_usd]) %></span> / <%= money.(row[:list_usd]) %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= money.(row[:billed_per_conversation_usd]) %> / <%= money.(row[:list_per_conversation_usd]) %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= money.(row[:billed_per_minute_usd]) %> / <%= money.(row[:list_per_minute_usd]) %></td>
+                <td class="px-4 py-2 text-right"><%= row[:call_minutes] %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= row[:first_audio_ms_p50] ? "#{row[:first_audio_ms_p50]} / #{row[:first_audio_ms_p90]} ms" : "—" %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= row[:delegations] %><%= " · #{row[:avg_delegation_ms]} ms" if row[:avg_delegation_ms] %></td>
+                <td class="px-4 py-2 text-right"><%= row[:errors] %></td>
+                <td class="px-4 py-2 text-right"><%= row[:fallbacks] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-caps>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">Today against the caps</h2>
+        <p class="mt-1 text-sm text-gray-500">The caps count list price, Claude included even when it is marked as on a subscription: until a subscription credential is wired, Zimmer still pays for it by the token. At 80% of a cap a call is warned; at the cap it ends and the next call runs on OpenAI Realtime. The caps are on <%= link_to "Live settings", live_settings_path, class: "text-indigo-600 hover:underline" %>.</p>
+      </div>
+      <ul class="divide-y divide-gray-100 text-sm">
+        <% report[:caps].each do |cap| %>
+          <% status = report[:engines].find { |engine| engine[:engine] == cap[:engine] } %>
+          <li class="px-4 py-3 sm:px-6 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <code class="font-mono text-xs"><%= cap[:engine] %></code>
+            <span><%= money.(cap[:daily_spend_usd]) %> of <%= money.(cap[:daily_cap_usd]) %> today · <%= money.(cap[:conversation_cap_usd]) %> per conversation</span>
+            <% if cap[:blocked] %><span class="text-red-600">at the cap</span><% elsif cap[:warn] %><span class="text-amber-600">near the cap</span><% end %>
+            <% if status && status[:unavailable_reason] %><span class="text-gray-500 basis-full">Not running: <%= status[:unavailable_reason] %>.</span><% end %>
+          </li>
+        <% end %>
+      </ul>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-conversations>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">Most expensive conversations</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs text-gray-500">
+            <tr><th class="px-4 py-2">Conversation</th><th class="px-4 py-2">Engine</th><th class="px-4 py-2 text-right">Billed / list</th><th class="px-4 py-2 text-right">Call minutes</th><th class="px-4 py-2 text-right">Delegations</th><th class="px-4 py-2">Last</th></tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% if report[:by_conversation].empty? %>
+              <tr><td colspan="6" class="px-4 py-4 text-gray-500">Nothing recorded in this window.</td></tr>
+            <% end %>
+            <% report[:by_conversation].each do |row| %>
+              <tr>
+                <td class="px-4 py-2"><%= link_to (row[:title].presence || "##{row[:live_conversation_id]}").truncate(48), live_conversation_path(row[:live_conversation_id]), class: "text-indigo-600 hover:underline" %></td>
+                <td class="px-4 py-2"><code class="font-mono text-xs"><%= row[:engine] %></code></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><span class="font-medium"><%= money.(row[:billed_usd]) %></span> / <%= money.(row[:list_usd]) %></td>
+                <td class="px-4 py-2 text-right"><%= row[:call_minutes] %></td>
+                <td class="px-4 py-2 text-right"><%= row[:delegations] %></td>
+                <td class="px-4 py-2 whitespace-nowrap text-gray-500"><%= row[:last_at] ? time_ago_in_words(Time.zone.parse(row[:last_at])) + " ago" : "—" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-operations>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">By operation</h2>
+        <p class="mt-1 text-sm text-gray-500">Each kind of billable or measured step, with its volumes.</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50 text-left text-xs text-gray-500">
+            <tr><th class="px-4 py-2">Engine</th><th class="px-4 py-2">Operation</th><th class="px-4 py-2">Model</th><th class="px-4 py-2 text-right">Billed / list</th><th class="px-4 py-2 text-right">Rows</th><th class="px-4 py-2 text-right">Tokens in / out</th><th class="px-4 py-2 text-right">Cache read / write</th><th class="px-4 py-2 text-right">Audio in / out</th><th class="px-4 py-2 text-right">Seconds</th></tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <% if report[:by_operation].empty? %>
+              <tr><td colspan="9" class="px-4 py-4 text-gray-500">Nothing recorded in this window.</td></tr>
+            <% end %>
+            <% report[:by_operation].each do |row| %>
+              <tr>
+                <td class="px-4 py-2"><code class="font-mono text-xs"><%= row[:engine] %></code></td>
+                <td class="px-4 py-2"><%= row[:operation] %></td>
+                <td class="px-4 py-2"><code class="font-mono text-xs"><%= row[:model] || "—" %></code></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><span class="font-medium"><%= money.(row[:billed_usd]) %></span> / <%= money.(row[:list_usd]) %><% if row[:billing_basis] == "subscription" %><div class="text-xs text-gray-500">subscription</div><% end %></td>
+                <td class="px-4 py-2 text-right"><%= row[:events] %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= number_with_delimiter(row[:input_tokens]) %> / <%= number_with_delimiter(row[:output_tokens]) %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= number_with_delimiter(row[:cache_read_tokens]) %> / <%= number_with_delimiter(row[:cache_write_tokens]) %></td>
+                <td class="px-4 py-2 text-right whitespace-nowrap"><%= number_with_delimiter(row[:audio_input_tokens]) %> / <%= number_with_delimiter(row[:audio_output_tokens]) %></td>
+                <td class="px-4 py-2 text-right"><%= row[:seconds] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-days>
+      <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
+        <h2 class="text-lg font-medium text-gray-900">By day</h2>
+      </div>
+      <ul class="divide-y divide-gray-100 text-sm">
+        <% if report[:by_day].empty? %><li class="px-4 py-4 text-gray-500">Nothing recorded in this window.</li><% end %>
+        <% report[:by_day].each do |row| %>
+          <li class="px-4 py-2 sm:px-6 flex flex-wrap gap-x-4">
+            <span class="text-gray-500 w-24"><%= row[:date] %></span>
+            <code class="font-mono text-xs"><%= row[:engine] %></code>
+            <span class="font-medium"><%= money.(row[:billed_usd]) %></span>
+            <span class="text-gray-500"><%= money.(row[:list_usd]) %> list</span>
+            <span class="text-gray-500"><%= pluralize(row[:conversations], "conversation") %></span>
+          </li>
+        <% end %>
+      </ul>
+    </section>
+
+    <p class="text-xs text-gray-500">
+      Calls from the iOS app and CarPlay are not in this ledger yet: they run on OpenAI Realtime and do not report their usage. The same report is <code class="font-mono">GET /api/v1/live/costs</code> and the <code class="font-mono">get_live_costs</code> MCP tool; the rows are <code class="font-mono">GET /api/v1/live/usage_events</code>.
+    </p>
+  </div>
+</div>
