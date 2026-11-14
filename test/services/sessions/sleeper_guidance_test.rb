@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # A session asleep on its own wake-up takes a follow-up immediately and goes
 # back to its wait afterwards. Every surface that says "paused" or refuses to
