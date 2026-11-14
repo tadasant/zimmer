@@ -115,7 +115,7 @@ group (so the `zimmer-sessions` catalog server carries them):
 
 | Tool | Does |
 | --- | --- |
-| `get_user_view` | Returns the board in the order it is drawn, paginated, with every fact a row shows. `quick_search_sessions` is not a substitute: three of the four facts a decision turns on — the root, the blurb and the PR — are not on its rows at all. |
+| `get_user_view` | Returns the board in the order it is drawn, paginated, with every fact a row shows plus when each row was last touched. `order: "last_touched"` returns the same rows most recently touched first, as **Sort By Last Touched** draws them; Live Mode reads the board that way. `quick_search_sessions` is not a substitute: three of the four facts a decision turns on — the root, the blurb and the PR — are not on its rows at all. |
 | `reorder_user_view` | Takes the whole ordering as one argument and writes it in one transaction, spacing the values so you can still drag any row afterwards. Partial orders are fine: sessions you do not list keep their own rank, below the ones you do. |
 
 **It is one durable session, reused, not one per click.** A session per press would leave a trail of
