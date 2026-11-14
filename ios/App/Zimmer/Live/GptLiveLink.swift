@@ -24,7 +24,7 @@ import os
 /// Every callback libwebrtc makes arrives on its own signalling thread; each is handed to the main
 /// actor, where `LiveCall` lives.
 final class GptLiveLink: NSObject, @unchecked Sendable {
-    enum Failure: Error, CustomStringConvertible {
+    enum Failure: Error, CustomStringConvertible, LocalizedError {
         case noPeerConnection
         case noDataChannel
         case offer(String)
@@ -38,6 +38,8 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
             case let .answer(message): return "GPT-Live's answer could not be used: \(message)"
             }
         }
+
+        var errorDescription: String? { description }
     }
 
     /// One server event's text.
@@ -46,7 +48,8 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
     var onDropped: (@MainActor (String) -> Void)?
 
     private static let log = Logger(subsystem: "com.tadasant.zimmer", category: "gpt-live")
-    /// One for the app's life, as libwebrtc expects. Built on first use, from the main actor.
+    /// One for the app's life, as libwebrtc expects, built on first use (`LiveCall` makes every
+    /// link on the main actor).
     nonisolated(unsafe) private static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
         configureAudioSession()
@@ -93,6 +96,18 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
         configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
         configuration.categoryOptions = [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
         RTCAudioSessionConfiguration.setWebRTC(configuration)
+        // libwebrtc deactivates the shared session when its audio stops, on its last unbalanced
+        // activation. A link closes up to `closeGrace` after its call ended, by when the next call's
+        // engine or the goodbye cue may be using the session. One activation held for the app's
+        // life means libwebrtc never takes the session down: `LiveAudioEngine` does, as on Realtime.
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        do {
+            try session.setActive(true)
+        } catch {
+            log.error("could not hold the audio session for WebRTC: \(error.localizedDescription, privacy: .public)")
+        }
+        session.unlockForConfiguration()
     }
 
     /// The offer to send Zimmer: the microphone track and the event channel. Like the browser's,
@@ -140,11 +155,13 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
         microphone.isEnabled = !muted
     }
 
-    /// The connection is up, as far as ICE knows: what the call's health asks between events.
+    /// The connection has not failed: what the call's health asks between events. `.disconnected`
+    /// counts as alive, because ICE often recovers from it by itself (a dead spot on the road, Wi-Fi
+    /// to cellular); a real failure is `.failed` or `.closed`, which the delegate reports at once.
     var isConnected: Bool {
         switch peer.connectionState {
-        case .connected, .connecting, .new: return true
-        default: return false
+        case .failed, .closed: return false
+        default: return true
         }
     }
 

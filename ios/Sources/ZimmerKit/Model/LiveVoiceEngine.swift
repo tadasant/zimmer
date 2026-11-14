@@ -48,8 +48,12 @@ public struct LiveEngineChoice: Decodable, Sendable, Equatable {
     /// line, so the driver hears why the engine they chose is not the one answering.
     public var spokenFallback: String? {
         guard let fallbackReason, !fallbackReason.isEmpty else { return nil }
-        return "(Zimmer: this call is on OpenAI Realtime, not the \(requested ?? "chosen") engine, because \(fallbackReason). "
-            + "Say that in one short sentence, then stop.)"
+        return Self.spokenLine("this call is on OpenAI Realtime, not the \(requested ?? "chosen") engine, because \(fallbackReason).")
+    }
+
+    /// Zimmer's note as a line for the Realtime model to say, briefly, before anything else.
+    public static func spokenLine(_ note: String) -> String {
+        "(Zimmer: \(note) Say that in one short sentence, then stop.)"
     }
 }
 
@@ -196,5 +200,12 @@ public extension LiveEvent {
              "requested": .text(grant.choice?.requested), "fallback_reason": .text(grant.choice?.fallbackReason),
              "warning": .text(grant.choice?.warning)]
         }
+    }
+}
+
+public extension LiveEvent {
+    /// GPT-Live was granted and could not start; the call went on Realtime.
+    static func gptLiveFellBack(_ reason: String) -> LiveEvent {
+        LiveEvent(.warn, "call.engine_fell_back") { ["engine": .string(LiveVoiceEngine.gptLive), "reason": .string(reason)] }
     }
 }

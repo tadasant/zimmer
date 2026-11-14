@@ -73,6 +73,8 @@ final class GptLiveAPITests: XCTestCase {
                        "(Zimmer: this call is on OpenAI Realtime, not the gpt_live_claude engine, because Zimmer has no current Claude Code account. Say that in one short sentence, then stop.)")
 
         await XCTAssertThrowsAsync(try await api.livePrewarmSecret(7), "Zimmer refuses to pre-warm Realtime for a GPT-Live call")
+        XCTAssertEqual(LiveEngineChoice.spokenLine("GPT-Live could not start."),
+                       "(Zimmer: GPT-Live could not start. Say that in one short sentence, then stop.)")
         let prewarm = try body(transport.sent[1])
         XCTAssertEqual(prewarm["engines"] as? [String], ["gpt_live_claude"], "the prewarm says what the app can run, so Zimmer can tell")
         XCTAssertEqual(prewarm["prewarm"] as? String, "1")
@@ -91,6 +93,10 @@ final class GptLiveAPITests: XCTestCase {
         let answer = try await fake.startGptLiveSession(conversation.id, sdp: "v=0")
         XCTAssertEqual(answer.sessionID, "sess_fixture")
         await XCTAssertThrowsAsync(try await fake.livePrewarmSecret(conversation.id), "no Realtime pre-warm for a GPT-Live call")
+
+        let realtimeAfterAll = try await fake.liveCallGrant(conversation.id, engines: [])
+        XCTAssertFalse(realtimeAfterAll.isGptLive, "GPT-Live could not start: the app asks again, able to run nothing else")
+        XCTAssertEqual(realtimeAfterAll.choice?.note, "On OpenAI Realtime: this client cannot run gpt_live_claude.")
 
         let settings = try await fake.liveSettings()
         XCTAssertEqual(settings.fields(on: "engine").map(\.key), ["voice_engine", "voice_claude_model"])
