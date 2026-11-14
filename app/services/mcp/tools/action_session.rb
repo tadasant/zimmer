@@ -431,6 +431,7 @@ module Mcp
         end
         wait_for = follow_up_sync_wait(session, args)
         @queued_follow_up = nil
+        @follow_up_sync = wait_for.present?
 
         # The edge is recorded only after the message has actually landed — every
         # branch below raises rather than returning on failure, so an edge is
@@ -784,13 +785,11 @@ module Mcp
         )
       end
 
-      # A refusal of a start path on a sleeper used to end at "it wakes on its
-      # own schedule", which a caller with a message to deliver reads as "my
-      # message waits until then" — the opposite of what `follow_up` does. See
-      # Sessions::SleeperGuidance.
+      # Without the tail, "it wakes on its own schedule" reads to a caller with a
+      # message to deliver as "my message waits until then" — the opposite of
+      # what `follow_up` does. See Sessions::SleeperGuidance.
       def with_sleeper_tail(message, session, **)
-        tail = Sessions::SleeperGuidance.refusal_tail(session, **)
-        tail.present? ? "#{message} #{tail}" : message
+        Sessions::SleeperGuidance.append_to(message, session, **)
       end
 
       def archive(session, args)
@@ -1605,7 +1604,7 @@ module Mcp
         # `get_session` grew a queued-messages section (#698): an unread queue is
         # how four sessions each restate the message above it.
         lines.concat(EnqueuedMessageSections.queue_depth_lines(session, queued_message: queued_message))
-        lines.concat(pending_wake_lines(session, delivered_now: queued_message.nil?))
+        lines.concat(pending_wake_lines(session, delivered_now: queued_message.nil?, sync: @follow_up_sync))
         lines.join("\n")
       end
 
@@ -1632,17 +1631,20 @@ module Mcp
       # the only status a sender sees is `waiting` — before the turn and after it
       # — and a Live Mode assistant read "waiting, asleep until 22:58Z" as "not
       # delivered" and told a driver to wait for a reply already given.
-      def pending_wake_lines(session, delivered_now: false)
+      def pending_wake_lines(session, delivered_now: false, sync: false)
         return [] unless session.armed_one_time_wake?
 
         lines = []
         if delivered_now
           lines << "- **Delivered now:** the wake-up does not hold a follow-up back. The session takes this " \
                    "turn immediately — `waiting` here means its turn is handed to a worker, usually starting " \
-                   "within seconds — and does not wait for its wake time."
-          lines << "- **Its answer:** send with `sync: true` to get it inline, or read it with `get_session` and " \
-                   "`transcript_last_messages: 2` in a minute or so. `Dormant because: follow_up_resleep` " \
-                   "means it has answered and gone back to its wait."
+                   "within seconds — and does not wait for its wake-up. A spot session's turn still answers " \
+                   "to the quota gate; if it is held there, `get_session` says so."
+          unless sync
+            lines << "- **Its answer:** send with `sync: true` to get it inline, or read it with `get_session` " \
+                     "and `transcript_last_messages: 2` in a minute or so. `Dormant because: " \
+                     "follow_up_resleep` means it has answered and gone back to its wait."
+          end
         end
 
         at = session.pending_wake_at

@@ -107,7 +107,8 @@ module LiveConversations
       "- To tell an existing session something, call `#{ToolBridge::ZIMMER_TOOL}` with tool `action_session`, " \
         "action `follow_up`. That is the only way to deliver it. A session that is `waiting`, \"Paused\" or " \
         "\"asleep until\" a time still takes a follow-up straight away: it answers, usually within a minute or " \
-        "two, and then goes back to its wait. Never use `start_now`, `restart` or `force_start` to deliver a " \
+        "two, and then goes back to its wait. (If `get_session` shows it held at the spot gate for quota, say " \
+        "so.) Never use `start_now`, `restart` or `force_start` to deliver a " \
         "message, and never say a reply waits for the wake time. Say it is sent, then check back with " \
         "`get_session` and `transcript_last_messages: 2` and tell the person what it said; " \
         "`Dormant because: follow_up_resleep` means it has answered."
