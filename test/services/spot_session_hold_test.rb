@@ -11,6 +11,7 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
   # A re-armed resume confirms an attachment's bytes are still on the volume
   # before it replays the descriptor, so the end-to-end case needs a real one.
   include AttachmentFixtures
+  include QueueTailAssertions
 
   setup do
     # Same isolation as SpotGateServiceTest: the gate reads the serving account's
@@ -665,6 +666,24 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
            "the gate has custody of the turn, so the marker must not hijack the deferred job"
     assert_equal 1, session.metadata[SpotSessionHold::HELD_COUNT],
                  "queueing behind a scheduled turn is not another rung on the backoff ladder"
+  end
+
+  test "a turn queued behind a deferred one reads the tail under the session row lock" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      assert_no_enqueued_jobs only: AgentSessionJob do
+        assert_appends_under_queue_tail_lock do
+          SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake")
+        end
+      end
+    end
+
+    assert_equal [ [ "Second wake", 1 ] ], session.enqueued_messages.pending.pluck(:content, :position)
   end
 
   # The third carrier of one turn's attachments. `queue_behind_scheduled_turn`

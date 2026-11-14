@@ -294,10 +294,11 @@ module Sessions
       # Caught around the whole transaction rather than around the insert,
       # because the unique constraint on (session_id, position) is DEFERRABLE
       # INITIALLY DEFERRED: the violation surfaces at COMMIT, by which point the
-      # `create!` has long returned. The parent row lock serializes this path
-      # against itself but not against the queue's other writers — a follow-up,
-      # an interrupt, a poller notice — so a collision is a live race and a
-      # retryable one, and `follow_up` answers it with a 409 rather than a 500.
+      # `create!` has long returned. Every writer that appends to the queue reads
+      # its position under the session row lock (Sessions::QueueTail), so they
+      # are ordered against this one. The rescue stays for a position written
+      # any other way — a collision is retryable, and `follow_up` answers it
+      # with a 409 rather than a 500.
       #
       # Only the queued branch writes a position. This same transaction also
       # enqueues a job on the direct branch, and a unique violation from that is
@@ -317,10 +318,9 @@ module Sessions
     end
 
     def enqueue
-      max_position = parent.enqueued_messages.maximum(:position) || 0
       enqueued = parent.enqueued_messages.create!(
         content: content,
-        position: max_position + 1,
+        position: Sessions::QueueTail.next_position!(parent),
         status: "pending",
         source_context: TurnSource.agent.to_h,
         # `caller` and not a new origin: this IS a message queued on somebody's

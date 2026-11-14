@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class McpApps::WidgetMessageTest < ActiveSupport::TestCase
+  include QueueTailAssertions
+
   setup do
     @session = sessions(:needs_input)
   end
@@ -44,6 +46,12 @@ class McpApps::WidgetMessageTest < ActiveSupport::TestCase
 
     assert_equal :queued, result.status
     assert_equal 1, @session.enqueued_messages.where(status: "pending").count
+  end
+
+  test "a queued message reads the tail under the session row lock, inside the insert's transaction" do
+    assert_appends_under_queue_tail_lock { deliver(kind: "context") }
+
+    assert_equal "MCP App widget queued a message at position 1", @session.logs.order(:id).last.content
   end
 
   test "a context update never spends a turn, even on an idle session" do

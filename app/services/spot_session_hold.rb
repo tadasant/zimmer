@@ -1345,21 +1345,29 @@ class SpotSessionHold
     # Put a refused prompt into the session's durable message queue, behind the
     # turn already scheduled ahead of it. `drain_enqueued_messages_after_pause`
     # delivers it when that turn ends.
+    #
+    # The position is read under the session row lock (Sessions::QueueTail) and
+    # the row is inserted in the same transaction, so a concurrent follow-up or
+    # trigger fire queues behind it instead of colliding on the unique position
+    # at COMMIT — which would land this prompt in the job fallback below.
     def queue_behind_scheduled_turn(session, prompt, scheduled_at, images:, files:, log_buffer:)
-      position = (session.enqueued_messages.maximum(:position) || 0) + 1
-      session.enqueued_messages.create!(
-        **EnqueuedMessage.attributes_for_prompt(prompt),
-        position: position,
-        # A jsonb column, so the record shape — the same round trip the hold
-        # record takes, and the one EnqueuedMessageProcessorService reads back.
-        images: Array(Sessions::AttachmentDescriptors.for_the_record(
-          images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
-        )),
-        files: Array(Sessions::AttachmentDescriptors.for_the_record(
-          files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
-        )),
-        origin: EnqueuedMessage.origin_for_prompt(prompt)
-      )
+      position = ActiveRecord::Base.transaction do
+        tail = Sessions::QueueTail.next_position!(session)
+        session.enqueued_messages.create!(
+          **EnqueuedMessage.attributes_for_prompt(prompt),
+          position: tail,
+          # A jsonb column, so the record shape — the same round trip the hold
+          # record takes, and the one EnqueuedMessageProcessorService reads back.
+          images: Array(Sessions::AttachmentDescriptors.for_the_record(
+            images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+          )),
+          files: Array(Sessions::AttachmentDescriptors.for_the_record(
+            files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+          )),
+          origin: EnqueuedMessage.origin_for_prompt(prompt)
+        )
+        tail
+      end
       message = "Spot session held before its next turn: a turn is already deferred to " \
                 "#{scheduled_at.iso8601}, so this prompt was queued behind it (position " \
                 "#{position}) rather than given a job of its own. Nothing is lost — it is " \

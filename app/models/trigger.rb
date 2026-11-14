@@ -2061,10 +2061,9 @@ class Trigger < ApplicationRecord
           # safely clean up siblings.
           @last_follow_up_status = :skipped_pending_exists
         else
-          next_position = (session.enqueued_messages.maximum(:position) || 0) + 1
           session.enqueued_messages.create!(
             content: prompt,
-            position: next_position,
+            position: Sessions::QueueTail.next_position!(session),
             status: "pending",
             source_context: turn_source&.to_h
           )
