@@ -134,6 +134,13 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(labelled(app, "Speaking speed").waitForExistence(timeout: timeout), "each field is listed")
         attachScreenshot(app, named: "live-settings")
 
+        // The voice engine: GPT-Live with Claude behind it is chosen here, as on the web.
+        let engine = app.descendants(matching: .any)["live-settings.field.voice_engine"].firstMatch
+        for _ in 0..<8 where !(engine.exists && engine.isHittable) { app.swipeUp() }
+        XCTAssertTrue(engine.waitForExistence(timeout: timeout), "the Voice engine section lists the engine")
+        XCTAssertTrue(app.descendants(matching: .any)["live-settings.field.voice_claude_model"].firstMatch.exists, "and the Claude model")
+        attachScreenshot(app, named: "live-settings-voice-engine")
+
         app.buttons["live-settings.done"].tap()
         XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live-settings-view"].firstMatch))
     }
