@@ -87,6 +87,7 @@ export class GptLiveCall {
     switch (event.type) {
       case "session.started":
         this.startedAt = performance.now()
+        this.callMark = this.startedAt
         this.reportedSeconds = 0
         this.sessionTimer = setInterval(() => this.reportSession({ partial: true }), SESSION_REPORT_MS)
         this.onState("listening")
@@ -193,6 +194,9 @@ export class GptLiveCall {
   async end() {
     if (this.ended || this.closing) return
     this.closing = true
+    // The call ends now for the person; the wait for `session.closed` below
+    // is not part of its length.
+    this.endedAt = performance.now()
     this.send({ type: "session.close", event_id: this.eventId() })
     await new Promise((resolve) => {
       this.closeResolve = resolve
@@ -211,7 +215,7 @@ export class GptLiveCall {
     this.closeResolve?.()
     this.flushUser()
     this.flushAssistant()
-    if (this.startedAt) this.usage.add("call", { seconds: Math.round(performance.now() - this.startedAt) / 1000 })
+    this.reportCall()
     this.reportSession()
     this.channel?.close()
     this.pc?.close()
@@ -244,8 +248,18 @@ export class GptLiveCall {
     this.usage.flush({ keepalive: true })
   }
 
+  // The call's length since the last report, measured to when the person hung
+  // up (not to the end of the close grace), as the Realtime call is.
+  reportCall({ partial = false } = {}) {
+    if (!this.callMark) return
+    const now = this.endedAt ?? performance.now()
+    this.usage.add("call", { seconds: Math.round(now - this.callMark) / 1000, details: { partial } })
+    this.callMark = partial ? now : null
+  }
+
   // The tab is closing: whatever the call has used so far, sent before it goes.
   pageHidden() {
+    this.reportCall({ partial: true })
     this.reportSession({ partial: true })
   }
 

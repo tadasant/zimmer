@@ -67,17 +67,20 @@ module LiveConversations
       raise Invalid, "operation must be one of: #{CLIENT_OPERATIONS.keys.join(', ')}." unless allowed
       raise Invalid, "#{operation} is not reported for engine #{engine.inspect}." unless allowed.include?(engine)
       # GPT-Live's billed seconds come from the call that ran on it, never from
-      # one Zimmer sent elsewhere.
+      # one Zimmer sent elsewhere; and a call's length and timings are filed
+      # under the engine it ran on, not one the client names.
       if operation == "voice_session" && @conversation.voice_engine != engine
         raise Invalid, "this conversation's call is not running on #{engine}."
+      end
+      if %w[call turn_latency].include?(operation) && @conversation.voice_engine.present? && @conversation.voice_engine != engine
+        raise Invalid, "this conversation's call ran on #{@conversation.voice_engine}, not #{engine}."
       end
 
       key = event["key"].to_s
       raise Invalid, "each event needs a key of at most 100 letters, digits or _.:-" unless KEY.match?(key)
 
       {
-        engine: engine, operation: operation, live_conversation: @conversation,
-        mode: VoiceEngine.mode_for(engine, setting: @setting, voice_model: @model),
+        engine: engine, operation: operation, live_conversation: @conversation, mode: mode_for(engine),
         idempotency_key: "client:#{@conversation.id}:#{key}",
         **vendor_and_model(operation),
         input_tokens: tokens(event["input_tokens"]), output_tokens: tokens(event["output_tokens"]),
@@ -92,11 +95,21 @@ module LiveConversations
 
     def vendor_and_model(operation)
       case operation
-      when "voice_tokens" then { vendor: "openai_realtime", model: @model || @conversation.model.presence || @setting.effective(:voice_model) }
+      when "voice_tokens" then { vendor: "openai_realtime", model: realtime_model }
       when "transcription" then { vendor: "openai_transcription", model: @setting.effective(:voice_transcription_model) }
       when "voice_session" then { vendor: "openai_live", model: GptLiveSession::MODEL }
       else { vendor: "zimmer", model: nil }
       end
+    end
+
+    def realtime_model = @model || @conversation.model.presence || @setting.effective(:voice_model)
+
+    # The mode the call was settled on when it started; one with no record of
+    # that (a call from before modes were kept) by the settings now.
+    def mode_for(engine)
+      return @conversation.voice_mode if @conversation.voice_engine == engine && @conversation.voice_mode.present?
+
+      VoiceEngine.mode_for(engine, setting: @setting, voice_model: (realtime_model if engine == VoiceEngine::DEFAULT))
     end
 
     def tokens(value) = number(value, MAX_TOKENS).to_i

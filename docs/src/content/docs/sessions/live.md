@@ -747,7 +747,7 @@ client that cannot run it (only the web dock tells Zimmer it can run `gpt_live_c
 and CarPlay stay on Realtime), or a spend cap reached. So choosing an engine never leaves Live Mode
 without a voice. Each fallback is a ledger row, so [Live costs](#live-costs) counts them.
 
-**Spend caps.** Two settings bound what each experimental engine may spend: **Per-conversation cap**
+**Spend caps.** Two settings bound what each experimental engine may spend, at list price: **Per-conversation cap**
 ($2.00 by default) and **Daily cap per engine** ($10.00 a day by default, in the deployment's time
 zone). At 80% of either cap the call carries on with a warning, shown on the dock and passed to
 GPT-Live as quiet context. At the cap a call does not start on that engine, and a call already on it
@@ -770,20 +770,24 @@ Every billable or measured step of a voice call is a row in the voice-engine led
 | `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
 | `turn_latency` | any | the dock (no cost). On Realtime, from `speech_stopped` to the first audio of the answer; on GPT-Live, which reports no speech boundaries, from the last fragment of the person's transcript to the first fragment of the answer's. Close, not identical |
 | `engine_fallback` | the engine asked for | Zimmer, when a call ran on another engine, with the reason (no cost) |
-| `call` | any | the dock, when a call ends: its length, which cost per minute is reckoned against (no cost) |
+| `call` | any | the dock, when a call ends (and its minutes so far when the tab closes): its length, which cost per minute is reckoned against. Filed only under the engine the call ran on (no cost) |
 
 Every row also carries its **mode**: the engine with the models it ran on, such as
 `gpt-realtime-2.1 · effort high`, `gpt-realtime-2.1-mini`, or `gpt-live-1 + claude-sonnet-5-5`. So
 two Realtime models, or the same model at two efforts, are compared as separate modes rather than
-averaged into one engine.
+averaged into one engine. A call's mode is settled when it starts, from what the call was actually
+started with, which is not the settings when OpenAI refused them, and the call's usage is filed
+under it. The one exception is Claude's own rows, which name the Claude model that answered: that
+setting applies from the next delegation, so a change mid-call shows up as a second mode.
 
 **Billed and list.** Every row records the raw usage and its list price. Its **billing basis** says
 whether that money was charged: `metered` for everything except Claude on a subscription. The
 **Claude billing** setting marks Claude's tokens `subscription` from then on. They are still
-recorded at list price, but billed at $0, because a flat plan costs nothing at the margin. The caps
-count billed money only, and every figure on the page is shown as billed and list, so a
-subscription's value stays visible. The setting changes the accounting only. Zimmer calls Claude
-with `LIVE_ANTHROPIC_API_KEY`, which is metered, until a subscription credential is wired.
+recorded at list price, but billed at $0, because a flat plan costs nothing at the margin. Every
+figure on the page is shown as billed and list, so a subscription's value stays visible. The
+setting changes the accounting only. Zimmer calls Claude with `LIVE_ANTHROPIC_API_KEY`, which is
+metered, until a subscription credential is wired, so the caps count list price either way:
+marking Claude as free must not lift the ceiling on money still being charged.
 
 
 A client reports volumes, never money. Zimmer picks the vendor and model from what it knows about

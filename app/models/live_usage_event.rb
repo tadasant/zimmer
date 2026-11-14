@@ -24,8 +24,9 @@
 # `cost_usd` is always the list price. `billing_basis` says whether that money
 # was billed (`metered`) or covered by a flat plan (`subscription`, Claude only,
 # by the LiveSetting `voice_claude_billing` in force when the row was written).
-# The caps and the "billed" figures count only metered money; the list price is
-# kept beside it so a subscription's value stays visible.
+# The "billed" figures count only metered money, and the list price is kept
+# beside it so a subscription's value stays visible. The caps count list price:
+# see SpendGuard.
 #
 # Rows written from a client report carry volumes, never dollars: the price is
 # applied here, from LiveVoicePricing, with the table version that applied it.
@@ -78,15 +79,14 @@ class LiveUsageEvent < ApplicationRecord
 
   private
 
-  # Claude's rows follow the Claude billing setting; everything else is metered.
-  # A mode the writer did not name is the engine's under the settings in force.
+  # What the writer did not say, from the settings in force: Claude's rows
+  # follow the Claude billing setting (everything else is metered), and a mode
+  # is the engine's under the current settings.
   def apply_basis_and_mode
-    setting = nil
-    if vendor.to_s == "anthropic"
-      setting = LiveSetting.current
-      self.billing_basis = setting.effective(:voice_claude_billing)
-    end
-    self.mode ||= LiveConversations::VoiceEngine.mode_for(engine, setting: setting || LiveSetting.current) if engine.present?
+    return if engine.blank?
+
+    self.billing_basis = LiveSetting.current.effective(:voice_claude_billing) if vendor.to_s == "anthropic" && !billing_basis_changed?
+    self.mode ||= LiveConversations::VoiceEngine.mode_for(engine)
   end
 
   def apply_price

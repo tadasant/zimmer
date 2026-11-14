@@ -48,14 +48,17 @@ module LiveConversations
     end
 
     # The engine with the models it runs on, as a label: what /live/costs
-    # compares. `voice_model` is the Realtime model a call was minted with,
-    # when the writer knows it.
-    def self.mode_for(engine, setting: LiveSetting.current, voice_model: nil)
+    # compares. A call's mode is settled when it starts (on the conversation's
+    # `voice_mode`), so a setting changed mid-call does not move its usage.
+    # `voice_model` / `effort`: what a Realtime call was actually minted with,
+    # which is not the settings when OpenAI refused them.
+    def self.mode_for(engine, setting: LiveSetting.current, voice_model: nil, effort: :setting, claude_model: nil)
       case engine.to_s
       when DEFAULT
-        effort = setting.effective(:voice_reasoning_effort).presence
+        effort = setting.effective(:voice_reasoning_effort) if effort == :setting
+        effort = effort.presence
         [ voice_model.presence || setting.effective(:voice_model), ("effort #{effort}" if effort) ].compact.join(" · ")
-      when GPT_LIVE then "#{GptLiveSession::MODEL} + #{setting.effective(:voice_claude_model)}"
+      when GPT_LIVE then "#{GptLiveSession::MODEL} + #{claude_model.presence || setting.effective(:voice_claude_model)}"
       when LIVEKIT then "livekit + #{setting.effective(:voice_claude_model)}"
       else engine.to_s
       end

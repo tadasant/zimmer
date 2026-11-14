@@ -12,7 +12,7 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     stub_live_key
     stub_claude_key
     @conversation = create_live_conversation(mode: "voice")
-    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", calls_url: "https://api.openai.com/v1/realtime/calls" })
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", model: "gpt-realtime-2.1-mini", calls_url: "https://api.openai.com/v1/realtime/calls" })
   end
 
   test "with the default engine, the dock gets its Realtime secret as before, named as the engine" do
@@ -22,6 +22,7 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "ek_1", response.parsed_body["client_secret"]
     assert_equal "openai_realtime", response.parsed_body["engine"]
     assert_equal "openai_realtime", @conversation.reload.voice_engine
+    assert_equal "gpt-realtime-2.1-mini", @conversation.voice_mode
     assert_equal 0, LiveUsageEvent.count
   end
 
@@ -37,6 +38,7 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     post gpt_live_session_live_conversation_path(@conversation), params: { sdp: "v=0 offer" }, as: :json
     assert_response :success
     assert_equal "v=0 answer", response.parsed_body["sdp"]
+    assert_equal "gpt-live-1 + claude-sonnet-5-5", @conversation.reload.voice_mode
 
     claude = LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Two sessions are running.") ])
     LiveConversations::ClaudeClient.stubs(:new).returns(claude)
@@ -50,6 +52,16 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     assert_response :created
     assert_in_delta 0.05, response.parsed_body["cost_usd"], 0.000001
     assert_equal %w[delegation voice_session], LiveUsageEvent.order(:id).pluck(:operation)
+  end
+
+  test "a Realtime call's mode is what it was minted with: OpenAI refusing the settings is not the settings' mode" do
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", model: "gpt-realtime-2.1-mini", reasoning_effort: nil })
+    LiveSetting.editable.update!(voice_model: "gpt-realtime-2.1", voice_reasoning_effort: "high")
+
+    post client_secret_live_conversation_path(@conversation), params: { engines: [ "gpt_live_claude" ] }, as: :json
+
+    assert_equal "gpt-realtime-2.1-mini", @conversation.reload.voice_mode
+    assert_not response.parsed_body.key?("reasoning_effort")
   end
 
   test "an engine the client cannot run falls back, and the fallback is on the ledger" do

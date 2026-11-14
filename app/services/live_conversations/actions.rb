@@ -117,7 +117,9 @@ module LiveConversations
       record_engine!(resolution)
       return { engine: resolution.engine, voice_engine: resolution.as_api_json } if resolution.engine == VoiceEngine::GPT_LIVE
 
-      RealtimeSession.mint(@conversation, listening_modes: listening_modes?).merge(engine: resolution.engine, voice_engine: resolution.as_api_json)
+      minted = RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
+      record_mode!(VoiceEngine.mode_for(VoiceEngine::DEFAULT, voice_model: minted[:model], effort: minted[:reasoning_effort]))
+      minted.except(:reasoning_effort).merge(engine: resolution.engine, voice_engine: resolution.as_api_json)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
@@ -139,7 +141,9 @@ module LiveConversations
         raise Refused.new("GPT-Live is not available for this call: #{resolution.fallback_reason}. Start the call again.", status: :conflict)
       end
 
-      GptLiveSession.start(@conversation, sdp: sdp)
+      started = GptLiveSession.start(@conversation, sdp: sdp)
+      record_mode!(VoiceEngine.mode_for(VoiceEngine::GPT_LIVE))
+      started
     rescue GptLiveSession::Invalid => e
       raise Refused, e.message
     rescue OpenaiClient::NotConfiguredError => e
@@ -261,7 +265,7 @@ module LiveConversations
       raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
 
       require_active!
-      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false).except(:reasoning_effort)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
@@ -313,6 +317,10 @@ module LiveConversations
                              count: 1, error: resolution.fallback_reason.truncate(250), details: { ran_on: resolution.engine, surface: @client_surface })
     rescue ActiveRecord::ActiveRecordError => e
       ErrorReporter.report_exception(e, context: { source: "LiveConversations::Actions#record_engine!", live_conversation_id: @conversation.id })
+    end
+
+    def record_mode!(mode)
+      @conversation.update_columns(voice_mode: mode) if @conversation.voice_mode != mode
     end
 
     def require_engine!(engine)
