@@ -933,7 +933,7 @@ struct SessionDetailView: View {
             // what to say types while the page loads. A placeholder page (a start not yet
             // answered) has no session to keep a draft for, so it waits for its id.
             .safeAreaInset(edge: .bottom) {
-                if !model.isPlaceholder, SessionDetail.showsComposer(model.detail) { composer }
+                if !model.isPlaceholder, SessionDetail.showsComposer(model.detail, readFailed: model.error != nil) { composer }
             }
             .refreshable { await model.load() }
             .task {
@@ -1575,7 +1575,8 @@ struct SessionDetailView: View {
                 AttachMenu { model.attach($0, problems: $1) }
                 // The hint lives in the placeholder: a running turn queues, and a touch and
                 // hold on the button sends now instead.
-                TextField(running ? "Queue message · hold send for now" : "Send message", text: $model.draft, axis: .vertical)
+                // Before the read, whether a turn is running is not known: a neutral word.
+                TextField(model.detail == nil ? "Message" : running ? "Queue message · hold send for now" : "Send message", text: $model.draft, axis: .vertical)
                     .lineLimit(1...5)
                     .font(.subheadline)
                     .padding(.horizontal, 12)

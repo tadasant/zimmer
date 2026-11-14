@@ -394,7 +394,10 @@ export default class extends Controller {
       this.updateDraftIndicator()
     }
 
-    if (handoff.focused) field.focus({ preventScroll: true })
+    // Unfocused, the caret stays where the draft restore parked it (the start,
+    // so a "/review" draft does not open the typeahead).
+    if (!handoff.focused) return
+    field.focus({ preventScroll: true })
     const length = field.value.length
     const start = Math.min(handoff.selectionStart ?? length, length)
     const end = Math.min(handoff.selectionEnd ?? start, length)

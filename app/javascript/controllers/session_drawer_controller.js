@@ -370,6 +370,8 @@ export default class extends Controller {
     message.className = "m-4 sm:m-6 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
     message.textContent = "Couldn't load this session. Check the connection, then open it again."
     this.frameTarget.replaceChildren(message)
+    // The provisional composer may have had focus; keep it inside the dialog.
+    this.panelTarget.focus({ preventScroll: true })
   }
 
   // Eagerly-bound delegated handler for close controls inside the lazy-loaded

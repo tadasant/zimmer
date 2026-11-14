@@ -79,9 +79,11 @@ public struct SessionDetail: Hashable, Sendable {
     /// Whether the composer is on screen for a page that has read `detail` — nil while the
     /// first read is still out. The composer is static: typing needs nothing from the server,
     /// so it is there from the first frame and comes off only once the session is known to
-    /// take no follow-up. Sending is what waits for the read (`canSend`), not typing.
-    public static func showsComposer(_ detail: SessionDetail?) -> Bool {
-        detail?.acceptsFollowUp ?? true
+    /// take no follow-up, or the first read failed and Send could never be enabled. Sending is
+    /// what waits for the read (`canSend`), not typing.
+    public static func showsComposer(_ detail: SessionDetail?, readFailed: Bool = false) -> Bool {
+        guard let detail else { return !readFailed }
+        return detail.acceptsFollowUp
     }
 
     /// Whether a typed message can go: something is typed, and the session has been read, so

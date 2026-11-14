@@ -57,7 +57,7 @@ final class AppEnvironment {
             let writeDelay: Duration? = arguments.contains("-ZimmerFixtureSlowWrites") ? .seconds(6) : nil
             // `-ZimmerFixtureSlowReads`: opening a session takes seconds, so a test can type into
             // the composer while the page is still loading.
-            let readDelay: Duration? = arguments.contains("-ZimmerFixtureSlowReads") ? .seconds(5) : nil
+            let readDelay: Duration? = arguments.contains("-ZimmerFixtureSlowReads") ? .seconds(12) : nil
             // `-ZimmerFixtureVoiceTurnedUp`: the CarPlay drill's break-glass. The Live settings are
             // as voice calls left them on the call that broke (a cap of 180, eagerness low, a
             // threshold Semantic ignores, plus a gated Listening), and the first call holds on
