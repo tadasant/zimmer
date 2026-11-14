@@ -94,6 +94,12 @@ export default class extends Controller {
     this.onSettingsChanged = () => this.refreshSession()
     // The tab is closing: the call's usage so far goes to the ledger first.
     this.onPageHide = () => {
+      // The minutes so far, as their own row: a page restored from the
+      // back-forward cache carries on counting from here.
+      if (this.callStartedAt) {
+        this.usage?.add("call", { seconds: Math.round(performance.now() - this.callStartedAt) / 1000, details: { partial: true } })
+        this.callStartedAt = performance.now()
+      }
       this.usage?.flush({ keepalive: true })
       this.gptLive?.pageHidden()
     }

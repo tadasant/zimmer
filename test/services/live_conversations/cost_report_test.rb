@@ -49,6 +49,18 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_includes LiveConversations::CostReport.new(days: 7).to_csv, %("'=HYPERLINK(""x"")")
   end
 
+  test "a tab closing mid-call sends its minutes so far, and the call still counts once" do
+    conversation = create_live_conversation(mode: "voice", voice_engine: "openai_realtime", voice_mode: "gpt-realtime-2.1-mini")
+    LiveConversations::UsageReport.call(conversation, [
+      { "engine" => "openai_realtime", "operation" => "call", "key" => "p.1", "seconds" => 60, "details" => { "partial" => true } },
+      { "engine" => "openai_realtime", "operation" => "call", "key" => "p.2", "seconds" => 30 }
+    ])
+
+    row = LiveConversations::CostReport.new(days: 1).by_mode.sole
+    assert_equal 1, row[:calls]
+    assert_equal 1.5, row[:call_minutes]
+  end
+
   test "modes compare like for like: each Realtime model and effort is its own mode, with cost per call-minute" do
     conversation = create_live_conversation(mode: "voice")
     LiveSetting.editable.update!(voice_reasoning_effort: "high")
@@ -71,7 +83,7 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_nil modes.fetch("gpt-realtime-2.1-mini")[:billed_per_minute_usd], "no call timed, no per-minute figure"
   end
 
-  test "Claude on a subscription is recorded at list price and billed at nothing, and the caps count only billed money" do
+  test "Claude on a subscription is recorded at list price and billed at nothing; the caps still count list price" do
     conversation = create_live_conversation(mode: "voice")
     LiveSetting.editable.update!(voice_claude_billing: "subscription", voice_engine_conversation_cap_usd: 1.0)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-sonnet-5-5",
@@ -85,8 +97,8 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     totals = LiveConversations::CostReport.new(days: 1).totals
     assert_in_delta 2.05, totals[:list_usd], 0.000001
     assert_in_delta 0.05, totals[:billed_usd], 0.000001
-    assert_not LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation).blocked?,
-               "$2 of subscription tokens does not trip a $1 cap"
+    assert LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation).blocked?,
+           "the API key is still metered, so marking Claude free must not lift the cap"
   end
 
   test "refuses an engine that does not exist" do

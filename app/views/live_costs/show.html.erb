@@ -62,7 +62,7 @@
     <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-costs-caps>
       <div class="px-4 py-4 sm:px-6 border-b border-gray-200">
         <h2 class="text-lg font-medium text-gray-900">Today against the caps</h2>
-        <p class="mt-1 text-sm text-gray-500">The caps count billed money only. At 80% of a cap a call is warned; at the cap it ends and the next call runs on OpenAI Realtime. The caps are on <%= link_to "Live settings", live_settings_path, class: "text-indigo-600 hover:underline" %>.</p>
+        <p class="mt-1 text-sm text-gray-500">The caps count list price, Claude included even when it is marked as on a subscription: until a subscription credential is wired, Zimmer still pays for it by the token. At 80% of a cap a call is warned; at the cap it ends and the next call runs on OpenAI Realtime. The caps are on <%= link_to "Live settings", live_settings_path, class: "text-indigo-600 hover:underline" %>.</p>
       </div>
       <ul class="divide-y divide-gray-100 text-sm">
         <% report[:caps].each do |cap| %>

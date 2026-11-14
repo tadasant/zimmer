@@ -71,6 +71,8 @@ module LiveConversations
         client_secret: value,
         expires_at: secret["expires_at"] || secret.dig("client_secret", "expires_at"),
         model: model,
+        # What this call runs at, which is not the setting when OpenAI refused it.
+        reasoning_effort: config.dig(:reasoning, :effort),
         calls_url: "#{OpenaiClient.base_url}/realtime/calls",
         websocket_url: "#{OpenaiClient.base_url.sub(/\Ahttp/, 'ws')}/realtime?model=#{ERB::Util.url_encode(model)}",
         tools: tools,

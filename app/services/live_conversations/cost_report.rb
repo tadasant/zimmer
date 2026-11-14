@@ -66,7 +66,8 @@ module LiveConversations
         # A fallback names the engine that did NOT run, so it is no conversation of that engine's.
         Arel.sql("COUNT(DISTINCT live_conversation_id) FILTER (WHERE operation <> 'engine_fallback')"),
         Arel.sql("SUM(seconds) FILTER (WHERE operation = 'call')"),
-        Arel.sql("COUNT(*) FILTER (WHERE operation = 'call')"),
+        # A tab closing mid-call sends its minutes so far as a partial row; the call is one call.
+        Arel.sql("COUNT(*) FILTER (WHERE operation = 'call' AND COALESCE((details->>'partial')::boolean, false) = false)"),
         Arel.sql("COUNT(*) FILTER (WHERE operation = 'delegation')"),
         Arel.sql("COUNT(*) FILTER (WHERE operation = 'tool_call')"),
         Arel.sql("AVG(latency_ms) FILTER (WHERE operation = 'delegation')"),

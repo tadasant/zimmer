@@ -140,7 +140,10 @@ module LiveConversations
     end
 
     def record(**attributes)
-      event = LiveUsageEvent.record!(engine: ENGINE, live_conversation: @conversation, **attributes)
+      event = LiveUsageEvent.record!(engine: ENGINE, live_conversation: @conversation,
+                                     mode: VoiceEngine.mode_for(ENGINE, setting: @setting, claude_model: model),
+                                     **(attributes[:vendor] == "anthropic" ? { billing_basis: @setting.effective(:voice_claude_billing) } : {}),
+                                     **attributes)
       @cost += event.cost_usd.to_f
       @billed += event.billed_cost_usd
       event

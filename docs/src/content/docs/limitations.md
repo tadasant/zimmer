@@ -357,6 +357,15 @@ LiveKit agent worker deployed next to Zimmer, speech-to-text and text-to-speech 
 LiveKit client on the web dock and the phone. Unlike the other engines, its audio would pass
 through infrastructure Zimmer runs.
 
+### Claude billing is accounting only
+
+The **Claude billing** setting can mark Claude's tokens as covered by a subscription, and Live
+costs then shows them at list price but billed at $0. Nothing changes how Zimmer calls Claude: it
+uses `LIVE_ANTHROPIC_API_KEY`, which is metered, so the spend caps keep counting Claude at list
+price. Calling Claude on the subscription itself is possible in transport terms (Zimmer already
+sends the pooled Claude Code token to the Messages API for its quota probe), but it would draw on the
+agent fleet's quota windows, and whether Anthropic's terms allow it is unconfirmed. Nobody has wired it.
+
 ### Live costs cover the web dock's calls only
 
 The iOS app and CarPlay run their calls on Realtime and report no usage to the voice-engine ledger,

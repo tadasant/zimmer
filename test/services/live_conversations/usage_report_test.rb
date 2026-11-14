@@ -56,6 +56,21 @@ class LiveConversations::UsageReportTest < ActiveSupport::TestCase
     assert_equal 0, LiveUsageEvent.sole.seconds
   end
 
+  test "a call's length and timings are filed under the engine it ran on, and under the mode it started in" do
+    @conversation.update_columns(voice_engine: "openai_realtime", voice_mode: "gpt-realtime-2.1 · effort high")
+    assert_raises(LiveConversations::UsageReport::Invalid) do
+      LiveConversations::UsageReport.call(@conversation, [ { "engine" => "gpt_live_claude", "operation" => "call", "key" => "c", "seconds" => 600 } ])
+    end
+    assert_raises(LiveConversations::UsageReport::Invalid) do
+      LiveConversations::UsageReport.call(@conversation, [ { "engine" => "livekit_claude", "operation" => "turn_latency", "key" => "t", "first_audio_ms" => 5 } ])
+    end
+
+    # The effort changed mid-call: the call's rows stay under the mode it started in.
+    LiveSetting.editable.update!(voice_reasoning_effort: "low")
+    LiveConversations::UsageReport.call(@conversation, [ { "engine" => "openai_realtime", "operation" => "call", "key" => "c2", "seconds" => 60 } ])
+    assert_equal "gpt-realtime-2.1 · effort high", LiveUsageEvent.sole.mode
+  end
+
   test "Realtime tokens are priced on the model the call was minted with, when the settings offer it" do
     @conversation.update_columns(model: "gpt-6-luna") # typed since
     event = { "engine" => "openai_realtime", "operation" => "voice_tokens", "key" => "m.1", "audio_output_tokens" => 1_000_000 }

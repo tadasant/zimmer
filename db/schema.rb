@@ -519,6 +519,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
     t.datetime "updated_at", null: false
     t.string "voice_engine"
     t.string "voice_engine_fallback"
+    t.string "voice_mode"
     t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
