@@ -547,8 +547,8 @@ struct SessionDetailView: View {
     /// The top of what the scroll view shows, under the navigation bar, in global coordinates:
     /// the edge when the page has no strip.
     @State private var scrollTop: CGFloat = 0
-    /// The bottom of the header's agent root chip, in global coordinates; nil while it is not
-    /// drawn. Once it has scrolled up out of sight the title carries the root instead.
+    /// The bottom of the header's agent root chip, in global coordinates; nil until it is first
+    /// drawn (a session with no root draws none, and the title then has nothing to carry). Once it has scrolled up out of sight the title carries the root instead.
     @State private var rootChipBottom: CGFloat?
     /// Bumped to open the hierarchy's or the human messages' folded row as a chip jumps to it.
     @State private var opensHierarchy = 0
@@ -1187,7 +1187,6 @@ struct SessionDetailView: View {
                     .accessibilityLabel("Agent root \(root)")
                     .accessibilityIdentifier("detail.agentRoot")
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { rootChipBottom = $0 }
-                    .onDisappear { rootChipBottom = nil }
                 }
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)

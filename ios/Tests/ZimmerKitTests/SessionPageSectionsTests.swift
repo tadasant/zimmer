@@ -64,7 +64,7 @@ final class SessionPageSectionsTests: XCTestCase {
         XCTAssertNotNil(root, "the fixture session has a root to show")
         // The page at its top: the chip sits well under the strip.
         XCTAssertNil(TitleAgentRoot.shown(root: root, chipBottom: 260, topEdge: 140), "the header shows it; not twice")
-        // Half under the strip is still in view.
+        // Its last point still below the strip: in view.
         XCTAssertNil(TitleAgentRoot.shown(root: root, chipBottom: 141, topEdge: 140))
         // Scrolled on — reading the end of the conversation, the chip is far above the top.
         XCTAssertEqual(TitleAgentRoot.shown(root: root, chipBottom: 140, topEdge: 140), root)
