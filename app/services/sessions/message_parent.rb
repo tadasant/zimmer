@@ -345,9 +345,8 @@ module Sessions
       parent.deliver_follow_up!(content, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: TurnSource.agent)
     end
 
-    # Staged, then interrupted outside the transaction: Sessions::InterruptService
-    # takes a per-session advisory lock of its own, and holding a row lock across
-    # it is how two locks become a deadlock. All-or-nothing — a failed interrupt
+    # Staged and interrupted through Sessions::InterruptWithFollowUp, the path
+    # every "send this now" door shares. All-or-nothing — a failed interrupt
     # drops the staged row rather than leaving it to arrive later as a surprise.
     def interrupt_parent
       unless parent.running? || parent.waiting? || parent.needs_input?
@@ -357,38 +356,28 @@ module Sessions
         )
       end
 
-      enqueued = nil
       begin
-        ActiveRecord::Base.transaction do
-          max_position = parent.enqueued_messages.maximum(:position) || 0
-          enqueued = parent.enqueued_messages.create!(
-            content: content, position: max_position + 1, status: "pending", origin: "caller",
-            source_context: TurnSource.agent.to_h
-          )
-        end
+        result = Sessions::InterruptWithFollowUp.call(
+          session: parent,
+          prompt: content,
+          origin: "caller",
+          source_context: TurnSource.agent.to_h,
+          actor: "child_session_report"
+        )
       rescue ActiveRecord::RecordNotUnique
-        # The staging transaction writes a position and nothing else, so every
-        # unique violation it can raise is the queue race. See #deliver.
+        # Only the staging can raise this — InterruptService answers every
+        # failure with a result rather than an exception — and staging writes a
+        # position and nothing else unique, so it is the queue race. See #deliver.
         return position_conflict
       end
 
-      result = Sessions::InterruptService.new(
-        session: parent, enqueued_message: enqueued, actor: "child_session_report"
-      ).call
-
       unless result.success?
-        begin
-          enqueued.reload
-          enqueued.destroy! if enqueued.status == "pending"
-        rescue ActiveRecord::RecordNotFound
-          # a concurrent interrupt already claimed it — nothing to clean up
-        end
         return failure("Could not interrupt parent session ##{parent.id}: #{result.error}",
                        error_code: result.error_code || :internal_server_error)
       end
 
       log_both("delivered to parent session ##{parent.id} as an interrupt")
-      # Deliberately NOT `enqueued_message: enqueued`. A successful interrupt
+      # Deliberately NOT `enqueued_message: result.enqueued_message`. A successful interrupt
       # drains the queue through EnqueuedMessageProcessorService, which destroys
       # the row after it claims it — so the object in hand names a message that
       # no longer exists. Reporting it would advertise a dead id to a REST caller

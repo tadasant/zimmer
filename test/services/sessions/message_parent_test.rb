@@ -127,6 +127,32 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
     assert_nil result.enqueued_message
   end
 
+  test "force_immediate stages and interrupts through Sessions::InterruptWithFollowUp" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+    Sessions::InterruptWithFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == parent && kwargs[:prompt].include?("through the service") &&
+        kwargs[:origin] == "caller" && kwargs[:actor] == "child_session_report" &&
+        kwargs[:source_context] == TurnSource.agent.to_h
+    end.returns(Sessions::InterruptWithFollowUp::Result.new(success: true, withdrawn: false))
+
+    result = report(child, message: "through the service", force_immediate: true)
+
+    assert result.success?
+    assert_equal :interrupted, result.delivery
+  end
+
+  test "a staging collision on the queue position is reported as the position conflict" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+    Sessions::InterruptWithFollowUp.stubs(:call).raises(ActiveRecord::RecordNotUnique)
+
+    result = report(child, force_immediate: true)
+
+    refute result.success?
+    assert_equal :conflict, result.error_code
+  end
+
   test "a failed interrupt drops the staged message rather than leaving it to arrive later" do
     parent = create_session(status: "running")
     child = create_session(parent: parent)

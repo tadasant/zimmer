@@ -2135,6 +2135,37 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Missing parameter", json["error"]
   end
 
+  test "force_immediate follow-up stages and interrupts through Sessions::InterruptWithFollowUp" do
+    session = sessions(:running)
+    Sessions::InterruptWithFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "All tests pass" && kwargs[:actor] == "api_force_immediate" &&
+        kwargs[:source_context]["surface"] == "api" && kwargs[:images] == [] && kwargs[:files] == []
+    end.returns(Sessions::InterruptWithFollowUp::Result.new(success: true, withdrawn: false))
+
+    post follow_up_api_v1_session_path(session.id), params: {
+      prompt: "Through the service", goal: "All tests pass", force_immediate: true
+    }, headers: @headers
+
+    assert_response :success
+    assert_equal "Follow-up prompt sent immediately", JSON.parse(response.body)["message"]
+  end
+
+  test "force_immediate follow-up whose interrupt fails withdraws the staged message and answers the interrupt's error" do
+    session = sessions(:running)
+    Sessions::InterruptService.any_instance.stubs(:call)
+      .returns(Sessions::Result.new(success: false, error: "Session is busy", error_code: :conflict))
+
+    assert_no_difference "EnqueuedMessage.count" do
+      post follow_up_api_v1_session_path(session.id), params: { prompt: "Urgent", force_immediate: true }, headers: @headers
+    end
+
+    assert_response :conflict
+    json = JSON.parse(response.body)
+    assert_equal "Cannot send follow-up", json["error"]
+    assert_equal "Session is busy", json["message"]
+  end
+
   # Pause tests
   test "should pause running session" do
     session = sessions(:running)
