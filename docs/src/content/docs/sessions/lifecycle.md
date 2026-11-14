@@ -62,10 +62,20 @@ against a session that already has one queued.
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
 at consecutive positions rather than colliding on the queue's unique position. The queue's other
-writers (triggers, `MessageParent`'s queued report, the enqueued-message endpoints) still take their own
+writers (triggers, `MessageParent`'s queued report, the processor and Slack paths, among others) still take their own
 `maximum + 1` and can still collide with it. It also writes the one timeline row all three leave
 behind, *"Message queued at position N (a turn is already underway)"*. Each route still writes its
 own response.
+
+Adding a message to the queue on purpose — the web queue form, `POST /api/v1/sessions/:id/enqueued_messages`
+and `manage_enqueued_messages` `create` — has its own writer, `Sessions::EnqueueMessage`. It differs
+from `QueueFollowUp` in why it queues: it does not ask whether a turn is underway, and its
+timeline row is the plain *"Enqueued message added at position N"*. It reads the tail through the
+same locked `Sessions::QueueTail`, so it is ordered against the follow-up and send-now writers too, and
+commits the message and its log row together. An invalid message comes back with its errors instead
+of raising, which REST answers as `422` and MCP as a `Validation failed` error. The web route wraps the
+write, the human-message record and the activity stamp in one transaction, so an attempt that
+`with_db_retry` retries after a failed write starts clean rather than queueing the message twice.
 
 Sending a *new* message "right now" has one writer too, `Sessions::InterruptWithFollowUp`: the
 REST and MCP `follow_up` with `force_immediate`, `manage_enqueued_messages` `send_now`, and a child's
