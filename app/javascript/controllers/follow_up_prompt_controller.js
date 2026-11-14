@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
-import { draftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDraftsOnce } from "lib/draft_storage"
+import { followUpDraftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDraftsOnce } from "lib/draft_storage"
+import { takeComposerHandoff } from "lib/composer_handoff"
 
 // How long to wait after the last keystroke before writing the draft. Long
 // enough that a fast typist isn't writing to localStorage on every character,
@@ -53,9 +54,14 @@ export default class extends Controller {
       this.updateDraftIndicator()
     }
 
-    // Auto-focus the textarea when the controller connects
-    // Only focus if no other element is already focused (to avoid disrupting user)
-    if (document.activeElement === document.body || !document.activeElement) {
+    // Text typed into the drawer's provisional composer while this one was in
+    // flight carries over with its caret and focus (lib/composer_handoff.js).
+    // Otherwise, auto-focus the textarea when the controller connects — only if
+    // no other element is already focused, to avoid disrupting the user.
+    const handoff = takeComposerHandoff(this.sessionIdValue)
+    if (handoff) {
+      this.applyHandoff(handoff)
+    } else if (document.activeElement === document.body || !document.activeElement) {
       this.textareaTarget.focus()
     }
 
@@ -133,7 +139,7 @@ export default class extends Controller {
   // The key this session's composer draft lives under. Scoped by session id so
   // a draft written on one session never surfaces on another.
   get draftStorageKey() {
-    return draftKey(`session:${this.sessionIdValue}`, "followUpPrompt")
+    return followUpDraftKey(this.sessionIdValue)
   }
 
   // The composer renders a desktop and a mobile textarea and shows one of them.
@@ -364,6 +370,38 @@ export default class extends Controller {
     this.updateDraftIndicator()
 
     // Don't clear it yet - we only clear after successful submission
+  }
+
+  // Take over from the drawer's provisional composer. Its text normally arrives
+  // through the draft restore above, which also parks the caret at the start; this
+  // puts the caret back where the reader left it and the focus back in the field,
+  // so typing carries on as if nothing had been swapped. Assigns the text itself
+  // only where the draft restore could not (storage unavailable), or where the
+  // server's recovered `sent_message` was preloaded in its place.
+  applyHandoff(handoff) {
+    const field = this.getActiveTextarea()
+    if (!field) return
+
+    if (handoff.value && field.value !== handoff.value) {
+      if (this.hasTextareaTarget) this.textareaTarget.value = handoff.value
+      if (this.hasTextareaMobileTarget) this.textareaMobileTarget.value = handoff.value
+      this.restoringDraft = true
+      try {
+        field.dispatchEvent(new Event("input", { bubbles: true }))
+      } finally {
+        this.restoringDraft = false
+      }
+      this.updateDraftIndicator()
+    }
+
+    // Unfocused, the caret stays where the draft restore parked it (the start,
+    // so a "/review" draft does not open the typeahead).
+    if (!handoff.focused) return
+    field.focus({ preventScroll: true })
+    const length = field.value.length
+    const start = Math.min(handoff.selectionStart ?? length, length)
+    const end = Math.min(handoff.selectionEnd ?? start, length)
+    field.setSelectionRange(start, end)
   }
 
   // Preload pending sent message from server into the textarea

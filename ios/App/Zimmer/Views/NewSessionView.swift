@@ -52,12 +52,17 @@ struct NewSessionView: View {
                     }
                     .themeRows()
                 }
+                // The prompt is typed into from the first frame: it needs nothing from the
+                // catalog, so it does not wait for it. What the catalog fills in — the roots,
+                // the models, the goals — follows when it reads, and Create waits for a root.
                 Group {
                     if let configs {
-                        form(configs)
+                        agentSection(configs)
                     } else if error == nil {
                         Section { LoadingState().padding(.vertical, 8) }
                     }
+                    promptSection
+                    if let configs { sectionsAfterPrompt(configs) }
                 }
                 .themeRows()
             }
@@ -77,9 +82,7 @@ struct NewSessionView: View {
     }
 
     @ViewBuilder
-    private func form(_ configs: AppConfigs) -> some View {
-        agentSection(configs)
-        promptSection
+    private func sectionsAfterPrompt(_ configs: AppConfigs) -> some View {
         goalSection(configs)
         schedulingSection
         artifactsSection

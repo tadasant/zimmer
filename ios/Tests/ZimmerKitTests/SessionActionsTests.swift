@@ -22,6 +22,29 @@ final class SessionActionsTests: XCTestCase {
         XCTAssertTrue(detail.acceptsFollowUp)
     }
 
+    func testTheComposerIsOnScreenBeforeTheSessionIsReadButSendingWaitsForIt() async throws {
+        let api = FakeZimmerAPI()
+        let open = try await api.session(1038)
+        var archived = open
+        archived.session.status = .archived
+
+        // Before the first read: the field is there to type into, and Send waits.
+        XCTAssertTrue(SessionDetail.showsComposer(nil))
+        XCTAssertFalse(SessionDetail.canSend("Yes, merge it.", detail: nil))
+        // A first read that failed leaves nothing to send to: no composer.
+        XCTAssertFalse(SessionDetail.showsComposer(nil, readFailed: true))
+        XCTAssertTrue(SessionDetail.showsComposer(open, readFailed: true), "a later poll's failure keeps the page's composer")
+
+        // Read, and taking follow-ups: the same text can go.
+        XCTAssertTrue(SessionDetail.showsComposer(open))
+        XCTAssertTrue(SessionDetail.canSend("Yes, merge it.", detail: open))
+        XCTAssertFalse(SessionDetail.canSend("   ", detail: open))
+
+        // Read, and archived: the composer comes off.
+        XCTAssertFalse(SessionDetail.showsComposer(archived))
+        XCTAssertFalse(SessionDetail.canSend("Yes, merge it.", detail: archived))
+    }
+
     func testAMissingStatusSummaryIsNotAnError() async throws {
         let (api, _) = client([{ _ in Fixtures.json(200, ["session": ["id": 7, "status": "running"], "status_summary": NSNull()]) }])
         let detail = try await api.session(7)
