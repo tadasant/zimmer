@@ -97,16 +97,18 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Message enqueued successfully", flash[:notice]
   end
 
-  test "a failure after the queue write takes the message and its log row back with it" do
-    HumanMessageCapture.stubs(:record_web_ui_message).raises(RuntimeError, "capture failed")
+  test "a retried attempt after a failed write queues the message once" do
+    Session.any_instance.stubs(:touch_user_activity!)
+           .raises(ActiveRecord::Deadlocked, "deadlock detected").then.returns(true)
+    EnqueuedMessagesController.any_instance.stubs(:sleep)
 
-    assert_no_difference [ "@session.enqueued_messages.count", "@session.logs.count" ] do
-      begin
-        post session_enqueued_messages_url(@session), params: { content: "Never lands" }
-      rescue RuntimeError
-        # Raised or rendered as a 500 depending on show_exceptions; either way nothing is left behind.
-      end
+    assert_difference [ "@session.enqueued_messages.count", "@session.logs.count" ], 1 do
+      post session_enqueued_messages_url(@session), params: { content: "Exactly once" }
     end
+
+    assert_redirected_to session_path(@session)
+    assert_equal 1, @session.enqueued_messages.where(content: "Exactly once").count
+    assert_equal 1, @session.enqueued_messages.find_by(content: "Exactly once").position
   end
 
   test "should create enqueued message with goal" do
