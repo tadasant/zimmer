@@ -87,6 +87,31 @@ class Github::IssueLinkProbeTest < ActiveSupport::TestCase
     assert probes.fetch(1).open_references.first.idle?(14.days)
   end
 
+  # A `multi_slice` row is re-queued only for a slice that merged after it left
+  # the queue, and the next row points at that PR — so both have to come back.
+  test "a merged reference carries when it merged and its URL, and an open one carries neither" do
+    merged = pr(500, "MERGED", "2026-09-03T00:00:00Z")
+              .merge("mergedAt" => "2026-09-01T00:00:00Z", "url" => "https://github.com/tadasant/zimmer/pull/500")
+    probes = probe_with(response(i0: issue(1, "OPEN", [ merged, pr(501, "OPEN", "2026-09-09T00:00:00Z") ])))
+
+    reference = probes.fetch(1).merged_references.first
+    assert_equal Time.iso8601("2026-09-01T00:00:00Z"), reference.merged_at
+    assert_equal "https://github.com/tadasant/zimmer/pull/500", reference.url
+    assert_nil probes.fetch(1).open_references.first.merged_at
+  end
+
+  test "the query asks for mergedAt and url" do
+    calls = []
+    stub = lambda do |argv, **|
+      calls << argv
+      cli_result(JSON.generate(response(i0: issue(1, "OPEN", []))), success: true)
+    end
+
+    GithubCli.stub(:run, stub) { Github::IssueLinkProbe.call(repo: "tadasant/zimmer", numbers: [ 1 ]) }
+
+    assert_includes calls.first.join(" "), "number state updatedAt mergedAt url"
+  end
+
   private
 
   def issue(number, state, prs, extra: [])

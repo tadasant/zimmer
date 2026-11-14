@@ -46,6 +46,8 @@ module Mcp
 
         **Keep the item thin.** The issue is the durable record: the verdict, the reasoning and the spec live there. `ratings` (your five axes, verbatim), `gate_verdict`, `gate_session`, `decided_at` and a one-line `notes` are what belongs here. Any other key you pass is kept in `payload` for later.
 
+        **An issue that stays open by design** — one slice per session, or open until a flake recurs — takes `continuation` (`multi_slice` / `awaiting_recurrence`). Without it, a merged PR on a still-open issue strands the row and pages `#alerts` after a week.
+
         **Returns** JSON: `result` ("appended" / "already_queued"), the item's `position` (1-based, whole queue), its `precedence`, `band_respaced`, and the item.
       DESC
 
@@ -67,7 +69,17 @@ module Mcp
           gate_verdict: { type: "string", description: 'Your verdict, e.g. "auto-proceed".' },
           gate_session: { type: "string", description: "The Zimmer session URL of the gate session that rated it." },
           decided_at: { type: "string", description: "ISO date the gate rated it, e.g. \"2026-08-29\". Defaults to today if omitted." },
-          notes: { type: "string", description: "One line, optional. Not a copy of the issue." }
+          notes: { type: "string", description: "One line, optional. Not a copy of the issue." },
+          continuation: {
+            type: "string",
+            enum: WorkBacklogItem::CONTINUATIONS,
+            description: "Optional. Declares that the issue stays OPEN BY DESIGN after a merged PR, so the stranded-row " \
+                         "sweep does not page on it. `multi_slice`: every session lands one slice and closes nothing — " \
+                         "when a slice merges, the server queues the next slice automatically, pointing at the merged PR. " \
+                         "`awaiting_recurrence`: the work is done until a failure recurs, so a PR merged by the started " \
+                         "session, with the issue still open, counts as resolved. Omit it for ordinary work. Neither " \
+                         "hides a row whose session ended with nothing merged: that still strands and pages."
+          }
         },
         required: %w[key issue_url repo surface title kind scope_direction estimated_cost]
       })

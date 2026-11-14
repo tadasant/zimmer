@@ -124,7 +124,8 @@ module Issues
     # convergent issues, why aren't they getting scheduled?" on 2026-09-11.
     #
     # WorkBacklog::LivenessSweep classifies these and writes `liveness_state` on
-    # each, but puts nothing back: telling a finished issue from one with a
+    # each, and puts back only a `multi_slice` row whose slice merged (see
+    # WorkBacklogItem::CONTINUATIONS). Otherwise telling a finished issue from one with a
     # deliberate remainder needs a judgement per issue, which is not a cron job's
     # to make. The state is the evidence a triager starts from.
     # Oldest first, and BOUNDED. Unlike the lists above it, nothing bounds this

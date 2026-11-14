@@ -64,7 +64,7 @@ class Api::V1::WorkBacklogItemsController < Api::BaseController
   #
   # Append one. Body: key, issue_url, repo, surface, title, kind, scope_direction,
   # estimated_cost, plus ratings / gate_verdict / gate_session / decided_at /
-  # notes / prompt (issueless items only), added_by (defaults to "human"),
+  # notes / continuation / prompt (issueless items only), added_by (defaults to "human"),
   # writing_session_id (self-declared, provenance only — `acting_session_id` is
   # accepted as an alias so the pull and start actions' name works here too),
   # and — for a human hand-placing the item on create — pinned: true with a
