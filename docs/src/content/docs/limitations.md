@@ -342,12 +342,13 @@ The cues are tested as samples: level, pitch, attack, brightness and length (`Li
 
 The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session
 start, `session.delegation.created`, `session.commentary.append`, `session.closed`) and the
-Anthropic Messages API, and is tested against scripted stand-ins for both. No call has been made
+Anthropic Messages API, and is tested against scripted stand-ins for both, on the web dock and in
+the iOS app (see below). No call has been made
 against the real services, because no GPT-Live access has been confirmed. Four things are guesses
 until one has: whether the Messages API serves Sonnet and Opus to a Claude Code subscription token
 outside Claude Code (Zimmer's quota probe only proves it for Haiku; a refusal is spoken as "I
 couldn't reach my reasoning backend" and the call carries on), the field names in `session.closed`'s
-`usage` (the dock reads `duration_seconds`, `session_seconds` or `duration_ms`, and otherwise prices
+`usage` (the dock and the app read `seconds`, `duration_seconds`, `session_seconds` or `duration_ms`, and otherwise price
 the seconds it saw itself), whether GPT-Live takes the Live settings' voice (Zimmer retries without
 one when it is refused), and how GPT-Live speaks commentary that arrives while the person is
 talking. It is off unless somebody picks it, and falls back to Realtime when it cannot run.
@@ -375,11 +376,27 @@ The **Claude billing** setting was removed when Live Mode's Claude moved onto Zi
 Code credential. Its column stays on `live_settings`, in `LiveSetting.ignored_columns`, until the
 second deploy of its [two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys).
 
-### Live costs cover the web dock's calls only
+### Live costs miss the phone's Realtime calls
 
-The iOS app and CarPlay run their calls on Realtime and report no usage to the voice-engine ledger,
-so `/live/costs` holds only calls made from the web dock. A comparison between engines there is a
-comparison between web calls.
+The iOS app and CarPlay report a call's usage to the voice-engine ledger only on `gpt_live_claude`
+(session seconds, call length, time to first audio). Their Realtime calls report none: their tokens
+arrive on the phone's WebSocket and are not totalled. So `/live/costs` has Realtime calls from the
+web dock and GPT-Live calls from everywhere, and a comparison between the engines there is
+lopsided until the phone reports Realtime too.
+
+### GPT-Live on the phone has not been heard on a device
+
+The iOS app and CarPlay run `gpt_live_claude` over WebRTC (Google's libwebrtc, from the
+`stasel/WebRTC` binary package), because GPT-Live takes a WebSocket only from a server that holds
+the OpenAI key. CI compiles it, and the event handling is tested on Linux (`GptLiveConductorTests`),
+but no call has run on a phone or in a car. Three things wait on the first real call: that
+libwebrtc's voice-processing audio unit and the cue engine (`LiveAudioEngine.startCues`) share the
+`.playAndRecord` session without one cutting the other off, which matters most on a CarPlay route;
+that the cues, which libwebrtc's echo canceller does not hear, do not reach GPT-Live as speech; and
+that an offer posted before ICE gathering finishes connects, as it does in the browser. A CarPlay
+call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
+Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
+happens only with a connection warmed before the engine was switched, for at most its five minutes.
 
 ### A sheet presented from inside a `List` row can reset itself
 

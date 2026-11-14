@@ -73,6 +73,17 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
 
   # A lookup is not triage: the CarPlay-fit filter that drops laptop-only rows from
   # "what needs me" must not drop the session the driver is asking about.
+  test "GPT-Live's front end is told the person is in the car too, and the phone's is not" do
+    conversation = create_live_conversation(mode: "voice", client_surface: "carplay")
+    car = LiveConversations::SystemPrompt.build_front_end(conversation)
+    conversation.update_columns(client_surface: "ios")
+    phone = LiveConversations::SystemPrompt.build_front_end(conversation)
+
+    assert_includes car, "The client driving this conversation right now is CarPlay"
+    assert_operator car.index("## How this call works (written by Zimmer)"), :<, car.index("right now is CarPlay")
+    assert_not_includes phone, "right now is CarPlay"
+  end
+
   test "a CarPlay conversation is told to keep carplay_fit off a search for a particular session" do
     prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "voice", client_surface: "carplay"))
 

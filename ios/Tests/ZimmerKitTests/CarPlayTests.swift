@@ -586,7 +586,7 @@ final class CarPlayTests: XCTestCase {
 
         let call = try body("Live/LiveCall.swift", from: "func start(_ conversation: Int")
         let own = try XCTUnwrap(call.range(of: "pressed()"))
-        for network in ["turnVoiceOn(", "mintSecret(", "openSocket(", "audio.start("] {
+        for network in ["turnVoiceOn(", "mintGrant(", "openSocket(", "audio.start("] {
             let step = try XCTUnwrap(call.range(of: network), network)
             XCTAssertLessThan(own.lowerBound, step.lowerBound, "*pressed* before \(network)")
         }

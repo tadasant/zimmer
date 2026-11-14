@@ -115,7 +115,10 @@ module LiveConversations
       note_client!(new_call: true)
       resolution = VoiceEngine.resolve(@conversation, client_engines: @engines)
       record_engine!(resolution)
-      return { engine: resolution.engine, voice_engine: resolution.as_api_json } if resolution.engine == VoiceEngine::GPT_LIVE
+      if resolution.engine == VoiceEngine::GPT_LIVE
+        return { engine: resolution.engine, voice_engine: resolution.as_api_json, model: GptLiveSession::MODEL,
+                 telemetry: LiveSetting.current.effective(:voice_telemetry) }
+      end
 
       minted = RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
       record_mode!(VoiceEngine.mode_for(VoiceEngine::DEFAULT, voice_model: minted[:model], effort: minted[:reasoning_effort]))
@@ -265,6 +268,11 @@ module LiveConversations
       raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
 
       require_active!
+      # A GPT-Live call starts its own session from the tap (#gpt_live_session):
+      # a warm Realtime connection is one it would never use.
+      if VoiceEngine.resolve(@conversation, client_engines: @engines).engine == VoiceEngine::GPT_LIVE
+        raise Refused.new("The next call runs on #{VoiceEngine::GPT_LIVE}, which has no connection to pre-warm.", status: :conflict)
+      end
       RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false).except(:reasoning_effort)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)

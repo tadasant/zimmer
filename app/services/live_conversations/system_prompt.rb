@@ -51,7 +51,7 @@ module LiveConversations
     end
 
     def build_front_end
-      [ @conversation.instructions.to_s.strip, front_end_mechanics, mode_section, recap_section, sessions_section,
+      [ @conversation.instructions.to_s.strip, front_end_mechanics, client_line, mode_section, recap_section, sessions_section,
         scratchpad_section, guidance_section ].compact_blank.join("\n\n")
     end
 
