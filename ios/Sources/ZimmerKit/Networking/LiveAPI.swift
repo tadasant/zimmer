@@ -25,12 +25,25 @@ public protocol LiveAPI: Sendable {
     func setLiveMode(_ id: Int, mode: LiveMode) async throws -> LiveConversation
     /// Typed: a message. The reply arrives as a later turn.
     func sendLiveMessage(_ id: Int, content: String) async throws -> LiveTurn
-    /// Voice: the short-lived secret to open the Realtime connection with.
-    func liveClientSecret(_ id: Int) async throws -> LiveClientSecret
+    /// Voice: how the call runs. The app says which engines it can run (`LiveVoiceEngine.runnable`);
+    /// Zimmer answers with a Realtime secret, or, on `gpt_live_claude`, with no secret: the call
+    /// starts with `startGptLiveSession`. An engine the settings chose that cannot run falls back to
+    /// Realtime, and the answer says why (`LiveCallGrant.choice`).
+    func liveCallGrant(_ id: Int) async throws -> LiveCallGrant
     /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
     /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
     /// refused (422) from any client but CarPlay.
     func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret
+    /// Voice, `gpt_live_claude`: the phone's WebRTC offer, which Zimmer starts the GPT-Live session
+    /// with (the OpenAI key stays on the server); OpenAI's SDP answer back. 409 when the call is no
+    /// longer to run on GPT-Live (a cap reached, the setting changed since `liveCallGrant`).
+    func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer
+    /// Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude answers it, in chunks to
+    /// append as commentary. `pendingUserText`: the person's line still in flight.
+    func answerLiveDelegation(_ id: Int, delegationID: String, pendingUserText: String) async throws -> LiveDelegation
+    /// Voice: what the call measured about its cost and speed, for the voice-engine ledger. At most
+    /// 50 events a request.
+    func reportLiveUsage(_ id: Int, events: [LiveUsageEvent]) async throws
     /// Voice: run a function call the model made; send back what this returns.
     func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult
     /// Voice: a finished transcript line, so the thread carries what was said. `gated`: the call
@@ -65,6 +78,10 @@ extension LiveAPI {
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
         try await liveSessionUpdate(id, recordingModel: nil)
     }
+}
+
+struct LiveUsageAnswer: Decodable {
+    let recorded: Int?
 }
 
 struct LiveSessionUpdateResponse: Decodable {
@@ -125,12 +142,36 @@ extension ZimmerHTTPClient {
     /// the call to answer everything, the way an app from before Listening expects.
     static let listeningModes: [String: String] = ["listening_modes": "1"]
 
-    public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
-        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes)
+    /// What every mint sends: Listening as above, and the engines this app can run, since Zimmer
+    /// picks one only for a client that can.
+    static func mint(_ extra: [String: Any] = [:]) -> [String: Any] {
+        var body: [String: Any] = listeningModes
+        body["engines"] = LiveVoiceEngine.runnable
+        return body.merging(extra) { $1 }
     }
 
+    public func liveCallGrant(_ id: Int) async throws -> LiveCallGrant {
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.mint())
+    }
+
+    /// With the engines too: Zimmer refuses (409) to pre-warm a Realtime connection for a call
+    /// that will run on GPT-Live, which starts its own session from the tap.
     public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
-        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.listeningModes.merging(["prewarm": "1"]) { $1 })
+        try await post("/api/v1/live_conversations/\(id)/client_secret",
+                       json: Self.mint(["prewarm": "1"]))
+    }
+
+    public func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer {
+        try await post("/api/v1/live_conversations/\(id)/gpt_live_session", json: ["sdp": sdp])
+    }
+
+    public func answerLiveDelegation(_ id: Int, delegationID: String, pendingUserText: String) async throws -> LiveDelegation {
+        try await post("/api/v1/live_conversations/\(id)/delegations", json: ["delegation_id": delegationID, "pending_user_text": pendingUserText])
+    }
+
+    public func reportLiveUsage(_ id: Int, events: [LiveUsageEvent]) async throws {
+        guard !events.isEmpty else { return }
+        let _: LiveUsageAnswer = try await post("/api/v1/live_conversations/\(id)/usage", json: ["events": events.map(\.foundationObject)])
     }
 
     public func relayLiveToolCall(_ id: Int, name: String, arguments: String, callID: String) async throws -> LiveToolResult {

@@ -350,6 +350,13 @@ struct LiveConversationView: View {
         return VStack(spacing: 8) {
             if mine {
                 Text(call.microphoneLost ? "Waiting for the microphone…" : call.state.label(muted: call.muted)).font(.subheadline).foregroundStyle(.secondary).accessibilityIdentifier("live.call.state")
+                if call.engine == LiveVoiceEngine.gptLive {
+                    Text("GPT-Live voice · Claude reasoning").font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("live.call.engine")
+                }
+            }
+            // Why the engine the settings chose is not the one answering, or how close it is to its cap.
+            if let note = call.engineNote, call.conversationID == conversation.id {
+                Text(note).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center).accessibilityIdentifier("live.call.engine-note")
             }
             // OpenAI's errors show during the call too, not only once it has ended.
             if let message = call.lastError, call.conversationID == conversation.id {
@@ -614,6 +621,7 @@ struct LiveSettingsView: View {
             if let settings {
                 fieldSection("Typed turns", path: "text", settings)
                 fieldSection("Voice", path: "voice", settings)
+                fieldSection("Voice engine", path: "engine", settings)
                 guidanceSection(settings)
                 Section {
                     Button("Reset settings to defaults", role: .destructive) { confirmingReset = true }

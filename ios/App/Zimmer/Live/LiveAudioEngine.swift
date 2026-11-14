@@ -97,8 +97,12 @@ final class LiveAudioEngine {
         let player: AVAudioPlayerNode
         let cuePlayer: AVAudioPlayerNode
         let loopPlayer: AVAudioPlayerNode
+        /// Opens the microphone. Off for a call whose microphone is WebRTC's (`startCues`): its
+        /// input node is never touched, so this engine never contends for the input with libwebrtc.
+        var listens = true
 
         func configure(sink: FrameSink, restart: Bool) throws {
+            guard listens else { return try configureCuesOnly(restart: restart) }
             let input = engine.inputNode
             // The echo canceller. Not fatal when refused: the mic still works, and headphones
             // sidestep echo entirely.
@@ -135,8 +139,24 @@ final class LiveAudioEngine {
                                                                 voiceProcessing: voiceProcessing && input.isVoiceProcessingEnabled, restart: restart))
         }
 
+        /// The players alone, for the cues: no input, no tap, no echo canceller.
+        private func configureCuesOnly(restart: Bool) throws {
+            if player.engine == nil { engine.attach(player) }
+            if cuePlayer.engine == nil { engine.attach(cuePlayer) }
+            if loopPlayer.engine == nil { engine.attach(loopPlayer) }
+            engine.connect(player, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+            engine.connect(cuePlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+            engine.connect(loopPlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+            engine.prepare()
+            try engine.start()
+            player.play()
+            cuePlayer.play()
+            loopPlayer.play()
+            LiveAudioEngine.telemetry.track(.audioEngineStarted(inputRate: 0, inputChannels: 0, voiceProcessing: false, restart: restart))
+        }
+
         func tearDown(deactivate: Bool) {
-            engine.inputNode.removeTap(onBus: 0)
+            if listens { engine.inputNode.removeTap(onBus: 0) }
             player.stop()
             cuePlayer.stop()
             loopPlayer.stop()
@@ -206,11 +226,29 @@ final class LiveAudioEngine {
     /// What is queued on the reply player, and how far through it the speaker is.
     private var playout = LiveReplyPlayout()
 
+    /// Whether the engine running now opened the microphone: a call on GPT-Live's engine has its
+    /// microphone in libwebrtc (`GptLiveLink`), and this engine plays only the cues.
+    private var listens = true
+
+    /// The cues alone, for a call whose microphone and voice are WebRTC's (`GptLiveLink`): the same
+    /// players on an engine with no input, so `play`, `startLoop` and `stop(farewell:)` work as on
+    /// a Realtime call. Asks for the microphone permission first, which libwebrtc needs as well and
+    /// would otherwise ask for with no `awaitingPermission` to hold the call's deadline.
+    @discardableResult
+    func startCues(failed: @escaping @Sendable (String) -> Void) async throws -> Int {
+        try await start(listening: false, frames: { _ in }, failed: failed)
+    }
+
     /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a
     /// time. Returns the token `stop(token:)` takes.
     @discardableResult
     func start(frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
+        try await start(listening: true, frames: frames, failed: failed)
+    }
+
+    private func start(listening: Bool, frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
         stop()
+        listens = listening
         interrupted = false
         token += 1
         let mine = token
@@ -223,7 +261,8 @@ final class LiveAudioEngine {
         // A newer start (or a stop) came while the permission prompt was up.
         guard token == mine else { throw CancellationError() }
 
-        let graph = Graph(engine: AVAudioEngine(), player: AVAudioPlayerNode(), cuePlayer: AVAudioPlayerNode(), loopPlayer: AVAudioPlayerNode())
+        let graph = Graph(engine: AVAudioEngine(), player: AVAudioPlayerNode(), cuePlayer: AVAudioPlayerNode(), loopPlayer: AVAudioPlayerNode(),
+                          listens: listens)
         let sink = self.sink
         sink.set(frames)
         self.failed = failed
@@ -335,7 +374,7 @@ final class LiveAudioEngine {
     /// here and do nothing, and a hang-up leaves it to be torn down when it does.
     func recoverIfStopped() {
         guard !interrupted, let engine, let player, let cuePlayer, let loopPlayer, !engine.isRunning else { return }
-        let graph = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer)
+        let graph = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, listens: listens)
         let sink = self.sink
         let mine = token
         let resetsThen = resets
@@ -547,7 +586,7 @@ final class LiveAudioEngine {
         }
         var current: Graph?
         if let engine, let player, let cuePlayer, let loopPlayer {
-            current = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer)
+            current = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, listens: listens)
         }
         playout = LiveReplyPlayout()
         let playing = farewell.map { play($0) } ?? false
@@ -558,7 +597,7 @@ final class LiveAudioEngine {
             return false
         }
         Self.queue.async {
-            graph.engine.inputNode.removeTap(onBus: 0)
+            if graph.listens { graph.engine.inputNode.removeTap(onBus: 0) }
             graph.player.stop()
             graph.loopPlayer.stop()
         }

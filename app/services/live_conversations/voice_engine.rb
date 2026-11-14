@@ -11,15 +11,17 @@ module LiveConversations
   #   delegated to Claude, which runs Zimmer's tools (ClaudeDelegate) on
   #   Zimmer's own Claude Code subscription credential (ClaudeClient). Rails
   #   starts the GPT-Live session with the browser's WebRTC offer
-  #   (GptLiveSession); audio goes browser ⇄ OpenAI as today.
+  #   (GptLiveSession) — the browser's or the iOS app's; audio goes client ⇄
+  #   OpenAI as today.
   # - `livekit_claude` — a LiveKit Agents cascade (speech-to-text → Claude →
   #   text-to-speech). Not built: it needs an agent worker deployed next to
   #   Zimmer, so it always falls back for now.
   #
   # An engine runs only when its credentials are there (the OpenAI key; for
   # Claude, a current Claude Code account in Zimmer's pool), the client asking can speak it
-  # (each client sends the engines it can run; one that sends none — the iOS
-  # app today — runs only the default), and its spend is under the caps
+  # (each client sends the engines it can run — the web call dock and the iOS
+  # app, phone and CarPlay, send `gpt_live_claude`; one that sends none, such as
+  # an iOS build from before it, runs only the default), and its spend is under the caps
   # (SpendGuard). Everything else falls back, so choosing an engine can never
   # leave Live Mode without a voice.
   class VoiceEngine
@@ -78,7 +80,7 @@ module LiveConversations
       return Resolution.new(engine: DEFAULT, requested: DEFAULT, fallback_reason: nil, warning: nil) if requested == DEFAULT
 
       reason = unavailable_reason(requested)
-      reason ||= "this app cannot run #{requested} yet (only the web call dock can)" unless Array(client_engines).map(&:to_s).include?(requested)
+      reason ||= "this client cannot run #{requested} (the web call dock and an up-to-date iOS app can)" unless Array(client_engines).map(&:to_s).include?(requested)
       check = SpendGuard.check(engine: requested, conversation: conversation, setting: setting) if reason.nil?
       reason ||= check.reason
       return Resolution.new(engine: DEFAULT, requested: requested, fallback_reason: reason, warning: nil) if reason

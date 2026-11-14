@@ -175,7 +175,11 @@ final class LiveAPITests: XCTestCase {
             { _ in Fixtures.json(201, ["id": 5, "role": "assistant", "source": "spoken", "content": "Done.", "tool_error": false]) },
             { _ in Fixtures.json(200, ["respond": false, "dropped": true, "listening": "dynamic"]) },
         ])
-        let secret = try await api.liveClientSecret(7)
+        let grant = try await api.liveCallGrant(7)
+        let secret = try XCTUnwrap(grant.realtime, "a server from before engines answers with the secret alone: Realtime")
+        XCTAssertNil(grant.choice)
+        XCTAssertEqual(grant.model, "gpt-realtime-2.1-mini")
+        XCTAssertEqual(try body(transport.sent[0])["engines"] as? [String], ["gpt_live_claude"], "the app says it can run GPT-Live")
         XCTAssertEqual(secret.clientSecret, "ek_1")
         XCTAssertEqual(secret.listening, "wake_word")
         XCTAssertEqual(try body(transport.sent[0])["listening_modes"] as? String, "1", "the app says it asks for its own replies")
@@ -354,12 +358,12 @@ final class LiveAPITests: XCTestCase {
         let newer = try await api.liveConversation(second.id, afterTurn: turns[0].id).turns ?? []
         XCTAssertEqual(newer.count, 2)
         await XCTAssertThrowsAsync(try await api.sendLiveMessage(first.id, content: "again"), "an ended conversation takes no messages")
-        await XCTAssertThrowsAsync(try await api.liveClientSecret(second.id), "no secret while voice is off")
+        await XCTAssertThrowsAsync(try await api.liveCallGrant(second.id), "no secret while voice is off")
 
         let spoken = try await api.setLiveMode(second.id, mode: .voice)
         XCTAssertEqual(spoken.model, "gpt-realtime-2.1-mini")
         await XCTAssertThrowsAsync(try await api.sendLiveMessage(second.id, content: "typed"), "no typing while voice is on")
-        _ = try await api.liveClientSecret(second.id)
+        _ = try await api.liveCallGrant(second.id)
         let typed = try await api.setLiveMode(second.id, mode: .text)
         XCTAssertEqual(typed.mode, .text)
         let after = try await api.liveConversation(second.id, afterTurn: nil)

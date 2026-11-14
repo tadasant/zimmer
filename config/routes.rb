@@ -242,6 +242,9 @@ Rails.application.routes.draw do
           post :mode
           post :messages
           post :client_secret
+          post :gpt_live_session
+          post :delegations
+          post :usage
           post :tool_calls
           post :turns
           post :session_update
