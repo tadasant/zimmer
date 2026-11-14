@@ -171,7 +171,8 @@ marks are on the board.
 
 When the client driving a Live conversation is CarPlay, `LiveConversations::SystemPrompt` adds one
 line to the mechanics section Zimmer writes: that the person is in a car, that sessions carry a
-CarPlay fit, that `get_user_view` filters on it and `action_session` sets it, and that a session it
+CarPlay fit, that going through what needs them is `get_user_view` with `order: "last_touched"` and
+`carplay_fit: "not_laptop_only"`, that `action_session` sets the fit, and that a session it
 starts, follows up or acts on is marked `carplay_ok` on its own. The line also says to leave
 `carplay_fit` off a search for a particular session. The filter is for going through what needs the
 driver, and a lookup is not that: a session auto-marked `laptop_only` is still the one they asked

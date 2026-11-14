@@ -262,8 +262,11 @@ all; see [the REST API](/extend/rest-api/#live-conversations).
 [User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
 order it is drawn, with the three facts a decision on it turns on that a session listing does not
 carry: the agent root, the cached status-summary blurb, and the session's most recent PR with its
-lifecycle state and CI verdict. The write takes a whole ordering as one argument and applies it in
-one transaction.
+lifecycle state and CI verdict. Every row also says when a person last touched it. `order:
+"last_touched"` returns the same filtered rows as the dashboard's **Sort By Last Touched** view
+instead (`Session::LAST_TOUCHED_ORDER`, the same SQL as `GET /api/v1/sessions?view=last_touched`).
+That list is not the board's order, so it is not what `reorder_user_view` takes. The write takes a
+whole ordering as one argument and applies it in one transaction.
 
 They are a pair, and neither is a convenience over `quick_search_sessions` + `action_session`.
 Assembling the board out of those means a `get_session` per row, and reordering it with
