@@ -76,8 +76,11 @@ module LiveConversations
     # about calls is for whoever reads the trace, not for the call. The voice
     # output cap cuts a response off wherever it lands, and it counts the tool
     # calls the model would need to undo it: a model that wants shorter replies
-    # has `append_guidance`.
-    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens].freeze
+    # has `append_guidance`. The spend caps are the person's ceiling on what the
+    # experimental engines cost, so the model they bound cannot raise them, nor
+    # declare its own tokens free by changing how Claude is billed.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd
+                             voice_claude_billing].freeze
     SETTINGS_CHANGED = "Changed:"
     SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
     SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."
@@ -549,7 +552,7 @@ module LiveConversations
       @session_changed = result.mid_call_changed?
       return unchanged_answer(result) unless result.changed?
 
-      later = result.keys.map(&:to_sym) & %i[voice_model voice_name voice_reasoning_effort]
+      later = result.keys.map(&:to_sym) & %i[voice_model voice_name voice_reasoning_effort voice_engine]
       tail = later.any? ? "\n(#{later.map { |key| LiveSetting.field(key).label }.join(', ')}: from the next call.)" : ""
       return "#{SETTINGS_SAVED_NO_EFFECT}\n#{result.summary}#{tail}#{SAY_NO_EFFECT}" if result.only_no_effect?
 

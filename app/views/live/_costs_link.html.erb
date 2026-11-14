@@ -1,0 +1,16 @@
+<%# A row linking to /live/costs, with the engine in force and the last week's spend. Locals: none %>
+<% setting = LiveSetting.current %>
+<% week = LiveUsageEvent.where(occurred_at: 7.days.ago..).sum(:cost_usd).to_f %>
+<%= link_to live_costs_path, class: "block bg-white shadow-sm rounded-lg border border-gray-200 p-4 hover:bg-gray-50", data: { live_costs_link: true } do %>
+  <div class="flex items-center gap-3">
+    <span class="text-indigo-600 shrink-0"><svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></span>
+    <div class="min-w-0 flex-1">
+      <p class="text-sm font-medium text-gray-900">Live costs</p>
+      <p class="text-xs text-gray-500 break-words">
+        Voice engine <code class="font-mono"><%= setting.effective(:voice_engine) %></code> ·
+        <%= format("$%.2f", week) %> in the last 7 days
+      </p>
+    </div>
+    <span class="text-gray-400" aria-hidden="true">›</span>
+  </div>
+<% end %>

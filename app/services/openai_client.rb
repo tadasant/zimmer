@@ -2,13 +2,16 @@
 
 require "net/http"
 
-# The two OpenAI calls the live modes make, over plain Net::HTTP:
+# The OpenAI calls the live modes make, over plain Net::HTTP:
 #
 # - Chat Completions, for Live Mode's typed turns (run server-side, in a job).
 # - Realtime client secrets, for Live Mode's voice: Rails mints a short-lived `ek_…`
 #   secret carrying the whole session config, and the browser or phone opens the
 #   audio connection to OpenAI with it. Audio never passes through Puma, and the
 #   long-lived key never leaves the server.
+# - GPT-Live sessions, for the experimental `gpt_live_claude` voice engine: Rails
+#   starts the session with the browser's WebRTC offer and hands back OpenAI's
+#   answer, so the key and the session config stay here (GptLiveSession).
 #
 # The key is `LIVE_OPENAI_API_KEY`, resolved through SecretProviders (Parameter
 # Store, then Rails credentials, then ENV). Zimmer never writes it: the Live page
@@ -64,6 +67,13 @@ class OpenaiClient
   # @return [Hash] `{ "value" => "ek_…", "expires_at" => …, "session" => {…} }`
   def create_realtime_client_secret(body)
     post_json("/realtime/client_secrets", body)
+  end
+
+  # GPT-Live (`gpt-live-1`): starts a live session and exchanges the browser's
+  # WebRTC offer for OpenAI's answer in the same request. 201 with
+  # `{ "session" => { "id" => … }, "transport" => { "type" => "webrtc", "sdp" => … } }`.
+  def create_live_session(body)
+    post_json("/live/sessions", body)
   end
 
   private

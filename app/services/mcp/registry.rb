@@ -315,6 +315,7 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::GetLiveConversations", group: "live_conversations", write: false),
       Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true),
       Definition.new(klass: "Mcp::Tools::GetLiveSettings", group: "live_conversations", write: false),
+      Definition.new(klass: "Mcp::Tools::GetLiveCosts", group: "live_conversations", write: false),
       Definition.new(klass: "Mcp::Tools::ActionLiveSettings", group: "live_conversations", write: true)
     ].freeze
 

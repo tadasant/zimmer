@@ -42,8 +42,11 @@ module LiveConversations
     #   writes, and the only thing HumanMessageCapture.record_live_mode_message
     #   attributes from. nil — the MCP tool's — writes turns nobody is said to
     #   have authored.
-    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false, hangs_up: false, author: nil)
+    # @param engines [Array<String>] the experimental voice engines this client
+    #   can run (VoiceEngine). A client that names none runs only the default.
+    def initialize(conversation, client_surface: nil, listening_modes: false, reattaches: false, hangs_up: false, author: nil, engines: [])
       @conversation = conversation
+      @engines = Array(engines).map(&:to_s) & VoiceEngine::KEYS
       @author = author
       @reattaches = reattaches
       @hangs_up = hangs_up
@@ -99,16 +102,78 @@ module LiveConversations
     # The tap turns voice on and sends a fresh `session_update` before any
     # audio goes up, which brings the warm session's instructions to the
     # conversation as it is then. Only the car pre-warms.
+    #
+    # Which engine runs the call is decided here (VoiceEngine): the default
+    # answers with the Realtime secret as always; `gpt_live_claude` answers
+    # with no secret — the client starts that call with #gpt_live_session —
+    # and an engine that cannot run falls back to the default, saying why in
+    # `engine.fallback_reason`. Either way the answer names the engine.
     def client_secret(prewarm: false)
       return prewarm_secret if prewarm
 
       require_voice!
       note_client!(new_call: true)
-      RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
+      resolution = VoiceEngine.resolve(@conversation, client_engines: @engines)
+      record_engine!(resolution)
+      return { engine: resolution.engine, voice_engine: resolution.as_api_json } if resolution.engine == VoiceEngine::GPT_LIVE
+
+      minted = RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
+      record_mode!(VoiceEngine.mode_for(VoiceEngine::DEFAULT, voice_model: minted[:model], effort: minted[:reasoning_effort]))
+      minted.except(:reasoning_effort).merge(engine: resolution.engine, voice_engine: resolution.as_api_json)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
       raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    # Voice, `gpt_live_claude`: start the GPT-Live session with the browser's
+    # WebRTC offer and return OpenAI's answer. Only for a conversation whose
+    # call this client was just told runs on GPT-Live (#client_secret), so a
+    # client cannot reach an engine the settings, the keys or the caps refused.
+    def gpt_live_session(sdp:)
+      require_voice!
+      require_engine!(VoiceEngine::GPT_LIVE)
+      # Decided again here, not trusted from the column: the settings, a key or
+      # a cap may have changed since the call was resolved, and each session
+      # this opens is billed.
+      resolution = VoiceEngine.resolve(@conversation, client_engines: [ VoiceEngine::GPT_LIVE ])
+      unless resolution.engine == VoiceEngine::GPT_LIVE
+        raise Refused.new("GPT-Live is not available for this call: #{resolution.fallback_reason}. Start the call again.", status: :conflict)
+      end
+
+      started = GptLiveSession.start(@conversation, sdp: sdp)
+      record_mode!(VoiceEngine.mode_for(VoiceEngine::GPT_LIVE))
+      started
+    rescue GptLiveSession::Invalid => e
+      raise Refused, e.message
+    rescue OpenaiClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    rescue OpenaiClient::Error => e
+      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    # Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude does it
+    # (ClaudeDelegate) and the client appends the answer as commentary.
+    # `end_call` in the answer means the client hangs up once it is said — the
+    # person asked to, or the engine hit a spend cap.
+    def delegate(delegation_id:, pending_user_text: nil)
+      require_active!
+      require_engine!(VoiceEngine::GPT_LIVE)
+      raise Refused, "delegation_id is required." if delegation_id.blank?
+
+      note_client!
+      ClaudeDelegate.call(@conversation, delegation_id: delegation_id, pending_user_text: pending_user_text)
+    rescue ClaudeClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    end
+
+    # Voice: what the client measured about its call's cost and speed, into
+    # the ledger (UsageReport). Active or not: the last report of a call can
+    # land after the conversation ended.
+    def record_usage(events, model: nil)
+      UsageReport.call(@conversation, events, model: model)
+    rescue UsageReport::Invalid => e
+      raise Refused, e.message
     end
 
     # Voice: run a function call the model made, return what to send back.
@@ -200,7 +265,7 @@ module LiveConversations
       raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
 
       require_active!
-      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false)
+      RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false).except(:reasoning_effort)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
@@ -239,6 +304,29 @@ module LiveConversations
       raise Refused, "model is not a model name." unless MODEL_NAME.match?(model)
 
       @conversation.update_columns(model: model)
+    end
+
+    # The engine the call resolved to, on the conversation; a fallback is also
+    # a ledger row, so /live/costs can count how often an engine was asked for
+    # and not run.
+    def record_engine!(resolution)
+      @conversation.update_columns(voice_engine: resolution.engine, voice_engine_fallback: resolution.fallback_reason&.truncate(250))
+      return unless resolution.fallback?
+
+      LiveUsageEvent.record!(engine: resolution.requested, operation: "engine_fallback", vendor: "zimmer", live_conversation: @conversation,
+                             count: 1, error: resolution.fallback_reason.truncate(250), details: { ran_on: resolution.engine, surface: @client_surface })
+    rescue ActiveRecord::ActiveRecordError => e
+      ErrorReporter.report_exception(e, context: { source: "LiveConversations::Actions#record_engine!", live_conversation_id: @conversation.id })
+    end
+
+    def record_mode!(mode)
+      @conversation.update_columns(voice_mode: mode) if @conversation.voice_mode != mode
+    end
+
+    def require_engine!(engine)
+      return if @conversation.voice_engine == engine
+
+      raise Refused.new("This call is not running on #{engine}. Start the call again.", status: :conflict)
     end
 
     def require_open!

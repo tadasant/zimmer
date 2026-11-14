@@ -4,7 +4,9 @@
 # Type instead post to `mode`; the browser's voice client
 # (live_voice_controller.js) uses the JSON member routes to mint its Realtime
 # secret, relay function calls, record transcript lines, and fetch a
-# `session.update` when the Live settings change mid-call.
+# `session.update` when the Live settings change mid-call — and, on the
+# `gpt_live_claude` engine, to start its GPT-Live session, have Claude answer
+# each delegation, and report what the call cost.
 class LiveConversationsController < ApplicationController
   before_action :set_conversation, except: :create
 
@@ -72,6 +74,28 @@ class LiveConversationsController < ApplicationController
     render json: { error: e.message }, status: e.status
   end
 
+  # Voice, `gpt_live_claude`: the browser's WebRTC offer in, OpenAI's answer out.
+  def gpt_live_session
+    render json: actions.gpt_live_session(sdp: params[:sdp].to_s)
+  rescue LiveConversations::Actions::Refused => e
+    render json: { error: e.message }, status: e.status
+  end
+
+  # Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude answers it.
+  def delegations
+    render json: actions.delegate(delegation_id: params[:delegation_id].to_s, pending_user_text: params[:pending_user_text]).as_api_json
+  rescue LiveConversations::Actions::Refused => e
+    render json: { error: e.message }, status: e.status
+  end
+
+  # Voice: the call's measured cost and timings, into the ledger.
+  def usage
+    result = actions.record_usage(params[:events], model: params[:model])
+    render json: { recorded: result.recorded, cost_usd: result.cost_usd.round(6) }, status: :created
+  rescue LiveConversations::Actions::Refused => e
+    render json: { error: e.message }, status: e.status
+  end
+
   def tool_calls
     render json: actions.tool_call(name: params[:name].to_s, arguments: params[:arguments], call_id: params[:call_id].to_s)
   rescue LiveConversations::Actions::Refused => e
@@ -101,11 +125,12 @@ class LiveConversationsController < ApplicationController
 
   # `listening_modes`: the dock asks for each reply itself when Listening is
   # gated. `reattaches`: it can move a call to another conversation.
-  # `hangs_up`: it closes the call when a tool call answers `hang_up`. The
+  # `hangs_up`: it closes the call when a tool call answers `hang_up`.
+  # `engines`: the experimental voice engines it can run (VoiceEngine). The
   # author is the web UI's human, as for every other message typed here.
   def actions
     LiveConversations::Actions.new(@conversation, client_surface: "web", listening_modes: params[:listening_modes].present?,
                                                   reattaches: params[:reattaches].present?, hangs_up: params[:hangs_up].present?,
-                                                  author: LiveConversations::Author.web_ui)
+                                                  author: LiveConversations::Author.web_ui, engines: Array(params[:engines]))
   end
 end
