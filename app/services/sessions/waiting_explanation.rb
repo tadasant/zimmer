@@ -455,8 +455,8 @@ module Sessions
         "pending_wake",
         tone: INFO,
         headline: at ? "Asleep until #{at.utc.strftime('%b %-d, %H:%M')} UTC" : "Asleep on a wake-up",
-        body: [ "#{phrase.upcase_first}. It wakes on its own; a message sent now reaches " \
-                "it without cancelling the wake-up." ],
+        body: [ "#{phrase.upcase_first}. It wakes on its own; a message sent now wakes it for one turn " \
+                "straight away, and it goes back to this wait after answering." ],
         details: { at: iso(at), phrase: phrase }
       )
     end

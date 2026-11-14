@@ -16,6 +16,22 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_not_includes prompt, "you are heard, not read"
   end
 
+  # A sleeping session reads `waiting` / "Paused" both before a follow-up and
+  # after answering one; an assistant without this line read that as
+  # non-delivery and escalated through start_now, restart and force_start.
+  test "both modes say a follow-up reaches a sleeping session and how to read its answer" do
+    conversation = create_live_conversation(mode: "text")
+    %w[text voice].each do |mode|
+      conversation.switch_mode!(mode) unless conversation.live_mode.key == mode
+      prompt = LiveConversations::SystemPrompt.build(conversation)
+
+      assert_includes prompt, "action `follow_up`. That is the only way to deliver it."
+      assert_includes prompt, "still takes a follow-up straight away"
+      assert_includes prompt, "Never use `start_now`, `restart` or `force_start` to deliver a message"
+      assert_includes prompt, "`transcript_last_messages: 2`"
+    end
+  end
+
   test "spoken: the spoken style, and nothing of the typed one" do
     prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "voice"))
 

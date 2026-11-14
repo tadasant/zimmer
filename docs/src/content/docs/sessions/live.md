@@ -238,6 +238,20 @@ To merge, the live model uses `authorize_merge`, the Merge button by voice: Zimm
 by repository and number, and only your yes to that read-back sends the merge. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 
+### Telling a session something
+
+The live model sends anything for an existing session with `action_session` `follow_up`, and Zimmer's
+section of its prompt says that is the only way. A session asleep on its own wake-up looks the same
+before and after: `waiting`, and "Paused … asleep until" a time. That pause holds back the
+schedulers, not a message. A follow-up wakes the session for one turn straight away, and it goes back
+to its wait once it has answered.
+
+So the live model says the message is sent, then checks back with `get_session` and
+`transcript_last_messages: 2` and tells you what the session said. `Dormant because:
+follow_up_resleep` means the session has answered. It does not reach for `start_now`, `restart` or
+`force_start` to deliver anything. Those refuse a sleeping session, and their refusals say to
+send a follow-up instead, and whether the last one was already answered.
+
 ### Finding an earlier session
 
 People ask for a session the way they remember it: "the one where we diagnosed the live mode

@@ -1747,7 +1747,8 @@ class Api::V1::SessionsController < Api::BaseController
       "Cannot restart",
       "Session #{@session.id} is asleep on a wake-up it has not reached yet " \
       "(#{@session.pending_wake_phrase}). A pause outranks precedence and scheduling class, so this " \
-      "session does not start early — it wakes on its own schedule.",
+      "session does not start early — it wakes on its own schedule. " \
+      "#{Sessions::SleeperGuidance.refusal_tail(@session, paused: true)}".rstrip,
       status: :unprocessable_entity
     )
     true
