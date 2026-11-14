@@ -280,10 +280,13 @@ struct TitleWithAgentRoot: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The bars' own title face (`Theme`'s `titleTextAttributes`), so this page's title
+            // matches every other screen's and does not change size on a push.
             Text(verbatim: title)
-                .font(.headline)
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Theme.ink)
                 .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
             if let root, !root.isEmpty {
                 // The header chip's glyph, so it reads as the same thing.
                 HStack(spacing: 3) {
