@@ -267,4 +267,36 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes output, "1. priority (ID: #{priority.id})"
     assert_includes output, "Ordered top to bottom exactly as the human sees it"
   end
+
+  # Same filters, different order: last_touched honours status and visibility,
+  # pages, and the hidden count prints in board order too.
+  test "order last_touched keeps the filters and pages, and the carplay count shows in board order too" do
+    freeze_time do
+      older = make_session(title: "older")
+      older.update!(metadata: (older.metadata || {}).merge("last_user_activity_at" => 2.hours.ago.iso8601))
+      newer = make_session(title: "newer")
+      newer.update!(metadata: (newer.metadata || {}).merge("last_user_activity_at" => 1.hour.ago.iso8601))
+      make_session(status: :running, title: "running one")
+      snoozed = make_session(title: "snoozed one")
+      snoozed.update!(metadata: (snoozed.metadata || {}).merge("last_user_activity_at" => 1.minute.ago.iso8601))
+      snoozed.update_columns(visibility: SessionVisibility::HIDDEN)
+      laptop = make_session(title: "needs the mac")
+      laptop.update!(carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+
+      first = @read.call({ "order" => "last_touched", "per_page" => 1, "visibility" => "on_board", "carplay_fit" => "not_laptop_only" })
+      assert_not_includes first, "running one"
+      assert_includes first, "1. newer (ID: #{newer.id})", "the hidden row touched a minute ago is off the board"
+      assert_includes first, "page 1 of"
+      assert_includes first, "*More rows. Use page=2.*"
+
+      all_rows = @read.call({ "order" => "last_touched", "status" => [ "needs_input" ] })
+      assert_not_includes all_rows, "running one"
+      assert_not_includes all_rows, "snoozed one"
+      assert_operator all_rows.index("newer"), :<, all_rows.index("older")
+
+      board = @read.call({ "carplay_fit" => "not_laptop_only" })
+      assert_includes board, "The carplay_fit filter (not_laptop_only) left out 1 row(s)"
+      assert_includes board, "That is the whole board."
+    end
+  end
 end
