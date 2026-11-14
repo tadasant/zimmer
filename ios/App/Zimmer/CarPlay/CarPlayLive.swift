@@ -33,6 +33,9 @@ import os
 ///   while the driver is heard and turn detection has not ended the turn (Hearing you);
 /// - a gear, the leading bar button, to the voice settings.
 ///
+/// The same voice settings are on the home too, as a tile beside the Live tiles while nothing is
+/// under way (`openSettingsFromHome`): no call ends for them and none comes back when they close.
+///
 /// **Send now ends the driver's turn when turn detection has not.** One tap, no confirmation:
 /// the speech heard so far goes up and the reply is asked for (`LiveCall.sendNow`,
 /// `RealtimeConductor.endTurn`). It is there only while there is speech to send, so it is never
@@ -120,6 +123,9 @@ final class CarPlayLive {
     }
 
     var tiles: [LiveTalkTile] { retry.tiles(callIsActive: call.isActive, conversationOpen: conversationOpen) }
+
+    /// Whether the home shows its Voice settings tile: nothing under way, and the panel not up.
+    var offersSettings: Bool { settings == nil && retry.offersSettings(callIsActive: call.isActive) }
 
     /// Whether there is anything to continue, for the tiles. Only a read, so the car stays
     /// silent, and only once the driver has stopped asking for a call: until then the tiles are
@@ -303,9 +309,18 @@ final class CarPlayLive {
 
     // MARK: - The voice settings
 
+    /// The home's Voice settings tile: the panel, with no call to end or bring back. Offered only
+    /// while nothing is under way (`offersSettings`); a tap that arrives after a call started is
+    /// dropped, because the call screen has its own gear.
+    func openSettingsFromHome() {
+        guard navigator != nil, offersSettings else { return }
+        telemetry.track(.carPlay("settings_opened", ["state": .string("home")]))
+        showSettings(fromCall: false)
+    }
+
     /// The gear: end the call, take its screen down, and put the panel up.
     private func openSettings() {
-        guard let navigator, settings == nil,
+        guard navigator != nil, settings == nil,
               let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted) else { return }
         telemetry.track(.carPlay("settings_opened", ["state": .string(String(describing: call.state))]))
         #if DEBUG
@@ -316,7 +331,13 @@ final class CarPlayLive {
         retry.stopped()
         call.hangUp()
         dismiss()
-        let panel = CarPlayVoiceSettings(api: AppEnvironment.shared.connection.api.live(from: .carplay))
+        showSettings(fromCall: true)
+    }
+
+    /// Push the panel. From the call, a panel CarPlay refuses brings the call straight back.
+    private func showSettings(fromCall: Bool) {
+        guard let navigator, settings == nil else { return }
+        let panel = CarPlayVoiceSettings(api: AppEnvironment.shared.connection.api.live(from: .carplay), fromCall: fromCall)
         panel.onClose = { [weak self] in self?.closeSettings() }
         panel.onWritten = { [telemetry] what in telemetry.track(.carPlay("settings_changed", ["what": .string(what)])) }
         settings = panel
@@ -330,17 +351,21 @@ final class CarPlayLive {
                 self.settingsMayHaveClosed()
                 await panel.load()
             } else {
-                // No panel: the driver has lost the call for nothing, so it comes straight back.
+                // No panel: from the call, the driver has lost it for nothing, so it comes
+                // straight back.
                 self.telemetry.track(.carPlay("settings_refused", level: .warn))
                 self.settings = nil
                 self.settingsClosing = false
-                self.callBack()
+                if fromCall { self.callBack() }
+                // After the call-back decision, so the home never offers the tile in between.
+                self.onChange?()
             }
         }
     }
 
-    /// The panel closed, by its own Back to the call or by CarPlay's. It waits for the driver's
-    /// last write, saying Saving…, so the call is minted from what the driver chose. A write that
+    /// The panel closed, by its own Back to the call (Done, from the home) or by CarPlay's. It
+    /// waits for the driver's last write, saying Saving…, so a call is minted from what the driver
+    /// chose. Only a panel the gear opened calls back; one the home opened calls nobody. A write that
     /// failed keeps the panel up to say so, and the next Back closes it on what the row holds.
     /// With CarPlay's Back there is no panel left to say it on, so the log does.
     private func closeSettings() {
@@ -360,7 +385,9 @@ final class CarPlayLive {
             self.settings = nil
             self.settingsOnStack = false
             await self.navigator?.pop(panel.template)
-            self.callBack()
+            if panel.fromCall { self.callBack() }
+            // After the call-back decision, so the home never offers the tile in between.
+            self.onChange?()
         }
     }
 

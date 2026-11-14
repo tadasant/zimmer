@@ -11,10 +11,15 @@ import os
 /// CarPlay to refuse, and nothing here is deeper than the one screen. Every row is a name and a
 /// value, a choice is one tap, and the way back is at the top of the list. CarPlay's own Back
 /// knows only the one template, so from a row's choices it closes the panel.
+///
+/// Opened from the call screen's gear its way out is *Back to the call*, which calls again; opened
+/// from the home's Voice settings tile there is no call, and the way out is *Done*.
 @MainActor
 final class CarPlayVoiceSettings {
     let template = CPListTemplate(title: "Voice settings", sections: [])
-    /// Back to the call.
+    /// The gear opened it, on a call that comes back when it closes. False from the home's tile.
+    let fromCall: Bool
+    /// Back to the call, or to the home.
     var onClose: (() -> Void)?
     /// A write landed, naming what it changed.
     var onWritten: ((String) -> Void)? {
@@ -26,7 +31,8 @@ final class CarPlayVoiceSettings {
     /// a tap that changed nothing got.
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
-    init(api: any LiveAPI) {
+    init(api: any LiveAPI, fromCall: Bool) {
+        self.fromCall = fromCall
         model = CarVoiceSettingsModel(api: api)
         model.onChange = { [weak self] in self?.draw() }
         draw()
@@ -61,7 +67,7 @@ final class CarPlayVoiceSettings {
             template.updateSections([CPListSection(items: top + choices)])
             return
         }
-        top.insert(item("Back to the call", detail: model.saving ? "Saving…" : nil) { [weak self] in self?.onClose?() }, at: 0)
+        top.insert(item(fromCall ? "Back to the call" : "Done", detail: model.saving ? "Saving…" : nil) { [weak self] in self?.onClose?() }, at: 0)
         guard let settings = model.settings else {
             if model.problem == nil { top.append(item("Loading…")) }
             template.updateSections([CPListSection(items: top)])
@@ -80,7 +86,8 @@ final class CarPlayVoiceSettings {
     }
 
     private func resetDetail(_ settings: CarVoiceSettings) -> String {
-        settings.canReset ? "Takes effect when the call comes back" : "Already on the defaults"
+        guard settings.canReset else { return "Already on the defaults" }
+        return fromCall ? "Takes effect when the call comes back" : "Takes effect on the next call"
     }
 
     private func item(_ text: String, detail: String? = nil, tapped: (@MainActor @Sendable () -> Void)? = nil) -> CPListItem {
