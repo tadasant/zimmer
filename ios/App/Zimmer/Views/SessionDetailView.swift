@@ -544,6 +544,12 @@ struct SessionDetailView: View {
     @State private var jumps = 0
     /// Where the strip ends, in global coordinates: the top of what the page shows.
     @State private var stripBottom: CGFloat = 0
+    /// The top of what the scroll view shows, under the navigation bar, in global coordinates:
+    /// the edge when the page has no strip.
+    @State private var scrollTop: CGFloat = 0
+    /// The bottom of the header's agent root chip, in global coordinates; nil while it is not
+    /// drawn. Once it has scrolled up out of sight the title carries the root instead.
+    @State private var rootChipBottom: CGFloat?
     /// Bumped to open the hierarchy's or the human messages' folded row as a chip jumps to it.
     @State private var opensHierarchy = 0
     @State private var opensHumanMessages = 0
@@ -752,6 +758,7 @@ struct SessionDetailView: View {
             .animation(.snappy(duration: 0.3), value: model.detail == nil)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
+        .readsTopEdge($scrollTop)
         // Pinned under the navigation bar, however long the transcript: every section a tap away.
         .safeAreaInset(edge: .top, spacing: 0) {
             if let detail = model.detail {
@@ -982,8 +989,25 @@ struct SessionDetailView: View {
             }
     }
 
+    /// The agent root the title carries: only while the header's own chip is out of sight.
+    private var titleAgentRoot: String? {
+        guard !model.isPlaceholder else { return nil }
+        return TitleAgentRoot.shown(
+            root: model.detail?.session.agentRoot,
+            chipBottom: rootChipBottom.map(Double.init),
+            topEdge: Double(max(stripBottom, scrollTop))
+        )
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // The title, and under it the agent root once the header has scrolled away.
+        ToolbarItem(placement: .principal) {
+            TitleWithAgentRoot(
+                title: model.isPlaceholder ? "Starting…" : "#\(model.id)",
+                root: titleAgentRoot
+            )
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             if let session = model.detail?.session {
                 actionsMenu(session)
@@ -1162,6 +1186,8 @@ struct SessionDetailView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Agent root \(root)")
                     .accessibilityIdentifier("detail.agentRoot")
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { rootChipBottom = $0 }
+                    .onDisappear { rootChipBottom = nil }
                 }
                 Text(verbatim: idAndAge(session))
                     .font(Theme.mono)

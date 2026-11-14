@@ -248,6 +248,10 @@ struct FullScreenTranscript<Conversation: View>: View {
             .navigationTitle(Text(verbatim: "#\(model.id) · Transcript"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // No header here at all, so the root is always under the title.
+                ToolbarItem(placement: .principal) {
+                    TitleWithAgentRoot(title: "#\(model.id) · Transcript", root: model.detail?.session.agentRoot)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         dismiss()
@@ -263,5 +267,44 @@ struct FullScreenTranscript<Conversation: View>: View {
                 Toast(text: $model.notice, identifier: "fullscreen.notice")
             }
         }
+    }
+}
+
+/// A navigation bar's inline title with the session's agent root under it, small and quiet,
+/// as a mail thread's subject sits under its sender: the reader at the end of a long
+/// conversation, the header far above, still sees which root this is. With no root it is the
+/// plain title. The root eases in and out rather than jumping the title up a line.
+struct TitleWithAgentRoot: View {
+    let title: String
+    let root: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(verbatim: title)
+                .font(.headline)
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+            if let root, !root.isEmpty {
+                // The header chip's glyph, so it reads as the same thing.
+                HStack(spacing: 3) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.caption2.weight(.semibold))
+                    Text(verbatim: root)
+                        .font(.system(.caption2, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(Theme.inkSoft)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Agent root \(root)")
+                .accessibilityIdentifier("detail.titleAgentRoot")
+                .transition(.opacity)
+            }
+        }
+        // Two lines in the bar's fixed height: past this size they would be clipped.
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+        .animation(.easeInOut(duration: 0.2), value: root)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("detail.navTitle")
     }
 }
