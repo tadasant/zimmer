@@ -31,6 +31,9 @@ final class SessionActionsTests: XCTestCase {
         // Before the first read: the field is there to type into, and Send waits.
         XCTAssertTrue(SessionDetail.showsComposer(nil))
         XCTAssertFalse(SessionDetail.canSend("Yes, merge it.", detail: nil))
+        // A first read that failed leaves nothing to send to: no composer.
+        XCTAssertFalse(SessionDetail.showsComposer(nil, readFailed: true))
+        XCTAssertTrue(SessionDetail.showsComposer(open, readFailed: true), "a later poll's failure keeps the page's composer")
 
         // Read, and taking follow-ups: the same text can go.
         XCTAssertTrue(SessionDetail.showsComposer(open))

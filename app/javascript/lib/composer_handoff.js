@@ -15,23 +15,23 @@
 // hand-off adds what storage does not hold — where the caret was and whether
 // the field had focus — and covers a browser where storage is unavailable.
 //
-// One slot, one session, one take: a stash for any other session, or one older
-// than MAX_AGE_MS (a body that never connected a composer — an archived
-// session), is never applied.
+// One slot, one take: the first composer to connect empties it, whichever
+// session it belongs to, and applies it only if it is its own and younger than
+// MAX_AGE_MS. A stash nobody takes (a body that brought no composer — an
+// archived session) is replaced by the next one.
 
 const MAX_AGE_MS = 30 * 1000
 
 let pending = null
 
-export function stashComposerHandoff({ sessionId, value, selectionStart, selectionEnd, focused }, now = Date.now()) {
-  if (!sessionId) return
-  pending = { sessionId, value, selectionStart, selectionEnd, focused, at: now }
+export function stashComposerHandoff({ sessionId, value, selectionStart, selectionEnd, focused }) {
+  pending = sessionId ? { sessionId, value, selectionStart, selectionEnd, focused, at: Date.now() } : null
 }
 
-export function takeComposerHandoff(sessionId, now = Date.now()) {
+export function takeComposerHandoff(sessionId) {
   const handoff = pending
-  if (!handoff || handoff.sessionId !== sessionId) return null
   pending = null
-  if (now - handoff.at > MAX_AGE_MS) return null
+  if (!handoff || handoff.sessionId !== sessionId) return null
+  if (Date.now() - handoff.at > MAX_AGE_MS) return null
   return handoff
 }

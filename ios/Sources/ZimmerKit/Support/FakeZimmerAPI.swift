@@ -53,7 +53,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// screen can be photographed showing a change the server has not yet taken.
     public let refuses: Set<String>
     public let writeDelay: Duration?
-    /// How long opening a session (its detail and its conversation) waits before answering,
+    /// How long opening a session (its first detail read) waits before answering,
     /// so a test can act on the page while it is still loading — type into the composer.
     public let readDelay: Duration?
     /// The names `refuses` takes.
@@ -189,7 +189,6 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// As the server: the newest `limit`, positions counted from the start, capped at 200.
     public func conversation(_ id: Int, limit: Int) async throws -> Conversation {
-        if let readDelay { try? await Task.sleep(for: readDelay) }
         let session = try find(id)
         if live, session.status == .running {
             let reads = conversationReads[id, default: 0]

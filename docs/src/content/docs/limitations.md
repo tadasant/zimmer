@@ -6192,6 +6192,10 @@ Also:
   again. A drawer link that cannot tell whether its session is archived, such as a hierarchy node,
   still shows the early composer. If the session is archived, that text stays as a draft with no
   composer to show it until the session is unarchived.
+- The drawer's early composer starts from the session's local draft only. It cannot see a follow-up
+  the server recovered after it went undelivered (`sent_message`). If you type into it, your text
+  becomes the draft, and a draft outranks the recovered message, so the recovered one is not
+  preloaded into the composer. It is still listed under undelivered messages.
 - `start_url` in the web manifest is `/`, so a cold relaunch of the PWA lands on the dashboard rather
   than the session you were reading. The composer draft is keyed by session id and is still there
   when you navigate back, but you have to navigate back.
