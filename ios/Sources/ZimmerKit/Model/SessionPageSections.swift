@@ -45,3 +45,17 @@ public enum ConversationReading {
         return shown.last(where: { above.contains($0.id) })?.id ?? shown.first?.id
     }
 }
+
+/// The session's agent root, small under the page's title, for as long as the header's own root
+/// chip is scrolled out of sight: reading the end of a long conversation, the header is far off
+/// the top and the root with it. Never both at once.
+public enum TitleAgentRoot {
+    /// The root to draw under the title, or nil. `chipBottom` is the bottom of the header's root
+    /// chip and `topEdge` the top of what the page shows (under the bar and the section strip),
+    /// both in the same coordinates; `chipBottom` is nil while the chip is not laid out. A chip
+    /// with any part still in view is enough, so the subtitle comes in only once it has gone.
+    public static func shown(root: String?, chipBottom: Double?, topEdge: Double) -> String? {
+        guard let root, !root.isEmpty, let chipBottom else { return nil }
+        return chipBottom <= topEdge ? root : nil
+    }
+}

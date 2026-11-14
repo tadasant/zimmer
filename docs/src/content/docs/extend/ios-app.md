@@ -107,7 +107,11 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
 - **Opens a session**, laid out the way the web UI's phone page is: the title, then one line of
   chips (status, priority class, the agent root, `#id` and age, each PR coloured by state with its
   CI dot, board visibility) and one line of what runs it (runtime, model, effort). The root
-  sits beside the status, so which root a session runs under reads without opening anything. Then *Where
+  sits beside the status, so which root a session runs under reads without opening anything. Once
+  that chip has scrolled up out of sight (reading the end of a long transcript, say), the root
+  appears in small grey type under the `#id` title in the navigation bar, and goes again when the
+  header is back, so it is never shown twice. The full-screen transcript, which has no header,
+  always carries it there. Then *Where
   things stand* with how fresh it is ("as of 12m · 2 new since", the web's "messages since summary
   generated"), *Regenerate*, and *Newest message*, which scrolls to the end of the transcript. The
   page opens here, on the summary, not on the transcript. A session with no summary yet says so in
