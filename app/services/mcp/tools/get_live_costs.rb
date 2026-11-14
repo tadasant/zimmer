@@ -11,7 +11,7 @@ module Mcp
       description <<~DESC
         Read what Live Mode's voice engines have cost, from the voice-engine ledger: OpenAI Realtime (the default), GPT-Live with Claude reasoning, and the LiveKit cascade.
 
-        Returns JSON for a window: totals; per engine the spend, spend per conversation, delegations, average delegation round trip, time-to-first-audio p50/p90, errors and fallbacks; spend by operation and model with token, audio and second volumes; spend by day; the most expensive conversations; today's spend against each experimental engine's caps; and whether each engine can run. Every row was priced from the price table version it names. Change the engine and caps with `action_live_settings` (the caps are a person's to change, on the page).
+        Returns JSON for a window: totals; per engine the spend, spend per conversation, delegations, average delegation round trip, time-to-first-audio p50/p90, errors and fallbacks; spend by operation and model with token, audio and second volumes; spend by day; the most expensive conversations; today's spend against each experimental engine's caps; and whether each engine can run. Every row was priced from the price table version it names. Change the engine, the Claude model and the caps with `action_live_settings` (the live model itself cannot change the caps).
       DESC
 
       input_schema({

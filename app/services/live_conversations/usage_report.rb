@@ -30,18 +30,27 @@ module LiveConversations
 
     Result = Data.define(:recorded, :cost_usd)
 
-    def self.call(conversation, events, setting: LiveSetting.current) = new(conversation, setting: setting).call(events)
+    # @param model [String, nil] the Realtime model the client's call runs on,
+    #   from its mint. Taken only when it is one the Live settings offer;
+    #   otherwise the conversation's own model column.
+    def self.call(conversation, events, setting: LiveSetting.current, model: nil) = new(conversation, setting: setting, model: model).call(events)
 
-    def initialize(conversation, setting:)
+    def initialize(conversation, setting:, model: nil)
       @conversation = conversation
       @setting = setting
+      @model = model.to_s if LiveSetting.options_for(LiveSetting.field(:voice_model)).key?(model.to_s)
     end
 
     def call(events)
       events = Array(events)
       raise Invalid, "events must be a list of at most #{MAX_EVENTS}." if events.size > MAX_EVENTS
 
-      rows = events.map { |event| attributes_for(event.respond_to?(:to_unsafe_h) ? event.to_unsafe_h : event.to_h) }
+      rows = events.map do |event|
+        event = event.to_unsafe_h if event.respond_to?(:to_unsafe_h)
+        raise Invalid, "each event must be an object." unless event.is_a?(Hash)
+
+        attributes_for(event)
+      end
       # A row already on the ledger under the same key is a retry: not counted again.
       recorded = rows.map { |row| LiveUsageEvent.record!(**row) }.select(&:previously_new_record?)
       Result.new(recorded: recorded.size, cost_usd: recorded.sum { |row| row.cost_usd.to_f })
@@ -56,6 +65,11 @@ module LiveConversations
       allowed = CLIENT_OPERATIONS[operation]
       raise Invalid, "operation must be one of: #{CLIENT_OPERATIONS.keys.join(', ')}." unless allowed
       raise Invalid, "#{operation} is not reported for engine #{engine.inspect}." unless allowed.include?(engine)
+      # GPT-Live's billed seconds come from the call that ran on it, never from
+      # one Zimmer sent elsewhere.
+      if operation == "voice_session" && @conversation.voice_engine != engine
+        raise Invalid, "this conversation's call is not running on #{engine}."
+      end
 
       key = event["key"].to_s
       raise Invalid, "each event needs a key of at most 100 letters, digits or _.:-" unless KEY.match?(key)
@@ -76,7 +90,7 @@ module LiveConversations
 
     def vendor_and_model(operation)
       case operation
-      when "voice_tokens" then { vendor: "openai_realtime", model: @conversation.model.presence || @setting.effective(:voice_model) }
+      when "voice_tokens" then { vendor: "openai_realtime", model: @model || @conversation.model.presence || @setting.effective(:voice_model) }
       when "transcription" then { vendor: "openai_transcription", model: @setting.effective(:voice_transcription_model) }
       when "voice_session" then { vendor: "openai_live", model: GptLiveSession::MODEL }
       else { vendor: "zimmer", model: nil }

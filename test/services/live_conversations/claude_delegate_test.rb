@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
   setup do
@@ -48,6 +49,38 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     tool_row = LiveUsageEvent.find_by!(operation: "tool_call")
     assert_equal "get_live_settings", tool_row.model
     assert_equal 0, tool_row.cost_usd
+  end
+
+  test "a delegation is priced on the model asked for, even when the API answers with a dated snapshot" do
+    claude = LiveConversationHelpers::FakeClaude.new(responses: [
+      LiveConversationHelpers::FakeClaude.text("Done.", model: "claude-sonnet-5-5-20261101", input: 1_000_000)
+    ])
+
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
+
+    row = LiveUsageEvent.sole
+    assert_equal "claude-sonnet-5-5", row.model
+    assert row.priced
+    assert_in_delta 2.0 + 0.001, row.cost_usd.to_f, 0.000001
+    assert_equal "claude-sonnet-5-5-20261101", row.details["response_model"]
+  end
+
+  test "the last round may not call tools, so nothing runs whose result nobody reads" do
+    responses = Array.new(LiveConversations::ClaudeDelegate::MAX_ROUNDS - 1) { |i| LiveConversationHelpers::FakeClaude.tool("get_live_settings", id: "toolu_#{i}") }
+    claude = LiveConversationHelpers::FakeClaude.new(responses: responses + [ LiveConversationHelpers::FakeClaude.text("Here's what I found.") ])
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
+
+    assert_equal "Here's what I found.", result.text
+    assert_equal [ nil ] * (LiveConversations::ClaudeDelegate::MAX_ROUNDS - 1) + [ { "type" => "none" } ], claude.requests.map { |r| r["tool_choice"] }
+  end
+
+  test "a missing key is not spoken as a backend failure: it is a 503 for the dock" do
+    LiveConversations::ClaudeClient.stubs(:api_key).returns(nil)
+
+    assert_raises(LiveConversations::ClaudeClient::NotConfiguredError) do
+      LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d")
+    end
   end
 
   test "a hang-up ends the call once the goodbye is said" do
@@ -99,5 +132,10 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     assert_operator chunks.size, :>, 1
     assert chunks.all? { |chunk| chunk.length <= LiveConversations::ClaudeDelegate::CHUNK_CHARS }
     assert_equal ("This is one sentence of the answer. " * 120).squish, chunks.join(" ")
+
+    run_on = "word " * 700 # one 3,500-character sentence
+    split = LiveConversations::ClaudeDelegate.chunk(run_on)
+    assert split.all? { |chunk| chunk.length <= LiveConversations::ClaudeDelegate::CHUNK_CHARS }
+    assert_equal run_on.squish, split.join(" "), "nothing of a long sentence is dropped"
   end
 end

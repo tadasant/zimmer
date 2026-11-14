@@ -44,7 +44,9 @@ module LiveConversations
 
     # @return [Hash] the message, string keys
     def create_message(**params)
-      JSON.parse(@client.messages.create(**params).to_json)
+      # Per request: the gem applies a client-level timeout only when it is
+      # its own default, and otherwise falls back to ten minutes.
+      JSON.parse(@client.messages.create(**params, request_options: { timeout: TIMEOUT_SECONDS }).to_json)
     rescue Anthropic::Errors::APIError => e
       raise Error, "Claude: #{e.message.to_s.truncate(300)}"
     end

@@ -91,6 +91,12 @@ export default class extends Controller {
     }
     this.onQuery = () => this.broadcast()
     this.onSettingsChanged = () => this.refreshSession()
+    // The tab is closing: the call's usage so far goes to the ledger first.
+    this.onPageHide = () => {
+      this.usage?.flush({ keepalive: true })
+      this.gptLive?.pageHidden()
+    }
+    window.addEventListener("pagehide", this.onPageHide)
     window.addEventListener("live-voice:start", this.onStart)
     window.addEventListener("live-voice:settings-changed", this.onSettingsChanged)
     window.addEventListener("live-voice:hangup", this.onHangup)
@@ -100,6 +106,7 @@ export default class extends Controller {
   }
 
   disconnect() {
+    window.removeEventListener("pagehide", this.onPageHide)
     window.removeEventListener("live-voice:start", this.onStart)
     window.removeEventListener("live-voice:hangup", this.onHangup)
     window.removeEventListener("live-voice:query", this.onQuery)
@@ -129,7 +136,7 @@ export default class extends Controller {
       if (session.engine === "gpt_live_claude") return await this.startGptLive(call, session, mine, muted)
       const fallback = session.voice_engine?.fallback_reason
       if (fallback) this.showError(`On OpenAI Realtime: ${fallback}.`)
-      this.usage = new LiveUsageReporter(`/live_conversations/${call.conversationId}/usage`, "openai_realtime")
+      this.usage = new LiveUsageReporter(`/live_conversations/${call.conversationId}/usage`, "openai_realtime", { model: session.model })
       this.gated = ["wake_word", "dynamic"].includes(session.listening)
 
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })

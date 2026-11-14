@@ -44,6 +44,9 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_equal LiveConversations::CostReport::CSV_COLUMNS.join(","), lines.first
     assert_equal 7, lines.size
     assert_includes lines.last, "not built"
+
+    LiveUsageEvent.record!(engine: "openai_realtime", operation: "turn_latency", vendor: "zimmer", error: "=HYPERLINK(\"x\")")
+    assert_includes LiveConversations::CostReport.new(days: 7).to_csv, %("'=HYPERLINK(""x"")")
   end
 
   test "refuses an engine that does not exist" do

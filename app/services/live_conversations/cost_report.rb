@@ -18,7 +18,8 @@ module LiveConversations
     attr_reader :from, :to, :engine
 
     def initialize(days: nil, from: nil, to: nil, engine: nil, now: Time.current)
-      @to = (to || now).ceil(60) # whole minutes, so two requests a second apart agree
+      # Up to the next whole minute, so two requests a second apart agree.
+      @to = (to || now).change(sec: 0) + 1.minute
       days = days.to_i.clamp(1, MAX_DAYS) if days.present?
       @from = from || (@to - (days || DEFAULT_DAYS).days)
       @from = [ @from, @to - MAX_DAYS.days ].max
@@ -135,8 +136,11 @@ module LiveConversations
 
     private
 
+    # Quoted where it must be, and a leading = + - @ neutralised: `error` can
+    # come from a client, and a spreadsheet would run it as a formula.
     def csv_cell(value)
       text = value.to_s
+      text = "'#{text}" if value.is_a?(String) && text.match?(/\A[=+\-@]/)
       text.match?(/[",\r\n]/) ? "\"#{text.gsub('"', '""')}\"" : text
     end
 

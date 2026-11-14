@@ -6,14 +6,18 @@ import { csrfHeaders } from "lib/csrf"
 // Each event carries a key unique to the call, so a batch sent twice counts once.
 //
 // Batched: events wait up to FLUSH_MS, and whatever is left goes when the call
-// ends (with keepalive, so a closing tab still delivers it).
+// ends or the tab closes (the dock flushes on `pagehide`, with keepalive, so the
+// request outlives the page).
 const FLUSH_MS = 5000
 const MAX_BATCH = 50
 
 export class LiveUsageReporter {
-  constructor(url, engine) {
+  // `model`: the Realtime model the call runs on, from its mint, so its tokens
+  // are priced on that model even if the conversation's own changes meanwhile.
+  constructor(url, engine, { model } = {}) {
     this.url = url
     this.engine = engine
+    this.model = model
     this.queue = []
     this.callKey = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
     this.seq = 0
@@ -43,7 +47,7 @@ export class LiveUsageReporter {
       credentials: "same-origin",
       keepalive,
       headers: csrfHeaders({ Accept: "application/json" }),
-      body: JSON.stringify({ events })
+      body: JSON.stringify({ events, model: this.model })
     }).catch(() => {})
     if (this.queue.length) this.flush({ keepalive })
   }
