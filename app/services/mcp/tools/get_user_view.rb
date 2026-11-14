@@ -36,7 +36,8 @@ module Mcp
       # `board` is the order the User view is drawn in (Sessions::UserView).
       # `last_touched` is the dashboard's "Sort By Last Touched" flat view —
       # Session::LAST_TOUCHED_ORDER, the same SQL the web and
-      # `GET /api/v1/sessions?view=last_touched` use, so the three cannot disagree.
+      # `GET /api/v1/sessions?view=last_touched` use, with the API's `id desc`
+      # tie-break.
       ORDER_BOARD = "board"
       ORDER_LAST_TOUCHED = SessionsController::VIEW_MODE_LAST_TOUCHED
       ORDERS = [ ORDER_BOARD, ORDER_LAST_TOUCHED ].freeze
@@ -303,7 +304,6 @@ module Mcp
       # reply says out loud.
       def last_touched(session)
         at = session.last_user_activity_at
-        return "never" if at.nil?
 
         # The accessor falls back to created_at when nothing usable was recorded.
         touched = at == session.created_at ? " (never touched — this is when it was created)" : ""
