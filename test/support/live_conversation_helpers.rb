@@ -145,8 +145,10 @@ module LiveConversationHelpers
     end
   end
 
-  def stub_claude_key(value = "sk-ant-test-live")
-    LiveConversations::ClaudeClient.stubs(:api_key).returns(value)
+  # Live Mode's Claude runs on Zimmer's current Claude Code account (the
+  # `primary` fixture, which carries a token). This takes it away.
+  def without_claude_code_account
+    ClaudeAccount.for_runtime(ClaudeAuthProvider::RUNTIME).update_all(is_current: false)
   end
 
   def use_voice_engine(engine, **settings)

@@ -42,6 +42,13 @@
 # TURN_DETECTION_KNOBS is that split, `inactive_keys` is what follows from it for
 # the row, and every surface that shows or writes a setting says so.
 class LiveSetting < ApplicationRecord
+  # Phase 1 of a two-phase drop (AGENTS.md "Dropping a column takes two
+  # deploys"): `voice_claude_billing` chose how Claude's tokens were counted
+  # when Claude ran on an API key. Claude runs on Zimmer's own subscription
+  # credential now, so its use is always subscription-billed and the setting is
+  # gone. A later PR drops the column.
+  self.ignored_columns += [ "voice_claude_billing" ]
+
   Field = Data.define(:key, :path, :type, :label, :help, :options, :min, :max) do
     def text? = path == :text
     def voice? = path == :voice
@@ -139,16 +146,6 @@ class LiveSetting < ApplicationRecord
   # The Claude model the experimental engines reason with.
   CLAUDE_MODELS = ModelCatalog::LIVE_CLAUDE_MODELS
 
-  # How Claude's use by the experimental engines is billed, which decides what
-  # it costs here: `metered` is money per token, at list price; `subscription`
-  # is a flat plan, so its tokens are recorded at list price but cost nothing at
-  # the margin. Zimmer calls Claude with LIVE_ANTHROPIC_API_KEY either way: this
-  # changes the accounting, not the credential (see ClaudeClient).
-  CLAUDE_BILLING = {
-    "metered" => "Metered API — every token billed at list price (default)",
-    "subscription" => "Subscription — a flat plan: tokens recorded at list price, billed at $0"
-  }.freeze
-
   GUIDANCE_MAX_LENGTH = 8_000
 
   FIELDS = [
@@ -204,14 +201,11 @@ class LiveSetting < ApplicationRecord
               help: "How much the phone and the car report about each voice call, to the shipped logs. Takes effect on the next call.",
               options: TELEMETRY, min: nil, max: nil),
     Field.new(key: :voice_engine, path: :engine, type: :enum, label: "Voice engine",
-              help: "What runs a voice call. Takes effect on the next call. An engine that cannot run — a key not set, an app that cannot speak it, a spend cap reached — falls back to OpenAI Realtime, and the call says why.",
+              help: "What runs a voice call. Takes effect on the next call. An engine that cannot run — a missing OpenAI key or Claude Code account, an app that cannot speak it, a spend cap reached — falls back to OpenAI Realtime, and the call says why.",
               options: VOICE_ENGINES, min: nil, max: nil),
     Field.new(key: :voice_claude_model, path: :engine, type: :enum, label: "Claude model",
-              help: "The model the experimental engines reason and run tools with. Takes effect on the next delegation.",
+              help: "The model the experimental engines reason and run tools with, on Zimmer's own Claude Code subscription — the account agent sessions run on, so its use counts against the same quota windows. No Anthropic key is needed. Takes effect on the next delegation.",
               options: CLAUDE_MODELS, min: nil, max: nil),
-    Field.new(key: :voice_claude_billing, path: :engine, type: :enum, label: "Claude billing",
-              help: "Whether Claude's tokens count as billed on Live costs, which always shows the list price beside what was billed. This changes the accounting only: until a subscription credential is wired, Zimmer still calls Claude with the API key, which is metered, so the spend caps keep counting Claude at list price either way.",
-              options: CLAUDE_BILLING, min: nil, max: nil),
     Field.new(key: :voice_engine_conversation_cap_usd, path: :engine, type: :float, label: "Per-conversation cap (USD)",
               help: "The most an experimental engine may spend on one conversation. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",
               options: nil, min: 0.1, max: 100.0),
@@ -254,7 +248,6 @@ class LiveSetting < ApplicationRecord
     when :voice_telemetry then "debug"
     when :voice_engine then "openai_realtime"
     when :voice_claude_model then ModelCatalog::LIVE_CLAUDE_DEFAULT
-    when :voice_claude_billing then "metered"
     when :voice_engine_conversation_cap_usd then 2.0
     when :voice_engine_daily_cap_usd then 10.0
     end

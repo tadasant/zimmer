@@ -20,10 +20,13 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
 
     report = LiveConversations::CostReport.new(days: 7).as_api_json
 
-    assert_in_delta 0.1 + 0.03 + 0.2, report[:totals][:billed_usd], 0.000001
+    # Claude's $0.03 is on the subscription: at list price, not billed.
+    assert_in_delta 0.1 + 0.2, report[:totals][:billed_usd], 0.000001
+    assert_in_delta 0.1 + 0.03 + 0.2, report[:totals][:list_usd], 0.000001
     gpt_row = report[:by_mode].find { |row| row[:engine] == "gpt_live_claude" }
     assert_equal "gpt-live-1 + claude-sonnet-5-5", gpt_row[:mode]
-    assert_in_delta 0.13, gpt_row[:billed_usd], 0.000001
+    assert_in_delta 0.1, gpt_row[:billed_usd], 0.000001
+    assert_in_delta 0.13, gpt_row[:list_usd], 0.000001
     assert_equal 1, gpt_row[:delegations]
     assert_equal 1_800, gpt_row[:avg_delegation_ms]
     assert_equal 1_200, gpt_row[:first_audio_ms_p50]
@@ -31,7 +34,7 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_equal 1, livekit[:fallbacks]
     assert_equal 0, livekit[:conversations], "a fallback is not a conversation the engine ran"
     assert_equal 1, gpt_row[:conversations]
-    assert_in_delta 0.13, gpt_row[:billed_per_conversation_usd], 0.000001
+    assert_in_delta 0.13, gpt_row[:list_per_conversation_usd], 0.000001
     assert_equal [ [ "Realtime call", "openai_realtime" ], [ "GPT call", "gpt_live_claude" ] ], report[:by_conversation].map { |row| row.values_at(:title, :engine) }
     assert_equal %w[gpt_live_claude livekit_claude openai_realtime], report[:by_day].map { |row| row[:engine] }.sort
     assert_equal %w[gpt_live_claude livekit_claude], report[:caps].map { |cap| cap[:engine] }
@@ -83,9 +86,9 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_nil modes.fetch("gpt-realtime-2.1-mini")[:billed_per_minute_usd], "no call timed, no per-minute figure"
   end
 
-  test "Claude on a subscription is recorded at list price and billed at nothing; the caps still count list price" do
+  test "Claude runs on Zimmer's subscription: recorded at list price, billed at nothing, and still counted by the caps" do
     conversation = create_live_conversation(mode: "voice")
-    LiveSetting.editable.update!(voice_claude_billing: "subscription", voice_engine_conversation_cap_usd: 1.0)
+    LiveSetting.editable.update!(voice_engine_conversation_cap_usd: 1.0)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-sonnet-5-5",
                            input_tokens: 1_000_000, live_conversation: conversation)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_session", vendor: "openai_live", model: "gpt-live-1",
@@ -98,7 +101,7 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_in_delta 2.05, totals[:list_usd], 0.000001
     assert_in_delta 0.05, totals[:billed_usd], 0.000001
     assert LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation).blocked?,
-           "the API key is still metered, so marking Claude free must not lift the cap"
+           "the subscription's quota is shared and finite, so list price still counts toward the cap"
   end
 
   test "refuses an engine that does not exist" do

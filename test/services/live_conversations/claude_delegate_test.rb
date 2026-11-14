@@ -75,8 +75,8 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     assert_equal [ nil ] * (LiveConversations::ClaudeDelegate::MAX_ROUNDS - 1) + [ { "type" => "none" } ], claude.requests.map { |r| r["tool_choice"] }
   end
 
-  test "a missing key is not spoken as a backend failure: it is a 503 for the dock" do
-    LiveConversations::ClaudeClient.stubs(:api_key).returns(nil)
+  test "no Claude Code account is not spoken as a backend failure: it is a 503 for the dock" do
+    without_claude_code_account
 
     assert_raises(LiveConversations::ClaudeClient::NotConfiguredError) do
       LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d")
