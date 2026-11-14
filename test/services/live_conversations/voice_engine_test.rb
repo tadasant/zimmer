@@ -82,7 +82,7 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
 end
 
 class LiveConversations::VoiceEngineSettingsTest < ActiveSupport::TestCase
-  test "the live model can switch its engine by voice, but cannot raise its own spend caps" do
+  test "the live model can switch its engine by voice, but cannot raise its own spend caps or call its tokens free" do
     conversation = create_live_conversation(mode: "voice")
     bridge = LiveConversations::ToolBridge.new(conversation)
 
@@ -95,5 +95,8 @@ class LiveConversations::VoiceEngineSettingsTest < ActiveSupport::TestCase
     raised = bridge.execute("update_live_settings", { "voice_engine_daily_cap_usd" => 500 }, call_id: "c2")
     assert raised.error
     assert_equal 10.0, LiveSetting.current.effective(:voice_engine_daily_cap_usd)
+
+    assert bridge.execute("update_live_settings", { "voice_claude_billing" => "subscription" }, call_id: "c3").error
+    assert_equal "metered", LiveSetting.current.effective(:voice_claude_billing)
   end
 end

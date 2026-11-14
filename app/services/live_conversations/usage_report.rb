@@ -23,7 +23,8 @@ module LiveConversations
       "voice_tokens" => %w[openai_realtime],
       "transcription" => %w[openai_realtime],
       "voice_session" => %w[gpt_live_claude],
-      "turn_latency" => LiveUsageEvent::ENGINES
+      "turn_latency" => LiveUsageEvent::ENGINES,
+      "call" => LiveUsageEvent::ENGINES
     }.freeze
 
     class Invalid < StandardError; end
@@ -76,6 +77,7 @@ module LiveConversations
 
       {
         engine: engine, operation: operation, live_conversation: @conversation,
+        mode: VoiceEngine.mode_for(engine, setting: @setting, voice_model: @model),
         idempotency_key: "client:#{@conversation.id}:#{key}",
         **vendor_and_model(operation),
         input_tokens: tokens(event["input_tokens"]), output_tokens: tokens(event["output_tokens"]),

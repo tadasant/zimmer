@@ -20,8 +20,8 @@ import { LiveUsageReporter } from "lib/live_usage_reporter"
 //                as `session.commentary.append`; a cap warning as quiet
 //                `session.thinking.append`; `end_call` hangs up once the
 //                goodbye has been said
-//   cost         the session's seconds, and each turn's time to first audio,
-//                → POST usage (lib/live_usage_reporter)
+//   cost         the session's seconds, each turn's time to first audio, and
+//                the call's length → POST usage (lib/live_usage_reporter)
 //   end          `session.close`, then wait for `session.closed` (its usage)
 //                before closing the peer connection
 //
@@ -211,6 +211,7 @@ export class GptLiveCall {
     this.closeResolve?.()
     this.flushUser()
     this.flushAssistant()
+    if (this.startedAt) this.usage.add("call", { seconds: Math.round(performance.now() - this.startedAt) / 1000 })
     this.reportSession()
     this.channel?.close()
     this.pc?.close()

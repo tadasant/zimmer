@@ -1310,12 +1310,14 @@ changes them through MCP (`action_live_settings`), where the change is recorded 
 ### Live costs
 
 - `GET /live/costs` (`days` 1–365, default 7; `engine` one of `openai_realtime`, `gpt_live_claude`,
-  `livekit_claude`) → `{window, price_version, totals, by_engine, by_operation, by_day,
+  `livekit_claude`) → `{window, price_version, totals, by_mode, by_operation, by_day,
   by_conversation, caps, engines}`: the [voice-engine ledger](/sessions/live/#live-costs) rolled
-  up. 400 for an unknown engine.
+  up. Money is `billed_usd` (metered only) beside `list_usd` (everything at list price). `by_mode`
+  has per-conversation and per-call-minute cost, call minutes, time to first audio p50/p90, the
+  delegation round trip, errors and fallbacks. 400 for an unknown engine.
 - `GET /live/usage_events` (`days`, `engine`, `limit` up to 10,000, default 1,000) → `{window,
-  events: [...]}`: the ledger rows, oldest first, each with its volumes, `cost_usd`, `priced` and
-  `price_version`.
+  events: [...]}`: the ledger rows, oldest first, each with its `mode`, volumes, `cost_usd` (list),
+  `billed_cost_usd`, `billing_basis`, `priced` and `price_version`.
 
 Both are reads, on an API key or the app's sign-in.
 

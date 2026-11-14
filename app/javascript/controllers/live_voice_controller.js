@@ -51,8 +51,9 @@ import { LiveUsageReporter, realtimeUsage } from "lib/live_usage_reporter"
 //                    (lib/gpt_live_call) instead; otherwise it is the Realtime
 //                    call above, and a fallback's reason is shown on the dock.
 //   cost             a Realtime call reports each response's tokens, each
-//                    transcription's tokens and each turn's time to first
-//                    audio to the voice-engine ledger (lib/live_usage_reporter).
+//                    transcription's tokens, each turn's time to first audio
+//                    and, when it ends, its length to the voice-engine ledger
+//                    (lib/live_usage_reporter), as a GPT-Live call does.
 
 // How often a call looks for a switch made somewhere else.
 const FOLLOW_INTERVAL_MS = 5000
@@ -161,6 +162,7 @@ export default class extends Controller {
       this.channel = channel
       channel.onopen = () => {
         if (mine !== this.generation) return
+        this.callStartedAt = performance.now()
         this.setState("listening")
         this.watchCurrent(mine)
         if (moved) this.speakFirst()
@@ -604,6 +606,9 @@ export default class extends Controller {
 
   hangUp({ keepError = false, dropped = false, quiet = false } = {}) {
     this.generation = (this.generation || 0) + 1
+    // The call's length: what cost per minute is reckoned against, on every engine.
+    if (this.callStartedAt) this.usage?.add("call", { seconds: Math.round(performance.now() - this.callStartedAt) / 1000 })
+    this.callStartedAt = null
     this.usage?.flush({ keepalive: true })
     this.usage = null
     this.stoppedAt = null

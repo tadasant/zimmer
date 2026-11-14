@@ -4,7 +4,9 @@ module LiveConversations
   # The spend caps on the experimental voice engines (LiveSetting
   # `voice_engine_conversation_cap_usd` and `voice_engine_daily_cap_usd`).
   #
-  # Spend is the LiveUsageEvent ledger for one engine: what it has cost this
+  # Spend is the billed money on the LiveUsageEvent ledger for one engine (a
+  # Claude subscription's tokens are at list price but billed at $0, so they do
+  # not count; LiveSetting `voice_claude_billing`): what it has cost this
   # conversation, and what it has cost today in the deployment's time zone,
   # across every conversation. At WARN_SHARE of either cap a call is warned
   # (the warning goes to the front end as quiet context and onto the page);
@@ -65,11 +67,15 @@ module LiveConversations
       scope = LiveUsageEvent.for_engine(@engine)
       Check.new(
         engine: @engine,
-        conversation_spend: @conversation&.id ? scope.where(live_conversation_id: @conversation.id).sum(:cost_usd).to_f : 0.0,
-        daily_spend: scope.where(occurred_at: @now.beginning_of_day..).sum(:cost_usd).to_f,
+        conversation_spend: @conversation&.id ? billed(scope.where(live_conversation_id: @conversation.id)) : 0.0,
+        daily_spend: billed(scope.where(occurred_at: @now.beginning_of_day..)),
         conversation_cap: @setting.effective(:voice_engine_conversation_cap_usd).to_f,
         daily_cap: @setting.effective(:voice_engine_daily_cap_usd).to_f
       )
     end
+
+    private
+
+    def billed(scope) = scope.pick(Arel.sql(LiveUsageEvent::BILLED_COST_SQL)).to_f
   end
 end

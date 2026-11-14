@@ -14,13 +14,28 @@
 # - `tool_call`         one Zimmer tool Claude ran (unbilled; counted)
 # - `turn_latency`      a turn's timings as the client measured them (unbilled)
 # - `engine_fallback`   a call that asked for an engine and ran on another
+# - `call`              a whole call's length as the client timed it (unbilled),
+#                       the denominator for cost per minute on every engine
+#
+# `mode` is the engine with the models it ran on — `gpt-realtime-2.1 · effort
+# high`, `gpt-live-1 + claude-sonnet-5-5` — so a mode is compared with another
+# like for like, not just engine with engine (VoiceEngine.mode_for).
+#
+# `cost_usd` is always the list price. `billing_basis` says whether that money
+# was billed (`metered`) or covered by a flat plan (`subscription`, Claude only,
+# by the LiveSetting `voice_claude_billing` in force when the row was written).
+# The caps and the "billed" figures count only metered money; the list price is
+# kept beside it so a subscription's value stays visible.
 #
 # Rows written from a client report carry volumes, never dollars: the price is
 # applied here, from LiveVoicePricing, with the table version that applied it.
 # `idempotency_key` makes a retried report a no-op.
 class LiveUsageEvent < ApplicationRecord
   ENGINES = %w[openai_realtime gpt_live_claude livekit_claude].freeze
-  OPERATIONS = %w[voice_tokens transcription voice_session delegation tool_call turn_latency engine_fallback].freeze
+  OPERATIONS = %w[voice_tokens transcription voice_session delegation tool_call turn_latency engine_fallback call].freeze
+  BILLING_BASES = %w[metered subscription].freeze
+  # Money that was billed, for the caps and the reports: a SQL expression.
+  BILLED_COST_SQL = "COALESCE(SUM(cost_usd) FILTER (WHERE billing_basis = 'metered'), 0)"
   VOLUMES = %i[input_tokens output_tokens cache_read_tokens cache_write_tokens audio_input_tokens audio_output_tokens seconds characters count].freeze
 
   belongs_to :live_conversation, optional: true
@@ -29,8 +44,9 @@ class LiveUsageEvent < ApplicationRecord
   validates :operation, inclusion: { in: OPERATIONS }
   validates :occurred_at, presence: true
   validates :idempotency_key, uniqueness: true, allow_nil: true
+  validates :billing_basis, inclusion: { in: BILLING_BASES }
 
-  before_validation :apply_price, on: :create
+  before_validation :apply_price, :apply_basis_and_mode, on: :create
 
   scope :for_engine, ->(engine) { where(engine: engine) }
   scope :between, ->(from, to) { where(occurred_at: from...to) }
@@ -53,12 +69,25 @@ class LiveUsageEvent < ApplicationRecord
     {
       id: id, live_conversation_id: live_conversation_id, engine: engine, operation: operation, vendor: vendor, model: model,
       **VOLUMES.to_h { |volume| [ volume, volume == :seconds ? seconds.to_f : self[volume] ] },
-      cost_usd: cost_usd.to_f, priced: priced, price_version: price_version,
+      mode: mode, cost_usd: cost_usd.to_f, billed_cost_usd: billed_cost_usd, billing_basis: billing_basis, priced: priced, price_version: price_version,
       latency_ms: latency_ms, first_audio_ms: first_audio_ms, error: error, details: details, occurred_at: occurred_at
     }
   end
 
+  def billed_cost_usd = billing_basis == "metered" ? cost_usd.to_f : 0.0
+
   private
+
+  # Claude's rows follow the Claude billing setting; everything else is metered.
+  # A mode the writer did not name is the engine's under the settings in force.
+  def apply_basis_and_mode
+    setting = nil
+    if vendor.to_s == "anthropic"
+      setting = LiveSetting.current
+      self.billing_basis = setting.effective(:voice_claude_billing)
+    end
+    self.mode ||= LiveConversations::VoiceEngine.mode_for(engine, setting: setting || LiveSetting.current) if engine.present?
+  end
 
   def apply_price
     price = LiveVoicePricing.price(vendor: vendor, model: model, **VOLUMES.to_h { |volume| [ volume, self[volume] ] })

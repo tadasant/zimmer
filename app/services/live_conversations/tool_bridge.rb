@@ -77,8 +77,10 @@ module LiveConversations
     # output cap cuts a response off wherever it lands, and it counts the tool
     # calls the model would need to undo it: a model that wants shorter replies
     # has `append_guidance`. The spend caps are the person's ceiling on what the
-    # experimental engines cost, so the model they bound cannot raise them.
-    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd].freeze
+    # experimental engines cost, so the model they bound cannot raise them, nor
+    # declare its own tokens free by changing how Claude is billed.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd
+                             voice_claude_billing].freeze
     SETTINGS_CHANGED = "Changed:"
     SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
     SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."

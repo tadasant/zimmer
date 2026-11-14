@@ -9,6 +9,7 @@ class LiveUsageEventDashboard < Administrate::BaseDashboard
     id: Field::Number,
     live_conversation: Field::BelongsTo,
     engine: Field::String,
+    mode: Field::String,
     operation: Field::String,
     vendor: Field::String,
     model: Field::String,
@@ -23,6 +24,7 @@ class LiveUsageEventDashboard < Administrate::BaseDashboard
     count: Field::Number,
     cost_usd: Field::Number.with_options(decimals: 6),
     priced: Field::Boolean,
+    billing_basis: Field::String,
     price_version: Field::String,
     latency_ms: Field::Number,
     first_audio_ms: Field::Number,
@@ -34,11 +36,11 @@ class LiveUsageEventDashboard < Administrate::BaseDashboard
     updated_at: Field::DateTime
   }.freeze
 
-  COLLECTION_ATTRIBUTES = %i[id occurred_at engine operation model cost_usd latency_ms].freeze
+  COLLECTION_ATTRIBUTES = %i[id occurred_at engine mode operation model cost_usd billing_basis latency_ms].freeze
 
   SHOW_PAGE_ATTRIBUTES = %i[
-    id live_conversation engine operation vendor model input_tokens output_tokens cache_read_tokens cache_write_tokens
-    audio_input_tokens audio_output_tokens seconds characters count cost_usd priced price_version latency_ms first_audio_ms
+    id live_conversation engine mode operation vendor model input_tokens output_tokens cache_read_tokens cache_write_tokens
+    audio_input_tokens audio_output_tokens seconds characters count cost_usd priced billing_basis price_version latency_ms first_audio_ms
     error idempotency_key details occurred_at created_at updated_at
   ].freeze
 

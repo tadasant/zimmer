@@ -29,8 +29,11 @@ module LiveConversations
     PENDING_MAX_CHARS = 4_000
     ENGINE = VoiceEngine::GPT_LIVE
 
-    Result = Data.define(:text, :chunks, :end_call, :hung_up, :warning, :rounds, :cost_usd) do
-      def as_api_json = { text: text, chunks: chunks, end_call: end_call, hung_up: hung_up, warning: warning, rounds: rounds, cost_usd: cost_usd.round(6) }.compact
+    # `cost_usd` is the list price of what this delegation used; `billed_usd`
+    # the part of it that was billed (nothing, for Claude on a subscription).
+    Result = Data.define(:text, :chunks, :end_call, :hung_up, :warning, :rounds, :cost_usd, :billed_usd) do
+      def as_api_json = { text: text, chunks: chunks, end_call: end_call, hung_up: hung_up, warning: warning, rounds: rounds,
+                          cost_usd: cost_usd.round(6), billed_usd: billed_usd.round(6) }.compact
     end
 
     def self.call(conversation, delegation_id:, pending_user_text: nil, setting: LiveSetting.current, client: nil)
@@ -45,6 +48,7 @@ module LiveConversations
       @client = client
       @bridge = ToolBridge.new(conversation, can_reattach: false, can_hang_up: true)
       @cost = 0.0
+      @billed = 0.0
     end
 
     def call
@@ -91,7 +95,7 @@ module LiveConversations
 
     def result(text, end_call:, warning:, rounds:, hung_up: false)
       Result.new(text: text, chunks: self.class.chunk(text), end_call: end_call, hung_up: hung_up, warning: warning,
-                 rounds: rounds, cost_usd: @cost)
+                 rounds: rounds, cost_usd: @cost, billed_usd: @billed)
     end
 
     def model = @setting.effective(:voice_claude_model)
@@ -138,6 +142,7 @@ module LiveConversations
     def record(**attributes)
       event = LiveUsageEvent.record!(engine: ENGINE, live_conversation: @conversation, **attributes)
       @cost += event.cost_usd.to_f
+      @billed += event.billed_cost_usd
       event
     rescue ActiveRecord::ActiveRecordError => e
       # The ledger failing must not cost the person their answer.

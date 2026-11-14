@@ -143,6 +143,16 @@ class LiveSetting < ApplicationRecord
     "claude-haiku-5-5" => "claude-haiku-5-5 — cheapest, $0.10/$0.50 per MTok"
   }.freeze
 
+  # How Claude's use by the experimental engines is billed, which decides what
+  # it costs here: `metered` is money per token, at list price; `subscription`
+  # is a flat plan, so its tokens are recorded at list price but cost nothing at
+  # the margin. Zimmer calls Claude with LIVE_ANTHROPIC_API_KEY either way: this
+  # changes the accounting, not the credential (see ClaudeClient).
+  CLAUDE_BILLING = {
+    "metered" => "Metered API — every token billed at list price (default)",
+    "subscription" => "Subscription — a flat plan: tokens recorded at list price, billed at $0"
+  }.freeze
+
   GUIDANCE_MAX_LENGTH = 8_000
 
   FIELDS = [
@@ -203,6 +213,9 @@ class LiveSetting < ApplicationRecord
     Field.new(key: :voice_claude_model, path: :engine, type: :enum, label: "Claude model",
               help: "The model the experimental engines reason and run tools with. Takes effect on the next delegation.",
               options: CLAUDE_MODELS, min: nil, max: nil),
+    Field.new(key: :voice_claude_billing, path: :engine, type: :enum, label: "Claude billing",
+              help: "How Claude's tokens are counted on Live costs and against the caps. Live costs always shows the list price beside what was billed. This changes the accounting only: until a subscription credential is wired, Zimmer still calls Claude with the API key, which is metered.",
+              options: CLAUDE_BILLING, min: nil, max: nil),
     Field.new(key: :voice_engine_conversation_cap_usd, path: :engine, type: :float, label: "Per-conversation cap (USD)",
               help: "The most an experimental engine may spend on one conversation. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",
               options: nil, min: 0.1, max: 100.0),
@@ -245,6 +258,7 @@ class LiveSetting < ApplicationRecord
     when :voice_telemetry then "debug"
     when :voice_engine then "openai_realtime"
     when :voice_claude_model then "claude-sonnet-5-5"
+    when :voice_claude_billing then "metered"
     when :voice_engine_conversation_cap_usd then 2.0
     when :voice_engine_daily_cap_usd then 10.0
     end
