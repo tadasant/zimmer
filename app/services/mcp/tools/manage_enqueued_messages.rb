@@ -152,18 +152,15 @@ module Mcp
         content = args["content"].to_s.strip
         raise ToolError, '"content" is required for the "create" action.' if content.blank?
 
-        max_position = session.enqueued_messages.maximum(:position) || 0
-        message = session.enqueued_messages.new(
+        message = Sessions::EnqueueMessage.call(
+          session: session,
           content: content,
           goal: args["goal"].to_s.strip.presence,
-          position: max_position + 1,
-          status: "pending",
           source_context: context.turn_source.to_h
         )
 
-        raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.save
+        raise ToolError, "Validation failed: #{message.errors.full_messages.join(', ')}" unless message.persisted?
 
-        session.logs.create!(content: "Enqueued message added at position #{message.position}", level: "info")
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.create")
         context.capture_assistant_message(session, content, "oauth.enqueued_message")
 

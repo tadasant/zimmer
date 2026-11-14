@@ -37,6 +37,34 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     assert_includes output, "so the 1 ahead of yours is read first"
   end
 
+  test "create writes through Sessions::EnqueueMessage with the MCP turn source" do
+    queued = @session.enqueued_messages.create!(content: "Via service", position: 1, status: "pending")
+    Sessions::EnqueueMessage.expects(:call).with do |session:, content:, goal:, source_context:|
+      session == @session && content == "Via service" && goal == "ship it" && source_context == @tool.context.turn_source.to_h
+    end.returns(queued)
+
+    output = @tool.call("session_id" => @session.id, "action" => "create", "content" => " Via service ", "goal" => "ship it")
+
+    assert_includes output, "## Message Queued"
+    assert_includes output, "- **ID:** #{queued.id}"
+  end
+
+  test "create logs the position it landed at" do
+    @tool.call("session_id" => @session.id, "action" => "create", "content" => "Logged")
+
+    assert_equal "Enqueued message added at position 1", @session.logs.order(:id).last.content
+  end
+
+  test "create of an invalid message raises the validation errors and writes nothing" do
+    error = nil
+    assert_no_difference [ "EnqueuedMessage.count", "Log.count" ] do
+      error = assert_raises(Mcp::ToolError) do
+        @tool.call("session_id" => @session.id, "action" => "create", "content" => "x" * (Session::PROMPT_MAX_LENGTH + 1))
+      end
+    end
+    assert_match(/\AValidation failed: Content is too long/, error.message)
+  end
+
   test "create without content raises" do
     error = assert_raises(Mcp::ToolError) do
       @tool.call("session_id" => @session.id, "action" => "create")
