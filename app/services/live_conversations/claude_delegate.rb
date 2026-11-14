@@ -60,13 +60,15 @@ module LiveConversations
       hung_up = false
       while rounds < MAX_ROUNDS
         rounds += 1
-        response = claude_call(messages, rounds)
+        response = claude_call(messages, rounds, last: rounds == MAX_ROUNDS)
         content = Array(response["content"])
         texts = content.select { |block| block["type"] == "text" }.map { |block| block["text"].to_s }.reject(&:blank?)
         uses = content.select { |block| block["type"] == "tool_use" }
         break if uses.empty? || response["stop_reason"] != "tool_use"
 
-        messages << { role: "assistant", content: content }
+        # Replayed as the API sent it, minus the nulls the gem's serializer
+        # fills in for fields the block did not carry.
+        messages << { role: "assistant", content: content.map(&:compact) }
         results = uses.map { |use| run_tool(use) }
         messages << { role: "user", content: results }
         hung_up = @hung_up
@@ -76,6 +78,8 @@ module LiveConversations
       text = texts.join(" ").squish
       text = "I couldn't finish that in time. Ask again, or narrow it down." if text.blank? && !hung_up
       result(text, end_call: hung_up, hung_up: hung_up, warning: check.warning, rounds: rounds)
+    rescue ClaudeClient::NotConfiguredError
+      raise
     rescue ClaudeClient::Error => e
       record(operation: "delegation", vendor: "anthropic", model: model, error: e.message.truncate(250),
              details: { delegation_id: @delegation_id })
@@ -94,9 +98,11 @@ module LiveConversations
 
     def client = @client ||= ClaudeClient.new
 
-    def claude_call(messages, round)
+    # `last`: the final round may not call tools, so it has to answer with
+    # what it has rather than start work whose results nobody would read.
+    def claude_call(messages, round, last: false)
       started = monotonic_ms
-      response = client.create_message(
+      params = {
         model: model,
         max_tokens: MAX_TOKENS,
         # The tools and this prompt are the same on every round of the loop, so
@@ -104,13 +110,18 @@ module LiveConversations
         system_: [ { type: "text", text: system_prompt, cache_control: { type: "ephemeral" } } ],
         tools: tools,
         messages: messages
-      )
+      }
+      params[:tool_choice] = { type: "none" } if last
+      response = client.create_message(**params)
       usage = response["usage"] || {}
-      record(operation: "delegation", vendor: "anthropic", model: response["model"].presence || model,
+      # Priced on the model asked for, which is the price table's key: the API
+      # can answer with a dated snapshot id the table does not list, and an
+      # unpriced row would never count toward a cap.
+      record(operation: "delegation", vendor: "anthropic", model: model,
              input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
              cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
              count: 1, latency_ms: monotonic_ms - started,
-             details: { delegation_id: @delegation_id, round: round, stop_reason: response["stop_reason"] })
+             details: { delegation_id: @delegation_id, round: round, stop_reason: response["stop_reason"], response_model: response["model"].to_s })
       response
     end
 
@@ -171,15 +182,25 @@ module LiveConversations
     def monotonic_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).round
 
     # Sentences packed into chunks of at most CHUNK_CHARS; a sentence longer
-    # than that is cut at a word.
+    # than that is split at words, so nothing is dropped.
     def self.chunk(text)
-      sentences = text.to_s.squish.split(/(?<=[.!?])\s+/)
-      sentences.each_with_object([]) do |sentence, chunks|
-        sentence = sentence.truncate(CHUNK_CHARS, separator: " ")
+      pieces = text.to_s.squish.split(/(?<=[.!?])\s+/).flat_map { |sentence| split_long(sentence) }
+      pieces.each_with_object([]) do |sentence, chunks|
         if chunks.last && chunks.last.length + 1 + sentence.length <= CHUNK_CHARS
           chunks.last << " " << sentence
         else
           chunks << sentence.dup
+        end
+      end
+    end
+
+    def self.split_long(sentence)
+      return [ sentence ] if sentence.length <= CHUNK_CHARS
+
+      sentence.split(" ").each_with_object([ +"" ]) do |word, parts|
+        if parts.last.empty? then parts.last << word[0, CHUNK_CHARS]
+        elsif parts.last.length + 1 + word.length <= CHUNK_CHARS then parts.last << " " << word
+        else parts << word[0, CHUNK_CHARS].dup
         end
       end
     end

@@ -131,6 +131,14 @@ module LiveConversations
     def gpt_live_session(sdp:)
       require_voice!
       require_engine!(VoiceEngine::GPT_LIVE)
+      # Decided again here, not trusted from the column: the settings, a key or
+      # a cap may have changed since the call was resolved, and each session
+      # this opens is billed.
+      resolution = VoiceEngine.resolve(@conversation, client_engines: [ VoiceEngine::GPT_LIVE ])
+      unless resolution.engine == VoiceEngine::GPT_LIVE
+        raise Refused.new("GPT-Live is not available for this call: #{resolution.fallback_reason}. Start the call again.", status: :conflict)
+      end
+
       GptLiveSession.start(@conversation, sdp: sdp)
     rescue GptLiveSession::Invalid => e
       raise Refused, e.message
@@ -158,8 +166,8 @@ module LiveConversations
     # Voice: what the client measured about its call's cost and speed, into
     # the ledger (UsageReport). Active or not: the last report of a call can
     # land after the conversation ended.
-    def record_usage(events)
-      UsageReport.call(@conversation, events)
+    def record_usage(events, model: nil)
+      UsageReport.call(@conversation, events, model: model)
     rescue UsageReport::Invalid => e
       raise Refused, e.message
     end

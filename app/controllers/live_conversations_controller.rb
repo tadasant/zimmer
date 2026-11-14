@@ -90,7 +90,7 @@ class LiveConversationsController < ApplicationController
 
   # Voice: the call's measured cost and timings, into the ledger.
   def usage
-    result = actions.record_usage(params[:events])
+    result = actions.record_usage(params[:events], model: params[:model])
     render json: { recorded: result.recorded, cost_usd: result.cost_usd.round(6) }, status: :created
   rescue LiveConversations::Actions::Refused => e
     render json: { error: e.message }, status: e.status

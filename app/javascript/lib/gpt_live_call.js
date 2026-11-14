@@ -33,6 +33,9 @@ const GOODBYE_GRACE_MS = 8000
 const CLOSE_GRACE_MS = 3000
 // Output fragments this far apart are one finished answer.
 const SPOKEN_IDLE_MS = 1200
+// A long call's seconds are reported as it goes, so a tab that dies takes at
+// most this much unreported time with it.
+const SESSION_REPORT_MS = 60000
 
 export class GptLiveCall {
   // `call`: the dock's URLs for the conversation. `mic`: the open microphone
@@ -71,7 +74,11 @@ export class GptLiveCall {
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(body.error || `Zimmer could not start the GPT-Live call (${response.status}).`)
     this.sessionId = body.session_id
-    if (this.ended) return
+    // Hung up while Zimmer was starting it: never connect a session nobody wants.
+    if (this.ended || this.closing) {
+      this.finish({ dropped: false })
+      return
+    }
     await pc.setRemoteDescription({ type: "answer", sdp: body.sdp })
   }
 
@@ -80,6 +87,8 @@ export class GptLiveCall {
     switch (event.type) {
       case "session.started":
         this.startedAt = performance.now()
+        this.reportedSeconds = 0
+        this.sessionTimer = setInterval(() => this.reportSession({ partial: true }), SESSION_REPORT_MS)
         this.onState("listening")
         break
       case "session.input_transcript.delta":
@@ -96,6 +105,11 @@ export class GptLiveCall {
         }
         this.awaitingAnswer = false
         this.delegatedThisTurn = false
+        // The goodbye has started: once it stops, the call ends.
+        if (this.goodbyePending) {
+          this.goodbyePending = false
+          this.hangingUp = true
+        }
         this.assistantText += event.delta || ""
         this.onState("speaking")
         clearTimeout(this.spokenTimer)
@@ -143,9 +157,11 @@ export class GptLiveCall {
   }
 
   // The backend asked to end the call (a hang-up, or a spend cap): let the
-  // goodbye be said, then close — or after GOODBYE_GRACE_MS, whatever is still sounding.
+  // goodbye be said, then close — or after GOODBYE_GRACE_MS, whatever is still
+  // sounding. The call ends when the speech that starts after this stops, not
+  // when an earlier filler line ("one moment…") does.
   hangUpAfterGoodbye() {
-    this.hangingUp = true
+    this.goodbyePending = true
     clearTimeout(this.goodbyeTimer)
     this.goodbyeTimer = setTimeout(() => this.end(), GOODBYE_GRACE_MS)
   }
@@ -191,6 +207,7 @@ export class GptLiveCall {
     clearTimeout(this.spokenTimer)
     clearTimeout(this.goodbyeTimer)
     clearTimeout(this.closeTimer)
+    clearInterval(this.sessionTimer)
     this.closeResolve?.()
     this.flushUser()
     this.flushAssistant()
@@ -202,19 +219,33 @@ export class GptLiveCall {
     this.onEnded({ dropped })
   }
 
-  // GPT-Live bills the session's seconds. `session.closed` reports the final
-  // usage; when it never came (a dropped call), the seconds this browser saw.
-  reportSession() {
+  // GPT-Live bills the session's seconds: reported every SESSION_REPORT_MS while
+  // the call runs, and the rest at the end. The total is `session.closed`'s
+  // final usage when it came, else the seconds this browser saw.
+  reportSession({ partial = false } = {}) {
     if (this.sessionReported || !this.startedAt) return
-    this.sessionReported = true
-    const usage = this.closedUsage || {}
-    const reported = usage.duration_seconds ?? usage.session_seconds ?? (usage.duration_ms != null ? usage.duration_ms / 1000 : null)
-    const seconds = reported ?? (performance.now() - this.startedAt) / 1000
-    this.usage.add("voice_session", {
-      seconds: Math.round(seconds * 1000) / 1000,
-      details: { session_id: this.sessionId || "", from_usage: reported != null }
-    })
+    let total = (performance.now() - this.startedAt) / 1000
+    let fromUsage = false
+    if (!partial) {
+      this.sessionReported = true
+      const usage = this.closedUsage || {}
+      const reported = usage.duration_seconds ?? usage.session_seconds ?? (usage.duration_ms != null ? usage.duration_ms / 1000 : null)
+      if (reported != null) { total = reported; fromUsage = true }
+    }
+    const seconds = Math.max(total - this.reportedSeconds, 0)
+    this.reportedSeconds += seconds
+    if (seconds > 0) {
+      this.usage.add("voice_session", {
+        seconds: Math.round(seconds * 1000) / 1000,
+        details: { session_id: this.sessionId || "", from_usage: fromUsage, partial }
+      })
+    }
     this.usage.flush({ keepalive: true })
+  }
+
+  // The tab is closing: whatever the call has used so far, sent before it goes.
+  pageHidden() {
+    this.reportSession({ partial: true })
   }
 
   send(event) {

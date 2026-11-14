@@ -714,6 +714,12 @@ the GPT-Live session with the browser's WebRTC offer, so the OpenAI key and the 
 on the server, and the audio goes between the browser and OpenAI as it does on the default engine.
 Claude reads the thread and the request as text; no audio goes to Anthropic.
 
+A GPT-Live call does less than a Realtime one in three ways. It answers every line, whatever
+[Listening](#listening-which-lines-get-an-answer) says, because GPT-Live does its own turn-taking
+and the dock does not gate it. A settings change mid-call reaches it only from the next call,
+because GPT-Live fixes its instructions and voice at the start. And a call that follows Live Mode
+to another conversation reconnects without speaking first.
+
 ```mermaid
 sequenceDiagram
   participant B as Browser (call dock)
@@ -758,10 +764,10 @@ Every billable or measured step of a voice call is a row in the voice-engine led
 | --- | --- | --- |
 | `voice_tokens` | `openai_realtime` | the dock, from each `response.done`: text and audio tokens, cached separately |
 | `transcription` | `openai_realtime` | the dock, from each transcription's usage |
-| `voice_session` | `gpt_live_claude` | the dock, when the call ends: GPT-Live's billed seconds (from `session.closed` when it comes, else the seconds the dock saw) |
+| `voice_session` | `gpt_live_claude` | the dock, every minute and when the call ends (or the tab closes): GPT-Live's billed seconds, totalled from `session.closed` when it comes, else the seconds the dock saw. Client-reported, and accepted only for a conversation whose call runs on GPT-Live |
 | `delegation` | `gpt_live_claude` | Zimmer, for each Claude call: model, input, output, cache read and cache write tokens, round-trip time |
 | `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
-| `turn_latency` | any | the dock: from the end of the person's line to the first sound of the answer (no cost) |
+| `turn_latency` | any | the dock (no cost). On Realtime, from `speech_stopped` to the first audio of the answer; on GPT-Live, which reports no speech boundaries, from the last fragment of the person's transcript to the first fragment of the answer's. Close, not identical |
 | `engine_fallback` | the engine asked for | Zimmer, when a call ran on another engine, with the reason (no cost) |
 
 A client reports volumes, never money. Zimmer picks the vendor and model from what it knows about

@@ -25,6 +25,7 @@ class LiveConversations::UsageReportTest < ActiveSupport::TestCase
   end
 
   test "a batch sent twice counts once" do
+    @conversation.update_columns(voice_engine: "gpt_live_claude")
     event = { "engine" => "gpt_live_claude", "operation" => "voice_session", "key" => "abc.1", "seconds" => 120 }
     assert_equal 1, LiveConversations::UsageReport.call(@conversation, [ event ]).recorded
     assert_equal 0, LiveConversations::UsageReport.call(@conversation, [ event ]).recorded
@@ -44,7 +45,26 @@ class LiveConversations::UsageReportTest < ActiveSupport::TestCase
       LiveConversations::UsageReport.call(@conversation, [ { "engine" => "openai_realtime", "operation" => "voice_tokens", "key" => "bad key!" } ])
     end
 
+    assert_raises(LiveConversations::UsageReport::Invalid) { LiveConversations::UsageReport.call(@conversation, [ "x" ]) }
+    # GPT-Live seconds only for a call that ran on GPT-Live.
+    assert_raises(LiveConversations::UsageReport::Invalid) do
+      LiveConversations::UsageReport.call(@conversation, [ { "engine" => "gpt_live_claude", "operation" => "voice_session", "key" => "k", "seconds" => 60 } ])
+    end
+
+    @conversation.update_columns(voice_engine: "gpt_live_claude")
     LiveConversations::UsageReport.call(@conversation, [ { "engine" => "gpt_live_claude", "operation" => "voice_session", "key" => "k", "seconds" => -5 } ])
     assert_equal 0, LiveUsageEvent.sole.seconds
+  end
+
+  test "Realtime tokens are priced on the model the call was minted with, when the settings offer it" do
+    @conversation.update_columns(model: "gpt-6-luna") # typed since
+    event = { "engine" => "openai_realtime", "operation" => "voice_tokens", "key" => "m.1", "audio_output_tokens" => 1_000_000 }
+
+    LiveConversations::UsageReport.call(@conversation, [ event ], model: "gpt-realtime-2.1")
+    assert_equal "gpt-realtime-2.1", LiveUsageEvent.last.model
+    assert_in_delta 64.0, LiveUsageEvent.last.cost_usd.to_f, 0.000001
+
+    LiveConversations::UsageReport.call(@conversation, [ event.merge("key" => "m.2") ], model: "free-model")
+    assert_equal "gpt-6-luna", LiveUsageEvent.last.model, "a model the settings do not offer is ignored"
   end
 end

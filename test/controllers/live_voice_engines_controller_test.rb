@@ -65,6 +65,27 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     assert_match(/only the web call dock/, @conversation.reload.voice_engine_fallback)
   end
 
+  test "a GPT-Live session is decided again when it starts: a cap reached or an engine switched since is refused" do
+    use_voice_engine("gpt_live_claude")
+    post client_secret_live_conversation_path(@conversation), params: { engines: [ "gpt_live_claude" ] }, as: :json
+    assert_equal "gpt_live_claude", @conversation.reload.voice_engine
+
+    LiveSetting.editable.update!(voice_engine: "openai_realtime")
+    LiveConversations::GptLiveSession.expects(:start).never
+    post gpt_live_session_live_conversation_path(@conversation), params: { sdp: "v=0" }, as: :json
+    assert_response :conflict
+    assert_match(/not available/, response.parsed_body["error"])
+  end
+
+  test "a missing Claude key answers a delegation with 503" do
+    use_voice_engine("gpt_live_claude")
+    post client_secret_live_conversation_path(@conversation), params: { engines: [ "gpt_live_claude" ] }, as: :json
+    LiveConversations::ClaudeClient.stubs(:api_key).returns(nil)
+
+    post delegations_live_conversation_path(@conversation), params: { delegation_id: "d" }, as: :json
+    assert_response :service_unavailable
+  end
+
   test "a call not running on GPT-Live cannot reach it: no session, no Claude" do
     post gpt_live_session_live_conversation_path(@conversation), params: { sdp: "v=0" }, as: :json
     assert_response :conflict
