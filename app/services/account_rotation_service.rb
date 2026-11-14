@@ -210,7 +210,7 @@ class AccountRotationService
     # ...and not one Anthropic has already refused: the stored token IS the exact
     # string that would be exported as CLAUDE_CODE_OAUTH_TOKEN, so a recorded
     # refusal is a statement about it rather than about the account in general.
-    if current&.active? && current&.claude_access_token.present? && !current.credential_rejected?
+    if current&.usable_as_current?
       if current.token_expired? || current.token_expiring_soon?
         @logger.info("Refreshing expired/expiring tokens for current account", email: current.email)
         @logger.warn("Token refresh failed for current account", email: current.email) unless current.refresh_token!

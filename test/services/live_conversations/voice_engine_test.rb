@@ -42,7 +42,8 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
     use_voice_engine("gpt_live_claude")
 
     claude_accounts(:primary).update!(oauth_config: {})
-    assert_match(/current Claude Code account \(.+\) has no credentials/, LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude]).fallback_reason)
+    assert_equal "Zimmer's current Claude Code account has no credentials",
+                 LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude]).fallback_reason
 
     without_claude_code_account
     resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude])

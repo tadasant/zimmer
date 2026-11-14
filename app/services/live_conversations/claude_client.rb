@@ -17,7 +17,8 @@ module LiveConversations
   # on the same 5-hour and weekly windows as the agent fleet. With no usable
   # account, the engines that need Claude are unavailable and calls fall back to
   # OpenAI Realtime (VoiceEngine). `LIVE_ANTHROPIC_BASE_URL` points the client
-  # elsewhere — a proxy, or a local stand-in when proving the flow end to end.
+  # elsewhere — a proxy, or a local stand-in when proving the flow end to end;
+  # the fleet's subscription token is sent wherever it points.
   #
   # Answers are plain string-keyed hashes, the wire shape, so nothing past this
   # class depends on the gem's model classes.
@@ -34,34 +35,46 @@ module LiveConversations
     class Error < StandardError; end
     class NotConfiguredError < Error; end
 
-    # The access token of Zimmer's current Claude Code account, or nil.
-    def self.access_token
-      ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)&.claude_access_token
+    # The current account's token and nil, or nil and why Live Mode cannot
+    # reach Claude now. Read once, so the two cannot describe different
+    # accounts. The test is the one sessions spawn on
+    # (ClaudeAccount#usable_as_current?): an account out of quota, waiting to be
+    # re-authenticated, or refused by Anthropic is unavailable, and the engine
+    # falls back rather than failing every delegation mid-call.
+    def self.credential
+      account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
+      return [ account.claude_access_token, nil ] if account&.usable_as_current?
+
+      [ nil, refusal_for(account) ]
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.warn("[claude] could not read the current Claude Code account: #{e.class}")
-      nil
+      [ nil, "Zimmer's Claude Code accounts could not be read" ]
     end
 
-    # Why Live Mode cannot reach Claude right now, or nil when it can.
-    def self.unavailable_reason
-      account = ClaudeAccount.current_account(ClaudeAuthProvider::RUNTIME)
-      return "Zimmer has no current Claude Code account" if account.nil?
-      return "Zimmer's current Claude Code account (#{account.email}) has no credentials" if account.claude_access_token.blank?
-
-      nil
-    rescue ActiveRecord::ActiveRecordError
-      "Zimmer's Claude Code accounts could not be read"
+    def self.refusal_for(account)
+      if account.nil? then "Zimmer has no current Claude Code account"
+      elsif account.claude_access_token.blank? then "Zimmer's current Claude Code account has no credentials"
+      elsif account.credential_rejected? || account.needs_reauth? then "Zimmer's current Claude Code account needs re-authenticating (/inference)"
+      elsif account.quota_exceeded? then "Zimmer's current Claude Code account is out of quota"
+      else "Zimmer's current Claude Code account cannot serve right now"
+      end
     end
+
+    def self.access_token = credential.first
+
+    def self.unavailable_reason = credential.last
 
     def self.configured? = unavailable_reason.nil?
 
     def self.base_url = ENV.fetch("LIVE_ANTHROPIC_BASE_URL", "").presence || DEFAULT_BASE_URL
 
-    def initialize(access_token: self.class.access_token, base_url: self.class.base_url)
-      raise NotConfiguredError, (self.class.unavailable_reason || "Zimmer has no Claude credential") if access_token.blank?
+    def initialize(credential: self.class.credential, base_url: self.class.base_url)
+      access_token, reason = credential
+      raise NotConfiguredError, (reason || "Zimmer has no Claude credential") if access_token.blank?
 
-      # `api_key: nil` with an explicit `auth_token:` keeps the gem from reading
-      # ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN out of the environment.
+      # An explicit `auth_token:` is what keeps the gem from reading
+      # ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or a profile from the environment:
+      # given one, it looks for no other credential.
       @client = Anthropic::Client.new(auth_token: access_token, base_url: base_url, timeout: TIMEOUT_SECONDS, max_retries: MAX_RETRIES)
     end
 

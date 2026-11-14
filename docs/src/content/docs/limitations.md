@@ -369,6 +369,12 @@ reading moves. A window the fleet has used up fails a delegation mid-call, which
 failure. The spend caps, counted at list price, are the only bound on it. Whether Anthropic's terms
 allow a subscription token to drive a custom app's reasoning loop has not been confirmed.
 
+### `live_settings.voice_claude_billing` is still on the table, ignored
+
+The **Claude billing** setting was removed when Live Mode's Claude moved onto Zimmer's own Claude
+Code credential. Its column stays on `live_settings`, in `LiveSetting.ignored_columns`, until the
+second deploy of its [two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys).
+
 ### Live costs cover the web dock's calls only
 
 The iOS app and CarPlay run their calls on Realtime and report no usage to the voice-engine ledger,

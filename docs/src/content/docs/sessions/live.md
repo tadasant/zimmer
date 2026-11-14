@@ -721,7 +721,10 @@ Bearer token with the `oauth-2025-04-20` beta header, the way the quota probe al
 token is read for every delegation, so an account rotation or a token refresh reaches Live Mode
 without a restart. Claude's use is therefore subscription-billed and draws on the same 5-hour and
 weekly quota windows as the fleet. With no current account, or one without credentials, the engine
-falls back to Realtime and says so.
+falls back to Realtime and says so. So does a current account that is out of quota, waiting to be
+re-authenticated, or refused by Anthropic: the same test the session spawn path applies
+(`ClaudeAccount#usable_as_current?`). Live Mode does not rotate accounts itself; the next session
+spawn does.
 
 A GPT-Live call does less than a Realtime one in three ways. It answers every line, whatever
 [Listening](#listening-which-lines-get-an-answer) says, because GPT-Live does its own turn-taking
@@ -790,7 +793,8 @@ under it. The one exception is Claude's own rows, which name the Claude model th
 setting applies from the next delegation, so a change mid-call shows up as a second mode.
 
 **Billed and list.** Every row records the raw usage and its list price. Its **billing basis** says
-whether that money was charged: `metered` for OpenAI, `subscription` for Claude. Claude's rows are
+whether that money was charged: `metered` for OpenAI, `subscription` for Claude (Claude rows
+written while Claude ran on an API key stay `metered`, which is what they were). Claude's rows are
 recorded at list price but billed at $0, because Claude runs on Zimmer's flat Claude Code
 subscription. Every figure on the page is shown as billed and list, so the subscription's value
 stays visible. The caps count list price, Claude included: its tokens cost nothing at the margin,
@@ -837,7 +841,7 @@ how those sessions authenticate or bill.
 | `LIVE_VOICE_MODEL` | `gpt-realtime-2.1-mini` | The voice default model, likewise |
 | `LIVE_VOICE_VOICE` | `marin` | The default voice it speaks in, likewise |
 | `LIVE_OPENAI_BASE_URL` | `https://api.openai.com/v1` | An OpenAI-compatible endpoint instead |
-| `LIVE_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | An Anthropic-compatible endpoint instead |
+| `LIVE_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | An Anthropic-compatible endpoint instead. Zimmer's Claude Code subscription token is sent there, so point it only at something you trust with it |
 | `ZIMMER_STORE_CONSOLE_URL` | none | The console over Zimmer's own store, linked from the key panel. Unset, the panel shows the path without a link |
 | `ZIMMER_STORE_CONSOLE_STORE_NAME` | none | What that console calls the store, shown beside the link |
 
