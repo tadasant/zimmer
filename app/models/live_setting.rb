@@ -137,11 +137,7 @@ class LiveSetting < ApplicationRecord
   }.freeze
 
   # The Claude model the experimental engines reason with.
-  CLAUDE_MODELS = {
-    "claude-sonnet-5-5" => "claude-sonnet-5-5 — fast, $2/$10 per MTok (default)",
-    "claude-opus-5-5" => "claude-opus-5-5 — strongest, $4/$20 per MTok",
-    "claude-haiku-5-5" => "claude-haiku-5-5 — cheapest, $0.10/$0.50 per MTok"
-  }.freeze
+  CLAUDE_MODELS = ModelCatalog::LIVE_CLAUDE_MODELS
 
   # How Claude's use by the experimental engines is billed, which decides what
   # it costs here: `metered` is money per token, at list price; `subscription`
@@ -257,7 +253,7 @@ class LiveSetting < ApplicationRecord
     # settings page, without a deploy.
     when :voice_telemetry then "debug"
     when :voice_engine then "openai_realtime"
-    when :voice_claude_model then "claude-sonnet-5-5"
+    when :voice_claude_model then ModelCatalog::LIVE_CLAUDE_DEFAULT
     when :voice_claude_billing then "metered"
     when :voice_engine_conversation_cap_usd then 2.0
     when :voice_engine_daily_cap_usd then 10.0
