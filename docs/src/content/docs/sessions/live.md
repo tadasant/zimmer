@@ -455,6 +455,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
 | Voice engine | engine | `openai_realtime` | `openai_realtime`, `gpt_live_claude`, `livekit_claude` ([Voice engines](#voice-engines)) | next call |
 | Claude model | engine | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` | next delegation |
+| Claude billing | engine | `metered` | `metered`, `subscription` ([Live costs](#live-costs); a person's to change, not the live model's) | next delegation |
 | Per-conversation cap (USD) | engine | 2.00 | 0.10–100 (a person's to change, not the live model's) | next call or delegation |
 | Daily cap per engine (USD) | engine | 10.00 | 0.50–500 (likewise) | next call or delegation |
 
@@ -699,7 +700,7 @@ until somebody picks one.
 
 | Engine | What runs the call | Where |
 | --- | --- | --- |
-| `openai_realtime` | OpenAI Realtime, as described under [Voice](#voice). The default. | web, phone, car |
+| `openai_realtime` | OpenAI Realtime, as described under [Voice](#voice): one model is the voice and the reasoning, at the voice model and reasoning effort the settings name. The default, and a full mode in its own right, measured the same way as the other two | web, phone, car |
 | `gpt_live_claude` | OpenAI's GPT-Live (`gpt-live-1`) as the full-duplex voice, with Claude doing the work | web call dock only |
 | `livekit_claude` | A LiveKit Agents cascade: speech-to-text, then Claude, then text-to-speech | not built; always falls back |
 
@@ -769,6 +770,21 @@ Every billable or measured step of a voice call is a row in the voice-engine led
 | `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
 | `turn_latency` | any | the dock (no cost). On Realtime, from `speech_stopped` to the first audio of the answer; on GPT-Live, which reports no speech boundaries, from the last fragment of the person's transcript to the first fragment of the answer's. Close, not identical |
 | `engine_fallback` | the engine asked for | Zimmer, when a call ran on another engine, with the reason (no cost) |
+| `call` | any | the dock, when a call ends: its length, which cost per minute is reckoned against (no cost) |
+
+Every row also carries its **mode**: the engine with the models it ran on, such as
+`gpt-realtime-2.1 · effort high`, `gpt-realtime-2.1-mini`, or `gpt-live-1 + claude-sonnet-5-5`. So
+two Realtime models, or the same model at two efforts, are compared as separate modes rather than
+averaged into one engine.
+
+**Billed and list.** Every row records the raw usage and its list price. Its **billing basis** says
+whether that money was charged: `metered` for everything except Claude on a subscription. The
+**Claude billing** setting marks Claude's tokens `subscription` from then on. They are still
+recorded at list price, but billed at $0, because a flat plan costs nothing at the margin. The caps
+count billed money only, and every figure on the page is shown as billed and list, so a
+subscription's value stays visible. The setting changes the accounting only. Zimmer calls Claude
+with `LIVE_ANTHROPIC_API_KEY`, which is metered, until a subscription credential is wired.
+
 
 A client reports volumes, never money. Zimmer picks the vendor and model from what it knows about
 the conversation, clamps the numbers, and prices each row as it is written from
@@ -776,10 +792,12 @@ the conversation, clamps the numbers, and prices each row as it is written from
 event carries the client's own key, so a batch sent twice counts once. A model the table does not
 list is recorded at zero and marked unpriced, rather than guessed at.
 
-`/live/costs` shows, for 1, 7, 30 or 90 days and one engine or all: spend per engine and per
-conversation, delegations, average delegation round trip, time to first audio (p50 and p90),
-errors, fallbacks, spend by operation and model with its token, audio and second volumes, spend by
-day, and today's spend against each experimental engine's caps. **Download CSV** is every row in the
+`/live/costs` shows, for 1, 7, 30 or 90 days and one engine or all, a **By mode** table that puts
+experience beside cost for every mode: billed and list cost, per conversation and per call-minute,
+call minutes, time to first audio (p50 and p90), delegations and their average round trip, errors
+and fallbacks. Below it: the most expensive conversations, spend by operation and model with its
+token, audio and second volumes, spend by day, and today's billed spend against each experimental
+engine's caps. **Download CSV** is every row in the
 window. The same report is `GET /api/v1/live/costs` and the `get_live_costs` MCP tool, and the rows
 are `GET /api/v1/live/usage_events`.
 

@@ -551,6 +551,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
     t.float "text_temperature"
     t.datetime "updated_at", null: false
     t.string "updated_by"
+    t.string "voice_claude_billing"
     t.string "voice_claude_model"
     t.string "voice_engine"
     t.float "voice_engine_conversation_cap_usd"
@@ -575,6 +576,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
   create_table "live_usage_events", force: :cascade do |t|
     t.bigint "audio_input_tokens", default: 0, null: false
     t.bigint "audio_output_tokens", default: 0, null: false
+    t.string "billing_basis", default: "metered", null: false
     t.bigint "cache_read_tokens", default: 0, null: false
     t.bigint "cache_write_tokens", default: 0, null: false
     t.bigint "characters", default: 0, null: false
@@ -589,6 +591,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
     t.bigint "input_tokens", default: 0, null: false
     t.integer "latency_ms"
     t.bigint "live_conversation_id"
+    t.string "mode"
     t.string "model"
     t.datetime "occurred_at", null: false
     t.string "operation", null: false
@@ -598,6 +601,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
     t.decimal "seconds", precision: 12, scale: 3, default: "0.0", null: false
     t.datetime "updated_at", null: false
     t.string "vendor"
+    t.index ["engine", "mode"], name: "index_live_usage_events_on_engine_and_mode"
     t.index ["engine", "occurred_at"], name: "index_live_usage_events_on_engine_and_occurred_at"
     t.index ["idempotency_key"], name: "index_live_usage_events_on_idempotency_key", unique: true
     t.index ["live_conversation_id", "engine"], name: "index_live_usage_events_on_live_conversation_id_and_engine"

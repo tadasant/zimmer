@@ -47,6 +47,20 @@ module LiveConversations
       end
     end
 
+    # The engine with the models it runs on, as a label: what /live/costs
+    # compares. `voice_model` is the Realtime model a call was minted with,
+    # when the writer knows it.
+    def self.mode_for(engine, setting: LiveSetting.current, voice_model: nil)
+      case engine.to_s
+      when DEFAULT
+        effort = setting.effective(:voice_reasoning_effort).presence
+        [ voice_model.presence || setting.effective(:voice_model), ("effort #{effort}" if effort) ].compact.join(" · ")
+      when GPT_LIVE then "#{GptLiveSession::MODEL} + #{setting.effective(:voice_claude_model)}"
+      when LIVEKIT then "livekit + #{setting.effective(:voice_claude_model)}"
+      else engine.to_s
+      end
+    end
+
     # Each engine with whether it can run, for the settings and costs pages.
     def self.statuses
       KEYS.map { |key| { engine: key, label: LiveSetting::VOICE_ENGINES[key], unavailable_reason: unavailable_reason(key) } }

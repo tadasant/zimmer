@@ -16,11 +16,11 @@ class Mcp::Tools::GetLiveCostsTest < ActiveSupport::TestCase
     LiveUsageEvent.record!(engine: "openai_realtime", operation: "voice_tokens", vendor: "openai_realtime", model: "gpt-realtime-2.1-mini", audio_output_tokens: 1_000)
 
     all = JSON.parse(@tool.call({ "days" => 2 }))
-    assert_equal %w[gpt_live_claude openai_realtime], all["by_engine"].map { |row| row["engine"] }.sort
+    assert_equal %w[gpt_live_claude openai_realtime], all["by_mode"].map { |row| row["engine"] }.sort
     assert_equal "https://zimmer.example.com/live/costs", all["page"]
 
     only = JSON.parse(@tool.call({ "engine" => "openai_realtime" }))
-    assert_equal [ "openai_realtime" ], only["by_engine"].map { |row| row["engine"] }
+    assert_equal [ "openai_realtime" ], only["by_mode"].map { |row| row["engine"] }
   end
 
   test "an unknown engine is a tool error" do

@@ -16,8 +16,8 @@ class Api::V1::LiveCostsControllerTest < ActionDispatch::IntegrationTest
 
     get "/api/v1/live/costs", params: { days: 3 }, headers: @headers
     assert_response :success
-    assert_in_delta 0.05, response.parsed_body.dig("totals", "cost_usd"), 0.000001
-    assert_equal "gpt_live_claude", response.parsed_body["by_engine"].sole["engine"]
+    assert_in_delta 0.05, response.parsed_body.dig("totals", "billed_usd"), 0.000001
+    assert_equal "gpt_live_claude", response.parsed_body["by_mode"].sole["engine"]
 
     get "/api/v1/live/usage_events", params: { engine: "gpt_live_claude" }, headers: @headers
     assert_response :success
