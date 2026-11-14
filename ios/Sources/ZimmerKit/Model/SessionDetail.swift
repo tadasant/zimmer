@@ -76,6 +76,21 @@ public struct SessionDetail: Hashable, Sendable {
         }
     }
 
+    /// Whether the composer is on screen for a page that has read `detail` — nil while the
+    /// first read is still out. The composer is static: typing needs nothing from the server,
+    /// so it is there from the first frame and comes off only once the session is known to
+    /// take no follow-up. Sending is what waits for the read (`canSend`), not typing.
+    public static func showsComposer(_ detail: SessionDetail?) -> Bool {
+        detail?.acceptsFollowUp ?? true
+    }
+
+    /// Whether a typed message can go: something is typed, and the session has been read, so
+    /// the page knows it takes follow-ups and whether one queues behind a running turn.
+    public static func canSend(_ draft: String, detail: SessionDetail?) -> Bool {
+        guard let detail, detail.acceptsFollowUp else { return false }
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// The channels capture is not configured for, as the web panel's empty state names them:
     /// "Slack", "Slack and the Zimmer web UI", "A, B, and C" — Rails' `to_sentence`.
     public var uncapturedChannels: String {

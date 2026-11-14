@@ -16,8 +16,13 @@
     dismiss the drawer before the body arrives — data-drawer-skeleton exempts it
     from the dim-and-inert style a busy session_detail frame otherwise gets
     (app/assets/tailwind/application.css). Carries no id and no
-    data-live-region, for the reason _provenance_skeleton gives. %>
-<div data-drawer-skeleton role="status" aria-busy="true" aria-label="Loading session">
+    data-live-region, for the reason _provenance_skeleton gives.
+
+    The composer at the bottom is not a placeholder: it takes typing from the
+    first frame (_drawer_composer). It sits outside the role="status" region,
+    which is only the part that is loading. %>
+<div data-drawer-skeleton>
+<div role="status" aria-busy="true" aria-label="Loading session">
   <span class="sr-only">Loading session…</span>
 
   <div class="bg-white shadow">
@@ -63,4 +68,7 @@
       <% end %>
     </div>
   </div>
+</div>
+
+<%= render "sessions/drawer_composer" %>
 </div>

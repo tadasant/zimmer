@@ -183,6 +183,30 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Priority"].exists, "a spot start is not a priority session")
     }
 
+    /// The composer is static, so it is there to type into while the session is still being
+    /// read — and what was typed is still there, caret and all, once the page fills in.
+    func test_the_composer_takes_typing_before_the_session_has_loaded() throws {
+        let app = launch(arguments: ["-ZimmerFixtureSlowReads"])
+
+        let row = app.descendants(matching: .any)["session.row.1038"]
+        XCTAssertTrue(row.waitForExistence(timeout: timeout))
+        row.tap()
+
+        let field = app.descendants(matching: .any)["followup.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 3), "the composer is on the first frame, not after the read")
+        XCTAssertFalse(app.descendants(matching: .any)["detail.summary"].exists, "the session is still loading")
+        field.tap()
+        field.typeText("Yes, merge it")
+        XCTAssertFalse(app.buttons["followup.send"].isEnabled, "sending waits for the session")
+        attachScreenshot(app, named: "composer-while-loading")
+
+        XCTAssertTrue(app.descendants(matching: .any)["detail.summary"].waitForExistence(timeout: timeout))
+        field.typeText(".")
+        XCTAssertTrue((field.value as? String ?? "").contains("Yes, merge it."), "the typing survived the page filling in")
+        XCTAssertTrue(app.buttons["followup.send"].isEnabled)
+        attachScreenshot(app, named: "composer-after-loading")
+    }
+
     private func launch(arguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-ZimmerFixture"] + arguments

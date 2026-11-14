@@ -6186,6 +6186,12 @@ Also:
 - The other text-entry surfaces — enqueued-message edit, dashboard notes, editable title and goal,
   the notes popover, elicitation forms — do not persist drafts across a reload. Notes have their own
   autosave; the rest lose in-progress text if the page is rebuilt under them.
+- The drawer's early composer is text only. Attachments, slash-command typeahead and Submit
+  appear when the session's body lands. If that load fails, the failure notice replaces the
+  composer, and the text survives only as the session's draft, restored when you open the session
+  again. A drawer link that cannot tell whether its session is archived, such as a hierarchy node,
+  still shows the early composer. If the session is archived, that text stays as a draft with no
+  composer to show it until the session is unarchived.
 - `start_url` in the web manifest is `/`, so a cold relaunch of the PWA lands on the dashboard rather
   than the session you were reading. The composer draft is keyed by session id and is still there
   when you navigate back, but you have to navigate back.

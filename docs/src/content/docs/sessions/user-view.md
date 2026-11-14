@@ -156,6 +156,18 @@ heaviest thing the dashboard asks for, so the drawer does not wait for it with a
 slides in on a grey skeleton shaped like the session header, and the skeleton's Close button already
 works. The real body replaces it when it lands.
 
+The follow-up composer does not wait for that body either. Typing needs nothing from the server, so
+the skeleton carries a composer of its own, pinned where the real one sits, and you can start your
+message the moment the drawer opens. Its Submit button stays disabled until the body arrives,
+because whether a message is sent now or queued behind a running turn is the real form's call. What
+you type there is saved as the session's draft on every keystroke. When the body lands, the real
+composer takes over the text, the caret position and the focus (`lib/composer_handoff.js`), so you
+keep typing without noticing the swap. A link that already knows the session is archived opens the
+drawer without that composer, because the body would bring no composer to hand the text to.
+
+The full session page (`/sessions/:id`) needs none of this. Its composer is part of its own
+response, outside the lazy Transcript and provenance frames, so it is there at first paint.
+
 A browser that has loaded Zimmer before downloads none of the page's scripts or stylesheets again.
 They are digest-stamped and cached for a year (see
 [Static files in `public/`](/operate/deploying/#static-files-in-public-are-not-digest-stamped)), so

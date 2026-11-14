@@ -41,6 +41,13 @@ export function draftKey(scope, field) {
   return `${PREFIX}${scope}:${field}`
 }
 
+// The key a session's follow-up composer draft lives under. One definition,
+// because two composers write it: the session's own, and the provisional one
+// the dashboard drawer shows while that session's detail is loading.
+export function followUpDraftKey(sessionId) {
+  return draftKey(`session:${sessionId}`, "followUpPrompt")
+}
+
 // Persist `value` under `key`. A blank value clears the entry instead of
 // storing an empty string, so "I deleted what I typed" survives a reload as
 // faithfully as "I typed something".

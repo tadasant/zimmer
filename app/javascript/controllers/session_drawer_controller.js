@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { stashComposerHandoff } from "lib/composer_handoff"
 
 /**
  * Session Drawer Controller
@@ -163,7 +164,8 @@ export default class extends Controller {
     // as a hung page.
     if (this.frameTarget.getAttribute("src") !== url) {
       this.frameTarget.removeAttribute("src")
-      this.showSkeleton()
+      const { sessionDrawerSessionId: sessionId, sessionDrawerComposer: composer } = event.currentTarget.dataset
+      this.showSkeleton({ sessionId, composer: composer !== "false" })
     }
 
     // Setting src triggers a Turbo Frame fetch; the matching
@@ -309,17 +311,54 @@ export default class extends Controller {
   // <template data-session-drawer-target="skeleton">). Turbo replaces it with the
   // detail body when the frame's fetch lands. A page without the template gets
   // the empty frame it always had.
-  showSkeleton() {
+  //
+  // The skeleton carries a provisional composer (_drawer_composer) that takes
+  // typing before the body lands. It needs the session's id to keep what is
+  // typed as that session's draft, so it is dropped when the trigger names none,
+  // and when the trigger says the session takes no follow-up (archived) — a
+  // composer that vanishes when the body arrives would only invite wasted typing.
+  showSkeleton({ sessionId, composer = true } = {}) {
     if (this.hasSkeletonTarget) {
-      this.frameTarget.replaceChildren(this.skeletonTarget.content.cloneNode(true))
+      const skeleton = this.skeletonTarget.content.cloneNode(true)
+      const provisional = skeleton.querySelector("[data-drawer-composer]")
+      if (provisional) {
+        if (composer && sessionId) {
+          provisional.setAttribute("data-drawer-composer-session-id-value", sessionId)
+        } else {
+          provisional.remove()
+        }
+      }
+      this.frameTarget.replaceChildren(skeleton)
     } else {
       this.frameTarget.innerHTML = ""
     }
   }
 
   handleBeforeFrameRender(event) {
-    if (event.target !== this.frameTarget || !this.isClosed) return
-    event.detail.render = () => {}
+    if (event.target !== this.frameTarget) return
+    if (this.isClosed) {
+      event.detail.render = () => {}
+      return
+    }
+    this.stashProvisionalComposer()
+  }
+
+  // The body is about to replace the skeleton, provisional composer and all.
+  // Hand what the reader typed there — and where the caret was, and whether the
+  // field had focus — to the real composer, which takes it as it connects
+  // (follow_up_prompt_controller#applyHandoff). Read now, while the textarea is
+  // still in the document: once Turbo removes it, focus has already gone.
+  stashProvisionalComposer() {
+    const provisional = this.frameTarget.querySelector(":scope > [data-drawer-skeleton] [data-drawer-composer]")
+    const field = provisional?.querySelector("textarea")
+    if (!field) return
+    stashComposerHandoff({
+      sessionId: Number(provisional.getAttribute("data-drawer-composer-session-id-value")),
+      value: field.value,
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+      focused: document.activeElement === field
+    })
   }
 
   handleFetchError(event) {

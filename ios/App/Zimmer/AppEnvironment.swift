@@ -55,6 +55,9 @@ final class AppEnvironment {
                 .flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
                 .map { Set($0.split(separator: ",").map(String.init)) } ?? []
             let writeDelay: Duration? = arguments.contains("-ZimmerFixtureSlowWrites") ? .seconds(6) : nil
+            // `-ZimmerFixtureSlowReads`: opening a session takes seconds, so a test can type into
+            // the composer while the page is still loading.
+            let readDelay: Duration? = arguments.contains("-ZimmerFixtureSlowReads") ? .seconds(5) : nil
             // `-ZimmerFixtureVoiceTurnedUp`: the CarPlay drill's break-glass. The Live settings are
             // as voice calls left them on the call that broke (a cap of 180, eagerness low, a
             // threshold Semantic ignores, plus a gated Listening), and the first call holds on
@@ -67,7 +70,7 @@ final class AppEnvironment {
             connection = Connection(origins: signedIn?.origins, auth: auth, api: FakeZimmerAPI(live: arguments.contains("-ZimmerFixtureLive"),
                                                                                          longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                                                                                          relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"), trashedElsewhere: trashedElsewhere,
-                                                                                         refuses: refuses, writeDelay: writeDelay,
+                                                                                         refuses: refuses, writeDelay: writeDelay, readDelay: readDelay,
                                                                                          liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
                                                                                          liveSecretHold: voiceTurnedUp ? .seconds(120) : carScript ? .seconds(600) : nil,
                                                                                          web: origins.web), edge: nil)
