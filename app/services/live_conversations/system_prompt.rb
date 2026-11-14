@@ -30,6 +30,13 @@ module LiveConversations
 
     def self.build(conversation, recap: false, setting: LiveSetting.current) = new(conversation, setting: setting).build(recap: recap)
 
+    # The GPT-Live front end's instructions (the `gpt_live_claude` engine). It
+    # has no tools of its own: everything that needs Zimmer, or real thought,
+    # is delegated to Claude (ClaudeDelegate), whose own prompt is #build. So it
+    # is told what it is, the thread so far, the notes and the guidance —
+    # and not the function mechanics, which name tools it cannot call.
+    def self.build_front_end(conversation, setting: LiveSetting.current) = new(conversation, setting: setting).build_front_end
+
     def initialize(conversation, setting: LiveSetting.current)
       @conversation = conversation
       @setting = setting
@@ -43,7 +50,27 @@ module LiveConversations
       sections.compact_blank.join("\n\n")
     end
 
+    def build_front_end
+      [ @conversation.instructions.to_s.strip, front_end_mechanics, mode_section, recap_section, sessions_section,
+        scratchpad_section, guidance_section ].compact_blank.join("\n\n")
+    end
+
     private
+
+    def front_end_mechanics
+      [
+        "## How this call works (written by Zimmer)",
+        "",
+        "- You are the voice of #{LABEL}. You have no tools. A backend agent does the work: when the person asks for anything " \
+        "that needs Zimmer — sessions, searching, starting or checking work, their settings, notes, hanging up — or needs " \
+        "careful thought, delegate it, and say a few words while it runs.",
+        "- Where the instructions above name functions or tools, they are the backend's: delegate instead of calling them.",
+        "- The backend's answer reaches you as commentary to say aloud. Say it in your own words, briefly. Never invent a " \
+        "result, a session number or a status the backend did not give you.",
+        "- If the backend says the call is ending (a hang-up, or a spend cap), say goodbye in one short sentence.",
+        "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
+      ].join("\n")
+    end
 
     def mechanics
       mode = @conversation.live_mode

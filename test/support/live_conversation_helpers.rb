@@ -112,3 +112,44 @@ end
 AgentRootsConfig.singleton_class.prepend(LiveConversationHelpers::RootOverride)
 ActiveSupport::TestCase.include(LiveConversationHelpers)
 ActiveSupport::TestCase.teardown { LiveConversationHelpers.root_overrides = nil }
+
+# A scripted Claude for the experimental voice engines (LiveConversations::ClaudeClient).
+module LiveConversationHelpers
+  class FakeClaude
+    attr_reader :requests
+
+    def initialize(responses: [])
+      @responses = responses.dup
+      @requests = []
+    end
+
+    def create_message(**params)
+      @requests << params.deep_stringify_keys
+      response = @responses.shift || raise("FakeClaude ran out of scripted responses")
+      raise response if response.is_a?(Exception)
+
+      response
+    end
+
+    def self.usage(input: 1_000, output: 100, cache_read: 0, cache_write: 0)
+      { "input_tokens" => input, "output_tokens" => output, "cache_read_input_tokens" => cache_read, "cache_creation_input_tokens" => cache_write }
+    end
+
+    def self.text(content, model: "claude-sonnet-5-5", **usage)
+      { "model" => model, "stop_reason" => "end_turn", "content" => [ { "type" => "text", "text" => content } ], "usage" => usage(**usage) }
+    end
+
+    def self.tool(name, input = {}, id: "toolu_1", model: "claude-sonnet-5-5", **usage)
+      { "model" => model, "stop_reason" => "tool_use",
+        "content" => [ { "type" => "tool_use", "id" => id, "name" => name, "input" => input } ], "usage" => usage(**usage) }
+    end
+  end
+
+  def stub_claude_key(value = "sk-ant-test-live")
+    LiveConversations::ClaudeClient.stubs(:api_key).returns(value)
+  end
+
+  def use_voice_engine(engine, **settings)
+    LiveSetting.editable.update!(voice_engine: engine, **settings)
+  end
+end

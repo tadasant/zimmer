@@ -453,6 +453,10 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Noise reduction | voice | off | `near_field`, `far_field` | mid-call |
 | Transcription model | voice | `gpt-4o-mini-transcribe` | that, `gpt-4o-transcribe` | mid-call |
 | Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
+| Voice engine | engine | `openai_realtime` | `openai_realtime`, `gpt_live_claude`, `livekit_claude` ([Voice engines](#voice-engines)) | next call |
+| Claude model | engine | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` | next delegation |
+| Per-conversation cap (USD) | engine | 2.00 | 0.10–100 (a person's to change, not the live model's) | next call or delegation |
+| Daily cap per engine (USD) | engine | 10.00 | 0.50–500 (likewise) | next call or delegation |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
 tools, and OpenAI accepts those from the GPT-6 family only from `gpt-6-luna` and `gpt-6-sol`, only
@@ -686,6 +690,96 @@ route is `PATCH /api/v1/live/settings {"voice_telemetry": "info"}`, and the MCP 
 the call leaves it as it was. What is logged, and how to read it, is under
 [CarPlay](/extend/ios-app/#carplay) and [observability](/operate/observability/#the-ios-apps-call-log).
 
+## Voice engines
+
+A voice call runs on one of three engines, chosen by the **Voice engine** setting on
+[Live settings](#live-settings), or by asking Live Mode to switch ("use the Claude engine"). The
+setting applies from the next call. The default is `openai_realtime`, and the other two are off
+until somebody picks one.
+
+| Engine | What runs the call | Where |
+| --- | --- | --- |
+| `openai_realtime` | OpenAI Realtime, as described under [Voice](#voice). The default. | web, phone, car |
+| `gpt_live_claude` | OpenAI's GPT-Live (`gpt-live-1`) as the full-duplex voice, with Claude doing the work | web call dock only |
+| `livekit_claude` | A LiveKit Agents cascade: speech-to-text, then Claude, then text-to-speech | not built; always falls back |
+
+**`gpt_live_claude`.** GPT-Live has no tools of its own. Its instructions are the root's AGENTS.md,
+a short note that it has no tools, the thread so far, the scratchpad and the guidance. When the
+person asks for anything that needs Zimmer, or careful thought, it hands the request off (*client
+delegation*), and the dock asks Zimmer to answer it. Claude (`LiveConversations::ClaudeDelegate`,
+on the **Claude model** setting, `claude-sonnet-5-5` by default) runs a Messages API tool loop over
+the same [tool bridge](#the-tool-bridge) the other paths use, then answers in a few spoken
+sentences. The dock appends the answer to the call as commentary for GPT-Live to say. Rails starts
+the GPT-Live session with the browser's WebRTC offer, so the OpenAI key and the session config stay
+on the server, and the audio goes between the browser and OpenAI as it does on the default engine.
+Claude reads the thread and the request as text; no audio goes to Anthropic.
+
+```mermaid
+sequenceDiagram
+  participant B as Browser (call dock)
+  participant Z as Zimmer
+  participant G as OpenAI GPT-Live
+  participant C as Anthropic (Claude)
+  B->>Z: POST client_secret (engines: gpt_live_claude)
+  Z-->>B: engine gpt_live_claude, no secret
+  B->>Z: POST gpt_live_session (SDP offer)
+  Z->>G: POST /v1/live/sessions (config + offer)
+  G-->>Z: SDP answer
+  Z-->>B: SDP answer
+  B<<->>G: audio (WebRTC) and events (oai-events)
+  G->>B: session.delegation.created
+  B->>Z: POST delegations (delegation id, the line in flight)
+  Z->>C: Messages API, tool loop over the tool bridge
+  Z-->>B: answer, in chunks
+  B->>G: session.commentary.append
+```
+
+**Falling back.** An engine that cannot run sends the call to `openai_realtime` and says why on the
+dock: a key not set (`gpt_live_claude` needs `LIVE_OPENAI_API_KEY` and `LIVE_ANTHROPIC_API_KEY`), a
+client that cannot run it (only the web dock tells Zimmer it can run `gpt_live_claude`; the iOS app
+and CarPlay stay on Realtime), or a spend cap reached. So choosing an engine never leaves Live Mode
+without a voice. Each fallback is a ledger row, so [Live costs](#live-costs) counts them.
+
+**Spend caps.** Two settings bound what each experimental engine may spend: **Per-conversation cap**
+($2.00 by default) and **Daily cap per engine** ($10.00 a day by default, in the deployment's time
+zone). At 80% of either cap the call carries on with a warning, shown on the dock and passed to
+GPT-Live as quiet context. At the cap a call does not start on that engine, and a call already on it
+ends: the next delegation is answered with the cap instead of calling Claude, the dock hangs up
+after the goodbye, and the next call starts on `openai_realtime`. The live model cannot change the
+caps itself; a person changes them on the page, or an agent through MCP. The default engine has no
+cap, because there is nothing to fall back to.
+
+### Live costs
+
+Every billable or measured step of a voice call is a row in the voice-engine ledger
+(`LiveUsageEvent`), tagged with its engine, its conversation and its operation:
+
+| Operation | Engine | Written by |
+| --- | --- | --- |
+| `voice_tokens` | `openai_realtime` | the dock, from each `response.done`: text and audio tokens, cached separately |
+| `transcription` | `openai_realtime` | the dock, from each transcription's usage |
+| `voice_session` | `gpt_live_claude` | the dock, when the call ends: GPT-Live's billed seconds (from `session.closed` when it comes, else the seconds the dock saw) |
+| `delegation` | `gpt_live_claude` | Zimmer, for each Claude call: model, input, output, cache read and cache write tokens, round-trip time |
+| `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
+| `turn_latency` | any | the dock: from the end of the person's line to the first sound of the answer (no cost) |
+| `engine_fallback` | the engine asked for | Zimmer, when a call ran on another engine, with the reason (no cost) |
+
+A client reports volumes, never money. Zimmer picks the vendor and model from what it knows about
+the conversation, clamps the numbers, and prices each row as it is written from
+`config/live_voice_prices.yml`, recording the price table's `version` on the row. Each reported
+event carries the client's own key, so a batch sent twice counts once. A model the table does not
+list is recorded at zero and marked unpriced, rather than guessed at.
+
+`/live/costs` shows, for 1, 7, 30 or 90 days and one engine or all: spend per engine and per
+conversation, delegations, average delegation round trip, time to first audio (p50 and p90),
+errors, fallbacks, spend by operation and model with its token, audio and second volumes, spend by
+day, and today's spend against each experimental engine's caps. **Download CSV** is every row in the
+window. The same report is `GET /api/v1/live/costs` and the `get_live_costs` MCP tool, and the rows
+are `GET /api/v1/live/usage_events`.
+
+The ledger holds web calls only. The iOS app and CarPlay run on Realtime and do not report their
+usage yet, so Realtime's figures cover the web dock's calls, not every call.
+
 ## The OpenAI key
 
 Live Mode needs `LIVE_OPENAI_API_KEY`, typed or spoken, resolved through the
@@ -708,6 +802,8 @@ how those sessions authenticate or bill.
 | `LIVE_VOICE_MODEL` | `gpt-realtime-2.1-mini` | The voice default model, likewise |
 | `LIVE_VOICE_VOICE` | `marin` | The default voice it speaks in, likewise |
 | `LIVE_OPENAI_BASE_URL` | `https://api.openai.com/v1` | An OpenAI-compatible endpoint instead |
+| `LIVE_ANTHROPIC_API_KEY` | none | Claude, for the `gpt_live_claude` [voice engine](#voice-engines). Unset, that engine falls back. Its own name rather than `ANTHROPIC_API_KEY` for the same reason as the OpenAI key's |
+| `LIVE_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | An Anthropic-compatible endpoint instead |
 | `ZIMMER_STORE_CONSOLE_URL` | none | The console over Zimmer's own store, linked from the key panel. Unset, the panel shows the path without a link |
 | `ZIMMER_STORE_CONSOLE_STORE_NAME` | none | What that console calls the store, shown beside the link |
 
@@ -718,15 +814,15 @@ how those sessions authenticate or bill.
   (`start`, `switch`, `send_message`, `set_mode`, `finish`, and the `scratchpad_*` actions for
   the [scratchpad](#the-scratchpad)). A message sent this way is not
   anybody's: what the live model then delivers into a session is not recorded as a human message; `get_live_settings` and `action_live_settings` (`update`, `reset`, `restore_guidance`)
-  for the [Live settings](#live-settings). All four are in the opt-in
+  for the [Live settings](#live-settings); `get_live_costs` for [Live costs](#live-costs). All five are in the opt-in
   `live_conversations` group, which nothing carries by default: a live model can reach the whole
   catalog, so a session must not be able to steer one just by holding `sessions`. See
   [the MCP server](/extend/mcp-server/).
-- **REST:** `/api/v1/live`, `/api/v1/live/settings` and `/api/v1/live_conversations`. An API key
+- **REST:** `/api/v1/live`, `/api/v1/live/settings`, `/api/v1/live/costs`, `/api/v1/live/usage_events` and `/api/v1/live_conversations`. An API key
   may read them. Starting, going back, messaging, switching mode, finishing, the voice relay and changing the settings
   take the iOS app's sign-in acting as you, for the same reason. An agent changes the settings through
   MCP, where the change is recorded as an agent's. See [the REST API](/extend/rest-api/#live-conversations).
-- **Supervisor:** `/supervisor/live_conversations`, `/supervisor/live_conversation_turns` and `/supervisor/live_scratchpad_entries`, all
+- **Supervisor:** `/supervisor/live_conversations`, `/supervisor/live_conversation_turns`, `/supervisor/live_scratchpad_entries` and `/supervisor/live_usage_events`, all
   read-only.
 
 What is not proven yet, and the known rough edges, are on [Known limitations](/limitations/).

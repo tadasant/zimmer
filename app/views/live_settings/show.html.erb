@@ -17,7 +17,8 @@
       <% end %>
       <input type="hidden" name="loaded[guidance]" value="<%= setting.guidance_text %>">
       <% [ [ :text, "Typed turns", "Chat Completions, with Zimmer's tools. OpenAI accepts tools here only at reasoning effort “none”, so there is no effort setting for this path; the stronger GPT-6 models take tools only through the Responses API, which Live Mode does not use yet." ],
-           [ :voice, "Voice", "The Realtime API. Speed, turn detection, noise reduction, transcription and the output cap change mid-call; the model, voice and reasoning effort apply from the next call." ] ].each do |path, heading, note| %>
+           [ :voice, "Voice", "The Realtime API. Speed, turn detection, noise reduction, transcription and the output cap change mid-call; the model, voice and reasoning effort apply from the next call." ],
+           [ :engine, "Voice engine and spend caps", "Which engine runs a voice call, and what the experimental ones may spend. The experimental engines run on the web call dock only; the phone and the car stay on OpenAI Realtime. What each engine has cost is on Live costs." ] ].each do |path, heading, note| %>
         <section class="bg-white shadow-sm rounded-lg border border-gray-200 mb-6" data-live-settings-section="<%= path %>"
                  <% if path == :voice %>data-controller="live-settings-turn-detection" data-live-settings-turn-detection-default-value="<%= LiveSetting.default_for(:voice_turn_detection) %>"<% end %>>
           <div class="px-4 py-4 sm:px-6 border-b border-gray-200">

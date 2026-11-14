@@ -1,6 +1,8 @@
 import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
 import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
+import { GptLiveCall } from "lib/gpt_live_call"
+import { LiveUsageReporter, realtimeUsage } from "lib/live_usage_reporter"
 
 // The Live Mode voice call, owned by a dock in the layout (shared/_live_voice_dock,
 // data-turbo-permanent) rather than by the conversation page — a Turbo
@@ -43,6 +45,14 @@ import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 //                   ends it sooner (output_audio_buffer.cleared). A move to another
 //                   conversation is not followed meanwhile. The conversation stays
 //                   open; tool calls already relayed run to the end on Zimmer's side.
+//   engines          the dock tells client_secret it can run `gpt_live_claude`.
+//                    When the Live settings pick that engine and it can run,
+//                    the answer carries no secret and the call is a GptLiveCall
+//                    (lib/gpt_live_call) instead; otherwise it is the Realtime
+//                    call above, and a fallback's reason is shown on the dock.
+//   cost             a Realtime call reports each response's tokens, each
+//                    transcription's tokens and each turn's time to first
+//                    audio to the voice-engine ledger (lib/live_usage_reporter).
 
 // How often a call looks for a switch made somewhere else.
 const FOLLOW_INTERVAL_MS = 5000
@@ -116,6 +126,10 @@ export default class extends Controller {
     try {
       const session = await this.mintSecret(call.clientSecretUrl)
       if (mine !== this.generation) return
+      if (session.engine === "gpt_live_claude") return await this.startGptLive(call, session, mine, muted)
+      const fallback = session.voice_engine?.fallback_reason
+      if (fallback) this.showError(`On OpenAI Realtime: ${fallback}.`)
+      this.usage = new LiveUsageReporter(`/live_conversations/${call.conversationId}/usage`, "openai_realtime")
       this.gated = ["wake_word", "dynamic"].includes(session.listening)
 
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -161,6 +175,33 @@ export default class extends Controller {
       this.showError(error.message || String(error))
       this.hangUp({ keepError: true })
     }
+  }
+
+  // The `gpt_live_claude` engine: the same dock, mic and audio element, with
+  // GptLiveCall speaking GPT-Live's protocol and Claude behind it.
+  async startGptLive(call, session, mine, muted) {
+    this.mic = await navigator.mediaDevices.getUserMedia({ audio: true })
+    if (mine !== this.generation) { this.stopMic(); return }
+    this.cues.unlock()
+    if (muted) this.toggleMute()
+    this.audio = this.audio || document.createElement("audio")
+    this.audio.autoplay = true
+    if (session.voice_engine?.warning) this.showError(session.voice_engine.warning)
+    this.gptLive = new GptLiveCall({
+      call,
+      mic: this.mic,
+      audio: this.audio,
+      onState: (state) => { if (mine === this.generation && this.state !== state) this.setState(state) },
+      onError: (message) => { if (mine === this.generation) this.showError(message) },
+      onEnded: ({ dropped }) => {
+        if (mine !== this.generation) return
+        this.gptLive = null
+        if (dropped) this.showError("The call dropped.")
+        this.hangUp({ keepError: dropped || this.errorShown, dropped })
+      }
+    })
+    await this.gptLive.start()
+    if (mine === this.generation) this.watchCurrent(mine)
   }
 
   watchCurrent(generation) {
@@ -217,7 +258,7 @@ export default class extends Controller {
   // The conversation may still be reading its AGENTS.md (409); give it a moment.
   async mintSecret(url) {
     for (let attempt = 0; attempt < 6; attempt++) {
-      const response = await this.post(url, { listening_modes: 1 })
+      const response = await this.post(url, { listening_modes: 1, engines: ["gpt_live_claude"] })
       if (response.ok) return response.json()
       const body = await response.json().catch(() => ({}))
       if (response.status !== 409 || !/still reading/i.test(body.error || "")) {
@@ -241,6 +282,7 @@ export default class extends Controller {
         break
       // Gated, the person counts as heard once Zimmer says the line gets an answer.
       case "input_audio_buffer.speech_stopped":
+        this.stoppedAt = performance.now()
         this.cues.perform(this.director.personStopped())
         if (!this.gated && this.state !== "speaking") {
           this.setState("thinking")
@@ -261,17 +303,24 @@ export default class extends Controller {
         break
       case "response.output_audio.delta":
       case "response.output_audio_transcript.delta":
+        if (this.stoppedAt) {
+          this.usage?.latency(performance.now() - this.stoppedAt)
+          this.stoppedAt = null
+        }
         this.spoke = true
         if (this.state !== "speaking") this.setState("speaking")
         break
       case "response.function_call_arguments.done":
         this.relayToolCall(event, generation)
         break
-      case "response.done":
+      case "response.done": {
+        const tokens = realtimeUsage(event.response?.usage)
+        if (tokens) this.usage?.add("voice_tokens", { ...tokens, details: { status: event.response?.status || "" } })
         this.responseActive = false
         this.finishResponse(event.response, generation)
         this.hangUpOnceSaid()
         break
+      }
       // What the person hears, not what OpenAI has sent: a reply sounds on well
       // after its response.done.
       case "output_audio_buffer.started":
@@ -283,6 +332,9 @@ export default class extends Controller {
         this.hangUpOnceSaid()
         break
       case "conversation.item.input_audio_transcription.completed":
+        if (event.usage?.type === "tokens") {
+          this.usage?.add("transcription", { input_tokens: event.usage.input_tokens || 0, output_tokens: event.usage.output_tokens || 0 })
+        }
         if (this.gated) {
           this.hear(event, generation)
         } else {
@@ -545,6 +597,13 @@ export default class extends Controller {
 
   hangUp({ keepError = false, dropped = false, quiet = false } = {}) {
     this.generation = (this.generation || 0) + 1
+    this.usage?.flush({ keepalive: true })
+    this.usage = null
+    this.stoppedAt = null
+    // A GPT-Live call closes its own session first, so its final usage is read.
+    const gptLive = this.gptLive
+    this.gptLive = null
+    gptLive?.end()
     clearInterval(this.following)
     if (!quiet) this.cues.perform(dropped ? this.director.dropped() : this.director.hungUp())
     this.channel?.close()
