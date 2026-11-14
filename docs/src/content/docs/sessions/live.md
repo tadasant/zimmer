@@ -265,6 +265,18 @@ sessions contain all of its words. On CarPlay, the [CarPlay fit](/sessions/carpl
 the filter at `get_user_view` triage and tells the model to leave it off a search for a particular
 session, because a session marked `laptop_only` still exists.
 
+### Reading the board
+
+"What needs me?" in Live Mode, typed or spoken, is one call. Zimmer's mechanics section tells the
+model to call `get_user_view` with `order: "last_touched"` and `carplay_fit: "not_laptop_only"`:
+the sessions the person touched most recently first, without the rows that need a screen or a
+keyboard, and a count of the laptop-only rows it left out. The person does not have to name either
+knob. The model drops one only when they ask for the board's own order or for everything.
+
+The CarPlay filter is the default on a typed conversation too, not only in the car. That is what was
+asked for: Live Mode is the hands-busy surface, and the laptop already has the dashboard. The line is
+Zimmer's, so it holds whatever the `live-mode` root's own style files say.
+
 ### Self-enabling a catalog server
 
 When the live agent keeps reaching the same capability through a background session, it can call

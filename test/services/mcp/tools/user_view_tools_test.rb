@@ -217,4 +217,86 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes driving, "1. say yes (ID: #{ok.id})"
     assert_includes driving, "2. nobody judged (ID: #{untagged.id})"
   end
+
+  # ---- Last touched ----------------------------------------------------------
+
+  # The Live Mode default: what the person was last on, minus what needs a screen.
+  # A priority session high on the board does not outrank a spot one the person
+  # touched more recently, and a laptop-only row is dropped however recent.
+  test "order last_touched with the CarPlay filter puts the most recently touched first and drops laptop-only rows" do
+    freeze_time do
+      board_top = make_session(klass: SessionGenesis::PRIORITY, precedence: 100_000, title: "board top")
+      board_top.update_columns(created_at: 3.days.ago)
+      board_top.update!(metadata: (board_top.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601))
+
+      recent = make_session(klass: SessionGenesis::SPOT, precedence: 0, title: "touched an hour ago")
+      recent.update_columns(created_at: 5.days.ago)
+      recent.update!(metadata: (recent.metadata || {}).merge("last_user_activity_at" => 1.hour.ago.iso8601))
+
+      never = make_session(klass: SessionGenesis::SPOT, precedence: 0, title: "never touched")
+      never.update_columns(created_at: 1.day.ago)
+
+      laptop = make_session(klass: SessionGenesis::SPOT, precedence: 0, title: "needs the mac")
+      laptop.update!(metadata: (laptop.metadata || {}).merge("last_user_activity_at" => 1.minute.ago.iso8601),
+        carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+
+      board = @read.call({})
+      assert_includes board, "1. board top (ID: #{board_top.id})", "the default order is still the board's"
+
+      output = @read.call({ "order" => "last_touched", "carplay_fit" => "not_laptop_only" })
+
+      assert_includes output, "Ordered by last touched, most recent first"
+      assert_not_includes output, "needs the mac"
+      assert_includes output, "The carplay_fit filter (not_laptop_only) left out 1 row(s)"
+      assert_includes output, "1. touched an hour ago (ID: #{recent.id})"
+      assert_includes output, "2. never touched (ID: #{never.id})"
+      assert_includes output, "3. board top (ID: #{board_top.id})"
+      assert_includes output, "- **Last touched:** #{1.hour.ago.utc.iso8601} (about 1 hour ago)"
+      assert_includes output, "- **Last touched:** #{1.day.ago.utc.iso8601} (1 day ago) (never touched — this is when it was created)"
+      assert_includes output, "read the board with the default order first",
+        "a last-touched list must not be written back as the board's order"
+    end
+  end
+
+  test "an unknown order falls back to the board's order" do
+    priority = make_session(klass: SessionGenesis::PRIORITY, precedence: 1, title: "priority")
+    make_session(klass: SessionGenesis::SPOT, precedence: 5, title: "spot")
+
+    output = @read.call({ "order" => "sideways" })
+
+    assert_includes output, "1. priority (ID: #{priority.id})"
+    assert_includes output, "Ordered top to bottom exactly as the human sees it"
+  end
+
+  # Same filters, different order: last_touched honours status and visibility,
+  # pages, and the hidden count prints in board order too.
+  test "order last_touched keeps the filters and pages, and the carplay count shows in board order too" do
+    freeze_time do
+      older = make_session(title: "older")
+      older.update!(metadata: (older.metadata || {}).merge("last_user_activity_at" => 2.hours.ago.iso8601))
+      newer = make_session(title: "newer")
+      newer.update!(metadata: (newer.metadata || {}).merge("last_user_activity_at" => 1.hour.ago.iso8601))
+      make_session(status: :running, title: "running one")
+      snoozed = make_session(title: "snoozed one")
+      snoozed.update!(metadata: (snoozed.metadata || {}).merge("last_user_activity_at" => 1.minute.ago.iso8601))
+      snoozed.update_columns(visibility: SessionVisibility::HIDDEN)
+      laptop = make_session(title: "needs the mac")
+      laptop.update!(carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+
+      first = @read.call({ "order" => "last_touched", "per_page" => 1, "visibility" => "on_board", "carplay_fit" => "not_laptop_only" })
+      assert_not_includes first, "running one"
+      assert_includes first, "1. newer (ID: #{newer.id})", "the hidden row touched a minute ago is off the board"
+      assert_includes first, "page 1 of"
+      assert_includes first, "*More rows. Use page=2.*"
+
+      all_rows = @read.call({ "order" => "last_touched", "status" => [ "needs_input" ] })
+      assert_not_includes all_rows, "running one"
+      assert_not_includes all_rows, "snoozed one"
+      assert_operator all_rows.index("newer"), :<, all_rows.index("older")
+
+      board = @read.call({ "carplay_fit" => "not_laptop_only" })
+      assert_includes board, "The carplay_fit filter (not_laptop_only) left out 1 row(s)"
+      assert_includes board, "That is the whole board."
+    end
+  end
 end
