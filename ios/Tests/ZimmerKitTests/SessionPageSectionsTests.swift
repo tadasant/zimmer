@@ -58,4 +58,22 @@ final class SessionPageSectionsTests: XCTestCase {
         let short = try await FakeZimmerAPI().conversation(1044, limit: Conversation.pageSize)
         XCTAssertEqual(short.total, 7, "the default fixture is untouched")
     }
+
+    func testTheTitleCarriesTheAgentRootOnlyOnceTheHeaderChipHasScrolledAway() async throws {
+        let root = try await FakeZimmerAPI().session(1044).session.agentRoot
+        XCTAssertNotNil(root, "the fixture session has a root to show")
+        // The page at its top: the chip sits well under the strip.
+        XCTAssertNil(TitleAgentRoot.shown(root: root, chipBottom: 260, topEdge: 140), "the header shows it; not twice")
+        // Half under the strip is still in view.
+        XCTAssertNil(TitleAgentRoot.shown(root: root, chipBottom: 141, topEdge: 140))
+        // Scrolled on — reading the end of the conversation, the chip is far above the top.
+        XCTAssertEqual(TitleAgentRoot.shown(root: root, chipBottom: 140, topEdge: 140), root)
+        XCTAssertEqual(TitleAgentRoot.shown(root: root, chipBottom: -4_000, topEdge: 140), root)
+    }
+
+    func testTheTitleCarriesNoRootWhenThereIsNoneOrTheHeaderIsNotLaidOut() {
+        XCTAssertNil(TitleAgentRoot.shown(root: nil, chipBottom: -500, topEdge: 140))
+        XCTAssertNil(TitleAgentRoot.shown(root: "", chipBottom: -500, topEdge: 140))
+        XCTAssertNil(TitleAgentRoot.shown(root: "zimmer", chipBottom: nil, topEdge: 140), "the page before its first read")
+    }
 }

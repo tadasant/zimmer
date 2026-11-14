@@ -90,6 +90,31 @@ final class SessionSectionsUITests: XCTestCase {
         XCTAssertTrue(waitForFootInView(app, newest))
     }
 
+    /// The header's root chip is far above the newest message: the title carries the root while
+    /// the chip is out of sight, and drops it once the chip is back, so it is never shown twice.
+    func test_the_title_carries_the_agent_root_while_the_header_is_scrolled_away() throws {
+        let app = launch()
+        let chip = app.descendants(matching: .any)["detail.agentRoot"]
+        XCTAssertTrue(chip.waitForExistence(timeout: timeout))
+        let newest = app.descendants(matching: .any)["detail.message.98"]
+        XCTAssertTrue(newest.waitForExistence(timeout: timeout))
+        let subtitle = app.descendants(matching: .any)["detail.titleAgentRoot"]
+        XCTAssertTrue(waitForVisible(app, chip), "the page opens on its header")
+        XCTAssertFalse(subtitle.exists, "the header shows the root; the title does not repeat it")
+        attachScreenshot(app, named: "title-root-at-top")
+
+        app.buttons["detail.sections.transcript"].tap()
+        XCTAssertTrue(waitForFootInView(app, newest))
+        XCTAssertTrue(subtitle.waitForExistence(timeout: timeout), "at the newest message, the title carries the root")
+        XCTAssertEqual(subtitle.label, "Agent root zimmer-orchestrator")
+        XCTAssertLessThanOrEqual(subtitle.frame.maxY, app.navigationBars.firstMatch.frame.maxY + 1, "in the navigation bar, not the page")
+        attachScreenshot(app, named: "title-root-at-end")
+
+        app.buttons["detail.sections.overview"].tap()
+        XCTAssertTrue(waitForVisible(app, chip))
+        XCTAssertTrue(waitForDisappearance(subtitle), "back at the header, the title drops it")
+    }
+
     func test_the_transcript_reads_full_screen_and_goes_back_to_the_page() throws {
         let app = launch()
         let enter = app.buttons["detail.fullscreen"]
@@ -103,6 +128,8 @@ final class SessionSectionsUITests: XCTestCase {
         let exit = app.buttons["transcript.fullscreen.exit"]
         XCTAssertTrue(exit.waitForExistence(timeout: timeout))
         XCTAssertTrue(app.navigationBars["#1044 · Transcript"].exists)
+        XCTAssertEqual(app.navigationBars["#1044 · Transcript"].descendants(matching: .any)["detail.titleAgentRoot"].label, "Agent root zimmer-orchestrator",
+                       "no header full screen: the root is always under the title")
         // The page stays under the cover, messages and all: what is read is the cover's own.
         let cover = app.descendants(matching: .any)["transcript.fullscreen.messages"]
         XCTAssertTrue(cover.waitForExistence(timeout: timeout))
