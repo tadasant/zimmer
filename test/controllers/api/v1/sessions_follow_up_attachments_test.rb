@@ -77,6 +77,36 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
     assert File.exist?(job_images.sole[:path]), "the processor hands the turn a path that is on disk"
   end
 
+  test "sent now, a failed interrupt withdraws the message and removes what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::InterruptService.any_instance.stubs(:call)
+      .returns(Sessions::Result.new(success: false, error: "nope", error_code: :conflict))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :conflict, response.body
+    assert_empty session.enqueued_messages.reload
+    assert_empty FileStorageService.new(session_id: session.id).list
+    assert_empty ImageStorageService.new(session_id: session.id).list
+  end
+
+  # A failure the service did not withdraw is one a concurrent interrupt claimed:
+  # that message is being delivered, so its attachments have to stay on disk.
+  test "sent now, a failed interrupt that withdrew nothing keeps what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::InterruptWithFollowUp.stubs(:call)
+      .returns(Sessions::InterruptWithFollowUp::Result.new(success: false, error: "busy", error_code: :conflict, withdrawn: false))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :conflict, response.body
+    assert_equal 1, FileStorageService.new(session_id: session.id).list.size
+  end
+
   test "an image is an image by its bytes, whatever its media type says, and a data URL is read" do
     session = sessions(:needs_input)
     reap(session)

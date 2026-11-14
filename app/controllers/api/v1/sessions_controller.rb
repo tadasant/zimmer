@@ -483,8 +483,9 @@ class Api::V1::SessionsController < Api::BaseController
   # - failed/archived: Returns error
   #
   # When force_immediate is true, the message is always sent immediately regardless of
-  # session state. If the session is running, it is paused first, then resumed with the
-  # new prompt. This combines the create-and-interrupt pattern into a single API call.
+  # session state: it is staged and delivered through Sessions::InterruptWithFollowUp,
+  # ending the turn in flight. This combines the create-and-interrupt pattern into a
+  # single API call.
   #
   # Request body:
   #   - prompt: The follow-up prompt text (required)
@@ -536,8 +537,8 @@ class Api::V1::SessionsController < Api::BaseController
     attachments = stage_follow_up_attachments
     return if attachments.nil?
 
-    # When force_immediate is set, send immediately regardless of session state.
-    # If the session is running, pause it first, then resume with the new prompt.
+    # When force_immediate is set, send immediately regardless of session state,
+    # ending the turn in flight.
     if force_immediate
       unless @session.running? || @session.waiting? || @session.needs_input?
         discard_staged_attachments(attachments)
@@ -545,36 +546,22 @@ class Api::V1::SessionsController < Api::BaseController
         return
       end
 
-      # Route force_immediate through the single race-free interrupt path
-      # (Sessions::InterruptService) rather than pausing and resuming inline. This
-      # is the same backend the web + API "Send Now" / interrupt buttons use, so
-      # the "deliver now, terminating the current turn" behavior cannot diverge
-      # across entry points. Critically, it inherits the per-session advisory
-      # lock, exactly-once FIFO delivery, and the worker-side cross-container
-      # termination the inline pause/resume lacked: inline pause/resume flipped
-      # needs_input -> running within this one request and never reliably killed
-      # the worker-spawned Claude CLI process, so the "immediate" send silently
-      # degraded into ordinary post-turn queued delivery.
-      enqueued_message = nil
-      ActiveRecord::Base.transaction do
-        max_position = @session.enqueued_messages.maximum(:position) || 0
-        # Pass goal through on the message; EnqueuedMessageProcessorService applies
-        # a non-blank message goal to the session when it claims the message.
-        enqueued_message = @session.enqueued_messages.create!(
-          content: prompt,
-          goal: goal,
-          position: max_position + 1,
-          status: "pending",
-          source_context: api_turn_source.to_h,
-          **attachments_for_the_record(attachments)
-        )
-      end
-
-      result = Sessions::InterruptService.new(
+      # Staged and delivered through Sessions::InterruptWithFollowUp, the one
+      # stage-then-interrupt path every "send this now" door shares. It runs on
+      # Sessions::InterruptService's per-session advisory lock and exactly-once
+      # FIFO delivery, rather than pausing and resuming inline — which never
+      # reliably killed the worker-spawned CLI process, so the "immediate" send
+      # silently degraded into ordinary post-turn queued delivery. The goal rides
+      # on the message; EnqueuedMessageProcessorService applies a non-blank one
+      # to the session when it claims the message.
+      result = Sessions::InterruptWithFollowUp.call(
         session: @session,
-        enqueued_message: enqueued_message,
-        actor: "api_force_immediate"
-      ).call
+        prompt: prompt,
+        goal: goal,
+        source_context: api_turn_source.to_h,
+        actor: "api_force_immediate",
+        **attachments_for_the_record(attachments)
+      )
 
       if result.success?
         record_uncle_edge(@session, "api_v1:sessions.follow_up")
@@ -585,21 +572,10 @@ class Api::V1::SessionsController < Api::BaseController
           message: "Follow-up prompt sent immediately"
         }.merge(preserved_wake_json(@session))
       else
-        # force_immediate is all-or-nothing: if the interrupt could not be
-        # dispatched, remove the message we staged so it is not silently delivered
-        # later as a surprise queued follow-up. A concurrent interrupt may have
-        # already claimed/destroyed it (RecordNotFound) — that is fine.
-        begin
-          enqueued_message.reload
-          if enqueued_message.status == "pending"
-            enqueued_message.destroy!
-            # Only when this request withdrew the message: one a concurrent
-            # interrupt claimed is being delivered, attachments and all.
-            discard_staged_attachments(attachments)
-          end
-        rescue ActiveRecord::RecordNotFound
-          # already claimed by a concurrent interrupt — nothing to clean up
-        end
+        # force_immediate is all-or-nothing: the service withdrew the staged
+        # message. Its attachments go only when this request withdrew it — one a
+        # concurrent interrupt claimed is being delivered, attachments and all.
+        discard_staged_attachments(attachments) if result.withdrawn?
         render_api_error("Cannot send follow-up", result.error, status: result.error_code || :internal_server_error)
       end
       return
