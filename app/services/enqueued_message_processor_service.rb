@@ -350,9 +350,11 @@ class EnqueuedMessageProcessorService
   # pre-existing behaviour instead: the marker stands and swallows the claimed
   # message, with the rescue's log line to say so.
   #
-  # The rescue cannot see a position collision, and that is fine rather than a
-  # gap: the `(session_id, position)` unique constraint is DEFERRABLE INITIALLY
-  # DEFERRED, so a race with another writer of this queue surfaces at COMMIT of the
+  # The tail is read through Sessions::QueueTail, so other appenders wait behind
+  # the session lock this claim already holds. The rescue cannot see a position
+  # collision, and that is fine rather than a gap: the `(session_id, position)`
+  # unique constraint is DEFERRABLE INITIALLY DEFERRED, so a position written any
+  # other way that collides with this one surfaces at COMMIT of the
   # outer transaction, which rolls the whole claim back. The message stays
   # `pending` and is redelivered — late, not lost.
   #
@@ -365,7 +367,7 @@ class EnqueuedMessageProcessorService
     ActiveRecord::Base.transaction(requires_new: true) do
       if held != message_content && !AutomatedPrompts.nudge?(held) &&
          !session.enqueued_messages.pending.exists?(content: EnqueuedMessage.contents_matching(held))
-        position = (session.enqueued_messages.maximum(:position) || 0) + 1
+        position = Sessions::QueueTail.next_position!(session)
         session.enqueued_messages.create!(
           **EnqueuedMessage.attributes_for_prompt(held),
           position: position,

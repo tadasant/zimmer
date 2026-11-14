@@ -656,12 +656,9 @@ module Github
       comment_type = comment_info[:type] == "review" ? "review comment" : "PR comment"
       comment_url = comment_info[:data]["url"]
 
-      max_position = session.enqueued_messages.maximum(:position) || 0
-      next_position = max_position + 1
-
       session.enqueued_messages.create!(
         content: prompt,
-        position: next_position,
+        position: Sessions::QueueTail.next_position!(session),
         status: "pending"
       )
 

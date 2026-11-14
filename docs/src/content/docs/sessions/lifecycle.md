@@ -61,9 +61,7 @@ against a session that already has one queued.
 
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
-at consecutive positions rather than colliding on the queue's unique position. The queue's other
-writers (triggers, `MessageParent`'s queued report, the processor and Slack paths, among others) still take their own
-`maximum + 1` and can still collide with it. It also writes the one timeline row all three leave
+at consecutive positions rather than colliding on the queue's unique position. It also writes the one timeline row all three leave
 behind, *"Message queued at position N (a turn is already underway)"*. Each route still writes its
 own response.
 
@@ -85,6 +83,20 @@ interrupt fails, or the surface's pre-interrupt step raises, it withdraws the st
 turns up later as a surprise queued follow-up. A message a concurrent interrupt already claimed is
 left to be delivered. The web "Send Now" button on a queued message is not on this path: it promotes
 a row that already exists, so it calls `InterruptService` directly.
+
+**Every writer that appends to the queue reads its position the same way**, through
+`Sessions::QueueTail`: a `FOR NO KEY UPDATE` lock on the session row, then `MAX(position) + 1`,
+then the insert, in one transaction. That covers the routes above and the queue's other writers:
+trigger fires, `MessageParent`'s queued report, the processor's displaced held prompt, GitHub
+comment and automated-message delivery, a Slack message folded into a session, an MCP App widget
+message, a spot-held prompt queued behind its deferred turn, and a skipped job's prompt
+(`Sessions::RequeueSkippedPrompt`). Two of them writing at once wait on each other and land at
+consecutive positions, instead of one failing on the deferred `(session_id, position)` unique
+constraint at commit. The ones that already locked the session with `lock!` were already ordered
+this way, because `FOR UPDATE` conflicts with `FOR NO KEY UPDATE`; the widget, spot-hold and
+skipped-prompt writers took no lock before. `test/services/sessions/queue_tail_writers_test.rb`
+fails on a `maximum(:position)` read anywhere else in `app/`. Reordering a queued message is the
+exception: it renumbers rows already in the queue rather than appending one.
 
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as

@@ -16,9 +16,13 @@ module Sessions
   #
   # Callers must already be inside a transaction, and must insert the row in
   # that same transaction — the lock is released at COMMIT, and a position read
-  # outside it orders nothing. Writers that compute their own `maximum + 1`
-  # are not ordered by this lock; a collision with one of them still raises
-  # `ActiveRecord::RecordNotUnique`.
+  # outside it orders nothing. Every writer that appends to a session's queue
+  # reads its position here; `test/services/sessions/queue_tail_writers_test.rb`
+  # fails on a `maximum(:position)` anywhere else in `app/`. Callers that already
+  # hold `FOR UPDATE` on the session (`lock!`) lose nothing by calling it: a
+  # transaction never waits on a lock it already holds. The one writer this
+  # does not order is the reorder in `EnqueuedMessage#move_to_position`, which
+  # renumbers existing rows rather than appending.
   module QueueTail
     # @param session [Session]
     # @return [Integer] the position the next queued message should take

@@ -66,13 +66,21 @@ module McpApps
         "[MCP App #{label} from #{server_name}/#{tool}]\n\n#{body}"
       end
 
+      # The position is read under the session row lock and the row and its log
+      # are written in the same transaction, so a widget message cannot take the
+      # position another writer is about to commit (Sessions::QueueTail). The
+      # activity stamp is outside it: it is not part of the queue write, and the
+      # lock need not wait on it.
       def queue(session, prompt)
-        position = (session.enqueued_messages.maximum(:position) || 0) + 1
-        session.enqueued_messages.create!(content: prompt, position: position, status: "pending")
-        session.logs.create!(
-          content: "MCP App widget queued a message at position #{position}",
-          level: "info"
-        )
+        position = ActiveRecord::Base.transaction do
+          tail = Sessions::QueueTail.next_position!(session)
+          session.enqueued_messages.create!(content: prompt, position: tail, status: "pending")
+          session.logs.create!(
+            content: "MCP App widget queued a message at position #{tail}",
+            level: "info"
+          )
+          tail
+        end
         session.touch_user_activity!
         Result.new(status: :queued, message: "Queued for the agent's next turn.")
       rescue ActiveRecord::RecordInvalid => e
