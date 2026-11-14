@@ -85,8 +85,8 @@ phone ends a call the car started: there the tap finds out. It is a read, so the
 **Break glass.** Everything else in the car is voice, and that is exactly what fails here: a call the
 live model has mis-tuned cannot be asked to fix itself. Tadas asked for a touch way out, reachable
 from the call. So the call screen has a gear, and behind it one list, the voice settings. This
-reverses *radically simple* below on purpose and only this far: one list, reached only from the
-call, holding only settings.
+reverses *radically simple* below on purpose and only this far: one list, holding only settings,
+reached from the call and (below) from the home.
 
 **The settings before any call.** Tadas, later: *"there should be a settings button present even
 before I'm inside live mode."* Reaching the panel only from the gear meant starting a call to look
@@ -352,7 +352,7 @@ make a sound at all, so during one of those this is only shown.
 
 ```mermaid
 flowchart TD
-  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Continue] [New] [Voice settings]\nNew alone with nothing open"]
+  connect([Car connects, silently]) --> home["Zimmer (grid, root)\n[Continue] [New] [Voice settings]\nNew and Voice settings with nothing open;\none tile, no Voice settings, while a call is under way"]
   home -- "Continue: the open conversation" --> call["Live Mode call (voice control template, modal)\nstate picture + title: Connecting… / Listening / Hearing you / Replying / Muted\n[Mute] [End], or [Send now] [End] on Hearing you"]
   home -- "New: ends the open one, starts another" --> call
   home -- "Continue, nothing open: falling notes, no call" --> home

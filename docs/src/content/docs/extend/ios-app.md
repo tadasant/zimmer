@@ -744,12 +744,12 @@ primary way in is talking (`com.apple.developer.carplay-voice-based-conversation
 the other categories fit: Zimmer isn't audio, navigation, messaging, or a driving task. The design,
 and why each choice was made, is [`ios/CARPLAY_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_DESIGN.md).
 
-**Radically simple: open, talk, mute, end.** The car has two screens, and one panel behind a gear. When the phone connects it
-shows two tiles, **Continue conversation** and **New conversation**, and says nothing. One tap on
+**Radically simple: open, talk, mute, end.** The car has two screens, and one panel, behind the call screen's gear and the home's Voice settings tile. When the phone connects it
+shows **Continue conversation** and **New conversation**, with **Voice settings** after them, and says nothing. One tap on
 either starts [Live Mode](/sessions/live/) with voice on, on the same call as the phone's, so a call
 started at the desk carries on in the car. Continue calls the open conversation. New ends it and
 calls a fresh one, with no confirmation, because the ended conversation stays readable on the
-phone. With nothing open there is only New: an ended conversation can't take a call. If you tap
+phone. With nothing open there is only New (and Voice settings): an ended conversation can't take a call. If you tap
 Continue and the conversation has ended on the phone since the tiles were drawn, you hear the falling
 notes, no call starts, and the tiles come down to New. While the call runs the screen is the voice control
 template. Its picture and title follow the call (Connecting…, Listening, Hearing you, Replying),
@@ -906,7 +906,8 @@ held only while the call runs, and the microphone opens only for the call.
 **What keeps it from crashing, and the tests that hold it.** Every iOS pull request runs the
 **CarPlay drill** (`ios_carplay`). Zimmer is opened in the iOS Simulator's CarPlay window and driven
 by XCUITest:
-- it opens on Continue and New, and Continue is one tap to the call screen;
+- it opens on Continue, New and Voice settings; Voice settings opens the panel with no call, and Done goes back to the tiles;
+- Continue is one tap to the call screen;
 - the car is unplugged with a call up, by the Simulator's own menu, and the phone lands on the call;
   plugged back in, the call is on the car again;
 - the gear is on the call screen, and the panel behind it (opened by the fixture running the gear's

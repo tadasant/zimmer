@@ -125,7 +125,9 @@ public struct LiveRetry: Hashable, Sendable {
 public enum CarHomeSettingsTile {
     /// Longest first, as CarPlay chooses among them.
     public static let titleVariants = ["Voice settings", "Settings"]
-    public static let symbol = "gearshape.fill"
+    /// Not the call screen's gear (`gearshape.fill`): CarPlay names a tile for its symbol, and the
+    /// drill takes that gear as proof the call screen is up.
+    public static let symbol = "slider.horizontal.3"
 }
 
 /// The home's tiles: the driver's two choices, and the one place the car says whether Live Mode

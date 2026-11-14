@@ -97,8 +97,10 @@ final class CarPlayDrillUITests: XCTestCase {
         assertAlive("with the voice settings up from the home")
         let done = row("Done")
         done.tap()
-        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "Done goes back to the tiles; the car showed:\n\(car.debugDescription)")
-        XCTAssertFalse(row("Reply length cap").exists, "the panel has left the stack")
+        // The tiles sit under the pushed panel the whole time, so the panel leaving is the proof.
+        let panelGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row("Reply length cap"))
+        XCTAssertEqual(XCTWaiter().wait(for: [panelGone], timeout: Self.hostStall), .completed, "Done takes the panel down; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "and the tiles are back; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("after the voice settings from the home: closing them calls nobody")
         photograph("carplay-home-after-settings")
         assertAlive("after the voice settings from the home")
