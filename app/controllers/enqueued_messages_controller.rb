@@ -93,10 +93,6 @@ class EnqueuedMessagesController < ApplicationController
       return
     end
 
-    # Calculate next position
-    max_position = @session.enqueued_messages.maximum(:position) || 0
-    next_position = max_position + 1
-
     # Parse attachments (images/files) from the form. These are passed as JSON
     # arrays of metadata objects pointing at session-scoped storage paths populated
     # by the upload_images/upload_files endpoints. We persist the metadata so the
@@ -104,30 +100,29 @@ class EnqueuedMessagesController < ApplicationController
     attached_images = parse_enqueued_images
     attached_files = parse_enqueued_files
 
+    # One transaction around the queue write and the bookkeeping after it, so a
+    # retried attempt never leaves a second copy of the message behind.
     result = with_db_retry do
-      @enqueued_message = @session.enqueued_messages.create!(
-        content: content,
-        goal: goal,
-        position: next_position,
-        status: "pending",
-        images: attached_images || [],
-        files: attached_files || [],
-        source_context: web_turn_source.to_h
-      )
+      @session.transaction do
+        @enqueued_message = Sessions::EnqueueMessage.call(
+          session: @session,
+          content: content,
+          goal: goal,
+          source_context: web_turn_source.to_h,
+          images: attached_images || [],
+          files: attached_files || []
+        )
+        raise ActiveRecord::RecordInvalid, @enqueued_message unless @enqueued_message.persisted?
 
-      # Recorded when the human typed it, not when the processor delivers it.
-      # The API/MCP twin of this endpoint deliberately records nothing: an agent
-      # queueing a message for another session is not a human turn.
-      capture_web_ui_human_message(@session, content, "web_ui.enqueued_message")
+        # Recorded when the human typed it, not when the processor delivers it.
+        # The API/MCP twin of this endpoint deliberately records nothing: an agent
+        # queueing a message for another session is not a human turn.
+        capture_web_ui_human_message(@session, content, "web_ui.enqueued_message")
 
-      @session.logs.create!(
-        content: "Enqueued message added at position #{next_position}",
-        level: "info"
-      )
-
-      # Stamps user activity so PollBackoff resets the GitHub-poll cadence
-      # for this session.
-      @session.touch_user_activity!
+        # Stamps user activity so PollBackoff resets the GitHub-poll cadence
+        # for this session.
+        @session.touch_user_activity!
+      end
     end
 
     # Check if we already redirected (max retries exceeded)

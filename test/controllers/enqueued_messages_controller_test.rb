@@ -84,6 +84,31 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_includes log.content, "Enqueued message added at position"
   end
 
+  test "create writes through Sessions::EnqueueMessage with the web turn source and attachments" do
+    queued = @session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    Sessions::EnqueueMessage.expects(:call).with do |session:, content:, goal:, source_context:, images:, files:|
+      session == @session && content == "Queued" && goal.nil? &&
+        source_context["surface"] == "web" && images == [] && files == []
+    end.returns(queued)
+
+    post session_enqueued_messages_url(@session), params: { content: "Queued" }
+
+    assert_redirected_to session_path(@session)
+    assert_equal "Message enqueued successfully", flash[:notice]
+  end
+
+  test "a failure after the queue write takes the message and its log row back with it" do
+    HumanMessageCapture.stubs(:record_web_ui_message).raises(RuntimeError, "capture failed")
+
+    assert_no_difference [ "@session.enqueued_messages.count", "@session.logs.count" ] do
+      begin
+        post session_enqueued_messages_url(@session), params: { content: "Never lands" }
+      rescue RuntimeError
+        # Raised or rendered as a 500 depending on show_exceptions; either way nothing is left behind.
+      end
+    end
+  end
+
   test "should create enqueued message with goal" do
     assert_difference("@session.enqueued_messages.count") do
       post session_enqueued_messages_url(@session), params: {

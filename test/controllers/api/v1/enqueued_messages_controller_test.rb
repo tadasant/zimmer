@@ -145,6 +145,39 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "create writes through Sessions::EnqueueMessage with the API turn source" do
+    queued = @session.enqueued_messages.create!(content: "Via service", position: 4, status: "pending")
+    Sessions::EnqueueMessage.expects(:call).with do |session:, content:, goal:, source_context:|
+      session == @session && content == "Via service" && goal == "Tests pass" && source_context["surface"] == "api"
+    end.returns(queued)
+
+    post api_v1_session_enqueued_messages_path(@session), params: {
+      content: "  Via service  ", goal: " Tests pass "
+    }, headers: @headers
+
+    assert_response :created
+    assert_equal queued.id, JSON.parse(response.body)["enqueued_message"]["id"]
+  end
+
+  test "create answers 422 with the validation errors and writes nothing for an invalid message" do
+    assert_no_difference [ "EnqueuedMessage.count", "Log.count" ] do
+      post api_v1_session_enqueued_messages_path(@session), params: {
+        content: "x" * (Session::PROMPT_MAX_LENGTH + 1)
+      }, headers: @headers
+    end
+
+    assert_response :unprocessable_entity
+    json = JSON.parse(response.body)
+    assert_equal "Validation failed", json["error"]
+    assert(json["messages"].any? { |m| m.start_with?("Content is too long") })
+  end
+
+  test "create logs the position it landed at" do
+    post api_v1_session_enqueued_messages_path(@session), params: { content: "Logged" }, headers: @headers
+
+    assert_equal "Enqueued message added at position 4", @session.logs.order(:id).last.content
+  end
+
   test "should create log entry on message creation" do
     assert_difference("@session.logs.count", 1) do
       post api_v1_session_enqueued_messages_path(@session), params: {
