@@ -96,12 +96,9 @@ module AutomatedSessionMessage
   # in `waiting`. EnqueuedMessage's after_create_commit hook is what guarantees
   # something comes back for the row in the second case; see the class comment.
   def enqueue_prompt_for_later(session, prompt, event_description, origin)
-    max_position = session.enqueued_messages.maximum(:position) || 0
-    next_position = max_position + 1
-
     session.enqueued_messages.create!(
       content: prompt,
-      position: next_position,
+      position: Sessions::QueueTail.next_position!(session),
       status: "pending",
       origin: origin
     )

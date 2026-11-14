@@ -8,6 +8,8 @@ require "mocha/minitest"
 # prompt destroyed by EnqueuedMessageProcessorService and then dropped by the
 # concurrency guard — lives in test/jobs/agent_session_job_test.rb.
 class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
+  include QueueTailAssertions
+
   setup do
     @session = Session.create!(
       prompt: "Original prompt",
@@ -160,6 +162,10 @@ class Sessions::RequeueSkippedPromptTest < ActiveSupport::TestCase
 
     assert_empty @session.enqueued_messages.pending
     assert_empty @session.logs.reload
+  end
+
+  test "reads the tail under the session row lock, inside the insert's transaction" do
+    assert_appends_under_queue_tail_lock { assert_equal :queued, requeue("Read the tail under the lock") }
   end
 
   test "a lost position race is retried rather than costing the prompt" do
