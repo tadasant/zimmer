@@ -45,10 +45,23 @@ class Sessions::SleeperGuidanceTest < ActiveSupport::TestCase
     output = tool.call({ "action" => "follow_up", "session_id" => session.id, "prompt" => "List the parallel work" })
 
     assert_match(/\*\*Delivered now:\*\* the wake-up does not hold a follow-up back/, output)
-    assert_match(/does not wait for its wake time/, output)
+    assert_match(/does not wait for its wake-up/, output)
     assert_match(/transcript_last_messages: 2/, output)
     assert_match(/\*\*Its own wake-up:\*\* still armed/, output)
     assert session.reload.paused_until_scheduled_time?, "the wake must survive the follow-up"
+  end
+
+  # The one branch where "Delivered now" would be a lie: a turn is underway, so
+  # the follow-up is queued behind it rather than delivered.
+  test "a follow-up queued behind an underway turn does not claim it was delivered now" do
+    session = asleep_session
+    Sessions::LiveTurn.stubs(:underway?).returns(true)
+
+    output = tool.call({ "action" => "follow_up", "session_id" => session.id, "prompt" => "List the parallel work" })
+
+    assert_match(/Message queued/, output)
+    refute_match(/Delivered now/, output)
+    refute_match(/\*\*Its answer:\*\*/, output)
   end
 
   test "start_now on a sleeper points at follow_up, and at the answer when one was given" do
@@ -60,7 +73,7 @@ class Sessions::SleeperGuidanceTest < ActiveSupport::TestCase
 
     assert_match(/A pause outranks the queue/, error.message)
     assert_match(/send a `follow_up`/, error.message)
-    assert_match(/last follow-up has already been delivered and answered/, error.message)
+    assert_match(/A follow-up was already delivered to it and answered/, error.message)
     assert_match(/at 2026-11-14T22:52:33Z/, error.message)
     assert session.reload.paused_until_scheduled_time?, "a refusal must leave the wake armed"
   end
@@ -73,7 +86,7 @@ class Sessions::SleeperGuidanceTest < ActiveSupport::TestCase
     end
 
     assert_match(/send a `follow_up`/, error.message)
-    refute_match(/already been delivered and answered/, error.message,
+    refute_match(/already delivered to it and answered/, error.message,
       "no follow-up was answered, so the refusal must not claim one was")
     assert session.reload.paused_until_scheduled_time?
   end
@@ -87,27 +100,19 @@ class Sessions::SleeperGuidanceTest < ActiveSupport::TestCase
 
     assert_match(/no turn queued for a worker/, error.message)
     assert_match(/send a `follow_up`/, error.message)
-    assert_match(/already been delivered and answered/, error.message)
+    assert_match(/already delivered to it and answered/, error.message)
   end
 
   test "get_session and the search row say an answered follow-up was answered" do
     session = answered!(asleep_session)
 
     detail = tool(Mcp::Tools::GetSession).call({ "id" => session.id })
-    assert_match(/\*\*Dormant because:\*\* `follow_up_resleep`.*already been delivered and answered/, detail)
+    assert_match(/\*\*Dormant because:\*\* `follow_up_resleep`.*already delivered to it and answered/, detail)
 
     row = tool(Mcp::Tools::QuickSearchSessions).call({ "id" => session.id })
     assert_match(/\*\*Paused:\*\* yes/, row)
     assert_match(/`follow_up` wakes it for one turn immediately/, row)
-    assert_match(/\*\*Last follow-up:\*\* Its last follow-up has already been delivered and answered/, row)
-  end
-
-  test "the REST restart refusal says the same" do
-    session = asleep_session
-    tail = Sessions::SleeperGuidance.refusal_tail(session, paused: true)
-
-    assert_match(/send a `follow_up`/, tail)
-    assert_nil Sessions::SleeperGuidance.last_follow_up_answered(session)
+    assert_match(/\*\*Last follow-up:\*\* A follow-up was already delivered to it and answered/, row)
   end
 
   test "a session that is neither asleep nor just answered gets no tail" do
