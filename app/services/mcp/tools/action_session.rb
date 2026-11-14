@@ -171,11 +171,11 @@ module Mcp
         Perform an action on an agent session.
 
         **Actions:**
-        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one. Pass "sync": true to wait for the session's answer to THIS prompt and get it back inline (reply text, sessions it started, resulting status) instead of polling `get_session` — a queued prompt is waited on through the turn ahead of it, and the call lasts at most "sync_timeout_seconds", counted from when Zimmer began handling it (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}), after which you get the session's state so far.
+        - **follow_up**: Send a follow-up prompt to a session (requires "prompt"; optional "force_immediate" to interrupt a running session — see "Interrupting vs queuing" below, and reach for it whenever the prompt would redirect the agent). Without "force_immediate", uses smart routing: sends immediately if idle, auto-queues if running. **A session asleep on a wake-up (`waiting`, "Paused", "asleep until …") counts as idle here: the follow-up wakes it for one turn straight away, and it goes back to the same wait after answering — so `follow_up` is how you get something to a sleeping session, never `start_now`, `restart` or `force_start`.** Optionally takes "goal" to give the session a new definition of done along with the prompt; a blank or omitted goal preserves the session's current one. Pass "sync": true to wait for the session's answer to THIS prompt and get it back inline (reply text, sessions it started, resulting status) instead of polling `get_session` — a queued prompt is waited on through the turn ahead of it, and the call lasts at most "sync_timeout_seconds", counted from when Zimmer began handling it (default #{Sessions::SyncReply::DEFAULT_TIMEOUT_SECONDS}, at most #{Sessions::SyncReply::MAX_TIMEOUT_SECONDS}), after which you get the session's state so far.
         - **pause**: Pause a running session, transitioning it to idle "needs_input" status
         - **pause_into_spot_queue**: Put this session to sleep in the spot queue instead of at a wall-clock time — the counterpart of `wake_me_up_later` when there is no time worth naming. The session goes dormant in "waiting" with NO wake-up trigger and no time attached, and resumes when the spot scheduler reaches it: a Claude Code account under both quota targets, a free session slot, highest precedence first. Any unfired one-time wake this session had is cancelled, since it was replaced by this. A session that resolves to "priority" is set to "spot" (a priority session cannot sit in the queue) — reverse it with `change_scheduling_class`, which resumes it on the next sweep. Optionally takes "prompt": what the session should be resumed with, in place of the default recovery nudge. A running session sleeps when its current turn ends, not mid-turn — pass "halt": true to stop the turn where it stands instead. Only use "halt" on a session that is NOT you: it terminates the agent process, so a session halting itself never gets a reply to this call. Any message still queued for the session waits with it, and unlike a timed pause nothing bounds how long — drain the queue first if that matters. Use this instead of a made-up wake time when the answer to "when should this come back" is "whenever there is quota headroom for it".
         - **restart**: Restart an idle or failed session without providing new input. On a connection restricted to specific agent roots, only sessions belonging to one of those roots can be restarted
-        - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule.
+        - **start_now**: Take a waiting session's next turn now instead of when the scheduler gets round to it — the tool half of the Ranked view's ⋮ menu entry. Reach for it when one session should not wait out the gate's deferred re-check, which can sit up to an hour out. It moves WHEN the turn is asked for and not WHETHER it is allowed: a spot session stays spot, so a window still over its target holds it again — `change_scheduling_class` to "priority" is what removes the gate. A session that has never run has its first turn enqueued, with the images and files it was created with. One that has run before with nothing queued is stranded rather than queued, and is refused with the error naming "follow_up" or "restart" instead; so is one asleep on a wake-up it has not reached, because a pause outranks the queue and it wakes on its own schedule. Neither refusal stops a message reaching it: `follow_up` delivers one to a sleeping session at once.
         - **force_start**: Take a worker thread AWAY from another session's turn and give it to this one. Only for a session that is "waiting" with its turn queued for a worker — the `agents` lane runs a fixed number of threads, and when they are all busy a queued turn waits however long the turns ahead of it take. "start_now" cannot help there (the turn is already due, there is nothing to bring forward) and neither can "change_scheduling_class": the spot gate decides WHETHER a turn may run and this is thread contention, which applies to priority sessions identically. The victim is the turn that started most recently, whatever its class — never you, the caller; its process is stopped — work on disk survives, the tool call in flight does not — and its turn goes straight back into the queue, so nothing is cancelled. Its row records that it was forced out and for whom. `get_session` on the queued session names the session that would be stopped; pass it as "expected_victim_id" and the call is refused if the pick has changed since, rather than stopping a different session than the one you decided on. Refused when the pool has a free thread already (the turn starts on the next poll anyway) or when no turn on a thread can be stopped. This is expensive and destroys another session's in-flight tool call: reach for it only when a human is actually waiting on this session.
         - **archive**: Archive a session (marks as completed). Refused when messages are still queued for the session, since archiving discards them — the error names them, and "force" overrides it deliberately. Also refused when you are archiving a session OTHER than your own and it has an agent turn in flight: that archive kills the running process mid-turn and deletes its clone. Archiving yourself is never refused for that reason — your own turn is the one in flight, and you are the only caller that knows whether it is finished.
         - **unarchive**: Restore an archived session to idle "needs_input" status
@@ -703,12 +703,13 @@ module Mcp
       # as a side effect of the promotion.
       def start_now(session)
         result = Sessions::StartNow.call(session, actor: "an agent through MCP")
-        raise ToolError, result.message if result.refused?
+        raise ToolError, with_sleeper_tail(result.message, session) if result.refused?
 
         if result.nothing_queued?
-          raise ToolError,
+          raise ToolError, with_sleeper_tail(
             "#{result.message} There is no turn to bring forward: send it a \"follow_up\" prompt, " \
-            "or \"restart\" it if it is stuck."
+            "or \"restart\" it if it is stuck.", session
+          )
         end
 
         summary("Session Starting Now", session.reload, message: result.message)
@@ -737,7 +738,7 @@ module Mcp
           expected_victim_id: args["expected_victim_id"].presence,
           excluding: [ context.self_session_id ].compact
         )
-        raise ToolError, result.message if result.refused?
+        raise ToolError, with_sleeper_tail(result.message, session) if result.refused?
 
         if result.no_victim?
           raise ToolError,
@@ -775,10 +776,21 @@ module Mcp
       def refuse_if_paused!(session)
         return unless session.paused_until_scheduled_time?
 
-        raise ToolError,
+        raise ToolError, with_sleeper_tail(
           "Session #{session.id} is asleep on a wake-up it has not reached yet (#{session.pending_wake_phrase}). " \
-          "A pause outranks precedence and scheduling class, so this session does not start early — " \
-          "skip it and take the next candidate. It wakes on its own schedule."
+          "A pause outranks precedence and scheduling class, so this session does not start early — if you are " \
+          "working a queue, skip it and take the next candidate. It wakes on its own schedule.",
+          session, paused: true
+        )
+      end
+
+      # A refusal of a start path on a sleeper used to end at "it wakes on its
+      # own schedule", which a caller with a message to deliver reads as "my
+      # message waits until then" — the opposite of what `follow_up` does. See
+      # Sessions::SleeperGuidance.
+      def with_sleeper_tail(message, session, **)
+        tail = Sessions::SleeperGuidance.refusal_tail(session, **)
+        tail.present? ? "#{message} #{tail}" : message
       end
 
       def archive(session, args)
@@ -1593,7 +1605,7 @@ module Mcp
         # `get_session` grew a queued-messages section (#698): an unread queue is
         # how four sessions each restate the message above it.
         lines.concat(EnqueuedMessageSections.queue_depth_lines(session, queued_message: queued_message))
-        lines.concat(pending_wake_lines(session))
+        lines.concat(pending_wake_lines(session, delivered_now: queued_message.nil?))
         lines.join("\n")
       end
 
@@ -1614,8 +1626,24 @@ module Mcp
       # for a status that never arrives. `pending_wake_at` is the same predicate
       # SessionStateMachine#preserve_pending_wakes_across_follow_up backs the
       # re-sleep with, so the two cannot disagree.
-      def pending_wake_lines(session)
+      #
+      # A delivered (not queued) follow-up to a sleeper also says, first, that
+      # the wake did not hold it back, and where its answer will be. Without that
+      # the only status a sender sees is `waiting` — before the turn and after it
+      # — and a Live Mode assistant read "waiting, asleep until 22:58Z" as "not
+      # delivered" and told a driver to wait for a reply already given.
+      def pending_wake_lines(session, delivered_now: false)
         return [] unless session.armed_one_time_wake?
+
+        lines = []
+        if delivered_now
+          lines << "- **Delivered now:** the wake-up does not hold a follow-up back. The session takes this " \
+                   "turn immediately — `waiting` here means its turn is handed to a worker, usually starting " \
+                   "within seconds — and does not wait for its wake time."
+          lines << "- **Its answer:** send with `sync: true` to get it inline, or read it with `get_session` and " \
+                   "`transcript_last_messages: 2` in a minute or so. `Dormant because: follow_up_resleep` " \
+                   "means it has answered and gone back to its wait."
+        end
 
         at = session.pending_wake_at
         rest_phrase =
@@ -1628,7 +1656,7 @@ module Mcp
               "With no wall-clock backstop among them the session rests in `needs_input` after it " \
               "answers, and a watched transition collects it from there."
           end
-        [ "- **Its own wake-up:** still armed #{rest_phrase}" ]
+        lines << "- **Its own wake-up:** still armed #{rest_phrase}"
       end
 
       def summary(heading, session, status_label: "Status", message: nil)

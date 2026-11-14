@@ -84,6 +84,7 @@ module LiveConversations
         "- To find an earlier session the person remembers, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_search_sessions` and a `query` of two or three distinctive words. From here it includes archived sessions, which is where finished work goes, and matches the words in any order. If nothing comes back, read the notes in the result, then try other words or `search_contents: true` to search what was said. Never say a session does not exist because one search missed it.",
         "- When the person asks for their board, what needs them, or how things stand, call `#{ToolBridge::ZIMMER_TOOL}` with tool `get_user_view` and `order: \"last_touched\"`, `carplay_fit: \"not_laptop_only\"`: what they touched most recently first, without the rows that need a screen or a keyboard. Say how many laptop-only rows that left out. Drop either knob only when they ask for the board's own order or for everything.",
         "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you. Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`.",
+        follow_up_line,
         "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
         "- `#{ToolBridge::SCRATCHPAD}` keeps short notes for the rest of this conversation, shown to you on every turn under \"Your scratchpad\" below.",
@@ -92,6 +93,24 @@ module LiveConversations
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ]
       lines.compact.join("\n")
+    end
+
+    # Sending something to an existing session, and finding out what it said.
+    #
+    # A session asleep on its own wake-up reads `waiting` and "Paused … asleep
+    # until …" both before a follow-up and after it has answered one, so the
+    # status alone cannot tell the assistant whether its message landed. Without
+    # this line an assistant read the pause as non-delivery, tried start_now,
+    # restart and force_start, and told a driver his answer would come at the
+    # wake time — a minute after the session had already given it.
+    def follow_up_line
+      "- To tell an existing session something, call `#{ToolBridge::ZIMMER_TOOL}` with tool `action_session`, " \
+        "action `follow_up`. That is the only way to deliver it. A session that is `waiting`, \"Paused\" or " \
+        "\"asleep until\" a time still takes a follow-up straight away: it answers, usually within a minute or " \
+        "two, and then goes back to its wait. Never use `start_now`, `restart` or `force_start` to deliver a " \
+        "message, and never say a reply waits for the wake time. Say it is sent, then check back with " \
+        "`get_session` and `transcript_last_messages: 2` and tell the person what it said; " \
+        "`Dormant because: follow_up_resleep` means it has answered."
     end
 
     # Which client is driving the conversation right now, when that changes what
