@@ -313,7 +313,7 @@ final class CarPlayLive {
     /// while nothing is under way (`offersSettings`); a tap that arrives after a call started is
     /// dropped, because the call screen has its own gear.
     func openSettingsFromHome() {
-        guard offersSettings, !call.isActive else { return }
+        guard navigator != nil, offersSettings else { return }
         telemetry.track(.carPlay("settings_opened", ["state": .string("home")]))
         showSettings(fromCall: false)
     }
@@ -356,14 +356,16 @@ final class CarPlayLive {
                 self.telemetry.track(.carPlay("settings_refused", level: .warn))
                 self.settings = nil
                 self.settingsClosing = false
-                self.onChange?()
                 if fromCall { self.callBack() }
+                // After the call-back decision, so the home never offers the tile in between.
+                self.onChange?()
             }
         }
     }
 
-    /// The panel closed, by its own Back to the call or by CarPlay's. It waits for the driver's
-    /// last write, saying Saving…, so the call is minted from what the driver chose. A write that
+    /// The panel closed, by its own Back to the call (Done, from the home) or by CarPlay's. It
+    /// waits for the driver's last write, saying Saving…, so a call is minted from what the driver
+    /// chose. Only a panel the gear opened calls back; one the home opened calls nobody. A write that
     /// failed keeps the panel up to say so, and the next Back closes it on what the row holds.
     /// With CarPlay's Back there is no panel left to say it on, so the log does.
     private func closeSettings() {
@@ -382,9 +384,10 @@ final class CarPlayLive {
             }
             self.settings = nil
             self.settingsOnStack = false
-            self.onChange?()
             await self.navigator?.pop(panel.template)
             if panel.fromCall { self.callBack() }
+            // After the call-back decision, so the home never offers the tile in between.
+            self.onChange?()
         }
     }
 

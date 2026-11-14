@@ -630,7 +630,7 @@ In the two gated Listening modes speech does not cut a reply off.
 
 In the car you choose with one tap: **Continue conversation** calls the open conversation with
 voice on, and **New conversation** ends it and calls a fresh one. It is still one thread, and the
-ended conversation stays readable. With nothing open the tile is only New, and going back is by
+ended conversation stays readable. With nothing open the only Live tile is New, and going back is by
 voice, with no screen for it: "go back to my last conversation" needs no list, and the call stays on
 its one call screen, reading Connecting… for the moment it takes to reconnect
 ([Going back to a conversation](#going-back-to-a-conversation)). Either way it is the same call, with Mute and End while it runs, **Send now** in Mute's place while you are talking and turn detection has not ended your turn, and a gear to the

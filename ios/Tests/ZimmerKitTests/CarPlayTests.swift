@@ -470,6 +470,7 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(CarHomeSettingsTile.titleVariants.count, 2)
         XCTAssertLessThanOrEqual(CarHomeSettingsTile.titleVariants[1].count, 10)
         XCTAssertFalse(CarHomeSettingsTile.symbol.isEmpty)
+        XCTAssertNotEqual(CarHomeSettingsTile.symbol, "gearshape.fill", "the call screen's gear, which the drill reads as the call screen being up")
     }
 
     func testEachTileMakesItsChoiceAndAStatusTileAsksAgain() {
@@ -786,6 +787,8 @@ final class CarPlayTests: XCTestCase {
         XCTAssertFalse(body.contains("comeback"), "and none to bring back")
         XCTAssertTrue(body.contains("showSettings(fromCall: false)"))
         XCTAssertTrue(live.contains("if panel.fromCall { self.callBack() }"), "closing calls back only a call the gear ended")
+        XCTAssertTrue(live.contains("if fromCall { self.callBack() }"), "and so does a refused push")
+        XCTAssertTrue(live.contains("var offersSettings: Bool { settings == nil && retry.offersSettings("), "no tile while the panel is up")
         let home = Self.carPlaySources.first { $0.name == "CarPlayHome.swift" }?.text ?? ""
         XCTAssertTrue(home.contains("CarPlayImages.tapped(\"tile.settings\")"), "the tile goes through CarPlayTap")
     }
