@@ -262,7 +262,7 @@ class SlackEventJob < ApplicationJob
     session.lock!
     session.enqueued_messages.create!(
       content: note,
-      position: (session.enqueued_messages.maximum(:position) || 0) + 1,
+      position: Sessions::QueueTail.next_position!(session),
       status: "pending",
       source_context: TurnSource.for_genesis(SessionGenesis::SLACK).to_h
     )

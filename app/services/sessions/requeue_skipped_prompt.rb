@@ -213,14 +213,13 @@ module Sessions
     end
 
     # How many times a lost position race is re-tried before the prompt is given up
-    # on. `max(position) + 1` is read outside any lock — the same shape the two other
-    # writers of this queue use — so two guard-skipped jobs landing together, or a
-    # race with the renumbering loop in EnqueuedMessageProcessorService, can both
-    # compute the same number and lose the deferred `(session_id, position)`
-    # constraint. That is exactly the concurrency this code lives in, and losing the
-    # prompt to it would reproduce the bug being fixed one layer down. Recomputing
-    # and retrying resolves it: the loser reads the winner's row and takes the next
-    # slot.
+    # on. The tail is read under the session row lock (Sessions::QueueTail), which
+    # orders this write against every other appender, so a lost race needs a
+    # position written some other way. Losing the prompt to one would still
+    # reproduce the bug being fixed one layer down, so the write keeps its retry:
+    # each attempt is its own transaction, the deferred `(session_id, position)`
+    # constraint fires at that attempt's COMMIT, and the next attempt reads the
+    # winner's row and takes the next slot.
     QUEUE_WRITE_ATTEMPTS = 3
 
     # Tail of the queue: the turn already running is ahead of this prompt, and so is
@@ -236,21 +235,27 @@ module Sessions
       end
     end
 
+    # Must not be called inside an outer transaction: the retry in #queue! relies
+    # on this transaction being a real one, whose COMMIT runs the deferred unique
+    # check. Nested, the collision would surface at the outer COMMIT, outside the
+    # rescue (a savepoint does not run deferred checks).
     def create_at_tail!
-      position = (@session.enqueued_messages.maximum(:position) || 0) + 1
-      @session.enqueued_messages.create!(
-        **EnqueuedMessage.attributes_for_prompt(@prompt),
-        position: position,
-        status: "pending",
-        images: Array(Sessions::AttachmentDescriptors.for_the_record(
-          @images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
-        )),
-        files: Array(Sessions::AttachmentDescriptors.for_the_record(
-          @files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
-        )),
-        origin: EnqueuedMessage.origin_for_prompt(@prompt)
-      )
-      position
+      ActiveRecord::Base.transaction do
+        position = Sessions::QueueTail.next_position!(@session)
+        @session.enqueued_messages.create!(
+          **EnqueuedMessage.attributes_for_prompt(@prompt),
+          position: position,
+          status: "pending",
+          images: Array(Sessions::AttachmentDescriptors.for_the_record(
+            @images, keys: Sessions::AttachmentDescriptors::IMAGE_KEYS
+          )),
+          files: Array(Sessions::AttachmentDescriptors.for_the_record(
+            @files, keys: Sessions::AttachmentDescriptors::FILE_KEYS
+          )),
+          origin: EnqueuedMessage.origin_for_prompt(@prompt)
+        )
+        position
+      end
     end
 
     # @param max_chars [Integer] PROMPT_LOG_MAX_CHARS when the prompt survives in the
