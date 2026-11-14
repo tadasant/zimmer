@@ -235,6 +235,10 @@ module Sessions
       end
     end
 
+    # Must not be called inside an outer transaction: the retry in #queue! relies
+    # on this transaction being a real one, whose COMMIT runs the deferred unique
+    # check. Nested, the collision would surface at the outer COMMIT, outside the
+    # rescue (a savepoint does not run deferred checks).
     def create_at_tail!
       ActiveRecord::Base.transaction do
         position = Sessions::QueueTail.next_position!(@session)

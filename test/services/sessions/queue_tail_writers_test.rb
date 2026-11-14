@@ -6,7 +6,9 @@ require "test_helper"
 # Sessions::QueueTail. A writer that reads `maximum(:position)` on its own is not
 # ordered by the session row lock, so it can read the same tail as a QueueTail
 # caller and lose the deferred `(session_id, position)` unique constraint at
-# COMMIT. This fails on a new one before it ships.
+# COMMIT. This fails on a new one before it ships. It matches the spelling
+# every writer has used, `maximum(:position)`; it does not catch other ways of
+# reading the tail (`pluck(:position).max`, `order(position: :desc).first`).
 class Sessions::QueueTailWritersTest < ActiveSupport::TestCase
   QUEUE_TAIL = "app/services/sessions/queue_tail.rb"
 
