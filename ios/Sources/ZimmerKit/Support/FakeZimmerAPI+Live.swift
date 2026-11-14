@@ -191,7 +191,7 @@ extension FakeZimmerAPI {
 
     /// As the server: `gpt_live_claude` when the settings pick it (this app can run it), else a
     /// Realtime secret. `livekit_claude` falls back, saying why.
-    public func liveCallGrant(_ id: Int) async throws -> LiveCallGrant {
+    public func liveCallGrant(_ id: Int, engines: [String]) async throws -> LiveCallGrant {
         guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 409, message: "Voice is off for this conversation. Turn it on first.") }
         // Only the first: a call held on Connecting… while its screen is driven, and every call
         // after it fails as fast as ever.
@@ -200,12 +200,14 @@ extension FakeZimmerAPI {
             try await Task.sleep(for: hold)
         }
         let requested = liveState.settingOverrides["voice_engine"]?.string ?? LiveVoiceEngine.realtime
-        if requested == LiveVoiceEngine.gptLive {
+        if requested == LiveVoiceEngine.gptLive, engines.contains(requested) {
             return LiveCallGrant(engine: .gptLive, choice: LiveEngineChoice(engine: requested, requested: requested), model: "gpt-live-1")
         }
         let secret = LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
                                       websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
-        let fallback = requested == LiveVoiceEngine.realtime ? nil : "the LiveKit engine is not built yet"
+        let fallback = requested == LiveVoiceEngine.realtime ? nil
+            : engines.contains(requested) || requested != LiveVoiceEngine.gptLive ? "the LiveKit engine is not built yet"
+            : "this client cannot run gpt_live_claude"
         return LiveCallGrant(engine: .realtime(secret), choice: LiveEngineChoice(engine: LiveVoiceEngine.realtime, requested: requested, fallbackReason: fallback),
                              model: secret.model)
     }

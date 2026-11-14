@@ -28,8 +28,9 @@ public protocol LiveAPI: Sendable {
     /// Voice: how the call runs. The app says which engines it can run (`LiveVoiceEngine.runnable`);
     /// Zimmer answers with a Realtime secret, or, on `gpt_live_claude`, with no secret: the call
     /// starts with `startGptLiveSession`. An engine the settings chose that cannot run falls back to
-    /// Realtime, and the answer says why (`LiveCallGrant.choice`).
-    func liveCallGrant(_ id: Int) async throws -> LiveCallGrant
+    /// Realtime, and the answer says why (`LiveCallGrant.choice`). `engines`: what to say this app
+    /// can run — `[]` asks for Realtime, as after GPT-Live failed to start.
+    func liveCallGrant(_ id: Int, engines: [String]) async throws -> LiveCallGrant
     /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
     /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
     /// refused (422) from any client but CarPlay.
@@ -74,6 +75,11 @@ public protocol LiveAPI: Sendable {
 }
 
 extension LiveAPI {
+    /// The grant for a call, saying every engine this app can run.
+    public func liveCallGrant(_ id: Int) async throws -> LiveCallGrant {
+        try await liveCallGrant(id, engines: LiveVoiceEngine.runnable)
+    }
+
     /// The `session.update` for an open call, recording nothing.
     public func liveSessionUpdate(_ id: Int) async throws -> JSONValue {
         try await liveSessionUpdate(id, recordingModel: nil)
@@ -144,14 +150,14 @@ extension ZimmerHTTPClient {
 
     /// What every mint sends: Listening as above, and the engines this app can run, since Zimmer
     /// picks one only for a client that can.
-    static func mint(_ extra: [String: Any] = [:]) -> [String: Any] {
+    static func mint(engines: [String] = LiveVoiceEngine.runnable, _ extra: [String: Any] = [:]) -> [String: Any] {
         var body: [String: Any] = listeningModes
-        body["engines"] = LiveVoiceEngine.runnable
+        body["engines"] = engines
         return body.merging(extra) { $1 }
     }
 
-    public func liveCallGrant(_ id: Int) async throws -> LiveCallGrant {
-        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.mint())
+    public func liveCallGrant(_ id: Int, engines: [String]) async throws -> LiveCallGrant {
+        try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.mint(engines: engines))
     }
 
     /// With the engines too: Zimmer refuses (409) to pre-warm a Realtime connection for a call

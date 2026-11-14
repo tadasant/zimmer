@@ -397,6 +397,9 @@ that an offer posted before ICE gathering finishes connects, as it does in the b
 call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
 Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
 happens only with a connection warmed before the engine was switched, for at most its five minutes.
+While the engine is GPT-Live the car keeps asking to pre-warm, backing off to once every two minutes,
+and each refusal spends one of the drive's 15 pre-warms. Switching back to Realtime late in a long
+drive can find the budget spent, so the next call starts cold.
 
 ### A sheet presented from inside a `List` row can reset itself
 

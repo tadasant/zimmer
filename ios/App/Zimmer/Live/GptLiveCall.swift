@@ -71,6 +71,8 @@ final class GptLiveCall {
     /// says `session.started` (`Signal.started`).
     func start() async throws {
         let offer = try await link.offer()
+        // Hung up while the offer was made: no session for Zimmer to start.
+        guard !ending else { return }
         let answer = try await api.startGptLiveSession(conversation, sdp: offer)
         conductor.sessionStarted(id: answer.sessionID)
         // Hung up while Zimmer was starting it: never connect a session nobody wants.
@@ -83,6 +85,9 @@ final class GptLiveCall {
     }
 
     var isConnected: Bool { link.isConnected }
+
+    /// The backend ended the call and its goodbye is being said: the call is over in a moment.
+    var hangingUp: Bool { conductor.hangingUp }
 
     func setMuted(_ muted: Bool) {
         link.setMuted(muted)
