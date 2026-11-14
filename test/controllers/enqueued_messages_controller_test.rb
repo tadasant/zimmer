@@ -84,6 +84,33 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_includes log.content, "Enqueued message added at position"
   end
 
+  test "create writes through Sessions::EnqueueMessage with the web turn source and attachments" do
+    queued = @session.enqueued_messages.create!(content: "Queued", position: 1, status: "pending")
+    Sessions::EnqueueMessage.expects(:call).with do |session:, content:, goal:, source_context:, images:, files:|
+      session == @session && content == "Queued" && goal.nil? &&
+        source_context["surface"] == "web" && images == [] && files == []
+    end.returns(queued)
+
+    post session_enqueued_messages_url(@session), params: { content: "Queued" }
+
+    assert_redirected_to session_path(@session)
+    assert_equal "Message enqueued successfully", flash[:notice]
+  end
+
+  test "a retried attempt after a failed write queues the message once" do
+    Session.any_instance.stubs(:touch_user_activity!)
+           .raises(ActiveRecord::Deadlocked, "deadlock detected").then.returns(true)
+    EnqueuedMessagesController.any_instance.stubs(:sleep)
+
+    assert_difference [ "@session.enqueued_messages.count", "@session.logs.count" ], 1 do
+      post session_enqueued_messages_url(@session), params: { content: "Exactly once" }
+    end
+
+    assert_redirected_to session_path(@session)
+    assert_equal 1, @session.enqueued_messages.where(content: "Exactly once").count
+    assert_equal 1, @session.enqueued_messages.find_by(content: "Exactly once").position
+  end
+
   test "should create enqueued message with goal" do
     assert_difference("@session.enqueued_messages.count") do
       post session_enqueued_messages_url(@session), params: {

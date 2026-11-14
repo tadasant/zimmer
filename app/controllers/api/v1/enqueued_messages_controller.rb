@@ -55,19 +55,14 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       return
     end
 
-    # Calculate next position
-    max_position = @session.enqueued_messages.maximum(:position) || 0
-
-    @enqueued_message = @session.enqueued_messages.new(
+    @enqueued_message = Sessions::EnqueueMessage.call(
+      session: @session,
       content: content,
       goal: params[:goal].to_s.strip.presence,
-      position: max_position + 1,
-      status: "pending",
       source_context: api_turn_source.to_h
     )
 
-    if @enqueued_message.save
-      @session.logs.create!(content: "Enqueued message added at position #{@enqueued_message.position}", level: "info")
+    if @enqueued_message.persisted?
       record_uncle_edge(@session, "api_v1:enqueued_messages.create")
       render json: { enqueued_message: enqueued_message_json(@enqueued_message) }, status: :created
     else
