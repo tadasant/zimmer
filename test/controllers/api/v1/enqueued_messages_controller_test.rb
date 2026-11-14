@@ -1,4 +1,5 @@
 require "test_helper"
+require "mocha/minitest"
 
 class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
   setup do
