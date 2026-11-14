@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_13_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_14_020200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -517,6 +517,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_13_140000) do
     t.string "status", default: "preparing", null: false
     t.string "title"
     t.datetime "updated_at", null: false
+    t.string "voice_engine"
+    t.string "voice_engine_fallback"
     t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
@@ -549,6 +551,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_13_140000) do
     t.float "text_temperature"
     t.datetime "updated_at", null: false
     t.string "updated_by"
+    t.string "voice_claude_model"
+    t.string "voice_engine"
+    t.float "voice_engine_conversation_cap_usd"
+    t.float "voice_engine_daily_cap_usd"
     t.string "voice_listening"
     t.integer "voice_max_output_tokens"
     t.string "voice_model"
@@ -564,6 +570,39 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_13_140000) do
     t.integer "voice_vad_silence_duration_ms"
     t.float "voice_vad_threshold"
     t.index "(true)", name: "index_live_settings_singleton", unique: true
+  end
+
+  create_table "live_usage_events", force: :cascade do |t|
+    t.bigint "audio_input_tokens", default: 0, null: false
+    t.bigint "audio_output_tokens", default: 0, null: false
+    t.bigint "cache_read_tokens", default: 0, null: false
+    t.bigint "cache_write_tokens", default: 0, null: false
+    t.bigint "characters", default: 0, null: false
+    t.decimal "cost_usd", precision: 14, scale: 6, default: "0.0", null: false
+    t.integer "count", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.jsonb "details", default: {}, null: false
+    t.string "engine", null: false
+    t.string "error"
+    t.integer "first_audio_ms"
+    t.string "idempotency_key"
+    t.bigint "input_tokens", default: 0, null: false
+    t.integer "latency_ms"
+    t.bigint "live_conversation_id"
+    t.string "model"
+    t.datetime "occurred_at", null: false
+    t.string "operation", null: false
+    t.bigint "output_tokens", default: 0, null: false
+    t.string "price_version"
+    t.boolean "priced", default: true, null: false
+    t.decimal "seconds", precision: 12, scale: 3, default: "0.0", null: false
+    t.datetime "updated_at", null: false
+    t.string "vendor"
+    t.index ["engine", "occurred_at"], name: "index_live_usage_events_on_engine_and_occurred_at"
+    t.index ["idempotency_key"], name: "index_live_usage_events_on_idempotency_key", unique: true
+    t.index ["live_conversation_id", "engine"], name: "index_live_usage_events_on_live_conversation_id_and_engine"
+    t.index ["live_conversation_id"], name: "index_live_usage_events_on_live_conversation_id"
+    t.index ["occurred_at"], name: "index_live_usage_events_on_occurred_at"
   end
 
   create_table "logs", force: :cascade do |t|
@@ -1377,6 +1416,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_13_140000) do
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
   add_foreign_key "live_scratchpad_entries", "live_conversations", on_delete: :cascade
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
+  add_foreign_key "live_usage_events", "live_conversations", on_delete: :nullify
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_event_webhook_subscriptions", "trigger_conditions", on_delete: :nullify
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade

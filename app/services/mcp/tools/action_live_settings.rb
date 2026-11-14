@@ -11,7 +11,7 @@ module Mcp
       ACTIONS = %w[update reset restore_guidance].freeze
 
       description <<~DESC
-        Change the Live settings — Live Mode's models, voice, speaking speed, turn detection, output caps — or the Live mode guidance appended to its instructions on every turn. Read them first with `get_live_settings`.
+        Change the Live settings — Live Mode's models, voice, speaking speed, turn detection, output caps, voice engine and its Claude model and spend caps — or the Live mode guidance appended to its instructions on every turn. Read them first with `get_live_settings`.
 
         **Actions:**
         - **update**: pass `settings`, an object of setting key → value (keys and choices as `get_live_settings` lists them; "default" puts one back), and/or `guidance` (replaces it) or `append_guidance` (adds a line). A model, voice or mode off the list is refused and nothing is saved; a number outside its range is clamped and the answer says so. A turn detection setting the current mode does not use is saved, and the answer says it has no effect (`get_live_settings` marks these).

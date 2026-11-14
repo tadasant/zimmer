@@ -338,6 +338,31 @@ The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 
 
 The cues are tested as samples: level, pitch, attack, brightness and length (`LiveDiagnosticsTests`). What a driver hears also passes through the voice-processing engine, the CarPlay route and the car's own processing, and none of that runs in CI. Whether each cue carries over road noise without sounding harsh is checked by ear on a drive, with the checklist in `ios/LIVE_CUES.md`.
 
+### The GPT-Live engine has never run against OpenAI or Anthropic
+
+The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session
+start, `session.delegation.created`, `session.commentary.append`, `session.closed`) and the
+Anthropic Messages API, and is tested against scripted stand-ins for both. No call has been made
+with real keys, because the deployment has no `LIVE_ANTHROPIC_API_KEY` and no GPT-Live access has
+been confirmed. Three things are guesses until one has: the field names in `session.closed`'s
+`usage` (the dock reads `duration_seconds`, `session_seconds` or `duration_ms`, and otherwise prices
+the seconds it saw itself), whether GPT-Live takes the Live settings' voice (Zimmer retries without
+one when it is refused), and how GPT-Live speaks commentary that arrives while the person is
+talking. It is off unless somebody picks it, and falls back to Realtime when it cannot run.
+
+### The LiveKit voice engine is a setting with nothing behind it
+
+`livekit_claude` can be chosen, and always falls back to Realtime with "not built yet". It needs a
+LiveKit agent worker deployed next to Zimmer, speech-to-text and text-to-speech vendors, and a
+LiveKit client on the web dock and the phone. Unlike the other engines, its audio would pass
+through infrastructure Zimmer runs.
+
+### Live costs cover the web dock's calls only
+
+The iOS app and CarPlay run their calls on Realtime and report no usage to the voice-engine ledger,
+so `/live/costs` holds only calls made from the web dock. A comparison between engines there is a
+comparison between web calls.
+
 ### A sheet presented from inside a `List` row can reset itself
 
 A `.sheet` attached to a view inside a `List` row can get a new identity in place when the model publishes. The sheet stays up, but its scroll position, open menus and `@State` are gone. It happened to the board's Filters sheet, which is now presented from the view that owns the `List` ([#1458](https://github.com/tadasant/zimmer/issues/1458)). Why it happens is not known, and neither is why only some launches do it. Moving the sheet stopped it in every test. Attach sheets to the view that owns the `List`, not to a row.

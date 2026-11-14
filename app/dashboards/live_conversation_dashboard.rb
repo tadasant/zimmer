@@ -18,6 +18,9 @@ class LiveConversationDashboard < Administrate::BaseDashboard
     status: Field::String,
     agent_root: Field::String,
     model: Field::String,
+    # The engine its latest voice call ran on, and why not the one asked for.
+    voice_engine: Field::String,
+    voice_engine_fallback: Field::String,
     title: Field::String,
     instructions: Field::Text,
     instructions_source: Field::String,
@@ -36,7 +39,7 @@ class LiveConversationDashboard < Administrate::BaseDashboard
   COLLECTION_ATTRIBUTES = %i[id mode status agent_root model last_activity_at].freeze
 
   SHOW_PAGE_ATTRIBUTES = %i[
-    id mode client_surface car_call agent_wrote_scratchpad_at status agent_root model title instructions_source mcp_servers mcp_tool_cache
+    id mode client_surface car_call agent_wrote_scratchpad_at status agent_root model voice_engine voice_engine_fallback title instructions_source mcp_servers mcp_tool_cache
     error_message responding_since last_activity_at ended_at instructions mode_instructions turns created_at updated_at
   ].freeze
 
