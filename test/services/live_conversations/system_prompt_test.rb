@@ -80,6 +80,20 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_not_includes prompt, "`get_user_view` and `quick_search_sessions` take a"
   end
 
+  # The easy path Tadas asked for: "my board" in Live Mode is the last-touched,
+  # CarPlay-friendly view without having to spell out the knobs — typed or
+  # spoken, and named again in the CarPlay line.
+  test "every conversation is told that the board is get_user_view by last touched, CarPlay-friendly" do
+    board_call = "with tool `get_user_view` and `order: \"last_touched\"`, `carplay_fit: \"not_laptop_only\"`"
+    conversation = create_live_conversation(mode: "text")
+    assert_includes LiveConversations::SystemPrompt.build(conversation), board_call
+
+    conversation.update!(mode: "voice", model: LiveConversations.mode("voice").model, client_surface: "carplay")
+    carplay = LiveConversations::SystemPrompt.build(conversation.reload)
+    assert_includes carplay, board_call
+    assert_includes carplay, "going through what needs them is `get_user_view` with `order: \"last_touched\"`"
+  end
+
   test "every conversation is told how to find an earlier session, archived ones included" do
     prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text"))
 
