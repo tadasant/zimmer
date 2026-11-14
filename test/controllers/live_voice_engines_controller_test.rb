@@ -10,7 +10,6 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
   setup do
     stub_live_root
     stub_live_key
-    stub_claude_key
     @conversation = create_live_conversation(mode: "voice")
     LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", model: "gpt-realtime-2.1-mini", calls_url: "https://api.openai.com/v1/realtime/calls" })
   end
@@ -89,10 +88,10 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     assert_match(/not available/, response.parsed_body["error"])
   end
 
-  test "a missing Claude key answers a delegation with 503" do
+  test "no Claude Code account answers a delegation with 503" do
     use_voice_engine("gpt_live_claude")
     post client_secret_live_conversation_path(@conversation), params: { engines: [ "gpt_live_claude" ] }, as: :json
-    LiveConversations::ClaudeClient.stubs(:api_key).returns(nil)
+    without_claude_code_account
 
     post delegations_live_conversation_path(@conversation), params: { delegation_id: "d" }, as: :json
     assert_response :service_unavailable
