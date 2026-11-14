@@ -8,14 +8,16 @@ module LiveConversations
   #   client secret; the client talks to OpenAI directly (RealtimeSession).
   # - `gpt_live_claude` — OpenAI's GPT-Live (`gpt-live-1`) as the full-duplex
   #   voice front end, with every tool call and anything that needs thought
-  #   delegated to Claude, which runs Zimmer's tools (ClaudeDelegate). Rails
+  #   delegated to Claude, which runs Zimmer's tools (ClaudeDelegate) on
+  #   Zimmer's own Claude Code subscription credential (ClaudeClient). Rails
   #   starts the GPT-Live session with the browser's WebRTC offer
   #   (GptLiveSession); audio goes browser ⇄ OpenAI as today.
   # - `livekit_claude` — a LiveKit Agents cascade (speech-to-text → Claude →
   #   text-to-speech). Not built: it needs an agent worker deployed next to
   #   Zimmer, so it always falls back for now.
   #
-  # An engine runs only when its keys are set, the client asking can speak it
+  # An engine runs only when its credentials are there (the OpenAI key; for
+  # Claude, a current Claude Code account in Zimmer's pool), the client asking can speak it
   # (each client sends the engines it can run; one that sends none — the iOS
   # app today — runs only the default), and its spend is under the caps
   # (SpendGuard). Everything else falls back, so choosing an engine can never
@@ -38,10 +40,10 @@ module LiveConversations
       case engine.to_s
       when DEFAULT then nil
       when GPT_LIVE
-        missing = []
-        missing << OpenaiClient::API_KEY_VARIABLE unless OpenaiClient.configured?
-        missing << ClaudeClient::API_KEY_VARIABLE unless ClaudeClient.configured?
-        "#{missing.join(' and ')} #{missing.one? ? 'is' : 'are'} not set" if missing.any?
+        reasons = []
+        reasons << "#{OpenaiClient::API_KEY_VARIABLE} is not set" unless OpenaiClient.configured?
+        reasons << ClaudeClient.unavailable_reason
+        reasons.compact.join(", and ").presence
       when LIVEKIT then "the LiveKit engine is not built yet: it needs an agent worker deployed next to Zimmer"
       else "#{engine.inspect} is not a voice engine"
       end

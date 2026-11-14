@@ -343,8 +343,10 @@ The cues are tested as samples: level, pitch, attack, brightness and length (`Li
 The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session
 start, `session.delegation.created`, `session.commentary.append`, `session.closed`) and the
 Anthropic Messages API, and is tested against scripted stand-ins for both. No call has been made
-with real keys, because the deployment has no `LIVE_ANTHROPIC_API_KEY` and no GPT-Live access has
-been confirmed. Three things are guesses until one has: the field names in `session.closed`'s
+against the real services, because no GPT-Live access has been confirmed. Four things are guesses
+until one has: whether the Messages API serves Sonnet and Opus to a Claude Code subscription token
+outside Claude Code (Zimmer's quota probe only proves it for Haiku; a refusal is spoken as "I
+couldn't reach my reasoning backend" and the call carries on), the field names in `session.closed`'s
 `usage` (the dock reads `duration_seconds`, `session_seconds` or `duration_ms`, and otherwise prices
 the seconds it saw itself), whether GPT-Live takes the Live settings' voice (Zimmer retries without
 one when it is refused), and how GPT-Live speaks commentary that arrives while the person is
@@ -357,14 +359,21 @@ LiveKit agent worker deployed next to Zimmer, speech-to-text and text-to-speech 
 LiveKit client on the web dock and the phone. Unlike the other engines, its audio would pass
 through infrastructure Zimmer runs.
 
-### Claude billing is accounting only
+### Live Mode's Claude shares the agent fleet's quota
 
-The **Claude billing** setting can mark Claude's tokens as covered by a subscription, and Live
-costs then shows them at list price but billed at $0. Nothing changes how Zimmer calls Claude: it
-uses `LIVE_ANTHROPIC_API_KEY`, which is metered, so the spend caps keep counting Claude at list
-price. Calling Claude on the subscription itself is possible in transport terms (Zimmer already
-sends the pooled Claude Code token to the Messages API for its quota probe), but it would draw on the
-agent fleet's quota windows, and whether Anthropic's terms allow it is unconfirmed. Nobody has wired it.
+The `gpt_live_claude` engine calls Claude on Zimmer's current Claude Code account, so every
+delegation draws on the same 5-hour and weekly windows as the agent sessions. Nothing in the
+quota pacing (`SpotGateService`, the burn-rate sampler) knows about it: Live Mode's use is not in
+`SessionTokenUsage`, so a long call is invisible to the spot gate until the account's own quota
+reading moves. A window the fleet has used up fails a delegation mid-call, which is spoken as a
+failure. The spend caps, counted at list price, are the only bound on it. Whether Anthropic's terms
+allow a subscription token to drive a custom app's reasoning loop has not been confirmed.
+
+### `live_settings.voice_claude_billing` is still on the table, ignored
+
+The **Claude billing** setting was removed when Live Mode's Claude moved onto Zimmer's own Claude
+Code credential. Its column stays on `live_settings`, in `LiveSetting.ignored_columns`, until the
+second deploy of its [two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys).
 
 ### Live costs cover the web dock's calls only
 

@@ -407,6 +407,15 @@ class ClaudeAccount < ApplicationRecord
     credential_verified_at.blank? || credential_rejected_at > credential_verified_at
   end
 
+  # Whether this account, as the current one, can serve right now: active, a
+  # token to present, and that token not already refused. The one test both the
+  # session spawn path (AccountRotationService#ensure_active_account!) and Live
+  # Mode's Claude (LiveConversations::ClaudeClient) apply to the current account,
+  # so the two cannot disagree about whether it is usable.
+  def usable_as_current?
+    active? && claude_access_token.present? && !credential_rejected?
+  end
+
   def credential_verified?
     return false if credential_verified_at.blank?
 
