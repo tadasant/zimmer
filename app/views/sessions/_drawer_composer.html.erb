@@ -1,0 +1,80 @@
+<%# The follow-up composer as the drawer shows it while a session's detail body is
+    in flight: part of _drawer_skeleton, so it is on screen the moment the drawer
+    slides in rather than after the body's fetch. Typing needs nothing from the
+    server, so it does not wait for it.
+
+    Shaped like _follow_up_form's desktop row (the drawer is desktop-only — a
+    phone opens the full page, where the real composer is in the first response),
+    and pinned to the bottom the same way, so the swap to the real one does not
+    move the field.
+
+    It knows nothing about the session but its id, which session-drawer#open
+    writes onto it from the card that was clicked. Everything else — queue or
+    send, the running indicator, attachments, slash commands — is the real
+    composer's, and fills in when it arrives. Until then Submit is disabled: the
+    endpoint a message goes to is the server-rendered form's decision.
+
+    What is typed here is the session's draft (drawer_composer_controller.js),
+    and the caret and focus are handed to the real composer as it replaces this
+    one (lib/composer_handoff.js). No id on the textarea: the real one is
+    data-turbo-permanent, keyed by id, and must not be matched against this. %>
+<div data-drawer-composer
+     data-controller="drawer-composer"
+     class="fixed bottom-0 left-0 right-0 z-20 bg-white border-t border-gray-200 shadow-lg">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
+    <%# mb-3: the real form's row sits in a space-y-3 stack with the phone row
+        under it, which leaves that much below it even while the phone row is
+        hidden; matching it keeps the field from moving at the swap. %>
+    <div class="mb-3 flex items-end space-x-4">
+      <div class="flex-1">
+        <div class="flex justify-between items-center mb-2">
+          <label class="block text-sm font-medium text-gray-700" data-drawer-composer-label>
+            Follow-up Prompt
+            <span class="text-xs text-gray-500">(loading session…)</span>
+          </label>
+        </div>
+        <textarea name="drawer_composer_prompt"
+                  rows="3"
+                  aria-label="Follow-up prompt"
+                  placeholder="Start typing — the session is still loading"
+                  class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-3 py-2"
+                  data-drawer-composer-target="textarea"
+                  data-action="input->drawer-composer#save"></textarea>
+      </div>
+      <%# The real row's attachment buttons, inert, so the field is the same width
+          before and after the swap and does not move under the caret. %>
+      <div class="flex items-center space-x-2">
+        <button type="button" disabled aria-hidden="true" tabindex="-1"
+                class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-white opacity-60 cursor-not-allowed">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+          </svg>
+        </button>
+        <button type="button" disabled aria-hidden="true" tabindex="-1"
+                class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-white opacity-60 cursor-not-allowed">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/>
+          </svg>
+        </button>
+        <button type="button" disabled aria-hidden="true" tabindex="-1"
+                class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-white opacity-60 cursor-not-allowed">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+          </svg>
+        </button>
+        <button type="button" disabled aria-hidden="true" tabindex="-1"
+                class="inline-flex items-center p-2 border border-gray-300 text-sm font-medium rounded-md text-gray-400 bg-white opacity-60 cursor-not-allowed">
+          <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>
+          </svg>
+        </button>
+        <button type="button" disabled
+                title="Available once the session has loaded"
+                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 opacity-50 cursor-not-allowed">
+          Send Message
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

@@ -112,6 +112,14 @@ seconds, and `-ZimmerFixtureRefuse trash,follow_up,…` (the names in
 `FakeZimmerAPI.refusableWrites`, every write the fixture takes) refuses those writes.
 `OptimisticActionsUITests` drives both.
 
+The session page's composer is the same idea on the read side: it is on screen from the first
+frame, before the session or its conversation has been read, so a person who knows what to say
+types while the page loads (`SessionDetail.showsComposer`). It comes off only once the read says
+the session takes no follow-up, or if that first read fails; Send waits for that read (`SessionDetail.canSend`). The draft is
+kept per session either way, so text typed into a session that turns out to be archived is still
+there if it is unarchived. `-ZimmerFixtureSlowReads` holds opening a session for twelve seconds, and
+`SessionActionsUITests.test_the_composer_takes_typing_before_the_session_has_loaded` types through it.
+
 ## Running the checks
 
 Every check is a script; every CI step is one line that calls it. Each script **skips** on a

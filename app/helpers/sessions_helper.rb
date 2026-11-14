@@ -567,10 +567,20 @@ module SessionsHelper
   # turbo_frame: "_top" matters most for the in-drawer case: without it a link
   # inside <turbo-frame id="session_detail"> would navigate that frame to the
   # full-page URL and land on a body with no matching frame.
+  #
+  # session_drawer_session_id names the session to the provisional composer the
+  # drawer shows while the body loads (_drawer_composer), and
+  # session_drawer_composer: false leaves that composer out for a session the
+  # link already knows is archived — the body would bring no composer to hand
+  # the typing to. A bare id cannot say, so it gets the composer.
   def session_drawer_link_data(session_or_id, **extra)
-    { turbo_frame: "_top",
-      action: "click->session-drawer#open",
-      session_drawer_url: drawer_session_path(session_or_id) }.merge(extra)
+    session_id = session_or_id.is_a?(Session) ? session_or_id.id : session_or_id
+    data = { turbo_frame: "_top",
+             action: "click->session-drawer#open",
+             session_drawer_url: drawer_session_path(session_or_id),
+             session_drawer_session_id: session_id }
+    data[:session_drawer_composer] = false if session_or_id.is_a?(Session) && session_or_id.archived?
+    data.merge(extra)
   end
 
   # What clicking Restart is about to do to this session, as a sentence to

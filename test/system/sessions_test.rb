@@ -1094,6 +1094,71 @@ class SessionsTest < ApplicationSystemTestCase
     end
   end
 
+  # The composer is static, so the drawer offers it the moment it slides in —
+  # in the skeleton, before the detail body has landed — and what is typed there
+  # carries over to the real composer when the body replaces the skeleton: the
+  # text, the caret, and the focus, so typing simply continues.
+  test "the drawer takes typing before its body loads and hands it to the real composer" do
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Type-ahead drawer session",
+      status: :needs_input
+    )
+
+    release = Queue.new
+    original = SessionsController.instance_method(:drawer)
+    SessionsController.define_method(:drawer) do
+      release.pop(timeout: 15)
+      original.bind_call(self)
+    end
+
+    begin
+      visit root_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
+      page.execute_script("Object.keys(localStorage).filter((k) => k.startsWith('zimmerDraft:')).forEach((k) => localStorage.removeItem(k))")
+      find("a[aria-label='View session #{session.id}']").click
+      assert_selector "[data-session-drawer-target='panel'][aria-hidden='false']:not(.pointer-events-none)"
+
+      within "turbo-frame#session_detail" do
+        # Still loading — and already typeable.
+        assert_selector "[role='status'][aria-label='Loading session']"
+        assert_no_selector "textarea[name='follow_up_prompt']", visible: :all
+        provisional = find("[data-drawer-composer] textarea")
+        provisional.click
+        provisional.send_keys("Ship it once CI is green")
+        assert_selector "[data-drawer-composer] button[disabled]", text: "Send Message"
+      end
+      rect_js = ->(selector) { "(() => { const r = document.querySelector(#{selector.to_json}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height] })()" }
+      provisional_rect = page.evaluate_script(rect_js.call("[data-drawer-composer] textarea"))
+
+      release << true
+
+      # The real composer replaced the provisional one, holding what was typed,
+      # focused, with the caret where the reader left it.
+      assert_selector "turbo-frame#session_detail [data-current-session-id='#{session.id}']"
+      assert_no_selector "[data-drawer-composer]", visible: :all
+      real = find("textarea#session_#{session.id}_follow_up_textarea")
+      assert_equal "Ship it once CI is green", real.value
+      state = page.evaluate_script(<<~JS)
+        (() => {
+          const field = document.getElementById("session_#{session.id}_follow_up_textarea")
+          return { focused: document.activeElement === field, start: field.selectionStart, end: field.selectionEnd, length: field.value.length }
+        })()
+      JS
+      assert state["focused"], "focus stays in the composer across the swap"
+      assert_equal provisional_rect, page.evaluate_script(rect_js.call("#session_#{session.id}_follow_up_textarea")),
+                   "the field does not move or resize under the caret when the real composer replaces it"
+      assert_equal state["length"], state["start"], "the caret stays at the end of what was typed"
+      assert_equal state["length"], state["end"]
+
+      # Typing continues straight on, into the real composer.
+      real.send_keys(".")
+      assert_equal "Ship it once CI is green.", real.value
+    ensure
+      release << true
+      SessionsController.define_method(:drawer, original)
+    end
+  end
+
   # A drawer load that fails replaces the skeleton with the failure notice rather
   # than leaving a "Loading session" placeholder pulsing under it forever.
   test "a drawer load that fails drops the skeleton for the failure notice" do

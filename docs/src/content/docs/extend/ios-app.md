@@ -246,6 +246,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   It is recorded as your message if the app's connection acts on your behalf (below).
   What you type and do not send is kept per session for seven days, across leaving the screen and
   relaunching, as the web UI keeps a composer's draft.
+  The box is there from the page's first frame, before the session has been read, so you can
+  start typing while the page loads. *Send* waits for that read, and the box goes once the read
+  says the session takes no follow-up (or if the read fails).
 - **Shows every action at the tap.** Nothing you do waits for the server before the screen
   shows it. A row swiped to the trash leaves the board as your finger lifts, with *Undo* offered.
   A snooze, a hide, a restore, a rename, a restart, a pause, a heartbeat switch or a promotion
@@ -372,7 +375,9 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   scheduling class, precedence (blank is 0; a value that is not a whole number is refused in the
   form), the MCP servers, skills, hooks and plugins, each starting at the root's defaults, and
   *Clone Only*, which sets the clone up with no first turn (`clone_only: true`; the prompt is
-  dropped, as the web button drops it, and the session opens needing input). The class starts at
+  dropped, as the web button drops it, and the session opens needing input). The prompt and
+  title fields are there before the catalog has been read, and the root, model and goal pickers
+  fill in around them; *Create* waits for a root. The class starts at
   *From its origin*, the web form's shape, and sends nothing: `POST /api/v1/sessions` classes a
   create from the app priority when it says no class — a person is waiting on it as they are on
   the web form's — so the option says so, and *Priority* and *Spot* choose. The create is

@@ -53,6 +53,9 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// screen can be photographed showing a change the server has not yet taken.
     public let refuses: Set<String>
     public let writeDelay: Duration?
+    /// How long opening a session (its first detail read) waits before answering,
+    /// so a test can act on the page while it is still loading — type into the composer.
+    public let readDelay: Duration?
     /// The names `refuses` takes.
     public static let refusableWrites: Set<String> = [
         "follow_up", "trash", "unarchive", "visibility", "quick_router", "create_session", "elicitation", "notification", "trigger", "fork",
@@ -105,7 +108,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// them. `liveSecretHold`: the first call stays on Connecting… this long.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
-                refuses: Set<String> = [], writeDelay: Duration? = nil,
+                refuses: Set<String> = [], writeDelay: Duration? = nil, readDelay: Duration? = nil,
                 liveSettings: [String: JSONValue] = [:], liveSecretHold: Duration? = nil,
                 web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
@@ -114,6 +117,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.trashedElsewhere = trashedElsewhere
         self.refuses = refuses
         self.writeDelay = writeDelay
+        self.readDelay = readDelay
         self.degraded = degraded
         self.relayOnly = relayOnly
         self.inference = FakeInference(now: now)
@@ -220,6 +224,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// As the server: opening a session marks its notifications read.
     public func openSession(_ id: Int) async throws -> SessionDetail {
+        if let readDelay { try? await Task.sleep(for: readDelay) }
         let detail = try await session(id)
         markRead(session: id)
         return detail
