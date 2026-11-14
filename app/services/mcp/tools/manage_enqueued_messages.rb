@@ -5,10 +5,10 @@ module Mcp
     # Mirrors the /api/v1/sessions/:session_id/enqueued_messages surface
     # (index/show/create/update/destroy/reorder/interrupt) plus the
     # force_immediate branch of SessionsController#follow_up, which is what the
-    # "send_now" action is: stage a message and hand it to
-    # Sessions::InterruptService in one step.
+    # "send_now" action is: stage a message and interrupt with it in one step,
+    # through Sessions::InterruptWithFollowUp.
     #
-    # Both interrupt paths go through Sessions::InterruptService so the
+    # Both interrupt paths end in Sessions::InterruptService so the
     # per-session advisory lock and exactly-once FIFO delivery contract hold for
     # MCP callers exactly as they do for the REST and web surfaces.
     class ManageEnqueuedMessages < Tool
@@ -263,11 +263,11 @@ module Mcp
         ].join("\n")
       end
 
-      # The one-step form of interrupt: stage the message, then deliver it through
-      # the same InterruptService. Mirrors SessionsController#follow_up with
-      # force_immediate, including its all-or-nothing cleanup — a message that
-      # could not be dispatched is removed rather than left to surface later as a
-      # surprise queued follow-up.
+      # The one-step form of interrupt: stage the message and deliver it now,
+      # through Sessions::InterruptWithFollowUp — the path the REST and
+      # `action_session` force_immediate follow-ups share, including its
+      # all-or-nothing cleanup: a message that could not be dispatched is removed
+      # rather than left to surface later as a surprise queued follow-up.
       def send_now(session, args)
         content = args["content"].to_s.strip
         raise ToolError, '"content" is required for the "send_now" action.' if content.blank?
@@ -281,27 +281,19 @@ module Mcp
                            "Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
 
-        max_position = session.enqueued_messages.maximum(:position) || 0
-        message = session.enqueued_messages.create!(
-          content: content,
-          goal: args["goal"].to_s.strip.presence,
-          position: max_position + 1,
-          status: "pending"
-        )
-
-        # Before the interrupt, as SessionsController does for the browser: the
-        # turn it starts must already see these words as the human's.
-        context.capture_assistant_message(session, content, "oauth.send_now")
-        result = Sessions::InterruptService.new(
+        result = Sessions::InterruptWithFollowUp.call(
           session: session,
-          enqueued_message: message,
+          prompt: content,
+          goal: args["goal"].to_s.strip.presence,
           actor: "mcp_send_now"
-        ).call
-
-        unless result.success?
-          discard_staged_message(message)
-          raise ToolError, "Cannot send follow-up: #{result.error}"
+        ) do
+          # Before the interrupt, as SessionsController does for the browser: the
+          # turn it starts must already see these words as the human's.
+          context.capture_assistant_message(session, content, "oauth.send_now")
         end
+
+        # All-or-nothing: the service withdrew the staged message.
+        raise ToolError, "Cannot send follow-up: #{result.error}" unless result.success?
 
         record_uncle_edge(session, args, "mcp:manage_enqueued_messages.send_now")
         session.reload
@@ -314,15 +306,6 @@ module Mcp
           "- **Session Status:** #{session.status}",
           "- **Result:** Follow-up prompt sent immediately"
         ].join("\n")
-      end
-
-      # A concurrent interrupt may have already claimed/destroyed the row — that
-      # is fine, there is nothing left to clean up.
-      def discard_staged_message(message)
-        message.reload
-        message.destroy! if message.status == "pending"
-      rescue ActiveRecord::RecordNotFound
-        nil
       end
 
       def find_message(session, args)

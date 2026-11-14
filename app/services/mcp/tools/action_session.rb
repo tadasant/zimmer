@@ -551,48 +551,29 @@ module Mcp
         follow_up_result(session.reload, "Follow-up prompt sent")
       end
 
-      # force_immediate goes through the one race-free interrupt path
-      # (Sessions::InterruptService) the web and REST "Send Now" buttons use, so
+      # force_immediate goes through Sessions::InterruptWithFollowUp, the one
+      # stage-then-interrupt path the REST force_immediate follow-up shares, so
       # "deliver now, terminating the current turn" cannot diverge across entry points.
       def force_immediate_follow_up(session, prompt, goal)
         unless session.running? || session.waiting? || session.needs_input?
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
 
-        enqueued_message = nil
-        ActiveRecord::Base.transaction do
-          max_position = session.enqueued_messages.maximum(:position) || 0
-          enqueued_message = session.enqueued_messages.create!(
-            content: prompt,
-            goal: goal,
-            position: max_position + 1,
-            status: "pending",
-            source_context: context.turn_source.to_h
-          )
-        end
-        @queued_follow_up = enqueued_message
-
-        # Before the interrupt, as SessionsController does for the browser: the
-        # turn it starts must already see these words as the human's.
-        context.capture_assistant_message(session, prompt, "oauth.follow_up")
-        result = Sessions::InterruptService.new(
+        result = Sessions::InterruptWithFollowUp.call(
           session: session,
-          enqueued_message: enqueued_message,
+          prompt: prompt,
+          goal: goal,
+          source_context: context.turn_source.to_h,
           actor: "mcp_force_immediate"
-        ).call
-
-        unless result.success?
-          # All-or-nothing: drop the staged message so it is not silently delivered
-          # later as a surprise queued follow-up. A concurrent interrupt may have
-          # already claimed it, which is fine.
-          begin
-            enqueued_message.reload
-            enqueued_message.destroy! if enqueued_message.status == "pending"
-          rescue ActiveRecord::RecordNotFound
-            # already claimed by a concurrent interrupt — nothing to clean up
-          end
-          raise ToolError, "Cannot send follow-up: #{result.error}"
+        ) do |enqueued_message|
+          @queued_follow_up = enqueued_message
+          # Before the interrupt, as SessionsController does for the browser: the
+          # turn it starts must already see these words as the human's.
+          context.capture_assistant_message(session, prompt, "oauth.follow_up")
         end
+
+        # All-or-nothing: the service withdrew the staged message.
+        raise ToolError, "Cannot send follow-up: #{result.error}" unless result.success?
 
         follow_up_result(session.reload, "Follow-up prompt sent immediately")
       end

@@ -514,6 +514,35 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_includes result, "it is delivered when the turn you just started ends"
   end
 
+  test "force_immediate follow_up stages and interrupts through Sessions::InterruptWithFollowUp" do
+    session = sessions(:running)
+    Sessions::InterruptWithFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "PR is merged" && kwargs[:actor] == "mcp_force_immediate" &&
+        kwargs[:source_context].is_a?(Hash)
+    end.returns(Sessions::InterruptWithFollowUp::Result.new(success: true, withdrawn: false))
+
+    result = @tool.call(
+      "action" => "follow_up", "session_id" => session.id, "prompt" => "Through the service",
+      "goal" => "PR is merged", "force_immediate" => true
+    )
+
+    assert_includes result, "Follow-up prompt sent immediately"
+  end
+
+  test "force_immediate follow_up whose interrupt fails withdraws the staged message and raises" do
+    session = sessions(:running)
+    Sessions::InterruptService.any_instance.stubs(:call)
+      .returns(Sessions::Result.new(success: false, error: "Session is busy", error_code: :conflict))
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Urgent", "force_immediate" => true)
+    end
+
+    assert_equal "Cannot send follow-up: Session is busy", error.message
+    assert_empty session.enqueued_messages.reload
+  end
+
   test "follow_up requires a prompt" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id) }
     assert_match(/"prompt" parameter is required/, error.message)
