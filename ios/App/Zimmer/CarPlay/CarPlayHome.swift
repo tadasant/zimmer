@@ -11,13 +11,24 @@ import ZimmerKit
 /// "what needs me?" and acts on sessions itself. The tiles are also where the car says Live Mode
 /// is not there (*Retrying…*, *Tap to retry*), never a voice. Which tiles show is
 /// `LiveRetry.tiles`.
+///
+/// Last, whenever nothing is under way, a Voice settings tile: the call screen's panel, reachable
+/// before any call, so a setting can be read or put right without first making a call to open
+/// it from (`LiveRetry.offersSettings`). It comes last so that it appearing or going never moves
+/// a Live tile under a finger.
 @MainActor
 final class CarPlayHome {
     let template: CPGridTemplate
     var onTap: ((LiveTalkTile) -> Void)?
+    /// The Voice settings tile.
+    var onSettings: (() -> Void)?
 
     var tiles: [LiveTalkTile] = [.continueConversation, .newConversation] {
         didSet { if tiles != oldValue { draw() } }
+    }
+
+    var showsSettings = true {
+        didSet { if showsSettings != oldValue { draw() } }
     }
 
     init() {
@@ -26,9 +37,13 @@ final class CarPlayHome {
     }
 
     private func draw() {
-        let buttons = tiles.map { tile in
+        var buttons = tiles.map { tile in
             CPGridButton(titleVariants: tile.titleVariants, image: CarPlayImages.tile(tile.symbol),
                          handler: CarPlayImages.tapped("tile.\(tile)") { [weak self] in self?.onTap?(tile) })
+        }
+        if showsSettings {
+            buttons.append(CPGridButton(titleVariants: CarHomeSettingsTile.titleVariants, image: CarPlayImages.tile(CarHomeSettingsTile.symbol),
+                                        handler: CarPlayImages.tapped("tile.settings") { [weak self] in self?.onSettings?() }))
         }
         template.updateGridButtons(buttons)
     }

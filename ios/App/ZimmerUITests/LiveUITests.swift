@@ -5,6 +5,8 @@ import XCTest
 /// tap turns voice off in that same thread and two start a new one; Back leads to the Live list,
 /// where one conversation is started and typed into and answered with Enable voice beside the
 /// composer; and a thread with voice on shows what was said, the call controls and Type instead.
+/// The Live settings open from the gear on a conversation and, without entering Live, from the
+/// app's Settings.
 /// A real call needs a microphone and OpenAI, neither of which a simulator run has, so a fixture
 /// landing turns voice on without starting the call; the call's protocol logic is
 /// `RealtimeConductor`, tested in ZimmerKit.
@@ -136,6 +138,42 @@ final class LiveUITests: XCTestCase {
 
         app.buttons["live-settings.done"].tap()
         XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live-settings-view"].firstMatch))
+    }
+
+    /// The Live settings without entering Live Mode: the board's gear, then Live settings. The
+    /// waveform button lands in a voice call, so this is the way to read or change them first.
+    /// Pushed, so Back is the way out, back to Settings; Live was never opened.
+    func test_the_live_settings_open_from_the_apps_settings_without_entering_live() throws {
+        let app = launch()
+        let gear = app.buttons["settings.open"]
+        XCTAssertTrue(gear.waitForExistence(timeout: timeout), "the gear is on the session list")
+        gear.tap()
+        let row = app.buttons["settings.live"].firstMatch
+        for _ in 0..<10 where !row.exists {
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            from.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)))
+        }
+        XCTAssertTrue(row.waitForExistence(timeout: timeout), "Settings has a Live settings row")
+        attachScreenshot(app, named: "settings-live-row")
+        row.tap()
+
+        XCTAssertTrue(element(app, "live-settings-view").waitForExistence(timeout: timeout))
+        XCTAssertTrue(labelled(app, "Speaking speed").waitForExistence(timeout: timeout), "each field is listed")
+        XCTAssertFalse(app.buttons["live-settings.done"].exists, "pushed: the bar's Back is the way out, not a sheet's Done")
+        XCTAssertFalse(app.navigationBars["Live Mode"].exists, "no conversation was opened")
+        attachScreenshot(app, named: "live-settings-from-settings")
+
+        let guidance = element(app, "live-settings.guidance")
+        for _ in 0..<10 where !guidance.exists {
+            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            from.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        }
+        XCTAssertTrue(guidance.waitForExistence(timeout: timeout), "the Live mode guidance is there too")
+        attachScreenshot(app, named: "live-settings-from-settings-guidance")
+
+        app.navigationBars["Live settings"].buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(waitForGone(element(app, "live-settings-view")), "Back leaves the Live settings")
+        XCTAssertTrue(app.staticTexts["settings.server"].exists || app.buttons["settings.live"].exists, "back on Settings")
     }
 
     private func openLive(_ app: XCUIApplication) {

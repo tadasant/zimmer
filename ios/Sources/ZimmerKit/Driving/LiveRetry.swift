@@ -89,6 +89,16 @@ public struct LiveRetry: Hashable, Sendable {
         return wanted ? .retrying : .unavailable
     }
 
+    /// Whether the home offers the Voice settings tile: at rest, and once the retries are spent.
+    /// Not while a call is up, connecting or retrying, when the call screen can go up at any
+    /// moment and the panel would have to come down under it; the call screen has its own gear.
+    public func offersSettings(callIsActive: Bool) -> Bool {
+        switch tile(callIsActive: callIsActive) {
+        case .continueConversation, .unavailable: return true
+        case .newConversation, .connecting, .inCall, .retrying: return false
+        }
+    }
+
     /// The home's tiles. At rest the driver chooses, and anything under way is one tile saying
     /// so, because there is nothing to choose. Giving up keeps New beside Retry: a conversation
     /// that will not connect is when a fresh one is most worth having.
@@ -107,6 +117,15 @@ public struct LiveRetry: Hashable, Sendable {
             return [first]
         }
     }
+}
+
+/// The home's Voice settings tile, beside the Live tiles whenever nothing is under way, so the
+/// settings can be read and changed before any call (`LiveRetry.offersSettings`). It opens the
+/// same panel as the call screen's gear, and closing it calls nobody.
+public enum CarHomeSettingsTile {
+    /// Longest first, as CarPlay chooses among them.
+    public static let titleVariants = ["Voice settings", "Settings"]
+    public static let symbol = "gearshape.fill"
 }
 
 /// The home's tiles: the driver's two choices, and the one place the car says whether Live Mode
