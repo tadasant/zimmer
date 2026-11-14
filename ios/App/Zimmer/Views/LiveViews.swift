@@ -589,9 +589,12 @@ struct LiveSettingsButton: View {
 /// conversation runs on, and the free text appended to the live model's instructions. Save sends
 /// only the fields edited here, so a change the live agent made meanwhile is not undone; an open
 /// voice call is then brought up to what it can take mid-call. Opened from the gear on the
-/// Live screens. See docs/sessions/live.md.
+/// Live screens, as a sheet, and from the app's Settings, pushed, so it can be read and changed
+/// without entering Live Mode. See docs/sessions/live.md.
 struct LiveSettingsView: View {
     let api: ZimmerAPI
+    /// A sheet's Done. Pushed from Settings, the navigation bar's Back is the way out instead.
+    var showsDone = true
 
     @Environment(\.dismiss) private var dismiss
     @State private var settings: LiveSettings?
@@ -631,8 +634,10 @@ struct LiveSettingsView: View {
         .navigationTitle("Live settings")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Done") { dismiss() }.accessibilityIdentifier("live-settings.done")
+            if showsDone {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }.accessibilityIdentifier("live-settings.done")
+                }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button(saving ? "Saving…" : "Save") { Task { await save() } }

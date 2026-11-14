@@ -448,6 +448,30 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
+    /// The voice settings are on the home before any call, beside the Live tiles, whenever
+    /// nothing is under way: at rest, with or without a conversation open, and once the car has
+    /// given up. Not while a call is up, connecting or retrying, when the call screen can go up
+    /// over the panel at any moment; the call screen has its own gear.
+    func testTheHomeOffersTheVoiceSettingsWheneverNothingIsUnderWay() {
+        var retry = LiveRetry()
+        XCTAssertTrue(retry.offersSettings(callIsActive: false), "at rest, before any call")
+        XCTAssertFalse(retry.offersSettings(callIsActive: true), "a call is up: the gear is on its screen")
+        retry.asked()
+        retry.lookup()
+        XCTAssertFalse(retry.offersSettings(callIsActive: false), "connecting")
+        retry.lookedUp()
+        XCTAssertNotNil(retry.failed())
+        XCTAssertFalse(retry.offersSettings(callIsActive: false), "retrying")
+        retry.gaveUp()
+        XCTAssertTrue(retry.offersSettings(callIsActive: false), "given up: Retry, New and the settings")
+    }
+
+    func testTheSettingsTileSaysSomethingOnANarrowScreen() {
+        XCTAssertEqual(CarHomeSettingsTile.titleVariants.count, 2)
+        XCTAssertLessThanOrEqual(CarHomeSettingsTile.titleVariants[1].count, 10)
+        XCTAssertFalse(CarHomeSettingsTile.symbol.isEmpty)
+    }
+
     func testEachTileMakesItsChoiceAndAStatusTileAsksAgain() {
         var wish = CarLiveWish()
         XCTAssertEqual(wish.choice, .continueOpen)
@@ -749,6 +773,21 @@ final class CarPlayTests: XCTestCase {
         let up = try XCTUnwrap(body.range(of: "navigator.push(panel.template)"))
         XCTAssertLessThan(hangUp.lowerBound, down.lowerBound)
         XCTAssertLessThan(down.lowerBound, up.lowerBound)
+    }
+
+    /// The home's Voice settings tile opens the same panel with no call under it: it hangs up
+    /// nothing, and closing a panel the home opened calls nobody.
+    func testTheHomesSettingsEndNoCallAndCallNobodyBack() async throws {
+        let live = Self.carPlaySources.first { $0.name == "CarPlayLive.swift" }?.text ?? ""
+        let start = try XCTUnwrap(live.range(of: "func openSettingsFromHome() {"))
+        let end = try XCTUnwrap(live.range(of: "\n    }\n", range: start.upperBound..<live.endIndex))
+        let body = live[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(body.contains("call.hangUp()"), "there is no call to end")
+        XCTAssertFalse(body.contains("comeback"), "and none to bring back")
+        XCTAssertTrue(body.contains("showSettings(fromCall: false)"))
+        XCTAssertTrue(live.contains("if panel.fromCall { self.callBack() }"), "closing calls back only a call the gear ended")
+        let home = Self.carPlaySources.first { $0.name == "CarPlayHome.swift" }?.text ?? ""
+        XCTAssertTrue(home.contains("CarPlayImages.tapped(\"tile.settings\")"), "the tile goes through CarPlayTap")
     }
 
     /// A tap that CarPlay delivers off the main thread still reaches the main actor. A closure

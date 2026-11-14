@@ -1,7 +1,8 @@
 import XCTest
 
 /// The CarPlay drill: Zimmer opened in the iOS Simulator's CarPlay window and driven through
-/// the car's app: it opens on Continue and New; Continue goes to the call screen, which shows the
+/// the car's app: it opens on Continue, New and Voice settings; Voice settings opens the panel with
+/// no call, and Done goes back to the tiles; Continue goes to the call screen, which shows the
 /// gear; the car is unplugged from under that call, by the Simulator's own menu, the phone lands on
 /// it, and plugged back in the call is on the car again; the gear's closure
 /// (run by the fixture: no tap of XCUITest's reaches the gear itself) opens the voice settings,
@@ -70,16 +71,37 @@ final class CarPlayDrillUITests: XCTestCase {
         zimmer.launch()
         openInTheCar()
 
-        // Open: the two choices, and nothing else.
+        // Open: the two choices and the settings, and nothing else.
         XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "Continue is offered: the fixture has a conversation open")
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "and New beside it")
+        XCTAssertTrue(waitFor(anyOf: Self.settingsTitles, seconds: Int(timeout)), "and Voice settings, before any call")
         for gone in ["Needs you", "Running"] {
-            XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is its two choices")
+            XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is its two choices and the settings")
         }
-        XCTAssertEqual(car.cells.count, 2, "two tiles on the screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(car.cells.count, 3, "three tiles on the screen; the car showed:\n\(car.debugDescription)")
         photograph("carplay-home")
         record("the home", car.debugDescription)
         assertAlive("on the home screen")
+
+        // Voice settings, before any call: the same panel as the call screen's gear, showing what
+        // voice left behind, with Done as its way out because there is no call to go back to.
+        // Only read here: the gear's visit below changes and resets them.
+        tapTile(Self.settingsTitles[0], or: Self.settingsTitles[1])
+        XCTAssertTrue(row("Done").waitForExistence(timeout: Self.hostStall), "the tile opens the voice settings; the car showed:\n\(car.debugDescription)")
+        XCTAssertFalse(row("Back to the call").exists, "no call to go back to")
+        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; the car showed:\n\(car.debugDescription)")
+        assertNoCallScreen("under the voice settings opened from the home", panelUp: true)
+        photograph("carplay-voice-settings-from-home")
+        record("the voice settings from the home", car.debugDescription)
+        assertAlive("with the voice settings up from the home")
+        let done = row("Done")
+        done.tap()
+        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "Done goes back to the tiles; the car showed:\n\(car.debugDescription)")
+        XCTAssertFalse(row("Reply length cap").exists, "the panel has left the stack")
+        assertNoCallScreen("after the voice settings from the home: closing them calls nobody")
+        photograph("carplay-home-after-settings")
+        assertAlive("after the voice settings from the home")
 
         // Continue: one tap to the call screen, where the gear is, on a call held on Connecting….
         tapTile(Self.continueTitles[0], or: Self.continueTitles[1])
@@ -167,7 +189,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
         assertNoCallScreen("once the car has given up")
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "New stays beside Retry: the way out of a conversation that will not connect")
-        XCTAssertEqual(car.cells.count, 2, "Retry and New; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(car.cells.count, 3, "Retry, New and Voice settings; the car showed:\n\(car.debugDescription)")
         photograph("carplay-unavailable")
         assertAlive("after three retries")
 
@@ -180,10 +202,11 @@ final class CarPlayDrillUITests: XCTestCase {
         assertAlive("after New")
 
         // Nothing to continue: the conversation ends on the phone, behind the car's tiles, and
-        // Retry finds nothing open. The car starts nothing in its place: one tile, New.
+        // Retry finds nothing open. The car starts nothing in its place: one Live tile, New, and
+        // the settings beside it.
         endTheConversationOnThePhone()
         tapTile(Self.retryTitles[1], or: Self.retryTitles[0])
-        waitForOneTile()
+        waitForTwoTiles()
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "with nothing open, New is what is left")
         XCTAssertFalse(Self.continueTitles.contains { text($0).exists }, "nothing to continue; the car showed:\n\(car.debugDescription)")
         assertNoCallScreen("with nothing to continue")
@@ -270,6 +293,7 @@ final class CarPlayDrillUITests: XCTestCase {
     private static let newTitles = ["New conversation", "New"]
     private static let retryingTitles = ["Live Mode unavailable, retrying…", "Retrying…"]
     private static let retryTitles = ["Live Mode unavailable. Tap to retry", "Retry"]
+    private static let settingsTitles = ["Voice settings", "Settings"]
 
     /// Any element with these words: the tile's text, or the call screen's title.
     private func text(_ label: String) -> XCUIElement {
@@ -320,11 +344,11 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTFail("no \(label) tile; the car showed:\n\(car.debugDescription)")
     }
 
-    /// The home comes down to a single tile, checking Zimmer is alive each second.
-    private func waitForOneTile() {
+    /// The home comes down to New and Voice settings, checking Zimmer is alive each second.
+    private func waitForTwoTiles() {
         for _ in 0..<Int(timeout) {
-            if car.cells.count == 1 { return }
-            assertAlive("while waiting for one tile")
+            if car.cells.count == 2 { return }
+            assertAlive("while waiting for two tiles")
             Thread.sleep(forTimeInterval: 1)
         }
         XCTFail("still \(car.cells.count) tiles; the car showed:\n\(car.debugDescription)")

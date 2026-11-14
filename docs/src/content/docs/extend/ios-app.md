@@ -793,6 +793,15 @@ The gear ends the call, because CarPlay allows recording only on the call screen
 progress is cut off. *Back to the call* calls the same conversation again, and every change takes
 effect on that call, Listening apart.
 
+**The same voice settings are on the car's home, before any call.** A **Voice settings** tile sits
+after the Live tiles at rest and once the car has given up, so you can look before calling, or when
+a call will not connect at all. It opens the same panel with **Done** at its head: no call ends and
+none comes back, and a change takes effect on the next call. It is not there while a call is up,
+connecting or retrying, when the call screen can go up at any moment. The guidance, the models and
+the voice are not in the car, which has no text field; on the phone they are under **Settings →
+Live settings**, reachable from the session board's gear without entering Live Mode, as well as from
+the gear inside Live.
+
 **One thread, one voice.** Everything you say to Zimmer in the car goes through that one Live Mode
 conversation, over the OpenAI Realtime call. Live Mode delegates to sessions itself: it checks on
 them, passes your answers on, merges, restarts, archives, starts work and follows up through
@@ -957,7 +966,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too, whole, so a pull request touching several can take most of the job's 75 minutes. A job [cut off there](/limitations/#a-job-cut-off-at-its-time-budget-is-never-alerted-on) fails `all-checks-pass` with no test failed |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: Continue and New; a true disconnect with a call up, the phone landing on it, and the reconnect; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind; New; and nothing to continue once the conversation has ended on the phone (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests` | `ios_carplay` (GitHub-hosted `macos-latest`), on every pull request, and the `carplay` shard of `ios-ui-tests.yml` | Zimmer opens in the iOS Simulator's CarPlay window (a build signed ad hoc with the CarPlay entitlement; the window opened from the Simulator's I/O menu) and is driven through the car app: Continue, New and Voice settings, the panel opened from the home before any call; a true disconnect with a call up, the phone landing on it, and the reconnect; the gear, the voice settings and Reset to defaults; a Live call that cannot connect, its retries, giving up with no call screen left behind; New; and nothing to continue once the conversation has ended on the phone (Mute, End and the gear cannot be pressed by XCUITest). Any crash fails it; the artifact keeps the CarPlay window's screenshots |
 | `ios/bin/ui-test --only <classes>` | `ios-ui-tests.yml`, on push to `main` and on dispatch, as five shards on five simulators | Every UI test, a quarter of the classes per shard, and on the `photos` shard a photograph of every key screen in both appearances, kept as the `ios-ui-test-<configuration>-<shard>` artifacts (none when the run is pointed at a real server) with the app's crash reports in `crashes/` and their crashed threads printed in the job's log |
 | `python3 -m unittest discover -s ios/tools` | `ios` | The export retry in `ios/tools/app_store_connect.py`: which failures are retried, that every other failure keeps xcodebuild's exit code, and that a build App Store Connect already has is never uploaded again |
 | `ios/bin/testflight upload` | `testflight.yml`, on push to `main` | Signs in Apple's cloud at export, uploads, checks export signed the entitlements in, and waits for processing |
