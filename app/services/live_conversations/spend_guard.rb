@@ -4,10 +4,10 @@ module LiveConversations
   # The spend caps on the experimental voice engines (LiveSetting
   # `voice_engine_conversation_cap_usd` and `voice_engine_daily_cap_usd`).
   #
-  # Spend is the LiveUsageEvent ledger's list price for one engine, even for
-  # Claude marked as on a subscription (`voice_claude_billing`): Zimmer calls
-  # Claude with a metered API key until a subscription credential is wired, so
-  # marking it free must not lift the ceiling on money still being charged.
+  # Spend is the LiveUsageEvent ledger's list price for one engine, Claude
+  # included although it runs on Zimmer's subscription and bills nothing per
+  # token: the subscription's quota windows are finite and shared with the agent
+  # fleet, and list price is the measure of how much of them a call has used.
   # That is: what it has cost this
   # conversation, and what it has cost today in the deployment's time zone,
   # across every conversation. At WARN_SHARE of either cap a call is warned

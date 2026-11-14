@@ -10,7 +10,6 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
 
   test "the default is OpenAI Realtime, so shipping the engines changes nothing" do
     stub_live_key
-    stub_claude_key
 
     resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude])
 
@@ -21,7 +20,6 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
 
   test "GPT-Live with Claude runs when it is chosen, both keys are set and the client can speak it" do
     stub_live_key
-    stub_claude_key
     use_voice_engine("gpt_live_claude")
 
     resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude])
@@ -30,21 +28,31 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
     assert_nil resolution.fallback_reason
   end
 
-  test "a missing key falls back to Realtime and names the key" do
+  test "no Anthropic key is needed: Claude runs on Zimmer's current Claude Code account" do
     stub_live_key
-    LiveConversations::ClaudeClient.stubs(:api_key).returns(nil)
+    use_voice_engine("gpt_live_claude")
+    ENV.delete("LIVE_ANTHROPIC_API_KEY")
+
+    assert_nil LiveConversations::VoiceEngine.unavailable_reason("gpt_live_claude")
+    assert_equal "gpt_live_claude", LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude]).engine
+  end
+
+  test "with no Claude Code account, or one without credentials, the engine falls back and says which" do
+    stub_live_key
     use_voice_engine("gpt_live_claude")
 
-    resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude])
+    claude_accounts(:primary).update!(oauth_config: {})
+    assert_match(/current Claude Code account \(.+\) has no credentials/, LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude]).fallback_reason)
 
+    without_claude_code_account
+    resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude])
     assert_equal "openai_realtime", resolution.engine
     assert_equal "gpt_live_claude", resolution.requested
-    assert_equal "LIVE_ANTHROPIC_API_KEY is not set", resolution.fallback_reason
+    assert_equal "Zimmer has no current Claude Code account", resolution.fallback_reason
   end
 
   test "a client that cannot run the engine (the iOS app today) falls back" do
     stub_live_key
-    stub_claude_key
     use_voice_engine("gpt_live_claude")
 
     resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: [])
@@ -64,7 +72,6 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
 
   test "an engine at its spend cap falls back; near it, the call runs with a warning" do
     stub_live_key
-    stub_claude_key
     use_voice_engine("gpt_live_claude", voice_engine_conversation_cap_usd: 1.0)
 
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_session", vendor: "openai_live", model: "gpt-live-1",
@@ -96,7 +103,8 @@ class LiveConversations::VoiceEngineSettingsTest < ActiveSupport::TestCase
     assert raised.error
     assert_equal 10.0, LiveSetting.current.effective(:voice_engine_daily_cap_usd)
 
-    assert bridge.execute("update_live_settings", { "voice_claude_billing" => "subscription" }, call_id: "c3").error
-    assert_equal "metered", LiveSetting.current.effective(:voice_claude_billing)
+    # There is no billing choice to make: Claude runs on Zimmer's subscription.
+    assert_not_includes LiveSetting::KEYS, :voice_claude_billing
+    assert bridge.execute("update_live_settings", { "voice_claude_billing" => "metered" }, call_id: "c3").error
   end
 end
