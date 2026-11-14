@@ -62,10 +62,19 @@ against a session that already has one queued.
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
 at consecutive positions rather than colliding on the queue's unique position. The queue's other
-writers (triggers, `MessageParent`, the enqueued-message endpoints) still take their own
+writers (triggers, `MessageParent`'s queued report, the enqueued-message endpoints) still take their own
 `maximum + 1` and can still collide with it. It also writes the one timeline row all three leave
 behind, *"Message queued at position N (a turn is already underway)"*. Each route still writes its
 own response.
+
+Sending a *new* message "right now" has one writer too, `Sessions::InterruptWithFollowUp`: the
+REST and MCP `follow_up` with `force_immediate`, `manage_enqueued_messages` `send_now`, and a child's
+`message_parent` with `force_immediate`. It stages the message at the tail through the same locked
+read (`Sessions::QueueTail`), commits it, then hands it to `Sessions::InterruptService`. If the
+interrupt fails, or the surface's pre-interrupt step raises, it withdraws the staged message while it is still `pending`, so it never
+turns up later as a surprise queued follow-up. A message a concurrent interrupt already claimed is
+left to be delivered. The web "Send Now" button on a queued message is not on this path: it promotes
+a row that already exists, so it calls `InterruptService` directly.
 
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as

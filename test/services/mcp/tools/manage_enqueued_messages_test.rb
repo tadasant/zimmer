@@ -169,6 +169,17 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     assert_includes output, "- **Result:** Follow-up prompt sent immediately"
   end
 
+  test "send_now stages and interrupts through Sessions::InterruptWithFollowUp" do
+    Sessions::InterruptWithFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == @session && kwargs[:prompt] == "Urgent" &&
+        kwargs[:goal] == "a queued goal" && kwargs[:actor] == "mcp_send_now"
+    end.returns(Sessions::InterruptWithFollowUp::Result.new(success: true, withdrawn: false))
+
+    output = @tool.call("session_id" => @session.id, "action" => "send_now", "content" => " Urgent ", "goal" => " a queued goal ")
+
+    assert_includes output, "## Message Sent Immediately"
+  end
+
   test "send_now discards the staged message when the interrupt fails" do
     Sessions::InterruptService.any_instance.expects(:call)
       .returns(Sessions::Result.new(success: false, error: "boom", error_code: :conflict))

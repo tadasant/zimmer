@@ -178,6 +178,7 @@ class TurnSourceTest < ActiveSupport::TestCase
     app/services/mcp/tools/quick_router.rb
     app/services/mcp/tools/start_session.rb
     app/services/orchestrator_system_prompt_builder.rb
+    app/services/sessions/interrupt_with_follow_up.rb
     app/services/sessions/message_parent.rb
     app/services/sessions/queue_follow_up.rb
     app/services/sessions/record_carplay_engagement.rb
