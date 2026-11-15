@@ -5559,21 +5559,26 @@ Re-linking needs a person with the phone: call the bridge's `whatsapp_pair` and 
 
 ### Email: who sent it is a claim, and automated mail is recognised by approximation
 
-The [`email` trigger](/sessions/triggers/#email) reads mail through a Gmail-tool MCP server, and that
-server prints only Subject, From, To, Cc, Date, labels, body and attachment names. It does not expose
-the raw headers. Two things follow:
+The [`email` trigger](/sessions/triggers/#email) reads mail through a Gmail-tool MCP server. That
+server prints Subject, From, To, Cc, Date, labels, body and attachment names, and strad's slugs also
+list a fixed set of raw headers verbatim (`Received`, `Authentication-Results`, `Auto-Submitted`,
+`List-Id`, …). Two things follow:
 
-- **No sender verification.** `From:` is spoofable, and the SPF, DKIM and DMARC results are not
-  visible to Zimmer. Gmail sends mail that fails them to spam, and spam never fires, but anything
-  that passes is still only a claim about who sent it. The template must fence the mail as untrusted
-  (it is refused otherwise), and a session must not act on a mail's instructions because of who it
-  says it is from.
-- **`Auto-Submitted`, `List-*` and `Precedence: bulk` are not read.** Gmail's own categories stand in
-  for them (promotions, social, forums, updates), plus a sender pattern (`mailer-daemon@`,
-  `no-reply@`, …) and an auto-reply subject pattern. An out-of-office reply with an unusual subject
-  from an ordinary address gets through, so a session that answers mail should not answer an
-  auto-reply. The other way round, a real person's mail that Gmail files under Updates is skipped
-  without a trace, unless the condition sets `include_automated`.
+- **The poller does not verify the sender.** `From:` is spoofable. Gmail sends mail that fails SPF,
+  DKIM or DMARC to spam, and spam never fires, but anything that passes is still only a claim about
+  who sent it. The template must fence the mail as untrusted (it is refused otherwise), and a session
+  must not act on a mail's instructions because of who it says it is from. Checking
+  `Authentication-Results` is the session's job.
+- **Automated mail is recognised by approximation.** The poller reads `Auto-Submitted` and `List-Id`
+  when the server lists them, Gmail's promotions, social and forums categories, a sender pattern
+  (`mailer-daemon@`, `no-reply@`, `notifications@`, …) and an auto-reply subject pattern. It does not read
+  `List-Unsubscribe` or `Precedence: bulk`, and a server without the header section leaves only
+  the labels and patterns. An out-of-office reply with an unusual subject from an ordinary address
+  gets through, so a session that answers mail should not answer an auto-reply. The other way
+  round, a person's mail Gmail files under Promotions, Social or Forums is skipped unless the
+  condition sets `include_automated`. It is not skipped silently: every skip is a WARN line naming
+  the message id and the rule. Transactional mail Gmail files under Updates, such as receipts and
+  shipping notices, fires unless one of those signals catches it.
 
 ### Email: one mailbox, one session per thread, and attachments by name only
 
