@@ -143,6 +143,18 @@ class LiveSetting < ApplicationRecord
     "livekit_claude" => "LiveKit cascade with Claude — not built yet, falls back"
   }.freeze
 
+  # Whether the live model may attach catalog MCP servers to itself
+  # (LiveConversations::ToolBridge). Off by default: it reaches Zimmer through
+  # its own catalog entry's tool groups, and hands anything else to a
+  # background session. Only a person can turn it on — the live model's own
+  # settings function cannot (ToolBridge::LIVE_MODEL_EXCLUDED).
+  DIRECT_SERVERS_OFF = "off"
+  DIRECT_SERVERS_ON = "on"
+  DIRECT_SERVERS = {
+    DIRECT_SERVERS_OFF => "Off — Zimmer's own tools only; anything else goes to a background session (default)",
+    DIRECT_SERVERS_ON => "On — the assistant can attach any available catalog MCP server to itself and call its tools"
+  }.freeze
+
   # The Claude model the experimental engines reason with.
   CLAUDE_MODELS = ModelCatalog::LIVE_CLAUDE_MODELS
 
@@ -211,7 +223,10 @@ class LiveSetting < ApplicationRecord
               options: nil, min: 0.1, max: 100.0),
     Field.new(key: :voice_engine_daily_cap_usd, path: :engine, type: :float, label: "Daily cap per engine (USD)",
               help: "The most each experimental engine may spend in a day (deployment time zone), across conversations. Same warning and fallback as the per-conversation cap.",
-              options: nil, min: 0.5, max: 500.0)
+              options: nil, min: 0.5, max: 500.0),
+    Field.new(key: :direct_servers_enabled, path: :tools, type: :enum, label: "Attach MCP servers",
+              help: "Whether the assistant can list the MCP server catalog, attach a server to the conversation and call its tools directly. Off, it has only the Zimmer tools its own catalog entry names, and hands anything else to a background session. The assistant cannot change this, and neither can an agent over MCP. Takes effect on the next call or typed turn.",
+              options: DIRECT_SERVERS, min: nil, max: nil)
   ].freeze
 
   FIELDS_BY_KEY = FIELDS.index_by(&:key).freeze
@@ -250,6 +265,7 @@ class LiveSetting < ApplicationRecord
     when :voice_claude_model then ModelCatalog::LIVE_CLAUDE_DEFAULT
     when :voice_engine_conversation_cap_usd then 2.0
     when :voice_engine_daily_cap_usd then 10.0
+    when :direct_servers_enabled then DIRECT_SERVERS_OFF
     end
   end
 

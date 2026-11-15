@@ -169,6 +169,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "voice relay over the API: secret, tool call that enables a server, transcript" do
+    LiveSetting.editable.update!(direct_servers_enabled: LiveSetting::DIRECT_SERVERS_ON)
     stub_clock_server
     conversation = create_live_conversation(mode: "voice")
     LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_api", websocket_url: "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1-mini" })

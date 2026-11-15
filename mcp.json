@@ -80,6 +80,15 @@
       "fleet-maintenance"
     ]
   },
+  "zimmer-live": {
+    "title": "Zimmer Live",
+    "description": "Zimmer's native MCP server, scoped to the Live Mode assistant (tool_groups=live_mode): quick_router (prompt only, the one way to start work), get_user_view, quick_search_sessions (titles and metadata, archived included, any word order, no transcript scan), get_session, action_session (follow_up, archive without force, unarchive, set_carplay_fit), and send_push_notification. No merge route: that is the assistant's own authorize_merge.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=live_mode",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "zimmer-self-session": {
     "title": "Zimmer Self-Session",
     "description": "Zimmer's native MCP server, scoped to self-management (own notes/title/heartbeat/archive, push notifications, wake-ups). Auto-injected into every session — list it explicitly only to pin it.",

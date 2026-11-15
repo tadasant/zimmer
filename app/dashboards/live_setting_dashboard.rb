@@ -28,6 +28,7 @@ class LiveSettingDashboard < Administrate::BaseDashboard
     voice_claude_model: Field::String,
     voice_engine_conversation_cap_usd: Field::Number.with_options(decimals: 2),
     voice_engine_daily_cap_usd: Field::Number.with_options(decimals: 2),
+    direct_servers_enabled: Field::String,
     guidance: Field::Text,
     updated_by: Field::String,
     created_at: Field::DateTime,
@@ -39,6 +40,7 @@ class LiveSettingDashboard < Administrate::BaseDashboard
   SHOW_PAGE_ATTRIBUTES = %i[
     id text_model text_temperature text_max_output_tokens voice_model voice_reasoning_effort voice_name voice_speed voice_max_output_tokens voice_turn_detection voice_vad_eagerness voice_vad_threshold voice_vad_prefix_padding_ms voice_vad_silence_duration_ms voice_noise_reduction voice_transcription_model voice_listening voice_telemetry
     voice_engine voice_claude_model voice_engine_conversation_cap_usd voice_engine_daily_cap_usd
+    direct_servers_enabled
     guidance updated_by created_at updated_at
   ].freeze
 

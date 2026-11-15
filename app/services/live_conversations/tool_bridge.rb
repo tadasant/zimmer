@@ -14,13 +14,21 @@ module LiveConversations
   #    definitions run to ~200 KB, which a realtime model cannot carry on every
   #    turn; the gateway's description lists each tool in one line instead.
   #    Present when the conversation has one of Zimmer's own catalog servers
-  #    (`zimmer`, `zimmer-*`) enabled, scoped to the tool groups those name.
+  #    (`zimmer`, `zimmer-*`) enabled, scoped to the tool groups those name. The
+  #    Live Mode root's own entry is `zimmer-live` (`?tool_groups=live_mode`):
+  #    six tools, four of them narrowed (Mcp::Registry). The groups are read
+  #    here, in-process, off the catalog entry, so the live model cannot widen
+  #    its own surface the way an agent holding the API key could.
   # 2. **Catalog servers** — `list_mcp_servers`, `enable_mcp_server`,
   #    `disable_mcp_server`. Enabling a server persists it on the conversation
-  #    and lists its tools once.
+  #    and lists its tools once. OFF unless the Live setting
+  #    `direct_servers_enabled` is on (#direct_servers_enabled?): with them, the
+  #    live model could attach any catalog server to itself — Gmail with send,
+  #    or a `zimmer-*` entry wider than the one it was given.
   # 3. **Direct tools** — every tool of every enabled non-Zimmer server, exposed
   #    as `<server>__<tool>` and executed through CatalogServer, so a capability
   #    the live agent keeps using costs one hop instead of a background session.
+  #    Off with the catalog servers, by the same setting.
   # 4. **Its own settings** — `get_live_settings` and `update_live_settings`, so
   #    "talk faster" or "from now on, always …" said to the live agent becomes a
   #    change it makes itself (LiveSetting, through SettingsUpdate). Always
@@ -78,7 +86,10 @@ module LiveConversations
     # calls the model would need to undo it: a model that wants shorter replies
     # has `append_guidance`. The spend caps are the person's ceiling on what the
     # experimental engines cost, so the model they bound cannot raise them.
-    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd].freeze
+    # Attaching servers to itself is the person's to allow, for the same reason:
+    # it is the setting that bounds the model.
+    LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd
+                             direct_servers_enabled].freeze
     SETTINGS_CHANGED = "Changed:"
     SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
     SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."
@@ -90,6 +101,11 @@ module LiveConversations
     SUMMARY_LIMIT = 160
     FUNCTION_NAME_LIMIT = 64
     LOGGED_ERROR_LIMIT = 300
+
+    # Said to the model when it calls a server function with them off. It has
+    # no list to read, so the answer is the way round.
+    DIRECT_SERVERS_OFF = "Nothing changed: attaching MCP servers is turned off for Live Mode. Do what you can with " \
+                         "Zimmer's tools, and hand anything else to a background session with quick_router."
 
     # Said to the model, which is the only one who can recover: an output cap
     # cuts a voice call's arguments off mid-JSON, and the client relays them as
@@ -140,13 +156,31 @@ module LiveConversations
     def functions
       list = []
       list.concat(zimmer_functions) if zimmer_tools.any?
-      list.concat(server_functions)
+      list.concat(server_functions) if direct_servers_enabled?
       list.concat(settings_functions)
       list.concat(conversation_functions)
       list << scratchpad_function
       list << AuthorizeMerge.function
       list.concat(direct_functions.map(&:first))
       list
+    end
+
+    # The class behind a Zimmer tool on this conversation's surface, or nil. So
+    # SystemPrompt describes the tools the conversation has — the narrowed
+    # `live_mode` variant or the full one — rather than one of them.
+    def zimmer_tool_class(name)
+      zimmer_tools.find { |tool| tool.tool_name == name.to_s }
+    end
+
+    # Whether this conversation may attach catalog servers to itself and call
+    # their tools directly. Off by default: the live model then reaches Zimmer
+    # through the gateway alone, on the surface its catalog entries name, and
+    # anything else goes through `quick_router`. A person turns it on, on the
+    # Live settings page; the live model cannot (LIVE_MODEL_EXCLUDED).
+    def direct_servers_enabled?
+      return @direct_servers_enabled if defined?(@direct_servers_enabled)
+
+      @direct_servers_enabled = LiveSetting.current.effective(:direct_servers_enabled) == LiveSetting::DIRECT_SERVERS_ON
     end
 
     # Chat Completions' tool shape.
@@ -220,9 +254,7 @@ module LiveConversations
       case name
       when ZIMMER_TOOL then [ *call_zimmer(args), false ]
       when DESCRIBE_ZIMMER_TOOL then [ describe_zimmer(args), false, false ]
-      when LIST_SERVERS then [ JSON.pretty_generate(server_listing), false, false ]
-      when ENABLE_SERVER then [ enable_server(args), false, true ]
-      when DISABLE_SERVER then [ disable_server(args), false, true ]
+      when LIST_SERVERS, ENABLE_SERVER, DISABLE_SERVER then server_call(name, args)
       when GET_SETTINGS then [ settings_listing, false, false ]
       when UPDATE_SETTINGS then [ update_settings(args), false, false ]
       when LIST_CONVERSATIONS then [ conversation_listing, false, false ]
@@ -232,7 +264,11 @@ module LiveConversations
       when AuthorizeMerge::NAME then [ authorize_merge(args), false, false ]
       else
         server_name, tool_name = direct_lookup[name]
-        raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if server_name.nil?
+        if server_name.nil?
+          raise ToolFailure, "No function named #{name}. Call #{LIST_SERVERS} to see what is available." if direct_servers_enabled?
+
+          raise ToolFailure, "No function named #{name}. Use the functions you have, or hand it to a background session with quick_router."
+        end
 
         output, error = CatalogServer.find!(server_name).call_tool(tool_name, args)
         [ output, error, false ]
@@ -339,7 +375,9 @@ module LiveConversations
 
       raise ToolFailure, "Zimmer has no tool named #{name.inspect} on this conversation's surface." if zimmer_tools.any?
 
-      raise ToolFailure, "This conversation has no Zimmer server enabled. Call #{ENABLE_SERVER} with name \"zimmer\"."
+      raise ToolFailure, "This conversation has no Zimmer server enabled. Call #{ENABLE_SERVER} with name \"zimmer\"." if direct_servers_enabled?
+
+      raise ToolFailure, "This conversation has no Zimmer tools. Tell the person to start a new Live conversation."
     end
 
     def call_zimmer(args)
@@ -347,8 +385,6 @@ module LiveConversations
       arguments = args["arguments"]
       arguments = {} if arguments.nil?
       raise ToolFailure, "\"arguments\" must be an object." unless arguments.is_a?(Hash)
-
-      arguments, defaulted = with_live_search_defaults(tool, arguments)
 
       # Through a real MCP server's `tools/call`, the path POST /mcp takes, so a
       # model's arguments meet the same required-argument and schema checks an
@@ -367,34 +403,7 @@ module LiveConversations
       if (declines = mcp_context.take_live_capture_declines).any?
         text = "#{text}\n\n#{NOT_RECORDED_AS_THEIRS}\n#{declines.map { |line| "- #{line}" }.join("\n")}"
       end
-      if defaulted.any? && !result[:isError]
-        text = "_Live Mode searched with #{defaulted.map { |k, v| "#{k}: #{v.to_json}" }.join(', ')} " \
-               "(its defaults for finding a session; pass #{defaulted.size == 1 ? 'it' : 'either'} to override)._\n\n#{text}"
-      end
       [ text, result[:isError] ? true : false ]
-    end
-
-    # Defaults for a session search from Live Mode, applied only where the model
-    # left the argument out. Somebody asking out loud for a session is looking for one
-    # they remember, which is usually finished work — and finished work has archived
-    # itself — named in their own words rather than as an exact title fragment. The
-    # tool's own defaults (no archived sessions, one literal phrase) suit an agent's
-    # duplicate check and stay as they are for every other caller; this is the Live
-    # Mode path only. A listing with no query and an `id` lookup get neither default;
-    # a status filter suppresses only the archived default, and a transcript scan only
-    # the `match` one (it matches a phrase). Returns the arguments and what was
-    # defaulted, so the answer can say so.
-    def with_live_search_defaults(tool, arguments)
-      return [ arguments, {} ] unless tool == Mcp::Tools::QuickSearchSessions
-      return [ arguments, {} ] if arguments["query"].to_s.strip.empty? || !arguments["id"].nil?
-
-      defaults = {}
-      statuses = Array(arguments["status"]).map { |s| s.to_s.strip }.reject(&:empty?)
-      defaults["show_archived"] = true unless arguments.key?("show_archived") || statuses.any?
-      unless arguments.key?("match") || SessionSearchable.search_contents?(arguments["search_contents"])
-        defaults["match"] = Mcp::Tools::QuickSearchSessions::MATCH_ALL_WORDS
-      end
-      [ arguments.merge(defaults), defaults ]
     end
 
     def mcp_server
@@ -416,6 +425,19 @@ module LiveConversations
     end
 
     # --- Catalog servers -------------------------------------------------------
+
+    # [output, error, tools_changed], as #dispatch answers. Refused, not just unlisted, with the setting off:
+    # a voice call relays whatever function name the model emits, and an older
+    # call may still have these in its tool list.
+    def server_call(name, args)
+      raise ToolFailure, DIRECT_SERVERS_OFF unless direct_servers_enabled?
+
+      case name
+      when LIST_SERVERS then [ JSON.pretty_generate(server_listing), false, false ]
+      when ENABLE_SERVER then [ enable_server(args), false, true ]
+      else [ disable_server(args), false, true ]
+      end
+    end
 
     def server_functions
       [
@@ -698,6 +720,8 @@ module LiveConversations
 
     # [[Function, [server_name, tool_name]], …], capped at MAX_DIRECT_TOOLS.
     def direct_functions
+      return [] unless direct_servers_enabled?
+
       @direct_functions ||= begin
         pairs = []
         @conversation.enabled_mcp_servers.each do |server_name|
