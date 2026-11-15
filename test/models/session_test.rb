@@ -2213,6 +2213,23 @@ class SessionTest < ActiveSupport::TestCase
 
   # --- live_clone_paths: the GC "never reap a live session's clone" set ---
 
+  test "running, waiting and needs_input sessions accept a follow-up and give no refusal" do
+    %i[running waiting needs_input].each do |name|
+      session = sessions(name)
+      assert session.accepts_follow_up?, "#{name} should accept a follow-up"
+      assert_nil session.follow_up_refusal
+    end
+  end
+
+  test "failed and archived sessions refuse a follow-up, naming their status" do
+    %w[failed archived].each do |status|
+      session = sessions(status.to_sym)
+      assert_not session.accepts_follow_up?
+      assert_equal "Session is #{status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.",
+                   session.follow_up_refusal
+    end
+  end
+
   test "live_clone_paths includes clones for running, waiting, and needs_input sessions" do
     running = sessions(:running)
     waiting = sessions(:waiting)

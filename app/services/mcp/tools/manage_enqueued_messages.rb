@@ -273,10 +273,8 @@ module Mcp
           raise ToolError, "Validation failed: content is too long (maximum #{Session::PROMPT_MAX_LENGTH} characters)"
         end
 
-        unless session.running? || session.waiting? || session.needs_input?
-          raise ToolError, "Cannot send follow-up: Session is #{session.status}. " \
-                           "Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
-        end
+        refusal = session.follow_up_refusal
+        raise ToolError, "Cannot send follow-up: #{refusal}" if refusal
 
         result = Sessions::InterruptWithFollowUp.call(
           session: session,

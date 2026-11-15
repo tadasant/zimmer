@@ -107,6 +107,106 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
     assert_equal 1, FileStorageService.new(session_id: session.id).list.size
   end
 
+  # Staging raises before any message exists, so nothing holds what the request
+  # stored: a retry must not pile copies into the session's storage.
+  test "sent now, a staging conflict removes what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::QueueTail.stubs(:next_position!).raises(ActiveRecord::RecordNotUnique, "position taken")
+    Sessions::InterruptService.any_instance.expects(:call).never
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :conflict, response.body
+    assert_empty session.enqueued_messages.reload
+    assert_empty FileStorageService.new(session_id: session.id).list
+    assert_empty ImageStorageService.new(session_id: session.id).list
+  end
+
+  test "sent now, a staging validation failure removes what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::QueueTail.stubs(:next_position!).raises(ActiveRecord::RecordInvalid.new(EnqueuedMessage.new))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :unprocessable_entity, response.body
+    assert_empty FileStorageService.new(session_id: session.id).list
+    assert_empty ImageStorageService.new(session_id: session.id).list
+  end
+
+  test "a queue conflict removes what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::LiveTurn.stubs(:underway?).returns(true)
+    Sessions::QueueTail.stubs(:next_position!).raises(ActiveRecord::RecordNotUnique, "position taken")
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "And this?", attachments: attachments }, headers: @headers, as: :json
+
+    assert_response :conflict, response.body
+    assert_empty session.enqueued_messages.reload
+    assert_empty FileStorageService.new(session_id: session.id).list
+    assert_empty ImageStorageService.new(session_id: session.id).list
+  end
+
+  test "a direct delivery that fails validation removes what it stored" do
+    session = sessions(:needs_input)
+    reap(session)
+    Sessions::DeliverFollowUp.stubs(:call).raises(ActiveRecord::RecordInvalid.new(session))
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "What broke?", attachments: attachments }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity, response.body
+    assert_empty FileStorageService.new(session_id: session.id).list
+    assert_empty ImageStorageService.new(session_id: session.id).list
+  end
+
+  # Once the message is staged and committed it holds the attachments; a raise
+  # after that leaves them, because a concurrent interrupt may be delivering it.
+  test "sent now, a raise after the message is staged keeps what it stored" do
+    session = sessions(:running)
+    reap(session)
+    Sessions::InterruptService.any_instance.stubs(:call).raises(ActiveRecord::RecordInvalid.new(session))
+    Sessions::InterruptWithFollowUp.any_instance.stubs(:withdraw).returns(false)
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :unprocessable_entity, response.body
+    assert_equal 1, FileStorageService.new(session_id: session.id).list.size
+  end
+
+  test "a session that cannot take a follow-up refuses it and removes what it stored" do
+    session = sessions(:failed)
+    reap(session)
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Anyone?", attachments: attachments }, headers: @headers, as: :json
+
+    assert_response :unprocessable_entity, response.body
+    body = JSON.parse(response.body)
+    assert_equal "Cannot send follow-up", body["error"]
+    assert_equal "Session is failed. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", body["message"]
+    assert_empty FileStorageService.new(session_id: session.id).list
+  end
+
+  test "sent now, a session that cannot take a follow-up refuses it the same way" do
+    session = sessions(:failed)
+    reap(session)
+    Sessions::InterruptWithFollowUp.expects(:call).never
+
+    post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Now", force_immediate: true, attachments: attachments },
+      headers: @headers, as: :json
+
+    assert_response :unprocessable_entity, response.body
+    body = JSON.parse(response.body)
+    assert_equal "Cannot send follow-up", body["error"]
+    assert_equal session.follow_up_refusal, body["message"]
+    assert_empty FileStorageService.new(session_id: session.id).list
+  end
+
   test "an image is an image by its bytes, whatever its media type says, and a data URL is read" do
     session = sessions(:needs_input)
     reap(session)

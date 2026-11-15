@@ -1913,6 +1913,37 @@ class Session < ApplicationRecord
     end
   end
 
+  # Can this session take a follow-up prompt in its current state at all?
+  #
+  # The status gate the REST and MCP follow-up doors share, before they decide how
+  # to deliver: REST `POST /api/v1/sessions/:id/follow_up` (both its
+  # `force_immediate` and its direct branch), the `action_session` MCP tool's
+  # `follow_up` (both branches), and `manage_enqueued_messages` `send_now`. A
+  # `running` session takes one by queueing or interrupting, an idle one by direct
+  # delivery; only `failed` and `archived` take none. Whether a running turn is
+  # underway — queue or deliver — is a separate question, Sessions::LiveTurn's.
+  #
+  # The web follow-up form is not one of these callers: it refuses in its own
+  # words, from the form.
+  #
+  # @return [Boolean]
+  def accepts_follow_up?
+    running? || waiting? || needs_input?
+  end
+
+  # Why this session refuses a follow-up, or nil when it takes one.
+  #
+  # The one wording of that refusal. Each surface frames it in its own error
+  # shape — REST as the `message` of a 422 "Cannot send follow-up" error, MCP as
+  # the tool error text — and keeps whatever prefix it already used.
+  #
+  # @return [String, nil]
+  def follow_up_refusal
+    return nil if accepts_follow_up?
+
+    "Session is #{status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
+  end
+
   # Deliver a follow-up prompt to an idle (waiting / needs_input) session.
   #
   # Drop the stale per-turn state, transition to running, stamp the prompt where the
