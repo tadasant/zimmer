@@ -82,7 +82,8 @@ write_files:
 %{ if ssh_host_ed25519_key != "" ~}
   # Pinned SSH host identity: survives a droplet rebuild so an SSH client's
   # known_hosts stays valid instead of tripping host-key-changed on every
-  # re-provision. Empty on staging (disposable box).
+  # re-provision. Empty on staging: its deploy pins the host key over SSH instead
+  # (scripts/converge-ssh-identity.sh), keeping it out of user_data.
   - path: /etc/ssh/ssh_host_ed25519_key
     permissions: "0600"
     content: |
