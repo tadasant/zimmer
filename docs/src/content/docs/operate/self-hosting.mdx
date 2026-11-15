@@ -52,13 +52,13 @@ Kamal reaches the droplet over SSH to swap containers. It is not your login key 
 
 Zimmer is reachable only over your tailnet. The droplet joins it at boot and the UI is served over that VPN, never a public port.
 
-Tailscale is optional in the Terraform module. Leave `tailscale_auth_key` empty and the droplet admits nothing inbound. You then serve the app through the [Cloudflare edge](/operate/deploying/#optional-cloudflare-edge) and deploy over a per-job SSH rule your own workflow opens. The staging workflows in this repo assume Tailscale, so that mode means writing your own deploy. See [Running without Tailscale](/operate/provisioning/#running-without-tailscale).
-
 - A **Tailscale account** and tailnet.
 - A **pre-authorized, ephemeral auth key** for the droplet to join (`tailscale_auth_key` / `TAILSCALE_AUTH_KEY`).
 - A **separate pre-minted auth key tagged `tag:ci`** for CI's own tailnet join, so it can resolve the droplet's IP and health-check it (`TS_CI_AUTHKEY`). This must be a real auth key, not an OAuth client — a Tailscale OAuth client cannot mint `tag:ci` keys.
 - A **Tailscale API client** (`TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET`) so the deploy can reap the stale tailnet node and keep the MagicDNS name from drifting to `zimmer-staging-1`, `-2`, …
 - Tailnet **ACL policy** that defines `tag:ci`. Edit it in the Tailscale admin console.
+
+Tailscale is optional in the Terraform module. Leave `tailscale_auth_key` empty and the droplet joins no tailnet and admits no TCP. You then serve the app through the [Cloudflare edge](/operate/deploying/#optional-cloudflare-edge) and deploy over a per-job SSH rule your own workflow opens. The staging workflows in this repo assume Tailscale, so that mode means writing your own deploy. See [Running without Tailscale](/operate/provisioning/#running-without-tailscale).
 
 ### The agent's brain: an account for at least one runtime
 

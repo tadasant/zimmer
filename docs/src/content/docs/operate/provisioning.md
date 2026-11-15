@@ -54,8 +54,9 @@ same Kamal-ready host with no tailnet:
 - cloud-init skips installing Tailscale and `tailscale up`. Everything else renders the same: Docker,
   sysbox, the deploy and admin keys, key-only sshd, the [root-password fix](/operate/ssh-access/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session),
   Caddy.
-- The firewall drops the `41641/udp` rule, so it admits **nothing** inbound. Still no `22` rule, and
-  this module never adds one.
+- The firewall is the same in both modes: one `41641/udp` rule, which has nothing behind it here, and
+  no TCP at all. Still no `22` rule, and this module never adds one. Keeping the UDP rule means a key
+  that arrives empty by mistake on a live tailnet droplet changes nothing.
 - `node_exporter_enabled = true` fails the plan. The exporter binds the tailnet address and nothing
   else, and this box has none.
 - The `tailscale_hostname` output is `null`.
@@ -74,11 +75,21 @@ A box like that is reachable two ways, and the module provides neither:
    `terraform apply` *before* opening the rule: Terraform does not know about it, so an apply in the
    middle of the job removes it.
 
+   On a **freshly created** droplet, `:22` answers before cloud-init is done. Until runcmd
+   authorizes the deploy key, clears DigitalOcean's forced root-password expiry, and restarts sshd,
+   SSH fails with `Permission denied (publickey)` and then `Password change required`. In tailnet
+   mode the deploy cannot connect until `tailscale up`, late in the same run, so it never sees this
+   window. Retry the first SSH until it succeeds, then run `cloud-init status --wait` before
+   deploying.
+
 Break-glass is the DigitalOcean web console. There is no `tailscale ssh`.
 
 For the host certificate, run `scripts/domain-cert.sh` with `CERT_HOST_IP` (the droplet's reserved
 IP) and `CERT_SSH_KEY` instead of `TS_HOST`. In that mode it never writes DNS, because the tunnel owns
 the name. It runs its final HTTPS check on the box over SSH, because the runner can reach only `:22`.
+That SSH crosses the public internet, so pass `CERT_KNOWN_HOSTS`, a known_hosts file holding the
+droplet's pinned `ssh_host_ed25519_key_pub`, to make the script verify the host key. Without it,
+the script accepts whatever host key answers.
 See [Custom-domain HTTPS](/operate/deploying/#custom-domain-https-over-the-tailnet).
 
 What you give up: MagicDNS (`http://zimmer`), the ACLs as the control on who reaches the box,

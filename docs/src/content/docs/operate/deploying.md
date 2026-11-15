@@ -103,9 +103,10 @@ gets an unroutable address — same tailnet-only exposure as the MagicDNS name, 
 On a droplet [without Tailscale](/operate/provisioning/#running-without-tailscale), pass
 `CERT_HOST_IP` (the droplet's address) and `CERT_SSH_KEY` instead of `TS_HOST`. The script SSHes
 there as root with that key, and it never touches DNS: the Cloudflare edge's tunnel owns the name,
-and a public A record would point at a box that admits nothing. Its final check runs `curl` on the
+and a public A record would point at a box that admits no TCP. Its final check runs `curl` on the
 box against its own Caddy, because the runner's firewall rule is `:22` only. `CERT_HOST_IP` without
-`CERT_SSH_KEY` fails before doing anything.
+`CERT_SSH_KEY` fails before doing anything. Set `CERT_KNOWN_HOSTS` to a known_hosts file to make it
+verify the droplet's host key, which matters once that SSH crosses the public internet.
 
 :::note[Turning it on]
 Mint a Cloudflare API token scoped to `Zone:DNS:Edit + Zone:Zone:Read` on the parent zone only, add it

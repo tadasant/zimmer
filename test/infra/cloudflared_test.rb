@@ -74,16 +74,12 @@ class CloudflaredTest < ActiveSupport::TestCase
       "an unset token must not take a running tunnel down on its own")
   end
 
-  test "the firewall still admits exactly one inbound rule, Tailscale's UDP, and only with Tailscale" do
+  test "the firewall still admits exactly one inbound rule, Tailscale's UDP" do
     firewall = File.read(MAIN_TF)[/resource "digitalocean_firewall" "zimmer" \{.*?\n\}/m]
-    static = firewall.scan(/^\s*inbound_rule \{/)
-    dynamic = firewall[/dynamic "inbound_rule" \{(.*?)\n  \}/m, 1]
+    inbound = firewall.scan(/inbound_rule \{(.*?)\}/m).flatten
 
-    assert_empty static, "the droplet firewall gained an unconditional inbound rule"
-    assert_equal 1, firewall.scan(/dynamic "inbound_rule"/).size, "the droplet firewall gained an inbound rule"
-    assert_match(/for_each\s*=\s*local\.tailscale_enabled \? \[1\] : \[\]/, dynamic,
-      "the one inbound rule must exist only when the droplet joins a tailnet")
-    assert_match(/protocol\s*=\s*"udp"/, dynamic)
-    assert_match(/port_range\s*=\s*"41641"/, dynamic)
+    assert_equal 1, inbound.size, "the droplet firewall gained an inbound rule"
+    assert_match(/protocol\s*=\s*"udp"/, inbound.first)
+    assert_match(/port_range\s*=\s*"41641"/, inbound.first)
   end
 end

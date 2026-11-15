@@ -268,7 +268,7 @@ runcmd:
 %{ else ~}
   # --- No Tailscale ---------------------------------------------------------------
   # tailscale_auth_key is empty, so this box joins no tailnet and the DO firewall admits
-  # nothing inbound. SSH is plain key-only OpenSSH on :22 (the stock ssh.socket listener;
+  # no TCP (its UDP 41641 rule has nothing behind it). SSH is plain key-only OpenSSH on :22 (the stock ssh.socket listener;
   # the :2222 drop-in above is bound too, but no rule ever reaches it). A deploy gets in
   # through a :22 rule its workflow opens for its runner's /32 and removes afterwards;
   # break-glass is the DigitalOcean web console. That makes the root-password fix below

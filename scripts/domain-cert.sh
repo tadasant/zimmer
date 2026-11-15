@@ -35,6 +35,10 @@
 #                  Wins over TS_HOST when both are set.
 # Optional env:
 #   CERT_SSH_KEY   private key for root on the droplet (see above)
+#   CERT_KNOWN_HOSTS  known_hosts file pinning the droplet's host key. When set, SSH
+#                  verifies it (StrictHostKeyChecking=yes); otherwise the first key
+#                  that answers is accepted. Worth setting with CERT_HOST_IP, where the
+#                  SSH crosses the public internet rather than an authenticated tailnet.
 #   LEGO_VERSION   pinned lego release (default below)
 #   ACME_CA        ACME directory URL (default: Let's Encrypt production)
 #   RENEW_DAYS     re-issue when fewer than this many days remain (default 30)
@@ -80,8 +84,13 @@ fi
 # on any runner and does not depend on the tailnet SSH policy (self-hosted CI runners
 # do not reliably satisfy the `tailscale ssh` identity check). Fall back to
 # `tailscale ssh` when no key is set, for environments that rely on it.
+if [ -n "${CERT_KNOWN_HOSTS:-}" ]; then
+  HOSTKEY_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${CERT_KNOWN_HOSTS}")
+else
+  HOSTKEY_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null)
+fi
 if [ -n "${CERT_SSH_KEY:-}" ]; then
-  ssh_box() { ssh -i "$CERT_SSH_KEY" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "root@${HOST_IP}" "$@"; }
+  ssh_box() { ssh -i "$CERT_SSH_KEY" "${HOSTKEY_OPTS[@]}" -o LogLevel=ERROR "root@${HOST_IP}" "$@"; }
 else
   ssh_box() { tailscale ssh "root@${HOST_IP}" "$@"; }
 fi
@@ -114,7 +123,7 @@ if [ "$VIA_TAILNET" = "true" ]; then
     | jq -r '[.result[]? | .content | select(endswith(".cfargotunnel.com"))][0] // empty')"
 fi
 if [ "$VIA_TAILNET" != "true" ]; then
-  # A public address would publish a name for a box whose firewall admits nothing, and
+  # A public address would publish a name for a box whose firewall admits no TCP, and
   # the tunnel (when there is one) already owns it. DNS is not this script's to touch.
   log "no tailnet (CERT_HOST_IP): leaving DNS for ${DOMAIN} alone"
 elif [ -n "$tunnel_target" ]; then

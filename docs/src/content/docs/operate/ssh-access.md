@@ -39,8 +39,8 @@ The tailnet is the only way in — for the app, for SSH, for break-glass.
 
 :::note[A droplet without Tailscale]
 With an empty `tailscale_auth_key` the module [skips Tailscale
-entirely](/operate/provisioning/#running-without-tailscale). The `41641/udp` rule goes too, so the
-firewall admits nothing. SSH is plain key-only OpenSSH on `:22`, reached only through a rule the
+entirely](/operate/provisioning/#running-without-tailscale). The firewall is unchanged, with
+nothing behind its `41641/udp` rule. SSH is plain key-only OpenSSH on `:22`, reached only through a rule the
 deploy workflow opens for its runner's `/32` and removes when the job ends. That is a rule scoped to
 one address for minutes, not public `tcp/22`. Break-glass is the DigitalOcean web console. The rest of
 this page describes the tailnet mode.
