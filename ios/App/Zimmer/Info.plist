@@ -30,7 +30,7 @@
     speech-recognition key.
   * `NSCameraUsageDescription` — the app never opens the camera. The WebRTC framework GPT-Live
     calls run over (stasel/WebRTC) ships libwebrtc's camera capturer, so the bundle references
-    `AVCaptureDevice`, and App Store Connect refuses a build that does without this key
+    `AVCaptureDevice`, and App Store Connect flags a build that does without this key
     (ITMS-90683, build 108.1). The string says so plainly. Attachments come through the system
     photo and file pickers, which run outside the app and need no key.
     `ios/bin/testflight check` asks every binary in the archived app for the APIs that need a
@@ -77,7 +77,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Live Mode listens while you talk to Zimmer, on your phone and in the car.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Zimmer does not use the camera. The voice-call library behind Live Mode includes camera support, which Zimmer never turns on.</string>
+	<string>The voice-call library behind Live Mode includes camera support. Zimmer never turns it on and does not use the camera.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
