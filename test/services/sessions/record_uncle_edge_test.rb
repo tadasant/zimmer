@@ -40,6 +40,26 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     assert edge?(target, actor)
   end
 
+  test "a failed edge write inside a caller's transaction leaves that transaction usable" do
+    actor = create_session
+    target = create_session
+    # A real failed statement, so Postgres marks the transaction aborted — a
+    # Ruby-side raise would not.
+    SessionUncleLink.define_singleton_method(:create!) { |*, **| connection.execute("SELECT 1/0") }
+
+    ActiveRecord::Base.transaction do
+      outcome = record(target, actor.id)
+      assert_equal :error, outcome.action
+      # The delivery's next statement, as Sessions::DeliverFollowUp would run it.
+      target.update!(prompt: "after the edge")
+    end
+  ensure
+    SessionUncleLink.singleton_class.send(:remove_method, :create!)
+
+    assert_equal "after the edge", target.reload.prompt
+    assert_not edge?(target, actor)
+  end
+
   test "a declared id given as a string is accepted" do
     actor = create_session
     target = create_session
@@ -224,6 +244,20 @@ class Sessions::RecordUncleEdgeTest < ActiveSupport::TestCase
     assert edge?(x, b)
     assert edge?(a, x)
     assert_cycle_free([ a, b, x ])
+  end
+
+  test "a refused inversion inside a caller's transaction still restores the direct edge" do
+    a = create_session
+    b = create_session
+    x = create_session
+    record(a, b.id)
+    record(a, x.id)
+    record(x, b.id)
+
+    outcome = ActiveRecord::Base.transaction { record(b, a.id) }
+
+    assert_equal :would_create_cycle, outcome.action
+    assert edge?(a, b), "the direct edge is restored, not left deleted"
   end
 
   # Regression: the reachability search was depth-bounded at 8, so a cycle

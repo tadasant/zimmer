@@ -3439,11 +3439,9 @@ class AgentSessionJob < ApplicationJob
     #
     # From here the recovery pause and `auto_continue_after_interrupt` resume the
     # session on a SYSTEM_RECOVERY nudge, and the prompt this job was carrying
-    # exists ONLY as its argument — the job row is being discarded, and two of the
-    # three routes that accept a follow-up (`Mcp::Tools::ActionSession#direct_follow_up`
-    # and `Api::V1::SessionsController#follow_up`) never stamped it anywhere. So
-    # the sender was told "sent", the agent was resumed with "you may have been
-    # interrupted, carry on", and the prompt was never seen by anyone (#1023).
+    # may exist ONLY as its argument — the job row is being discarded. If it is not
+    # handed back, the sender is told "sent", the agent is resumed with "you may have
+    # been interrupted, carry on", and the prompt is never seen by anyone (#1023).
     #
     # Stamping it BEFORE the pause is what makes the nudge harmless: the follow-up
     # arm of #perform resolves this turn's prompt as

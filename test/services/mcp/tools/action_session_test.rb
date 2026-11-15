@@ -438,6 +438,18 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "running", session.reload.status
   end
 
+  test "follow_up to an idle session delivers through Sessions::DeliverFollowUp" do
+    session = sessions(:needs_input)
+    Sessions::DeliverFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "All tests pass" && kwargs[:source] == TurnSource.new(surface: "mcp")
+    end.returns(stub(job_id: "job-1"))
+
+    result = @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Through the service", "goal" => "All tests pass")
+
+    assert_includes result, "- **Message:** Follow-up prompt sent"
+  end
+
   test "follow_up to a running session queues through Sessions::QueueFollowUp" do
     session = sessions(:running)
     queued = session.enqueued_messages.create!(content: "Stand-in", position: 1, status: "pending")
