@@ -125,8 +125,29 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text"))
 
     assert_includes prompt, "To find an earlier session the person remembers"
-    assert_includes prompt, "includes archived sessions"
+    assert_includes prompt, "Pass `show_archived: true`"
+    assert_includes prompt, "match: \"all_words\""
     assert_includes prompt, "search_contents: true"
+    assert_includes prompt, "Use `start_session` only when you know the exact agent root"
+  end
+
+  # The prompt describes the surface the conversation has, not the full one.
+  test "a conversation on the live_mode surface is told what its narrowed tools do, and nothing it lacks" do
+    prompt = LiveConversations::SystemPrompt.build(create_live_conversation(mode: "text", mcp_servers: [ "zimmer-live" ]))
+
+    assert_includes prompt, "archived sessions included (finished work is archived)"
+    assert_includes prompt, "It cannot search what was said in a session"
+    assert_not_includes prompt, "search_contents"
+    assert_not_includes prompt, "start_session"
+    assert_includes prompt, "It is the only way to start work."
+  end
+
+  test "attaching servers is described only when a person has turned it on" do
+    conversation = create_live_conversation(mode: "text")
+    assert_not_includes LiveConversations::SystemPrompt.build(conversation), "enable_mcp_server"
+
+    LiveSetting.editable.update!(direct_servers_enabled: LiveSetting::DIRECT_SERVERS_ON)
+    assert_includes LiveConversations::SystemPrompt.build(conversation), "`enable_mcp_server` let you add a catalog MCP server"
   end
 
   test "says how to go back, and a call's recap names the sessions the thread touched" do

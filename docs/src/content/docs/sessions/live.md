@@ -160,10 +160,13 @@ The model can call seven kinds of function (`LiveConversations::ToolBridge`):
   servers (`zimmer`, `zimmer-*`), scoped to the tool groups that server's URL names. It is one
   gateway rather than one function per tool because the default surface's definitions come to about
   200 KB, too much for a realtime model to carry on every turn. The gateway lists each tool in one
-  line, and `describe_zimmer_tool` returns any tool's full schema.
+  line, and `describe_zimmer_tool` returns any tool's full schema. The Live Mode root's own entry is
+  meant to be `zimmer-live`, which names the [`live_mode` group](#the-live_mode-surface).
 - **`list_mcp_servers`, `enable_mcp_server`, `disable_mcp_server`**, through which the model manages
-  its own catalog servers. This is the self-enable path.
-- **`<server>__<tool>`**: every tool of every enabled non-Zimmer server, called directly.
+  its own catalog servers. This is the self-enable path, and it is **off** unless you turn on
+  [Attach MCP servers](#self-enabling-a-catalog-server).
+- **`<server>__<tool>`**: every tool of every enabled non-Zimmer server, called directly. Off with the
+  self-enable path.
 - **`get_live_settings`, `update_live_settings`**: its own [settings](#live-settings) and guidance,
   always present. "Talk faster" or "from now on, always…" becomes a change the live agent makes
   itself.
@@ -205,6 +208,43 @@ flowchart LR
   Bridge --> Cat
   Mcp -- "start_session / quick_router" --> Sessions["Background sessions"]
 ```
+
+### The `live_mode` surface
+
+The `live_mode` tool group is Live Mode's whole Zimmer surface: six tools instead of about thirty.
+`zimmer-live` (`/mcp?tool_groups=live_mode`) is the catalog entry that names it. Four of the six are
+narrowed variants of the full tool, with the same name and the same action bodies, like the
+`self_session` variants:
+
+| Tool | On `live_mode` |
+| --- | --- |
+| `quick_router` | `LiveModeQuickRouter`. Takes `prompt` and nothing else: no scheduling class, context, sync wait or idempotency key. It is the only way to start work, since there is no `start_session`. |
+| `get_user_view` | `LiveModeGetUserView`. `order` defaults to `last_touched`. It takes `status`, `carplay_fit`, `order`, `page` and `per_page`, and does not mention `reorder_user_view`. |
+| `quick_search_sessions` | `LiveModeSearchSessions`. Searches titles and metadata only, always includes archived sessions, always `match: "all_words"`, and returns short rows. There is no `search_contents`. |
+| `get_session` | As it is. |
+| `action_session` | `LiveModeActionSession`. `follow_up` (with `force_immediate`, and no goal or sync), `archive` (never forced), `unarchive` and `set_carplay_fit`. |
+| `send_push_notification` | As it is. |
+
+The bridge reads the group off the catalog entry's URL in-process, so the live model cannot write
+its own `?tool_groups=`. Everywhere else a tool group is only a scoping boundary, because the fleet
+shares one API key. For Live Mode it is a real one.
+
+**Merging is never a follow-up.** `authorize_merge` is the only route, and needs a fresh yes to a
+read-back. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
+`[HUMAN-AUTHORIZED MERGE]` marker, in any spelling inside brackets, and say to use `authorize_merge`.
+Both descriptions say so in their first sentence.
+
+Each tool's description reaches the model as one line, its first sentence cut to 160 characters. So
+each `LiveMode*` description leads with what matters: "never a merge", or "cannot search what was
+said".
+
+Anything outside the surface (how a session is set up, schedules, servers, settings) goes to
+`quick_router` in the person's words. Zimmer's mechanics section tells the model so when the
+conversation has no `start_session`. A domain group outranks the composite, as it does for
+`self_session`: a conversation that still holds the full `zimmer` entry gets the full tools.
+
+The `gpt_live_claude` engine gets the same surface: its Claude half (`ClaudeDelegate`) calls tools
+through this same `ToolBridge`, and the GPT-Live front end has no tools of its own.
 
 ### Delegating, and when not to
 
@@ -260,20 +300,17 @@ defaults suit an agent's duplicate check instead: archived sessions are left out
 one literal phrase, so "diagnose live mode" does not match "Diagnose failed Zimmer live mode voice
 session".
 
-The tool bridge gives a search from Live Mode its own defaults, filled in only where the model left
-the argument out (`ToolBridge#with_live_search_defaults`):
+On the [`live_mode` surface](#the-live_mode-surface) the search is `LiveModeSearchSessions`. It
+always includes archived sessions and always matches every word in any order, whatever the model
+passes. It has no transcript scan: from Live Mode that scan was used for paraphrases, which an
+exact-phrase scan cannot match, and one conversation ran thirteen empty multi-word scans. An empty
+answer says it is not proof, and says to try other words or hand the question to `quick_router`.
+Every other caller of `quick_search_sessions` keeps its defaults.
 
-- `show_archived: true`, unless the call names a non-empty `status` or passes `show_archived` itself;
-- `match: "all_words"`, which needs every word somewhere in the title or metadata in any order,
-  unless the call passes `match` or `search_contents: true` (the transcript scan matches one phrase).
-
-A listing with no `query` and an `id` lookup get neither default. The answer starts with a line naming
-the defaults it used, so the model can tell the person that archived sessions were included. The
-turn records the model's own arguments. Every other caller of the tool keeps its defaults.
-
-Zimmer's mechanics section says this in one line, and adds that an empty answer is not proof: read
-the notes in the result, try other words, then `search_contents: true`. Those notes are the tool's,
-on every surface: a title/metadata search with a query says how many more sessions match but were
+A conversation still on the full `zimmer` entry gets the full tool, with its own defaults and nothing
+filled in. The mechanics section then tells the model to pass `show_archived: true` and
+`match: "all_words"`, and to use `search_contents: true` to search what was said. Either way it adds
+that an empty answer is not proof. The full tool's notes say how many more sessions match but were
 kept out by the archived default or by `carplay_fit`, and a phrase that found nothing says how many
 sessions contain all of its words. On CarPlay, the [CarPlay fit](/sessions/carplay-fit/) line points
 the filter at `get_user_view` triage and tells the model to leave it off a search for a particular
@@ -284,8 +321,11 @@ session, because a session marked `laptop_only` still exists.
 "What needs me?" in Live Mode, typed or spoken, is one call. Zimmer's mechanics section tells the
 model to call `get_user_view` with `order: "last_touched"` and `carplay_fit: "not_laptop_only"`:
 the sessions the person touched most recently first, without the rows that need a screen or a
-keyboard, and a count of the laptop-only rows it left out. The person does not have to name either
-knob. The model drops one only when they ask for the board's own order or for everything.
+keyboard. The answer says how many rows the filter left out and what kind they were, for example
+"9 laptop-only (4 a credential, 3 a long read, 2 no reason given)", and tells the model to say both.
+A filter that drops every row says the board is not empty, rather than that it is. This is on
+`get_user_view` for every caller, not only Live Mode. On the `live_mode` surface `last_touched` is
+the tool's own default. The person does not have to name either knob. The model drops one only when they ask for the board's own order or for everything.
 
 The CarPlay filter is the default on a typed conversation too, not only in the car. That is what was
 asked for: Live Mode is the hands-busy surface, and the laptop already has the dashboard. The line is
@@ -293,7 +333,15 @@ Zimmer's, so it holds whatever the `live-mode` root's own style files say.
 
 ### Self-enabling a catalog server
 
-When the live agent keeps reaching the same capability through a background session, it can call
+**Off by default.** The **Attach MCP servers** setting (`direct_servers_enabled`, under Tools on Live
+settings) is `off` unless you change it. Off, the bridge offers no `list_mcp_servers`,
+`enable_mcp_server` or `disable_mcp_server`, and no `<server>__<tool>` functions, even for servers a
+conversation enabled earlier. A call to one is refused with a sentence telling the model to use
+`quick_router`. Without this, the live model could attach any available catalog server to itself:
+Gmail with send, or a `zimmer-*` entry wider than the one it was given. The live model cannot turn the
+setting on. `update_live_settings` refuses it, as it refuses the spend caps.
+
+With it on, when the live agent keeps reaching the same capability through a background session, it can call
 `enable_mcp_server` with that server's catalog name and call the server's tools itself. That costs
 one hop instead of a session. Enabling lists the server's tools once and keeps them on the
 conversation (`mcp_tool_cache`), so building the function list never has to start the server. A
@@ -483,6 +531,7 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Claude model | engine | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` | next delegation |
 | Per-conversation cap (USD) | engine | 2.00 | 0.10–100 (a person's to change, not the live model's) | next call or delegation |
 | Daily cap per engine (USD) | engine | 10.00 | 0.50–500 (likewise) | next call or delegation |
+| Attach MCP servers | tools | `off` | `off`, `on` ([Self-enabling](#self-enabling-a-catalog-server); a person's to change, not the live model's) | next call or typed turn |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
 tools, and OpenAI accepts those from the GPT-6 family only from `gpt-6-luna` and `gpt-6-sol`, only

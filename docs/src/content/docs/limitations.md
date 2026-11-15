@@ -357,6 +357,24 @@ The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 
 
 The cues are tested as samples: level, pitch, attack, brightness and length (`LiveDiagnosticsTests`). What a driver hears also passes through the voice-processing engine, the CarPlay route and the car's own processing, and none of that runs in CI. Whether each cue carries over road noise without sounding harsh is checked by ear on a drive, with the checklist in `ios/LIVE_CUES.md`.
 
+### Live Mode's narrow surface waits on a catalog change
+
+The `live_mode` tool group and its `zimmer-live` entry ship with Zimmer, but the `live-mode` root
+that conversations start from is in a deployment's own catalog. Until that root moves from the full
+`zimmer` entry to `zimmer-live`, a new conversation still gets the full Zimmer surface (about thirty
+tools) through the gateway. Attaching servers is off either way. A conversation keeps the servers it
+started with, so one opened before the move keeps the full surface until the person starts a new one.
+
+The order matters. Before this group existed a catalog entry naming `live_mode` got no Zimmer tools
+at all: `Mcp::Registry.parse_groups` drops a group it does not know, and a list of only unknown
+groups is empty, not the default surface. That fails closed on purpose, so the catalog change has to
+land after the Zimmer deploy that adds the group.
+
+`LiveModeActionSession` acts on any session id it is given. "Sessions the assistant already knows
+about" is a prompt rule, not a check: nothing yet records which sessions a conversation started,
+touched or heard about. Interrupting a session (`force_immediate`) and archiving one need no spoken
+confirmation. Only merging does.
+
 ### The GPT-Live engine has never run against OpenAI or Anthropic
 
 The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session

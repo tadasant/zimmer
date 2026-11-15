@@ -81,11 +81,11 @@ module LiveConversations
         "and switch between the two at any time; spoken turns in the thread are transcripts. Right now it is #{mode.voice? ? 'spoken' : 'typed'}.",
         client_line,
         "- Anything that takes more than about five seconds belongs in a background session: start it through the `#{ToolBridge::ZIMMER_TOOL}` function, say that you have, and keep talking. Check on it later with the same function.",
-        "- To find an earlier session the person remembers, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_search_sessions` and a `query` of two or three distinctive words. From here it includes archived sessions, which is where finished work goes, and matches the words in any order. If nothing comes back, read the notes in the result, then try other words or `search_contents: true` to search what was said. Never say a session does not exist because one search missed it.",
-        "- When the person asks for their board, what needs them, or how things stand, call `#{ToolBridge::ZIMMER_TOOL}` with tool `get_user_view` and `order: \"last_touched\"`, `carplay_fit: \"not_laptop_only\"`: what they touched most recently first, without the rows that need a screen or a keyboard. Say how many laptop-only rows that left out. Drop either knob only when they ask for the board's own order or for everything.",
-        "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you. Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`.",
+        search_line,
+        "- When the person asks for their board, what needs them, or how things stand, call `#{ToolBridge::ZIMMER_TOOL}` with tool `get_user_view` and `order: \"last_touched\"`, `carplay_fit: \"not_laptop_only\"`: what they touched most recently first, without the rows that need a screen or a keyboard. The answer says how many rows that left out and what kind; say both, so a filtered read never passes for the whole board. Drop either knob only when they ask for the board's own order or for everything.",
+        start_line,
         follow_up_line,
-        "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` functions you call directly.",
+        servers_line,
         "- `#{ToolBridge::GET_SETTINGS}` and `#{ToolBridge::UPDATE_SETTINGS}` read and change your own settings: your models, your voice and speaking speed, turn detection, and the Live mode guidance below. When the person asks for a change (\"talk faster\", \"from now on, always …\"), make it — a standing instruction goes in with `append_guidance` — and tell them what you changed. Do not change them unasked.",
         "- `#{ToolBridge::SCRATCHPAD}` keeps short notes for the rest of this conversation, shown to you on every turn under \"Your scratchpad\" below.",
         "- `#{ToolBridge::SWITCH_CONVERSATION}` goes back to an earlier conversation when the person asks; on its own it means the one they were in last, so \"go back\" needs no list. `#{ToolBridge::LIST_CONVERSATIONS}` is for when they ask what there is. Say at most three names, never ids. Starting a new conversation does not lose this one: it can be gone back to.",
@@ -93,6 +93,49 @@ module LiveConversations
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ]
       lines.compact.join("\n")
+    end
+
+    def bridge = @bridge ||= ToolBridge.new(@conversation)
+
+    # Finding a session, described for the search this conversation has. The
+    # `live_mode` variant always includes archived sessions and matches every
+    # word in any order, and cannot scan transcripts; the full tool does
+    # neither unless asked.
+    def search_line
+      lead = "- To find an earlier session the person remembers, call `#{ToolBridge::ZIMMER_TOOL}` with tool " \
+             "`quick_search_sessions` and a `query` of two or three distinctive words."
+      tail = "Never say a session does not exist because one search missed it."
+      if bridge.zimmer_tool_class("quick_search_sessions") == Mcp::Tools::LiveModeSearchSessions
+        "#{lead} It searches titles and metadata, archived sessions included (finished work is archived), and " \
+          "matches the words in any order. It cannot search what was said in a session. If nothing comes back, " \
+          "try other words; if only what was said would find it, hand the question to `quick_router`. #{tail}"
+      else
+        "#{lead} Pass `show_archived: true`, because finished work is archived, and `match: \"all_words\"` so " \
+          "the words match in any order. If nothing comes back, read the notes in the result, then try other " \
+          "words or `search_contents: true` to search what was said. #{tail}"
+      end
+    end
+
+    # Starting work. With no `start_session` on the surface, the router is
+    # the only door, and anything this conversation cannot do itself goes
+    # through it as a request in the person's words.
+    def start_line
+      lead = "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you."
+      if bridge.zimmer_tool_class("start_session")
+        "#{lead} Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`."
+      else
+        "#{lead} It is the only way to start work. When the person asks for something your tools cannot do — " \
+          "changing how a session is set up, schedules, servers — say in one sentence that you will hand it to an " \
+          "agent, and do it with `quick_router` in their words."
+      end
+    end
+
+    def servers_line
+      return nil unless bridge.direct_servers_enabled?
+
+      "- `#{ToolBridge::LIST_SERVERS}` and `#{ToolBridge::ENABLE_SERVER}` let you add a catalog MCP server to this " \
+        "conversation when you keep needing the same capability; its tools then appear as `<server>__<tool>` " \
+        "functions you call directly."
     end
 
     # Sending something to an existing session, and finding out what it said.

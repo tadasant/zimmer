@@ -91,11 +91,12 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
 | `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, go back to one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
+| `/mcp?tool_groups=live_mode` | [The Live Mode assistant's surface](/sessions/live/#the-live_mode-surface): `quick_router` (prompt only), `get_user_view`, `quick_search_sessions` (no transcript scan), `get_session`, a four-action `action_session` and `send_push_notification` |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data` and `live_conversations` are **opt-in** groups, and `self_session` is a composite. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data` and `live_conversations` are **opt-in** groups, and `self_session` and `live_mode` are composites. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
