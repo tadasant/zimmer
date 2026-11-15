@@ -275,8 +275,8 @@ class SessionContentSearch
   # The cost is bounded the same way the phrase scan is — per chunk of candidates, under
   # the same wall clock and statement_timeout. Each word is one more correlated read of
   # a candidate's chunks (see the `OFFSET 0` on TRANSCRIPT_PREDICATE), stopping at that
-  # word's first matching chunk, and in practice skipped once an earlier word has ruled the session
-  # out. A session holding every word but the last costs up to MAX_ALL_WORDS reads, so
+  # word's first matching chunk, and in practice skipped once an earlier word has
+  # ruled the session out. A session holding every word but the last costs up to MAX_ALL_WORDS reads, so
   # an all-words call can cover fewer sessions per budget than a phrase call.
   def matching_ids(chunk_ids)
     search_binds.reduce(Session.where(id: chunk_ids)) do |relation, binds|
@@ -290,7 +290,9 @@ class SessionContentSearch
   # `:q_json` carries.
   def search_binds
     @search_binds ||= begin
-      terms = @all_words ? SessionSearchable.query_words(query) : [ query ]
+      # A query with no words at all falls back to itself, so an all-words search can
+      # never AND zero predicates together and match every candidate.
+      terms = @all_words ? SessionSearchable.query_words(query).presence || [ query ] : [ query ]
       terms.map { |term| SessionSearchable.search_binds(term) }
     end
   end

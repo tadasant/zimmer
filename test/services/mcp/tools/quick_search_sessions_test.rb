@@ -498,6 +498,26 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "1 more session(s) match by title or metadata but were left out by carplay_fit: carplay_ok"
   end
 
+  test "an empty scan that stopped early does not call a live title match outside its window archived" do
+    create_titled_session("Quokka outside the window", status: :needs_input)
+    SessionContentSearch.stubs(:budget_seconds).returns(0)
+
+    output = @tool.call("query" => "Quokka outside", "search_contents" => true)
+
+    assert_includes output, "Scan incomplete"
+    assert_not_includes output, "archived session(s) match",
+      "the session is not archived; it is outside the window the scan reached"
+  end
+
+  test "a repeated word is still a phrase, and one word is a substring in either mode" do
+    phrase = @tool.call("query" => "quokka QUOKKA", "search_contents" => true)
+    assert_includes phrase, "as one exact phrase"
+    assert_includes phrase, "was matched as one exact phrase"
+
+    single = @tool.call("query" => "quokka", "search_contents" => true, "match" => "all_words")
+    assert_includes single, "as a substring"
+  end
+
   test "an incomplete scan that found nothing says the rest were not searched, not that they matter" do
     create_transcript_session(title: "Newer", said: "nothing here", created_at: 1.hour.ago)
     create_transcript_session(title: "Older", said: "nothing here either", created_at: 2.hours.ago)
