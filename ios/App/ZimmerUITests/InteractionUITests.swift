@@ -68,8 +68,14 @@ final class InteractionUITests: XCTestCase {
         // fixture gives it — holding the conversation up to the message.
         let forkTitle = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Fork of '")).firstMatch
         XCTAssertTrue(forkTitle.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["detail.message.2"]), "nothing after the fork point")
-        XCTAssertTrue(app.descendants(matching: .any)["detail.message.0"].exists)
+        // The fork shows at the tap, on a page that is still starting: "Fork of #1038" and
+        // "Starting the session…", with no conversation until the server answers. Run
+        // 43651444018's recording shows the title matched there, and the conversation looked for
+        // on that page, before the fork's own page came in. So the start is waited out first, and
+        // what comes after the fork point is looked for once the conversation is on the page.
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["start.pending"]), "the fork has started")
+        XCTAssertTrue(app.descendants(matching: .any)["detail.message.0"].waitForExistence(timeout: timeout), "the conversation up to the message")
+        XCTAssertFalse(app.descendants(matching: .any)["detail.message.2"].exists, "nothing after the fork point")
     }
 
     // MARK: - Helpers
