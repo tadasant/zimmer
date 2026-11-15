@@ -147,21 +147,24 @@ final class SettingsUITests: XCTestCase {
         let settings = app.buttons["more.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: timeout))
         settings.tap()
-        XCTAssertTrue(app.staticTexts["settings.server"].waitForExistence(timeout: timeout), "Settings opened")
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: timeout), "Settings opened")
         let banner = app.staticTexts["settings.defaults.banner"]
         let loading = app.descendants(matching: .any)["settings.loading"]
-        for _ in 0..<8 where !banner.exists && !loading.exists {
+        for _ in 0..<8 {
+            if banner.exists || loading.exists { break }
             scroll(app, down: false)
         }
         XCTAssertTrue(banner.waitForExistence(timeout: timeout), "the server's row is read")
     }
 
     private func closeSettings(_ app: XCUIApplication) {
+        let bar = app.navigationBars["Settings"]
+        XCTAssertTrue(bar.exists, "Settings is open")
         let done = app.buttons["Done"].firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: timeout))
         done.tap()
         // The bar, not a row: a row the form has scrolled past is already gone from the tree.
-        XCTAssertTrue(waitForDisappearance(app.navigationBars["Settings"]))
+        XCTAssertTrue(waitForDisappearance(bar))
     }
 
     /// Scroll until `element` is on screen and below the navigation bar, where a tap lands on
