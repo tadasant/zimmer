@@ -370,6 +370,15 @@ at all: `Mcp::Registry.parse_groups` drops a group it does not know, and a list 
 groups is empty, not the default surface. That fails closed on purpose, so the catalog change has to
 land after the Zimmer deploy that adds the group.
 
+The narrow surface bounds what the live model does by itself, not what the work it starts can do.
+A `quick_router` session can do anything a router can, so a request the model hands it is limited
+only by that agent's judgement. Two things are closed on the way: `action_live_settings` refuses
+`direct_servers_enabled`, and both `quick_router` and `follow_up` refuse the
+`[HUMAN-AUTHORIZED MERGE]` marker. A merge described in words rather than marked is not caught
+there. What counts as a human's merge approval is still the HumanMessage only `authorize_merge`
+and the Merge button write. `PATCH /api/v1/live/settings` takes the fleet's shared API key, so the
+setting is a person's by convention there, not by enforcement.
+
 `LiveModeActionSession` acts on any session id it is given. "Sessions the assistant already knows
 about" is a prompt rule, not a check: nothing yet records which sessions a conversation started,
 touched or heard about. Interrupting a session (`force_immediate`) and archiving one need no spoken

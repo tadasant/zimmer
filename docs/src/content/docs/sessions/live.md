@@ -227,7 +227,9 @@ narrowed variants of the full tool, with the same name and the same action bodie
 
 The bridge reads the group off the catalog entry's URL in-process, so the live model cannot write
 its own `?tool_groups=`. Everywhere else a tool group is only a scoping boundary, because the fleet
-shares one API key. For Live Mode it is a real one.
+shares one API key. For what the live model does on its own, it is a real one. It does not bound
+what an agent the model starts through `quick_router` can do: see
+[limitations](/limitations/#live-modes-narrow-surface-waits-on-a-catalog-change).
 
 **Merging is never a follow-up.** `authorize_merge` is the only route, and needs a fresh yes to a
 read-back. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
@@ -238,7 +240,7 @@ Each tool's description reaches the model as one line, its first sentence cut to
 each `LiveMode*` description leads with what matters: "never a merge", or "cannot search what was
 said".
 
-Anything outside the surface (how a session is set up, schedules, servers, settings) goes to
+Anything outside the surface about the work (how a session is set up, its schedule) goes to
 `quick_router` in the person's words. Zimmer's mechanics section tells the model so when the
 conversation has no `start_session`. A domain group outranks the composite, as it does for
 `self_session`: a conversation that still holds the full `zimmer` entry gets the full tools.
@@ -339,7 +341,9 @@ settings) is `off` unless you change it. Off, the bridge offers no `list_mcp_ser
 conversation enabled earlier. A call to one is refused with a sentence telling the model to use
 `quick_router`. Without this, the live model could attach any available catalog server to itself:
 Gmail with send, or a `zimmer-*` entry wider than the one it was given. The live model cannot turn the
-setting on. `update_live_settings` refuses it, as it refuses the spend caps.
+setting on. `update_live_settings` refuses it, as it refuses the spend caps, and so does
+`action_live_settings` over MCP, so an agent the live model starts cannot turn it on either. The
+Live settings page and `PATCH /api/v1/live/settings` can.
 
 With it on, when the live agent keeps reaching the same capability through a background session, it can call
 `enable_mcp_server` with that server's catalog name and call the server's tools itself. That costs

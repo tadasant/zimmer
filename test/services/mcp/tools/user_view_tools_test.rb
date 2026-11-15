@@ -245,6 +245,10 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes output, "left out 1 row(s) that match the other filters: 1 laptop-only (1 a credential)"
   end
 
+  test "an empty board under a carplay_fit filter is still called empty" do
+    assert_includes @read.call({ "carplay_fit" => "not_laptop_only" }), "the board is empty"
+  end
+
   test "a filter that dropped nothing says that too" do
     make_session(title: "say yes")
 

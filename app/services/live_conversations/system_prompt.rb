@@ -120,12 +120,14 @@ module LiveConversations
     # the only door, and anything this conversation cannot do itself goes
     # through it as a request in the person's words.
     def start_line
+      return nil unless bridge.zimmer_tool_class("quick_router")
+
       lead = "- To start one, call `#{ToolBridge::ZIMMER_TOOL}` with tool `quick_router` and a `prompt` saying what to do: it picks the agent root for you."
       if bridge.zimmer_tool_class("start_session")
         "#{lead} Use `start_session` only when you know the exact agent root, and always pass both `agent_root` and `prompt`."
       else
         "#{lead} It is the only way to start work. When the person asks for something your tools cannot do — " \
-          "changing how a session is set up, schedules, servers — say in one sentence that you will hand it to an " \
+          "changing how a session is set up, or its schedule — say in one sentence that you will hand it to an " \
           "agent, and do it with `quick_router` in their words."
       end
     end

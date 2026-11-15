@@ -225,7 +225,7 @@ class LiveSetting < ApplicationRecord
               help: "The most each experimental engine may spend in a day (deployment time zone), across conversations. Same warning and fallback as the per-conversation cap.",
               options: nil, min: 0.5, max: 500.0),
     Field.new(key: :direct_servers_enabled, path: :tools, type: :enum, label: "Attach MCP servers",
-              help: "Whether the assistant can list the MCP server catalog, attach a server to the conversation and call its tools directly. Off, it has only the Zimmer tools its own catalog entry names, and hands anything else to a background session. Only you can change this; the assistant cannot. Takes effect on the next call or typed turn.",
+              help: "Whether the assistant can list the MCP server catalog, attach a server to the conversation and call its tools directly. Off, it has only the Zimmer tools its own catalog entry names, and hands anything else to a background session. The assistant cannot change this, and neither can an agent over MCP. Takes effect on the next call or typed turn.",
               options: DIRECT_SERVERS, min: nil, max: nil)
   ].freeze
 

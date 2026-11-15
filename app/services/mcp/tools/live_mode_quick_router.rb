@@ -26,7 +26,7 @@ module Mcp
         background. Check on it later with `get_session`, and pass the person's answers to it with
         `action_session` `follow_up`.
 
-        Anything you cannot do yourself — changing how a session is set up, schedules, servers, settings —
+        Anything you cannot do yourself about the work — changing how a session is set up, or its schedule —
         goes here too, as a request in the person's words.
 
         **Never use it to merge.** A router cannot carry a merge authorization, and a prompt carrying the merge
