@@ -319,7 +319,8 @@ and for as long as they sound (`LiveAudioEngine.playAlone`).
 event and then closes the socket; read only as the close, every retry looks like a dropped call and
 meets the same refusal. `LiveCall` ends the call on the error (`LiveBlock`), and the car gives up at
 once (`LiveRetry.gaveUp(blockedBy:)`): one tile, *OpenAI is out of credits*, with Voice settings
-beside it, since a different voice engine may be the way round it. A tap tries once more.
+beside it as at any rest. A tap tries once more. Only the Realtime engine reads the refusal; on
+GPT-Live it still reads as a drop and is retried.
 
 **A call that will not connect gives up in 15 seconds.** The driver's answer comes quickly or it is
 no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and

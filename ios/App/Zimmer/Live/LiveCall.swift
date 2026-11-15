@@ -456,6 +456,8 @@ final class LiveCall: ObservableObject {
         warm.handOver { [weak self] text, failure in
             self?.received(text: text, failure: failure, generation: mine)
         }
+        // A refusal the warm connection had already heard ends the call during the hand-over.
+        guard mine == generation else { return }
         let readied = Task { await self.readyWarm(conversation, voiceIsOn: voiceIsOn, generation: mine) }
         health.stage = .microphone
         microphoneGeneration = mine
