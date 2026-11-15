@@ -314,7 +314,12 @@ filled in. The mechanics section then tells the model to pass `show_archived: tr
 `match: "all_words"`, and to use `search_contents: true` to search what was said. Either way it adds
 that an empty answer is not proof. The full tool's notes say how many more sessions match but were
 kept out by the archived default or by `carplay_fit`, and a phrase that found nothing says how many
-sessions contain all of its words. On CarPlay, the [CarPlay fit](/sessions/carplay-fit/) line points
+sessions contain all of its words. A transcript search that found nothing says which match mode it
+used, carries the same archived and `carplay_fit` notes (counted on title and metadata, which is the
+part that is cheap to count), and for a multi-word phrase says to retry with `match: "all_words"` or
+one distinctive word before paging back with `scan_cursor`. That last line matters more here than
+anywhere: Live Mode's model sees each Zimmer tool's description cut to its first sentence, so the
+result text is the only place this reliably reaches it. On CarPlay, the [CarPlay fit](/sessions/carplay-fit/) line points
 the filter at `get_user_view` triage and tells the model to leave it off a search for a particular
 session, because a session marked `laptop_only` still exists.
 

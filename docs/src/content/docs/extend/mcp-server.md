@@ -288,12 +288,14 @@ When it stops early it says so and returns a `scan_cursor`; pass that back with 
 filters to continue from exactly where it stopped. The query is matched as one case-insensitive
 substring, so a multi-word `query` is a **phrase** — the words must be adjacent and in order, which
 is what makes a search precise enough to confirm a session said something rather than shortlist the
-ones that mentioned each word somewhere. `match: "all_words"` is the opt-in paraphrase search on
-title and metadata: every word must appear, in any order, AND-ed and never OR-ed, at most eight of
-them; it does not combine with `search_contents`. A title/metadata search with a query also says
+ones that mentioned each word somewhere. `match: "all_words"` is the opt-in paraphrase search:
+every word must appear, in any order, AND-ed and never OR-ed, at most eight of them — over title and
+metadata, and over the transcript too with `search_contents: true`. A title/metadata search with a query also says
 what the caller's filters kept out: how many more sessions match among the archived ones or outside
 the `carplay_fit` filter, and, when a multi-word phrase finds nothing, how many sessions contain all
-of its words. Live Mode's tool bridge defaults `show_archived` and `match` for its own searches
+of its words. A transcript search that finds nothing names the match mode it used, carries the
+same archived/`carplay_fit` notes counted on title and metadata, and — for a multi-word phrase —
+says to retry with `match: "all_words"` or one distinctive word before paging back. Live Mode's tool bridge defaults `show_archived` and `match` for its own searches
 ([Finding an earlier session](/sessions/live/#finding-an-earlier-session)); no other caller's
 defaults change. An empty result that says "scan incomplete" means
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
