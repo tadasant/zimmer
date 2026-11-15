@@ -117,6 +117,25 @@ a different consumer, and it inherits the same create-time-only limit,
 The DO agent reports host metrics. App telemetry goes to the self-hosted OTLP stack — see
 [Observability](/operate/observability/).
 
+### The no-Tailscale mode is not exercised by this repo's own deploys
+
+An empty `tailscale_auth_key` provisions a droplet with [no Tailscale and no inbound
+rule](/operate/provisioning/#running-without-tailscale). Neither of this repo's deployments runs that
+way. Staging and production both join a tailnet, and `deploy-staging.yml` assumes one. So the
+mode's evidence is narrower than the tailnet mode's: a mock-provider `terraform test` of both modes
+that was run by hand for the PR that added it (CI has no Terraform binary, so it is not in the repo),
+the rendered cloud-config parsed in `test/infra/cloud_init_template_test.rb`, and
+`scripts/domain-cert.sh`'s `CERT_HOST_IP` path in `test/scripts/domain_cert_dns_test.rb` against
+stubbed `ssh` and `curl`. The first droplet that actually boots without Tailscale belongs to a
+downstream consumer.
+
+Two edges come with the mode, not with a bug. The deploy's per-job `22/tcp` rule lives on a firewall
+Terraform manages, so a `terraform apply` while the rule is open removes it. Apply first, then open
+the rule. A fresh droplet answers on `:22` before cloud-init has authorized the deploy key, so the
+first deploy has to retry SSH and wait for `cloud-init status --wait`. And with no tailnet, the only
+break-glass path is the DigitalOcean web console.
+`node_exporter` is refused at plan time, because the only address it binds is the tailnet's.
+
 ### `node_exporter` is opt-in, and reaches only a rebuilt droplet
 
 `var.node_exporter_enabled` (default `false`) makes cloud-init install a pinned Prometheus
