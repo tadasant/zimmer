@@ -139,8 +139,26 @@ module SessionStateMachine
   # follow-up, a Slack message — each of which would put it back to sleep on the
   # wake it already said it was not resting on, burying the question it asked.
   #
-  # Cleared by the one thing that means the session has decided to wait again:
-  # arming a new wake (Trigger#sleep_target_session_if_applicable).
+  # Cleared by either of the two things that end the hand-back:
+  #
+  # * the session deciding to wait again — arming a new wake
+  #   (Trigger#sleep_target_session_if_applicable);
+  # * the human answering — a HumanMessage recorded after the stamp
+  #   (#release_hand_back_answered_by_human). The turn that carries the answer
+  #   then ends the ordinary way, back asleep on its armed wakes, unless it calls
+  #   `rest_in_needs_input` again. Session 28288 is the case: handed back, answered
+  #   by the operator, told them nothing more was needed — and it must not then
+  #   sit in the action queue.
+  #
+  # Only a human releases it. A machine turn (a poller notice, a wake firing, a
+  # router's follow-up, a recovery resume) has not answered the question, so it
+  # leaves the stamp where it is. "Human" means exactly what HumanMessageCapture
+  # counts as human — the authenticated actor at the input boundary — so this
+  # reads its ledger rather than inferring authorship from the turn.
+  #
+  # Microsecond precision: the release compares HumanMessage#occurred_at with it,
+  # and a message sent a few hundred milliseconds BEFORE the hand-back must not
+  # read as its answer.
   HANDED_BACK_TO_HUMAN = "handed_back_to_human_at"
 
   # The `pending_sleep_reason` values that carry the same condition as the marker
@@ -348,6 +366,12 @@ module SessionStateMachine
           # would re-open the no-trigger window at the one moment it must stay
           # shut. See #turn_stood_down_before_it_ran?.
           retire_held_wake_triggers unless turn_stood_down_before_it_ran?
+          # After the retire, so the re-sleep it may write is backed by a wake
+          # that is still armed; before execute_pending_sleep, which executes it.
+          # Not on a pause Zimmer entered on a turn's behalf: that turn has not
+          # run, so it has not answered anyone, and a recovery sweep is owed it
+          # in needs_input.
+          release_hand_back_at_turn_end unless turn_stood_down_before_it_ran?
           execute_pending_sleep
           # Last, and after execute_pending_sleep, so the check below reads the
           # state the sleep left behind rather than the one it replaced. It no
@@ -1447,6 +1471,40 @@ module SessionStateMachine
     metadata&.dig(HANDED_BACK_TO_HUMAN).present?
   end
 
+  # Whether a human has spoken to this session since it last handed back to one.
+  # HumanMessage is HumanMessageCapture's ledger, written only for an
+  # authenticated human actor at an input boundary, never for a machine.
+  def human_replied_since_hand_back?
+    stamp = metadata&.dig(HANDED_BACK_TO_HUMAN)
+    return false if stamp.blank?
+
+    human_messages.where("occurred_at > ?", Time.iso8601(stamp.to_s)).exists?
+  rescue ArgumentError
+    false
+  end
+
+  # Clear the hand-back if a human has answered it. See HANDED_BACK_TO_HUMAN.
+  #
+  # @return [Boolean] true when the hand-back was released
+  def release_hand_back_answered_by_human
+    return false unless handed_back_to_human?
+
+    # Savepointed, read included: the pause callback calls this inside its
+    # transaction, and a DB-level failure — the read timing out as much as the
+    # write failing — must not abort the pause it runs in.
+    self.class.transaction(requires_new: true) do
+      next false unless human_replied_since_hand_back?
+
+      remove_metadata!(HANDED_BACK_TO_HUMAN)
+      logs.create!(
+        content: "A human replied after this session handed back to them, so the hand-back is answered — " \
+          "this turn comes to rest as any follow-up would, unless it hands back again",
+        level: "info"
+      )
+      true
+    end
+  end
+
   def write_follow_up_resleep_intent
     merge_metadata!(
       Sessions::StopRecord.pending_sleep(Sessions::StopRecord::FOLLOW_UP_RESLEEP).merge(
@@ -1456,6 +1514,32 @@ module SessionStateMachine
   end
 
   private
+
+  # The turn-end half of the release (HANDED_BACK_TO_HUMAN). The resume half in
+  # #preserve_pending_wakes_across_follow_up only sees a reply recorded before the
+  # follow-up resumed the session; this one catches every other route a human's
+  # words take into a turn — a queued message handed straight to the next turn
+  # with no resume, a boundary that records the HumanMessage after delivering —
+  # and is what makes the answered turn re-sleep there: the hand-back dropped
+  # this session's wake-backed intent, so nothing else would.
+  #
+  # A turn that called `rest_in_needs_input` again re-stamped the hand-back after
+  # the reply, so the reply no longer post-dates it and it stands.
+  #
+  # Only a still-fireable one-time schedule backs the re-sleep, as on every other
+  # follow-up path (#648); with only watchers armed the session rests in
+  # needs_input as it always has, hand-back or not.
+  def release_hand_back_at_turn_end
+    return unless release_hand_back_answered_by_human
+    return if metadata&.dig("pending_sleep") == true
+    return unless pending_wake_at
+
+    write_follow_up_resleep_intent
+  rescue => e
+    # Alert: the failure mode is the bug this exists to fix — a session that has
+    # been answered left sitting in the human's action queue.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
 
   def follow_up_rest_clause(backstopped, handed_back)
     if handed_back
@@ -2427,6 +2511,8 @@ module SessionStateMachine
       condition.one_time_schedule? && self.class.one_time_wake_pending?(condition)
     end
 
+    # A follow-up carrying the human's reply ends the hand-back it answers.
+    release_hand_back_answered_by_human
     handed_back = handed_back_to_human?
     write_follow_up_resleep_intent if backstopped && !handed_back
 

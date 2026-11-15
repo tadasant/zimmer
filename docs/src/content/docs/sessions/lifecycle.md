@@ -778,14 +778,29 @@ self-session surface only, because it is a statement about the turn the caller i
   session-scoped `ao_event` watchers) aimed at the session is destroyed.
 - It does not override an unconditional intent — a spot-queue park, a deliberate sleep, a platform
   dormancy. The result says the session will still sleep, and why.
-- It lasts until the session waits again. The hand-back is stamped as
-  `handed_back_to_human_at`, and while it is set neither re-sleep branch — the follow-up one above,
-  nor the system-recovery one — writes an intent. So a deploy interrupting the turn before its
-  pause, a router's follow-up, or a Slack message does not put the session back to sleep on the
-  wake it said it was not resting on. Arming a new wake clears the stamp
-  (`Trigger#sleep_target_session_if_applicable`), which is the session deciding to wait again — and
-  is also why a wake armed after the call in the same turn puts it back to sleep, so the tool tells
-  the caller to call it last.
+- It lasts until the human answers or the session waits again. The hand-back is stamped as
+  `handed_back_to_human_at` (microsecond precision), and while it is set neither re-sleep branch —
+  the follow-up one above, nor the system-recovery one — writes an intent. So a deploy
+  interrupting the turn before its pause, a wake firing, a PR-poller notice, or a router's
+  follow-up does not put the session back to sleep on the wake it said it was not resting on.
+  Two things clear the stamp:
+  - **The human replying.** A `HumanMessage` whose `occurred_at` is after the stamp — the ledger
+    `HumanMessageCapture` writes only for an authenticated human at an input boundary (the web UI, a
+    mapped Slack user, an OAuth client acting for its approver, Live Mode) — means the question has
+    been answered. The follow-up resume checks for one before deciding whether to re-sleep, and
+    `pause` checks again before `execute_pending_sleep`, which covers the routes the resume does not
+    see: a queued message handed straight to the next turn, and a boundary that records the
+    `HumanMessage` after delivering. Either way the stamp is cleared, and if a still-fireable
+    one-time schedule is armed the turn ends with `follow_up_resleep`, back in `waiting`. A turn
+    that calls `rest_in_needs_input` again re-stamps after the reply, so it stays in `needs_input`.
+    A pause Zimmer entered on a turn's behalf (`turn_stood_down_before_it_ran?`) releases nothing.
+    Session 28288 is the case this covers: handed back, answered by the operator, told them nothing
+    more was needed — and it must not then sit in the action queue with its wakes armed. Two edges
+    of the ledger test are listed in
+    [limitations](/limitations/#a-hand-back-is-answered-by-a-human-message-not-by-the-turn-that-delivers-it).
+  - **Arming a new wake** (`Trigger#sleep_target_session_if_applicable`), which is the session
+    deciding to wait again — and is also why a wake armed after the call in the same turn puts it
+    back to sleep, so the tool tells the caller to call it last.
 - It is refused on a `waiting` session, which is not in a turn and has nothing to come to rest.
 
 The workaround it replaces is a short dummy wake armed so that its firing destroys the real
