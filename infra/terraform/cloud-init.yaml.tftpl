@@ -253,6 +253,7 @@ runcmd:
       [ -n "$admin_key" ] || continue
       grep -qxF "$admin_key" /root/.ssh/authorized_keys || printf '%s\n' "$admin_key" >> /root/.ssh/authorized_keys
     done < /root/.ssh/admin_keys.pub
+%{ if tailscale_enabled ~}
   # --- Tailscale ----------------------------------------------------------------
   # Join the tailnet as ${tailnet_hostname}. ACLs (who may reach this node) live in
   # the Tailscale admin, NOT here.
@@ -264,6 +265,15 @@ runcmd:
   # drop-in above.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey='${tailscale_auth_key}' --hostname='${tailnet_hostname}' --ssh
+%{ else ~}
+  # --- No Tailscale ---------------------------------------------------------------
+  # tailscale_auth_key is empty, so this box joins no tailnet and the DO firewall admits
+  # no TCP (its UDP 41641 rule has nothing behind it). SSH is plain key-only OpenSSH on :22 (the stock ssh.socket listener;
+  # the :2222 drop-in above is bound too, but no rule ever reaches it). A deploy gets in
+  # through a :22 rule its workflow opens for its runner's /32 and removes afterwards;
+  # break-glass is the DigitalOcean web console. That makes the root-password fix below
+  # load-bearing for the deploy itself: every session here runs pam_unix.
+%{ endif ~}
 %{ if ssh_host_ed25519_key != "" ~}
   - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 %{ endif ~}

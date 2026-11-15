@@ -12,7 +12,7 @@
 # between this and no check at all.
 #
 # It is NOT a Terraform implementation. It handles exactly the constructs this one file uses --
-# `${ ... }` interpolation, and `%{ if ... ~}` / `%{ endif ~}` directives that start at column 0
+# `${ ... }` interpolation, and `%{ if ... ~}` / `%{ else ~}` / `%{ endif ~}` directives that start at column 0
 # and right-trim -- and RAISES on every other shape it can see, so a template that grows a
 # construct this cannot model fails loudly here instead of being silently half-rendered.
 #
@@ -45,7 +45,8 @@ module CloudInitRender
     # node_exporter_enabled, which mirrors main.tf's own `false` so that a no-argument render is
     # a config some real droplet actually gets.
     def defaults
-      { "ssh_host_ed25519_key" => "key", "domain" => "example.com", "node_exporter_enabled" => false }
+      { "ssh_host_ed25519_key" => "key", "domain" => "example.com", "node_exporter_enabled" => false,
+        "tailscale_enabled" => true }
     end
 
     def render(vars = {})
@@ -83,6 +84,10 @@ module CloudInitRender
 
     def apply_directive(body, emit, vars)
       case body
+      when "else"
+        raise UnsupportedTemplate, "%{ else } with no matching %{ if }" if emit.size == 1
+
+        emit.push(!emit.pop)
       when "endif"
         raise UnsupportedTemplate, "%{ endif } with no matching %{ if }" if emit.size == 1
 

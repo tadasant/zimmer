@@ -7,6 +7,15 @@
 # zero downtime. The same module serves staging and production; the difference is
 # entirely in *.tfvars.
 #
+# Tailscale is OPTIONAL. An empty `tailscale_auth_key` (the default) provisions the same
+# host with no Tailscale at all: no install and no `tailscale up`. The firewall is the
+# same in both modes (UDP 41641 only, nothing behind it here), so there is still ZERO
+# public TCP. Such a box is reachable only through an outbound
+# tunnel (the optional Cloudflare edge) and through whatever per-job firewall rule the
+# CONSUMER'S deploy workflow opens -- e.g. :22 for the runner's own /32, removed again
+# in an always() step. That rule is the consumer's job, never this module's. See
+# docs/operate/provisioning.md#running-without-tailscale.
+#
 # WHY THE DROPLET NO LONGER CHURNS
 # --------------------------------
 # The app image, env, and data stores used to be baked into user_data, so every
@@ -145,14 +154,31 @@ variable "ssh_key_fingerprints" {
 variable "tailscale_auth_key" {
   type        = string
   sensitive   = true
-  description = "Tailscale (ephemeral, pre-authorized) auth key for the droplet to join the tailnet."
+  nullable    = false
+  default     = ""
+  description = <<-EOT
+    Tailscale (ephemeral, pre-authorized) auth key for the droplet to join the tailnet.
+
+    EMPTY (the default) = NO TAILSCALE: cloud-init neither installs it nor runs
+    `tailscale up`, nothing listens behind the firewall's UDP 41641 rule (kept, so an
+    empty key on a live tailnet box is a no-op), there is still no TCP rule, and
+    node_exporter (which binds the tailnet address) is refused at plan time. SSH is
+    then plain key-only OpenSSH on :22, reachable only through a firewall rule the
+    consumer's deploy opens for its own runner and removes afterwards. Break-glass is
+    the DigitalOcean web console. See docs/operate/provisioning.md#running-without-tailscale.
+
+    Like everything else that reaches the droplet through cloud-init, this is
+    CREATE-TIME ONLY: user_data is under `ignore_changes`, so switching a running box
+    between the two modes changes its firewall but not the box.
+  EOT
 }
 
 variable "deploy_ssh_pubkey" {
   type        = string
   description = <<-EOT
     Public half of the Kamal deploy keypair (KAMAL_SSH_KEY). cloud-init authorizes
-    it for root so Kamal can SSH in over the tailnet to run docker / kamal-proxy.
+    it for root so Kamal can SSH in -- over the tailnet, or over plain OpenSSH on :22
+    when the droplet runs without Tailscale -- to run docker / kamal-proxy.
     The private half is a GH Actions secret used only by the deploy workflow.
   EOT
 }
@@ -323,6 +349,11 @@ locals {
   # (http://zimmer); every other environment is suffixed (http://zimmer-staging).
   tailnet_hostname = var.environment == "production" ? "zimmer" : "zimmer-${var.environment}"
 
+  # Whether the droplet joins a tailnet at all (see var.tailscale_auth_key). Only the
+  # emptiness of the key is read here, so the boolean is not secret -- and it must not
+  # be marked sensitive, because it gates a template branch, a precondition and an output.
+  tailscale_enabled = nonsensitive(var.tailscale_auth_key != "")
+
   # When a managed cluster is named (production), the droplet is pinned into its VPC
   # so the private DB host is routable, and the connection details flow to Kamal via
   # outputs. Otherwise (staging) the Kamal stack runs its own Postgres accessory.
@@ -409,11 +440,20 @@ resource "digitalocean_droplet" "zimmer" {
       condition     = var.deploy_ssh_pubkey != ""
       error_message = "deploy_ssh_pubkey must be set (the public half of KAMAL_SSH_KEY) so Kamal can reach the droplet."
     }
+
+    # node_exporter binds the tailnet address and nothing else, so without Tailscale it
+    # would retry forever on a box that has no tailscale0. Refuse the combination rather
+    # than silently dropping the exporter someone asked for.
+    precondition {
+      condition     = !var.node_exporter_enabled || local.tailscale_enabled
+      error_message = "node_exporter_enabled requires tailscale_auth_key: the exporter binds the tailnet address only, and a droplet without Tailscale has none."
+    }
   }
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     environment              = var.environment
     tailnet_hostname         = local.tailnet_hostname
+    tailscale_enabled        = local.tailscale_enabled
     tailscale_auth_key       = var.tailscale_auth_key
     deploy_ssh_pubkey        = var.deploy_ssh_pubkey
     admin_ssh_pubkeys        = var.admin_ssh_pubkeys
@@ -455,6 +495,16 @@ resource "digitalocean_reserved_ip" "zimmer" {
 # effectively DOWN. Break-glass without a rule: `tailscale ssh root@zimmer-<env>`, or
 # the DigitalOcean web console.
 #
+# WITHOUT TAILSCALE (empty tailscale_auth_key) this firewall is deliberately the SAME:
+# the UDP rule stays, with nothing on the box listening behind it, so a key that comes
+# through empty by mistake on a live tailnet droplet changes nothing at all (user_data is
+# under ignore_changes too). There is still no TCP, and still no `22` rule. A deploy reaches
+# :22 (plain key-only OpenSSH in that mode) through a rule its own workflow adds for the
+# runner's /32 for the length of the job and removes in an always() step -- on this
+# firewall, by name, with `doctl compute firewall add-rules`. Terraform does not manage
+# that transient rule; run `terraform apply` BEFORE opening it, or the apply removes it
+# mid-job. Break-glass is the DigitalOcean web console.
+#
 # The OPTIONAL Cloudflare edge needs no rule either, and must not get one: its connector
 # (cloudflared) dials OUT to Cloudflare and serves the public hostname over that outbound
 # connection. It is deliberately not provisioned by this module -- its credential would land
@@ -465,7 +515,8 @@ resource "digitalocean_firewall" "zimmer" {
   name        = "zimmer-${var.environment}"
   droplet_ids = [digitalocean_droplet.zimmer.id]
 
-  # Tailscale coordination / direct connections. The ONLY public ingress.
+  # Tailscale coordination / direct connections. The ONLY public ingress. Kept in both
+  # modes (see above): without Tailscale nothing listens on it.
   inbound_rule {
     protocol         = "udp"
     port_range       = "41641"
@@ -491,7 +542,9 @@ resource "digitalocean_firewall" "zimmer" {
 # No DNS record here. A custom domain's A record points at the droplet's TAILNET IP
 # (100.x), assigned at `tailscale up` (boot) and therefore unknown at plan time; the
 # `domain-cert` workflow discovers it and upserts the Cloudflare record from CI,
-# alongside issuing the cert. Keeping DNS out of Terraform also keeps the Cloudflare
+# alongside issuing the cert. Without Tailscale there is no such record to make: the
+# name is served by the Cloudflare edge's tunnel, and domain-cert.sh (given
+# CERT_HOST_IP) leaves DNS alone. Keeping DNS out of Terraform also keeps the Cloudflare
 # credential out of the provisioning path.
 
 # ---- Outputs ----------------------------------------------------------------
@@ -508,8 +561,9 @@ output "droplet_name" {
   value = digitalocean_droplet.zimmer.name
 }
 
+# Null when the droplet does not join a tailnet (empty tailscale_auth_key).
 output "tailscale_hostname" {
-  value = local.tailnet_hostname
+  value = local.tailscale_enabled ? local.tailnet_hostname : null
 }
 
 # Managed DB connection details for the production Kamal deploy to wire into

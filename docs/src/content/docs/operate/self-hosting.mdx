@@ -58,6 +58,8 @@ Zimmer is reachable only over your tailnet. The droplet joins it at boot and the
 - A **Tailscale API client** (`TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET`) so the deploy can reap the stale tailnet node and keep the MagicDNS name from drifting to `zimmer-staging-1`, `-2`, …
 - Tailnet **ACL policy** that defines `tag:ci`. Edit it in the Tailscale admin console.
 
+Tailscale is optional in the Terraform module. Leave `tailscale_auth_key` empty and the droplet joins no tailnet and admits no TCP. You then serve the app through the [Cloudflare edge](/operate/deploying/#optional-cloudflare-edge) and deploy over a per-job SSH rule your own workflow opens. The staging workflows in this repo assume Tailscale, so that mode means writing your own deploy. See [Running without Tailscale](/operate/provisioning/#running-without-tailscale).
+
 ### The agent's brain: an account for at least one runtime
 
 Zimmer runs coding agents, so it needs at least one of its [three runtimes](/sessions/runtimes/) credentialed. Without this, sessions spawn but no agent runs.
