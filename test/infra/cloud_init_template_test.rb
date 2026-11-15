@@ -74,11 +74,12 @@ class CloudInitTemplateTest < ActiveSupport::TestCase
   # nobody has tested. Every combination of the gating variables is parsed here so that a
   # branch only one environment takes is checked before it reaches a boot.
   test "every combination of the gating variables renders to a parseable cloud-config" do
-    [ true, false ].repeated_permutation(3) do |host_key, domain, node_exporter|
+    [ true, false ].repeated_permutation(4) do |host_key, domain, node_exporter, tailscale|
       vars = {
         "ssh_host_ed25519_key" => host_key ? "key" : "",
         "domain" => domain ? "zimmer.example.com" : "",
-        "node_exporter_enabled" => node_exporter
+        "node_exporter_enabled" => node_exporter,
+        "tailscale_enabled" => tailscale
       }
 
       config = begin
@@ -119,5 +120,24 @@ class CloudInitTemplateTest < ActiveSupport::TestCase
     # :2222 from answering during a window where it would take a key and drop the session.
     assert usermod < restart, "neutralize the root password before the restart that serves :2222"
     assert chage < restart, "clear the expiry before the restart that serves :2222"
+  end
+
+  # An empty tailscale_auth_key is the no-Tailscale mode a second instance runs in (main.tf
+  # passes `tailscale_enabled = false`). The box must not install or join Tailscale -- there
+  # is no key to join with -- but everything a deploy over plain OpenSSH on :22 depends on
+  # has to survive: the deploy key, key-only sshd, and the root-password fix.
+  test "with Tailscale off the cloud-config installs and joins no tailnet, and keeps the deploy path" do
+    with_ts = CloudInitRender.parse("tailscale_enabled" => true)["runcmd"].map(&:to_s)
+    without = CloudInitRender.parse("tailscale_enabled" => false)["runcmd"].map(&:to_s)
+
+    assert with_ts.any? { _1.start_with?("tailscale up") }, "the Tailscale branch lost `tailscale up`"
+    assert with_ts.any? { _1.include?("tailscale.com/install.sh") }, "the Tailscale branch lost the install"
+    refute without.any? { _1.start_with?("tailscale up") }, "no-Tailscale render still runs `tailscale up`"
+    refute without.any? { _1.include?("tailscale.com/install.sh") }, "no-Tailscale render still installs Tailscale"
+
+    assert_equal with_ts.reject { _1.include?("tailscale") }, without,
+      "turning Tailscale off must remove exactly the Tailscale commands and nothing else"
+    assert_includes without, "usermod -p '*' root"
+    assert_includes without, "systemctl restart ssh.socket ssh.service"
   end
 end

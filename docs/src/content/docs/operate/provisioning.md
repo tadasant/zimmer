@@ -38,12 +38,53 @@ explicit `terraform taint digitalocean_droplet.zimmer`.
 
 **Secrets** (as `TF_VAR_*`):
 
-`do_token` · `tailscale_auth_key` · `deploy_ssh_pubkey` (public half of the Kamal deploy key;
+`do_token` · `tailscale_auth_key` (optional: `""` by default, which means [no Tailscale at
+all](#running-without-tailscale)) · `deploy_ssh_pubkey` (public half of the Kamal deploy key;
 cloud-init authorizes it for root) · optional `ssh_host_ed25519_key` / `_pub` (pins the droplet's SSH
 host identity so it survives a rebuild — see [Hostname stability](#hostname-stability)).
 
 A `lifecycle.precondition` on the droplet fails the plan if `deploy_ssh_pubkey` is empty, since Kamal
 could not reach the box.
+
+## Running without Tailscale
+
+Tailscale is optional. Leave `tailscale_auth_key` empty (its default) and the module provisions the
+same Kamal-ready host with no tailnet:
+
+- cloud-init skips installing Tailscale and `tailscale up`. Everything else renders the same: Docker,
+  sysbox, the deploy and admin keys, key-only sshd, the [root-password fix](/operate/ssh-access/#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session),
+  Caddy.
+- The firewall drops the `41641/udp` rule, so it admits **nothing** inbound. Still no `22` rule, and
+  this module never adds one.
+- `node_exporter_enabled = true` fails the plan. The exporter binds the tailnet address and nothing
+  else, and this box has none.
+- The `tailscale_hostname` output is `null`.
+
+With a non-empty key, the plan and the rendered cloud-config are byte-identical to the module before
+the key was optional. The tailnet mode is unchanged.
+
+A box like that is reachable two ways, and the module provides neither:
+
+1. **The app**, through an outbound tunnel: the [optional Cloudflare
+   edge](/operate/deploying/#optional-cloudflare-edge). cloudflared dials out, so it needs no inbound
+   rule.
+2. **SSH, for a deploy.** The consumer's workflow opens `22/tcp` to its runner's own `/32` on this
+   firewall for the length of the job (`doctl compute firewall add-rules`), deploys over plain key-only
+   OpenSSH on `:22` with the Kamal deploy key, and removes the rule in an `always()` step. Run
+   `terraform apply` *before* opening the rule: Terraform does not know about it, so an apply in the
+   middle of the job removes it.
+
+Break-glass is the DigitalOcean web console. There is no `tailscale ssh`.
+
+For the host certificate, run `scripts/domain-cert.sh` with `CERT_HOST_IP` (the droplet's reserved
+IP) and `CERT_SSH_KEY` instead of `TS_HOST`. In that mode it never writes DNS, because the tunnel owns
+the name. It runs its final HTTPS check on the box over SSH, because the runner can reach only `:22`.
+See [Custom-domain HTTPS](/operate/deploying/#custom-domain-https-over-the-tailnet).
+
+What you give up: MagicDNS (`http://zimmer`), the ACLs as the control on who reaches the box,
+publickey SSH on `:2222` for an operator or an `ssh-*` MCP server, and `node_exporter`. Like every
+cloud-init input, the mode is **create-time only**. Flipping the key on a running droplet changes its
+firewall, not the box.
 
 ## The managed Postgres cluster
 

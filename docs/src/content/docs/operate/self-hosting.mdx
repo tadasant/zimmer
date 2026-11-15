@@ -52,6 +52,8 @@ Kamal reaches the droplet over SSH to swap containers. It is not your login key 
 
 Zimmer is reachable only over your tailnet. The droplet joins it at boot and the UI is served over that VPN, never a public port.
 
+Tailscale is optional in the Terraform module. Leave `tailscale_auth_key` empty and the droplet admits nothing inbound. You then serve the app through the [Cloudflare edge](/operate/deploying/#optional-cloudflare-edge) and deploy over a per-job SSH rule your own workflow opens. The staging workflows in this repo assume Tailscale, so that mode means writing your own deploy. See [Running without Tailscale](/operate/provisioning/#running-without-tailscale).
+
 - A **Tailscale account** and tailnet.
 - A **pre-authorized, ephemeral auth key** for the droplet to join (`tailscale_auth_key` / `TAILSCALE_AUTH_KEY`).
 - A **separate pre-minted auth key tagged `tag:ci`** for CI's own tailnet join, so it can resolve the droplet's IP and health-check it (`TS_CI_AUTHKEY`). This must be a real auth key, not an OAuth client — a Tailscale OAuth client cannot mint `tag:ci` keys.

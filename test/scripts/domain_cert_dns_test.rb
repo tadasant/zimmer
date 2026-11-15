@@ -12,13 +12,21 @@ require "open3"
 # Its final probe must test this box's Caddy, not whatever public DNS points at: it pins the name
 # to the tailnet IP with --resolve, so after cutover it does not end up probing Cloudflare.
 #
-# `tailscale`, `curl` and the cert read are stubbed; the box holds a valid cert, so no issuance runs.
+# A droplet without Tailscale is named by CERT_HOST_IP instead: the script SSHes there with
+# CERT_SSH_KEY, never touches DNS (the edge's tunnel owns the name), and runs the final probe ON
+# the box, because the runner can reach only :22.
+#
+# `tailscale`, `ssh`, `curl` and the cert read are stubbed; the box holds a valid cert, so no
+# issuance runs.
 class DomainCertDnsTest < ActiveSupport::TestCase
   SCRIPT = Rails.root.join("scripts", "domain-cert.sh")
   DOMAIN = "zimmer.example.com"
   TS_IP = "100.101.102.103"
 
+  HOST_IP = "203.0.113.7"
+
   TAILSCALE_STUB = <<~SH
+    printf '%s\\n' "$*" >> "$TAILSCALE_LOG"
     case "$1" in
       status) echo '{"Peer":{"n1":{"HostName":"zimmer","Online":true,"TailscaleIPs":["#{TS_IP}"]}}}' ;;
       ssh) printf 'issuer=C=US, O=Let'"'"'s Encrypt, CN=R11\\nsubject=CN=#{DOMAIN}\\n    DNS:#{DOMAIN}\\nrc=0\\n' ;;
@@ -36,11 +44,21 @@ class DomainCertDnsTest < ActiveSupport::TestCase
     esac
   SH
 
+  # Every call is logged. The cert read answers with a valid Let's Encrypt cert; the on-box
+  # probe answers ssl_verify_result 0.
+  SSH_STUB = <<~SH
+    printf '%s\\n' "$*" >> "$SSH_LOG"
+    case "$*" in
+      *"openssl x509"*) printf 'issuer=C=US, O=Let'"'"'s Encrypt, CN=R11\\nsubject=CN=#{DOMAIN}\\n    DNS:#{DOMAIN}\\nrc=0\\n' ;;
+      *"/up"*) echo 0 ;;
+    esac
+  SH
+
   def setup
     @dir = Dir.mktmpdir("domain-cert")
     @bin = File.join(@dir, "bin")
     FileUtils.mkdir_p(@bin)
-    { "tailscale" => TAILSCALE_STUB, "curl" => CURL_STUB }.each do |name, body|
+    { "tailscale" => TAILSCALE_STUB, "curl" => CURL_STUB, "ssh" => SSH_STUB }.each do |name, body|
       File.write(File.join(@bin, name), "#!/usr/bin/env bash\n#{body}\n")
       File.chmod(0o755, File.join(@bin, name))
     end
@@ -48,19 +66,22 @@ class DomainCertDnsTest < ActiveSupport::TestCase
 
   def teardown = FileUtils.rm_rf(@dir)
 
-  def run_script(cname_records)
+  def run_script(cname_records, env_overrides = {})
     File.write(File.join(@dir, "cname.json"), { result: cname_records }.to_json)
     env = {
       "PATH" => "#{@bin}:#{ENV.fetch('PATH')}",
-      "CURL_LOG" => File.join(@dir, "curl.log"),
+      "CURL_LOG" => log_path("curl"), "SSH_LOG" => log_path("ssh"), "TAILSCALE_LOG" => log_path("tailscale"),
       "CNAME_JSON" => File.join(@dir, "cname.json"),
       "DOMAIN" => DOMAIN, "TS_HOST" => "zimmer", "CF_ZONE_ID" => "zone",
       "CF_API_TOKEN" => "cf-token", "ACME_EMAIL" => "ops@example.com",
-      "CERT_SSH_KEY" => nil, "FORCE_ISSUE" => nil
-    }
+      "CERT_SSH_KEY" => nil, "CERT_HOST_IP" => nil, "FORCE_ISSUE" => nil
+    }.merge(env_overrides)
     out, status = Open3.capture2e(env, "bash", SCRIPT.to_s)
-    [ out, status, File.readlines(File.join(@dir, "curl.log"), chomp: true) ]
+    [ out, status, read_log("curl") ]
   end
+
+  def log_path(name) = File.join(@dir, "#{name}.log")
+  def read_log(name) = File.exist?(log_path(name)) ? File.readlines(log_path(name), chomp: true) : []
 
   def writes(calls) = calls.grep(/-X (POST|PUT) .*dns_records/)
 
@@ -94,5 +115,45 @@ class DomainCertDnsTest < ActiveSupport::TestCase
     probe = calls.grep(%r{https://#{Regexp.escape(DOMAIN)}/up}).first
     assert probe, "no health probe ran:\n#{calls.join("\n")}"
     assert_includes probe, "--resolve #{DOMAIN}:443:#{TS_IP}"
+  end
+
+  test "CERT_HOST_IP reaches the box over key SSH with no tailnet and no DNS writes" do
+    out, status, calls = run_script([], "TS_HOST" => nil, "CERT_HOST_IP" => HOST_IP, "CERT_SSH_KEY" => "/tmp/key")
+
+    assert status.success?, out
+    assert_empty read_log("tailscale"), "no-Tailscale mode invoked tailscale"
+    assert_empty calls.grep(/dns_records/), "no-Tailscale mode touched DNS:\n#{calls.join("\n")}"
+    assert_match(/leaving DNS for #{Regexp.escape(DOMAIN)} alone/, out)
+
+    ssh = read_log("ssh")
+    refute_empty ssh, "nothing was SSHed"
+    assert ssh.all? { _1.include?("-i /tmp/key") && _1.include?("root@#{HOST_IP}") },
+      "every SSH must use CERT_SSH_KEY against CERT_HOST_IP:\n#{ssh.join("\n")}"
+  end
+
+  test "with CERT_HOST_IP the final probe runs on the box, against its own Caddy" do
+    out, status, calls = run_script([], "TS_HOST" => nil, "CERT_HOST_IP" => HOST_IP, "CERT_SSH_KEY" => "/tmp/key")
+
+    assert status.success?, out
+    assert_empty calls.grep(%r{/up}), "the runner probed :443 itself, which its :22-only rule cannot reach"
+    probe = read_log("ssh").grep(%r{https://#{Regexp.escape(DOMAIN)}/up}).first
+    assert probe, "no on-box probe ran:\n#{read_log('ssh').join("\n")}"
+    assert_includes probe, "--resolve '#{DOMAIN}:443:127.0.0.1'"
+  end
+
+  test "CERT_HOST_IP without CERT_SSH_KEY fails before touching anything" do
+    out, status, calls = run_script([], "TS_HOST" => nil, "CERT_HOST_IP" => HOST_IP)
+
+    refute status.success?
+    assert_match(/CERT_HOST_IP needs CERT_SSH_KEY/, out)
+    assert_empty calls
+    assert_empty read_log("ssh")
+  end
+
+  test "neither TS_HOST nor CERT_HOST_IP is an error that names both" do
+    out, status, = run_script([], "TS_HOST" => nil)
+
+    refute status.success?
+    assert_match(/TS_HOST.*CERT_HOST_IP/, out)
   end
 end
