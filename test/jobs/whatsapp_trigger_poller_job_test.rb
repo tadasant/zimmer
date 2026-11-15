@@ -33,7 +33,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
         page = sorted.last(limit)
         has_more = false
       end
-      WhatsappService::Page.new(chat_id: chat_id, chat_name: "Event planning", self_jid: SELF, messages: page, has_more: has_more)
+      WhatsappService::Page.new(chat_id: chat_id, chat_name: "Party planning", self_jid: SELF, messages: page, has_more: has_more)
     end
   end
 
@@ -51,7 +51,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
       agent_root_name: "zimmer",
       prompt_template: "New messages in {{channel}} ({{chat_id}}, newest {{message_id}}):\n{{text|untrusted}}\nFrom: {{author}}",
       trigger_conditions_attributes: [
-        { condition_type: "whatsapp", configuration: { "chat_id" => CHAT, "chat_name" => "Event", "mode" => "listen" } }
+        { condition_type: "whatsapp", configuration: { "chat_id" => CHAT, "chat_name" => "Party", "mode" => "listen" } }
       ]
     )
     @condition = @trigger.trigger_conditions.first

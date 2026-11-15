@@ -45,7 +45,8 @@
 #   FORCE_ISSUE    "true" to issue regardless of the current cert
 set -euo pipefail
 
-: "${DOMAIN:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}" "${ACME_EMAIL:?}"
+: "${DOMAIN:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}"
+: "${ACME_EMAIL:?is not set: lego will not register an ACME account without a contact email (in CI: the ACME_EMAIL Actions secret)}"
 LEGO_VERSION="${LEGO_VERSION:-v4.19.2}"
 ACME_CA="${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
 RENEW_DAYS="${RENEW_DAYS:-30}"

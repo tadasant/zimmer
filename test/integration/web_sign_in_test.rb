@@ -48,7 +48,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     follow_redirect!
     assert_response :success
     assert_includes response.body, "Sign in with Google"
-    assert_includes response.body, "tadasant.com"
+    assert_includes response.body, "example.com"
 
     sign_in_and_enroll
     assert_select "a[href=?]", settings_path, text: "Continue to Zimmer"
@@ -395,7 +395,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
 
   test "a trusted-device cookie only vouches for the identity it was issued to" do
     enable_web_auth
-    other = google_claims(sub: "other-account", email: "operator_b@example.com")
+    other = google_claims(sub: "other-account", email: "operator-b@example.com")
     sign_in_and_enroll(other)
     reset!
 

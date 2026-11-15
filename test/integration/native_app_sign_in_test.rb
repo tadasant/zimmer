@@ -21,7 +21,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["API_KEYS"] = "test_api_key_native_app"
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
   end
@@ -325,7 +325,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   end
 
   test "a follow-up is recorded as whoever approved the app, never as the admin" do
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "operator_b@example.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "operator-b@example.com"
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
     session = build_zimmer_session(status: :needs_input)
 
@@ -335,7 +335,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_response :success
     message = session.human_messages.sole
     assert_equal "operator-b", message.author
-    assert_equal "operator_b@example.com", message.provenance["grant_user_email"]
+    assert_equal "operator-b@example.com", message.provenance["grant_user_email"]
   end
 
   test "an app connection that is relay only, or whose approver is not on the roster, records nothing" do

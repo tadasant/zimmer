@@ -7,13 +7,11 @@ class UserTest < ActiveSupport::TestCase
     ENV.delete(User::ADMIN_ENV_KEY)
   end
 
-  test "the roster ships with the two humans this deployment knows about" do
-    assert_equal %w[tadasant operator-b], User::SEEDED.map { |attrs| attrs[:key] }
-    assert_equal %w[Tadas Operator B], User::SEEDED.map { |attrs| attrs[:display_name] }
-    assert_equal %w[owner@example.com operator_b@example.com], User::SEEDED.map { |attrs| attrs[:email] }
-    assert User::SEEDED.all? { |attrs| attrs[:notes].present? }
-    # Slack IDs are deployment configuration and this repository is public.
-    assert User::SEEDED.none? { |attrs| attrs.key?(:slack_user_ids) }
+  test "the roster ships with the default admin alone, and no deployment configuration" do
+    assert_equal [ User::DEFAULT_ADMIN_KEY ], User::SEEDED.map { |attrs| attrs[:key] }
+    assert User::SEEDED.all? { |attrs| attrs[:display_name].present? && attrs[:notes].present? }
+    # Emails and Slack IDs are deployment configuration and this repository is public.
+    assert User::SEEDED.none? { |attrs| attrs.key?(:email) || attrs.key?(:slack_user_ids) }
   end
 
   test "the seeded rows are creatable as written" do
@@ -21,8 +19,9 @@ class UserTest < ActiveSupport::TestCase
 
     User::SEEDED.each { |attrs| User.create!(**attrs) }
 
-    assert_equal %w[operator-b tadasant], User.alphabetical.pluck(:key)
-    assert_equal "owner@example.com", User.for_key("tadasant").email
+    assert_equal %w[tadasant], User.alphabetical.pluck(:key)
+    assert_nil User.for_key("tadasant").email
+    assert User.admin, "the seeded row is the admin a fresh install falls back to"
   end
 
   test "for_key finds a human, and nobody for an unknown or blank key" do
@@ -135,18 +134,18 @@ class UserTest < ActiveSupport::TestCase
 
   test "email is linked, normalized, and unique across humans" do
     assert_equal "owner@example.com", users(:tadasant).email
-    assert_equal "operator_b@example.com", users(:operator_b).email
+    assert_equal "operator-b@example.com", users(:operator_b).email
 
-    users(:tadasant).update!(email: "  owner@example.com ")
+    users(:tadasant).update!(email: "  Owner@Example.com ")
     assert_equal "owner@example.com", users(:tadasant).reload.email
 
     operator_b = users(:operator_b)
-    operator_b.email = "owner@example.com"
+    operator_b.email = "OWNER@example.com"
     refute operator_b.valid?
   end
 
   test "for_email finds a human case-insensitively" do
-    assert_equal "tadasant", User.for_email("owner@example.com").key
+    assert_equal "tadasant", User.for_email("OWNER@example.com").key
     assert_nil User.for_email("stranger@example.com")
     assert_nil User.for_email(nil)
   end

@@ -29,7 +29,7 @@ require "digest"
 # detected on successful exit - attempting auth recovery" → "Auth recovery limit
 # reached (3 attempts) — failing" → parked AUTH_UNRECOVERABLE for an hour; at
 # 11:50:12Z it was back at "retrying 1/3", re-injecting the SAME account
-# (pool-3@example.com). Across the whole incident the session logged not one
+# (one Gmail-backed pool account). Across the whole incident the session logged not one
 # "Account quota hit — rotated to …" line: the rotation path never ran, because
 # the auth signature is checked before the API-error path and shadows the quota
 # message that was sitting in the same transcript.

@@ -35,7 +35,7 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
       reuse_session: "1",
       trigger_conditions_attributes: {
         "0" => { condition_type: "whatsapp", configuration: {
-          chat_id: CHAT, chat_name: "Event", mode: "addressed", keywords: "zimmer\nassistant", include_from_me: "0"
+          chat_id: CHAT, chat_name: "Party", mode: "addressed", keywords: "zimmer\nassistant", include_from_me: "0"
         } }
       }
     } }
@@ -61,12 +61,12 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   test "whatsapp_chats lists the bridge's chats" do
     WhatsappService.stubs(:configured?).returns(true)
-    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Event", "is_group" => true } ])
+    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Party", "is_group" => true } ])
 
     get whatsapp_chats_triggers_path
 
     assert_response :success
-    assert_equal [ { "id" => CHAT, "name" => "Event", "is_group" => true } ], response.parsed_body["chats"]
+    assert_equal [ { "id" => CHAT, "name" => "Party", "is_group" => true } ], response.parsed_body["chats"]
   end
 
   test "whatsapp_chats reports a bridge error" do
@@ -81,7 +81,7 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   test "the API lists chats and creates a whatsapp trigger" do
     WhatsappService.stubs(:configured?).returns(true)
-    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Event", "is_group" => true, "participant_count" => 3 } ])
+    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Party", "is_group" => true, "participant_count" => 3 } ])
 
     get whatsapp_chats_api_v1_triggers_path, headers: { "X-API-Key" => @api_key }
     assert_response :success

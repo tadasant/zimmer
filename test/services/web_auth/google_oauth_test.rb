@@ -18,7 +18,7 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
 
     assert_equal "110248495921238986420", identity.sub
     assert_equal "owner@example.com", identity.email
-    assert_equal "tadasant.com", identity.hosted_domain
+    assert_equal "example.com", identity.hosted_domain
   end
 
   test "an account from another Workspace is refused, by its hd claim" do
@@ -69,7 +69,7 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
     assert_equal "S256", query["code_challenge_method"]
     assert_equal WebAuth::GoogleOauth.code_challenge("verifier"), query["code_challenge"]
     assert_equal "openid email profile", query["scope"]
-    assert_equal "tadasant.com", query["hd"]
+    assert_equal "example.com", query["hd"]
 
     two_domains = WebAuth::GoogleOauth.new(web_auth_configuration_with(allowed_domains: "a.com,b.com"))
     assert_nil Rack::Utils.parse_query(URI(two_domains.authorization_url(state: "s", code_verifier: "v")).query)["hd"]

@@ -22,7 +22,7 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["API_KEYS"] = API_KEY
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = EMAIL
   end
@@ -53,7 +53,7 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
 
   test "me shows the Sign-in card's authenticator age and recovery codes once web sign-in is on" do
     access = token(privilege: OauthServer::ACT_AS_HUMAN)
-    WebIdentity.create!(google_sub: "sub-1", email: EMAIL, hosted_domain: "tadasant.com", name: "Tadas",
+    WebIdentity.create!(google_sub: "sub-1", email: EMAIL, hosted_domain: "example.com", name: "Tadas",
       totp_secret: "JBSWY3DPEHPK3PXP", totp_enrolled_at: 3.days.ago, last_signed_in_at: 1.hour.ago,
       recovery_code_digests: %w[a b c])
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with)
@@ -290,8 +290,8 @@ class NativeAppAccountTest < ActionDispatch::IntegrationTest
   end
 
   test "acting as you, sign out everywhere ends the web sessions and revokes the caller's own connection" do
-    identity = WebIdentity.create!(google_sub: "sub-2", email: EMAIL, hosted_domain: "tadasant.com", session_generation: 4)
-    someone_else = WebIdentity.create!(google_sub: "sub-3", email: "other@example.com", hosted_domain: "tadasant.com")
+    identity = WebIdentity.create!(google_sub: "sub-2", email: EMAIL, hosted_domain: "example.com", session_generation: 4)
+    someone_else = WebIdentity.create!(google_sub: "sub-3", email: "other@example.com", hosted_domain: "example.com")
     access = token(privilege: OauthServer::ACT_AS_HUMAN)
     bystander = grant_for(token(privilege: OauthServer::ACT_AS_HUMAN))
 

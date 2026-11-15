@@ -5546,7 +5546,7 @@ joined. `whatsapp_get_messages` cannot reach past that.
 
 ### WhatsApp authors are not recorded as human messages
 
-A Slack fire records the words of a mapped human (Tadas, Operator B) as a human message on the session.
+A Slack fire records the words of a mapped human on the roster as a human message on the session.
 A WhatsApp fire records nothing: there is no roster mapping from a phone number to a person yet. The
 batch is in the prompt, fenced as untrusted, and that is all.
 
