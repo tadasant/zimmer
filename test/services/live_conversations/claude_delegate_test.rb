@@ -173,8 +173,40 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     refused = LiveConversations::ClaudeClient::Error.new("Claude: invalid x-api-key", status: 401, api_message: "invalid x-api-key", credential_kind: :api_key)
     claude = LiveConversationHelpers::FakeClaude.new(credential: api_key, responses: [ refused ])
     result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d2", client: claude)
-    assert_match(/refused Live Mode's credential/, result.text)
+    assert_match(/refused Live Mode's Anthropic key/, result.text)
     assert_equal 1, claude.requests.size
+
+    expired = LiveConversations::ClaudeClient::Error.new("Claude: unauthorized", status: 401, api_message: "invalid token", credential_kind: :subscription)
+    claude = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ expired ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d3", client: claude)
+    assert_match(/refused Zimmer's Claude Code account/, result.text)
+    assert_no_match(/Anthropic key/, result.text)
+  end
+
+  test "a refusal is remembered: the next delegation goes straight to Haiku, and the mode stays the configured model's" do
+    LiveSetting.editable.update!(voice_claude_model: "claude-opus-5-5")
+    previous_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    first = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [
+      subscription_refusal, LiveConversationHelpers::FakeClaude.text("One.", model: "claude-haiku-5-5")
+    ])
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d1", client: first)
+
+    second = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ LiveConversationHelpers::FakeClaude.text("Two.", model: "claude-haiku-5-5") ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d2", client: second)
+
+    assert_equal "Two.", result.text
+    assert_equal %w[claude-haiku-5-5], second.requests.map { |r| r["model"] }
+    assert_equal "claude-opus-5-5", LiveUsageEvent.where(operation: "delegation").order(:id).last.details["fallback_from"]
+    assert LiveUsageEvent.where(operation: "delegation").all? { |row| row.mode.include?("claude-opus-5-5") }
+
+    # On the API key, a remembered subscription refusal does not apply.
+    api_key = LiveConversations::ClaudeClient::Credential.new(kind: :api_key, secret: "sk-ant-api-x")
+    third = LiveConversationHelpers::FakeClaude.new(credential: api_key, responses: [ LiveConversationHelpers::FakeClaude.text("Three.", model: "claude-opus-5-5") ])
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d3", client: third)
+    assert_equal %w[claude-opus-5-5], third.requests.map { |r| r["model"] }
+  ensure
+    Rails.cache = previous_cache
   end
 
   test "Claude on the API key is metered on the ledger" do

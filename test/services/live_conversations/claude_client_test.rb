@@ -41,6 +41,8 @@ class LiveConversations::ClaudeClientTest < ActiveSupport::TestCase
     assert_equal :api_key, credential.first.kind
     assert_nil credential.last
     assert_not_includes credential.first.inspect, "sk-ant-api-live"
+    assert_not_includes credential.first.pretty_inspect, "sk-ant-api-live"
+    assert_not_includes credential.first.to_h.to_s, "sk-ant-api-live"
 
     with_recording_server do |url, headers|
       answer = LiveConversations::ClaudeClient.new(credential: credential, base_url: url)

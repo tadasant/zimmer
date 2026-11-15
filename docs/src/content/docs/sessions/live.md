@@ -827,7 +827,9 @@ It is sent as a Bearer token with the `oauth-2025-04-20` beta header, the way th
 sends it. Anthropic limits that token to Claude Code: outside it, Opus and Sonnet are refused with a
 429 `rate_limit_error` whose message is just `Error`, while the fleet on the same account works.
 `ClaudeDelegate` treats that refusal as one. It retries the round once on `claude-haiku-5-5` and stays
-on Haiku for the rest of the delegation. If Haiku is refused too, the voice says Claude turned down the
+on Haiku for the rest of the delegation. For the next hour it skips the refused model and goes straight to Haiku, so
+only one turn pays for the refusal. The ledger's mode stays the configured model's, and each row's
+`model` says which one answered. If Haiku is refused too, the voice says Claude turned down the
 subscription, that the tools are fine, and that Live Mode needs an Anthropic API key. Every Claude
 failure is logged at WARN as `[live.claude] delegation failed status=… model=… credential=…
 message=…`, and every fallback as `[live.claude] falling back to claude-haiku-5-5`. Both also go on

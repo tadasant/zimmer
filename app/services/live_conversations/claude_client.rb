@@ -49,8 +49,11 @@ module LiveConversations
     Credential = Data.define(:kind, :secret) do
       def subscription? = kind == :subscription
       def billing_basis = subscription? ? "subscription" : "metered"
+      # Never the secret, however it is printed.
       def inspect = "#<#{self.class.name} kind=#{kind}>"
       alias_method :to_s, :inspect
+      def pretty_print(printer) = printer.text(inspect)
+      def to_h = { kind: kind }
     end
 
     # `status` is the HTTP status (nil for a connection failure or timeout);
@@ -71,7 +74,7 @@ module LiveConversations
       def credential_refused?
         return false if status.nil?
         return true if [ 401, 403 ].include?(status)
-        return true if status == 400 && api_message.to_s.match?(/claude code|credential/i)
+        return true if status == 400 && api_message.to_s.match?(/only authorized for use with claude code/i)
 
         subscription_refused?
       end
