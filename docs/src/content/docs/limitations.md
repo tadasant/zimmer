@@ -4988,6 +4988,26 @@ Only **Continue** is warmed. **New** starts a fresh conversation, which cannot e
 
 ---
 
+### A hand-back is answered by a human message, not by the turn that delivers it
+
+A `rest_in_needs_input` hand-back is released when a `HumanMessage` with an `occurred_at` after
+`handed_back_to_human_at` exists for the session. Nothing links that row to the turn that delivers
+it, so there are two edges:
+
+- **A queued reply the human then deletes still counts.** The web UI records the `HumanMessage` when
+  the message is queued, and deleting the queued message does not remove it. The next turn to come
+  to rest, machine or not, releases the hand-back and can go back to sleep on its wakes. The human
+  wrote something and withdrew it, so the question is buried until a wake fires.
+- **A message the human sent before the hand-back does not count, even if it arrives after.** A Slack
+  message carries its Slack timestamp, and a web UI message queued while the handing-back turn was
+  still running carries the time it was queued. Either can be older than the stamp. The turn that
+  delivers it answers the human but stays in `needs_input`, wakes armed, until the session arms a new
+  wake or the human writes again.
+
+Linking a `HumanMessage` to the `EnqueuedMessage` or follow-up that carried it, and releasing on
+delivery, would close both. See
+[Handing back with a wake armed](/sessions/lifecycle/#handing-back-with-a-wake-armed).
+
 ### A Live voice reply a person's output cap cuts off is not continued
 
 The voice output cap is a hard stop. When it costs a tool call, or a reply nobody heard, the client

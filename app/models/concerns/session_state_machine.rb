@@ -146,9 +146,9 @@ module SessionStateMachine
   # * the human answering — a HumanMessage recorded after the stamp
   #   (#release_hand_back_answered_by_human). The turn that carries the answer
   #   then ends the ordinary way, back asleep on its armed wakes, unless it calls
-  #   `rest_in_needs_input` again. Session 28288 is why: it handed back, the
-  #   operator replied, it answered "nothing more needed from you" — and sat in
-  #   the action queue anyway, because nothing released it.
+  #   `rest_in_needs_input` again. Session 28288 is the case: handed back, answered
+  #   by the operator, told them nothing more was needed — and it must not then
+  #   sit in the action queue.
   #
   # Only a human releases it. A machine turn (a poller notice, a wake firing, a
   # router's follow-up, a recovery resume) has not answered the question, so it
@@ -1487,19 +1487,22 @@ module SessionStateMachine
   #
   # @return [Boolean] true when the hand-back was released
   def release_hand_back_answered_by_human
-    return false unless human_replied_since_hand_back?
+    return false unless handed_back_to_human?
 
-    # Savepointed: the pause callback calls this inside its transaction, and a
-    # DB-level failure must not abort the pause it runs in.
+    # Savepointed, read included: the pause callback calls this inside its
+    # transaction, and a DB-level failure — the read timing out as much as the
+    # write failing — must not abort the pause it runs in.
     self.class.transaction(requires_new: true) do
+      next false unless human_replied_since_hand_back?
+
       remove_metadata!(HANDED_BACK_TO_HUMAN)
       logs.create!(
         content: "A human replied after this session handed back to them, so the hand-back is answered — " \
-          "this turn goes back to sleep on any wake-up still armed, unless it hands back again",
+          "this turn comes to rest as any follow-up would, unless it hands back again",
         level: "info"
       )
+      true
     end
-    true
   end
 
   def write_follow_up_resleep_intent
