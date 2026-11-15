@@ -3,7 +3,7 @@
 require "test_helper"
 require "mocha/minitest"
 
-# GithubRateLimit is the breaker and the reserve that GithubCli applies before spending
+# GithubRateLimit is the breaker GithubCli applies before spending
 # any of GitHub's budgets. The case it exists for is 2026-11-15: the REST core budget ran out,
 # and Zimmer's callers sent 586 more calls in 19 minutes, every one refused and every one counted.
 class GithubRateLimitTest < ActiveSupport::TestCase
@@ -54,6 +54,10 @@ class GithubRateLimitTest < ActiveSupport::TestCase
     assert_equal "graphql", GithubRateLimit.resource_for(%w[gh api graphql -f query=x])
     assert_equal "search", GithubRateLimit.resource_for([ "gh", "api", "-X", "GET", "search/issues", "--raw-field", "q=x" ])
     assert_nil GithubRateLimit.resource_for(%w[gh api rate_limit])
+    assert_nil GithubRateLimit.resource_for(%w[gh auth token]), "local: never refused"
+    assert_nil GithubRateLimit.resource_for(%w[gh --version])
+    assert_equal "search", GithubRateLimit.resource_for(%w[gh search prs foo])
+    assert_equal "graphql", GithubRateLimit.resource_for(%w[gh repo view a/b])
     assert_nil GithubRateLimit.resource_for(%w[git status])
   end
 
@@ -79,7 +83,6 @@ class GithubRateLimitTest < ActiveSupport::TestCase
     assert second.refused?
     refute second.success?
     assert_nil second.exit_code, "a refused call has no exit code to read meaning into"
-    assert_equal :exhausted, second.refusal.kind
     assert_equal "core", second.refusal.resource
     assert_equal reset_at.to_i, second.refusal.reset_at.to_i
     assert_includes second.failure_description, "not sent to GitHub"
@@ -174,41 +177,41 @@ class GithubRateLimitTest < ActiveSupport::TestCase
     assert_nil GithubRateLimit.refusal_for(%w[gh api repos/a/b])
   end
 
-  # --- the reserve -------------------------------------------------------------------
+  test "a GithubCli call for an owner is refused by that owner's breaker, not the default token's" do
+    set_tokens("GH_TOKEN" => "ghp_default_token_for_tests", "GH_TOKEN__PULSEMCP" => "ghp_pulsemcp_token")
+    BoundedSubprocess.stubs(:run).returns([ "", PRIMARY_RATE_LIMIT, status(false) ]).then
+      .returns([ rate_limit_json(core_remaining: 0, reset_at: 20.minutes.from_now), "", status(true) ])
+    GithubCli.run(%w[gh api repos/pulsemcp/x/pulls/1], timeout: 5)
 
-  test "under the reserve, ordinary callers stand down and the poller does not" do
-    reset_at = 25.minutes.from_now
-    BoundedSubprocess.stubs(:run).returns(
-      [ rate_limit_json(core_remaining: 120, reset_at: reset_at), "", status(true) ]
-    )
-    GithubRateLimitSnapshotJob.perform_now
+    BoundedSubprocess.unstub(:run)
+    BoundedSubprocess.expects(:run).never
+    assert GithubCli.run(%w[gh api repos/pulsemcp/y/pulls/2], timeout: 5).refused?
 
-    refusal = GithubRateLimit.refusal_for(%w[gh api repos/a/b])
-    assert_equal :reserve, refusal.kind
-    assert_equal 120, refusal.remaining
-    assert_includes refusal.message, "holding back GH_TOKEN's core budget for the trigger poller"
-
-    assert_nil GithubRateLimit.refusal_for(%w[gh auth status --json hosts], priority: :poller)
-    assert_nil GithubRateLimit.refusal_for([ "gh", "api", "search/issues" ]), "search has no reserve"
+    BoundedSubprocess.unstub(:run)
+    BoundedSubprocess.expects(:run).once.returns([ "{}", "", status(true) ])
+    refute GithubCli.run(%w[gh api repos/tadasant/zimmer/pulls/3], timeout: 5).refused?,
+           "the default token's budget was never spent"
   end
 
-  test "above the reserve, nobody is held back" do
+  test "a budget with calls left is never refused, however low" do
     BoundedSubprocess.stubs(:run).returns(
-      [ rate_limit_json(core_remaining: 501, reset_at: 25.minutes.from_now), "", status(true) ]
+      [ rate_limit_json(core_remaining: 3, reset_at: 25.minutes.from_now), "", status(true) ]
     )
     GithubRateLimitSnapshotJob.perform_now
 
     assert_nil GithubRateLimit.refusal_for(%w[gh api repos/a/b])
+    assert_includes GithubRateLimit.diagnosis, "GH_TOKEN's core budget is down to 3/5000",
+                    "but the page names it, so a stall just before exhaustion still says why"
   end
 
-  test "a snapshot that has aged out holds nobody back" do
+  test "a snapshot that has aged out is not reported" do
     BoundedSubprocess.stubs(:run).returns(
       [ rate_limit_json(core_remaining: 10, reset_at: 50.minutes.from_now), "", status(true) ]
     )
     GithubRateLimitSnapshotJob.perform_now
 
     travel_to(GithubRateLimit::SNAPSHOT_TTL.from_now + 1.second) do
-      assert_nil GithubRateLimit.refusal_for(%w[gh api repos/a/b])
+      assert_nil GithubRateLimit.diagnosis
     end
   end
 
@@ -218,8 +221,8 @@ class GithubRateLimitTest < ActiveSupport::TestCase
     )
     GithubRateLimitSnapshotJob.perform_now
 
-    refusal = GithubRateLimit.refusal_for(%w[gh auth status --json hosts], priority: :poller)
-    assert_equal :exhausted, refusal.kind, "even the poller cannot spend a budget that is gone"
+    refusal = GithubRateLimit.refusal_for(%w[gh auth status --json hosts])
+    assert_equal "core", refusal.resource, "known spent before any caller was refused"
   end
 
   # --- the diagnosis -----------------------------------------------------------------

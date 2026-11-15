@@ -170,6 +170,14 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "an unauthenticated per-IP rate limit is not :rate_limited: it says nothing about the credential" do
+    stub_auth_status(unreachable_json("non-200 OK status code: 403 Forbidden body: API rate limit exceeded for 203.0.113.7."))
+    BoundedSubprocess.stubs(:run).with([ "gh", "api", "rate_limit" ], timeout: GithubRateLimit::PROBE_TIMEOUT)
+      .returns([ "", "", status(false) ])
+
+    assert GithubSearchService.auth_preflight.unknown?
+  end
+
   test "a rate-limited preflight counts as configured: the credential demonstrably works" do
     GithubSearchService.stubs(:auth_preflight)
       .returns(GithubSearchService::PreflightResult.new(GithubSearchService::PREFLIGHT_RATE_LIMITED, "spent"))

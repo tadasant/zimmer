@@ -2025,22 +2025,29 @@ every refused call still counted against the budget.
   Callers treat it like a timeout, as a failed call to retry later and never as an answer. Budgets
   are tracked separately (`core`, `graphql`, `search`), so a spent core budget does not stop
   searches. The breaker logs one WARN when it opens, not one per call.
-- **A reserve for the poller.** `GithubRateLimitSnapshotJob` reads every credential's budgets once a
-  minute. When `core` or `graphql` is under 500 remaining, ordinary callers stand down until the reset.
-  The poller's preflight runs at `priority: :poller` and may spend the reserve. A snapshot older than
-  three minutes holds nobody back.
 - **The poller polls through a spent core budget.** A rate-limited preflight is `:rate_limited`, and
   the poller logs which budget is spent and until when, then sweeps. If search is refused too, the
-  sweep ends as described in the note below, and the five-sweep streak pages.
+  sweep ends as described in the note below, and the five-sweep streak pages. If a search fails some
+  other way, the sweep ends with one WARN. A preflight the breaker answered never checked the
+  credential, so a revoked token or a GitHub outage shows up first as a failing search, and the
+  preflight's rule for that is one WARN and a skipped tick, not an alert per condition.
+- **A minute-by-minute reading.** `GithubRateLimitSnapshotJob` reads every credential's budgets once a
+  minute, for free. A budget it finds spent trips the breaker before any caller is refused, and the
+  reading feeds the liveness page's diagnosis.
+
+There is no reserve that holds Zimmer's other callers back to save budget for the poller. The
+poller's sweep spends search, not core, and it polls through a spent core budget, so a core reserve
+would buy it nothing. It would only cost the merge gate its PR reads in the last stretch of a busy
+hour.
 
 None of this touches the liveness page. If the poller polls nothing for 15 minutes for any reason,
 including a dead worker, a hung `gh`, bad credentials or both budgets spent, `TriggerPollerLivenessCheckJob`
-pages. Its details now include `GithubRateLimit.diagnosis`: every budget known to be spent or in
-reserve, with its reset time. That way a rate-limited stall reads as a rate limit, not as GitHub
+pages. Its details include `GithubRateLimit.diagnosis`: every budget known to be spent or under 500
+remaining, with its reset time. That way a rate-limited stall reads as a rate limit, not as GitHub
 being down.
 
 Everything here fails open. A cache that cannot be read, or a probe that cannot be parsed, means no
-breaker and no reserve. The call then goes ahead as it would without this code.
+breaker. The call then goes ahead as it would without this code.
 
 A GitHub App installation token would give the pollers a budget of their own that no session can
 spend. That is a credential change, not a code change, and it is not made here.
@@ -2075,7 +2082,7 @@ so it fails during a GitHub outage too — and its human-readable output then as
 invalid" about a credential it never managed to check. Taking that at face value is how a GitHub
 degradation once got reported as a missing credential, in text byte-identical to a revoked token's.
 So the preflight reads `gh auth status --json hosts` instead, which carries the transport error `gh`
-swallows on its way to that prose, and reports one of four states:
+swallows on its way to that prose, and reports one of five states:
 
 | State | What `gh` reported | The poller's WARN says |
 | --- | --- | --- |
@@ -2083,7 +2090,7 @@ swallows on its way to that prose, and reports one of four states:
 | `:unconfigured` | an empty `hosts` map, or no `gh` binary | `gh CLI is not authenticated (no gh auth login / GH_TOKEN)` |
 | `:rejected` | `401` / `Bad credentials` | GitHub rejected the credential; it likely needs rotating |
 | `:unknown` | a 5xx, a DNS failure, a timeout, anything else | it could not reach GitHub, so the credential's validity is **unknown** |
-| `:rate_limited` | `API rate limit exceeded for user ID …`, or the rate-limit breaker answered for GitHub | the REST core budget is spent; the credential is valid, so **it polls anyway** |
+| `:rate_limited` | `API rate limit exceeded for user ID …` (an unauthenticated per-IP limit stays `:unknown`), or the rate-limit breaker answered for GitHub | the REST core budget is spent; the credential is valid, so **it polls anyway** |
 
 Only `:unconfigured` keeps the original wording, because it is the only state that ever deserved it.
 `:rate_limited` is the one state that does not skip. GitHub had to identify the user to refuse it, so

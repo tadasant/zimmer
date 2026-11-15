@@ -39,7 +39,7 @@
 # an owner with no token of its own, inherits the default GH_TOKEN.
 #
 # The fourth is the rate-limit breaker (GithubRateLimit). Before a call is sent, the
-# wrapper asks whether its budget is spent or held in reserve. If it is, the call is answered
+# wrapper asks whether its budget is spent. If it is, the call is answered
 # locally with a failed Result whose `refusal` says why and until when, and GitHub never
 # sees it. After a call fails, the wrapper hands GitHub's words to the breaker, so the first
 # primary rate-limit refusal stops the next thousand. A refused Result is a failure like a
@@ -71,7 +71,7 @@ module GithubCli
       new(stdout: "", stderr: refusal.message, status: nil, refusal: refusal)
     end
 
-    # True when this call was never sent because its budget was spent or reserved.
+    # True when this call was never sent because its budget was spent.
     def refused?
       !@refusal.nil?
     end
@@ -117,13 +117,11 @@ module GithubCli
   # @param timeout [Numeric] wall-clock seconds before the process group is killed
   # @param owner [String, nil] the repository owner whose token to use; inferred
   #   from the argv when omitted
-  # @param priority [Symbol] :poller lets the call spend the reserve GithubRateLimit
-  #   keeps for the trigger poller; every other caller leaves it alone
   # @return [Result] never raises TimeoutError; a hang comes back as a failed Result
-  def run(command, timeout:, owner: nil, priority: :normal)
+  def run(command, timeout:, owner: nil)
     env = GithubTokens.env_for(owner || owner_for(command))
 
-    refusal = GithubRateLimit.refusal_for(command, env: env, priority: priority)
+    refusal = GithubRateLimit.refusal_for(command, env: env)
     return Result.refused(refusal) if refusal
 
     stdout, stderr, status = if env.empty?

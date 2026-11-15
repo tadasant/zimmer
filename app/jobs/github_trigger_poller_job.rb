@@ -254,6 +254,9 @@ class GithubTriggerPollerJob < ApplicationJob
     # never got their turn because of it.
     rate_limit = nil
     rate_limited_skips = 0
+    # A search failure met after a :rate_limited preflight, which ends the sweep. See the
+    # rescue below.
+    unverified_failure = nil
 
     conditions.find_each do |condition|
       # A rate limit belongs to the credential, not to the condition that happened to
@@ -262,7 +265,7 @@ class GithubTriggerPollerJob < ApplicationJob
       # requests make worse and longer. Stop asking; the next tick is the retry, and
       # under seen-set semantics a skipped tick costs nothing because the next one
       # re-derives the whole set.
-      if rate_limit
+      if rate_limit || unverified_failure
         rate_limited_skips += 1
         next
       end
@@ -281,6 +284,17 @@ class GithubTriggerPollerJob < ApplicationJob
       # the limit first and could reset a genuine index degradation forever.
       rate_limit = e
     rescue => e
+      # A preflight the rate-limit breaker answered never reached GitHub, so this tick never
+      # checked that GitHub is reachable or that the credential still works. A search that
+      # fails some other way is then most likely the failure the preflight would have
+      # caught (a revoked token, GitHub down), and the preflight's rule for that is one WARN
+      # and a skipped tick, not an alert per condition per minute. So stop here. If it lasts,
+      # nothing stamps the heartbeat and TriggerPollerLivenessCheckJob pages.
+      if preflight.rate_limited? && e.is_a?(GithubSearchService::SearchError)
+        unverified_failure = e
+        next
+      end
+
       # Clearing here too is what makes the streak's "consecutive" literal: a tick that
       # failed some other way is not an incomplete-index tick, and it pages on its own
       # below, so it must break the run rather than be counted into it.
@@ -301,6 +315,10 @@ class GithubTriggerPollerJob < ApplicationJob
 
     if rate_limit
       defer_rate_limited_sweep(rate_limit, skipped: rate_limited_skips)
+    elsif unverified_failure
+      Rails.logger.warn "[GithubTriggerPollerJob] A search failed while GitHub's core budget is spent " \
+                        "and the credential could not be checked; ending this sweep (#{rate_limited_skips} " \
+                        "further conditions not polled). #{unverified_failure.message}"
     else
       clear_rate_limited_streak
     end

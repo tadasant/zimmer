@@ -23,12 +23,16 @@
 #      `gh api rate_limit`, which GitHub does not count against any budget. `gh`'s own
 #      error line does not carry it. If that probe fails too, the breaker holds for
 #      FALLBACK_HOLD and the next refused call probes again.
-#   2. **Keep a reserve for the trigger poller.** GithubRateLimitSnapshotJob reads every
-#      credential's budgets once a minute. Ordinary callers stand down once a budget's
-#      remaining count is below RESERVE. The poller's preflight runs at `priority: :poller`
-#      and may spend the reserve. The reserve can only hold back Zimmer's own callers.
-#      Agent sessions running `gh` as the same user are outside its reach, which is why
-#      the poller must also survive the budget running out entirely (see below).
+#   2. **Let the trigger poller run through it.** The poller's sweep spends only the
+#      search budget, so a spent core budget costs it nothing but its `gh auth status`
+#      preflight, and GithubTriggerPollerJob polls through a rate-limited preflight. That
+#      is the protection that holds against callers Zimmer cannot limit, such as agent
+#      sessions running `gh` as the same user. A reserve that held Zimmer's other callers
+#      back below some remaining count would buy the poller nothing on top of that, and
+#      would cost the merge gate its PR reads for the last stretch of every busy hour.
+#      GithubRateLimitSnapshotJob reads every credential's budgets once a minute. A
+#      budget it finds spent trips the breaker before any caller is refused, and the
+#      readings feed .diagnosis.
 #   3. **Say what happened.** A spent budget is reported as rate-limited until a stated
 #      time, in GithubSearchService.auth_preflight's state, in the poller's WARN, and in
 #      the stalled-polling page's details (.diagnosis). It is not reported as GitHub being
@@ -42,31 +46,26 @@
 #
 # ## Failing open
 #
-# Everything here is advisory and fails open. A cache that cannot be read, a snapshot
-# that has aged out, a probe that cannot be parsed: each one means "no breaker, no
-# reserve" and the call goes ahead exactly as it would have without this module. The
-# worst case of this module failing is the behaviour before it existed, never a call
-# withheld for a reason nobody can see.
+# Everything here is advisory and fails open. A cache that cannot be read or a probe that
+# cannot be parsed means "no breaker", and the call goes ahead exactly as it would have
+# without this module. The worst case of this module failing is GitHub refusing the call
+# itself, never a call withheld for a reason nobody can see.
 module GithubRateLimit
   # The budgets this module tracks, by the name GitHub's `rate_limit` endpoint uses.
   RESOURCES = %w[core graphql search].freeze
 
-  # Remaining calls below which an ordinary (non-poller) caller stands down until the
-  # window resets. 500 of 5000 is about the last ten minutes of a busy hour. The poller's
-  # preflight is one `core` call a minute, so the reserve covers it many times over.
-  #
-  # No reserve on `search`. Its budget is 30 a minute and resets every minute, the
-  # poller is its main spender, and GithubSearchService already backs off on a refusal.
-  RESERVE = { "core" => 500, "graphql" => 500 }.freeze
+  # Remaining calls below which .diagnosis reports a budget as running low, so a stall
+  # page in the minutes before exhaustion still names the cause. Reporting only.
+  LOW_WATER = 500
 
   # How long a breaker holds when GitHub refused a call with a primary rate limit but
   # the free probe could not tell us when the window resets. Short, so a wrong guess
   # costs a minute; the next refused call after it probes again.
   FALLBACK_HOLD = 60.seconds
 
-  # A snapshot older than this is not trusted to hold anyone back. GithubRateLimitSnapshotJob
-  # refreshes it every minute; a snapshot this old means the job is not running, and an
-  # aged reading of "remaining" says nothing about now.
+  # A snapshot older than this is not reported. GithubRateLimitSnapshotJob refreshes it
+  # every minute; a snapshot this old means the job is not running, and an aged reading of
+  # "remaining" says nothing about now.
   SNAPSHOT_TTL = 3.minutes
 
   PROBE_TIMEOUT = 10
@@ -88,23 +87,21 @@ module GithubRateLimit
   # sentence, echoed back in a search error) costs one free call.
   PRIMARY_EXHAUSTION_PATTERN = /API rate limit (?:already )?exceeded/i
 
-  # Why a call was answered locally instead of being sent.
+  # The same refusal, made to an authenticated request: GitHub names the user it is
+  # refusing. Only this form says the credential is valid. An unauthenticated request is
+  # refused per IP (`API rate limit exceeded for 203.0.113.7`), which proves nothing.
+  CREDENTIAL_EXHAUSTION_PATTERN = /API rate limit (?:already )?exceeded for user ID/i
+
+  # Why a call was answered locally instead of being sent: GitHub refused this budget,
+  # and its window has not reset.
   #
-  #   kind:        :exhausted (GitHub refused this budget, and the window has not reset)
-  #                or :reserve (the budget is under RESERVE and the caller is not the poller)
   #   resource:    "core", "graphql" or "search"
   #   reset_at:    when GitHub's window resets, so when this stops applying
-  #   remaining:   the last count GitHub reported (nil for :exhausted, where it is 0)
   #   credential:  which variable holds the token, e.g. "GH_TOKEN" — a name, never a value
-  Refusal = Data.define(:kind, :resource, :reset_at, :remaining, :credential) do
+  Refusal = Data.define(:resource, :reset_at, :credential) do
     def message
-      reason = if kind == :exhausted
-        "GitHub's API rate limit exceeded for #{credential}'s #{resource} budget"
-      else
-        "holding back #{credential}'s #{resource} budget for the trigger poller " \
-          "(#{remaining} remaining, under the reserve of #{RESERVE[resource]})"
-      end
-      "not sent to GitHub: #{reason} until #{reset_at.utc.iso8601}"
+      "not sent to GitHub: GitHub's API rate limit exceeded for #{credential}'s #{resource} " \
+        "budget until #{reset_at.utc.iso8601}"
     end
   end
 
@@ -114,8 +111,9 @@ module GithubRateLimit
   #
   # `gh api rate_limit` is nil: GitHub does not count it, and it is the probe. Answering it
   # locally during an outage would leave the breaker unable to learn when the window
-  # resets. `gh pr …` and `gh issue …` go through GraphQL. Everything else that reaches
-  # the network, including `gh auth status`, spends `core`.
+  # resets. `gh auth` subcommands other than `status` are local and nil too. `gh pr`,
+  # `gh issue` and `gh repo` go through GraphQL, `gh search` through search. Everything
+  # else that reaches the network, including `gh auth status`, spends `core`.
   def resource_for(command)
     args = Array(command).map(&:to_s)
     return nil unless args.first == "gh"
@@ -128,8 +126,14 @@ module GithubRateLimit
       return "search" if rest.any? { |arg| arg.match?(%r{\A/?search/}) }
 
       "core"
-    when "pr", "issue"
+    when "auth"
+      args[2] == "status" ? "core" : nil
+    when "pr", "issue", "repo"
       "graphql"
+    when "search"
+      "search"
+    when "--version", "version", "help", "config", "alias", "completion"
+      nil
     else
       "core"
     end
@@ -139,28 +143,15 @@ module GithubRateLimit
   #
   # @param command [Array<String>] the `gh` argv
   # @param env [Hash] the extra environment GithubCli will run it with
-  # @param priority [Symbol] :poller may spend the reserve; anything else may not
-  def refusal_for(command, env: {}, priority: :normal)
+  def refusal_for(command, env: {})
     resource = resource_for(command)
     return nil unless resource
 
     credential = credential_for(env)
     exhausted_until = read_exhausted(credential, resource)
-    if exhausted_until
-      return Refusal.new(kind: :exhausted, resource: resource, reset_at: exhausted_until,
-                         remaining: 0, credential: credential[:label])
-    end
+    return nil unless exhausted_until
 
-    return nil if priority == :poller
-
-    reserve = RESERVE[resource]
-    return nil unless reserve
-
-    budget = snapshot(credential)&.dig(resource)
-    return nil unless budget && budget[:remaining] < reserve && budget[:reset_at].future?
-
-    Refusal.new(kind: :reserve, resource: resource, reset_at: budget[:reset_at],
-                remaining: budget[:remaining], credential: credential[:label])
+    Refusal.new(resource: resource, reset_at: exhausted_until, credential: credential[:label])
   rescue => e
     Rails.logger.warn "[GithubRateLimit] Could not check the rate-limit breaker (#{e.class}: #{e.message}); " \
                       "letting the call through"
@@ -219,7 +210,7 @@ module GithubRateLimit
   end
 
   # One paragraph for the stalled-polling page: every budget Zimmer knows to be spent or
-  # in reserve, with its reset time. Nil when nothing is known to be wrong. In that case the
+  # running low (under LOW_WATER), with its reset time. Nil when nothing is known to be wrong. In that case the
   # page's other causes (a dead worker, a hung `gh`, GitHub down) are the ones to check.
   def diagnosis(env: ENV)
     findings = credentials(env: env).flat_map do |credential|
@@ -228,7 +219,7 @@ module GithubRateLimit
         exhausted_until = read_exhausted(credential, resource)
         if exhausted_until
           "#{credential[:label]}'s #{resource} budget is spent until #{exhausted_until.utc.iso8601}"
-        elsif (budget = budgets[resource]) && RESERVE[resource] && budget[:remaining] < RESERVE[resource] &&
+        elsif (budget = budgets[resource]) && resource != "search" && budget[:remaining] < LOW_WATER &&
               budget[:reset_at].future?
           "#{credential[:label]}'s #{resource} budget is down to #{budget[:remaining]}/#{budget[:limit]} " \
             "until #{budget[:reset_at].utc.iso8601}"
@@ -269,8 +260,7 @@ module GithubRateLimit
     reset_at = read_exhausted(credential, fallback_resource)
     return nil unless reset_at
 
-    Refusal.new(kind: :exhausted, resource: fallback_resource, reset_at: reset_at, remaining: 0,
-                credential: credential[:label])
+    Refusal.new(resource: fallback_resource, reset_at: reset_at, credential: credential[:label])
   end
 
   # Open a breaker. Logs once per breaker, not once per call: `unless_exist` makes the

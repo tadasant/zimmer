@@ -234,7 +234,7 @@ module CronSchedule
     github_rate_limit_snapshot: {
       cron: "* * * * *", # Every minute — `gh api rate_limit` per token, which GitHub does not count
       class: "GithubRateLimitSnapshotJob",
-      description: "Read each GitHub credential's rate-limit budgets so ordinary gh callers leave a reserve for the trigger poller",
+      description: "Read each GitHub credential's rate-limit budgets, tripping the breaker on a spent one",
       environments: %i[production staging]
     },
     github_trigger_poller: {

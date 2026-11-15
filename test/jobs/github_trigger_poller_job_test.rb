@@ -1769,6 +1769,22 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
     assert_nil heartbeat
   end
 
+  # Through an open breaker the preflight never reached GitHub, so a revoked token or a
+  # GitHub outage shows up first as failing searches. That must be one WARN, as the
+  # preflight would have given, not an alert per condition per minute.
+  test "after a rate-limited preflight, a search that fails another way ends the sweep with one WARN" do
+    stub_preflight(GithubSearchService::PREFLIGHT_RATE_LIMITED, "core budget spent")
+    GithubSearchService.expects(:search_issues).once
+      .raises(GithubSearchService::SearchError, "gh api search/issues failed: gh: Bad credentials (HTTP 401)")
+    ErrorReporter.expects(:report_exception).never
+
+    warns = capture_warns { GithubTriggerPollerJob.perform_now }
+
+    assert_includes warns.last, "credential could not be checked; ending this sweep"
+    assert_includes warns.last, "Bad credentials"
+    assert_nil heartbeat, "nothing polled, so the liveness page still fires if this lasts"
+  end
+
   test "a heartbeat write failure does not break an otherwise successful poll" do
     Rails.cache.stubs(:write).raises(StandardError, "Redis connection refused")
 
