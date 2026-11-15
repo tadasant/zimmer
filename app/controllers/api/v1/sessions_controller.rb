@@ -1425,6 +1425,8 @@ class Api::V1::SessionsController < Api::BaseController
   # Query parameters:
   #   - q (or query): Search query (required) - searches title, metadata, and custom_metadata
   #   - search_contents: "true" or "1" to also search transcript contents
+  #   - match: "phrase" (default) or "all_words" (every word, any order; with
+  #     search_contents, anywhere in the title, metadata or transcript)
   #   - scan_cursor: resume token from a previous content search's content_scan.next_cursor
   #   - status, agent_runtime, agent_root, priority_class, genesis, visibility,
   #     show_archived: the same board filters as #index, combinable the same way
@@ -1462,14 +1464,11 @@ class Api::V1::SessionsController < Api::BaseController
     include_contents = SessionSearchable.search_contents?(params[:search_contents])
 
     # `match` is the MCP tool's parameter of the same name: "phrase" (default) or
-    # "all_words", which is title/metadata only.
+    # "all_words" — every word somewhere, in any order, over title and metadata, and
+    # over the transcript too when search_contents is set.
     match = params[:match].presence || "phrase"
     unless %w[phrase all_words].include?(match)
       render_api_error("Invalid match", "match must be phrase or all_words", status: :bad_request)
-      return
-    end
-    if include_contents && match == "all_words"
-      render_api_error("Invalid match", "match=all_words searches title and metadata only; drop search_contents", status: :bad_request)
       return
     end
 
@@ -1490,7 +1489,9 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     per_page = pagination_params[:per_page]
-    matches, scan = search_sessions_by_content(scope, query, limit: per_page, cursor: params[:scan_cursor])
+    matches, scan = search_sessions_by_content(
+      scope, query, limit: per_page, cursor: params[:scan_cursor], all_words: match == "all_words"
+    )
     sessions = matches.reorder(created_at: :desc, id: :desc).to_a
     delegates = goal_check_delegates_for(sessions)
 
