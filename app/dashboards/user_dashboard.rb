@@ -56,7 +56,7 @@ class UserDashboard < Administrate::BaseDashboard
   #
   # This is the surface that exists so Slack attribution can be switched on
   # without a deploy: a Slack user ID is deployment configuration, this
-  # repository is public, and the seeded rows ship with an empty list.
+  # repository is public, and the seeded row ships with an empty list.
   #
   # `key` is editable but should not be edited casually — HumanMessage#author
   # stores it verbatim, so changing it orphans every record that human has
