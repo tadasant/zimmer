@@ -301,18 +301,21 @@ automated nudge prompt and resumes it — the "keep working toward your goal" lo
 It deliberately skips sessions that are blocked on an elicitation or that have pending enqueued
 messages, because resuming those would spawn a second process against the same clone.
 
-The nudge goes out through `Session#deliver_follow_up!`. Five entry points share it: the web
-follow-up form, triggers, the GitHub comment and merge-conflict pollers, and this sweep. The method
+The nudge goes out through `Session#deliver_follow_up!`. It is the one writer for delivering a
+prompt straight into an idle session: the web follow-up form, the REST API's `follow_up` and the MCP
+tool's `follow_up` (both through `Sessions::DeliverFollowUp`), triggers, the GitHub comment and
+merge-conflict pollers, and this sweep all share it. The method
 clears the stale per-turn metadata, transitions the session to running, stamps the prompt where the
 recovery paths look for it, enqueues `AgentSessionJob`, and records `running_job_id` so the session
 is never "running with no job."
 
-Three direct-delivery paths deliberately stay outside it: the REST API's `follow_up` and the MCP
-tool's `direct_follow_up`, which each own a transaction of their own around a goal update and an
-uncle edge, and `EnqueuedMessageProcessorService`, which delivers a message it has already claimed
-from a queue, under different locking. The first two still stamp `pending_follow_up_prompt` inline —
-see [a follow-up the session is still holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too)
-for why an accepted prompt that lives only as a job argument is one a deploy can silently discard.
+`Sessions::DeliverFollowUp` is the REST and MCP doors' wrapper: one transaction around the goal (and
+the `prompt` column), whatever the surface must record before the job starts — the uncle edge, and
+for MCP the human message — and the `deliver_follow_up!` call itself, so a failed send rolls all of
+it back. One direct-delivery path deliberately stays outside it: `EnqueuedMessageProcessorService`,
+which delivers a message it has already claimed from a queue, under different locking. See
+[a follow-up the session is still holding](/sessions/lifecycle/#and-a-follow-up-the-session-is-still-holding-outranks-it-too)
+for why the `pending_follow_up_prompt` marker the shared writer stamps is not optional.
 
 The heartbeat is the one caller that passes `stamp_pending_prompt: false`. A user's message is worth
 replaying after a SIGTERM retry; a drumbeat is not — replaying one would deliver a beat for a moment

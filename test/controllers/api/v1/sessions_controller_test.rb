@@ -1534,6 +1534,20 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "pending", enqueued.status
   end
 
+  test "follow_up to an idle session delivers through Sessions::DeliverFollowUp" do
+    session = sessions(:needs_input)
+    Sessions::DeliverFollowUp.expects(:call).with do |**kwargs|
+      kwargs[:session] == session && kwargs[:prompt] == "Through the service" &&
+        kwargs[:goal] == "All tests pass" && kwargs[:source]&.surface == "api" &&
+        kwargs[:images].nil? && kwargs[:files].nil?
+    end.returns(stub(job_id: "job-1"))
+
+    post follow_up_api_v1_session_path(session.id), params: { prompt: "Through the service", goal: "All tests pass" }, headers: @headers
+
+    assert_response :success
+    assert_equal "Follow-up prompt sent", JSON.parse(response.body)["message"]
+  end
+
   test "follow_up to a running session queues through Sessions::QueueFollowUp" do
     session = sessions(:running)
     queued = session.enqueued_messages.create!(content: "Stand-in", position: 7, status: "pending")

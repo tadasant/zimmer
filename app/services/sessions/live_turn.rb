@@ -194,8 +194,8 @@ module Sessions
     # path and either one alone leaves a window: `EnqueuedMessage` is the durable
     # queue, and `pending_follow_up_prompt` is stamped for a prompt already handed
     # to a job by every route that accepts a follow-up into an idle session
-    # (`Session#deliver_follow_up!`, `Mcp::Tools::ActionSession#direct_follow_up`,
-    # `Api::V1::SessionsController#follow_up`). A conversation with either is one
+    # (`Session#deliver_follow_up!`, which the web, REST and MCP follow-up doors
+    # all reach). A conversation with either is one
     # whose next turn is already decided.
     #
     # Only where that next turn can actually happen, which is what the status

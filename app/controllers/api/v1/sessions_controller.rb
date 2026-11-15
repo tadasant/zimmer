@@ -618,41 +618,27 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    ActiveRecord::Base.transaction do
-      # The goal is applied here, on the session itself — the other two branches
-      # carry it on the EnqueuedMessage and EnqueuedMessageProcessorService applies
-      # it when it claims the message. Sessions::FollowUpGoal is that rule, written
-      # once for all four surfaces: a non-blank goal overwrites, a blank or absent
-      # one leaves the session's goal alone (clearing a goal is
-      # PATCH /api/v1/sessions/:id). `also_update` keeps the goal and the prompt in
-      # the one UPDATE they have always shared.
-      Sessions::FollowUpGoal.apply!(
-        session: @session,
-        goal: goal,
-        source: :follow_up,
-        also_update: { prompt: prompt }
-      )
-      # Not `resume!`: a follow-up adds to whatever this session was waiting on,
-      # so its own pending wake-ups survive it (#898).
-      @session.resume_for_follow_up!
-      # Stamp the prompt where every resume path looks for it, exactly as
-      # Session#deliver_follow_up! does — and after the resume, whose callbacks
-      # rewrite `metadata` whole-column, so a reader who sees the marker is
-      # guaranteed to also see `running`. Until #1023 this branch left the accepted
-      # prompt living only as the argument of the job enqueued below, which a
-      # worker shutdown discards: the session was then resumed on a SYSTEM_RECOVERY
-      # nudge and the caller, already answered "Follow-up prompt sent", had no way
-      # to tell that from delivery.
-      delivered_prompt, source_updates = @session.tag_turn(prompt, api_turn_source)
-      @session.merge_metadata!(source_updates.merge("pending_follow_up_prompt" => delivered_prompt))
-      # Before the enqueue, and in the same transaction: the job this line
-      # creates builds the next prompt for the session, and it must see the edge
-      # — a job that starts first renders a hierarchy missing exactly the human
-      # context the edge exists to carry. A rollback takes the edge with it, so a
-      # failed send still records nothing.
+    # Delivered through Sessions::DeliverFollowUp, the idle-session writer the MCP
+    # `follow_up` shares, which delivers through Session#deliver_follow_up! like
+    # the web form. The goal is applied there, on the session itself — the other
+    # two branches carry it on the EnqueuedMessage and
+    # EnqueuedMessageProcessorService applies it when it claims the message; a
+    # blank or absent goal leaves the session's alone (clearing a goal is
+    # PATCH /api/v1/sessions/:id).
+    #
+    # The uncle edge and the attachment log rows are written in the block: inside
+    # the delivery's transaction and before the job is enqueued, because the job
+    # builds the next prompt and must see the edge. A rollback takes them with
+    # it, so a failed send records nothing and a 422 never follows a delivery.
+    Sessions::DeliverFollowUp.call(
+      session: @session,
+      prompt: prompt,
+      goal: goal,
+      source: api_turn_source,
+      images: attachments[:images],
+      files: attachments[:files]
+    ) do
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
-      job = AgentSessionJob.enqueue_with_prompt(@session.id, delivered_prompt, images: attachments[:images], files: attachments[:files])
-      @session.update!(running_job_id: job.job_id)
       log_follow_up_attachments(attachments)
     end
     record_native_app_follow_up(prompt)

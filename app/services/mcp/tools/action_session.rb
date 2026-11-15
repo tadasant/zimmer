@@ -437,8 +437,8 @@ module Mcp
         # branch below raises rather than returning on failure, so an edge is
         # never written for a delivery that did not happen.
         #
-        # The direct branch is the exception, and records inside its own
-        # transaction instead: it enqueues the job that will build the very next
+        # The direct branch is the exception, and records inside
+        # Sessions::DeliverFollowUp's transaction instead: it enqueues the job that will build the very next
         # prompt, and a job that starts before the edge is visible would render a
         # hierarchy missing exactly the human context the edge exists to carry.
         direct_waiter = nil
@@ -496,57 +496,21 @@ module Mcp
           raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
         end
 
-        ActiveRecord::Base.transaction do
-          # The goal is applied to the session here; the queue and interrupt
-          # branches carry it on the EnqueuedMessage and let
-          # EnqueuedMessageProcessorService apply it on claim. Sessions::FollowUpGoal
-          # is that rule, written once for all four surfaces: a non-blank goal
-          # overwrites, a blank or absent one leaves the session's goal alone
-          # (clearing it is the "change_goal" action). `also_update` keeps the goal
-          # and the prompt in the one UPDATE they have always shared.
-          Sessions::FollowUpGoal.apply!(
-            session: session,
-            goal: goal,
-            source: :follow_up,
-            also_update: { prompt: prompt }
-          )
-          # Not `resume!`: a follow-up adds to whatever this session was waiting
-          # on, so its own pending wake-ups survive it (#898). This is the path
-          # the filed strand came down — a router redirecting a session asleep on
-          # its own `wake_me_up_later`.
-          session.resume_for_follow_up!
-          # Stamp the prompt where every resume path looks for it, exactly as
-          # Session#deliver_follow_up! does — and AFTER the resume, for the reason
-          # that method gives: the resume's callbacks rewrite `metadata`
-          # whole-column, and a reader who sees the marker must be guaranteed to
-          # also see the state the resume left behind (`waiting`, with the turn
-          # queued for a worker).
-          #
-          # Without this the accepted prompt existed only as the argument of the
-          # job enqueued below: one copy, in the one place a deploy destroys. A
-          # worker shutdown discards the job, `handle_interrupt_error` resumes the
-          # session on a SYSTEM_RECOVERY nudge, and the sender — already told
-          # "Follow-up prompt sent" — cannot tell delivery from loss (#1023). It
-          # also left the orphan sweep's "a follow-up is mid-delivery, do not reap
-          # this session" skip blind to every follow-up sent through MCP.
-          #
-          # Exactly one copy stays live: whichever route delivers the prompt
-          # consumes the marker. AgentSessionJob's follow-up arm moves it to
-          # `active_follow_up_prompt` when it spawns, and
-          # Sessions::RequeueSkippedPrompt drops it when it takes custody of the
-          # same text into the durable queue.
-          delivered_prompt, source_updates = session.tag_turn(prompt, context.turn_source)
-          session.merge_metadata!(source_updates.merge("pending_follow_up_prompt" => delivered_prompt))
-          # Before the enqueue, and in the same transaction: the job this line
-          # creates builds the next prompt, and it must see the edge. Rolling
-          # back takes the edge with it, so a failed send still records nothing.
+        # Delivered through Sessions::DeliverFollowUp, the idle-session writer
+        # REST `follow_up` shares, which delivers through
+        # Session#deliver_follow_up! like the web form: a follow-up resume (so a
+        # router redirecting a session asleep on its own `wake_me_up_later`
+        # leaves that wake armed, #898), the prompt stamped as
+        # `pending_follow_up_prompt` after it (#1023), then the job. The goal is
+        # applied there too; the queue and interrupt branches carry it on the
+        # EnqueuedMessage instead.
+        #
+        # The block runs inside the delivery's transaction and before the job is
+        # enqueued: the job builds the next prompt, and it must already see the
+        # edge and this turn as the human's. A failed send rolls both back.
+        Sessions::DeliverFollowUp.call(session: session, prompt: prompt, goal: goal, source: context.turn_source) do
           record_uncle_edge(session, args, FOLLOW_UP_EDGE_SOURCE)
-          # Same reasoning as the edge: before the enqueue, so the prompt the job
-          # builds already sees this turn as the human's, and inside the
-          # transaction, so a failed send records nothing.
           context.capture_assistant_message(session, prompt, "oauth.follow_up")
-          job = AgentSessionJob.enqueue_with_prompt(session.id, delivered_prompt)
-          session.update!(running_job_id: job.job_id)
         end
 
         follow_up_result(session.reload, "Follow-up prompt sent")
