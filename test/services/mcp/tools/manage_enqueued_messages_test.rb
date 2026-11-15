@@ -233,7 +233,7 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     error = assert_raises(Mcp::ToolError) do
       @tool.call("session_id" => sessions(:archived).id, "action" => "send_now", "content" => "Urgent")
     end
-    assert_includes error.message, "Cannot send follow-up"
+    assert_equal "Cannot send follow-up: #{sessions(:archived).follow_up_refusal}", error.message
     assert_equal 0, sessions(:archived).enqueued_messages.count
   end
 
