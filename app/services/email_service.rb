@@ -152,7 +152,10 @@ class EmailService
     json = section[at..][/^```json[ \t]*\n(.*?)\n```[ \t]*$/m, 1]
     return [] unless json
 
-    Array(JSON.parse(json)["headers"]).filter_map do |entry|
+    parsed = JSON.parse(json)
+    return [] unless parsed.is_a?(Hash)
+
+    Array(parsed["headers"]).filter_map do |entry|
       next unless entry.is_a?(Hash) && entry["name"].is_a?(String)
 
       [ entry["name"], entry["value"].to_s ]

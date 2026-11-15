@@ -5544,13 +5544,14 @@ list a fixed set of raw headers verbatim (`Received`, `Authentication-Results`, 
   `Authentication-Results` is the session's job.
 - **Automated mail is recognised by approximation.** The poller reads `Auto-Submitted` and `List-Id`
   when the server lists them, Gmail's promotions, social and forums categories, a sender pattern
-  (`mailer-daemon@`, `no-reply@`, …) and an auto-reply subject pattern. It does not read
+  (`mailer-daemon@`, `no-reply@`, `notifications@`, …) and an auto-reply subject pattern. It does not read
   `List-Unsubscribe` or `Precedence: bulk`, and a server without the header section leaves only
   the labels and patterns. An out-of-office reply with an unusual subject from an ordinary address
   gets through, so a session that answers mail should not answer an auto-reply. The other way
   round, a person's mail Gmail files under Promotions, Social or Forums is skipped unless the
   condition sets `include_automated`. It is not skipped silently: every skip is a WARN line naming
-  the message id and the rule.
+  the message id and the rule. Transactional mail Gmail files under Updates, such as receipts and
+  shipping notices, fires unless one of those signals catches it.
 
 ### Email: one mailbox, one session per thread, and attachments by name only
 

@@ -31,9 +31,8 @@
 # one unreadable mail cannot hold the cursor for good.
 #
 # The search never filters on what the classifier decides. A message the search leaves out is one
-# the poller never sees, so nothing can log it: that is how operator mail Gmail had filed under
-# Updates went unanswered for hours without a line in any log (#1525). Every
-# message the query matches is read and judged here, where a skip can be reported.
+# the poller never sees, so nothing can log it (#1525). Every message the query matches is read and
+# judged here, where a skip can be reported.
 #
 # A condition the poller has never visited is baselined, not fired: what is already in the window
 # goes into the seen-set, so turning a trigger on never answers old mail.
@@ -82,7 +81,7 @@ class EmailTriggerPollerJob < ApplicationJob
   NEVER_FIRE_LABELS = %w[SENT DRAFT SPAM TRASH].freeze
 
   # A sender that is a mail system or says outright that it reads nothing.
-  AUTOMATED_SENDER = /\A(mailer-daemon|postmaster|no[-_.]?reply|do[-_.]?not[-_.]?reply|bounces?)([+@])/i
+  AUTOMATED_SENDER = /\A(mailer-daemon|postmaster|no[-_.]?reply|do[-_.]?not[-_.]?reply|bounces?|notifications?|alerts?)([+@])/i
 
   # Headers a machine sets. `Auto-Submitted` with any value but `no` is RFC 3834's mark of an
   # auto-reply or an auto-generated message; `List-Id` is RFC 2919's mark of mailing-list traffic.
@@ -173,6 +172,7 @@ class EmailTriggerPollerJob < ApplicationJob
     seen = condition.email_seen_messages
     found = service.search(search_query(condition, cursor - LOOKBACK.to_i), count: EmailService::MAX_RESULTS)
     read_at = Time.current.to_i
+    warn_if_truncated(condition, found)
     fresh = found.reject { |summary| seen.key?(summary.id) }
 
     # Oldest thread first: Gmail lists newest first, so the thread whose newest new message is
@@ -180,17 +180,31 @@ class EmailTriggerPollerJob < ApplicationJob
     threads = fresh.group_by(&:thread_id).to_a.reverse
     settled = true
 
-    threads.each_with_index do |(thread_id, summaries), index|
-      if index >= MAX_FIRES_PER_TICK
+    # Only a thread that fires counts against the budget: one where nothing may fire is read,
+    # logged and marked seen, so a run of promotions mail cannot hold the cursor on its own.
+    fires = 0
+    threads.each do |thread_id, summaries|
+      if fires >= MAX_FIRES_PER_TICK
         settled = false
         break
       end
 
       outcome = settle_thread(service, condition, search, cursor, thread_id, summaries, read_at)
+      fires += 1 unless outcome == :skipped
       settled = false if %i[held rolled_back failed].include?(outcome)
     end
 
     advance!(condition, search, cursor, settled ? started : cursor)
+  end
+
+  # The mailbox server returns at most MAX_RESULTS, newest first, with no pagination. A full page
+  # means older matching mail may be past the cut, and the poller can neither read nor log it.
+  def warn_if_truncated(condition, found)
+    return if found.size < EmailService::MAX_RESULTS
+
+    Rails.logger.warn "[EmailTriggerPollerJob] Condition #{condition.id} on trigger #{condition.trigger_id}: " \
+                      "the search returned #{found.size} messages, the server's maximum; older matching mail " \
+                      "may not have been read. Narrow the condition's query."
   end
 
   # What the condition searches for. An edit that changes it mid-poll makes the poll moot.
@@ -329,7 +343,7 @@ class EmailTriggerPollerJob < ApplicationJob
   # labels, a mail-system or no-reply sender, an auto-reply or bounce subject.
   def automated_reason(message)
     auto_submitted = message.header(AUTO_SUBMITTED_HEADER)
-    return "automated: #{AUTO_SUBMITTED_HEADER} header" if auto_submitted && !auto_submitted.strip.casecmp?("no")
+    return "automated: #{AUTO_SUBMITTED_HEADER} header" if auto_submitted && !auto_submitted.split(";").first.to_s.strip.casecmp?("no")
     return "automated: #{LIST_ID_HEADER} header" if message.header(LIST_ID_HEADER)
 
     category = AUTOMATED_LABELS & message.labels
