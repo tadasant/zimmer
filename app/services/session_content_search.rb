@@ -147,9 +147,12 @@ class SessionContentSearch
   # @param limit [Integer] how many matches to collect before stopping
   # @param cursor [String, nil] a `next_cursor` from a previous call, to resume
   # @param budget_seconds [Integer] wall-clock ceiling for this search
-  def initialize(scope:, query:, limit: DEFAULT_LIMIT, cursor: nil, budget_seconds: nil, chunk_size: nil)
+  # @param all_words [Boolean] match every word of the query, anywhere and in any
+  #   order, instead of the whole query as one phrase — see #matching_ids
+  def initialize(scope:, query:, limit: DEFAULT_LIMIT, cursor: nil, budget_seconds: nil, chunk_size: nil, all_words: false)
     @scope = scope
     @query = query.to_s
+    @all_words = all_words
     @limit = [ limit.to_i, 1 ].max
     @cursor = cursor
     @budget_seconds = (budget_seconds || self.class.budget_seconds).to_f
@@ -261,18 +264,35 @@ class SessionContentSearch
     relation.pluck(:id, :created_at)
   end
 
+  # Phrase mode is one CONTENT_PREDICATE over the whole query. All-words mode is the
+  # same predicate once per word, AND-ed: every word must appear somewhere in the
+  # session's searchable text — title, either JSON column, or anywhere in the
+  # transcript, each word in its own place. Per word rather than one `ILIKE ALL` over
+  # each chunk, because the words of a remembered session are routinely in different
+  # chunks, and a per-chunk AND would quietly turn "anywhere in the session" into
+  # "within 256 KiB of each other". Still an AND, never an OR (#405): each word narrows.
+  #
+  # The cost is bounded the same way the phrase scan is — per chunk of candidates, under
+  # the same wall clock and statement_timeout. Each word is one more correlated read of
+  # a candidate's chunks (see the `OFFSET 0` on TRANSCRIPT_PREDICATE), stopping at that
+  # word's first matching chunk, and in practice skipped once an earlier word has ruled the session
+  # out. A session holding every word but the last costs up to MAX_ALL_WORDS reads, so
+  # an all-words call can cover fewer sessions per budget than a phrase call.
   def matching_ids(chunk_ids)
-    Session.where(id: chunk_ids)
-      .where(SessionSearchable::CONTENT_PREDICATE, search_binds)
-      .pluck(:id)
-      .to_set
+    search_binds.reduce(Session.where(id: chunk_ids)) do |relation, binds|
+      relation.where(SessionSearchable::CONTENT_PREDICATE, binds)
+    end.pluck(:id).to_set
   end
 
-  # The predicate's binds are built where the predicate is spelled, so this scan
+  # One set of binds per predicate pass: the whole query in phrase mode, one per word
+  # in all-words mode. They are built where the predicate is spelled, so this scan
   # matches exactly what the cheap search matches — including the JSON respelling
   # `:q_json` carries.
   def search_binds
-    @search_binds ||= SessionSearchable.search_binds(query)
+    @search_binds ||= begin
+      terms = @all_words ? SessionSearchable.query_words(query) : [ query ]
+      terms.map { |term| SessionSearchable.search_binds(term) }
+    end
   end
 
   # A server-side ceiling under the wall-clock budget, so a single pathological

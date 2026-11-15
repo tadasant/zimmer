@@ -183,6 +183,51 @@ class SessionContentSearchTest < ActiveSupport::TestCase
       "one word still matches wherever it appears, newest first"
   end
 
+  test "all_words matches every word apart and out of order, and drops a session missing any one" do
+    phrase = create_session(title: "epsilon", said: "the YC interview went well", created_at: 5.hours.ago)
+    apart = create_session(title: "zeta", said: "the interview is at YC tomorrow", created_at: 6.hours.ago)
+    missing = create_session(title: "eta", said: "the interview is tomorrow", created_at: 7.hours.ago)
+    scope = Session.where(id: [ phrase.id, apart.id, missing.id ])
+
+    assert_equal [ phrase.id, apart.id ],
+      SessionContentSearch.new(scope: scope, query: "interview YC", all_words: true).call.matched_ids,
+      "all_words is an AND over the words, in any order"
+    assert_empty SessionContentSearch.new(scope: scope, query: "interview YC quokka", all_words: true).call.matched_ids,
+      "one absent word rules a session out — an AND, never the OR #405 rejected"
+  end
+
+  test "all_words lets each word land in a different column or a different transcript chunk" do
+    session = create_session(title: "OSS MCP gateways", said: "unrelated opening line", created_at: 4.hours.ago)
+    # Rebuild the transcript as two chunks, so two of the words sit in different ones.
+    session.update_columns(transcript: nil)
+    SessionTranscriptChunk.where(session_id: session.id).delete_all
+    SessionTranscriptChunk.create!(session: session, seq: 0, content: %({"text":"we compared Obot first"}\n))
+    SessionTranscriptChunk.create!(session: session, seq: 1, content: %({"text":"pricing came up later"}\n))
+    scope = Session.where(id: session.id)
+
+    assert_equal [ session.id ],
+      SessionContentSearch.new(scope: scope, query: "obot pricing gateways", all_words: true).call.matched_ids,
+      "two words in two chunks and one in the title are all somewhere in the session"
+    assert_empty SessionContentSearch.new(scope: scope, query: "obot pricing gateways").call.matched_ids,
+      "the default stays one phrase"
+  end
+
+  test "all_words keeps the bound: limit, cursor and resume behave as in phrase mode" do
+    result = SessionContentSearch.new(
+      scope: @scope, query: "powerhouse mitochondrion", all_words: true, limit: 1, chunk_size: 1
+    ).call
+    assert_equal [ @old.id ], result.matched_ids
+    assert result.complete?
+
+    first = SessionContentSearch.new(scope: @scope, query: "mitochondrion the", all_words: true, limit: 1, chunk_size: 1).call
+    assert_equal [ @new.id ], first.matched_ids
+    assert first.next_cursor.present?
+    rest = SessionContentSearch.new(
+      scope: @scope, query: "mitochondrion the", all_words: true, cursor: first.next_cursor
+    ).call
+    assert_equal [ @old.id ], rest.matched_ids
+  end
+
   test "eager-loaded associations on the caller's scope do not leak into the id pluck" do
     scope = Session.includes(:logs).where(id: [ @old.id, @new.id ])
 
