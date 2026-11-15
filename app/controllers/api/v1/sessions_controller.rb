@@ -626,10 +626,10 @@ class Api::V1::SessionsController < Api::BaseController
     # blank or absent goal leaves the session's alone (clearing a goal is
     # PATCH /api/v1/sessions/:id).
     #
-    # The uncle edge is recorded in the block: inside the delivery's transaction
-    # and before the job is enqueued, because the job builds the next prompt and
-    # must see the edge. A rollback takes the edge with it, so a failed send
-    # still records nothing.
+    # The uncle edge and the attachment log rows are written in the block: inside
+    # the delivery's transaction and before the job is enqueued, because the job
+    # builds the next prompt and must see the edge. A rollback takes them with
+    # it, so a failed send records nothing and a 422 never follows a delivery.
     Sessions::DeliverFollowUp.call(
       session: @session,
       prompt: prompt,
@@ -639,8 +639,8 @@ class Api::V1::SessionsController < Api::BaseController
       files: attachments[:files]
     ) do
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
+      log_follow_up_attachments(attachments)
     end
-    log_follow_up_attachments(attachments)
     record_native_app_follow_up(prompt)
 
     render json: {

@@ -57,7 +57,7 @@ class Sessions::DeliverFollowUpTest < ActiveSupport::TestCase
     assert_equal "new goal", session.goal
     assert_equal "Do the thing", session.prompt
     assert_equal "job-2", session.running_job_id
-    assert session.waiting? || session.running?, "expected the session resumed, was #{session.status}"
+    assert session.waiting?, "expected the turn queued for a worker, was #{session.status}"
     assert_match(/\ADo the thing/, session.metadata["pending_follow_up_prompt"])
     assert_equal "api", session.metadata.dig(Session::LAST_TURN_SOURCE_KEY, "surface")
   end

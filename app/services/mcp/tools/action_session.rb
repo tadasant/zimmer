@@ -437,8 +437,8 @@ module Mcp
         # branch below raises rather than returning on failure, so an edge is
         # never written for a delivery that did not happen.
         #
-        # The direct branch is the exception, and records inside its own
-        # transaction instead: it enqueues the job that will build the very next
+        # The direct branch is the exception, and records inside
+        # Sessions::DeliverFollowUp's transaction instead: it enqueues the job that will build the very next
         # prompt, and a job that starts before the edge is visible would render a
         # hierarchy missing exactly the human context the edge exists to carry.
         direct_waiter = nil
