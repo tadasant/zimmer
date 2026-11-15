@@ -48,7 +48,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     follow_redirect!
     assert_response :success
     assert_includes response.body, "Sign in with Google"
-    assert_includes response.body, "example.com"
+    assert_select "strong", text: "example.com"
 
     sign_in_and_enroll
     assert_select "a[href=?]", settings_path, text: "Continue to Zimmer"

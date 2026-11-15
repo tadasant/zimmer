@@ -6,7 +6,7 @@ module Supervisor
     #
     # Full CRUD, deliberately: this is where a Slack user ID gets linked to a
     # person. Slack IDs are deployment configuration and this repository is
-    # public, so the seeded rows ship with none — before this screen existed,
+    # public, so the seeded row ships with none — before this screen existed,
     # turning Slack attribution on meant setting an env var and redeploying,
     # which is why it stayed off.
     #
