@@ -81,10 +81,12 @@ module Mcp
       # authorized — the HumanMessage the Merge button writes is
       # (Sessions::AuthorizeMerge). It keeps the voice assistant from sending
       # something that reads like one.
-      MERGE_MARKER_PATTERN = /\[\s*human[\s_-]*authori[sz]ed[\s_-]*merge\s*\]/i
+      # NFKC first, so fullwidth brackets and letters fold to ASCII; any dash,
+      # space or zero-width character may separate the words.
+      MERGE_MARKER_PATTERN = /\[[\p{Zs}\s\u200B-\u200D]*human[\p{Zs}\p{Pd}\s_\u200B-\u200D]*authori[sz]ed[\p{Zs}\p{Pd}\s_\u200B-\u200D]*merge[\p{Zs}\s\u200B-\u200D]*\]/i
 
       def self.carries_merge_marker?(text)
-        MERGE_MARKER_PATTERN.match?(text.to_s)
+        MERGE_MARKER_PATTERN.match?(text.to_s.unicode_normalize(:nfkc))
       end
 
       # Sliced rather than trusted to the schema: none of these schemas sets

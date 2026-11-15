@@ -33,6 +33,9 @@ module Mcp
       # seen exactly the board.
       MAX_ROWS = SessionsController::USER_VIEW_LIMIT
 
+      # How many dropped rows the carplay_fit line reads to say what kind they were.
+      DROPPED_KINDS_SAMPLE = 500
+
       # `board` is the order the User view is drawn in (Sessions::UserView).
       # `last_touched` is the dashboard's "Sort By Last Touched" flat view —
       # Session::LAST_TOUCHED_ORDER, the same SQL the web and
@@ -135,12 +138,13 @@ module Mcp
         window = rows[(page - 1) * per_page, per_page] || []
 
         if rows.empty?
-          dropped = carplay_hidden_line(args)
-          return "No sessions match these filters — the board is empty." if dropped.nil?
-
           # A filter that hid every row has not found an empty board, and must not
-          # say it has: the rows it dropped are the whole answer.
-          return "No row passes the carplay_fit filter, but the board is NOT empty.\n\n#{dropped}"
+          # say it has: the rows it dropped are the whole answer. A filter that
+          # dropped nothing has, and says so plainly.
+          dropped = carplay_dropped(args)
+          return "No sessions match these filters — the board is empty." if dropped.nil? || dropped.count(:all).zero?
+
+          return "No row passes the carplay_fit filter, but the board is NOT empty.\n\n#{carplay_hidden_line(args, dropped)}"
         end
 
         summary_chars = summary_chars(args)
@@ -204,18 +208,30 @@ module Mcp
       # `not_laptop_only` hid 9 of the 12 waiting rows and the assistant reported
       # the 3 it had as the board; "9 laptop-only (4 a credential, …)" says what
       # kind of thing is waiting, which is what the person decides on.
-      def carplay_hidden_line(args)
+      def carplay_hidden_line(args, dropped = carplay_dropped(args))
+        return nil if dropped.nil?
+
+        filter = args["carplay_fit"]
+        total = dropped.count(:all)
+        return "The carplay_fit filter (#{filter}) left out no rows: this is every row that matches the other filters." if total.zero?
+
+        # The kinds are read off at most DROPPED_KINDS_SAMPLE rows, so a filter
+        # over every status cannot load the whole table; the count is exact.
+        sample = dropped
+          .reselect(:id, :carplay_fit, :carplay_fit_reason, :carplay_fit_source, :carplay_fit_line_count, :transcript_line_count)
+          .limit(DROPPED_KINDS_SAMPLE).to_a
+        of = sample.size < total ? " (kinds from #{sample.size} of them)" : ""
+        "The carplay_fit filter (#{filter}) left out #{total} row(s) that match the other filters#{of}: " \
+          "#{dropped_kinds(sample)}. This is not the whole board; say how many were left out and what kind."
+      end
+
+      # The rows the carplay_fit filter dropped, as a relation, or nil when no
+      # carplay_fit filter was asked for.
+      def carplay_dropped(args)
         return nil if args["carplay_fit"].blank?
 
         kept = filtered_scope(args).unscope(:includes).reselect(:id)
-        dropped = filtered_scope(args.except("carplay_fit")).where.not(id: kept)
-          .reselect(:id, :carplay_fit, :carplay_fit_reason, :carplay_fit_source, :carplay_fit_line_count, :transcript_line_count)
-          .unscope(:includes).to_a
-        filter = args["carplay_fit"]
-        return "The carplay_fit filter (#{filter}) left out no rows: this is every row that matches the other filters." if dropped.empty?
-
-        "The carplay_fit filter (#{filter}) left out #{dropped.size} row(s) that match the other filters: " \
-          "#{dropped_kinds(dropped)}. This is not the whole board; say how many were left out and what kind."
+        filtered_scope(args.except("carplay_fit")).unscope(:includes).where.not(id: kept).reorder(nil)
       end
 
       # "7 laptop-only (4 a credential, 2 a long read, 1 no reason given), 2 untagged"

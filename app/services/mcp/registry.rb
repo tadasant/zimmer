@@ -140,7 +140,10 @@ module Mcp
         klass: "Mcp::Tools::ActionSession",
         group: "sessions",
         write: true,
-        composite_groups: %w[self_session live_mode],
+        # live_mode first: a Live conversation that also holds the self-session
+        # entry must still get its own narrowed action_session, never the
+        # self-management one. A session's own connection never names live_mode.
+        composite_groups: %w[live_mode self_session],
         composite_overrides: {
           "self_session" => "Mcp::Tools::SelfSessionActionSession",
           # follow_up, archive (never forced), unarchive, set_carplay_fit.

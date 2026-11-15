@@ -102,14 +102,14 @@ module LiveConversations
     FUNCTION_NAME_LIMIT = 64
     LOGGED_ERROR_LIMIT = 300
 
-    # Said to the model, which is the only one who can recover: an output cap
-    # cuts a voice call's arguments off mid-JSON, and the client relays them as
-    # they are.
     # Said to the model when it calls a server function with them off. It has
     # no list to read, so the answer is the way round.
     DIRECT_SERVERS_OFF = "Nothing changed: attaching MCP servers is turned off for Live Mode. Do what you can with " \
                          "Zimmer's tools, and hand anything else to a background session with quick_router."
 
+    # Said to the model, which is the only one who can recover: an output cap
+    # cuts a voice call's arguments off mid-JSON, and the client relays them as
+    # they are.
     UNREADABLE_ARGUMENTS = "Nothing ran: the arguments were cut off or were not valid JSON. " \
                            "Call it again with complete arguments, or tell the person it did not work."
 
