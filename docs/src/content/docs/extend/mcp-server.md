@@ -295,9 +295,11 @@ what the caller's filters kept out: how many more sessions match among the archi
 the `carplay_fit` filter, and, when a multi-word phrase finds nothing, how many sessions contain all
 of its words. A transcript search that finds nothing names the match mode it used, carries the
 same archived/`carplay_fit` notes counted on title and metadata, and — for a multi-word phrase —
-says to retry with `match: "all_words"` or one distinctive word before paging back. Live Mode's tool bridge defaults `show_archived` and `match` for its own searches
-([Finding an earlier session](/sessions/live/#finding-an-earlier-session)); no other caller's
-defaults change. An empty result that says "scan incomplete" means
+says to retry with `match: "all_words"` or one distinctive word before paging back. The Live
+Mode assistant's `live_mode` surface serves its own `quick_search_sessions`, which always includes
+archived sessions and matches every word, and has no transcript scan
+([Finding an earlier session](/sessions/live/#finding-an-earlier-session)); every other caller gets
+the defaults above. An empty result that says "scan incomplete" means
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
 hundreds of megabytes and up to ten minutes stale.
 
