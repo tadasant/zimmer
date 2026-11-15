@@ -711,7 +711,9 @@ voice settings by touch, for a call that has stopped working. The same voice set
 them before calling; closing them calls nobody. The guidance and the models are not there: a car
 has no text field, so they are on the phone. The car has no other voice: a call
 that isn't up in 15 seconds gives up, the tile says *Live Mode unavailable, retrying…*, and the
-car retries with no voice, playing the falling notes the first time and when it stops. Unplug
+car retries with no voice, playing the falling notes the first time and when it stops. When
+OpenAI refuses the call for something no retry can fix (its account out of credits), the car does
+not retry: the tile says *OpenAI is out of credits*, and the phone shows the same reason. Unplug
 with a call up and it carries on on the phone, which [goes to the call's thread](/extend/ios-app/#carplay).
 `GET /api/v1/live_conversations/:id/sessions` returns the sessions the
 conversation's tool calls have named, newest first (`LiveConversation#referenced_session_ids`). See
