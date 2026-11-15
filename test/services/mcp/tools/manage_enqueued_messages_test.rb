@@ -157,6 +157,18 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     assert_includes output, "- **New Position:** 1"
   end
 
+  test "reorder of a message gone by the time it takes the queue lock is a not-found error and logs no move" do
+    first = @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
+    @session.enqueued_messages.create!(content: "Second", position: 2, status: "pending")
+    EnqueuedMessage.any_instance.stubs(:reorder_to).returns(nil)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("session_id" => @session.id, "action" => "reorder", "message_id" => first.id, "position" => 2)
+    end
+    assert_includes error.message, "not found"
+    assert_empty @session.logs.where("content LIKE ?", "Enqueued message moved%")
+  end
+
   test "reorder rejects a position below 1" do
     message = @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
 

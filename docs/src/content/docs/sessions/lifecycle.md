@@ -81,7 +81,12 @@ through `EnqueuedMessage#reorder_to`, which takes the same queue lock (`Sessions
 and re-reads the message's position under it. Two moves on one queue at once therefore apply one
 after the other, the second to the queue the first left, and a move made from a stale copy of the
 message starts from where the row really is. A message deleted or delivered before the move gets
-the lock moves nothing. Deleting a queued message renumbers the rows behind it without this lock.
+the lock moves nothing: REST answers `404`, MCP a not-found error, and no "moved" row is logged.
+Every surface logs the position the row really moved from, read under the lock.
+
+Deleting a queued message renumbers the rows behind it without this lock, from a position read before
+its transaction began. Racing a move, a delete can leave a gap in the positions, fail at COMMIT on the
+unique position, or deadlock with the move.
 
 Sending a *new* message "right now" has one writer too, `Sessions::InterruptWithFollowUp`: the
 REST and MCP `follow_up` with `force_immediate`, `manage_enqueued_messages` `send_now`, and a child's

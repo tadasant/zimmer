@@ -25,8 +25,9 @@ module Sessions
   # `EnqueuedMessage#reorder_to` renumbers existing rows under the same lock
   # (`QueueTail.lock!`), so two reorders, or a reorder and an append, take turns rather
   # than computing positions from rows the other is rewriting. The delete paths
-  # on web, REST and MCP do not take it; racing an append, they can at worst
-  # leave a gap in the positions.
+  # on web, REST and MCP do not take it yet. They decrement from a position read
+  # before their transaction, so racing a reorder they can leave a gap, fail the
+  # unique constraint at COMMIT, or deadlock on the rows both are shifting.
   module QueueTail
     # @param session [Session]
     # @return [Integer] the position the next queued message should take

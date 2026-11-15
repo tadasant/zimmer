@@ -83,7 +83,10 @@ class EnqueuedMessageReorderConcurrencyTest < ActiveSupport::TestCase
           end
         end
       end
-      held.pop
+      unless held.pop(timeout: 10)
+        holder.join(1)&.value # re-raises what the holding writer died of, if it died
+        flunk "the holding writer did not take its lock within 10s"
+      end
 
       contender = Thread.new do
         ActiveRecord::Base.connection_pool.with_connection do

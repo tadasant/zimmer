@@ -311,13 +311,14 @@ class EnqueuedMessagesController < ApplicationController
 
     result = with_db_retry do
       ActiveRecord::Base.transaction do
-        old_position = @enqueued_message.position
-        @enqueued_message.reorder_to(new_position)
+        old_position = @enqueued_message.reorder_to(new_position)
 
-        @session.logs.create!(
-          content: "Enqueued message moved from position #{old_position} to #{new_position}",
-          level: "info"
-        )
+        if old_position
+          @session.logs.create!(
+            content: "Enqueued message moved from position #{old_position} to #{new_position}",
+            level: "info"
+          )
+        end
       end
     end
 

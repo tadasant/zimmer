@@ -348,7 +348,9 @@ class EnqueuedMessage < ApplicationRecord
   # The starting position is re-read under the lock rather than taken from this
   # instance, which may have been loaded before another reorder moved the row.
   # A row deleted or delivered out from under the caller is left alone: there is
-  # nothing to move, and shifting its old neighbours would open a gap.
+  # nothing to move, and shifting its old neighbours would open a gap. The
+  # return value tells the caller which happened, so it logs the position the
+  # row really moved from, and no move at all for a row that is gone.
   #
   # The writes themselves do not rely on the query planner or on the deferred
   # constraint: the moving row parks at 0, then its neighbours shift one row per
@@ -356,12 +358,13 @@ class EnqueuedMessage < ApplicationRecord
   # moving up), so every write lands on a position no row still holds.
   #
   # @param new_position [Integer]
-  # @return [void]
+  # @return [Integer, nil] the position the row moved from, read under the lock,
+  #   or nil when the row no longer exists
   def reorder_to(new_position)
     transaction do
       Sessions::QueueTail.lock!(session_id)
       current = self.class.where(id: id).pick(:position)
-      next if current.nil?
+      next nil if current.nil?
 
       if new_position == current
         self.position = current
@@ -369,6 +372,7 @@ class EnqueuedMessage < ApplicationRecord
       else
         shift_neighbours_for_move(current, new_position)
       end
+      current
     end
   end
 
