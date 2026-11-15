@@ -95,8 +95,8 @@ media_type, data }]` with `data` in base64 (a `data:<type>;base64,` prefix is fi
   naming it, and whatever the message had already stored is removed. The browser drops the bad
   one and sends the rest. The same cleanup runs when the follow-up itself is refused after its
   attachments stored: a session that cannot take one (422), or a queue or delivery write that fails
-  (422, or 409 on a position conflict). Once the message is staged or delivered it holds the
-  attachments, and nothing removes them.
+  (422, or 409 on a position conflict). Once a message is staged or delivered it holds the
+  attachments and they stay — with [one gap](/limitations/#a-sent-now-follow-up-whose-interrupt-raises-can-strand-its-attachments).
 - **One request.** There is no upload step and no path to name: the follow-up stores its own
   attachments and the turn reads them, delivered now, queued behind a turn, or sent now.
 

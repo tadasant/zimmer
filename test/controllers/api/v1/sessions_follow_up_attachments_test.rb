@@ -165,11 +165,11 @@ class Api::V1::SessionsFollowUpAttachmentsTest < ActionDispatch::IntegrationTest
 
   # Once the message is staged and committed it holds the attachments; a raise
   # after that leaves them, because a concurrent interrupt may be delivering it.
+  # (Limitations: a raising interrupt that withdrew the message strands them.)
   test "sent now, a raise after the message is staged keeps what it stored" do
     session = sessions(:running)
     reap(session)
     Sessions::InterruptService.any_instance.stubs(:call).raises(ActiveRecord::RecordInvalid.new(session))
-    Sessions::InterruptWithFollowUp.any_instance.stubs(:withdraw).returns(false)
 
     post "/api/v1/sessions/#{session.id}/follow_up", params: { prompt: "Stop and look", force_immediate: true, attachments: attachments },
       headers: @headers, as: :json

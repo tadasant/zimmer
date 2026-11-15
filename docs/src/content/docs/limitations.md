@@ -5850,6 +5850,16 @@ that reports failure — so callers cannot get it wrong rather than merely not g
 
 ## API
 
+### A sent-now follow-up whose interrupt raises can strand its attachments
+
+`POST /api/v1/sessions/:id/follow_up` with `force_immediate` and inline attachments stages a message
+that holds them, then interrupts. If the interrupt *raises* (rather than answering with a failed
+result, which is how `Sessions::InterruptService` normally fails), `Sessions::InterruptWithFollowUp`
+withdraws the message and re-raises. The caller cannot tell that withdrawal from a concurrent
+interrupt that claimed the message, so it keeps the stored files, and they stay in the session's
+storage with no message pointing at them. A failed *result* says which happened (`withdrawn?`) and
+removes them. They go when the session is deleted.
+
 ### Codex's own user-role scaffolding reads as the person's message
 
 A Codex rollout carries some lines Codex wrote itself under the `user` role, such as

@@ -1920,7 +1920,8 @@ class Session < ApplicationRecord
   # `force_immediate` and its direct branch), the `action_session` MCP tool's
   # `follow_up` (both branches), and `manage_enqueued_messages` `send_now`. A
   # `running` session takes one by queueing or interrupting, an idle one by direct
-  # delivery; only `failed` and `archived` take none. Whether a running turn is
+  # delivery or, with `force_immediate`, through the interrupt path; only `failed`
+  # and `archived` take none. Whether a running turn is
   # underway — queue or deliver — is a separate question, Sessions::LiveTurn's.
   #
   # The web follow-up form is not one of these callers: it refuses in its own

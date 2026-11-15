@@ -662,8 +662,8 @@ the session's status at the moment it arrives:
 | any of the three, with `force_immediate: true` | staged as an `EnqueuedMessage` and delivered through `Sessions::InterruptService`, terminating the running turn | 200 |
 | `failed` / `archived` | refused: `{"error": "Cannot send follow-up", "message": "Session is failed. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."}` | 422 |
 
-The refusal's wording comes from `Session#follow_up_refusal`, and MCP `action_session` `follow_up` and
-`manage_enqueued_messages` `send_now` raise the same sentence.
+The refusal's wording comes from `Session#follow_up_refusal`. MCP `action_session` `follow_up` raises
+the same sentence, and `manage_enqueued_messages` `send_now` raises it after `Cannot send follow-up: `.
 
 On the direct path the prompt is also recorded on the session itself, not only handed to the job.
 That is what makes a 200 mean delivery: a worker shutdown between the response and the turn discards
