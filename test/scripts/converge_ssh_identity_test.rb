@@ -103,17 +103,44 @@ class ConvergeSshIdentityTest < ActiveSupport::TestCase
     end
   end
 
-  test "fails the deploy when :2222 presents a different key than the pin" do
+  test "a daemon still serving another key gets exactly one forced restart, then fails the deploy" do
     Dir.mktmpdir do |keys|
       host = keygen(keys, "pinned-host")
       other = keygen(keys, "other-host")
-      code, out, _calls = run_script(
+      code, out, calls = run_script(
         env: { "SSH_HOST_ED25519_KEY" => File.read(host) },
         keyscan: "testhost #{pub_line(other)}"
       )
 
       assert_equal 1, code
+      assert_match(/restarting sshd once/, out)
       assert_match(/not the pinned key/, out)
+      assert_equal 2, calls.size
+      assert calls.last[:argv].strip.end_with?(" restart"), calls.last[:argv]
+      refute_match(/PRIVATE KEY/, calls.last[:argv])
+    end
+  end
+
+  test "accepts a raw host key with CRLF line endings and leading whitespace" do
+    Dir.mktmpdir do |keys|
+      host = keygen(keys, "pinned-host")
+      code, out, _calls = run_script(
+        env: { "SSH_HOST_ED25519_KEY" => "  " + File.read(host).gsub("\n", "\r\n") },
+        keyscan: "testhost #{pub_line(host)}"
+      )
+
+      assert_equal 0, code, out
+    end
+  end
+
+  test "refuses an authorized_keys line with an options prefix" do
+    Dir.mktmpdir do |keys|
+      strad = keygen(keys, "strad-client")
+      code, out, calls = run_script(env: { "AUTHORIZED_PUBKEYS" => %(from="10.0.0.1" #{File.read("#{strad}.pub")}) })
+
+      assert_equal 2, code
+      assert_match(/does not start with a key type/, out)
+      assert_empty calls
     end
   end
 
@@ -140,7 +167,7 @@ class ConvergeSshIdentityTest < ActiveSupport::TestCase
   end
 
   test "refuses a line that is not a public key" do
-    code, out, calls = run_script(env: { "AUTHORIZED_PUBKEYS" => "not-a-key" })
+    code, out, calls = run_script(env: { "AUTHORIZED_PUBKEYS" => "ssh-ed25519 not-base64" })
 
     assert_equal 2, code
     assert_match(/line 1 is not an OpenSSH public key/, out)
@@ -149,7 +176,7 @@ class ConvergeSshIdentityTest < ActiveSupport::TestCase
 
   test "refuses a host key that is not ed25519" do
     Dir.mktmpdir do |keys|
-      host = keygen(keys, "rsa-host", type: "ecdsa")
+      host = keygen(keys, "ecdsa-host", type: "ecdsa")
       code, out, calls = run_script(env: { "SSH_HOST_ED25519_KEY" => File.read(host) })
 
       assert_equal 2, code

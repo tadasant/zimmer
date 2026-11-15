@@ -73,9 +73,15 @@ if [ -n "$AUTHORIZED_PUBKEYS" ]; then
   fi
   n=0
   while IFS= read -r line; do
-    line=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    line=$(printf '%s' "$line" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$line" ] || continue
     n=$((n + 1))
+    # A bare "<type> <blob> [comment]" line only. An options prefix (from="...", command=...)
+    # would shift the blob out of field 2, which is what the box-side dedupe matches on.
+    case "$line" in
+      ssh-*|ecdsa-*|sk-*) ;;
+      *) echo "::error::AUTHORIZED_PUBKEYS line ${n} does not start with a key type (options such as from= are not supported). Nothing was changed."; exit 2 ;;
+    esac
     printf '%s\n' "$line" > "$work/one.pub"
     if ! fp=$(ssh-keygen -l -f "$work/one.pub" 2>/dev/null); then
       echo "::error::AUTHORIZED_PUBKEYS line ${n} is not an OpenSSH public key. Nothing was changed."
@@ -90,9 +96,10 @@ host_pub=""
 if [ -n "$SSH_HOST_ED25519_KEY" ]; then
   hk="$work/host_key"
   ( umask 077
-    case "$SSH_HOST_ED25519_KEY" in
-      -----BEGIN*) printf '%s\n' "$SSH_HOST_ED25519_KEY" > "$hk" ;;
-      *) printf '%s' "$SSH_HOST_ED25519_KEY" | tr -d '[:space:]' | base64 -d > "$hk" 2>/dev/null || : ;;
+    raw=$(printf '%s\n' "$SSH_HOST_ED25519_KEY" | tr -d '\r' | sed -e 's/^[[:space:]]*//')
+    case "$raw" in
+      -----BEGIN*) printf '%s\n' "$raw" > "$hk" ;;
+      *) printf '%s' "$raw" | tr -d '[:space:]' | base64 -d > "$hk" 2>/dev/null || : ;;
     esac )
   if ! derived=$(ssh-keygen -y -f "$hk" 2>/dev/null); then
     echo "::error::SSH_HOST_ED25519_KEY is set but is not a readable, unencrypted OpenSSH private key"
@@ -121,9 +128,17 @@ fi
 # shellcheck disable=SC2016  # expanded remotely, deliberately.
 authorize_remote='
   set -eu
+  # On a droplet created this run, cloud-init may still be appending its own keys and binding
+  # :2222. Let it finish first, bounded, and carry on either way: a box whose cloud-init
+  # failed still deserves the keys.
+  timeout 900 cloud-init status --wait >/dev/null 2>&1 || true
   install -d -m 0700 /root/.ssh
   touch /root/.ssh/authorized_keys
   chmod 600 /root/.ssh/authorized_keys
+  # A file whose last line has no newline would have the next key glued onto it.
+  if [ -s /root/.ssh/authorized_keys ] && [ -n "$(tail -c1 /root/.ssh/authorized_keys)" ]; then
+    echo >> /root/.ssh/authorized_keys
+  fi
   added=0
   while IFS= read -r key; do
     [ -n "$key" ] || continue
@@ -137,19 +152,35 @@ authorize_remote='
   echo "authorized_keys: ${added} key(s) added"
 '
 
-# The wanted public key is passed as $1 (it is public). The private key is read from stdin
-# only when it has to be written; on a converged box it is drained and discarded.
+# The wanted public key is passed as $1 (it is public); $2 = "restart" forces an sshd restart
+# even when the files already hold the key (the recovery path for a daemon still serving an
+# old key). The private key is read from stdin only when it has to be written; on a converged
+# box it is drained and discarded.
+#
+# NO SINGLE QUOTES anywhere in this payload, comments included: it is sent wrapped in
+# sh -c '...', and the guard below refuses to run if one creeps in.
 # shellcheck disable=SC2016
 hostkey_remote='
   set -eu
   want="$1"
+  mode="${2:-}"
+  timeout 900 cloud-init status --wait >/dev/null 2>&1 || true
   cur=$(ssh-keygen -y -f /etc/ssh/ssh_host_ed25519_key 2>/dev/null | awk "{print \$1\" \"\$2}" || true)
   pub=$(awk "{print \$1\" \"\$2}" /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || true)
   if [ "$cur" = "$want" ] && [ "$pub" = "$want" ]; then
     cat > /dev/null
-    echo "host key: already pinned, sshd not restarted"
+    if [ "$mode" = "restart" ]; then
+      sshd -t
+      systemctl restart ssh.service 2>/dev/null || systemctl restart sshd
+      echo "host key: already pinned on disk; restarted sshd so the daemon serves it"
+    else
+      echo "host key: already pinned, sshd not restarted"
+    fi
     exit 0
   fi
+  # Validate the config BEFORE swapping the key, so an unrelated config error cannot leave a
+  # new key on disk that the running daemon never loads.
+  sshd -t
   umask 077
   tmp=$(mktemp /etc/ssh/.ssh_host_ed25519_key.XXXXXX)
   trap "rm -f \"$tmp\"" EXIT
@@ -163,13 +194,16 @@ hostkey_remote='
   mv -f "$tmp" /etc/ssh/ssh_host_ed25519_key
   printf "%s root@%s\n" "$want" "$(hostname)" > /etc/ssh/ssh_host_ed25519_key.pub
   chmod 644 /etc/ssh/ssh_host_ed25519_key.pub
-  sshd -t
   # ssh.service is the one long-lived sshd -D that socket activation hands :22/:2222 to;
   # it loads host keys at start, so it is the unit that has to restart. Open sessions
   # survive (KillMode=process).
   systemctl restart ssh.service 2>/dev/null || systemctl restart sshd
   echo "host key: installed the pinned key and restarted sshd"
 '
+
+case "$hostkey_remote" in
+  *"'"*) echo "::error::internal: the host-key payload contains a single quote and cannot be sent through sh -c."; exit 2 ;;
+esac
 
 # Retried on ssh's own failure (255) only: a freshly-created droplet can report Online on
 # the tailnet before sshd answers. A non-255 status is the payload failing, which a retry
@@ -205,17 +239,28 @@ fi
 if [ -n "$host_pub" ]; then
   echo "Converging the pinned host key on ${HOST}…"
   # The payload is `sh -c`'s script and the wanted key its $1, so stdin stays free for the
-  # private key. Single-quoting is safe: neither the payload nor a validated
-  # "ssh-ed25519 <base64>" contains a single quote.
+  # private key. Single-quoting is safe: the guard above keeps quotes out of the payload, and a
+  # validated "ssh-ed25519 <base64>" contains none.
   run_remote "host-key converge" "$hk" "sh -c '${hostkey_remote}' converge '${host_pub}'"
 
   # Prove it from the outside: the key :KEYSCAN_PORT presents is what strad's pin checks.
-  presented=""
-  for attempt in $(seq 1 5); do
-    presented=$(ssh-keyscan -T 10 -t ed25519 -p "$KEYSCAN_PORT" "$HOST" 2>/dev/null | awk '$2 == "ssh-ed25519" {print $2" "$3; exit}' || true)
-    [ -n "$presented" ] && break
-    if [ "$attempt" -lt 5 ]; then sleep 5; fi
-  done
+  # The budget (~2 minutes) covers a just-restarted sshd and a cloud-init that timed out above.
+  scan() {
+    presented=""
+    for attempt in $(seq 1 12); do
+      presented=$(ssh-keyscan -T 10 -t ed25519 -p "$KEYSCAN_PORT" "$HOST" 2>/dev/null | awk '$2 == "ssh-ed25519" {print $2" "$3; exit}' || true)
+      [ "$presented" = "$host_pub" ] && return 0
+      if [ "$attempt" -lt 12 ]; then sleep 10; fi
+    done
+    return 1
+  }
+  if ! scan && [ -n "$presented" ]; then
+    # The files hold the key but the daemon serves another: an earlier run swapped the file and
+    # never got to the restart. Restart once, then look again.
+    echo "   ${HOST}:${KEYSCAN_PORT} still serves another key; restarting sshd once to load the pinned one…"
+    run_remote "sshd restart" "$hk" "sh -c '${hostkey_remote}' converge '${host_pub}' restart"
+    scan || true
+  fi
   if [ -z "$presented" ]; then
     echo "::error::${HOST}:${KEYSCAN_PORT} presented no ed25519 host key, so the pin cannot be confirmed."
     echo "::error::OpenSSH's tailnet listener is down or unreachable; strad's SSH slug will fail the same way."

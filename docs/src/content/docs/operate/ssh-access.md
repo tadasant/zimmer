@@ -347,7 +347,12 @@ no existing box through Terraform. Which path actually converges it depends on t
 
 **Staging — just deploy.** Every `deploy-staging` run appends `ADMIN_SSH_PUBKEYS` and
 `STRAD_SSH_PUBKEY` to the live box's `authorized_keys` over Tailscale SSH — see [the SSH identity is
-converged on every deploy](#the-ssh-identity-is-converged-on-every-deploy). No rebuild is needed.
+converged on every deploy](#the-ssh-identity-is-converged-on-every-deploy). No rebuild is needed to
+*add* a key. Removing one still needs a rebuild (`recreate_droplet=true`) or a by-hand edit. Before a
+rebuild, read [the one fallback door a rebuilt droplet
+has](/limitations/#a-rebuilt-droplet-has-exactly-one-fallback-door-and-it-is-the-digitalocean-console),
+and budget rebuilds: each one costs a TLS cert, and [Let's Encrypt allows only five issuances a
+week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
 
 **Production — append the key live, over Tailscale SSH.** Production cannot be casually recreated, so
 a rebuild is not an option. Tailscale SSH on `:22` is, because it works regardless of what `:2222` is
@@ -405,7 +410,9 @@ the root-password repair and before Kamal:
 | --- | --- | --- |
 | `ADMIN_SSH_PUBKEYS` | Actions variable (JSON list) | Appends each key to root's `authorized_keys` if its key blob is not already there. |
 | `STRAD_SSH_PUBKEY` | Actions variable (one public-key line) | The same. This is strad's SSH client key; its private half is the slug's `SSH_PRIVATE_KEY` in strad. |
-| `STAGING_SSH_HOST_ED25519_KEY` | Actions **secret** (OpenSSH private key, raw or base64) | Installs it as `/etc/ssh/ssh_host_ed25519_key` if the box holds a different one, restarts `ssh.service`, then runs `ssh-keyscan -p 2222` and **fails the deploy** unless `:2222` presents exactly that key. |
+| `STAGING_SSH_HOST_ED25519_KEY` | Actions **secret** (OpenSSH private key, raw or base64) | If the box holds a different key: checks `sshd -t`, installs it as `/etc/ssh/ssh_host_ed25519_key`, and restarts `ssh.service`. If the box already holds it, nothing is written or restarted. Either way it then runs `ssh-keyscan -p 2222` from the runner. If `:2222` serves some other key, it restarts `sshd` once and scans again. If `:2222` still does not present exactly the pinned key, the deploy **fails**. |
+
+Both converges first wait (bounded) for `cloud-init status --wait`, so on a droplet created in the same run they do not race cloud-init's own key append or its `:2222` bind. The keyscan runs from the CI runner over the tailnet. The policy's network grant is `* → *`, so the runner reaches `:2222` the same way strad does.
 
 All three are optional, so a fork that sets none of them deploys as before. When the host key is set,
 it is the stable identity strad pins: the first deploy after it is set re-keys the box, and every
@@ -416,6 +423,8 @@ key travels only on `ssh`'s stdin, never on a command line.
 The deploy keeps strad's copy of the host key correct by pinning the *host*, rather than by writing
 each new key into strad. That second design would need a strad write credential in CI, and that is
 more blast radius than one more Actions secret.
+
+**Tailscale SSH on `:22` changes host key too.** When `tailscaled` runs as root, it serves the host keys in `/etc/ssh`. So the first deploy that pins the key also changes what `:22` presents. CI does not notice, because it uses `UserKnownHostsFile /dev/null`. A human whose `tailscale ssh` client cached the old key may see one host-key warning. The key stays fixed after that, across rebuilds too.
 
 **Why not Terraform's `ssh_host_ed25519_key`.** The module already has that variable, and production
 uses it from the private repo. Staging deliberately does not, because it is delivered through
@@ -431,7 +440,7 @@ service. That includes every agent-session container. Over SSH, the key lands on
 | `SSH_PORT` | `2222`. Do not use 22: tailnet `:22` is Tailscale SSH, which ignores publickey and has no SSH rule for strad's node. `:2222` is real OpenSSH. |
 | `SSH_USERNAME` | `root`. It is the only login user on the box, key-only (`PermitRootLogin prohibit-password`). |
 | `SSH_PRIVATE_KEY` | The private half of `STRAD_SSH_PUBKEY`. |
-| `SSH_HOST_KEY` | The public half of `STAGING_SSH_HOST_ED25519_KEY`, as one `ssh-ed25519 AAAA…` line. Pin ed25519 only. The box also has RSA and ECDSA host keys, and those still change on every rebuild. |
+| `SSH_HOST_KEY` | The public half of `STAGING_SSH_HOST_ED25519_KEY`, as one `ssh-ed25519 AAAA…` line. Pin ed25519 only. The box also has RSA and ECDSA host keys, and those still change on every rebuild. strad offers only the host-key algorithms of the key types it has pinned, so an ed25519-only pin negotiates ed25519. |
 
 The tailnet policy needs nothing new for `:2222`: it is plain TCP to a tailnet address, and the
 network-level grant covers it. Turning the sidecar on, and seeding the slug, are strad-production
