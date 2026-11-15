@@ -555,6 +555,31 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_empty session.enqueued_messages.reload
   end
 
+  # The refusal Session#follow_up_refusal words, raised as-is by both branches.
+  test "follow_up refuses a session that cannot take one, in the shared wording" do
+    session = sessions(:failed)
+    AgentSessionJob.expects(:enqueue_with_prompt).never
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Anyone there?")
+    end
+
+    assert_equal "Session is failed. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.",
+                 error.message
+  end
+
+  test "force_immediate follow_up refuses a session that cannot take one, before staging anything" do
+    session = sessions(:failed)
+    Sessions::InterruptWithFollowUp.expects(:call).never
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Now", "force_immediate" => true)
+    end
+
+    assert_equal session.follow_up_refusal, error.message
+    assert_empty session.enqueued_messages.reload
+  end
+
   test "follow_up requires a prompt" do
     error = assert_raises(Mcp::ToolError) { @tool.call("action" => "follow_up", "session_id" => sessions(:needs_input).id) }
     assert_match(/"prompt" parameter is required/, error.message)
