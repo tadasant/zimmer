@@ -22,6 +22,10 @@ module Mcp
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
+  #   live_mode      → the Live Mode assistant's whole Zimmer surface: hand off
+  #                    through the router, read the board, find and check on a
+  #                    session, follow one up, push to the phone. Six tools,
+  #                    four of them narrowed (LiveMode* overrides)
   #
   # Every domain group — base or opt-in — has a `_readonly` variant that drops
   # write tools.
@@ -42,7 +46,12 @@ module Mcp
     # connection carrying its write tools outweighs the convenience.
     OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations].freeze
 
-    COMPOSITE_GROUPS = %w[self_session].freeze
+    # A composite group is a curated cut across domain groups, never part of
+    # "no groups". `live_mode` is the one a Live conversation's own `zimmer-live`
+    # catalog entry names; LiveConversations::ToolBridge reads the group off that
+    # entry in-process, so — unlike everywhere else on this endpoint — the live
+    # model cannot widen it by composing its own `?tool_groups=`.
+    COMPOSITE_GROUPS = %w[self_session live_mode].freeze
 
     DOMAIN_GROUPS = (BASE_GROUPS + OPT_IN_GROUPS).freeze
     VALID_GROUPS = (DOMAIN_GROUPS + DOMAIN_GROUPS.map { |g| "#{g}_readonly" } + COMPOSITE_GROUPS).freeze
@@ -55,8 +64,18 @@ module Mcp
 
     ALL_TOOLS = [
       # Sessions — reads
-      Definition.new(klass: "Mcp::Tools::QuickSearchSessions", group: "sessions", write: false),
-      Definition.new(klass: "Mcp::Tools::GetSession", group: "sessions", write: false, composite_groups: %w[self_session]),
+      # In live_mode as a narrowed override: titles and metadata, archived
+      # included, every word in any order — what somebody remembering a session
+      # out loud needs — and no transcript scan, the slow multi-word phrase
+      # search that came back empty thirteen times in one conversation.
+      Definition.new(
+        klass: "Mcp::Tools::QuickSearchSessions",
+        group: "sessions",
+        write: false,
+        composite_groups: %w[live_mode],
+        composite_overrides: { "live_mode" => "Mcp::Tools::LiveModeSearchSessions" }
+      ),
+      Definition.new(klass: "Mcp::Tools::GetSession", group: "sessions", write: false, composite_groups: %w[self_session live_mode]),
       Definition.new(klass: "Mcp::Tools::GetConfigs", group: "sessions", write: false, composite_groups: %w[self_session]),
       # In self_session as well as sessions: with provenance offered on demand
       # rather than injected, the filtered self-session server is the only
@@ -86,7 +105,17 @@ module Mcp
       # HumanMessage the browser (or the iOS app, acting as its approver) writes for
       # the click, and that record — not the marker — is the provenance an audit
       # keys on. See Sessions::AuthorizeMerge.
-      Definition.new(klass: "Mcp::Tools::GetUserView", group: "sessions", write: false),
+      #
+      # In live_mode as LiveModeGetUserView: last-touched first by default, and a
+      # short description that does not send the voice model to the reorder tool
+      # it does not have.
+      Definition.new(
+        klass: "Mcp::Tools::GetUserView",
+        group: "sessions",
+        write: false,
+        composite_groups: %w[live_mode],
+        composite_overrides: { "live_mode" => "Mcp::Tools::LiveModeGetUserView" }
+      ),
 
       # Sessions — writes
       # Ahead of start_session, because a client lists tools in this order and an assistant that
@@ -95,14 +124,31 @@ module Mcp
       # not in self_session, where a session managing itself has no business
       # starting a router. A restricted connection is refused unless its allowlist
       # already names the router root — see the tool.
-      Definition.new(klass: "Mcp::Tools::QuickRouter", group: "sessions", write: true),
+      #
+      # In live_mode as LiveModeQuickRouter, which takes the prompt and nothing
+      # else. It is Live Mode's only way to start work: there is no start_session
+      # on that surface, so everything about how work is set up is the router's.
+      Definition.new(
+        klass: "Mcp::Tools::QuickRouter",
+        group: "sessions",
+        write: true,
+        composite_groups: %w[live_mode],
+        composite_overrides: { "live_mode" => "Mcp::Tools::LiveModeQuickRouter" }
+      ),
       Definition.new(klass: "Mcp::Tools::StartSession", group: "sessions", write: true),
       Definition.new(
         klass: "Mcp::Tools::ActionSession",
         group: "sessions",
         write: true,
-        composite_groups: %w[self_session],
-        composite_overrides: { "self_session" => "Mcp::Tools::SelfSessionActionSession" }
+        # live_mode first: a Live conversation that also holds the self-session
+        # entry must still get its own narrowed action_session, never the
+        # self-management one. A session's own connection never names live_mode.
+        composite_groups: %w[live_mode self_session],
+        composite_overrides: {
+          "self_session" => "Mcp::Tools::SelfSessionActionSession",
+          # follow_up, archive (never forced), unarchive, set_carplay_fit.
+          "live_mode" => "Mcp::Tools::LiveModeActionSession"
+        }
       ),
       Definition.new(klass: "Mcp::Tools::ManageEnqueuedMessages", group: "sessions", write: true),
       # The write half of the User view. Beside `change_precedence` rather than
@@ -124,7 +170,7 @@ module Mcp
 
       # Notifications
       Definition.new(klass: "Mcp::Tools::GetNotifications", group: "notifications", write: false),
-      Definition.new(klass: "Mcp::Tools::SendPushNotification", group: "notifications", write: true, composite_groups: %w[self_session]),
+      Definition.new(klass: "Mcp::Tools::SendPushNotification", group: "notifications", write: true, composite_groups: %w[self_session live_mode]),
       Definition.new(klass: "Mcp::Tools::ActionNotification", group: "notifications", write: true),
 
       # Triggers

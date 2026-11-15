@@ -357,6 +357,33 @@ The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 
 
 The cues are tested as samples: level, pitch, attack, brightness and length (`LiveDiagnosticsTests`). What a driver hears also passes through the voice-processing engine, the CarPlay route and the car's own processing, and none of that runs in CI. Whether each cue carries over road noise without sounding harsh is checked by ear on a drive, with the checklist in `ios/LIVE_CUES.md`.
 
+### Live Mode's narrow surface waits on a catalog change
+
+The `live_mode` tool group and its `zimmer-live` entry ship with Zimmer, but the `live-mode` root
+that conversations start from is in a deployment's own catalog. Until that root moves from the full
+`zimmer` entry to `zimmer-live`, a new conversation still gets the full Zimmer surface (about thirty
+tools) through the gateway. Attaching servers is off either way. A conversation keeps the servers it
+started with, so one opened before the move keeps the full surface until the person starts a new one.
+
+The order matters. Before this group existed a catalog entry naming `live_mode` got no Zimmer tools
+at all: `Mcp::Registry.parse_groups` drops a group it does not know, and a list of only unknown
+groups is empty, not the default surface. That fails closed on purpose, so the catalog change has to
+land after the Zimmer deploy that adds the group.
+
+The narrow surface bounds what the live model does by itself, not what the work it starts can do.
+A `quick_router` session can do anything a router can, so a request the model hands it is limited
+only by that agent's judgement. Two things are closed on the way: `action_live_settings` refuses
+`direct_servers_enabled`, and both `quick_router` and `follow_up` refuse the
+`[HUMAN-AUTHORIZED MERGE]` marker. A merge described in words rather than marked is not caught
+there. What counts as a human's merge approval is still the HumanMessage only `authorize_merge`
+and the Merge button write. `PATCH /api/v1/live/settings` takes the fleet's shared API key, so the
+setting is a person's by convention there, not by enforcement.
+
+`LiveModeActionSession` acts on any session id it is given. "Sessions the assistant already knows
+about" is a prompt rule, not a check: nothing yet records which sessions a conversation started,
+touched or heard about. Interrupting a session (`force_immediate`) and archiving one need no spoken
+confirmation. Only merging does.
+
 ### The GPT-Live engine has never run against OpenAI or Anthropic
 
 The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session

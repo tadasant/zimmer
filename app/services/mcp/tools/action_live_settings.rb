@@ -10,8 +10,14 @@ module Mcp
 
       ACTIONS = %w[update reset restore_guidance].freeze
 
+      # Whether the Live Mode assistant may attach catalog servers to itself. An
+      # agent reached through quick_router could otherwise turn it on for the
+      # assistant that asked; a reset puts it back to off, the safe side, so
+      # only `update` refuses it.
+      PERSON_ONLY = :direct_servers_enabled
+
       description <<~DESC
-        Change the Live settings — Live Mode's models, voice, speaking speed, turn detection, output caps, voice engine and its Claude model and spend caps — or the Live mode guidance appended to its instructions on every turn. Read them first with `get_live_settings`.
+        Change the Live settings — Live Mode's models, voice, speaking speed, turn detection, output caps, voice engine and its Claude model and spend caps (not whether Live Mode may attach MCP servers, which is a person's) — or the Live mode guidance appended to its instructions on every turn. Read them first with `get_live_settings`.
 
         **Actions:**
         - **update**: pass `settings`, an object of setting key → value (keys and choices as `get_live_settings` lists them; "default" puts one back), and/or `guidance` (replaces it) or `append_guidance` (adds a line). A model, voice or mode off the list is refused and nothing is saved; a number outside its range is clamped and the answer says so. A turn detection setting the current mode does not use is saved, and the answer says it has no effect (`get_live_settings` marks these).
@@ -52,6 +58,10 @@ module Mcp
       def update(args)
         settings = args["settings"] || {}
         raise ToolError, "\"settings\" must be an object." unless settings.is_a?(Hash)
+        if settings.key?(PERSON_ONLY.to_s)
+          raise ToolError, "Nothing changed. #{PERSON_ONLY} is a person's to change, on the Live settings page or " \
+                           "PATCH /api/v1/live/settings — not an agent's over MCP."
+        end
 
         attributes = settings.merge(args.slice("guidance", "append_guidance"))
         raise ToolError, "Nothing to change: pass settings, guidance or append_guidance." if attributes.empty?

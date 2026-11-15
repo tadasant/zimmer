@@ -9,10 +9,17 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     @bridge = LiveConversations::ToolBridge.new(@conversation)
   end
 
+  # Attaching servers is off unless a person turns it on (LiveSetting
+  # `direct_servers_enabled`). The tests of what attaching does turn it on first.
+  def allow_direct_servers!
+    LiveSetting.editable.update!(direct_servers_enabled: LiveSetting::DIRECT_SERVERS_ON)
+    @bridge = LiveConversations::ToolBridge.new(@conversation)
+  end
+
   test "a conversation with the zimmer server gets the gateway, not one function per Zimmer tool" do
     names = @bridge.functions.map(&:name)
 
-    assert_equal %w[zimmer describe_zimmer_tool list_mcp_servers enable_mcp_server disable_mcp_server get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad authorize_merge], names
+    assert_equal %w[zimmer describe_zimmer_tool get_live_settings update_live_settings list_live_conversations switch_live_conversation scratchpad authorize_merge], names
     gateway = @bridge.functions.first
     assert_includes gateway.parameters[:properties][:tool][:enum], "quick_router"
     assert_includes gateway.parameters[:properties][:tool][:enum], "get_system_health"
@@ -36,6 +43,11 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_not_includes bridge.functions.map(&:name), "zimmer"
     result = bridge.execute("zimmer", { tool: "get_system_health" }.to_json, call_id: "c1")
     assert result.error
+    assert_match(/no Zimmer tools\. Tell the person to start a new Live conversation/, result.output)
+
+    allow_direct_servers!
+    @conversation.update!(mcp_servers: [])
+    result = LiveConversations::ToolBridge.new(@conversation).execute("zimmer", { tool: "get_system_health" }.to_json, call_id: "c1b")
     assert_match(/enable_mcp_server with name "zimmer"/, result.output)
   end
 
@@ -128,6 +140,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "list_mcp_servers lists the catalog with what this conversation has enabled" do
+    allow_direct_servers!
     listing = JSON.parse(@bridge.execute("list_mcp_servers", "{}", call_id: "c8").output)
     zimmer = listing.find { |entry| entry["name"] == "zimmer" }
 
@@ -136,6 +149,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "self-enable: enabling a catalog server lists its tools once and exposes them as direct functions" do
+    allow_direct_servers!
     stub_clock_server
 
     result = @bridge.execute("enable_mcp_server", { name: "test-clock" }.to_json, call_id: "c9")
@@ -156,6 +170,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "a stdio server Zimmer spawns gets its catalog env and a few basics, never the Rails environment" do
+    allow_direct_servers!
     stub_clock_server
     @bridge.execute("enable_mcp_server", { name: "test-clock" }.to_json, call_id: "c11")
     ENV["LIVE_TEST_LEAK_CHECK"] = "should-not-reach-the-server"
@@ -172,6 +187,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "disabling a server removes its functions" do
+    allow_direct_servers!
     stub_clock_server
     @bridge.execute("enable_mcp_server", { name: "test-clock" }.to_json, call_id: "c13")
 
@@ -184,6 +200,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "enabling a server that is not in the catalog, or cannot start, is a readable error" do
+    allow_direct_servers!
     result = @bridge.execute("enable_mcp_server", { name: "no-such-server" }.to_json, call_id: "c15")
     assert result.error
     assert_match(/No MCP server named "no-such-server"/, result.output)
@@ -197,6 +214,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "enabling one of Zimmer's own servers widens the gateway instead of adding direct tools" do
+    allow_direct_servers!
     @conversation.update!(mcp_servers: [ "zimmer-sessions" ])
     result = LiveConversations::ToolBridge.new(@conversation).execute("enable_mcp_server", { name: "zimmer-self-session" }.to_json, call_id: "c17")
 
@@ -318,6 +336,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   end
 
   test "a catalog server's error stays off the log line, and an exception logs only its class" do
+    allow_direct_servers!
     lines = []
     Rails.logger.stubs(:warn).with { |message| lines << message; true }
     @conversation.update!(mcp_servers: [ "clock" ], mcp_tool_cache: { "clock" => [ { "name" => "now", "description" => "x", "input_schema" => { "type" => "object" } } ] })
@@ -459,6 +478,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
   test "the target's own servers are what a bridge built on it offers" do
     go_back_setup
+    allow_direct_servers!
     stub_clock_server
     other = create_live_conversation(status: LiveConversation::ENDED, ended_at: 1.hour.ago, mcp_servers: [ "zimmer", CLOCK_SERVER ],
                                      mcp_tool_cache: { CLOCK_SERVER => [ { "name" => "now", "description" => "The time.", "input_schema" => { "type" => "object" } } ] })
@@ -470,48 +490,101 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
     assert_includes LiveConversations::ToolBridge.new(target).functions.map(&:name), "test-clock__now"
   end
 
-  # --- Live Mode's defaults for a session search -----------------------------
+  # --- Attaching servers, off by default -------------------------------------
 
-  def search(arguments)
-    @bridge.execute("zimmer", { tool: "quick_search_sessions", arguments: arguments }.to_json, call_id: "s#{SecureRandom.hex(3)}")
+  test "with attaching off, there is no catalog to list, no server to enable, and no direct tool" do
+    @conversation.update!(mcp_servers: [ "zimmer", "clock" ],
+                          mcp_tool_cache: { "clock" => [ { "name" => "now", "description" => "x", "input_schema" => { "type" => "object" } } ] })
+    bridge = LiveConversations::ToolBridge.new(@conversation)
+    names = bridge.functions.map(&:name)
+
+    assert_not bridge.direct_servers_enabled?
+    assert_empty names & %w[list_mcp_servers enable_mcp_server disable_mcp_server clock__now]
+    assert_includes names, "zimmer"
+    assert_includes names, "authorize_merge"
+
+    %w[list_mcp_servers enable_mcp_server disable_mcp_server].each do |function|
+      result = bridge.execute(function, { name: "zimmer-settings" }.to_json, call_id: "off-#{function}")
+      assert result.error
+      assert_equal LiveConversations::ToolBridge::DIRECT_SERVERS_OFF, result.output
+    end
+    assert_equal %w[zimmer clock], @conversation.reload.mcp_servers, "a refused enable or disable changed the conversation"
+
+    LiveConversations::CatalogServer.expects(:find!).never
+    result = bridge.execute("clock__now", "{}", call_id: "off-direct")
+    assert result.error
+    assert_match(/No function named clock__now\. Use the functions you have, or hand it to a background session with quick_router/, result.output)
   end
 
-  test "a search from Live Mode includes archived sessions and matches the words in any order" do
+  test "the live model cannot turn attaching on for itself" do
+    properties = @bridge.functions.find { |f| f.name == "update_live_settings" }.parameters[:properties]
+    assert_not properties.key?("direct_servers_enabled")
+
+    result = @bridge.execute("update_live_settings", { direct_servers_enabled: "on" }.to_json, call_id: "self-on")
+
+    assert result.error
+    assert_match(/direct_servers_enabled is a person's to change/, result.output)
+    assert_not LiveConversations::ToolBridge.new(@conversation).direct_servers_enabled?
+  end
+
+  # --- The live_mode surface ----------------------------------------------------
+
+  def live_mode_bridge
+    @conversation.update!(mcp_servers: [ "zimmer-live" ])
+    LiveConversations::ToolBridge.new(@conversation)
+  end
+
+  def live_call(bridge, tool, arguments)
+    bridge.execute("zimmer", { tool: tool, arguments: arguments }.to_json, call_id: "lm#{SecureRandom.hex(3)}")
+  end
+
+  test "the zimmer-live entry gives the gateway the six live_mode tools and nothing else" do
+    bridge = live_mode_bridge
+    gateway = bridge.functions.first
+
+    assert_equal %w[get_session get_user_view quick_router action_session quick_search_sessions send_push_notification].sort,
+                 gateway.parameters[:properties][:tool][:enum].sort
+    assert_equal Mcp::Tools::LiveModeActionSession, bridge.zimmer_tool_class("action_session")
+    assert_equal Mcp::Tools::LiveModeSearchSessions, bridge.zimmer_tool_class("quick_search_sessions")
+    assert_nil bridge.zimmer_tool_class("start_session")
+    # What the voice model reads: one summary line per tool, merge kept out of the follow-up and the router.
+    assert_match(/- action_session\(session_id\*, action\*\): Tell an existing session something with follow_up \(never a merge approval/, gateway.description)
+    assert_match(/- quick_router\(prompt\*\): Hand new work to a background agent in plain words \(never a merge/, gateway.description)
+  end
+
+  test "the live_mode search includes archived sessions, matches the words in any order, and cannot scan transcripts" do
     target = Session.create!(title: "Diagnose failed Zimmer quokka voice session", prompt: "p", status: :archived,
                              git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code")
+    bridge = live_mode_bridge
 
-    result = search(query: "diagnose quokka")
+    result = live_call(bridge, "quick_search_sessions", { query: "quokka diagnose", search_contents: true, show_archived: false })
 
     assert_not result.error, result.output
     assert_includes result.output, "(ID: #{target.id})"
-    assert_includes result.output, 'show_archived: true, match: "all_words"'
-    # The turn records what the model asked for, not what Zimmer filled in.
-    assert_equal({ "query" => "diagnose quokka" }, @conversation.turns.last.tool_arguments["arguments"])
+    assert_not_includes result.output, "transcript search"
+    assert_not_includes result.output, "Live Mode searched with"
+    # The turn records what the model asked for.
+    assert_equal({ "query" => "quokka diagnose", "search_contents" => true, "show_archived" => false },
+                 @conversation.turns.last.tool_arguments["arguments"])
   end
 
-  test "an argument the model passed wins over Live Mode's default" do
+  test "the full zimmer surface's search keeps the tool's own defaults: the bridge fills nothing in" do
     target = Session.create!(title: "Quokka archived explicit", prompt: "p", status: :archived,
                              git_root: "https://github.com/test/repo.git", agent_runtime: "claude_code")
 
-    result = search(query: "Quokka archived explicit", show_archived: false)
+    result = @bridge.execute("zimmer", { tool: "quick_search_sessions", arguments: { query: "quokka explicit" } }.to_json, call_id: "full")
 
     assert_not_includes result.output, "(ID: #{target.id})"
-    assert_includes result.output, "1 more archived session(s) match"
-    assert_includes result.output, 'Live Mode searched with match: "all_words" (its defaults for finding a session; pass it'
+    assert_not_includes result.output, "Live Mode searched with"
   end
 
-  test "a listing and an id lookup get no defaults; a transcript scan gets show_archived but not match" do
-    assert_not_includes search({}).output, "Live Mode searched with"
-    assert_not_includes search(id: sessions(:router_child_running).id, query: "quokka").output, "Live Mode searched with"
+  test "the live_mode action_session refuses everything but its four actions" do
+    session = sessions(:router_child_running)
+    result = live_call(live_mode_bridge, "action_session", { session_id: session.id, action: "change_mcp_servers", mcp_servers: [ "zimmer" ] })
 
-    scan = search(query: "quokka", search_contents: true).output
-    assert_includes scan, "Live Mode searched with show_archived: true (its defaults"
-    assert_not_includes scan, "match:"
-  end
-
-  test "a status filter suppresses the archived default, an empty one does not" do
-    assert_includes search(query: "quokka", status: "running").output, 'Live Mode searched with match: "all_words"'
-    assert_includes search(query: "quokka", status: []).output, "show_archived: true, match"
+    assert result.error
+    # Refused by the narrowed schema, before the tool body runs.
+    assert_match(/not one of: \["follow_up", "archive", "unarchive", "set_carplay_fit"\]/, result.output)
   end
 
   test "hang_up is a voice call's, whatever servers are enabled, and says when to use it and when not" do

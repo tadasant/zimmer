@@ -179,6 +179,18 @@ class McpControllerTest < ActionDispatch::IntegrationTest
     assert_empty all_tools.grep(/pin|place|remove|start_now|promote/)
   end
 
+  # The Live Mode assistant's surface over the wire: six tools, and the
+  # narrowed action_session schema is what a client is served.
+  test "the live_mode group serves the six Live Mode tools and the narrowed action_session" do
+    tools = rpc("tools/list", path: "/mcp?tool_groups=live_mode")["result"]["tools"]
+
+    assert_equal %w[action_session get_session get_user_view quick_router quick_search_sessions send_push_notification],
+                 tools.map { |t| t["name"] }.sort
+    action = tools.find { |t| t["name"] == "action_session" }
+    assert_equal %w[follow_up archive unarchive set_carplay_fit], action["inputSchema"]["properties"]["action"]["enum"]
+    assert_equal %w[prompt], tools.find { |t| t["name"] == "quick_router" }["inputSchema"]["properties"].keys
+  end
+
   # The Settings page over the wire. The write changes what every later session
   # is created under, so it is offered only to a connection that names
   # `settings`: the unscoped surface and the self_session server injected into

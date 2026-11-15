@@ -162,7 +162,7 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal "ek_1", response.parsed_body["client_secret"]
 
-    post tool_calls_live_conversation_path(conversation), params: { name: "list_mcp_servers", arguments: "{}", call_id: "call_9" }, as: :json
+    post tool_calls_live_conversation_path(conversation), params: { name: "get_live_settings", arguments: "{}", call_id: "call_9" }, as: :json
     assert_response :success
     assert_equal false, response.parsed_body["error"]
     assert_equal false, response.parsed_body["tools_changed"]
