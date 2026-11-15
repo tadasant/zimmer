@@ -422,6 +422,14 @@ The **Claude billing** setting was removed when Live Mode's Claude moved onto Zi
 Code credential. Its column stays on `live_settings`, in `LiveSetting.ignored_columns`, until the
 second deploy of its [two-phase drop](/operate/deploying/#dropping-a-column-takes-two-deploys).
 
+### Out of credits on GPT-Live is retried as a drop
+
+On the Realtime engine the app reads OpenAI's out-of-credits refusal (`LiveBlock`): the call ends
+with that reason and the car stops retrying. The GPT-Live engine bills the same OpenAI account, but
+its refusal arrives on the data channel or from Zimmer's session start, and neither path checks for
+it. There, a call refused for credits still reads as a dropped call, and the car retries it until
+its budget runs out.
+
 ### Live costs miss the phone's Realtime calls
 
 The iOS app and CarPlay report a call's usage to the voice-engine ledger only on `gpt_live_claude`

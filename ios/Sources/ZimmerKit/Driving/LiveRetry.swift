@@ -110,7 +110,7 @@ public struct LiveRetry: Hashable, Sendable {
     /// moment and the panel would have to come down under it; the call screen has its own gear.
     public func offersSettings(callIsActive: Bool) -> Bool {
         switch tile(callIsActive: callIsActive) {
-        // Blocked too: a setting (the voice engine) may be the way round it.
+        // Blocked too: nothing is under way, so nothing can come up over the panel.
         case .continueConversation, .unavailable, .blocked: return true
         case .newConversation, .connecting, .inCall, .retrying: return false
         }
