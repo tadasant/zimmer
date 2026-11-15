@@ -406,10 +406,21 @@ LiveKit agent worker deployed next to Zimmer, speech-to-text and text-to-speech 
 LiveKit client on the web dock and the phone. Unlike the other engines, its audio would pass
 through infrastructure Zimmer runs.
 
+### Without an Anthropic key, Live Mode's Claude is Haiku at best
+
+Anthropic refuses Zimmer's Claude Code subscription token for Opus and Sonnet when the request is
+not Claude Code: production saw a 429 `rate_limit_error` with the message `Error` on every
+`gpt_live_claude` delegation on 2026-11-15. Zimmer does not disguise its requests as Claude Code to
+get past that. Without `LIVE_ANTHROPIC_API_KEY`, `ClaudeDelegate` retries a refused model on
+`claude-haiku-5-5`. Whether Anthropic accepts the subscription token for Haiku outside Claude Code
+has not been seen in production. If it does not, the engine answers only with "Claude turned down
+Zimmer's Claude Code subscription" until a key is set.
+
 ### Live Mode's Claude shares the agent fleet's quota
 
-The `gpt_live_claude` engine calls Claude on Zimmer's current Claude Code account, so every
-delegation draws on the same 5-hour and weekly windows as the agent sessions. Nothing in the
+Without `LIVE_ANTHROPIC_API_KEY`, the `gpt_live_claude` engine calls Claude on Zimmer's current
+Claude Code account, so every delegation draws on the same 5-hour and weekly windows as the agent
+sessions. Nothing in the
 quota pacing (`SpotGateService`, the burn-rate sampler) knows about it: Live Mode's use is not in
 `SessionTokenUsage`, so a long call is invisible to the spot gate until the account's own quota
 reading moves. A window the fleet has used up fails a delegation mid-call, which is spoken as a
