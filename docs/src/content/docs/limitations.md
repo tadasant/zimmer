@@ -8711,7 +8711,7 @@ The Simulator is not a car. Its CarPlay window has no audio route of a car's own
 microphone and speaker moving to the car, and the audio engine's restart when they do, are
 confirmed only by driving, or by Apple's CarPlay Simulator app with a physical iPhone over USB,
 which no CI runner has. The drill's call never connects (CI has no microphone and no OpenAI key),
-so a conversation's own states (listening, hearing you, replying) are not driven either, and Send now has never ended a real turn: the drill shows its state on a call that hears nobody and runs its closure, which finds nothing to send. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
+so a conversation's own states (listening, hearing you, replying) are not driven either, and Send now has never ended a real turn: the drill shows its state on a call that hears nobody and runs its closure, which finds nothing to send. Nor is the microphone permission: the drill's fixture holds every call on a permission prompt nobody answers and draws no system alert, because XCUITest answers a real one Don't Allow whenever a tap finds it up, and a refused microphone makes the car give up at once instead of retrying. The car's handling of a refused microphone is covered by `LiveRetry`'s give-up rule in `CarPlayTests`, not by the drill. In the Simulator, CarPlay never reconnects Zimmer's scene to a relaunched process
 (the window stays blank), so the drill runs in one process; whether a car does the same after
 Zimmer crashes or is killed is untested. Opening the CarPlay window needs the Simulator app's GUI and a System Events click, which
 GitHub's hosted macOS runners allow; a runner that refuses Accessibility fails the drill rather
