@@ -68,8 +68,10 @@ module Mcp
         **CarPlay fit** is a third axis, for a driver: whether what a session needs next from the human can be done by voice from a car (`carplay_ok`), needs a screen or keyboard (`laptop_only`), or has not been judged. Zimmer derives it from the status summary at every rest; a session started, followed up or acted on from CarPlay is marked `carplay_ok` with source `carplay`, a mark that does not go stale and is demoted only when a later judgement clearly finds a laptop-only step. A row reports its mark, with who wrote it and whether it is current. Filter on it with `carplay_fit` only when you are triaging for a driver — like visibility, it is unset by default and says nothing about scheduling.
 
         **Paused sessions.** A result carrying `**Paused:** yes` is asleep until a time somebody chose. It is
-        still listed, and still holds its precedence, but Zimmer refuses to start it before its wake fires —
-        a pause outranks precedence and scheduling class. Skip it and take the next candidate.
+        still listed, and still holds its precedence, but no scheduler starts it before its wake fires —
+        a pause outranks precedence and scheduling class, so a caller working a queue skips it and takes the
+        next candidate. A pause does NOT hold back a message: `action_session` `follow_up` wakes it for one
+        turn immediately, and it goes back to the same wait after answering.
 
         **Returns:** A list of matching sessions with their status, configuration, and metadata.
 
@@ -480,8 +482,11 @@ module Mcp
         if paused
           at = session.pending_wake_at
           when_phrase = at ? "until #{at.utc.iso8601}" : "on a pending wake-up"
-          lines << "- **Paused:** yes — asleep #{when_phrase}. Zimmer will not start it before then, " \
-                   "whatever its precedence or scheduling class. Skip it and take the next candidate."
+          lines << "- **Paused:** yes — asleep #{when_phrase}. No scheduler starts it before then, whatever " \
+                   "its precedence or scheduling class, so a caller working a queue skips it. " \
+                   "#{Sessions::SleeperGuidance::FOLLOW_UP_STILL_WAKES}"
+          answered = Sessions::SleeperGuidance.last_follow_up_answered(session)
+          lines << "- **Last follow-up:** #{answered}" if answered
         end
 
         # An auth-outage park says who wakes it, on the LIST row rather than only

@@ -298,6 +298,7 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
 
     assert_match(/does not start early/, error.message)
     assert_match(/skip it and take the next candidate/i, error.message)
+    assert_match(/send a `follow_up`/, error.message, "the refusal must name the path that does reach a sleeper")
     assert session.reload.waiting?, "expected the session to stay asleep, got #{session.status}"
     assert Trigger.exists?(trigger.id), "refusing must leave the pause armed"
   end
@@ -357,7 +358,9 @@ class ScheduledWakeStackingTest < ActiveSupport::TestCase
 
     assert paused_block, "the paused session must still be listed, not hidden from the queue"
     assert_match(/\*\*Paused:\*\* yes/, paused_block)
-    assert_match(/Skip it and take the next candidate/, paused_block)
+    assert_match(/a caller working a queue skips it/, paused_block)
+    assert_match(/`follow_up` wakes it for one turn immediately/, paused_block,
+      "the same line must say a message still reaches it, or a sender reads the pause as non-delivery")
     refute_match(/\*\*Paused:\*\* yes/, queued_block.to_s,
       "a session merely queued behind the gate must not be reported as paused")
   end
