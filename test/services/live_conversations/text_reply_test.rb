@@ -47,6 +47,7 @@ class LiveConversations::TextReplyTest < ActiveSupport::TestCase
   end
 
   test "enabling a server mid-reply makes its tools available on the next round" do
+    LiveSetting.editable.update!(direct_servers_enabled: LiveSetting::DIRECT_SERVERS_ON)
     stub_clock_server
     @conversation.turns.create!(role: "user", source: "typed", content: "what time is it?")
     client = Fake.new(chat_responses: [

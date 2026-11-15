@@ -134,7 +134,14 @@ module Mcp
         total_pages = [ (rows.size.to_f / per_page).ceil, 1 ].max
         window = rows[(page - 1) * per_page, per_page] || []
 
-        return "No sessions match these filters — the board is empty." if rows.empty?
+        if rows.empty?
+          dropped = carplay_hidden_line(args)
+          return "No sessions match these filters — the board is empty." if dropped.nil?
+
+          # A filter that hid every row has not found an empty board, and must not
+          # say it has: the rows it dropped are the whole answer.
+          return "No row passes the carplay_fit filter, but the board is NOT empty.\n\n#{dropped}"
+        end
 
         summary_chars = summary_chars(args)
         overrides = AppSetting.current.genesis_class_overrides || {}
@@ -159,11 +166,7 @@ module Mcp
           lines << "*More rows. Use page=#{page + 1}.*"
         else
           lines << "---"
-          lines << if order == ORDER_LAST_TOUCHED
-            "*That is every matching row. This is not the board's order: to write one back with `reorder_user_view`, read the board with the default order first.*"
-          else
-            "*That is the whole board. Write an order back with `reorder_user_view`, top to bottom.*"
-          end
+          lines << footer(order)
         end
 
         lines.join("\n")
@@ -182,13 +185,50 @@ module Mcp
         scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc).limit(limit).to_a
       end
 
-      # So a driver can be told what was left for the laptop without the rows
-      # being read out. Counted against every other filter, uncapped.
+      # The last line of a read that reached the end of its rows.
+      def footer(order)
+        if order == ORDER_LAST_TOUCHED
+          "*That is every matching row. This is not the board's order: to write one back with `reorder_user_view`, read the board with the default order first.*"
+        else
+          "*That is the whole board. Write an order back with `reorder_user_view`, top to bottom.*"
+        end
+      end
+
+      # So a filtered read cannot pass for the whole board: how many rows the
+      # carplay_fit filter dropped, and what kind they were, in one line. A driver
+      # can be told what was left for the laptop without the rows being read out.
+      # Counted against every other filter, uncapped. Nil when no carplay_fit
+      # filter was asked for.
+      #
+      # The count alone was not enough. In one Live Mode conversation
+      # `not_laptop_only` hid 9 of the 12 waiting rows and the assistant reported
+      # the 3 it had as the board; "9 laptop-only (4 a credential, …)" says what
+      # kind of thing is waiting, which is what the person decides on.
       def carplay_hidden_line(args)
         return nil if args["carplay_fit"].blank?
 
-        hidden = filtered_scope(args.except("carplay_fit")).count(:all) - filtered_scope(args).count(:all)
-        "The carplay_fit filter (#{args['carplay_fit']}) left out #{hidden} row(s) that match the other filters."
+        kept = filtered_scope(args).unscope(:includes).reselect(:id)
+        dropped = filtered_scope(args.except("carplay_fit")).where.not(id: kept)
+          .reselect(:id, :carplay_fit, :carplay_fit_reason, :carplay_fit_source, :carplay_fit_line_count, :transcript_line_count)
+          .unscope(:includes).to_a
+        filter = args["carplay_fit"]
+        return "The carplay_fit filter (#{filter}) left out no rows: this is every row that matches the other filters." if dropped.empty?
+
+        "The carplay_fit filter (#{filter}) left out #{dropped.size} row(s) that match the other filters: " \
+          "#{dropped_kinds(dropped)}. This is not the whole board; say how many were left out and what kind."
+      end
+
+      # "7 laptop-only (4 a credential, 2 a long read, 1 no reason given), 2 untagged"
+      def dropped_kinds(sessions)
+        sessions.group_by(&:effective_carplay_fit).sort_by { |fit, group| [ -group.size, fit.to_s ] }.map do |fit, group|
+          label = fit.nil? ? "untagged" : SessionCarplayFit::LABELS.fetch(fit, fit).downcase.tr(" ", "-")
+          next "#{group.size} #{label}" if fit.nil?
+
+          # Most common first; a mark with no reason after the named ones.
+          reasons = group.group_by(&:carplay_fit_reason).sort_by { |reason, members| [ -members.size, reason.nil? ? 1 : 0, reason.to_s ] }
+            .map { |reason, members| "#{members.size} #{reason ? SessionCarplayFit::REASON_LABELS.fetch(reason, reason) : 'no reason given'}" }
+          "#{group.size} #{label} (#{reasons.join(', ')})"
+        end.join(", ")
       end
 
       def order_line(order)
