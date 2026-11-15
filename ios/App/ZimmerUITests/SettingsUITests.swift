@@ -139,19 +139,29 @@ final class SettingsUITests: XCTestCase {
         return app
     }
 
-    /// From the More tab, until the row has been read.
+    /// From the More tab, until the row has been read. The server's sections sit below the
+    /// Sign-in card and the rows into API keys and Live settings, past the fold on a phone, and
+    /// a Form row off screen is not in the accessibility tree: scroll down until the section is
+    /// there, loading or loaded, then wait for the banner that replaces its spinner.
     private func openSettings(_ app: XCUIApplication) {
         let settings = app.buttons["more.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: timeout))
         settings.tap()
-        XCTAssertTrue(app.staticTexts["settings.defaults.banner"].waitForExistence(timeout: timeout), "the server's row is read")
+        XCTAssertTrue(app.staticTexts["settings.server"].waitForExistence(timeout: timeout), "Settings opened")
+        let banner = app.staticTexts["settings.defaults.banner"]
+        let loading = app.descendants(matching: .any)["settings.loading"]
+        for _ in 0..<8 where !banner.exists && !loading.exists {
+            scroll(app, down: false)
+        }
+        XCTAssertTrue(banner.waitForExistence(timeout: timeout), "the server's row is read")
     }
 
     private func closeSettings(_ app: XCUIApplication) {
         let done = app.buttons["Done"].firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: timeout))
         done.tap()
-        XCTAssertTrue(waitForDisappearance(app.staticTexts["settings.server"]))
+        // The bar, not a row: a row the form has scrolled past is already gone from the tree.
+        XCTAssertTrue(waitForDisappearance(app.navigationBars["Settings"]))
     }
 
     /// Scroll until `element` is on screen and below the navigation bar, where a tap lands on
