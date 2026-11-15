@@ -2211,7 +2211,7 @@ class SessionTest < ActiveSupport::TestCase
     assert_not(old_clone_path.blank? && new_clone_path.present?)
   end
 
-  # --- live_clone_paths: the GC "never reap a live session's clone" set ---
+  # --- accepts_follow_up? / follow_up_refusal ---
 
   test "running, waiting and needs_input sessions accept a follow-up and give no refusal" do
     %i[running waiting needs_input].each do |name|
@@ -2229,6 +2229,8 @@ class SessionTest < ActiveSupport::TestCase
                    session.follow_up_refusal
     end
   end
+
+  # --- live_clone_paths: the GC "never reap a live session's clone" set ---
 
   test "live_clone_paths includes clones for running, waiting, and needs_input sessions" do
     running = sessions(:running)
