@@ -310,16 +310,37 @@ class Sessions::RestInNeedsInputTest < ActionDispatch::IntegrationTest
     assert_not session.handed_back_to_human?
   end
 
+  # Inside one wall-clock second, so a second-precision stamp would read the
+  # earlier message as the answer.
   test "a human message from before the hand-back does not answer it" do
     session = sessions(:running)
-    schedule_wake(session)
-    session.human_messages.create!(author: "tadasant", channel: HumanMessage::WEB_UI, content: "go ahead",
-                                   occurred_at: 1.second.ago)
-    Sessions::RestInNeedsInput.call(session: session.reload)
-    session.reload.pause!
+    travel_to(Time.utc(2026, 11, 15, 19, 36, 32) + 0.1, with_usec: true) do
+      session.human_messages.create!(author: "tadasant", channel: HumanMessage::WEB_UI, content: "go ahead",
+                                     occurred_at: Time.current)
+    end
+    travel_to(Time.utc(2026, 11, 15, 19, 36, 32) + 0.8, with_usec: true) do
+      Sessions::RestInNeedsInput.call(session: session.reload)
+      session.reload.pause!
+    end
 
     assert session.reload.needs_input?
     assert session.handed_back_to_human?
+  end
+
+  test "a wake firing into an unanswered hand-back does not release it" do
+    session = sessions(:running)
+    backstop = schedule_wake(session)
+    second = schedule_wake(session, at: 3.hours.from_now)
+    Sessions::RestInNeedsInput.call(session: session.reload)
+    session.reload.pause!
+
+    backstop.reload.send(:follow_up_session!, session.reload, prompt: "Backstop: check on the fix session")
+    session.reload.start!
+    session.pause!
+
+    assert session.reload.needs_input?, "a wake is not the human answering"
+    assert session.handed_back_to_human?
+    assert Trigger.exists?(second.id)
   end
 
   test "with only a watcher armed, an answered hand-back rests in needs_input as before" do

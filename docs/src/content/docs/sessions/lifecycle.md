@@ -794,8 +794,10 @@ self-session surface only, because it is a statement about the turn the caller i
     one-time schedule is armed the turn ends with `follow_up_resleep`, back in `waiting`. A turn
     that calls `rest_in_needs_input` again re-stamps after the reply, so it stays in `needs_input`.
     A pause Zimmer entered on a turn's behalf (`turn_stood_down_before_it_ran?`) releases nothing.
-    Session 28288 is why: it handed back, the operator replied, it said nothing more was needed —
-    and sat in the action queue with its wakes armed, because only arming a new wake released it.
+    Session 28288 is the case this covers: handed back, answered by the operator, told them nothing
+    more was needed — and it must not then sit in the action queue with its wakes armed. Two edges
+    of the ledger test are listed in
+    [limitations](/limitations/#a-hand-back-is-answered-by-a-human-message-not-by-the-turn-that-delivers-it).
   - **Arming a new wake** (`Trigger#sleep_target_session_if_applicable`), which is the session
     deciding to wait again — and is also why a wake armed after the call in the same turn puts it
     back to sleep, so the tool tells the caller to call it last.
