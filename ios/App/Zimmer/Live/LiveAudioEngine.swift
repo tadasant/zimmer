@@ -210,6 +210,16 @@ final class LiveAudioEngine {
     private var bringingUp = 0
     /// The microphone permission prompt is waiting on the person.
     private(set) var awaitingPermission = false
+    #if DEBUG
+    /// `-ZimmerFixtureMicrophoneUnanswered`, for the CarPlay drill: every start waits on a
+    /// permission prompt nobody answers, and the system's own prompt never goes up. A real prompt
+    /// is answered by whatever reaches it first: XCUITest's interruption handling taps Don't Allow
+    /// when it finds the alert during a tap, and from then on every call fails at once on the
+    /// microphone rather than on its connection, so whether the drill's retries happen came down
+    /// to when the alert was drawn.
+    private static let permissionNeverAnswered = AppEnvironment.shared.isFixture
+        && ProcessInfo.processInfo.arguments.contains("-ZimmerFixtureMicrophoneUnanswered")
+    #endif
     /// Between an interruption's `.began` and its `.ended`: the session belongs to someone else
     /// (a phone call, Siri), and reactivating it would fail and end the call.
     private(set) var interrupted = false
@@ -253,6 +263,16 @@ final class LiveAudioEngine {
         token += 1
         let mine = token
         let asked = ProcessInfo.processInfo.systemUptime
+        #if DEBUG
+        if Self.permissionNeverAnswered {
+            // The prompt up and nobody answering, without the system's alert: a newer start or a
+            // stop is the only way out, as it is for a prompt left up on a real phone.
+            // `awaitingPermission` stays true after it, as it does while a real prompt is still up.
+            awaitingPermission = true
+            while token == mine { try await Task.sleep(for: .milliseconds(250)) }
+            throw CancellationError()
+        }
+        #endif
         awaitingPermission = AVAudioApplication.shared.recordPermission == .undetermined
         let granted = await AVAudioApplication.requestRecordPermission()
         awaitingPermission = false
