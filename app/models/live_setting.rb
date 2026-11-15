@@ -139,7 +139,7 @@ class LiveSetting < ApplicationRecord
   # reached — runs on `openai_realtime` instead and says why.
   VOICE_ENGINES = {
     "openai_realtime" => "OpenAI Realtime — today's engine (default)",
-    "gpt_live_claude" => "GPT-Live front end, Claude reasoning — web only, experimental",
+    "gpt_live_claude" => "GPT-Live front end, Claude reasoning — experimental",
     "livekit_claude" => "LiveKit cascade with Claude — not built yet, falls back"
   }.freeze
 

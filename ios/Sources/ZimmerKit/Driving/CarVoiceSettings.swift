@@ -14,6 +14,9 @@ import Foundation
 /// pause go nowhere, so they have no row until the driver picks Silence, and Eagerness has none
 /// under Silence. A value hidden that way is still cleared by Reset to defaults.
 ///
+/// **The voice engine has a row** (`voice_engine`, from the next call): the way to try GPT-Live with
+/// Claude behind it from the car, and the way back to Realtime when it misbehaves. Reset leaves it.
+///
 /// **The first row is the reply cap, because that is what has actually broken a call.**
 /// `voice_max_output_tokens` at 180 cut off 12 of one call's 13 replies, and the tool calls with
 /// them. Listening is the one row a car call does not read, and it says so: a call that has been
@@ -58,11 +61,18 @@ public struct CarVoiceSettings: Sendable, Equatable {
         var unset = "Off"
         /// What the driver has to know to read the value.
         var caveat: String?
+        /// Put back by Reset to defaults. Not the engine: which engine runs a call is somebody's
+        /// choice, like the models, and not a knob pushed too far.
+        var resettable = true
+        /// A choice's name when the server's label is too long for a row, by value.
+        var names: [String: String] = [:]
     }
 
     private static let knobs = [
         Knob(key: "voice_max_output_tokens", title: "Reply length cap",
              presets: [(512, nil), (1_024, nil), (2_048, nil)], unset: "No cap"),
+        Knob(key: "voice_engine", title: "Voice engine", caveat: "Next call", resettable: false,
+             names: ["openai_realtime": "Realtime", "gpt_live_claude": "GPT-Live + Claude", "livekit_claude": "LiveKit + Claude"]),
         Knob(key: turnDetectionKey, title: "Turn detection"),
         Knob(key: "voice_vad_eagerness", title: "Eagerness", onlyWith: semantic),
         Knob(key: "voice_vad_threshold", title: "Speech threshold", onlyWith: silence,
@@ -78,7 +88,7 @@ public struct CarVoiceSettings: Sendable, Equatable {
     /// too small to earn a row. Not the models or the voice, which are somebody's choice and not
     /// a knob pushed too far; not Call telemetry; and not the guidance, which is somebody's
     /// writing and has its own history.
-    public static let resetKeys = knobs.map(\.key) + ["voice_vad_prefix_padding_ms"]
+    public static let resetKeys = knobs.filter(\.resettable).map(\.key) + ["voice_vad_prefix_padding_ms"]
 
     public let rows: [Row]
     /// What Reset to defaults writes: the settings away from their default, each back on it.
@@ -122,7 +132,8 @@ public struct CarVoiceSettings: Sendable, Equatable {
 
     private static func shown(_ value: JSONValue, field: LiveSettingField, knob: Knob) -> String {
         if value == .null { return knob.unset }
-        return field.type == .choice ? short(field.label(for: value)) : value.liveSettingText + knob.unit
+        guard field.type == .choice else { return value.liveSettingText + knob.unit }
+        return knob.names[value.liveSettingText] ?? short(field.label(for: value))
     }
 
     /// Why the threshold is missing is said where the driver would go to bring it back.
@@ -138,7 +149,7 @@ public struct CarVoiceSettings: Sendable, Equatable {
         var choices = field.options.map { option in
             let isDefault = field.defaultValue?.liveSettingText == option.value
             let parts = option.label.components(separatedBy: " — ")
-            let name = short(option.label)
+            let name = knob.names[option.value] ?? short(option.label)
             return Choice(title: isDefault ? "\(name) (default)" : name, note: parts.count > 1 ? sentence(parts[1]) : nil,
                           value: isDefault ? .null : .string(option.value), isCurrent: option.value == current)
         }

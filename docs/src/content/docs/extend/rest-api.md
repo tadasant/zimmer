@@ -1252,7 +1252,24 @@ Voice — the relay a client holding the audio connection makes:
   voice is off; 502 when OpenAI refuses. With `prewarm=1` it is the CarPlay app minting ahead of a
   tap ([CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). Voice need not be on, and nothing on
   the conversation changes: no client noted, no car call, no model written. 422 from any client but CarPlay; 409 when the conversation
-  is not active.
+  is not active, or when the call would run on `gpt_live_claude`, which has no connection to pre-warm.
+  `engines` (an array) names the [voice engines](/sessions/live/#voice-engines) the client can run
+  besides the default: the app sends `["gpt_live_claude"]`. The answer always carries `engine` and
+  `voice_engine: {engine, requested, fallback_reason, warning}`. On `gpt_live_claude` it is
+  `{engine, voice_engine, model, telemetry}` and no secret: start the call with `gpt_live_session`.
+- `POST /live_conversations/:id/gpt_live_session` (`sdp`, the client's WebRTC offer with a microphone
+  track and an `oai-events` data channel) → `{session_id, sdp, model}`: Zimmer starts the GPT-Live
+  session with OpenAI and returns its SDP answer, so the OpenAI key stays on the server. 409 when the
+  call was not told `gpt_live_claude`, or can no longer run on it (a cap reached, the setting changed).
+- `POST /live_conversations/:id/delegations` (`delegation_id` from `session.delegation.created`,
+  `pending_user_text`, the person's line still in flight) → `{text, chunks, end_call, hung_up,
+  warning, rounds, cost_usd, billed_usd}`: Claude's answer. Append each chunk as
+  `session.commentary.append`; on `end_call`, hang up once it has been said. 503 with no usable Claude
+  Code account; 409 on a call not running on GPT-Live.
+- `POST /live_conversations/:id/usage` (`events`: at most 50 of `{engine, operation, key, seconds,
+  first_audio_ms, details}`) → 201 `{recorded, cost_usd}`: what the call measured, for the
+  [voice-engine ledger](/sessions/live/#live-costs). Volumes only; Zimmer prices them. A `key` already
+  recorded counts once. 422 for an operation the engine does not report.
 - `POST /live_conversations/:id/tool_calls` (`name`, `arguments` as the model's JSON string,
   `call_id`, and `reattaches` from a client that can move its call; one that does not send it is
   refused `switch_live_conversation`; and `hangs_up` from a client that closes its call when asked;

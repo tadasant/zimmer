@@ -59,7 +59,7 @@ final class CarVoiceSettingsTests: XCTestCase {
     /// CarPlay cuts a detail at about forty characters, as the drill's photographs showed, and a
     /// cut one hid the word Silence.
     func testEveryDetailFitsOnTheRow() async throws {
-        for values in [Self.broken, Self.silence, [:]] {
+        for values in [Self.broken, Self.silence, [:], ["voice_engine": .string("gpt_live_claude")], ["voice_engine": .string("livekit_claude")]] {
             let (model, _) = await panel(values)
             let settings = try XCTUnwrap(model.settings)
             for row in settings.rows {
@@ -301,14 +301,37 @@ final class CarVoiceSettingsTests: XCTestCase {
         XCTAssertEqual(model.settings?.canReset, true)
     }
 
-    func testResetCoversEveryRow() async {
+    func testResetCoversEveryRowButTheEngine() async {
         let (model, _) = await panel()
         let (silence, _) = await panel(Self.silence)
-        XCTAssertEqual(model.settings?.rows.count, 6, "Semantic: cap, turn detection, eagerness, listening, noise, speed")
-        XCTAssertEqual(silence.settings?.rows.count, 7, "Silence: threshold and pause for eagerness")
-        for row in (model.settings?.rows ?? []) + (silence.settings?.rows ?? []) {
+        XCTAssertEqual(model.settings?.rows.count, 7, "Semantic: cap, engine, turn detection, eagerness, listening, noise, speed")
+        XCTAssertEqual(silence.settings?.rows.count, 8, "Silence: threshold and pause for eagerness")
+        for row in (model.settings?.rows ?? []) + (silence.settings?.rows ?? []) where row.key != "voice_engine" {
             XCTAssertTrue(CarVoiceSettings.resetKeys.contains(row.key), "\(row.key) can be moved here and not put back here")
         }
+        XCTAssertFalse(CarVoiceSettings.resetKeys.contains("voice_engine"), "the engine is somebody's choice, like the models")
+    }
+
+    /// GPT-Live with Claude behind it is one tap from the car, and so is the way back.
+    func testTheEngineIsChosenFromTheCarAndResetLeavesIt() async throws {
+        let (model, api) = await panel(["voice_vad_threshold": .number(0.92)])
+        let engine = try row(model, "voice_engine")
+        XCTAssertEqual(engine.title, "Voice engine")
+        XCTAssertEqual(engine.detail, "Realtime. Next call")
+        XCTAssertEqual(engine.choices.map(\.title), ["Realtime (default)", "GPT-Live + Claude", "LiveKit + Claude"])
+        XCTAssertEqual(try choice(engine, "GPT-Live + Claude").note, "Experimental", "the server's words after the dash")
+        model.open(engine)
+        model.choose(try choice(engine, "GPT-Live + Claude"))
+        await model.settled()
+        let chosen = try await api.liveSettings()
+        XCTAssertEqual(chosen.value("voice_engine"), .string("gpt_live_claude"))
+        XCTAssertEqual(try row(model, "voice_engine").detail, "GPT-Live + Claude. Next call")
+
+        model.reset()
+        await model.settled()
+        let read = try await api.liveSettings()
+        XCTAssertEqual(read.value("voice_engine"), .string("gpt_live_claude"), "Reset puts back the knobs, not the engine")
+        XCTAssertEqual(read.value("voice_vad_threshold"), .number(0.5))
     }
 
     func testResetOnTheDefaultsWritesNothing() async throws {

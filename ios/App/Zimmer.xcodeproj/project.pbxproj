@@ -21,6 +21,12 @@
 // reads `-showBuildSettings -scheme Zimmer` to decide which entitlements file is signed
 // in, and that guard reasons about the blocks it gets back.
 //
+// ONE REMOTE PACKAGE. WebRTC (stasel/WebRTC, Google's libwebrtc as a binary XCFramework, pinned
+// to an exact version and checksummed by its own manifest) is linked into the app target only:
+// the `gpt_live_claude` voice engine's GPT-Live session is WebRTC-only for a client that must not
+// hold the OpenAI key (`GptLiveLink`). It is not a ZimmerKit dependency, so the Linux CI build
+// never sees it.
+//
 // SIGNING IS OFF and no entitlements file is named. The ones that exist are each listed in
 // the exception set below so they are never copied into the bundle, and are signed in only
 // by `ios/bin/testflight`, behind its guard.
@@ -34,6 +40,7 @@
 /* Begin PBXBuildFile section */
 		AA0000000000000000000010 /* ZimmerKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000040 /* ZimmerKit */; };
 		AA0000000000000000000011 /* ZimmerPlatform in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000041 /* ZimmerPlatform */; };
+		AA0000000000000000000012 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000044 /* WebRTC */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -76,6 +83,7 @@
 			files = (
 				AA0000000000000000000010 /* ZimmerKit in Frameworks */,
 				AA0000000000000000000011 /* ZimmerPlatform in Frameworks */,
+				AA0000000000000000000012 /* WebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -129,6 +137,7 @@
 			packageProductDependencies = (
 				AA0000000000000000000040 /* ZimmerKit */,
 				AA0000000000000000000041 /* ZimmerPlatform */,
+				AA0000000000000000000044 /* WebRTC */,
 			);
 			productName = Zimmer;
 			productReference = AA0000000000000000000002 /* Zimmer.app */;
@@ -195,6 +204,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA0000000000000000000042 /* XCLocalSwiftPackageReference ".." */,
+				AA0000000000000000000043 /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AA0000000000000000000005 /* Products */;
@@ -501,6 +511,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		AA0000000000000000000043 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = exactVersion;
+				version = 157.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AA0000000000000000000040 /* ZimmerKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -509,6 +530,11 @@
 		AA0000000000000000000041 /* ZimmerPlatform */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ZimmerPlatform;
+		};
+		AA0000000000000000000044 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000043 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

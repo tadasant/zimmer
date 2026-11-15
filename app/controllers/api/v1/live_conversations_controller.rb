@@ -12,7 +12,11 @@
 #   POST /api/v1/live_conversations/:id/finish     end it
 #   POST /api/v1/live_conversations/:id/mode       switch typed ⇄ spoken (mode=text|voice)
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
-#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap)
+#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap;
+#                                                      engines[]=gpt_live_claude: the app can run that engine, and may be told to)
+#   POST /api/v1/live_conversations/:id/gpt_live_session  voice, `gpt_live_claude`: the app's WebRTC offer (sdp) → OpenAI's answer
+#   POST /api/v1/live_conversations/:id/delegations    voice, `gpt_live_claude`: Claude answers a delegation (delegation_id, pending_user_text)
+#   POST /api/v1/live_conversations/:id/usage          voice: the call's measured cost and timings, into the ledger (events)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
 #   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings (model: record the call's)
@@ -31,7 +35,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
-  PERSON_ACTIONS = %i[create switch finish mode messages client_secret tool_calls turns session_update].freeze
+  PERSON_ACTIONS = %i[create switch finish mode messages client_secret gpt_live_session delegations usage tool_calls turns session_update].freeze
 
   before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
   before_action :set_conversation, except: %i[modes index create switch]
@@ -109,6 +113,22 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render json: actions.client_secret(prewarm: ActiveModel::Type::Boolean.new.cast(params[:prewarm]) == true)
   end
 
+  # Voice, `gpt_live_claude`: the app's WebRTC offer in, OpenAI's answer out.
+  def gpt_live_session
+    render json: actions.gpt_live_session(sdp: params[:sdp].to_s)
+  end
+
+  # Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude answers it.
+  def delegations
+    render json: actions.delegate(delegation_id: params[:delegation_id].to_s, pending_user_text: params[:pending_user_text]).as_api_json
+  end
+
+  # Voice: the call's measured cost and timings, into the ledger.
+  def usage
+    result = actions.record_usage(params[:events], model: params[:model])
+    render json: { recorded: result.recorded, cost_usd: result.cost_usd.round(6) }, status: :created
+  end
+
   def tool_calls
     render json: actions.tool_call(name: params[:name].to_s, arguments: params[:arguments], call_id: params[:call_id].to_s)
   end
@@ -136,12 +156,14 @@ class Api::V1::LiveConversationsController < Api::BaseController
   # `listening_modes`: the client asks for each reply itself when Listening is
   # gated (LiveConversations::Listening); an app from before that is answered as
   # `always`. `reattaches`: it can move a call to another conversation.
-  # `hangs_up`: it closes the call when a tool call answers `hang_up`. The
+  # `hangs_up`: it closes the call when a tool call answers `hang_up`.
+  # `engines`: the experimental voice engines it can run (VoiceEngine); an app
+  # from before them sends none and runs only the default. The
   # author is the person the app's grant acts as; every action that writes a
   # turn is behind require_a_person_on_the_app, so an API key never gets here.
   def actions
     LiveConversations::Actions.new(@conversation, client_surface: api_turn_source.surface, listening_modes: params[:listening_modes].present?,
                                                   reattaches: params[:reattaches].present?, hangs_up: params[:hangs_up].present?,
-                                                  author: LiveConversations::Author.native_app(native_app_grant))
+                                                  author: LiveConversations::Author.native_app(native_app_grant), engines: Array(params[:engines]))
   end
 end

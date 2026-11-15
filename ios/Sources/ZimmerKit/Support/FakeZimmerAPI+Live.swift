@@ -17,6 +17,10 @@ struct FakeLiveState: Sendable {
     var telemetryBatches: [LiveTelemetryBatch] = []
     /// Every CarPlay prewarm secret minted (`livePrewarmSecret`).
     var prewarmMints = 0
+    /// Every voice-engine ledger row the app reported (`reportLiveUsage`).
+    var usageEvents: [LiveUsageEvent] = []
+    /// Every delegation the app asked Zimmer to answer.
+    var delegations: [String] = []
 
     /// A few of the server's fields, enough for the settings screen to show each kind.
     static let settingFields: [LiveSettingField] = [
@@ -65,6 +69,18 @@ struct FakeLiveState: Sendable {
                          options: [.init(value: "near_field", label: "near field — headphones, a phone at your ear"),
                                    .init(value: "far_field", label: "far field — laptop or car microphone")],
                          midCall: true),
+        LiveSettingField(key: "voice_engine", path: "engine", type: .choice, label: "Voice engine",
+                         help: "What runs a voice call. Takes effect on the next call. An engine that cannot run falls back to OpenAI Realtime, and the call says why.",
+                         options: [.init(value: "openai_realtime", label: "OpenAI Realtime — today's engine (default)"),
+                                   .init(value: "gpt_live_claude", label: "GPT-Live front end, Claude reasoning — experimental"),
+                                   .init(value: "livekit_claude", label: "LiveKit cascade with Claude — not built yet, falls back")],
+                         defaultValue: .string("openai_realtime")),
+        LiveSettingField(key: "voice_claude_model", path: "engine", type: .choice, label: "Claude model",
+                         help: "The model the experimental engines reason and run tools with. Takes effect on the next delegation.",
+                         options: [.init(value: "claude-sonnet-5-5", label: "claude-sonnet-5-5 (default)"),
+                                   .init(value: "claude-opus-5-5", label: "claude-opus-5-5"),
+                                   .init(value: "claude-haiku-5-5", label: "claude-haiku-5-5")],
+                         defaultValue: .string("claude-sonnet-5-5")),
     ]
 
     static func sample() -> FakeLiveState {
@@ -173,7 +189,9 @@ extension FakeZimmerAPI {
         return user
     }
 
-    public func liveClientSecret(_ id: Int) async throws -> LiveClientSecret {
+    /// As the server: `gpt_live_claude` when the settings pick it (this app can run it), else a
+    /// Realtime secret. `livekit_claude` falls back, saying why.
+    public func liveCallGrant(_ id: Int, engines: [String]) async throws -> LiveCallGrant {
         guard liveState.conversations[id]?.mode == .voice else { throw ZimmerError.http(status: 409, message: "Voice is off for this conversation. Turn it on first.") }
         // Only the first: a call held on Connecting… while its screen is driven, and every call
         // after it fails as fast as ever.
@@ -181,14 +199,46 @@ extension FakeZimmerAPI {
             liveSecretHold = nil
             try await Task.sleep(for: hold)
         }
-        return LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
-                                websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
+        let requested = liveState.settingOverrides["voice_engine"]?.string ?? LiveVoiceEngine.realtime
+        if requested == LiveVoiceEngine.gptLive, engines.contains(requested) {
+            return LiveCallGrant(engine: .gptLive, choice: LiveEngineChoice(engine: requested, requested: requested), model: "gpt-live-1")
+        }
+        let secret = LiveClientSecret(clientSecret: "ek_fixture", model: "gpt-realtime-2.1-mini",
+                                      websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!)
+        let fallback = requested == LiveVoiceEngine.realtime ? nil
+            : engines.contains(requested) || requested != LiveVoiceEngine.gptLive ? "the LiveKit engine is not built yet"
+            : "this client cannot run gpt_live_claude"
+        return LiveCallGrant(engine: .realtime(secret), choice: LiveEngineChoice(engine: LiveVoiceEngine.realtime, requested: requested, fallbackReason: fallback),
+                             model: secret.model)
     }
+
+    /// The fixture has no OpenAI behind it: the answer is an SDP no connection can be made with.
+    public func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer {
+        guard liveState.settingOverrides["voice_engine"]?.string == LiveVoiceEngine.gptLive else {
+            throw ZimmerError.http(status: 409, message: "This call is not running on gpt_live_claude. Start the call again.")
+        }
+        return GptLiveAnswer(sessionID: "sess_fixture", sdp: "v=0\r\n", model: "gpt-live-1")
+    }
+
+    public func answerLiveDelegation(_ id: Int, delegationID: String, pendingUserText: String) async throws -> LiveDelegation {
+        liveState.delegations.append(delegationID)
+        return LiveDelegation(chunks: ["Two sessions are running."])
+    }
+
+    public func reportLiveUsage(_ id: Int, events: [LiveUsageEvent]) async throws {
+        liveState.usageEvents += events
+    }
+
+    /// The voice-engine ledger rows reported.
+    public var usageEvents: [LiveUsageEvent] { liveState.usageEvents }
 
     /// As the server: refused on a conversation that is not active;
     /// changes nothing on the conversation, and is counted so a test can see it happened.
     public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
         guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.") }
+        guard liveState.settingOverrides["voice_engine"]?.string != LiveVoiceEngine.gptLive else {
+            throw ZimmerError.http(status: 409, message: "The next call runs on gpt_live_claude, which has no connection to pre-warm.")
+        }
         liveState.prewarmMints += 1
         return LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
                                 websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!, listening: "always")
