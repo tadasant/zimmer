@@ -922,7 +922,8 @@ by XCUITest:
 - the gear is on the call screen, and the panel behind it (opened by the fixture running the gear's
   action) shows a cap a voice call set, offers the speech threshold only under Silence, resets to
   the defaults, and calls the conversation again;
-- a call that cannot connect (the fixture's Realtime secret points nowhere) fails, retries, gives
+- a call that cannot connect (the fixture's Realtime secret points nowhere, and its microphone waits on a
+  permission prompt nobody answers, with no system alert for XCUITest to dismiss) fails, retries, gives
   up with Retry and New on the home, and leaves no call screen behind;
 - New is one tap to a call of its own;
 - a conversation ended on the phone leaves one tile, New, and Retry starts nothing in its place.
