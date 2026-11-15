@@ -822,7 +822,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to inference_path(runtime: "claude_code")
     assert secondary.reload.is_current?
     assert_not claude_accounts(:primary).reload.is_current?
-    assert_equal "Switched to sam@tadasant.com", flash[:notice]
+    assert_equal "Switched to pool-1@example.com", flash[:notice]
   end
 
   test "switch_account creates a manual rotation event" do
@@ -1003,7 +1003,7 @@ class InferenceControllerTest < ActionDispatch::IntegrationTest
     post switch_account_path(secondary)
 
     assert_redirected_to inference_path(runtime: "claude_code")
-    assert_equal "Switched to sam@tadasant.com", flash[:notice]
+    assert_equal "Switched to pool-1@example.com", flash[:notice]
     secondary.reload
     assert secondary.is_current?
     assert_equal "refreshed-token", secondary.oauth_config.dig("credentials_json", "claudeAiOauth", "accessToken")

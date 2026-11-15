@@ -3672,7 +3672,7 @@ Replaced the web-side refresh thread tracked in [#98](https://github.com/tadasan
 When the catalog renames or removes an MCP server, skill, hook or plugin that a session already
 names, the session's next `air prepare` drops the stale id rather than fail
 ([zimmer#1257](https://github.com/tadasant/zimmer/issues/1257)). It does not know the successor:
-`gmail-tadas412-readonly` → `gmail-tadas412-ro` leaves the session with no Gmail server at all, and the
+`gmail-pool-readonly` → `gmail-pool-ro` leaves the session with no Gmail server at all, and the
 agent is told so in a `<dropped-catalog-artifacts>` prompt block. There is no alias map. A rename that
 should carry live sessions with it needs a backfill that repoints the stored ids, as
 `db/migrate/20260801120000_backfill_renamed_open_pr_skill_id.rb` did for `pr` → `open-pr`. The
@@ -5546,7 +5546,7 @@ joined. `whatsapp_get_messages` cannot reach past that.
 
 ### WhatsApp authors are not recorded as human messages
 
-A Slack fire records the words of a mapped human (Tadas, Julie) as a human message on the session.
+A Slack fire records the words of a mapped human on the roster as a human message on the session.
 A WhatsApp fire records nothing: there is no roster mapping from a phone number to a person yet. The
 batch is in the prompt, fenced as untrusted, and that is all.
 

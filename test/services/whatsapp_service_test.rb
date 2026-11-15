@@ -32,7 +32,7 @@ class WhatsappServiceTest < ActiveSupport::TestCase
       tools: [ "whatsapp-zimmer__whatsapp_get_messages" ],
       results: {
         "whatsapp-zimmer__whatsapp_get_messages" => structured(
-          "chat_id" => "1@g.us", "chat_name" => "Wedding", "has_more" => true,
+          "chat_id" => "1@g.us", "chat_name" => "Party", "has_more" => true,
           "messages" => [
             { "id" => "B", "timestamp" => 20, "text" => "second", "from_me" => true },
             { "id" => "A", "timestamp" => 10, "text" => "first", "sent_by_bridge" => true, "mentions_self" => true },
@@ -50,7 +50,7 @@ class WhatsappServiceTest < ActiveSupport::TestCase
     assert page.messages.first.mentions_self
     assert page.messages.last.from_me
     assert page.has_more
-    assert_equal "Wedding", page.chat_name
+    assert_equal "Party", page.chat_name
   end
 
   test "falls back to the JSON text item when there is no structuredContent" do

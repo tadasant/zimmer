@@ -11,7 +11,7 @@ class NpxCacheHealServiceTest < ActiveSupport::TestCase
     # Mirror the production layout: ~/.zimmer/clones/<clone>/<subdir>
     @working_directory = File.join(
       @temp_dir, ".zimmer", "clones", "pulsemcp-main-abc",
-      "agents", "agent-roots", "tadas-groceries"
+      "agents", "agent-roots", "personal-root"
     )
     @npx_dir = File.join(@working_directory, ".npm-cache", "_npx")
     FileUtils.mkdir_p(@npx_dir)

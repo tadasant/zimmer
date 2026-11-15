@@ -3,7 +3,7 @@
 # Zimmer's client for a mailbox: an MCP server that speaks the Gmail tool contract of
 # `pulsemcp/mcp-servers/experimental/gmail` — `search_email_conversations` and
 # `get_email_conversation`, among others. On the Tadasant deployment that is a strad gmail slug
-# (`gmail-zimmer-ro`, a read-only mount of zimmer@tadasant.com), but nothing here names a mailbox:
+# (`gmail-zimmer-ro`, a read-only mount of the deployment's own mailbox), but nothing here names a mailbox:
 # whichever account the server reads is the one the `email` trigger watches.
 #
 # Zimmer POLLS it, for the same reason it polls the WhatsApp bridge: `/webhooks/*` has no public

@@ -14,7 +14,7 @@
 class XOauthTokenVendor
   # Only variables whose name begins with this prefix are backed by the X token
   # store. Covers the default X_OAUTH_ACCESS_TOKEN plus any future per-account
-  # variants (e.g. X_OAUTH_ACCESS_TOKEN_JULIE).
+  # variants (e.g. X_OAUTH_ACCESS_TOKEN_SECOND).
   ENV_VAR_PREFIX = "X_OAUTH_ACCESS_TOKEN"
 
   # True when this vendor owns the variable AND holds a credential row for it —

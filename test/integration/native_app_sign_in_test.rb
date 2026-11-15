@@ -21,9 +21,9 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["API_KEYS"] = "test_api_key_native_app"
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
   end
 
   teardown do
@@ -317,7 +317,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     message = from_phone.human_messages.sole
     assert_equal "Yes, merge it.", message.content
-    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    assert_equal User.for_email("owner@example.com").key, message.author
     assert_equal HumanMessage::ASSISTANT, message.channel
     assert_equal "ios_app.follow_up", message.provenance["entry_point"]
     assert_equal OauthServer::Grant.sole.id, message.provenance["oauth_grant_id"]
@@ -325,7 +325,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
   end
 
   test "a follow-up is recorded as whoever approved the app, never as the admin" do
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "julie@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "operator-b@example.com"
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(OpenStruct.new(job_id: "job-1"))
     session = build_zimmer_session(status: :needs_input)
 
@@ -334,8 +334,8 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     message = session.human_messages.sole
-    assert_equal "juliehazz", message.author
-    assert_equal "julie@tadasant.com", message.provenance["grant_user_email"]
+    assert_equal "operator-b", message.author
+    assert_equal "operator-b@example.com", message.provenance["grant_user_email"]
   end
 
   test "an app connection that is relay only, or whose approver is not on the roster, records nothing" do
@@ -346,7 +346,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_empty relay_only.human_messages
 
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-else@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-else@example.com"
     unknown = build_zimmer_session(status: :needs_input)
     post "/api/v1/sessions/#{unknown.id}/follow_up", params: { prompt: "Yes" },
       headers: bearer(sign_in(privilege: OauthServer::ACT_AS_HUMAN)["access_token"])
@@ -392,7 +392,7 @@ class NativeAppSignInTest < ActionDispatch::IntegrationTest
     message = session.human_messages.sole
     assert_equal "ios_app.quick_router", message.provenance["entry_point"]
     assert_equal HumanMessage::ASSISTANT, message.channel
-    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    assert_equal User.for_email("owner@example.com").key, message.author
     # An OAuth-delivered start, like MCP's quick_router: `api` genesis, so capture
     # coverage never expects a web UI record for it, at priority because a person waits.
     assert_equal SessionGenesis::API, session.genesis

@@ -24,7 +24,7 @@ class WebAuth::ConfigurationTest < ActiveSupport::TestCase
 
     assert_predicate configuration, :enabled?
     assert_predicate configuration, :usable?
-    assert_equal [ "tadasant.com" ], configuration.allowed_domains
+    assert_equal [ "example.com" ], configuration.allowed_domains
   end
 
   test "a client ID with the rest missing is on but unusable, and says what is missing" do
@@ -37,10 +37,10 @@ class WebAuth::ConfigurationTest < ActiveSupport::TestCase
   end
 
   test "allowed domains are a lowercased list, commas or spaces" do
-    configuration = web_auth_configuration_with(allowed_domains: "Tadasant.com, @example.org  other.net")
+    configuration = web_auth_configuration_with(allowed_domains: "Example.COM, @example.org  other.net")
 
-    assert_equal %w[tadasant.com example.org other.net], configuration.allowed_domains
-    assert configuration.domain_allowed?("TADASANT.COM")
+    assert_equal %w[example.com example.org other.net], configuration.allowed_domains
+    assert configuration.domain_allowed?("EXAMPLE.COM")
     refute configuration.domain_allowed?("gmail.com")
     refute configuration.domain_allowed?(nil)
   end
@@ -118,7 +118,7 @@ class WebAuth::ConfigurationTest < ActiveSupport::TestCase
     working.stubs(:get).returns(nil)
     working.stubs(:get).with("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID").returns("cid")
     working.stubs(:get).with("ZIMMER_WEB_AUTH_GOOGLE_CLIENT_SECRET").returns("secret")
-    working.stubs(:get).with("ZIMMER_WEB_AUTH_ALLOWED_DOMAINS").returns("tadasant.com")
+    working.stubs(:get).with("ZIMMER_WEB_AUTH_ALLOWED_DOMAINS").returns("example.com")
     SecretProviders.stubs(:chain).returns(working)
     WebAuth::Configuration.current
     WebAuth::Configuration.reset!
@@ -130,7 +130,7 @@ class WebAuth::ConfigurationTest < ActiveSupport::TestCase
 
     assert_predicate configuration, :enabled?
     assert_nil configuration.client_secret
-    assert_equal [ "tadasant.com" ], configuration.allowed_domains
+    assert_equal [ "example.com" ], configuration.allowed_domains
     refute_predicate configuration, :usable?
     assert_match "not answering", configuration.problems.first
   end

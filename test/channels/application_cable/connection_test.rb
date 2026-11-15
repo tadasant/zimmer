@@ -10,7 +10,7 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
   include WebAuthTestHelpers
 
   def signed_in_identity
-    WebIdentity.create!(google_sub: "sub-cable", email: "tadas@tadasant.com", hosted_domain: "tadasant.com",
+    WebIdentity.create!(google_sub: "sub-cable", email: "owner@example.com", hosted_domain: "example.com",
       totp_secret: WebAuth::Totp.generate_secret, totp_enrolled_at: 1.day.ago)
   end
 

@@ -17,8 +17,8 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV[ApiKey::ENV_VAR] = "live-api-test-key"
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     @key_headers = { "X-API-Key" => "live-api-test-key" }
     @headers = bearer(app_token(privilege: OauthServer::ACT_AS_HUMAN))

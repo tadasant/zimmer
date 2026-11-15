@@ -158,9 +158,9 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
   end
 
   test "an empty notes column describes nobody" do
-    users(:juliehazz).update!(notes: nil)
+    users(:operator_b).update!(notes: nil)
     session = create_session
-    add_message(session, content: "the rest should all be actioned", author: "juliehazz")
+    add_message(session, content: "the rest should all be actioned", author: "operator-b")
 
     record = SessionHumanMessages.new(session)
     assert_empty record.described_among(record.entries)
@@ -168,7 +168,7 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
 
   test "only the humans who actually spoke are described" do
     users(:tadasant).update!(notes: "Tadas is master")
-    users(:juliehazz).update!(notes: "Julie is the other human")
+    users(:operator_b).update!(notes: "Operator B is the other human")
     session = create_session
     add_message(session, content: "ship it", author: "tadasant")
 
@@ -180,9 +180,9 @@ class SessionHumanMessagesTest < ActiveSupport::TestCase
 
   test "described_among describes only the entries the renderer showed" do
     users(:tadasant).update!(notes: "Tadas is master")
-    users(:juliehazz).update!(notes: "Julie is the other human")
+    users(:operator_b).update!(notes: "Operator B is the other human")
     session = create_session
-    add_message(session, content: "the old one", author: "juliehazz", at: 2.hours.ago)
+    add_message(session, content: "the old one", author: "operator-b", at: 2.hours.ago)
     add_message(session, content: "the shown one", author: "tadasant", at: 1.hour.ago)
 
     record = SessionHumanMessages.new(session)

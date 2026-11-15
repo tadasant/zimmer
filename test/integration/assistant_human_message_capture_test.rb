@@ -16,7 +16,7 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
   setup do
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     @api_key = "test_api_key_assistant_capture"
     ENV["API_KEYS"] = @api_key
 
@@ -31,7 +31,7 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     @saved_env.each { |k, v| v.nil? ? ENV.delete(k) : ENV[k] = v }
   end
 
-  def grant_for(privilege, email: "tadas@tadasant.com", client_name: "Claude")
+  def grant_for(privilege, email: "owner@example.com", client_name: "Claude")
     client = OauthServer::Client.create!(client_id: "dcr-#{SecureRandom.hex(8)}", registration_type: OauthServer::Client::DCR,
       client_name: client_name, redirect_uris: [ "https://claude.ai/api/mcp/auth_callback" ],
       grant_types: %w[authorization_code refresh_token])
@@ -90,7 +90,7 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
   end
 
   test "an approver whose email is not on the roster is attributed to nobody" do
-    grant = grant_for(OauthServer::ACT_AS_HUMAN, email: "stranger@tadasant.com")
+    grant = grant_for(OauthServer::ACT_AS_HUMAN, email: "stranger@example.com")
 
     assert_no_difference("HumanMessage.count") { follow_up(token_for(grant)) }
   end

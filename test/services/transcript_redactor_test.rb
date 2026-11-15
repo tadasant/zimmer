@@ -356,7 +356,7 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
   # secret — what `gcloud secrets list` prints to anyone with read access on the
   # project. The credential is the version's payload, which was never in the
   # message.
-  SECRET_RESOURCE_NAME = "strad-prod-mcp-google-sheets-tadas412-ro-static-google-ada4ec8f"
+  SECRET_RESOURCE_NAME = "strad-prod-mcp-google-sheets-owner-ro-static-google-ada4ec8f"
   GCLOUD_ACCESS_COMMAND = <<~COMMAND
     gcloud secrets versions access latest --project=strad-secrets-prod \\
       --secret=#{SECRET_RESOURCE_NAME}
@@ -375,7 +375,7 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
   # after the noun (`kubectl create secret generic NAME`) never reached the rule
   # in the first place and would pass with the whole guard deleted.
   PUBLIC_IDENTIFIERS = [
-    %(gcloud secrets versions access latest --secret=strad-prod-mcp-google-sheets-tadas412-ro),
+    %(gcloud secrets versions access latest --secret=strad-prod-mcp-google-sheets-owner-ro),
     %(--secret=projects/strad-secrets-prod/secrets/google-sheets-ro/versions/latest),
     %(https://console.cloud.google.com/security/secret-manager?secret=strad-prod-mcp-google-sheets),
     %(vault kv get -format=json secret=strad-prod-google-sheets-ro),

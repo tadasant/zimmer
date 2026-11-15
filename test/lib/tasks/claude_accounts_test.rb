@@ -130,7 +130,7 @@ class ClaudeAccountsTasksTest < ActiveSupport::TestCase
     end.first
 
     assert_match(/Claude Accounts/, output)
-    assert_match(/tadas@tadasant.com/, output)
+    assert_match(/owner@example.com/, output)
     assert_match(/\[CURRENT\]/, output)
   end
 

@@ -24,9 +24,9 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["API_KEYS"] = API_KEY
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
 
     # A switch probes the stored access token before admitting the account, and
     # activating a Claude account takes a quota snapshot — stub both so no test
@@ -46,7 +46,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
 
   test "a relay-only app and an API key both read the roster, the pool, the log and the policy" do
     AccountRotationEvent.create!(rotated_from: claude_accounts(:secondary), rotated_to: claude_accounts(:primary),
-      reason: "manual_switch", source: "manual", triggered_by: "tadas@tadasant.com via the iOS app")
+      reason: "manual_switch", source: "manual", triggered_by: "owner@example.com via the iOS app")
 
     [ bearer(token), { "X-API-Key" => API_KEY } ].each do |headers|
       get "/api/v1/inference", headers: headers
@@ -56,7 +56,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
       assert_equal "claude_code", body["runtime"]
       assert_equal %w[claude_code codex pi], body["runtimes"].map { |r| r["key"] }
 
-      primary = body["accounts"].find { |a| a["email"] == "tadas@tadasant.com" }
+      primary = body["accounts"].find { |a| a["email"] == "owner@example.com" }
       assert primary["is_current"]
       assert_equal "active", primary["effective_status"]
       assert_equal "unverified", primary["credentials"]["state"], "stored, and never checked against Anthropic"
@@ -74,9 +74,9 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
       assert body["pool"].key?("five_hour_utilization")
 
       event = body["rotation_log"].first
-      assert_equal "sam@tadasant.com", event["from"]["email"]
-      assert_equal "tadas@tadasant.com", event["to"]["email"]
-      assert_equal "tadas@tadasant.com via the iOS app", event["triggered_by"]
+      assert_equal "pool-1@example.com", event["from"]["email"]
+      assert_equal "owner@example.com", event["to"]["email"]
+      assert_equal "owner@example.com via the iOS app", event["triggered_by"]
 
       policy = body["spot_policy"]
       assert_includes [ true, false ], policy["gating_enabled"]
@@ -141,7 +141,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     account = claude_accounts(:secondary)
     attempt = account.runtime_login_attempts.create!(runtime: account.runtime, status: "awaiting_code")
     writes = [
-      [ :post, "/api/v1/inference/accounts", { runtime: "claude_code", email: "new@tadasant.com" } ],
+      [ :post, "/api/v1/inference/accounts", { runtime: "claude_code", email: "new@example.com" } ],
       [ :post, "/api/v1/inference/accounts/#{account.id}/refresh", {} ],
       [ :post, "/api/v1/inference/accounts/#{account.id}/activate", {} ],
       [ :delete, "/api/v1/inference/accounts/#{account.id}", {} ],
@@ -170,7 +170,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert_equal "awaiting_code", attempt.reload.status
     assert_nil attempt.pasted_code
     assert_equal 0, RuntimeLoginAttempt.where.not(id: attempt.id).count
-    refute ClaudeAccount.exists?(email: "new@tadasant.com")
+    refute ClaudeAccount.exists?(email: "new@example.com")
     assert_nil AppSetting.order(:id).first&.genesis_class_overrides&.fetch("web_ui", nil)
   end
 
@@ -212,13 +212,13 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert_response :success, response.body
     body = JSON.parse(response.body)
     assert body["account"]["is_current"]
-    assert_equal "Switched to sam@tadasant.com", body["message"]
+    assert_equal "Switched to pool-1@example.com", body["message"]
     assert account.reload.is_current?
     refute claude_accounts(:primary).reload.is_current?
     event = AccountRotationEvent.order(:id).last
     assert_equal "manual_switch", event.reason
     assert_equal "manual", event.source
-    assert_equal "tadas@tadasant.com via the iOS app", event.triggered_by
+    assert_equal "owner@example.com via the iOS app", event.triggered_by
   end
 
   test "activate refuses an account with no credentials, as the page does" do
@@ -236,7 +236,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     delete "/api/v1/inference/accounts/#{secondary.id}", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
     assert_response :success, response.body
     refute ClaudeAccount.exists?(secondary.id)
-    assert_equal "tadas@tadasant.com", JSON.parse(response.body)["current_account"]["email"]
+    assert_equal "owner@example.com", JSON.parse(response.body)["current_account"]["email"]
 
     primary = claude_accounts(:primary)
     delete "/api/v1/inference/accounts/#{primary.id}", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
@@ -247,21 +247,21 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert body["current_account"]["is_current"]
     event = AccountRotationEvent.order(:id).last
     assert_equal "deleted_current_account", event.reason
-    assert_equal "tadas@tadasant.com", event.rotated_from_email
-    assert_equal "tadas@tadasant.com via the iOS app", event.triggered_by
+    assert_equal "owner@example.com", event.rotated_from_email
+    assert_equal "owner@example.com via the iOS app", event.triggered_by
   end
 
   test "adding an account creates an unauthenticated row, and refuses a duplicate or a blank email" do
     headers = bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
 
-    post "/api/v1/inference/accounts", params: { runtime: "claude_code", email: "new@tadasant.com", priority: 7 }, headers: headers
+    post "/api/v1/inference/accounts", params: { runtime: "claude_code", email: "new@example.com", priority: 7 }, headers: headers
     assert_response :created, response.body
     body = JSON.parse(response.body)
     assert_equal "needs_reauth", body["account"]["status"]
     assert_equal 7, body["account"]["priority"]
     assert_match(/Authenticate it/, body["message"])
 
-    post "/api/v1/inference/accounts", params: { runtime: "claude_code", email: "new@tadasant.com" }, headers: headers
+    post "/api/v1/inference/accounts", params: { runtime: "claude_code", email: "new@example.com" }, headers: headers
     assert_response :unprocessable_entity
     assert_match(/already exists/, JSON.parse(response.body)["message"])
 
@@ -373,7 +373,7 @@ class NativeAppInferenceTest < ActionDispatch::IntegrationTest
     assert_equal 0, setting.spot_starvation_age_ceiling_hours
     audit = entries.map(&:last).find { |m| m.include?("[FleetPolicy]") }
     assert audit, "the policy change is recorded"
-    assert_match(/tadas@tadasant.com via the iOS app/, audit)
+    assert_match(/owner@example.com via the iOS app/, audit)
     assert_match(/spot_reserve_five_hour_pct 20 -> 35/, audit)
   end
 

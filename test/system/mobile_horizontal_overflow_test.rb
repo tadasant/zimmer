@@ -1236,7 +1236,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # text input and in the trigger detail's description.
   test "a whatsapp trigger's form and detail do not overflow horizontally on a phone" do
     trigger = Trigger.new(
-      name: "wedding-planner-whatsapp-listener",
+      name: "event-planner-whatsapp-listener",
       prompt_template: "New messages: {{text|untrusted}}",
       status: "enabled",
       agent_root_name: AgentRootsConfig.all.first.name
@@ -1267,7 +1267,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
   # An email condition's query is often one unbreakable token — a long plus-address — and the
   # trigger detail's description repeats it.
   test "an email trigger's form and detail do not overflow horizontally on a phone" do
-    query = "to:zimmer+bug-reports-from-the-wedding-planning-spreadsheet@tadasant.com"
+    query = "to:zimmer+bug-reports-from-the-event-planning-spreadsheet@example.com"
     trigger = Trigger.new(
       name: "zimmer-inbox-email-listener",
       prompt_template: "New mail: {{text|untrusted}} ({{message_id}})",

@@ -694,13 +694,13 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
       "a root with no resolvable defaults must not have mcp_servers invented on unarchive"
   end
 
-  # zimmer#1257: session 22934 named `gmail-tadas412-readonly`, which the catalog
+  # zimmer#1257: session 22934 named `gmail-pool-readonly`, which the catalog
   # removed after the session was created. Its unarchive passed the stale id to
   # `air prepare`, which exited 1 on `Unknown MCP server ID`. Runs the REAL
   # AirPrepareService#prepare! down to the subprocess, which is the only seam
   # that sees the flags `air prepare` would have been handed.
   test "unarchive drops an MCP server id the catalog has since removed instead of failing" do
-    @session.update_column(:mcp_servers, [ "context7", "gmail-tadas412-readonly" ])
+    @session.update_column(:mcp_servers, [ "context7", "gmail-pool-readonly" ])
     @mock_fs.mkdir_p(@clone_path)
 
     AirPrepareService.any_instance.unstub(:prepare!)
@@ -716,12 +716,12 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
 
     assert result.success?, result.error
     assert_includes air_cmd, "context7"
-    refute_includes air_cmd, "gmail-tadas412-readonly",
+    refute_includes air_cmd, "gmail-pool-readonly",
       "an id the catalog no longer knows must never reach `air prepare`"
 
     @session.reload
     assert_equal [ "context7" ], @session.mcp_servers
-    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+    assert_equal({ "mcp_servers" => [ "gmail-pool-readonly" ] }, @session.dropped_unknown_catalog_ids)
   end
 
   test "does not clobber a non-empty mcp_servers column with agent root defaults" do

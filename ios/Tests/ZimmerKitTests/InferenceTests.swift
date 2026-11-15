@@ -19,7 +19,7 @@ final class InferenceTests: XCTestCase {
         "runtime": "claude_code",
         "runtimes": [["key": "claude_code", "label": "Claude Code"], ["key": "codex", "label": "Codex"], ["key": "pi", "label": "Pi"]],
         "accounts": [[
-            "id": 11, "email": "ops@tadasant.com", "runtime": "claude_code", "priority": 0, "is_current": true, "status": "active",
+            "id": 11, "email": "ops@example.com", "runtime": "claude_code", "priority": 0, "is_current": true, "status": "active",
             "effective_status": "quota_exceeded", "quota_hit_count": 2, "api_key_account": false,
             "credentials": ["state": "verified", "stored": true, "refused": false, "rejected_at": NSNull(), "rejection_reason": NSNull(), "verified_at": "2026-10-13T01:00:00Z"],
             "probe_error": NSNull(),
@@ -39,7 +39,7 @@ final class InferenceTests: XCTestCase {
                  "worst_five_hour_utilization": 0.9, "worst_weekly_utilization": 1.0, "read_count": 3, "servable_count": 2, "weekly_spent_count": 1,
                  "capacity_now": true, "next_capacity_at": NSNull(), "next_weekly_reset": "2026-10-18T00:00:00Z", "windows": ["five_hour": ["capacity_usd": 12.5]],
                  "dry": ["reasons": ["quota_exceeded": 3], "breakdown": "3 out of quota", "recovery": "Sessions will park and resume on their own when a window resets."]],
-        "rotation_log": [["id": 61, "at": "2026-10-16T00:30:00Z", "from": ["email": "spot@tadasant.com", "deleted": false], "to": ["email": "ops@tadasant.com", "deleted": false],
+        "rotation_log": [["id": 61, "at": "2026-10-16T00:30:00Z", "from": ["email": "spot@example.com", "deleted": false], "to": ["email": "ops@example.com", "deleted": false],
                           "reason": "quota_exceeded", "source": "automatic", "triggered_by": "session:1042", "session_id": 1042]],
         "openrouter_key": NSNull(),
         "spot_policy": ["gating_enabled": true, "five_hour_reserve_pct": 15, "weekly_reserve_pct": 20, "max_concurrent_sessions": 4, "preemption_enabled": true,
@@ -112,27 +112,27 @@ final class InferenceTests: XCTestCase {
     }
 
     func testEachAccountVerbHitsItsRouteWithTheServersParameterNames() async throws {
-        let account: [String: Any] = ["id": 20, "email": "new@tadasant.com", "runtime": "codex", "priority": 3, "is_current": false, "status": "active",
+        let account: [String: Any] = ["id": 20, "email": "new@example.com", "runtime": "codex", "priority": 3, "is_current": false, "status": "active",
                                       "effective_status": "active", "quota_hit_count": 0, "api_key_account": true,
                                       "credentials": ["state": "unverified", "stored": true, "refused": false], "quota": NSNull(),
                                       "login": ["available": false, "active_attempt": NSNull(), "last_attempt": NSNull()]]
         let responses = [
-            Fixtures.json(201, ["account": account, "message": "Added new@tadasant.com."]),
+            Fixtures.json(201, ["account": account, "message": "Added new@example.com."]),
             Fixtures.json(200, ["account": account, "pool": ["total": 1, "active": 1, "quota_exceeded": 0, "needs_reauth": 0, "read_count": 0, "servable_count": 1, "weekly_spent_count": 0, "capacity_now": true]]),
-            Fixtures.json(200, ["account": account, "message": "Switched to new@tadasant.com"]),
-            Fixtures.json(200, ["message": "Deleted new@tadasant.com.", "current_account": NSNull()]),
+            Fixtures.json(200, ["account": account, "message": "Switched to new@example.com"]),
+            Fixtures.json(200, ["message": "Deleted new@example.com.", "current_account": NSNull()]),
         ]
         let (api, transport) = client(responses.map { response in { _ in response } })
 
-        let added = try await api.addInferenceAccount(runtime: "codex", email: "new@tadasant.com", priority: 3, apiKey: "sk-test")
+        let added = try await api.addInferenceAccount(runtime: "codex", email: "new@example.com", priority: 3, apiKey: "sk-test")
         let refreshed = try await api.refreshInferenceAccount(20)
         let activated = try await api.activateInferenceAccount(20)
         let removed = try await api.deleteInferenceAccount(20)
 
-        XCTAssertEqual(added.message, "Added new@tadasant.com.")
+        XCTAssertEqual(added.message, "Added new@example.com.")
         XCTAssertEqual(added.account.credentialTag, "API key")
         XCTAssertEqual(refreshed.pool?.total, 1)
-        XCTAssertEqual(activated.message, "Switched to new@tadasant.com")
+        XCTAssertEqual(activated.message, "Switched to new@example.com")
         XCTAssertNil(removed.currentAccount)
         XCTAssertEqual(transport.sent.map { "\($0.method) \($0.url.path)" }, [
             "POST /api/v1/inference/accounts", "POST /api/v1/inference/accounts/20/refresh",
@@ -140,7 +140,7 @@ final class InferenceTests: XCTestCase {
         ])
         let form = body(transport.sent[0])
         XCTAssertEqual(form["runtime"] as? String, "codex")
-        XCTAssertEqual(form["email"] as? String, "new@tadasant.com")
+        XCTAssertEqual(form["email"] as? String, "new@example.com")
         XCTAssertEqual(form["priority"] as? Int, 3)
         XCTAssertEqual(form["api_key"] as? String, "sk-test")
     }
@@ -240,7 +240,7 @@ final class InferenceTests: XCTestCase {
         let fake = FakeZimmerAPI()
         let report = try await fake.inference(runtime: "claude_code")
         let accounts = try XCTUnwrap(report.accounts)
-        XCTAssertEqual(accounts.map(\.email), ["ops@tadasant.com", "spot@tadasant.com", "backup@tadasant.com"])
+        XCTAssertEqual(accounts.map(\.email), ["ops@example.com", "spot@example.com", "backup@example.com"])
         XCTAssertEqual(accounts.filter(\.isCurrent).map(\.id), [11])
         XCTAssertEqual(accounts[1].statusLabel, "Quota Exceeded")
         XCTAssertNotNil(accounts[2].probeError)
@@ -255,10 +255,10 @@ final class InferenceTests: XCTestCase {
     func testTheFakeMovesTheCurrentMarkerAndLogsTheRotation() async throws {
         let fake = FakeZimmerAPI()
         let switched = try await fake.activateInferenceAccount(12)
-        XCTAssertEqual(switched.message, "Switched to spot@tadasant.com")
+        XCTAssertEqual(switched.message, "Switched to spot@example.com")
         let report = try await fake.inference(runtime: "claude_code")
         XCTAssertEqual(report.accounts?.filter(\.isCurrent).map(\.id), [12])
-        XCTAssertEqual(report.rotationLog?.first?.to.email, "spot@tadasant.com")
+        XCTAssertEqual(report.rotationLog?.first?.to.email, "spot@example.com")
         XCTAssertEqual(report.rotationLog?.first?.triggeredBy, FakeInference.actor)
         await XCTAssertThrowsAsync(try await fake.activateInferenceAccount(13), "a refused token cannot be switched to")
         await XCTAssertThrowsAsync(try await fake.activateInferenceAccount(15), "an account with no credentials cannot be switched to")
@@ -276,7 +276,7 @@ final class InferenceTests: XCTestCase {
     func testDeletingTheCurrentAccountHandsOver() async throws {
         let fake = FakeZimmerAPI()
         let removed = try await fake.deleteInferenceAccount(11)
-        XCTAssertEqual(removed.message, "Deleted ops@tadasant.com. Activated spot@tadasant.com as the current account.")
+        XCTAssertEqual(removed.message, "Deleted ops@example.com. Activated spot@example.com as the current account.")
         XCTAssertEqual(removed.currentAccount?.id, 12)
         let report = try await fake.inference(runtime: "claude_code")
         XCTAssertEqual(report.accounts?.count, 2)
@@ -284,8 +284,8 @@ final class InferenceTests: XCTestCase {
 
     func testTheFakesCodexLoginWalksToSucceededOnSuccessivePolls() async throws {
         let fake = FakeZimmerAPI()
-        let added = try await fake.addInferenceAccount(runtime: "codex", email: "new@tadasant.com", priority: 2, apiKey: nil)
-        XCTAssertEqual(added.message, "Added new@tadasant.com. Authenticate it to capture credentials.")
+        let added = try await fake.addInferenceAccount(runtime: "codex", email: "new@example.com", priority: 2, apiKey: nil)
+        XCTAssertEqual(added.message, "Added new@example.com. Authenticate it to capture credentials.")
         XCTAssertFalse(added.account.credentials.stored)
         let attempt = try await fake.startInferenceLogin(accountID: added.account.id)
         XCTAssertEqual(attempt.status, "starting")

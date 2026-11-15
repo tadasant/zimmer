@@ -17,7 +17,7 @@ module WebAuthTestHelpers
     values = {
       WebAuth::Configuration::CLIENT_ID => GOOGLE_CLIENT_ID,
       WebAuth::Configuration::CLIENT_SECRET => "test-client-secret",
-      WebAuth::Configuration::ALLOWED_DOMAINS => "tadasant.com"
+      WebAuth::Configuration::ALLOWED_DOMAINS => "example.com"
     }
     overrides.each { |key, value| values[WebAuth::Configuration.const_get(key.to_s.upcase)] = value }
     WebAuth::Configuration.new(values)
@@ -36,10 +36,10 @@ module WebAuthTestHelpers
       "iss" => "https://accounts.google.com",
       "aud" => GOOGLE_CLIENT_ID,
       "sub" => "110248495921238986420",
-      "email" => "tadas@tadasant.com",
+      "email" => "owner@example.com",
       "email_verified" => true,
-      "hd" => "tadasant.com",
-      "name" => "Tadas Antanavicius",
+      "hd" => "example.com",
+      "name" => "Owner Example",
       "iat" => Time.current.to_i,
       "exp" => 1.hour.from_now.to_i
     }.merge(overrides.transform_keys(&:to_s)).compact

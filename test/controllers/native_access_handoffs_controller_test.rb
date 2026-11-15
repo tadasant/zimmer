@@ -30,7 +30,7 @@ class NativeAccessHandoffsControllerTest < ActionDispatch::IntegrationTest
   end
 
   def assertion(claims: {}, key: @key, kid: "k1")
-    payload = { "iss" => "https://#{TEAM}", "aud" => [ AUD ], "email" => "tadas@tadasant.com",
+    payload = { "iss" => "https://#{TEAM}", "aud" => [ AUD ], "email" => "owner@example.com",
       "iat" => Time.now.to_i, "exp" => 30.days.from_now.to_i }.merge(claims)
     JWT.encode(payload, key, "RS256", { kid: kid })
   end

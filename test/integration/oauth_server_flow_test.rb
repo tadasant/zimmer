@@ -22,10 +22,10 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     @api_key = "test_api_key_oauth_flow"
     ENV["API_KEYS"] = @api_key
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     # The web sign-in wall is off unless a test turns it on.
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
     ENV.delete("OAUTH_SERVER_ACCESS_TOKEN_TTL_SECONDS")
   end
 
@@ -277,7 +277,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     get "/oauth/authorize", params: authorize_params(client_id, challenge)
     assert_response :success
-    assert_includes response.body, "tadas@tadasant.com"
+    assert_includes response.body, "owner@example.com"
     assert_includes response.body, "self-registered"
     assert_equal "DENY", response.headers["X-Frame-Options"]
     # `no-referrer` would make the browser post the consent form with `Origin: null`,
@@ -608,7 +608,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
     follow_redirect!
     assert_response :success
-    assert_includes response.body, "tadas@tadasant.com"
+    assert_includes response.body, "owner@example.com"
 
     post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only")
     _, query = redirect_params
@@ -674,13 +674,13 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
   end
 
   test "signed in outside the allowed domain: a page, no code — even when posting the consent form directly" do
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone@gmail.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone@elsewhere.test"
     client_id = register["client_id"]
     _, challenge = pkce
 
     get "/oauth/authorize", params: authorize_params(client_id, challenge)
     assert_response :forbidden
-    assert_includes response.body, "@tadasant.com"
+    assert_includes response.body, "@example.com"
 
     post "/oauth/authorize", params: authorize_params(client_id, challenge).merge(decision: "approve", privilege: "relay_only")
     assert_response :forbidden
@@ -697,7 +697,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
   test "the allowed domains fall back to the web sign-in's" do
     ENV.delete("OAUTH_SERVER_ALLOWED_DOMAINS")
-    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: "example.org, tadasant.com"))
+    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: "example.org, example.com"))
     _, challenge = pkce
 
     get "/oauth/authorize", params: authorize_params(register["client_id"], challenge)
@@ -878,7 +878,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     get "/settings/api_keys"
     assert_response :success
     assert_includes response.body, "MCP connections"
-    assert_includes response.body, "tadas@tadasant.com"
+    assert_includes response.body, "owner@example.com"
 
     post "/settings/api_keys/oauth_grants/#{grant.id}/revoke"
     assert_redirected_to "/settings/api_keys#oauth-connections"

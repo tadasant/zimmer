@@ -14,7 +14,7 @@ class LetExistingOauthGrantsActOnTheirApproversBehalfTest < ActiveSupport::TestC
   def grant(scope: OauthServer::SCOPE, scope_changed_at: nil, scope_change_reason: nil, revoked: false)
     client = OauthServer::Client.create!(client_id: "dcr-#{SecureRandom.hex(8)}", registration_type: OauthServer::Client::DCR,
       client_name: "Claude", redirect_uris: [ "https://claude.ai/api/mcp/auth_callback" ])
-    OauthServer::Grant.create!(client: client, user_email: "tadas@tadasant.com", resource: "http://www.example.com/mcp",
+    OauthServer::Grant.create!(client: client, user_email: "owner@example.com", resource: "http://www.example.com/mcp",
       scope: scope, scope_changed_at: scope_changed_at, scope_change_reason: scope_change_reason,
       revoked_at: (Time.current if revoked))
   end

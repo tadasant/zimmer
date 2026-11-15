@@ -8,7 +8,7 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   setup do
     ServersConfig.stubs(:exists?).returns(true)
-    AgentRootsConfig.stubs(:names).returns(%w[zimmer wedding-planning])
+    AgentRootsConfig.stubs(:names).returns(%w[zimmer event-planning])
     @api_key = "test_api_key_12345"
     ENV["API_KEYS"] = @api_key
   end
@@ -28,14 +28,14 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   test "the form creates a whatsapp condition from the fields it renders" do
     post triggers_path, params: { trigger: {
-      name: "Wedding planner chat",
+      name: "Event planner chat",
       status: "enabled",
       agent_root_name: "zimmer",
       prompt_template: "{{text|untrusted}}",
       reuse_session: "1",
       trigger_conditions_attributes: {
         "0" => { condition_type: "whatsapp", configuration: {
-          chat_id: CHAT, chat_name: "Wedding", mode: "addressed", keywords: "zimmer\nassistant", include_from_me: "0"
+          chat_id: CHAT, chat_name: "Party", mode: "addressed", keywords: "zimmer\nassistant", include_from_me: "0"
         } }
       }
     } }
@@ -61,12 +61,12 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   test "whatsapp_chats lists the bridge's chats" do
     WhatsappService.stubs(:configured?).returns(true)
-    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Wedding", "is_group" => true } ])
+    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Party", "is_group" => true } ])
 
     get whatsapp_chats_triggers_path
 
     assert_response :success
-    assert_equal [ { "id" => CHAT, "name" => "Wedding", "is_group" => true } ], response.parsed_body["chats"]
+    assert_equal [ { "id" => CHAT, "name" => "Party", "is_group" => true } ], response.parsed_body["chats"]
   end
 
   test "whatsapp_chats reports a bridge error" do
@@ -81,14 +81,14 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
 
   test "the API lists chats and creates a whatsapp trigger" do
     WhatsappService.stubs(:configured?).returns(true)
-    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Wedding", "is_group" => true, "participant_count" => 3 } ])
+    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => CHAT, "name" => "Party", "is_group" => true, "participant_count" => 3 } ])
 
     get whatsapp_chats_api_v1_triggers_path, headers: { "X-API-Key" => @api_key }
     assert_response :success
     assert_equal 3, response.parsed_body["chats"].first["participant_count"]
 
     post api_v1_triggers_path, headers: { "X-API-Key" => @api_key }, params: {
-      name: "Wedding planner chat (API)",
+      name: "Event planner chat (API)",
       status: "enabled",
       agent_root_name: "zimmer",
       prompt_template: "{{text|untrusted}}",
@@ -98,6 +98,6 @@ class TriggersWhatsappControllerTest < ActionDispatch::IntegrationTest
     }, as: :json
 
     assert_response :created
-    assert_equal "listen", Trigger.find_by!(name: "Wedding planner chat (API)").trigger_conditions.sole.whatsapp_mode
+    assert_equal "listen", Trigger.find_by!(name: "Event planner chat (API)").trigger_conditions.sole.whatsapp_mode
   end
 end

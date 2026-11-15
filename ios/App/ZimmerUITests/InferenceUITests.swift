@@ -71,7 +71,7 @@ final class InferenceUITests: XCTestCase {
         let email = app.textFields["inference.add.email"]
         XCTAssertTrue(email.waitForExistence(timeout: timeout))
         email.tap()
-        email.typeText("new@tadasant.com")
+        email.typeText("new@example.com")
         app.buttons["inference.add.submit"].tap()
 
         // The login sheet: the fake's CLI prints the link and the one-time code on the first poll.

@@ -7,13 +7,11 @@ class UserTest < ActiveSupport::TestCase
     ENV.delete(User::ADMIN_ENV_KEY)
   end
 
-  test "the roster ships with the two humans this deployment knows about" do
-    assert_equal %w[tadasant juliehazz], User::SEEDED.map { |attrs| attrs[:key] }
-    assert_equal %w[Tadas Julie], User::SEEDED.map { |attrs| attrs[:display_name] }
-    assert_equal %w[tadas@tadasant.com julie@tadasant.com], User::SEEDED.map { |attrs| attrs[:email] }
-    assert User::SEEDED.all? { |attrs| attrs[:notes].present? }
-    # Slack IDs are deployment configuration and this repository is public.
-    assert User::SEEDED.none? { |attrs| attrs.key?(:slack_user_ids) }
+  test "the roster ships with the default admin alone, and no deployment configuration" do
+    assert_equal [ User::DEFAULT_ADMIN_KEY ], User::SEEDED.map { |attrs| attrs[:key] }
+    assert User::SEEDED.all? { |attrs| attrs[:display_name].present? && attrs[:notes].present? }
+    # Emails and Slack IDs are deployment configuration and this repository is public.
+    assert User::SEEDED.none? { |attrs| attrs.key?(:email) || attrs.key?(:slack_user_ids) }
   end
 
   test "the seeded rows are creatable as written" do
@@ -21,8 +19,9 @@ class UserTest < ActiveSupport::TestCase
 
     User::SEEDED.each { |attrs| User.create!(**attrs) }
 
-    assert_equal %w[juliehazz tadasant], User.alphabetical.pluck(:key)
-    assert_equal "tadas@tadasant.com", User.for_key("tadasant").email
+    assert_equal %w[tadasant], User.alphabetical.pluck(:key)
+    assert_nil User.for_key("tadasant").email
+    assert User.admin, "the seeded row is the admin a fresh install falls back to"
   end
 
   test "for_key finds a human, and nobody for an unknown or blank key" do
@@ -43,15 +42,15 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "the admin env var names who it says" do
-    ENV[User::ADMIN_ENV_KEY] = "juliehazz"
+    ENV[User::ADMIN_ENV_KEY] = "operator-b"
 
-    assert_equal "juliehazz", User.admin.key
+    assert_equal "operator-b", User.admin.key
   end
 
   test "the admin env var tolerates surrounding whitespace" do
-    ENV[User::ADMIN_ENV_KEY] = "  juliehazz  "
+    ENV[User::ADMIN_ENV_KEY] = "  operator-b  "
 
-    assert_equal "juliehazz", User.admin.key
+    assert_equal "operator-b", User.admin.key
   end
 
   # Nobody is a safer answer than somebody: web-UI capture records nothing
@@ -69,9 +68,9 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "admin? answers for the configured key" do
-    ENV[User::ADMIN_ENV_KEY] = "juliehazz"
+    ENV[User::ADMIN_ENV_KEY] = "operator-b"
 
-    assert users(:juliehazz).admin?
+    assert users(:operator_b).admin?
     refute users(:tadasant).admin?
   end
 
@@ -86,11 +85,11 @@ class UserTest < ActiveSupport::TestCase
 
   test "resolves a Slack user ID linked on the row" do
     users(:tadasant).update!(slack_user_ids: %w[U01TADAS U01TADAS_ALT])
-    users(:juliehazz).update!(slack_user_ids: %w[U07JULIE])
+    users(:operator_b).update!(slack_user_ids: %w[U07OPERB])
 
     assert_equal "tadasant", User.for_slack_user_id("U01TADAS").key
     assert_equal "tadasant", User.for_slack_user_id("U01TADAS_ALT").key
-    assert_equal "juliehazz", User.for_slack_user_id("U07JULIE").key
+    assert_equal "operator-b", User.for_slack_user_id("U07OPERB").key
   end
 
   # An unmapped Slack account may be another workspace member, a bot, or an app
@@ -113,11 +112,11 @@ class UserTest < ActiveSupport::TestCase
   # row order.
   test "a Slack ID cannot belong to two humans" do
     users(:tadasant).update!(slack_user_ids: %w[U01TADAS])
-    julie = users(:juliehazz)
-    julie.slack_user_ids = %w[U01TADAS]
+    operator_b = users(:operator_b)
+    operator_b.slack_user_ids = %w[U01TADAS]
 
-    refute julie.valid?
-    assert_includes julie.errors[:slack_user_ids], "already belong to tadasant"
+    refute operator_b.valid?
+    assert_includes operator_b.errors[:slack_user_ids], "already belong to tadasant"
   end
 
   test "the comma-separated form field round-trips the array" do
@@ -134,25 +133,25 @@ class UserTest < ActiveSupport::TestCase
   # ==========================================================================
 
   test "email is linked, normalized, and unique across humans" do
-    assert_equal "tadas@tadasant.com", users(:tadasant).email
-    assert_equal "julie@tadasant.com", users(:juliehazz).email
+    assert_equal "owner@example.com", users(:tadasant).email
+    assert_equal "operator-b@example.com", users(:operator_b).email
 
-    users(:tadasant).update!(email: "  Tadas@Tadasant.com ")
-    assert_equal "tadas@tadasant.com", users(:tadasant).reload.email
+    users(:tadasant).update!(email: "  Owner@Example.com ")
+    assert_equal "owner@example.com", users(:tadasant).reload.email
 
-    julie = users(:juliehazz)
-    julie.email = "TADAS@tadasant.com"
-    refute julie.valid?
+    operator_b = users(:operator_b)
+    operator_b.email = "OWNER@example.com"
+    refute operator_b.valid?
   end
 
   test "for_email finds a human case-insensitively" do
-    assert_equal "tadasant", User.for_email("TADAS@tadasant.com").key
+    assert_equal "tadasant", User.for_email("OWNER@example.com").key
     assert_nil User.for_email("stranger@example.com")
     assert_nil User.for_email(nil)
   end
 
   test "email must look like an address, but may be absent" do
-    user = users(:juliehazz)
+    user = users(:operator_b)
 
     user.email = "not-an-address"
     refute user.valid?
@@ -162,9 +161,9 @@ class UserTest < ActiveSupport::TestCase
   end
 
   test "notes carry free-form context for policy decisions" do
-    users(:juliehazz).update!(notes: "Tadas is master")
+    users(:operator_b).update!(notes: "Tadas is master")
 
-    assert_equal "Tadas is master", users(:juliehazz).reload.notes
+    assert_equal "Tadas is master", users(:operator_b).reload.notes
     assert_nil User.new(key: "x", display_name: "X").notes
   end
 

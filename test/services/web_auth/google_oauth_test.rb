@@ -17,8 +17,8 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
     identity = @google.verify(google_claims)
 
     assert_equal "110248495921238986420", identity.sub
-    assert_equal "tadas@tadasant.com", identity.email
-    assert_equal "tadasant.com", identity.hosted_domain
+    assert_equal "owner@example.com", identity.email
+    assert_equal "example.com", identity.hosted_domain
   end
 
   test "an account from another Workspace is refused, by its hd claim" do
@@ -29,7 +29,7 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
   test "a personal account is refused even when its email is on the allowed domain" do
     # The case the hd check exists for: a gmail account can carry an address on
     # someone else's domain, verified, with no hd claim at all.
-    error = assert_raises(WebAuth::GoogleOauth::Rejected) { @google.verify(google_claims(hd: nil, email: "tadas@tadasant.com")) }
+    error = assert_raises(WebAuth::GoogleOauth::Rejected) { @google.verify(google_claims(hd: nil, email: "owner@example.com")) }
     assert_match "personal Google account", error.message
   end
 
@@ -50,7 +50,7 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
   test "complete decodes the token Google's endpoint returned and verifies it" do
     stub_google_id_token(google_claims)
 
-    assert_equal "tadas@tadasant.com", @google.complete(code: "c", code_verifier: "v").email
+    assert_equal "owner@example.com", @google.complete(code: "c", code_verifier: "v").email
   end
 
   test "a malformed token is an exchange failure, not a crash" do
@@ -69,7 +69,7 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
     assert_equal "S256", query["code_challenge_method"]
     assert_equal WebAuth::GoogleOauth.code_challenge("verifier"), query["code_challenge"]
     assert_equal "openid email profile", query["scope"]
-    assert_equal "tadasant.com", query["hd"]
+    assert_equal "example.com", query["hd"]
 
     two_domains = WebAuth::GoogleOauth.new(web_auth_configuration_with(allowed_domains: "a.com,b.com"))
     assert_nil Rack::Utils.parse_query(URI(two_domains.authorization_url(state: "s", code_verifier: "v")).query)["hd"]

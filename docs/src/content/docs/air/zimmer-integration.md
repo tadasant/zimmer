@@ -387,8 +387,8 @@ bug. The enrichment is skipped when AIR's message already carries a path of its 
 Requested artifact ids — MCP servers, skills, hooks and plugins — get one more guard, *before* the
 invocation. Each column is validated against the catalog when the session is created, but the
 catalog moves on independently: an artifact renamed (`pr` → `open-pr`) or removed
-(`gmail-tadas412-readonly`) leaves a stale id in a long-lived session's stored config. `air prepare`
-hard-rejects an unknown id with exit 1 (`Error: Unknown MCP server ID "gmail-tadas412-readonly". …`),
+(`gmail-pool-readonly`) leaves a stale id in a long-lived session's stored config. `air prepare`
+hard-rejects an unknown id with exit 1 (`Error: Unknown MCP server ID "gmail-pool-readonly". …`),
 which would fail every later resume, unarchive and follow-up of that session. So
 `AirPrepareService#reconciled_catalog_selection` drops any id not in the live catalog and prepares
 with the survivors. Catalog drift is expected, not a fault, so it logs at WARN and pages nobody. It

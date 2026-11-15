@@ -228,7 +228,7 @@ class SessionScopedCredentialsTest < ActiveSupport::TestCase
     status = ClaudeCredentialHealth.status
 
     assert_equal :ok, status.state
-    assert_equal "tadas@tadasant.com", status.owner_email
+    assert_equal "owner@example.com", status.owner_email
     assert_match(/authenticate from the database/, status.detail)
   end
 

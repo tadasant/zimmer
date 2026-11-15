@@ -57,7 +57,7 @@ class WebAuth::TotpTest < ActiveSupport::TestCase
   end
 
   test "the provisioning URI is one an authenticator app reads" do
-    uri = WebAuth::Totp.provisioning_uri("JBSWY3DPEHPK3PXP", account: "tadas@tadasant.com", issuer: "Zimmer")
-    assert_equal "otpauth://totp/Zimmer%3Atadas%40tadasant.com?secret=JBSWY3DPEHPK3PXP&issuer=Zimmer&algorithm=SHA1&digits=6&period=30", uri
+    uri = WebAuth::Totp.provisioning_uri("JBSWY3DPEHPK3PXP", account: "owner@example.com", issuer: "Zimmer")
+    assert_equal "otpauth://totp/Zimmer%3Aowner%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Zimmer&algorithm=SHA1&digits=6&period=30", uri
   end
 end

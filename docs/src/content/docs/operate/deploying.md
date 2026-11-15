@@ -111,7 +111,8 @@ verify the droplet's host key, which matters once that SSH crosses the public in
 :::note[Turning it on]
 Mint a Cloudflare API token scoped to `Zone:DNS:Edit + Zone:Zone:Read` on the parent zone only, add it
 as the `CLOUDFLARE_API_TOKEN` Actions secret (on staging → `tadasant/zimmer`; on production →
-your private production repo), set `domain` in the environment's tfvars, deploy, then run the
+your private production repo), add the ACME account's contact address as the `ACME_EMAIL` secret (lego will
+not register without one; a secret rather than a literal because a public repo's workflow logs are public), set `domain` in the environment's tfvars, deploy, then run the
 `domain-cert-*` workflow once (`workflow_dispatch`) to issue the first cert. The weekly schedule renews
 thereafter — a no-op unless the cert is missing, self-signed, wrong-name, or within 30 days of expiry, so
 it issues only ~every 60 days. `domain=""` renders byte-identically to the plain-HTTP setup, so existing

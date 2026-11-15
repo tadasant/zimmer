@@ -48,7 +48,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     follow_redirect!
     assert_response :success
     assert_includes response.body, "Sign in with Google"
-    assert_includes response.body, "tadasant.com"
+    assert_includes response.body, "example.com"
 
     sign_in_and_enroll
     assert_select "a[href=?]", settings_path, text: "Continue to Zimmer"
@@ -82,7 +82,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     sign_in_and_enroll
     get "/supervisor/web_identities"
     assert_response :success
-    assert_includes response.body, "tadas@tadasant.com"
+    assert_includes response.body, "owner@example.com"
     get "/jobs"
     # GoodJob's own redirect to its localized index: past the wall.
     assert_redirected_to %r{/jobs/jobs}
@@ -160,7 +160,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
   test "a personal account with an allowed-looking address is refused" do
     enable_web_auth
 
-    sign_in_with_google(google_claims(hd: nil, email: "tadas@tadasant.com"))
+    sign_in_with_google(google_claims(hd: nil, email: "owner@example.com"))
     assert_response :forbidden
     assert_includes response.body, "personal Google account"
     assert_equal 0, WebIdentity.count
@@ -360,7 +360,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     get settings_path
     assert_response :success
     assert_includes response.body, "Signed in as"
-    assert_includes response.body, "tadas@tadasant.com"
+    assert_includes response.body, "owner@example.com"
     assert_includes response.body, "10 recovery codes left"
     assert_select "a[href=?]", second_factor_setup_path
     assert_select "form[action=?]", logout_path
@@ -395,7 +395,7 @@ class WebSignInTest < ActionDispatch::IntegrationTest
 
   test "a trusted-device cookie only vouches for the identity it was issued to" do
     enable_web_auth
-    other = google_claims(sub: "other-account", email: "julie@tadasant.com")
+    other = google_claims(sub: "other-account", email: "operator-b@example.com")
     sign_in_and_enroll(other)
     reset!
 

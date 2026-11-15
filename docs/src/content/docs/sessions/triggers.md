@@ -570,11 +570,11 @@ message the poller fired is a minute late, not lost, and nothing about it should
 ### `whatsapp`
 
 Fires when new messages land in one WhatsApp chat, usually a group. It exists so a session can sit
-in a chat with people outside Zimmer, such as a wedding planner, listen to it, and answer when
+in a chat with people outside Zimmer, such as an event planner, listen to it, and answer when
 someone talks to it.
 
 ```json
-{ "chat_id": "120363012345678901@g.us", "chat_name": "Wedding", "mode": "listen" }
+{ "chat_id": "120363012345678901@g.us", "chat_name": "Party", "mode": "listen" }
 ```
 
 | Key | Required | Meaning |
@@ -668,7 +668,7 @@ enter the code on the phone.
 ### `email`
 
 Fires when new mail lands in a mailbox, one session per mail thread. It exists so a mailbox Zimmer
-owns (on the Tadasant deployment, zimmer@tadasant.com) can be written to like a person, and a session
+owns (on the Tadasant deployment, its own Gmail address) can be written to like a person, and a session
 decides how, and whether, to answer each message.
 
 ```json
@@ -688,7 +688,7 @@ filter in `query` is a noise filter, not authentication. `From:` is whatever the
 Zimmer does not speak IMAP or Gmail's API. A **mailbox server** does: an MCP server with the Gmail
 tool contract of `pulsemcp/mcp-servers/experimental/gmail` (`search_email_conversations`,
 `get_email_conversation`, `download_email_attachments`, …). On the Tadasant deployment it is strad's
-`gmail-zimmer-ro` slug, a read-only mount of zimmer@tadasant.com. `EmailService` talks to it with two
+`gmail-zimmer-ro` slug, a read-only mount of that mailbox. `EmailService` talks to it with two
 settings, resolved like every other secret (Parameter Store, then encrypted credentials, then `ENV`):
 
 - `EMAIL_MCP_URL`: the server's MCP endpoint, for example

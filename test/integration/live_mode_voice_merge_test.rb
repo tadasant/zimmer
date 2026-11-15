@@ -20,8 +20,8 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV[ApiKey::ENV_VAR] = "voice-merge-test-key"
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     stub_live_root
     stub_live_key

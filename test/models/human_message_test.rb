@@ -85,31 +85,31 @@ class HumanMessageTest < ActiveSupport::TestCase
 
   test "display_name resolves through the users table" do
     assert_equal "Tadas", build_message(author: "tadasant").display_name
-    assert_equal "Julie", build_message(author: "juliehazz").display_name
+    assert_equal "Operator B", build_message(author: "operator-b").display_name
   end
 
   # `author` is a key, not a foreign key, precisely so an immutable record
   # survives the roster changing under it.
   test "a record whose author left the roster still renders, naming the key" do
     message = @session.human_messages.create!(
-      author: "juliehazz",
+      author: "operator-b",
       channel: HumanMessage::SLACK,
       content: "the rest should all be actioned",
       occurred_at: Time.current
     )
 
-    users(:juliehazz).destroy!
+    users(:operator_b).destroy!
 
     message.reload
-    assert_equal "juliehazz", message.author
+    assert_equal "operator-b", message.author
     assert_nil message.user
-    assert_equal "juliehazz", message.display_name
+    assert_equal "operator-b", message.display_name
     assert_nil message.author_notes
   end
 
   test "author_notes carries the roster's context about the human" do
     assert_equal users(:tadasant).notes, build_message(author: "tadasant").author_notes
-    assert_nil build_message(author: "juliehazz").author_notes
+    assert_nil build_message(author: "operator-b").author_notes
   end
 
   test "channel_label names the channel a reader has to weigh" do

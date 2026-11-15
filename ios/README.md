@@ -198,7 +198,7 @@ Signing out revokes the refresh token at `/oauth/revoke`.
 A deployment can serve the app from two origins (`ServerOrigins`): **web**, where a person signs
 in (`/oauth/authorize`, the OAuth issuer), and **api**, where every machine call goes
 (`/oauth/token`, `/oauth/revoke`, `/api/v1`). Tadas's puts the api origin on its own hostname
-(`zimmer-app.…`) behind a Cloudflare Access application that admits only the `@tadasant.com`
+(`zimmer-app.…`) behind a Cloudflare Access application that admits only the deployment's own
 Google policy — no service token, no bypass. The contract, from the edge design in the private
 companion repo:
 

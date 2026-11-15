@@ -571,12 +571,12 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
 
   # --- Removed/renamed MCP server, hook and plugin ids (zimmer#1257) ----------
   #
-  # The production failure: a session created naming `gmail-tadas412-readonly`
+  # The production failure: a session created naming `gmail-pool-readonly`
   # was unarchived after the catalog removed it, and `air prepare` exited 1 on
   # `Unknown MCP server ID`, failing the unarchive and the follow-up job.
 
   test "prepare! drops an MCP server id the catalog no longer knows and records it" do
-    @session.update_column(:mcp_servers, [ "playwright-custom", "gmail-tadas412-readonly" ])
+    @session.update_column(:mcp_servers, [ "playwright-custom", "gmail-pool-readonly" ])
     ErrorReporter.expects(:report_message).never
 
     captured_cmd = nil
@@ -594,12 +594,12 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     cmd_args = captured_cmd[1..]
     mcp_values = cmd_args.each_cons(2).select { |a, _| a == "--mcp-server" }.map(&:last)
     assert_includes mcp_values, "playwright-custom"
-    refute_includes cmd_args, "gmail-tadas412-readonly",
+    refute_includes cmd_args, "gmail-pool-readonly",
       "an id the catalog no longer knows must never reach `air prepare`, which exits 1 on it"
 
     @session.reload
     assert_equal [ "playwright-custom" ], @session.mcp_servers
-    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+    assert_equal({ "mcp_servers" => [ "gmail-pool-readonly" ] }, @session.dropped_unknown_catalog_ids)
   end
 
   test "prepare! drops a stale hook even when the catalog has no hooks left at all" do
@@ -626,8 +626,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     # Without the marker McpServerBackfill reads the empty column as a failed
     # resolve and refills it with the root's defaults on the next turn.
     @session.update_columns(
-      mcp_servers: [ "gmail-tadas412-readonly" ],
-      custom_metadata: { "mcp_servers_status" => { "gmail-tadas412-readonly" => { "status" => "connected" } } }
+      mcp_servers: [ "gmail-pool-readonly" ],
+      custom_metadata: { "mcp_servers_status" => { "gmail-pool-readonly" => { "status" => "connected" } } }
     )
 
     stub_air_subprocess(proc { |*args, **opts|
@@ -640,9 +640,9 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_equal [], @session.mcp_servers
     assert @session.mcp_servers_explicitly_empty?,
       "an emptied list must not be backfilled with servers the session never chose"
-    assert_not @session.custom_metadata.fetch("mcp_servers_status", {}).key?("gmail-tadas412-readonly"),
+    assert_not @session.custom_metadata.fetch("mcp_servers_status", {}).key?("gmail-pool-readonly"),
       "a dropped server must not be re-reported as lost on every later regeneration"
-    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+    assert_equal({ "mcp_servers" => [ "gmail-pool-readonly" ] }, @session.dropped_unknown_catalog_ids)
   end
 
   test "prepare! drops removed hook and plugin ids and accumulates every dropped id" do

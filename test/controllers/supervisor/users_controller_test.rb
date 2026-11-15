@@ -17,7 +17,7 @@ module Supervisor
       assert_response :success
       assert_select "h1", "Users"
       assert_match "tadasant", response.body
-      assert_match "juliehazz", response.body
+      assert_match "operator-b", response.body
     end
 
     # `slack_user_ids_list` is a plain Ruby method, not a column. The dashboard
@@ -33,7 +33,7 @@ module Supervisor
       get supervisor_user_url(@tadas)
 
       assert_response :success
-      assert_match "tadas@tadasant.com", response.body
+      assert_match "owner@example.com", response.body
     end
 
     test "the form renders" do
@@ -99,7 +99,7 @@ module Supervisor
           user: {
             key: "newhuman",
             display_name: "New Human",
-            email: "new@tadasant.com",
+            email: "new@example.com",
             slack_user_ids_list: "U02NEW",
             notes: ""
           }

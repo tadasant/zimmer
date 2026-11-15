@@ -99,7 +99,7 @@ class ClaudeAccount < ApplicationRecord
   has_many :runtime_login_attempts, dependent: :nullify
 
   # Email uniqueness is scoped to runtime: the same person can hold one account
-  # per runtime (e.g. a claude_code AND a codex account for tadas@tadasant.com).
+  # per runtime (e.g. a claude_code AND a codex account for the same address).
   # Two accounts with the same email on the SAME runtime are still rejected.
   validates :email, presence: true, uniqueness: { scope: :runtime }
   validates :priority, numericality: { only_integer: true }

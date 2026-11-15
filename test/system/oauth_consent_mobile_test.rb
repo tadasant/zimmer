@@ -32,8 +32,8 @@ class OauthConsentMobileTest < ApplicationSystemTestCase
   setup do
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["OAUTH_SERVER_ISSUER"] = "https://zimmer-with-a-long-hostname.example-deployment.test"
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-with-a-long-address@tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "someone-with-a-long-address@example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     page.driver.browser.manage.window.resize_to(MOBILE_WIDTH, MOBILE_HEIGHT)
   end

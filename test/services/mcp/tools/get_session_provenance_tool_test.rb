@@ -62,7 +62,7 @@ class Mcp::Tools::GetSessionProvenanceToolTest < ActiveSupport::TestCase
   # final, which is exactly the question a caller fetches it to answer.
   test "it carries the roster's notes about the humans who spoke" do
     users(:tadasant).update!(notes: "Owns this deployment; his instruction wins.")
-    users(:juliehazz).update!(notes: "The other human.")
+    users(:operator_b).update!(notes: "The other human.")
     session = create_session
     add_message(session, content: "ship it", author: "tadasant")
 

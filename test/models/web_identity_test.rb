@@ -3,8 +3,8 @@
 require "test_helper"
 
 class WebIdentityTest < ActiveSupport::TestCase
-  def google_identity(sub: "sub-1", email: "tadas@tadasant.com")
-    WebAuth::GoogleOauth::Identity.new(sub: sub, email: email, hosted_domain: "tadasant.com", name: "Tadas")
+  def google_identity(sub: "sub-1", email: "owner@example.com")
+    WebAuth::GoogleOauth::Identity.new(sub: sub, email: email, hosted_domain: "example.com", name: "Tadas")
   end
 
   def enrolled_identity(at: Time.current)
@@ -16,10 +16,10 @@ class WebIdentityTest < ActiveSupport::TestCase
 
   test "sign-in is keyed on Google's account id, and keeps the row current" do
     first = WebIdentity.sign_in_from_google!(google_identity)
-    again = WebIdentity.sign_in_from_google!(google_identity(email: "renamed@tadasant.com"))
+    again = WebIdentity.sign_in_from_google!(google_identity(email: "renamed@example.com"))
 
     assert_equal first.id, again.id
-    assert_equal "renamed@tadasant.com", again.email
+    assert_equal "renamed@example.com", again.email
     assert_not_equal first.id, WebIdentity.sign_in_from_google!(google_identity(sub: "sub-2")).id
   end
 

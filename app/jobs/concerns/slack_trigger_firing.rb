@@ -329,7 +329,7 @@ module SlackTriggerFiring
           # Resolution goes through the Slack user ID map, so a message from an
           # allow-listed account that maps to no configured human records nothing
           # — `user_allowed?` says "may fire this trigger", which is not the same
-          # claim as "is Tadas or Julie".
+          # claim as "is one of the named humans".
           #
           # A folded message gets its own record against the same session, for the
           # same reason its link is in the prompt: coalescing decides how many

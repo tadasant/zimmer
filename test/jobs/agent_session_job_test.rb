@@ -1779,7 +1779,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
         "working_directory" => "/tmp/deleted-clone"
       }
     )
-    @session.update_column(:mcp_servers, [ "context7", "gmail-tadas412-readonly" ])
+    @session.update_column(:mcp_servers, [ "context7", "gmail-pool-readonly" ])
 
     AirPrepareService.stubs(:ensure_air_installed!)
     AirPrepareService.any_instance.stubs(:write_env_file!)
@@ -1824,18 +1824,18 @@ class AgentSessionJobTest < ActiveJob::TestCase
 
     assert_not_nil air_cmd, "the follow-up must have reached `air prepare`"
     assert_includes air_cmd, "context7"
-    refute_includes air_cmd, "gmail-tadas412-readonly"
+    refute_includes air_cmd, "gmail-pool-readonly"
 
     @session.reload
     assert_not @session.failed?, "catalog drift must not fail the session"
     assert_equal [ "context7" ], @session.mcp_servers
-    assert_equal({ "mcp_servers" => [ "gmail-tadas412-readonly" ] }, @session.dropped_unknown_catalog_ids)
+    assert_equal({ "mcp_servers" => [ "gmail-pool-readonly" ] }, @session.dropped_unknown_catalog_ids)
 
     prompt = mock_cli_adapter.executed_commands.last&.dig(:prompt)
     assert_not_nil prompt, "the turn must still spawn"
     assert_includes prompt, "Check my inbox"
     assert_includes prompt, "<dropped-catalog-artifacts>"
-    assert_includes prompt, "- MCP server(s): gmail-tadas412-readonly"
+    assert_includes prompt, "- MCP server(s): gmail-pool-readonly"
   end
 
   test "build_prompt_with_goal leaves out a dropped id the session names again" do
@@ -9346,7 +9346,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # NpxCacheHealService's path-safety guard accepts it.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
     clone_dir = File.join(clones_base, "zimmer-test-heal-#{SecureRandom.hex(4)}")
-    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "personal-root")
     hash = "49a1f4c1ceebda27"
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)
     FileUtils.mkdir_p(File.join(corrupt_dir, "node_modules", "ajv-formats"))
@@ -9391,7 +9391,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # retry crashed identically until the session was orphaned.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
     clone_dir = File.join(clones_base, "zimmer-test-heal-tar-#{SecureRandom.hex(4)}")
-    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "personal-root")
     hash = "dbbb2997d8a4f060"
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", hash)
     modules = File.join(corrupt_dir, "node_modules")
@@ -10170,7 +10170,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # one that hit ERR_UNSUPPORTED_DIR_IMPORT from a corrupt npx cache.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
     clone_dir = File.join(clones_base, "zimmer-test-mixed-#{SecureRandom.hex(4)}")
-    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "personal-root")
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", "a5c0f8a8df975b78")
     FileUtils.mkdir_p(File.join(corrupt_dir, "node_modules", "zod", "v4"))
 
@@ -10487,7 +10487,7 @@ class AgentSessionJobTest < ActiveJob::TestCase
     # on the route that schedules no retry at all.
     clones_base = File.join(Dir.home, ".zimmer", "clones")
     clone_dir = File.join(clones_base, "zimmer-test-degrade-heal-#{SecureRandom.hex(4)}")
-    working_directory = File.join(clone_dir, "agents", "agent-roots", "tadas-groceries")
+    working_directory = File.join(clone_dir, "agents", "agent-roots", "personal-root")
     corrupt_dir = File.join(working_directory, ".npm-cache", "_npx", "b7c0f8a8df975b78")
     FileUtils.mkdir_p(File.join(corrupt_dir, "node_modules", "zod", "v4"))
 

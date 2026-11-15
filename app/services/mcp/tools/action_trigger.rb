@@ -129,7 +129,7 @@ module Mcp
           or `bot_mention` condition to that thread's replies — for `bot_mention`, only replies that
           @mention Zimmer, with no DMs and nothing else in the channel.
         - **whatsapp**: Triggered by new messages in one WhatsApp chat, read through the WhatsApp bridge
-          MCP server. `{"chat_id": "120363012345678901@g.us", "chat_name": "Wedding", "mode": "listen"}` —
+          MCP server. `{"chat_id": "120363012345678901@g.us", "chat_name": "Party", "mode": "listen"}` —
           `mode` is required: `listen` fires on every new message, `addressed` only on a batch where
           someone @mentions the linked account, replies to it, or writes one of `keywords` (default
           `["zimmer"]`). `include_from_me: true` also fires on the linked account's own phone messages.

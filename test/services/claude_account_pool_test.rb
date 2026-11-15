@@ -242,7 +242,7 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
       reset_5h: 10.minutes.from_now, reset_7d: weekly_back)
     seed(account("jon@example.com"), five_hour: 0.0, weekly: 1.0,
       reset_5h: 15.minutes.from_now, reset_7d: 44.hours.from_now)
-    seed(account("tadas412@example.com"), five_hour: 0.0, weekly: 1.0,
+    seed(account("pool-3@example.com"), five_hour: 0.0, weekly: 1.0,
       reset_5h: 25.minutes.from_now, reset_7d: 83.hours.from_now)
     # Over its 5-hour cap, week still there: back when the 5-hour window rolls.
     seed(account("matt@example.com"), five_hour: 1.03, weekly: 0.79,

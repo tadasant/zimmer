@@ -306,7 +306,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
   test "a spent fork cost cap does not starve the headless path behind it" do
     ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
     ClaudeAccount.create!(
-      email: "codex@tadasant.com", runtime: "codex", status: :active, priority: 0,
+      email: "codex@example.com", runtime: "codex", status: :active, priority: 0,
       oauth_config: { "tokens" => { "access_token" => "t" } }
     )
 
@@ -333,7 +333,7 @@ class StatusSummaryBackstopJobTest < ActiveJob::TestCase
   test "the fork path cannot take the whole lane budget while outage work waits" do
     ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
     ClaudeAccount.create!(
-      email: "codex@tadasant.com", runtime: "codex", status: :active, priority: 0,
+      email: "codex@example.com", runtime: "codex", status: :active, priority: 0,
       oauth_config: { "tokens" => { "access_token" => "t" } }
     )
 

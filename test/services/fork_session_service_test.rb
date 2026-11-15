@@ -266,12 +266,12 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   end
 
   # zimmer#1257: session 22934's status-summary fork failed `create!` with
-  # "Mcp servers contains invalid server(s): gmail-tadas412-readonly" — an id
+  # "Mcp servers contains invalid server(s): gmail-pool-readonly" — an id
   # the catalog removed after the source was created. The fork is a new row, so
   # validation judges every id it copies; drift must be dropped, not copied.
   test "forks a session naming catalog ids the catalog no longer has" do
     @source_session.update_columns(
-      mcp_servers: [ "playwright-custom", "gmail-tadas412-readonly" ],
+      mcp_servers: [ "playwright-custom", "gmail-pool-readonly" ],
       catalog_skills: [ "zimmer-start-dev-server", "renamed-away-skill" ],
       custom_metadata: { Session::DROPPED_UNKNOWN_CATALOG_IDS_KEY => { "catalog_hooks" => [ "earlier-drop" ] } }
     )
@@ -286,7 +286,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_equal(
       {
         "catalog_hooks" => [ "earlier-drop" ],
-        "mcp_servers" => [ "gmail-tadas412-readonly" ],
+        "mcp_servers" => [ "gmail-pool-readonly" ],
         "catalog_skills" => [ "renamed-away-skill" ]
       },
       forked.dropped_unknown_catalog_ids
@@ -307,7 +307,7 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   end
 
   test "a fork whose every MCP server was dropped as drift stays empty" do
-    @source_session.update_column(:mcp_servers, [ "gmail-tadas412-readonly" ])
+    @source_session.update_column(:mcp_servers, [ "gmail-pool-readonly" ])
 
     result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
 

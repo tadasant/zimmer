@@ -98,7 +98,9 @@ jobs:
       DOMAIN: staging.zimmer.tadasant.com
       TS_HOST: zimmer-staging
       CF_ZONE_ID: "7724dafbdb549223d8f0a9a51f5709da" # tadasant.com
-      ACME_EMAIL: tadas@tadasant.com
+      # The ACME account contact. A secret, not a literal or a `vars.` value: the repo is public
+      # and so are its workflow logs, which print `env:` values unmasked.
+      ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
       FORCE_ISSUE: ${{ inputs.force_issue && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4

@@ -33,7 +33,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
         page = sorted.last(limit)
         has_more = false
       end
-      WhatsappService::Page.new(chat_id: chat_id, chat_name: "Wedding planning", self_jid: SELF, messages: page, has_more: has_more)
+      WhatsappService::Page.new(chat_id: chat_id, chat_name: "Party planning", self_jid: SELF, messages: page, has_more: has_more)
     end
   end
 
@@ -46,12 +46,12 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
 
     @trigger = Trigger.create!(
-      name: "Wedding planner chat",
+      name: "Event planner chat",
       status: "enabled",
       agent_root_name: "zimmer",
       prompt_template: "New messages in {{channel}} ({{chat_id}}, newest {{message_id}}):\n{{text|untrusted}}\nFrom: {{author}}",
       trigger_conditions_attributes: [
-        { condition_type: "whatsapp", configuration: { "chat_id" => CHAT, "chat_name" => "Wedding", "mode" => "listen" } }
+        { condition_type: "whatsapp", configuration: { "chat_id" => CHAT, "chat_name" => "Party", "mode" => "listen" } }
       ]
     )
     @condition = @trigger.trigger_conditions.first
@@ -168,7 +168,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
   test "new messages fire one session for the whole batch, with the trusted identifiers" do
     baseline_at(1_000, { "A0" => 1_000 })
     @bridge.messages = [ wa_message("A0", 1_000), wa_message("B1", 1_010, text: "Venue deposit is due Friday"),
-                         wa_message("B2", 1_020, text: "Also the caterer called", name: "Julie", sender: "15553334444@s.whatsapp.net") ]
+                         wa_message("B2", 1_020, text: "Also the caterer called", name: "Operator B", sender: "15553334444@s.whatsapp.net") ]
 
     assert_difference -> { spawned_sessions.count }, 1 do
       WhatsappTriggerPollerJob.perform_now
@@ -179,7 +179,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
     assert_includes session.prompt, "Also the caterer called"
     assert_includes session.prompt, "(#{CHAT}, newest B2)"
     assert_includes session.prompt, "Planner (+15551112222)"
-    assert_includes session.prompt, "Julie (+15553334444)"
+    assert_includes session.prompt, "Operator B (+15553334444)"
     assert_not_includes session.prompt, "A0"
     assert_equal CHAT, session.metadata["whatsapp_chat_id"]
     assert_equal "whatsapp", session.genesis

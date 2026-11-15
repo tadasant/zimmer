@@ -18,8 +18,8 @@ class LiveModeHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV[ApiKey::ENV_VAR] = "live-capture-test-key"
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     @key_headers = { "X-API-Key" => "live-capture-test-key" }
     stub_live_root
@@ -60,7 +60,7 @@ class LiveModeHumanMessageCaptureTest < ActionDispatch::IntegrationTest
     assert_equal "ios", message.provenance["surface"]
     assert_equal "spoken", message.provenance["heard"]
     assert_equal conversation.id, message.provenance["live_conversation_id"]
-    assert_equal "tadas@tadasant.com", message.provenance["grant_user_email"]
+    assert_equal "owner@example.com", message.provenance["grant_user_email"]
     assert_match(/\ALive Mode \(iOS app, spoken, as transcribed; delivered by the Live Mode assistant\)\z/, message.channel_label)
 
     text = Mcp::Tools::GetSessionProvenance.new(context: Mcp::Context.new).call("session_id" => idle_session.id.to_s)

@@ -345,19 +345,19 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
   # ==========================================================================
 
   test "a Slack message from a mapped human records that human's own words" do
-    users(:juliehazz).update!(slack_user_ids: %w[U07JULIE])
+    users(:operator_b).update!(slack_user_ids: %w[U07OPERB])
     session = idle_session
 
     event = HumanMessageCapture.record_slack_message(
       session: session,
-      slack_user_id: "U07JULIE",
+      slack_user_id: "U07OPERB",
       content: "the rest should all be actioned",
       entry_point: "slack.channel_message",
       slack_channel: "general",
       slack_permalink: "https://slack.example/p1"
     )
 
-    assert_equal "juliehazz", event.author
+    assert_equal "operator-b", event.author
     assert_equal HumanMessage::SLACK, event.channel
     assert_equal "the rest should all be actioned", event.content
     assert_equal "general", event.slack_channel_name
@@ -415,17 +415,17 @@ class HumanMessageCaptureBoundariesTest < ActionDispatch::IntegrationTest
   # The other direction: the deployment can hand the web UI to somebody else,
   # and capture follows the configuration rather than a hardcoded name.
   test "web UI input is attributed to the human the admin env var names" do
-    ENV[User::ADMIN_ENV_KEY] = "juliehazz"
+    ENV[User::ADMIN_ENV_KEY] = "operator-b"
     session = idle_session
 
     event = HumanMessageCapture.record_web_ui_message(
       session: session, content: "ship it", entry_point: "web_ui.follow_up"
     )
 
-    assert_equal "juliehazz", event.author
+    assert_equal "operator-b", event.author
   end
 
-  # `user_allowed?` means "may fire this trigger" — not "is Tadas or Julie".
+  # `user_allowed?` means "may fire this trigger" — not "is Tadas or Operator B".
   test "a Slack message from an unmapped user records nothing" do
     users(:tadasant).update!(slack_user_ids: %w[U01TADAS])
     session = idle_session

@@ -253,7 +253,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
   end
 
   test "a Slack message links back to Slack" do
-    message = add_message(@session, content: "ship it", author: "juliehazz", channel: HumanMessage::SLACK)
+    message = add_message(@session, content: "ship it", author: "operator-b", channel: HumanMessage::SLACK)
     message.update_column(:provenance, {
       "slack_channel" => "general",
       "slack_permalink" => "https://slack.example/archives/C1/p1"
@@ -262,7 +262,7 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     get provenance_panel_session_url(@session)
 
     assert_response :success
-    assert_match "Julie", response.body
+    assert_match "Operator B", response.body
     assert_match "Slack (general)", response.body
     assert_select "a[href=?]", "https://slack.example/archives/C1/p1", text: "view in Slack"
   end

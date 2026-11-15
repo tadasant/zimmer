@@ -6,10 +6,10 @@
 tadasant:
   key: tadasant
   display_name: Tadas
-  email: tadas@tadasant.com
+  email: owner@example.com
   notes: Owns and operates this Zimmer deployment, and is its admin.
 
-juliehazz:
-  key: juliehazz
-  display_name: Julie
-  email: julie@tadasant.com
+operator_b:
+  key: operator-b
+  display_name: Operator B
+  email: operator-b@example.com

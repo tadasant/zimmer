@@ -23,9 +23,9 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["API_KEYS"] = API_KEY
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
-    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "tadas@tadasant.com"
+    ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
   end
 
   teardown do
@@ -47,7 +47,7 @@ class NativeAppPersonActionsTest < ActionDispatch::IntegrationTest
     assert_equal HumanMessage::ASSISTANT, message.channel
     assert_equal "ios_app.authorize_merge", message.provenance["entry_point"]
     assert message.provenance["oauth_grant_id"].present?
-    assert_equal User.for_email("tadas@tadasant.com").key, message.author
+    assert_equal User.for_email("owner@example.com").key, message.author
 
     post "/api/v1/sessions/#{session.id}/authorize_merge", headers: bearer(token(privilege: OauthServer::ACT_AS_HUMAN))
     assert_response :success

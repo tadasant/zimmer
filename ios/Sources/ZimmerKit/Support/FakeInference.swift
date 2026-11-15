@@ -5,7 +5,7 @@ import Foundation
 /// log, and the policy. A login attempt walks through its states on successive polls, as the
 /// worker drives the CLI on the server.
 struct FakeInference: Sendable {
-    static let actor = "tadas@tadasant.com via the iOS app"
+    static let actor = "owner@example.com via the iOS app"
     static let relayRefusal = "This sign-in may not act as you; sign in again and allow acting as you"
 
     var accounts: [InferenceAccount]
@@ -24,7 +24,7 @@ struct FakeInference: Sendable {
     init(now: Date) {
         func hours(_ count: Double) -> Date { now.addingTimeInterval(count * 3600) }
         let ops = InferenceAccount(
-            id: 11, email: "ops@tadasant.com", runtime: InferenceReport.claudeCode, priority: 0, isCurrent: true, status: "active", quotaHitCount: 2,
+            id: 11, email: "ops@example.com", runtime: InferenceReport.claudeCode, priority: 0, isCurrent: true, status: "active", quotaHitCount: 2,
             credentials: .init(state: "verified", stored: true, verifiedAt: hours(-72)),
             quota: .init(takenAt: hours(-0.25), trigger: "rotation_check", subscriptionType: "max", rateLimitTier: "default_claude_max_20x",
                          fiveHour: .init(utilization: 0.42, status: "allowed", resetAt: hours(2.17)),
@@ -32,7 +32,7 @@ struct FakeInference: Sendable {
             login: .init(available: true, lastAttempt: .init(id: 201, status: "succeeded"))
         )
         let spot = InferenceAccount(
-            id: 12, email: "spot@tadasant.com", runtime: InferenceReport.claudeCode, priority: 1, status: "quota_exceeded", quotaHitCount: 7,
+            id: 12, email: "spot@example.com", runtime: InferenceReport.claudeCode, priority: 1, status: "quota_exceeded", quotaHitCount: 7,
             credentials: .init(state: "verified", stored: true, verifiedAt: hours(-30)),
             quota: .init(takenAt: hours(-0.5), trigger: "manual_refresh", subscriptionType: "max", rateLimitTier: "default_claude_max_5x",
                          fiveHour: .init(utilization: 0.31, status: "allowed", resetAt: hours(1.08)),
@@ -42,7 +42,7 @@ struct FakeInference: Sendable {
         // Its last probe failed, and the card wears that until a refresh succeeds. The server
         // carries `probe_error` on a refresh response only; the fake keeps the last one.
         let backup = InferenceAccount(
-            id: 13, email: "backup@tadasant.com", runtime: InferenceReport.claudeCode, priority: 2, status: "active", quotaHitCount: 0,
+            id: 13, email: "backup@example.com", runtime: InferenceReport.claudeCode, priority: 2, status: "active", quotaHitCount: 0,
             credentials: .init(state: "rejected", stored: true, refused: true, rejectedAt: hours(-5),
                                rejectionReason: "Anthropic answered 401 Unauthorized to the usage probe"),
             probeError: "Anthropic answered 401 Unauthorized: the stored access token was refused",
@@ -52,11 +52,11 @@ struct FakeInference: Sendable {
             login: .init(available: true, lastAttempt: .init(id: 204, status: "failed", errorMessage: "The CLI exited before printing a verification link"))
         )
         let codexKey = InferenceAccount(
-            id: 14, email: "codex-ops@tadasant.com", runtime: InferenceReport.codex, priority: 0, isCurrent: true, status: "active", apiKeyAccount: true,
+            id: 14, email: "codex-ops@example.com", runtime: InferenceReport.codex, priority: 0, isCurrent: true, status: "active", apiKeyAccount: true,
             credentials: .init(state: "unverified", stored: true), login: .init(available: false)
         )
         let codexOAuth = InferenceAccount(
-            id: 15, email: "codex-backup@tadasant.com", runtime: InferenceReport.codex, priority: 1, status: "needs_reauth",
+            id: 15, email: "codex-backup@example.com", runtime: InferenceReport.codex, priority: 1, status: "needs_reauth",
             credentials: .init(state: "none", stored: false)
         )
         accounts = [ops, spot, backup, codexKey, codexOAuth]
@@ -66,12 +66,12 @@ struct FakeInference: Sendable {
                                  verificationURL: "https://auth.openai.com/codex/device", verificationCode: "WXYZ-7K2Q",
                                  expiresAt: now.addingTimeInterval(540), createdAt: now.addingTimeInterval(-60))]
         rotations = [
-            RotationEvent(id: 61, at: hours(-0.6), from: .init(email: "spot@tadasant.com"), to: .init(email: "ops@tadasant.com"),
+            RotationEvent(id: 61, at: hours(-0.6), from: .init(email: "spot@example.com"), to: .init(email: "ops@example.com"),
                           reason: "quota_exceeded", source: "automatic", triggeredBy: "session:1042", sessionID: 1042),
-            RotationEvent(id: 60, at: hours(-9), from: .init(email: "ops@tadasant.com"), to: .init(email: "spot@tadasant.com"),
-                          reason: "manual_switch", source: "manual", triggeredBy: "tadas@tadasant.com"),
-            RotationEvent(id: 58, at: hours(-80), from: .init(email: "old@tadasant.com", deleted: true), to: .init(email: "ops@tadasant.com"),
-                          reason: "account_deleted", source: "automatic", triggeredBy: "tadas@tadasant.com"),
+            RotationEvent(id: 60, at: hours(-9), from: .init(email: "ops@example.com"), to: .init(email: "spot@example.com"),
+                          reason: "manual_switch", source: "manual", triggeredBy: "owner@example.com"),
+            RotationEvent(id: 58, at: hours(-80), from: .init(email: "old@example.com", deleted: true), to: .init(email: "ops@example.com"),
+                          reason: "account_deleted", source: "automatic", triggeredBy: "owner@example.com"),
         ]
         spotPolicy = SpotPolicy(
             gatingEnabled: true, fiveHourReservePct: 15, weeklyReservePct: 20, maxConcurrentSessions: 4, preemptionEnabled: true,

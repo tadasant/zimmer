@@ -22,7 +22,7 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
       "fleet-maintenance" => ROUTER,
       "zimmer" => APP,
       "zimmer-production" => APP,
-      "wedding-website" => SITE,
+      "personal-site" => SITE,
       "obs" => DOCS
     )
   end
@@ -56,7 +56,7 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
   test "the active scope ranks keys by recency-weighted starts, router first" do
     activate!
     record_starts("obs", 20, at: 6.days.ago)
-    record_starts("wedding-website", 14, at: 1.hour.ago)
+    record_starts("personal-site", 14, at: 1.hour.ago)
     record_starts("zimmer", 8, at: 1.hour.ago)
     record_starts("zimmer-production", 4, at: 1.hour.ago)
 
@@ -107,7 +107,7 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
     activate!
     ENV["WARM_CLONE_POOL_MAX_CLONES"] = "3"
     record_starts("fleet-maintenance", WarmPoolPolicy::BUSY_STARTS)
-    record_starts("wedding-website", 30)
+    record_starts("personal-site", 30)
     record_starts("zimmer", 20)
 
     plan = WarmPoolPolicy.plan(base_size: 1)
@@ -173,7 +173,7 @@ class WarmPoolPolicyTest < ActiveSupport::TestCase
   test "at the cap, a key already pooled keeps its place against a slightly busier newcomer" do
     activate!
     ENV["WARM_CLONE_POOL_MAX_CLONES"] = "2"
-    record_starts("wedding-website", 11)
+    record_starts("personal-site", 11)
     record_starts("zimmer", 10)
     WarmPoolPolicy.stubs(:pooled?).returns(false)
     WarmPoolPolicy.stubs(:pooled?).with(has_entry(repo_url: APP)).returns(true)

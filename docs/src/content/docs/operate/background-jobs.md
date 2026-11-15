@@ -1907,7 +1907,7 @@ total Slack-poller stall was invisible until a feed drifted three hours behind (
 would notice ran on the same worker). The liveness plumbing now has one implementation
 (`PollerHeartbeat`, one check job) and the freshness checks are the same shape on both sides.
 
-`WhatsappTriggerPollerJob` has the liveness half and not the freshness half. A wedding group can go
+`WhatsappTriggerPollerJob` has the liveness half and not the freshness half. A family group can go
 a week without a message, so "no new message" says nothing about the feed. What does go wrong is the
 bridge losing its link to WhatsApp — the phone offline for 14 days, the linked device removed, the
 number banned — and the poller treats that as a sweep that polled nothing: it asks the bridge's

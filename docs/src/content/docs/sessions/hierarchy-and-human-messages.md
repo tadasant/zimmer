@@ -351,12 +351,14 @@ The web panel shows the same gap as an amber block above the messages, linking t
 
 The `users` table lists them — a hand-seeded roster, not authentication. Zimmer has no signup and no
 login; rows exist so that when Zimmer establishes *who* spoke at an input boundary, it has something
-durable to attribute the words to. Two rows ship, inserted by the migration that creates the table:
+durable to attribute the words to. One row ships, inserted by the migration that creates the table:
 
 | `key` | `display_name` | `email` | `slack_user_ids` | `notes` |
 | --- | --- | --- | --- | --- |
-| `tadasant` | Tadas | `tadas@tadasant.com` | set per deployment | who he is, served with the record `get_session_provenance` returns |
-| `juliehazz` | Julie | `julie@tadasant.com` | set per deployment | same |
+| `tadasant` | Tadas | set per deployment | set per deployment | who he is, served with the record `get_session_provenance` returns |
+
+Every other human, and every email address, is added per deployment at `/supervisor/users`. This
+repository is public, so the roster in source carries no address and nobody beyond the default admin.
 
 `key` is the stable identity string. `HumanMessage#author` stores it verbatim — not a foreign key —
 because those records are immutable evidence and must not depend on the roster staying exactly as it
@@ -365,7 +367,7 @@ stops naming a person. The practical consequence: **renaming a key orphans every
 already authored.**
 
 Slack user IDs are **deployment configuration, never application source** — the same class of config
-as a Slack trigger's `allowed_user_ids`. This repository is public, so the seeded rows ship with an
+as a Slack trigger's `allowed_user_ids`. This repository is public, so the seeded row ships with an
 empty list and a deployment fills them in at `/supervisor/users`. Until then, no Slack message is
 attributed to anybody — and while that is true of the whole roster, the record says which channel it
 is blind to rather than rendering the silence as an absence. An ID that belongs to no row resolves to nobody rather than inventing an
@@ -373,7 +375,7 @@ author, and one ID cannot belong to two humans (the model rejects the collision,
 otherwise make an author depend on row order).
 
 A Slack trigger's `allowed_user_ids` answers a *different* question. "May fire this trigger" is not
-"is Tadas or Julie", so the author resolves independently.
+"is one of the named humans", so the author resolves independently.
 
 The roster is editable **only** from the Supervisor panel, which, like the rest of the web UI, asks for
 no credential. No MCP tool reads or writes it, and that asymmetry is deliberate rather than an
@@ -387,7 +389,7 @@ shell can drive `/supervisor/users` like any other page on the host. See
 `email` is how the [assistant channel](#the-assistant-channel) finds its author. The email that
 approved an OAuth grant resolves through `User.for_email` at the boundary, from the actor. Nothing
 else attributes a message from an email. In particular, a session's `auth_identity_email` in metadata
-often reads `tadas@tadasant.com`, but that names the pooled Claude login the *agent process* was
+often reads the owner's own address, but that names the pooled Claude login the *agent process* was
 spawned with. It is a machine's credentials, not the person who typed, so attributing from it would
 claim a human asked for something every time an agent ran.
 

@@ -1,7 +1,7 @@
 # The named human beings this deployment knows about, moved out of
 # `config/human_identities.yml` and into a table.
 #
-# The two rows are inserted here rather than left to `db/seeds.rb` because an
+# The admin row is inserted here rather than left to `db/seeds.rb` because an
 # existing deployment never runs seeds: the image entrypoint runs `db:prepare`,
 # which seeds only a database it just created. Without this insert, the first
 # deploy after this migration would come up with an empty roster — every
@@ -9,9 +9,9 @@
 # UI. Raw SQL keeps the insert self-contained, so a replay years from now does
 # not depend on what app/models/user.rb looks like then.
 #
-# `slack_user_ids` stays EMPTY here on purpose: this repository is public, and a
-# Slack user ID is deployment configuration, not application source. They are
-# filled in per deployment at /supervisor/users.
+# `email` and `slack_user_ids` stay EMPTY here on purpose: this repository is
+# public, and both are deployment configuration, not application source. They —
+# and any further humans — are filled in per deployment at /supervisor/users.
 class CreateUsers < ActiveRecord::Migration[8.0]
   def up
     create_table :users do |t|
@@ -50,18 +50,9 @@ class CreateUsers < ActiveRecord::Migration[8.0]
       {
         key: "tadasant",
         display_name: "Tadas",
-        email: "tadas@tadasant.com",
         notes: "Owns and operates this Zimmer deployment, and is its admin: " \
                "anything typed into the Zimmer web UI is his. When his instruction " \
                "conflicts with an inference you drew, his instruction wins."
-      },
-      {
-        key: "juliehazz",
-        display_name: "Julie",
-        email: "julie@tadasant.com",
-        notes: "The other named human in this deployment's circle of trust. Her " \
-               "messages are genuine human instruction, but she is not the admin: " \
-               "web UI actions are not attributed to her."
       }
     ]
 

@@ -201,12 +201,12 @@ class Mcp::Tools::GetSessionProvenanceTest < ActiveSupport::TestCase
   end
 
   test "a Slack message names the Slack channel" do
-    message = add_message(@session, content: "ship it", author: "juliehazz", channel: HumanMessage::SLACK)
+    message = add_message(@session, content: "ship it", author: "operator-b", channel: HumanMessage::SLACK)
     message.update_column(:provenance, { "slack_channel" => "general" })
 
     output = @tool.call("id" => @session.id)
 
-    assert_includes output, "Julie (`juliehazz`) via Slack (general)"
+    assert_includes output, "Operator B (`operator-b`) via Slack (general)"
   end
 
   # The same laundering the prompt path guards, on the surface a self-inspecting

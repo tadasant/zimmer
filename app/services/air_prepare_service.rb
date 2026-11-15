@@ -652,7 +652,7 @@ class AirPrepareService
     # Every id is reconciled against the live catalog first: a session's stored
     # selection was valid when the session was created, but the catalog evolves
     # independently, so a renamed/removed artifact (`pr` → `open-pr`,
-    # `gmail-tadas412-readonly` → `gmail-tadas412-ro`) leaves a stale id that
+    # `gmail-pool-readonly` → `gmail-pool-ro`) leaves a stale id that
     # `air prepare` would hard-reject with exit 1 — bricking every later resume,
     # unarchive and follow-up of that session. reconciled_catalog_selection drops
     # such ids instead. See its comment for the full rationale.
@@ -696,7 +696,7 @@ class AirPrepareService
   # catalog evolves independently of the sessions that reference it: an artifact
   # can be renamed or removed long after a session's config was frozen. `air
   # prepare` HARD-validates every requested id and exits 1 on the first unknown
-  # one (`Error: Unknown MCP server ID "gmail-tadas412-readonly". Available: …`),
+  # one (`Error: Unknown MCP server ID "gmail-pool-readonly". Available: …`),
   # which AirPrepareError-fails the unarchive, the follow-up job, and pages
   # #alerts (zimmer#1257). Catalog drift is not a fault in the session, so it must
   # not be able to kill one: drop the id, prepare with the survivors, and tell the
