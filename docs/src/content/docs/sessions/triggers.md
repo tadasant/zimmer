@@ -717,7 +717,8 @@ Every minute, `EmailTriggerPollerJob` does this for each `email` condition on an
    - anything labelled `SENT`, `DRAFT`, `SPAM` or `TRASH`
    - unless `include_automated`, automated mail: an `Auto-Submitted` header with any value but
      `no`, a `List-Id` header, a `CATEGORY_PROMOTIONS`/`SOCIAL`/`FORUMS` label, a sender like
-     `mailer-daemon@`, `postmaster@`, `no-reply@` or `bounce@`, or an auto-reply or bounce subject
+     `mailer-daemon@`, `postmaster@`, `no-reply@`, `bounce@`, `notifications@` or `alerts@`, or an
+     auto-reply or bounce subject
      (`Automatic reply:`, `Out of Office`, `Undeliverable`, `Delivery Status Notification`, …)
 
    Every message dropped here is logged at WARN, once, with its id and the reason:
@@ -749,12 +750,16 @@ Changing a condition's `query` or `include_automated` drops its cursor and basel
 condition, so mail that already matched it is not answered as new.
 
 The search filters on nothing the classifier in step 2 decides. A message the search leaves out is
-one the poller never sees, so nothing can log it. That is how the first version lost mail: it added
-`-category:updates` to the search, Gmail filed an operator's forwarded mail under Updates, and it
-sat unanswered for hours with nothing in any log
-([#1525](https://github.com/tadasant/zimmer/issues/1525)). Updates is no longer an automated
-signal at all. Gmail files transactional mail there by its content, and a person who forwards some
-lands there too.
+one the poller never sees, so nothing can log it
+([#1525](https://github.com/tadasant/zimmer/issues/1525)). Gmail's Updates category is not an
+automated signal: Gmail files transactional mail there by its content, and a person who forwards
+some lands there too. The cost is that receipts, shipping notices and alerts in Updates fire unless
+they carry `Auto-Submitted` or `List-Id` or match the sender pattern. If the mailbox receives that
+kind of mail, narrow `query` (for example `-from:orders@shop.example`).
+
+Only threads that fire count against the ten fires a tick allows; skipped mail is read, logged and
+marked seen without spending it. The mailbox server's search returns at most 100 messages, so a
+search that comes back full logs a WARN saying older mail may not have been read.
 
 Sessions get `email` genesis, which is spot by default. Anyone can send mail, and nobody expects an
 answer within the minute. Set the trigger's scheduling class to priority if they do. Sessions carry

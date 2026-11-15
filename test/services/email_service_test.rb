@@ -143,6 +143,9 @@ class EmailServiceTest < ActiveSupport::TestCase
 
     plain = service({ "get_email_conversation" => text("**ID:** 18c2\n\n## Headers\n**Labels:** INBOX\n\n## Body\nhi") }).get_message("18c2")
     assert_empty plain.headers, "a server without the section yields no headers"
+
+    odd = "**ID:** 18c2\n\n## Sender Verification Headers\n\n```json\n[1, 2]\n```\n\n## Headers\n**Labels:** INBOX\n\n## Body\nhi"
+    assert_empty service({ "get_email_conversation" => text(odd) }).get_message("18c2").headers, "a block that is not an object yields no headers"
   end
 
   test "get_message refuses an answer about a different message" do

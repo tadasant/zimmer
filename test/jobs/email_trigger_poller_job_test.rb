@@ -169,10 +169,11 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     @server.deliver(id: "as1", thread_id: "as1", received_at: @now, headers: { "Auto-Submitted" => "auto-generated" })
     @server.deliver(id: "li1", thread_id: "li1", received_at: @now, headers: { "List-Id" => "<dev.lists.example.org>" })
     @server.deliver(id: "no1", thread_id: "no1", received_at: @now, headers: { "Auto-Submitted" => "no" })
+    @server.deliver(id: "no2", thread_id: "no2", received_at: @now, headers: { "Auto-Submitted" => "No; comment" })
 
     EmailTriggerPollerJob.perform_now
 
-    assert_equal [ "no1" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+    assert_equal %w[no1 no2], spawned_sessions.map { |session| session.metadata["email_message_id"] }.sort
   end
 
   test "every message that does not fire is logged at WARN once, by id and reason, never by content" do
@@ -193,6 +194,37 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     assert(skips.all? { |line| line.include?("Condition #{@condition.id} on trigger #{@trigger.id}") })
     assert_not(skips.any? { |line| line.include?("SECRET") || line.include?("shop.example") })
     assert_empty spawned_sessions
+  end
+
+  test "skipped threads do not spend the per-tick fire budget, and a mixed thread fires once" do
+    baseline!
+    (EmailTriggerPollerJob::MAX_FIRES_PER_TICK + 3).times do |i|
+      @server.deliver(id: "ad#{i}", thread_id: "ad#{i}", labels: %w[INBOX CATEGORY_PROMOTIONS], received_at: @now + i)
+    end
+    @server.deliver(id: "mx1", thread_id: "mx", from: "Alerts <alerts@ci.example>", received_at: @now - 5)
+    @server.deliver(id: "mx2", thread_id: "mx", received_at: @now - 4)
+
+    EmailTriggerPollerJob.perform_now
+
+    assert_equal [ "mx2" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+    assert_operator @condition.reload.last_message_ts.to_i, :>=, @now, "the cursor moved: every thread settled"
+    assert @condition.email_seen_messages.key?("mx1")
+  end
+
+  test "a search that returns the server's maximum is logged at WARN" do
+    baseline!
+    warnings = []
+    Rails.logger.stubs(:warn).with { |line| warnings << line }
+    EmailService.any_instance.stubs(:search).returns(
+      Array.new(EmailService::MAX_RESULTS) { |i| EmailService::Summary.new(id: "s#{i}", thread_id: "s#{i}", subject: nil) }
+    )
+    @condition.update_columns(configuration: @condition.configuration.merge(
+      "seen_messages" => (0...EmailService::MAX_RESULTS).to_h { |i| [ "s#{i}", @now ] }
+    ))
+
+    EmailTriggerPollerJob.perform_now
+
+    assert(warnings.any? { |line| line.include?("server's maximum") }, warnings.inspect)
   end
 
   test "a burst past MAX_FIRES_PER_TICK holds the cursor and the rest fire next tick" do
