@@ -251,7 +251,8 @@ module Mcp
             "re-read: this is the signature of a start that un-did itself."
           ]
         else
-          [ "- **Dormant because:** `#{reason}`#{" (recorded #{at})" if at}. #{detail}".rstrip ]
+          answered = Sessions::SleeperGuidance.last_follow_up_answered(session)
+          [ "- **Dormant because:** `#{reason}`#{" (recorded #{at})" if at}. #{detail} #{answered}".squish ]
         end
       end
 

@@ -1470,9 +1470,24 @@ Both `restart` doors refuse at the surface rather than deeper down, because each
 *before* it enqueues anything and `resume`'s `cancel_pending_one_time_wake_triggers` callback consumes
 the pause on the way past. A guard further in would arrive after the pause was already gone.
 
-Two paths deliberately still consume the pause, because both mean *a caller is taking this session
-over* rather than a selector working a list: the web UI's **Restart** button, and a `follow_up`
-addressed to the session directly.
+One path deliberately still consumes the pause, because it means *a caller is taking this session
+over* rather than a selector working a list: the web UI's **Restart** button.
+
+A `follow_up` addressed to the session directly is neither refused nor a takeover. The pause holds
+back schedulers, never a message: the follow-up takes a turn immediately, the wake stays armed, and
+the session goes back to sleep on it after answering (`stopped_reason: follow_up_resleep`). A spot
+session's follow-up turn still answers to the quota gate like any other turn. Every surface that
+reports the pause says a follow-up still reaches it: the `**Paused:**` row in `quick_search_sessions`
+and the `start_now`, `restart` and `force_start` refusals (MCP and REST) share one sentence from
+`Sessions::SleeperGuidance`, and the follow-up's own reply adds a **Delivered now** line and where to
+read the answer. When the last thing the session did was answer a follow-up, the refusals,
+`get_session`'s `Dormant because` line and the search row say that too. A caller that reads only
+"asleep until 22:58Z" otherwise concludes its message is waiting for the wake, which it is not.
+
+No MCP or REST action fires a sleeping session's wake early without a message (the web UI's
+**Restart** cancels the wake rather than firing it). A wake's prompt was
+written for its moment ("check CI now"), and anything a caller wants the session to do sooner is a
+follow-up.
 
 The pause is a **deferral, not a cancellation**, and its expiry is what makes that true. Past its
 moment the wake is no longer "ahead of" the session, every guard above stops applying, and the

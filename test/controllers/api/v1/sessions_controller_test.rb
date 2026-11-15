@@ -2292,6 +2292,8 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     assert_match(/does not start early/, JSON.parse(response.body)["message"])
+    assert_match(/send a `follow_up`/, JSON.parse(response.body)["message"],
+      "the refusal must name the path that does reach a sleeper, as the MCP one does")
     assert_equal "waiting", session.reload.status
     assert Trigger.exists?(trigger.id), "refusing must leave the pause armed"
   ensure
