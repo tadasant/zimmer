@@ -285,6 +285,36 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     assert_equal 2, msg4.position
   end
 
+  test "reorder_to starts from the position in the database, not a stale in-memory one" do
+    session = sessions(:running)
+    msg1 = session.enqueued_messages.create!(content: "First", position: 1)
+    msg2 = session.enqueued_messages.create!(content: "Second", position: 2)
+    msg3 = session.enqueued_messages.create!(content: "Third", position: 3)
+
+    stale = EnqueuedMessage.find(msg1.id)
+    EnqueuedMessage.find(msg1.id).reorder_to(3) # Second, Third, First
+
+    stale.reorder_to(1)
+
+    assert_equal [ msg1.id, msg2.id, msg3.id ], session.enqueued_messages.order(:position).pluck(:id)
+    assert_equal [ 1, 2, 3 ], session.enqueued_messages.order(:position).pluck(:position)
+    assert_equal 1, stale.position
+  end
+
+  test "reorder_to on a row deleted since it was loaded moves nothing" do
+    session = sessions(:running)
+    msg1 = session.enqueued_messages.create!(content: "First", position: 1)
+    msg2 = session.enqueued_messages.create!(content: "Second", position: 2)
+    msg3 = session.enqueued_messages.create!(content: "Third", position: 3)
+
+    stale = EnqueuedMessage.find(msg3.id)
+    msg3.destroy!
+
+    stale.reorder_to(1)
+
+    assert_equal [ [ msg1.id, 1 ], [ msg2.id, 2 ] ], session.enqueued_messages.order(:position).pluck(:id, :position)
+  end
+
   test "reorder_to should not change positions if moving to same position" do
     session = sessions(:running)
     msg1 = session.enqueued_messages.create!(content: "First", position: 1)

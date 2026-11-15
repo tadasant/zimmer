@@ -20,16 +20,29 @@ module Sessions
   # reads its position here; `test/services/sessions/queue_tail_writers_test.rb`
   # fails on a `maximum(:position)` anywhere else in `app/`. Callers that already
   # hold `FOR UPDATE` on the session (`lock!`) lose nothing by calling it: a
-  # transaction never waits on a lock it already holds. Writers that renumber
-  # existing rows rather than append — `EnqueuedMessage#reorder_to` and the
-  # delete paths on web, REST and MCP — do not take this lock; racing an append,
-  # they can at worst leave a gap in the positions.
+  # transaction never waits on a lock it already holds.
+  #
+  # `EnqueuedMessage#reorder_to` renumbers existing rows under the same lock
+  # (`QueueTail.lock!`), so two reorders, or a reorder and an append, take turns rather
+  # than computing positions from rows the other is rewriting. The delete paths
+  # on web, REST and MCP do not take it; racing an append, they can at worst
+  # leave a gap in the positions.
   module QueueTail
     # @param session [Session]
     # @return [Integer] the position the next queued message should take
     def self.next_position!(session)
-      Session.where(id: session.id).lock("FOR NO KEY UPDATE").pick(:id)
+      lock!(session.id)
       (session.enqueued_messages.maximum(:position) || 0) + 1
+    end
+
+    # Take the queue lock on the session row and nothing else. For writers that
+    # renumber rows already in the queue rather than append one. Same contract
+    # as `next_position!`: call it inside the transaction that does the writes.
+    #
+    # @param session_id [Integer]
+    # @return [void]
+    def self.lock!(session_id)
+      Session.where(id: session_id).lock("FOR NO KEY UPDATE").pick(:id)
     end
   end
 end

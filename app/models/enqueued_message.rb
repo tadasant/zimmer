@@ -335,44 +335,63 @@ class EnqueuedMessage < ApplicationRecord
     true
   end
 
-  # Reorder message to a new position
-  # Updates positions of other messages in the same session to maintain sequential ordering
-  # Uses a temporary position (0) to avoid unique constraint violations during swap
+  # Move this message to `new_position`, shifting the rows between its old and
+  # new positions by one so the queue stays sequential.
   #
-  # Unlike the bulk decrement on the DELETE paths, this method does not rely on
-  # the query planner, or on the deferred unique constraint: it parks the moving
-  # row at 0, then shifts its neighbours one row per statement in an order Ruby
-  # pins explicitly (ascending when moving down, descending when moving up), so
-  # every write lands on a position no row still holds.
+  # Runs under the session's queue lock (Sessions::QueueTail.lock!), the one
+  # every append takes. Without it two reorders on the same queue each read
+  # their neighbours' positions before the other committed, wrote positions
+  # computed from those stale reads, and one of them died on the deferred
+  # `(session_id, position)` unique constraint at COMMIT — or, interleaved
+  # differently, both committed a reshuffle neither caller asked for.
+  #
+  # The starting position is re-read under the lock rather than taken from this
+  # instance, which may have been loaded before another reorder moved the row.
+  # A row deleted or delivered out from under the caller is left alone: there is
+  # nothing to move, and shifting its old neighbours would open a gap.
+  #
+  # The writes themselves do not rely on the query planner or on the deferred
+  # constraint: the moving row parks at 0, then its neighbours shift one row per
+  # statement in an order Ruby pins (ascending when moving down, descending when
+  # moving up), so every write lands on a position no row still holds.
+  #
+  # @param new_position [Integer]
+  # @return [void]
   def reorder_to(new_position)
-    return if new_position == position
-
     transaction do
-      old_position = position
+      Sessions::QueueTail.lock!(session_id)
+      current = self.class.where(id: id).pick(:position)
+      next if current.nil?
 
-      # Move current message to temporary position (0) to avoid unique constraint violation
-      update_column(:position, 0)
-
-      if new_position > old_position
-        # Moving down: shift messages between old and new position up
-        session.enqueued_messages
-               .where("position > ? AND position <= ?", old_position, new_position)
-               .order(position: :asc)
-               .each { |msg| msg.update_column(:position, msg.position - 1) }
+      if new_position == current
+        self.position = current
+        clear_attribute_change(:position)
       else
-        # Moving up: shift messages between new and old position down
-        session.enqueued_messages
-               .where("position >= ? AND position < ?", new_position, old_position)
-               .order(position: :desc)
-               .each { |msg| msg.update_column(:position, msg.position + 1) }
+        shift_neighbours_for_move(current, new_position)
       end
-
-      # Move to final position
-      update_column(:position, new_position)
     end
   end
 
   private
+
+  # The writes behind #reorder_to. Caller holds the queue lock.
+  def shift_neighbours_for_move(old_position, new_position)
+    update_column(:position, 0)
+
+    if new_position > old_position
+      session.enqueued_messages
+             .where("position > ? AND position <= ?", old_position, new_position)
+             .order(position: :asc)
+             .each { |msg| msg.update_column(:position, msg.position - 1) }
+    else
+      session.enqueued_messages
+             .where("position >= ? AND position < ?", new_position, old_position)
+             .order(position: :desc)
+             .each { |msg| msg.update_column(:position, msg.position + 1) }
+    end
+
+    update_column(:position, new_position)
+  end
 
   def record_carplay_engagement
     Sessions::RecordCarplayEngagement.call(session)
