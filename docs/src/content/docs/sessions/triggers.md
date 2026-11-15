@@ -678,7 +678,7 @@ decides how, and whether, to answer each message.
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `query` | no | A Gmail search narrowing what counts, such as `to:zimmer+bugs@example.com` or `from:(a@example.com OR b@example.com)`. Defaults to `in:inbox`. One line, at most 500 characters |
-| `include_automated` | no | Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Off by default |
+| `include_automated` | no | Also fire on automated mail: an `Auto-Submitted` or `List-Id` header, Gmail's promotions, social and forums categories, bounces, no-reply senders and auto-replies. Off by default |
 
 Both keys are optional, but the configuration may not be empty: send at least `query`. A sender
 filter in `query` is a noise filter, not authentication. `From:` is whatever the sender typed.
@@ -699,7 +699,8 @@ settings, resolved like every other secret (Parameter Store, then encrypted cred
 There is one mailbox per deployment: every `email` condition reads the one `EMAIL_MCP_URL` names.
 The poller matches either the bare tool name or the gateway's `<slug>__<tool>` form. The server
 answers in markdown, and `EmailService` reads the fields it prints (`**ID:**`, `**Thread ID:**`,
-`**Labels:**`, `## Body`). A session that should answer gets a read-write slug of the same mailbox
+`**Labels:**`, `## Body`, and the JSON block under `## Sender Verification Headers`, where strad's
+slugs list `Auto-Submitted` and `List-Id` verbatim). A session that should answer gets a read-write slug of the same mailbox
 in its MCP servers. The poller never sends anything.
 
 Zimmer polls because nothing can push to it: `/webhooks/*` has
@@ -709,17 +710,21 @@ Zimmer polls because nothing can push to it: `/webhooks/*` has
 
 Every minute, `EmailTriggerPollerJob` does this for each `email` condition on an enabled trigger:
 
-1. It searches the mailbox for `(<query>) -from:me after:<cursor − 10 minutes>`, plus
-   `-category:promotions -category:social -category:forums -category:updates` unless
-   `include_automated`, and drops the ids it has already read (`seen_messages`). `-from:me` is the
-   self-loop guard: the mailbox's own replies never fire. The ten-minute overlap is there because
-   Gmail's search index can trail delivery.
+1. It searches the mailbox for `(<query>) -from:me after:<cursor − 10 minutes>` and drops the ids it
+   has already read (`seen_messages`). `-from:me` is the self-loop guard: the mailbox's own replies
+   never fire. The ten-minute overlap is there because Gmail's search index can trail delivery.
 2. It reads each new message with `get_email_conversation` and drops what must never fire:
    - anything labelled `SENT`, `DRAFT`, `SPAM` or `TRASH`
-   - unless `include_automated`, automated mail: a `CATEGORY_PROMOTIONS`/`SOCIAL`/`FORUMS`/`UPDATES`
-     label, a sender like `mailer-daemon@`, `postmaster@`, `no-reply@` or `bounce@`, or an
-     auto-reply or bounce subject (`Automatic reply:`, `Out of Office`, `Undeliverable`,
-     `Delivery Status Notification`, …)
+   - unless `include_automated`, automated mail: an `Auto-Submitted` header with any value but
+     `no`, a `List-Id` header, a `CATEGORY_PROMOTIONS`/`SOCIAL`/`FORUMS` label, a sender like
+     `mailer-daemon@`, `postmaster@`, `no-reply@`, `bounce@`, `notifications@` or `alerts@`, or an
+     auto-reply or bounce subject
+     (`Automatic reply:`, `Out of Office`, `Undeliverable`, `Delivery Status Notification`, …)
+
+   Every message dropped here is logged at WARN, once, with its id and the reason:
+   `[EmailTriggerPollerJob] Condition <id> on trigger <id>: message <message id> in thread
+   <thread id> not fired (automated: label CATEGORY_PROMOTIONS)`. The line names the rule, never the sender or
+   subject. When someone asks why a mail got no answer, search the logs for its Gmail id.
 3. It fires **once per thread**. The new messages of one thread are one fire. `{{text}}` holds them
    oldest first, each with its headers and body, and `{{message_id}}` is the newest. Two threads
    are two sessions.
@@ -742,7 +747,19 @@ the look-back window plus five minutes, which covers clock skew between Zimmer a
 is never forgotten while a search could still return it. A condition the poller has never seen is baselined:
 what is already in the window goes into the seen-set, so turning a trigger on never answers old mail.
 Changing a condition's `query` or `include_automated` drops its cursor and baselines the new
-search, so mail that already matched it is not answered as new.
+condition, so mail that already matched it is not answered as new.
+
+The search filters on nothing the classifier in step 2 decides. A message the search leaves out is
+one the poller never sees, so nothing can log it
+([#1525](https://github.com/tadasant/zimmer/issues/1525)). Gmail's Updates category is not an
+automated signal: Gmail files transactional mail there by its content, and a person who forwards
+some lands there too. The cost is that receipts, shipping notices and alerts in Updates fire unless
+they carry `Auto-Submitted` or `List-Id` or match the sender pattern. If the mailbox receives that
+kind of mail, narrow `query` (for example `-from:orders@shop.example`).
+
+Only threads that fire count against the ten fires a tick allows; skipped mail is read, logged and
+marked seen without spending it. The mailbox server's search returns at most 100 messages, so a
+search that comes back full logs a WARN saying older mail may not have been read.
 
 Sessions get `email` genesis, which is spot by default. Anyone can send mail, and nobody expects an
 answer within the minute. Set the trigger's scheduling class to priority if they do. Sessions carry

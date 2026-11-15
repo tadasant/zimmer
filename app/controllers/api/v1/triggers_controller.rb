@@ -121,8 +121,8 @@ class Api::V1::TriggersController < Api::BaseController
   #       - include_from_me: fire on the linked account's own phone messages (default false)
   #       For email (the mailbox EMAIL_MCP_URL reads; one session per thread with new mail):
   #       - query: a Gmail search narrowing what counts (optional, default "in:inbox")
-  #       - include_automated: also fire on promotions/social/forums/updates, bounces, no-reply
-  #         senders and auto-replies (default false)
+  #       - include_automated: also fire on Auto-Submitted/List-Id mail, promotions/social/forums,
+  #         bounces, no-reply senders and auto-replies (default false)
   #       The template must write {{text}}, {{author}} and {{title}} as {{name|untrusted}}.
   #       For mcp_event (one session per event a catalog MCP server publishes; polled each minute
   #       with the credentials a session would get for that server):
