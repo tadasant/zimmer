@@ -137,10 +137,12 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
 
     assert_equal [ "h1" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
     search = @server.calls.reverse.find { |name, _| name == "search_email_conversations" }.last["query"]
-    %w[promotions social forums updates].each { |category| assert_includes search, "-category:#{category}" }
+    assert_not_includes search, "category:", "the search never hides what the classifier judges"
+    assert_equal %w[m1 n1 o1 o2 p1], @condition.reload.email_seen_messages.keys.sort - %w[h1],
+      "skipped mail is seen, so it is judged and logged once"
 
-    # Opting in widens the search, so it re-baselines: promotions mail that arrived before the edit
-    # (p1) is not new mail. New automated mail fires.
+    # Opting in re-baselines: promotions mail that arrived before the edit (p1) is not new mail.
+    # New automated mail fires.
     @condition.reload.update!(configuration: @condition.configuration.merge("include_automated" => "1"))
     assert_nil @condition.reload.last_message_ts
     baseline!
@@ -148,6 +150,49 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     EmailTriggerPollerJob.perform_now
 
     assert_equal %w[h1 p2], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+  end
+
+  test "a person's forward Gmail filed under Updates fires (#1525)" do
+    baseline!
+    # Gmail files a person's forward of transactional mail by its content: CATEGORY_UPDATES.
+    @server.deliver(id: "fw1", thread_id: "fw1", subject: "Fwd: Your order", from: "Operator <operator@example.com>",
+                    labels: %w[UNREAD IMPORTANT CATEGORY_UPDATES INBOX], received_at: @now,
+                    headers: { "From" => "Operator <operator@example.com>", "Message-ID" => "<a@example.com>" })
+
+    EmailTriggerPollerJob.perform_now
+
+    assert_equal [ "fw1" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+  end
+
+  test "Auto-Submitted and List-Id headers mark mail automated; Auto-Submitted: no does not" do
+    baseline!
+    @server.deliver(id: "as1", thread_id: "as1", received_at: @now, headers: { "Auto-Submitted" => "auto-generated" })
+    @server.deliver(id: "li1", thread_id: "li1", received_at: @now, headers: { "List-Id" => "<dev.lists.example.org>" })
+    @server.deliver(id: "no1", thread_id: "no1", received_at: @now, headers: { "Auto-Submitted" => "no" })
+
+    EmailTriggerPollerJob.perform_now
+
+    assert_equal [ "no1" ], spawned_sessions.map { |session| session.metadata["email_message_id"] }
+  end
+
+  test "every message that does not fire is logged at WARN once, by id and reason, never by content" do
+    baseline!
+    @server.deliver(id: "p9", thread_id: "p9", subject: "SECRET SUBJECT", from: "Shop <deals@shop.example>",
+                    labels: %w[INBOX CATEGORY_PROMOTIONS], received_at: @now)
+    @server.deliver(id: "as9", thread_id: "as9", received_at: @now, headers: { "Auto-Submitted" => "auto-replied" })
+
+    warnings = []
+    Rails.logger.stubs(:warn).with { |line| warnings << line }
+    EmailTriggerPollerJob.perform_now
+    EmailTriggerPollerJob.perform_now
+
+    skips = warnings.grep(/not fired/)
+    assert_equal 2, skips.size, skips.inspect
+    assert(skips.any? { |line| line.include?("message p9") && line.include?("label CATEGORY_PROMOTIONS") })
+    assert(skips.any? { |line| line.include?("message as9") && line.include?("Auto-Submitted header") })
+    assert(skips.all? { |line| line.include?("Condition #{@condition.id} on trigger #{@trigger.id}") })
+    assert_not(skips.any? { |line| line.include?("SECRET") || line.include?("shop.example") })
+    assert_empty spawned_sessions
   end
 
   test "a burst past MAX_FIRES_PER_TICK holds the cursor and the rest fire next tick" do

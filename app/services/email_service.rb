@@ -41,11 +41,19 @@ class EmailService
 
   # One message, read in full. `labels` are Gmail's system and category labels (INBOX, SENT,
   # CATEGORY_PROMOTIONS, …), the one field here that Gmail set rather than the sender. `url` is the
-  # account-scoped Gmail link the server builds from the id.
-  Message = Data.define(:id, :thread_id, :url, :subject, :from, :to, :cc, :date, :labels, :body, :attachments) do
+  # account-scoped Gmail link the server builds from the id. `headers` are the raw headers the
+  # server lists verbatim in its Sender Verification Headers section, as [name, value] pairs in
+  # message order — `Auto-Submitted` and `List-Id` among them — and empty from a server that does
+  # not print that section.
+  Message = Data.define(:id, :thread_id, :url, :subject, :from, :to, :cc, :date, :labels, :body, :attachments, :headers) do
     # The address in the From header, lower-cased: `Name <a@b.c>` and bare `a@b.c` alike.
     def from_address
       (from.to_s[/<([^<>\s]+@[^<>\s]+)>/, 1] || from.to_s[/[^\s<>"]+@[^\s<>"]+/]).to_s.downcase.presence
+    end
+
+    # The first value of header +name+ (case-insensitive), or nil when the message has none.
+    def header(name)
+      headers.find { |candidate, _value| candidate.casecmp?(name) }&.last
     end
   end
 
@@ -124,11 +132,34 @@ class EmailService
       # wrote, so a Subject that smuggled in a line of its own comes earlier.
       labels: head.scan(/^\*\*Labels:\*\*[ \t]*(.*)$/).last&.first.to_s.split(",").map(&:strip).reject { |label| label.blank? || label == "None" },
       body: body.strip,
-      attachments: attachments
+      attachments: attachments,
+      headers: verification_headers(head)
     )
   end
 
   private
+
+  # The headers in the server's `## Sender Verification Headers` section: a fenced JSON object
+  # `{ "headers": [{ "index", "name", "value" }, …], "absent": [names] }`, printed after the ids and
+  # before `## Headers`, so ahead of every line the sender controls. Only the first section counts;
+  # a later copy is text from the message. A server that does not print it, or prints something
+  # this cannot parse, yields no headers — the poller then judges by labels, sender and subject.
+  def verification_headers(head)
+    section = head.split(/^## Headers[ \t]*$/, 2).first.to_s
+    at = section.index(/^## Sender Verification Headers[ \t]*$/)
+    return [] unless at
+
+    json = section[at..][/^```json[ \t]*\n(.*?)\n```[ \t]*$/m, 1]
+    return [] unless json
+
+    Array(JSON.parse(json)["headers"]).filter_map do |entry|
+      next unless entry.is_a?(Hash) && entry["name"].is_a?(String)
+
+      [ entry["name"], entry["value"].to_s ]
+    end
+  rescue JSON::ParserError
+    []
+  end
 
   def field(text, name)
     text[/^\*\*#{Regexp.escape(name)}:\*\*[ \t]*(.*)$/, 1]&.strip.presence

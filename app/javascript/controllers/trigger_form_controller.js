@@ -731,7 +731,7 @@ export default class extends Controller {
             <input type="hidden" name="${name}[configuration][include_automated]" value="0" disabled>
             <input type="checkbox" id="email_include_automated_${index}" name="${name}[configuration][include_automated]" value="1" disabled
                    class="h-4 w-4 mt-0.5 text-indigo-600 border-gray-300 rounded">
-            <label for="email_include_automated_${index}" class="ml-2 text-xs text-gray-600">Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.</label>
+            <label for="email_include_automated_${index}" class="ml-2 text-xs text-gray-600">Also fire on automated mail: an Auto-Submitted or List-Id header, Gmail's promotions, social and forums categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.</label>
           </div>
         </div>
 

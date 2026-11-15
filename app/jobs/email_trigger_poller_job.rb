@@ -5,12 +5,13 @@
 # Every minute, for every `email` condition on an enabled trigger:
 #
 #   1. search the mailbox for the condition's query, minus the mailbox's own mail (`-from:me`, the
-#      self-loop) and, unless the condition opts in, Gmail's promotions/social/forums/updates
-#      categories — received after LOOKBACK before the condition's cursor — and drop the ids
+#      self-loop) — received after LOOKBACK before the condition's cursor — and drop the ids
 #      already read (`seen_messages`);
 #   2. read each new message in full and drop what must never fire: anything Gmail filed as SENT,
-#      DRAFT, SPAM or TRASH, and, unless the condition opts in, automated mail — a category label,
-#      a bounce or no-reply sender, an auto-reply subject (#automated?);
+#      DRAFT, SPAM or TRASH, and, unless the condition opts in, automated mail — an
+#      `Auto-Submitted` or `List-Id` header, a promotions/social/forums category label, a bounce or
+#      no-reply sender, an auto-reply subject (#automated_reason). Every message dropped here is
+#      logged at WARN with its id and the reason, once (it is then seen);
 #   3. fire ONCE PER THREAD: the new messages of one thread are one fire, with the newest as
 #      {{message_id}}; two threads are two fires.
 #
@@ -28,6 +29,11 @@
 # was, and the next tick re-reads it. A burst-suppressed fire is dropped, as on Slack. A message the
 # mailbox server cannot return (MAX_READ_ATTEMPTS ticks running) is given up on with one report, so
 # one unreadable mail cannot hold the cursor for good.
+#
+# The search never filters on what the classifier decides. A message the search leaves out is one
+# the poller never sees, so nothing can log it: that is how operator mail Gmail had filed under
+# Updates went unanswered for hours without a line in any log (#1525). Every
+# message the query matches is read and judged here, where a skip can be reported.
 #
 # A condition the poller has never visited is baselined, not fired: what is already in the window
 # goes into the seen-set, so turning a trigger on never answers old mail.
@@ -67,17 +73,21 @@ class EmailTriggerPollerJob < ApplicationJob
   MAX_BODY_CHARS = 10_000
 
   # Gmail categories that are, by Gmail's own classification, mail nobody wrote to this mailbox by
-  # hand: marketing, social-network notices, mailing lists, automated updates. Gmail derives them
-  # from exactly the signals the mailbox server does not expose (`List-*`, `Precedence: bulk`,
-  # `Auto-Submitted`, the sender's history), which is why they stand in for those headers here.
-  AUTOMATED_CATEGORIES = %w[promotions social forums updates].freeze
-  AUTOMATED_LABELS = AUTOMATED_CATEGORIES.map { |category| "CATEGORY_#{category.upcase}" }.freeze
+  # hand: marketing, social-network notices, mailing lists. Updates is deliberately not one of
+  # them: Gmail files transactional mail there by its content, and a person who forwards some to
+  # this mailbox with a request lands in Updates too.
+  AUTOMATED_LABELS = %w[CATEGORY_PROMOTIONS CATEGORY_SOCIAL CATEGORY_FORUMS].freeze
 
   # Labels that mean the message is not inbound mail for anyone to answer.
   NEVER_FIRE_LABELS = %w[SENT DRAFT SPAM TRASH].freeze
 
   # A sender that is a mail system or says outright that it reads nothing.
   AUTOMATED_SENDER = /\A(mailer-daemon|postmaster|no[-_.]?reply|do[-_.]?not[-_.]?reply|bounces?)([+@])/i
+
+  # Headers a machine sets. `Auto-Submitted` with any value but `no` is RFC 3834's mark of an
+  # auto-reply or an auto-generated message; `List-Id` is RFC 2919's mark of mailing-list traffic.
+  AUTO_SUBMITTED_HEADER = "Auto-Submitted"
+  LIST_ID_HEADER = "List-Id"
 
   # An auto-reply or a bounce, by the subjects the common mail systems give them.
   AUTOMATED_SUBJECT = /\A\s*(auto(matic)?[- ]?(reply|response)\b|auto:|out of (the )?office\b|undeliverable\b|undelivered mail\b|delivery status notification\b|mail delivery (failed|subsystem)\b|returned mail\b|failure notice\b)/i
@@ -190,10 +200,9 @@ class EmailTriggerPollerJob < ApplicationJob
 
   # Gmail's search for "this condition's mail, received after +after+, that is not the mailbox's
   # own". The condition's query is parenthesised so an OR in it cannot swallow the terms after it.
+  # Nothing else narrows it — see the class comment for why automated mail is judged after reading.
   def search_query(condition, after)
-    terms = [ "(#{condition.email_query})", "-from:me", "after:#{after}" ]
-    terms.concat(AUTOMATED_CATEGORIES.map { |category| "-category:#{category}" }) unless condition.email_include_automated?
-    terms.join(" ")
+    [ "(#{condition.email_query})", "-from:me", "after:#{after}" ].join(" ")
   end
 
   # The first poll of a condition: remember what is already in the window, fire nothing.
@@ -223,7 +232,7 @@ class EmailTriggerPollerJob < ApplicationJob
     rescue EmailService::Error => e
       return :failed unless give_up_reading?(condition, summary.id, thread_id, e)
     end
-    firing = messages.select { |message| fires?(condition, message) }
+    skipped, firing = messages.partition { |message| skip_reason(condition, message) }
 
     outcome = :rolled_back
     ActiveRecord::Base.transaction do
@@ -253,7 +262,10 @@ class EmailTriggerPollerJob < ApplicationJob
       end
     end
 
-    log_outcome(condition, thread_id, firing.size, outcome) if firing.any?
+    unless outcome == :rolled_back
+      skipped.each { |message| log_skip(condition, thread_id, message) } unless outcome == :held
+      log_outcome(condition, thread_id, firing.size, outcome) if firing.any?
+    end
     outcome
   rescue => e
     # One thread's failure — a message deleted between the search and the read, a spawn that
@@ -303,19 +315,38 @@ class EmailTriggerPollerJob < ApplicationJob
     end
   end
 
-  def fires?(condition, message)
-    return false if NEVER_FIRE_LABELS.intersect?(message.labels)
-    return true if condition.email_include_automated?
+  # Why +message+ must not fire, or nil when it may. The reason names a label, a header or a
+  # pattern — never what the sender wrote — because it goes into a log line.
+  def skip_reason(condition, message)
+    never = NEVER_FIRE_LABELS & message.labels
+    return "label #{never.join(', ')}" if never.any?
+    return nil if condition.email_include_automated?
 
-    !automated?(message)
+    automated_reason(message)
   end
 
-  # Bulk, list and auto-reply mail, as far as the mailbox server lets Zimmer see it: Gmail's
-  # category labels, a mail-system or no-reply sender, an auto-reply or bounce subject.
-  def automated?(message)
-    AUTOMATED_LABELS.intersect?(message.labels) ||
-      message.from_address.to_s.match?(AUTOMATED_SENDER) ||
-      message.subject.to_s.match?(AUTOMATED_SUBJECT)
+  # Bulk, list and auto-reply mail: the headers a machine sets, Gmail's promotions/social/forums
+  # labels, a mail-system or no-reply sender, an auto-reply or bounce subject.
+  def automated_reason(message)
+    auto_submitted = message.header(AUTO_SUBMITTED_HEADER)
+    return "automated: #{AUTO_SUBMITTED_HEADER} header" if auto_submitted && !auto_submitted.strip.casecmp?("no")
+    return "automated: #{LIST_ID_HEADER} header" if message.header(LIST_ID_HEADER)
+
+    category = AUTOMATED_LABELS & message.labels
+    return "automated: label #{category.join(', ')}" if category.any?
+    return "automated: no-reply or mail-system sender" if message.from_address.to_s.match?(AUTOMATED_SENDER)
+
+    "automated: auto-reply or bounce subject" if message.subject.to_s.match?(AUTOMATED_SUBJECT)
+  end
+
+  # WARN, not INFO: only WARN and above leave the box (config/initializers/otel_logs_exporter.rb),
+  # and a mail the trigger chose not to answer is exactly what an operator needs to be able to find
+  # when they ask why nothing happened. Each message is logged once — it is then seen. A condition
+  # that should answer such mail sets include_automated.
+  def log_skip(condition, thread_id, message)
+    reason = skip_reason(condition, message)
+    Rails.logger.warn "[EmailTriggerPollerJob] Condition #{condition.id} on trigger #{condition.trigger_id}: " \
+                      "message #{message.id} in thread #{thread_id} not fired (#{reason})"
   end
 
   # +messages+ are one thread's new mail, oldest first.
