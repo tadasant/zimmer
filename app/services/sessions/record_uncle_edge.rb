@@ -98,15 +98,21 @@ module Sessions
     end
 
     def call
-      return skip(:no_actor_declared) if uncle.nil?
-      return skip(:self) if uncle.id == junior.id
-      return skip(:already_senior) if senior_already?
+      # A savepoint, because the follow-up doors call this inside the delivery's
+      # own transaction (Sessions::DeliverFollowUp). Without it a failed INSERT
+      # aborts that outer transaction, and the rescue below would swallow the
+      # error only for the delivery's next statement to fail instead.
+      ActiveRecord::Base.transaction(requires_new: true) do
+        next skip(:no_actor_declared) if uncle.nil?
+        next skip(:self) if uncle.id == junior.id
+        next skip(:already_senior) if senior_already?
 
-      inverted = SessionUncleLink.find_by(session_id: uncle.id, uncle_session_id: junior.id)
-      return invert(inverted) if inverted
-      return skip(:would_create_cycle) if junior_of_actor?
+        inverted = SessionUncleLink.find_by(session_id: uncle.id, uncle_session_id: junior.id)
+        next invert(inverted) if inverted
+        next skip(:would_create_cycle) if junior_of_actor?
 
-      create_edge
+        create_edge
+      end
     rescue StandardError => e
       # Lineage is a record ABOUT the delivery, never a precondition of it. A
       # failure here — a racing duplicate, a session destroyed mid-call — must not
@@ -173,7 +179,10 @@ module Sessions
     # Cheaper than proving the general case and exact for the graph as it stands.
     def invert(existing)
       link = nil
-      inverted = ActiveRecord::Base.transaction do
+      # Its own savepoint: `ActiveRecord::Rollback` in a nested transaction
+      # without one is swallowed and rolls back nothing, which would leave the
+      # destroyed edge gone when this runs inside a caller's transaction.
+      inverted = ActiveRecord::Base.transaction(requires_new: true) do
         existing.destroy!
 
         if junior_of_actor?

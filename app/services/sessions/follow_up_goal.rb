@@ -5,8 +5,8 @@ module Sessions
   #
   # Delivery of the prompt itself has been shared since #260 — `Session#deliver_follow_up!`
   # — but the goal rule that runs beside it was written out longhand at every entry
-  # surface: the web controller's `follow_up`, `Api::V1::SessionsController#follow_up`,
-  # the MCP `follow_up` action's `direct_follow_up`, and `EnqueuedMessageProcessorService`
+  # surface: the web controller's `follow_up`, the REST and MCP `follow_up` doors
+  # (through `Sessions::DeliverFollowUp`), and `EnqueuedMessageProcessorService`
   # when it claims a queued message. Four copies of one sentence, each with its own
   # wording for the log line it writes. This is that sentence, once (#105).
   #
