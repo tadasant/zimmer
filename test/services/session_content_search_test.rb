@@ -228,6 +228,21 @@ class SessionContentSearchTest < ActiveSupport::TestCase
     assert_equal [ @old.id ], rest.matched_ids
   end
 
+  test "the transcript EXISTS stays correlated: no hashed SubPlan over the whole chunk table" do
+    sql = Session.where(id: [ @old.id, @new.id ])
+      .where(SessionSearchable::CONTENT_PREDICATE, SessionSearchable.search_binds("mitochondrion"))
+      .select(:id).to_sql
+    plan = Session.connection.select_values("EXPLAIN #{sql}").join("\n")
+
+    assert_no_match(/hashed SubPlan|AlternativeSubPlan/i, plan,
+      "without the OFFSET 0 fence Postgres may hash the EXISTS into one seq scan of every chunk " \
+      "of every session per statement — see TRANSCRIPT_PREDICATE")
+  end
+
+  test "an all-words search with no words does not match everything" do
+    assert_empty SessionContentSearch.new(scope: @scope, query: "   ", all_words: true).call.matched_ids
+  end
+
   test "eager-loaded associations on the caller's scope do not leak into the id pluck" do
     scope = Session.includes(:logs).where(id: [ @old.id, @new.id ])
 

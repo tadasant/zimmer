@@ -7655,6 +7655,17 @@ returning. The cost is that a search over a large corpus may not reach the end i
 reported rather than hidden — `complete: false` plus a `next_cursor` to resume with — but a caller
 that ignores the flag will read an empty page as "no such session".
 
+`match: "all_words"` makes it slower per session. It checks the transcript once per word, up to
+eight words, and a word stops at its first matching chunk, so an all-words call covers fewer sessions
+per budget than a phrase call. The worst case is several common words plus one that is absent.
+
+The `EXISTS` carries an `OFFSET 0` that looks like dead code and is not. Without it, Postgres may turn
+the subquery into a hashed SubPlan that sequentially scans the whole chunk table once per statement,
+ILIKE-ing every chunk of every session to answer a question about 100 candidates. It does this
+because chunk text lives in TOAST, so the heap the planner costs looks tiny. Measured locally on a
+284 MB chunk corpus, removing the fence made a phrase scan 3–12× slower and an all-words scan about
+one whole-table pass slower per word.
+
 The proper fix is an index the search can use, and both candidates have a real obstacle: a `pg_trgm`
 GIN index would be built over gigabytes of TOASTed text, and `to_tsvector` refuses documents over
 1 MB, which most transcripts exceed. Neither can be sized or measured from this repository — the

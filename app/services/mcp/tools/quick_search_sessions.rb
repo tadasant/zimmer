@@ -248,7 +248,7 @@ module Mcp
 
         if sessions.empty?
           header << (scan.complete? ?
-            "No sessions matched #{query.inspect} #{match_phrasing(query, match)} in title, metadata or transcript." :
+            "No sessions matched #{query.inspect} #{match_phrasing(query, match)}, in title, metadata or transcript." :
             "No matches for #{query.inspect} #{match_phrasing(query, match)} in the #{scan.scanned} most recent " \
             "of #{scan.candidate_count} candidate session(s).")
           header << ""
@@ -274,32 +274,44 @@ module Mcp
       # Which match mode answered, in words. An empty transcript search that does not
       # say it matched one exact phrase reads as "that session is not in this window",
       # and a caller who believes that pages back in time with the same phrase rather
-      # than loosening it — Live Mode did exactly that, twelve searches running (#27935).
+      # than loosening it — Live Mode did exactly that, twelve searches
+      # running (postmortem session 27935).
       def match_phrasing(query, match)
-        if match == MATCH_ALL_WORDS
+        if match == MATCH_ALL_WORDS && SessionSearchable.query_words(query).size > 1
           "with all of its words, in any order"
-        elsif SessionSearchable.query_words(query).size > 1
+        elsif match == MATCH_PHRASE && multi_word?(query)
           "as one exact phrase"
         else
           "as a substring"
         end
       end
 
+      # Several words as typed, duplicates included: "foo FOO" is still a two-word phrase,
+      # even though an all-words search would treat it as one word.
+      def multi_word?(query)
+        query.split(/\s+/).reject(&:empty?).size > 1
+      end
+
       # What an empty transcript search owes the caller beyond "nothing here". Every note
       # is computed on the cheap title/metadata path: a second transcript scan to say how
       # many archived sessions a phrase would have matched costs the budget the bound
       # exists to protect, so these say what is cheap to know and say which part it is.
-      # The phrase hint needs no query at all, and comes first because it is the one most
+      # The phrase hint costs no query at all, and comes first because it is the one most
       # likely to be the real reason nothing came back.
       def content_empty_notes(args, query, match)
         notes = []
-        if match == MATCH_PHRASE && SessionSearchable.query_words(query).size > 1
+        if match == MATCH_PHRASE && multi_word?(query)
           notes << "**Note:** #{query.inspect} was matched as one exact phrase — its words adjacent, in that " \
                    "order, on one line of the stored transcript. A session holding all of these words apart " \
                    "is not a match. Before paging back with scan_cursor, retry with match: \"all_words\" " \
                    "(every word, any order, anywhere in the session) or with one distinctive word."
         end
-        notes.concat(narrowing_notes(args, query, match, 0, where: "by title or metadata"))
+        # `shown` is what the caller's own filters match on the cheap path — not zero. The
+        # scan may have stopped early or resumed from a cursor, so "nothing came back" says
+        # nothing about the title/metadata matches outside its window, and subtracting zero
+        # would report those as hidden by a filter that never touched them.
+        shown = search_count(args, query, match)
+        notes.concat(narrowing_notes(args, query, match, shown, where: "by title or metadata"))
       end
 
       def scan_footer(scan)
@@ -320,9 +332,9 @@ module Mcp
             "from — narrow the filters (status, genesis, agent_runtime) so the scan has less to " \
             "read, then try again."
           end
-          # "The rest were not searched", not "have NOT been ruled out": the second reads
-          # as an instruction to keep paging back, which is wrong when the session was
-          # inside the window and it was the query that missed it.
+          # States the extent of the scan and nothing more. It must not read as advice to
+          # keep paging back: when the session was inside the window it was the query that
+          # missed it, and the empty-result notes say how to loosen that.
           lines << "*Scan incomplete: #{scan.scanned} of #{scan.candidate_count} candidate session(s) searched, " \
                    "newest first, because #{reason}; the older #{scan.candidate_count - scan.scanned} were not " \
                    "searched. #{resume}*"
@@ -375,11 +387,14 @@ module Mcp
           end
         end
 
-        if shown.zero? && match == MATCH_PHRASE && SessionSearchable.query_words(query).size > 1
+        # Not on the transcript path: there the phrase hint already says to loosen the
+        # query, and "no session has this exact phrase" overclaims about a scan that may
+        # not have reached the whole corpus.
+        if where.nil? && shown.zero? && match == MATCH_PHRASE && SessionSearchable.query_words(query).size > 1
           loose = search_count(args.merge("show_archived" => true).except("carplay_fit"), query, MATCH_ALL_WORDS)
           if loose.positive?
             notes << "**Note:** no session has this exact phrase, but #{loose} session(s) contain every one " \
-                     "of its words#{where ? " #{where}" : ''} (counting archived sessions, ignoring carplay_fit, keeping your other filters). Pass match: \"all_words\" to see them."
+                     "of its words (counting archived sessions, ignoring carplay_fit, keeping your other filters). Pass match: \"all_words\" to see them."
           end
         end
 
