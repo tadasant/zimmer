@@ -8,8 +8,9 @@
 # entirely in *.tfvars.
 #
 # Tailscale is OPTIONAL. An empty `tailscale_auth_key` (the default) provisions the same
-# host with no Tailscale at all: no install, no `tailscale up`, no UDP 41641 rule, and
-# so ZERO public ingress of any kind. Such a box is reachable only through an outbound
+# host with no Tailscale at all: no install and no `tailscale up`. The firewall is the
+# same in both modes (UDP 41641 only, nothing behind it here), so there is still ZERO
+# public TCP. Such a box is reachable only through an outbound
 # tunnel (the optional Cloudflare edge) and through whatever per-job firewall rule the
 # CONSUMER'S deploy workflow opens -- e.g. :22 for the runner's own /32, removed again
 # in an always() step. That rule is the consumer's job, never this module's. See
@@ -159,8 +160,9 @@ variable "tailscale_auth_key" {
     Tailscale (ephemeral, pre-authorized) auth key for the droplet to join the tailnet.
 
     EMPTY (the default) = NO TAILSCALE: cloud-init neither installs it nor runs
-    `tailscale up`, the firewall drops its UDP 41641 rule and admits nothing inbound,
-    and node_exporter (which binds the tailnet address) is refused at plan time. SSH is
+    `tailscale up`, nothing listens behind the firewall's UDP 41641 rule (kept, so an
+    empty key on a live tailnet box is a no-op), there is still no TCP rule, and
+    node_exporter (which binds the tailnet address) is refused at plan time. SSH is
     then plain key-only OpenSSH on :22, reachable only through a firewall rule the
     consumer's deploy opens for its own runner and removes afterwards. Break-glass is
     the DigitalOcean web console. See docs/operate/provisioning.md#running-without-tailscale.
@@ -349,7 +351,7 @@ locals {
 
   # Whether the droplet joins a tailnet at all (see var.tailscale_auth_key). Only the
   # emptiness of the key is read here, so the boolean is not secret -- and it must not
-  # be marked sensitive, because it gates a firewall rule and a template branch.
+  # be marked sensitive, because it gates a template branch, a precondition and an output.
   tailscale_enabled = nonsensitive(var.tailscale_auth_key != "")
 
   # When a managed cluster is named (production), the droplet is pinned into its VPC
@@ -493,8 +495,10 @@ resource "digitalocean_reserved_ip" "zimmer" {
 # effectively DOWN. Break-glass without a rule: `tailscale ssh root@zimmer-<env>`, or
 # the DigitalOcean web console.
 #
-# WITHOUT TAILSCALE (empty tailscale_auth_key) the UDP rule goes too, so this firewall
-# admits NOTHING inbound and the same rule stands: no `22` rule here. A deploy reaches
+# WITHOUT TAILSCALE (empty tailscale_auth_key) this firewall is deliberately the SAME:
+# the UDP rule stays, with nothing on the box listening behind it, so a key that comes
+# through empty by mistake on a live tailnet droplet changes nothing at all (user_data is
+# under ignore_changes too). There is still no TCP, and still no `22` rule. A deploy reaches
 # :22 (plain key-only OpenSSH in that mode) through a rule its own workflow adds for the
 # runner's /32 for the length of the job and removes in an always() step -- on this
 # firewall, by name, with `doctl compute firewall add-rules`. Terraform does not manage
@@ -511,15 +515,12 @@ resource "digitalocean_firewall" "zimmer" {
   name        = "zimmer-${var.environment}"
   droplet_ids = [digitalocean_droplet.zimmer.id]
 
-  # Tailscale coordination / direct connections. The ONLY public ingress, and only
-  # when the droplet joins a tailnet.
-  dynamic "inbound_rule" {
-    for_each = local.tailscale_enabled ? [1] : []
-    content {
-      protocol         = "udp"
-      port_range       = "41641"
-      source_addresses = ["0.0.0.0/0", "::/0"]
-    }
+  # Tailscale coordination / direct connections. The ONLY public ingress. Kept in both
+  # modes (see above): without Tailscale nothing listens on it.
+  inbound_rule {
+    protocol         = "udp"
+    port_range       = "41641"
+    source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
   outbound_rule {

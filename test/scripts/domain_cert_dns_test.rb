@@ -74,7 +74,7 @@ class DomainCertDnsTest < ActiveSupport::TestCase
       "CNAME_JSON" => File.join(@dir, "cname.json"),
       "DOMAIN" => DOMAIN, "TS_HOST" => "zimmer", "CF_ZONE_ID" => "zone",
       "CF_API_TOKEN" => "cf-token", "ACME_EMAIL" => "ops@example.com",
-      "CERT_SSH_KEY" => nil, "CERT_HOST_IP" => nil, "FORCE_ISSUE" => nil
+      "CERT_SSH_KEY" => nil, "CERT_HOST_IP" => nil, "CERT_KNOWN_HOSTS" => nil, "FORCE_ISSUE" => nil
     }.merge(env_overrides)
     out, status = Open3.capture2e(env, "bash", SCRIPT.to_s)
     [ out, status, read_log("curl") ]
@@ -155,5 +155,24 @@ class DomainCertDnsTest < ActiveSupport::TestCase
 
     refute status.success?
     assert_match(/TS_HOST.*CERT_HOST_IP/, out)
+  end
+
+  test "CERT_HOST_IP wins over TS_HOST, so the tailnet is never consulted" do
+    out, status, = run_script([], "CERT_HOST_IP" => HOST_IP, "CERT_SSH_KEY" => "/tmp/key")
+
+    assert status.success?, out
+    assert_empty read_log("tailscale")
+    assert read_log("ssh").all? { _1.include?("root@#{HOST_IP}") }
+  end
+
+  test "CERT_KNOWN_HOSTS makes SSH verify the host key; without it the first key is accepted" do
+    _, status, = run_script([], "TS_HOST" => nil, "CERT_HOST_IP" => HOST_IP, "CERT_SSH_KEY" => "/tmp/key",
+      "CERT_KNOWN_HOSTS" => "/tmp/known_hosts")
+    assert status.success?
+    assert read_log("ssh").all? { _1.include?("StrictHostKeyChecking=yes") && _1.include?("UserKnownHostsFile=/tmp/known_hosts") }
+
+    File.delete(log_path("ssh"))
+    run_script([], "TS_HOST" => nil, "CERT_HOST_IP" => HOST_IP, "CERT_SSH_KEY" => "/tmp/key")
+    assert read_log("ssh").all? { _1.include?("StrictHostKeyChecking=accept-new") }
   end
 end
