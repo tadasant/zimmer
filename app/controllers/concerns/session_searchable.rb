@@ -111,11 +111,24 @@ module SessionSearchable
   # so the only phrase a per-chunk match can miss is one spanning the newline
   # BETWEEN two JSON events — text nobody typed, since that newline is a record
   # separator. A phrase inside an event is inside one chunk by construction.
+  #
+  # `OFFSET 0` is a planner fence, and it is load-bearing. Without it Postgres may
+  # turn the `EXISTS` into a hashed SubPlan: one sequential scan of the WHOLE chunk
+  # table, ILIKE-ing every chunk of every session, to answer a statement about the
+  # 100 candidates SessionContentSearch handed it. The planner picks that because a
+  # chunk's text lives in TOAST and the heap it costs looks tiny. The fence keeps the
+  # subquery correlated, so each candidate reads only its own chunks through
+  # `index_session_transcript_chunks_on_session_and_seq` and stops at its first
+  # matching one. Measured on a 300-session, 284 MB chunk corpus, 100 candidates per
+  # statement: an absent phrase went from 8.8 s to 2.8 s and a common word from 7.3 s
+  # to 0.6 s. An all-words search pays this once per word, so without the fence four
+  # words cost four whole-table scans per statement (28.6 s; 2.4 s with it).
   TRANSCRIPT_PREDICATE = <<~SQL.squish
     transcript::text ILIKE :q
     OR EXISTS (
       SELECT 1 FROM session_transcript_chunks stc
       WHERE stc.session_id = sessions.id AND stc.content ILIKE :q
+      OFFSET 0
     )
   SQL
   CONTENT_PREDICATE = "#{METADATA_PREDICATE} OR #{TRANSCRIPT_PREDICATE}"
@@ -149,7 +162,8 @@ module SessionSearchable
   end
 
   # How many words an all-words search honours. Each word is one more pass of the
-  # metadata predicate, so a pasted paragraph must not become forty of them.
+  # metadata predicate — and on a content search, one more read of the transcript —
+  # so a pasted paragraph must not become forty of them.
   MAX_ALL_WORDS = 8
 
   # The words of a query, for an all-words search: whitespace-split, de-duplicated
@@ -201,9 +215,15 @@ module SessionSearchable
   # and render it like any other scope; the returned Result says how far the scan got
   # and where to resume.
   #
+  # `all_words: true` is filter_sessions_by_all_words with the transcript added: every
+  # word must appear somewhere in the title, metadata, custom_metadata or transcript,
+  # in any order. Phrase stays the default here as everywhere else.
+  #
   # @return [Array(ActiveRecord::Relation, SessionContentSearch::Result)]
-  def search_sessions_by_content(sessions, query, limit: SessionContentSearch::DEFAULT_LIMIT, cursor: nil)
-    result = SessionContentSearch.new(scope: sessions, query: query, limit: limit, cursor: cursor).call
+  def search_sessions_by_content(sessions, query, limit: SessionContentSearch::DEFAULT_LIMIT, cursor: nil, all_words: false)
+    result = SessionContentSearch.new(
+      scope: sessions, query: query, limit: limit, cursor: cursor, all_words: all_words
+    ).call
     [ sessions.where(id: result.matched_ids), result ]
   end
 

@@ -876,7 +876,10 @@ posted so the comment poller never reads one back as if a human wrote it.
 (`search_contents: true`) both match the stored transcript, so a session can be found by a phrase
 from its conversation rather than by its title. A multi-word query is matched as one literal
 substring — [the words have to be adjacent and in order](/extend/rest-api/#searching-transcript-contents),
-against the transcript's stored JSON.
+against the transcript's stored JSON. `match: "all_words"` (`match=all_words` on REST) relaxes that
+to every word somewhere in the session — title, metadata or transcript, any order, any line — still
+AND-ed, so each word narrows the result. When a multi-word phrase finds nothing, the MCP tool says it
+was matched as one exact phrase and suggests that retry.
 
 There is no index a leading-wildcard substring match can use, so the scan is **bounded rather than
 best-effort**: `SessionContentSearch` walks candidates newest-first in chunks, stops at the result

@@ -2696,7 +2696,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     session&.destroy
   end
 
-  test "search with match=all_words finds every word in any order, and refuses search_contents" do
+  test "search with match=all_words finds every word in any order" do
     session = Session.create!(agent_runtime: "claude_code", git_root: "https://github.com/test/repo.git",
                               branch: "main", title: "Diagnose failed quokka voice session")
 
@@ -2709,10 +2709,34 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "all_words", json["match"]
     assert_includes json["sessions"].map { |s| s["id"] }, session.id
 
-    get search_api_v1_sessions_path, params: { q: "a b", match: "all_words", search_contents: "true" }, headers: @headers
-    assert_response :bad_request
     get search_api_v1_sessions_path, params: { q: "a", match: "fuzzy" }, headers: @headers
     assert_response :bad_request
+  end
+
+  test "search with match=all_words and search_contents ANDs the words over title and transcript" do
+    target = Session.create!(
+      title: "Research OSS MCP gateways", prompt: "p", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :needs_input,
+      transcript: [ { "type" => "user", "message" => { "content" => "Start with Obot." } },
+                    { "type" => "assistant", "message" => { "content" => "The gateway comparison is done." } } ]
+    )
+
+    get search_api_v1_sessions_path, params: { q: "Obot gateways", search_contents: "true" }, headers: @headers
+    assert_response :success
+    assert_not_includes JSON.parse(response.body)["sessions"].map { |s| s["id"] }, target.id
+
+    get search_api_v1_sessions_path,
+      params: { q: "gateways Obot", search_contents: "true", match: "all_words" }, headers: @headers
+    assert_response :success
+    json = JSON.parse(response.body)
+    assert_equal "all_words", json["match"]
+    assert_includes json["sessions"].map { |s| s["id"] }, target.id
+
+    get search_api_v1_sessions_path,
+      params: { q: "gateways Obot kubernetes", search_contents: "true", match: "all_words" }, headers: @headers
+    assert_not_includes JSON.parse(response.body)["sessions"].map { |s| s["id"] }, target.id
+  ensure
+    target&.destroy
   end
 
   test "search should find sessions by metadata" do

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 
 class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
@@ -430,13 +431,105 @@ class Mcp::Tools::QuickSearchSessionsTest < ActiveSupport::TestCase
     assert_includes output, "(ID: #{target.id})"
   end
 
-  test "all_words with search_contents is refused, and an unknown match is refused" do
-    error = assert_raises(Mcp::ToolError) do
-      @tool.call("query" => "a b", "match" => "all_words", "search_contents" => true)
-    end
-    assert_match(/title and metadata only/, error.message)
-
+  test "an unknown match is refused, on both paths" do
     assert_raises(Mcp::ToolError) { @tool.call("query" => "a", "match" => "fuzzy") }
+    assert_raises(Mcp::ToolError) { @tool.call("query" => "a", "match" => "fuzzy", "search_contents" => true) }
+  end
+
+  # --- all_words with search_contents (#27935, failure mode 3) -----------------
+
+  # Conversation 20's shape: the session's words are all there, but never side by side.
+  # The title says "gateways", the transcript says "Obot" early and "gateway" much later.
+  def create_obot_session(**attrs)
+    Session.create!(
+      title: "Research OSS MCP gateways", prompt: "prompt", git_root: "https://github.com/test/repo.git",
+      agent_runtime: "claude_code", status: :archived,
+      transcript: [
+        { "type" => "user", "message" => { "role" => "user", "content" => "Start with Obot, then the others." } },
+        { "type" => "assistant", "message" => { "role" => "assistant", "content" => "Read the docs for each one." } },
+        { "type" => "assistant", "message" => { "role" => "assistant", "content" => "The gateway comparison is done." } }
+      ],
+      **attrs
+    )
+  end
+
+  test "conversation 20: a phrase scan misses the session, all_words finds it, and the miss says why" do
+    target = create_obot_session
+
+    phrase = @tool.call("query" => "Obot gateway comparison", "search_contents" => true, "show_archived" => true)
+    assert_not_includes phrase, "(ID: #{target.id})"
+    assert_includes phrase, "as one exact phrase"
+    assert_includes phrase, '"Obot gateway comparison" was matched as one exact phrase'
+    assert_includes phrase, 'retry with match: "all_words"'
+    assert_includes phrase, "Scan complete"
+
+    loose = @tool.call("query" => "Obot gateway comparison", "search_contents" => true, "show_archived" => true,
+                       "match" => "all_words")
+    assert_includes loose, "(ID: #{target.id})"
+    assert_includes loose, "with all of its words, in any order"
+  end
+
+  test "all_words with search_contents drops a session missing any one word" do
+    target = create_obot_session
+
+    output = @tool.call("query" => "Obot gateway kubernetes", "search_contents" => true, "show_archived" => true,
+                        "match" => "all_words")
+
+    assert_not_includes output, "(ID: #{target.id})"
+    assert_includes output, "with all of its words, in any order"
+    assert_not_includes output, "was matched as one exact phrase",
+      "the phrase hint belongs to phrase mode only"
+  end
+
+  test "an empty transcript search says what the archived default hid, by title or metadata" do
+    create_obot_session
+
+    output = @tool.call("query" => "OSS MCP gateways", "search_contents" => true)
+
+    assert_includes output, "No sessions matched"
+    assert_includes output, "1 more archived session(s) match by title or metadata and are not shown"
+  end
+
+  test "an empty transcript search says what carplay_fit hid" do
+    create_obot_session(status: :needs_input, carplay_fit: "laptop_only", carplay_fit_source: "auto",
+                        carplay_fit_line_count: 5, carplay_fit_set_at: Time.current)
+
+    output = @tool.call("query" => "OSS MCP gateways", "search_contents" => true, "carplay_fit" => "carplay_ok")
+
+    assert_includes output, "1 more session(s) match by title or metadata but were left out by carplay_fit: carplay_ok"
+  end
+
+  test "an empty scan that stopped early does not call a live title match outside its window archived" do
+    create_titled_session("Quokka outside the window", status: :needs_input)
+    SessionContentSearch.stubs(:budget_seconds).returns(0)
+
+    output = @tool.call("query" => "Quokka outside", "search_contents" => true)
+
+    assert_includes output, "Scan incomplete"
+    assert_not_includes output, "archived session(s) match",
+      "the session is not archived; it is outside the window the scan reached"
+  end
+
+  test "a repeated word is still a phrase, and one word is a substring in either mode" do
+    phrase = @tool.call("query" => "quokka QUOKKA", "search_contents" => true)
+    assert_includes phrase, "as one exact phrase"
+    assert_includes phrase, "was matched as one exact phrase"
+
+    single = @tool.call("query" => "quokka", "search_contents" => true, "match" => "all_words")
+    assert_includes single, "as a substring"
+  end
+
+  test "an incomplete scan that found nothing says the rest were not searched, not that they matter" do
+    create_transcript_session(title: "Newer", said: "nothing here", created_at: 1.hour.ago)
+    create_transcript_session(title: "Older", said: "nothing here either", created_at: 2.hours.ago)
+    SessionContentSearch.stubs(:chunk_size).returns(1)
+    SessionContentSearch.stubs(:budget_seconds).returns(0)
+
+    output = @tool.call("query" => "quokka harbour", "search_contents" => true)
+
+    assert_not_includes output, "have NOT been ruled out"
+    assert_includes output, "were not searched"
+    assert_includes output, "was matched as one exact phrase"
   end
 
   test "a multi-word phrase that finds nothing says how many sessions hold every word" do
