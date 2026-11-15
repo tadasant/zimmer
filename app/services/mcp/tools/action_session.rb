@@ -492,9 +492,11 @@ module Mcp
       # the thing being recorded is one session deciding to redirect another, and
       # a router following up an idle worker is the most common instance of it.
       def direct_follow_up(session, prompt, goal, args)
-        unless session.waiting? || session.needs_input?
-          raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
-        end
+        # Session#follow_up_refusal admits `running` too, which this branch never
+        # sees: Sessions::LiveTurn.underway? answers true for a `running` session
+        # without a query, so #follow_up routed it to the queue before here.
+        refusal = session.follow_up_refusal
+        raise ToolError, refusal if refusal
 
         # Delivered through Sessions::DeliverFollowUp, the idle-session writer
         # REST `follow_up` shares, which delivers through
@@ -520,9 +522,8 @@ module Mcp
       # stage-then-interrupt path the REST force_immediate follow-up shares, so
       # "deliver now, terminating the current turn" cannot diverge across entry points.
       def force_immediate_follow_up(session, prompt, goal)
-        unless session.running? || session.waiting? || session.needs_input?
-          raise ToolError, "Session is #{session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions."
-        end
+        refusal = session.follow_up_refusal
+        raise ToolError, refusal if refusal
 
         result = Sessions::InterruptWithFollowUp.call(
           session: session,

@@ -35,9 +35,10 @@ module Sessions
   # around it is defensive; the block is what can realistically raise.
   #
   # Scope: the message and the interrupt. It does not check the session's
-  # status (each surface refuses a session it cannot send to in its own words,
-  # and InterruptService re-checks under its lock), does not record the uncle
-  # edge, user activity or attachments in the log, and renders nothing.
+  # status: the follow-up surfaces refuse with Session#follow_up_refusal,
+  # Sessions::MessageParent refuses in its own words, and InterruptService
+  # re-checks under its lock. It does not record the uncle edge, user activity
+  # or attachments in the log, and renders nothing.
   class InterruptWithFollowUp
     Result = Struct.new(:success, :error, :error_code, :enqueued_message, :withdrawn, keyword_init: true) do
       def success?

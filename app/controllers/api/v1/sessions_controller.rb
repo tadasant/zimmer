@@ -537,12 +537,17 @@ class Api::V1::SessionsController < Api::BaseController
     attachments = stage_follow_up_attachments
     return if attachments.nil?
 
+    # Read by the rescues below: a branch that raises before anything holds the
+    # stored attachments leaves them for discard_unheld_follow_up_attachments.
+    @follow_up_attachments = attachments
+    @follow_up_attachments_held = false
+
     # When force_immediate is set, send immediately regardless of session state,
     # ending the turn in flight.
     if force_immediate
-      unless @session.running? || @session.waiting? || @session.needs_input?
+      if (refusal = @session.follow_up_refusal)
         discard_staged_attachments(attachments)
-        render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
+        render_api_error("Cannot send follow-up", refusal, status: :unprocessable_entity)
         return
       end
 
@@ -561,7 +566,11 @@ class Api::V1::SessionsController < Api::BaseController
         source_context: api_turn_source.to_h,
         actor: "api_force_immediate",
         **attachments_for_the_record(attachments)
-      )
+      ) do
+        # The message is staged and committed: from here it holds the
+        # attachments, and only the withdrawn? check below may discard them.
+        @follow_up_attachments_held = true
+      end
 
       if result.success?
         record_uncle_edge(@session, "api_v1:sessions.follow_up")
@@ -596,6 +605,7 @@ class Api::V1::SessionsController < Api::BaseController
         source_context: api_turn_source.to_h,
         **attachments_for_the_record(attachments)
       )
+      @follow_up_attachments_held = true
       log_follow_up_attachments(attachments)
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
       record_native_app_follow_up(prompt)
@@ -611,10 +621,12 @@ class Api::V1::SessionsController < Api::BaseController
       return
     end
 
-    # For waiting/needs_input sessions, send immediately
-    unless @session.waiting? || @session.needs_input?
+    # For waiting/needs_input sessions, send immediately. Session#follow_up_refusal
+    # admits `running` too, which never reaches here: Sessions::LiveTurn.underway?
+    # answers true for a `running` session without a query, so it was queued above.
+    if (refusal = @session.follow_up_refusal)
       discard_staged_attachments(attachments)
-      render_api_error("Cannot send follow-up", "Session is #{@session.status}. Follow-up prompts can only be sent to running, waiting, or needs_input sessions.", status: :unprocessable_entity)
+      render_api_error("Cannot send follow-up", refusal, status: :unprocessable_entity)
       return
     end
 
@@ -641,6 +653,7 @@ class Api::V1::SessionsController < Api::BaseController
       record_uncle_edge(@session, "api_v1:sessions.follow_up")
       log_follow_up_attachments(attachments)
     end
+    @follow_up_attachments_held = true
     record_native_app_follow_up(prompt)
 
     render json: {
@@ -648,8 +661,10 @@ class Api::V1::SessionsController < Api::BaseController
       message: "Follow-up prompt sent"
     }.merge(preserved_wake_json(@session))
   rescue ActiveRecord::RecordInvalid => e
+    discard_unheld_follow_up_attachments
     render_api_error("Validation failed", e.message, status: :unprocessable_entity)
   rescue ActiveRecord::RecordNotUnique
+    discard_unheld_follow_up_attachments
     render_api_error("Conflict", "Message position conflict, please retry", status: :conflict)
   end
 
@@ -1593,6 +1608,18 @@ class Api::V1::SessionsController < Api::BaseController
   # client that retries does not pile copies into the session's storage.
   def discard_staged_attachments(attachments)
     InlineAttachments.discard(attachments)
+  end
+
+  # For a follow-up that raised: remove what it stored unless a message or a
+  # delivered turn already holds it. Staging a message, queueing one and the
+  # direct delivery each raise before anything commits, so a refused request
+  # leaves no copies for a retry to pile onto. Once one has committed, the
+  # attachments are left alone — a staged message whose interrupt raised may
+  # have been claimed by a concurrent interrupt, attachments and all.
+  def discard_unheld_follow_up_attachments
+    return if @follow_up_attachments.nil? || @follow_up_attachments_held
+
+    discard_staged_attachments(@follow_up_attachments)
   end
 
   # A line on the session's log, as the web composer writes one, so the timeline
