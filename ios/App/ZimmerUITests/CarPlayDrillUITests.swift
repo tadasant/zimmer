@@ -200,6 +200,7 @@ final class CarPlayDrillUITests: XCTestCase {
 
         // New: one tap to a call on a conversation of its own, which in this fixture cannot
         // connect either, so it retries that conversation and gives up the same way.
+        assertNoMicrophonePrompt("before New")
         tapTile(Self.newTitles[0], or: Self.newTitles[1])
         XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New tries a call")
         XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and gives up on its own conversation")
@@ -219,6 +220,7 @@ final class CarPlayDrillUITests: XCTestCase {
         assertAlive("with nothing to continue")
 
         // And New from there is one tap too, and retries like the rest.
+        assertNoMicrophonePrompt("before New from the one tile")
         tapTile(Self.newTitles[0], or: Self.newTitles[1])
         XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New from the one tile tries a call")
         assertAlive("at the end of the drill")
@@ -374,6 +376,13 @@ final class CarPlayDrillUITests: XCTestCase {
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
         XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,
                        "the call screen is still up \(when); the car showed:\n\(car.debugDescription)")
+    }
+
+    /// No system alert over the phone. XCUITest answers one Don't Allow when a tap finds it up,
+    /// and a refused microphone makes the car give up at once instead of retrying.
+    private func assertNoMicrophonePrompt(_ when: String) {
+        let alert = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
+        XCTAssertFalse(alert.exists, "a system alert is up \(when); it showed:\n\(alert.debugDescription)")
     }
 
     private func assertAlive(_ when: String) {

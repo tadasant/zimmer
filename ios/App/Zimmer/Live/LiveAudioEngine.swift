@@ -267,6 +267,7 @@ final class LiveAudioEngine {
         if Self.permissionNeverAnswered {
             // The prompt up and nobody answering, without the system's alert: a newer start or a
             // stop is the only way out, as it is for a prompt left up on a real phone.
+            // `awaitingPermission` stays true after it, as it does while a real prompt is still up.
             awaitingPermission = true
             while token == mine { try await Task.sleep(for: .milliseconds(250)) }
             throw CancellationError()
