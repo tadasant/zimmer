@@ -9,7 +9,9 @@ require "socket"
 # and the same markdown answers, byte for byte where it matters — `formatEmail` for
 # `search_email_conversations` and `formatFullEmail` for `get_email_conversation`. The search
 # understands the few Gmail operators EmailTriggerPollerJob writes: `in:inbox`, `-from:me`,
-# `after:<unix seconds>`, `-category:<name>`, and a parenthesised group of those.
+# `after:<unix seconds>`, `-category:<name>`, and a parenthesised group of those. A mail delivered
+# with `headers:` is read back with strad's Sender Verification Headers section, as the gmail slugs
+# print it.
 #
 #   server = FakeGmailMcpServer.start
 #   server.deliver(id: "18c1", thread_id: "18c1", subject: "Hi", from: "A <a@x.com>", body: "…")
@@ -20,7 +22,7 @@ class FakeGmailMcpServer
   SLUG = "gmail-zimmer-ro"
   TOOLS = %w[list_email_conversations get_email_conversation search_email_conversations download_email_attachments list_draft_emails].freeze
 
-  Mail = Struct.new(:id, :thread_id, :subject, :from, :to, :cc, :date, :labels, :body, :snippet, :received_at, :attachments, keyword_init: true)
+  Mail = Struct.new(:id, :thread_id, :subject, :from, :to, :cc, :date, :labels, :body, :snippet, :received_at, :attachments, :headers, keyword_init: true)
 
   attr_reader :mails, :calls, :unreadable
   attr_accessor :refuse
@@ -55,11 +57,12 @@ class FakeGmailMcpServer
   end
 
   def deliver(id:, thread_id: id, subject: "Hello", from: "Ada <ada@example.org>", to: ACCOUNT, cc: nil,
-              labels: %w[INBOX UNREAD CATEGORY_PERSONAL], body: "Hi there.", received_at: Time.current.to_i, attachments: [])
+              labels: %w[INBOX UNREAD CATEGORY_PERSONAL], body: "Hi there.", received_at: Time.current.to_i, attachments: [], headers: nil)
     @mutex.synchronize do
       @mails << Mail.new(id: id, thread_id: thread_id, subject: subject, from: from, to: to, cc: cc,
                          date: Time.zone.at(received_at).rfc2822, labels: labels, body: body,
-                         snippet: body.to_s.squish.first(100), received_at: received_at, attachments: attachments)
+                         snippet: body.to_s.squish.first(100), received_at: received_at, attachments: attachments,
+                         headers: headers)
     end
   end
 
@@ -147,6 +150,7 @@ class FakeGmailMcpServer
   # formatFullEmail in upstream's shared/src/tools/get-email-conversation.ts.
   def format_full_email(mail)
     output = +"# Email Details\n\n**ID:** #{mail.id}\n**Thread ID:** #{mail.thread_id}\n**Gmail URL:** #{gmail_url(mail)}"
+    output << verification_headers(mail) if mail.headers
     output << "\n\n## Headers\n**Subject:** #{mail.subject}\n**From:** #{mail.from}\n**To:** #{mail.to}"
     output << "\n**Cc:** #{mail.cc}" if mail.cc
     output << "\n**Date:** #{mail.date}\n**Labels:** #{mail.labels.join(', ').presence || 'None'}\n\n## Body\n\n#{mail.body}"
@@ -155,6 +159,16 @@ class FakeGmailMcpServer
       mail.attachments.each_with_index { |name, index| output << "#{index + 1}. #{name} (application/pdf, 12 KB)\n" }
     end
     output
+  end
+
+  # strad's section: every listed header present in the message, verbatim, then the names absent.
+  VERIFICATION_HEADER_NAMES = %w[Received Authentication-Results From Sender Reply-To Return-Path Message-ID Auto-Submitted List-Id].freeze
+
+  def verification_headers(mail)
+    present = mail.headers.each_with_index.map { |(name, value), index| { "index" => index, "name" => name, "value" => value } }
+    absent = VERIFICATION_HEADER_NAMES.reject { |name| mail.headers.key?(name) }
+    "\n\n## Sender Verification Headers\n\nEvery instance of each header below, verbatim and in message order.\n\n" \
+      "```json\n#{JSON.pretty_generate({ "headers" => present, "absent" => absent })}\n```"
   end
 
   def gmail_url(mail)

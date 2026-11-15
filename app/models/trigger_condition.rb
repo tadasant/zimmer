@@ -1238,10 +1238,10 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
-  # The email poller's cursor survives a UI save the same way. Changing what the poller searches
-  # for — the query, or include_automated, which adds or drops the category exclusions — drops it,
-  # so the new search is baselined rather than replayed: mail that already matched it before the
-  # edit is not new mail.
+  # The email poller's cursor survives a UI save the same way. Changing what the poller fires on —
+  # the query, or include_automated, which decides whether automated mail fires — drops it, so the
+  # new condition is baselined rather than replayed: mail that already matched it before the edit
+  # is not new mail.
   def preserve_email_poll_state
     return if new_record?
     return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
