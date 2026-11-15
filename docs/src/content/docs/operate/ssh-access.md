@@ -184,6 +184,7 @@ the same**:
 | `agent-orchestrator-prod-hetzner` — the orchestrator, which runs on a **separate** host | yes | yes | — | — |
 | `root@local` — a human's laptop, break-glass only | yes | yes | — | — |
 | the Kamal deploy key (`var.deploy_ssh_pubkey`) | yes | yes | — | — |
+| strad's SSH client key (`STRAD_SSH_PUBKEY`) — the `ssh-tadasant-zimmer-staging` slug, which runs **off-box** in strad | — | yes | — | — |
 
 A `—` means "not part of this deployment's access model", not "denied". There is exactly one `no` in
 the table, and it is the decision the rest of this section is about: `zimmer-production-operator` off
@@ -271,7 +272,7 @@ on production**:
 
 | Environment | Declared in | Converged by |
 | --- | --- | --- |
-| staging | the `ADMIN_SSH_PUBKEYS` Actions **variable** on **this** repo → `TF_VAR_admin_ssh_pubkeys` | cloud-init, at droplet creation |
+| staging | the `ADMIN_SSH_PUBKEYS` and `STRAD_SSH_PUBKEY` Actions **variables** on **this** repo | cloud-init at droplet creation (`ADMIN_SSH_PUBKEYS` only), and [every staging deploy](#the-ssh-identity-is-converged-on-every-deploy) (both) |
 | production | `zimmer/admin_authorized_keys.pub` (the [private companion repo](/operate/companion-repo/)) | its `authorize-admin-keys-prod` workflow, live over Tailscale SSH — and re-asserted by the prod deploy, so it self-heals across a rebuild |
 
 The two environments do not merely hold different lists — they use **different mechanisms**, and this
@@ -338,19 +339,15 @@ resolves. Leaving it empty is also what triggers [DigitalOcean's forced root-pas
 expiry](#digitalocean-force-expires-roots-password-and-that-rejects-every-openssh-session), which
 cloud-init handles.
 
-### Adding a key does not touch a running droplet
+### Adding a key does not touch a running droplet — through Terraform
 
 `admin_ssh_pubkeys` is interpolated into `user_data`, and the droplet carries `ignore_changes =
 [user_data]`. **cloud-init runs once, at creation.** Editing the list produces no plan diff and reaches
-no existing box; it decides who is authorized on the *next rebuild*. Two ways to converge it, and which
-one you want depends on whether the box is disposable:
+no existing box through Terraform. Which path actually converges it depends on the environment:
 
-**Staging — rebuild it.** Run `deploy-staging` with `recreate_droplet=true` (a `terraform -replace` of
-the droplet). Staging is disposable by design and this is the intended path. Read [the one fallback
-door a rebuilt droplet has](/limitations/#a-rebuilt-droplet-has-exactly-one-fallback-door-and-it-is-the-digitalocean-console)
-first: a rebuild whose `tailscale up` fails leaves you with only the DigitalOcean console. And budget
-the rebuilds — each destroys the box's TLS cert, and [Let's Encrypt allows only five issuances a
-week](/limitations/#rebuilding-staging-costs-a-lets-encrypt-issuance-and-there-are-only-five-a-week).
+**Staging — just deploy.** Every `deploy-staging` run appends `ADMIN_SSH_PUBKEYS` and
+`STRAD_SSH_PUBKEY` to the live box's `authorized_keys` over Tailscale SSH — see [the SSH identity is
+converged on every deploy](#the-ssh-identity-is-converged-on-every-deploy). No rebuild is needed.
 
 **Production — append the key live, over Tailscale SSH.** Production cannot be casually recreated, so
 a rebuild is not an option. Tailscale SSH on `:22` is, because it works regardless of what `:2222` is
@@ -385,6 +382,60 @@ every session container carries the `zimmer-production-operator` private key at
 opens is [the table above](#who-is-authorized-where) — staging, obs, and the CI runner, never the
 production box the session is running on.
 :::
+
+## The SSH identity is converged on every deploy
+
+Staging is torn down when idle (`teardown-staging` runs `terraform destroy`), and the next
+`deploy-staging` builds a new droplet. Two things do not survive that on their own:
+
+- **The authorized keys.** A key appended by hand is gone, because the new box trusts only what its
+  bootstrap installs — and cloud-init reads only `ADMIN_SSH_PUBKEYS`, and only at creation.
+- **The host key.** The new box generates its own, so any client that pinned the old one refuses to
+  connect.
+
+The second matters for [strad's SSH server](https://github.com/tadasant/strad/pull/414), which serves
+`ssh-tadasant-zimmer-staging`. It checks host keys strictly: no trust-on-first-use, and no
+`@cert-authority` lines. A fresh host key on every rebuild would break the slug until someone re-seeded
+it by hand.
+
+So every staging deploy runs `scripts/converge-ssh-identity.sh` over Tailscale SSH (`:22`), right after
+the root-password repair and before Kamal:
+
+| Input | Kind | What the deploy does with it |
+| --- | --- | --- |
+| `ADMIN_SSH_PUBKEYS` | Actions variable (JSON list) | Appends each key to root's `authorized_keys` if its key blob is not already there. |
+| `STRAD_SSH_PUBKEY` | Actions variable (one public-key line) | The same. This is strad's SSH client key; its private half is the slug's `SSH_PRIVATE_KEY` in strad. |
+| `STAGING_SSH_HOST_ED25519_KEY` | Actions **secret** (OpenSSH private key, raw or base64) | Installs it as `/etc/ssh/ssh_host_ed25519_key` if the box holds a different one, restarts `ssh.service`, then runs `ssh-keyscan -p 2222` and **fails the deploy** unless `:2222` presents exactly that key. |
+
+All three are optional, so a fork that sets none of them deploys as before. When the host key is set,
+it is the stable identity strad pins: the first deploy after it is set re-keys the box, and every
+later one, including the first deploy on a rebuilt droplet, leaves the same key in place. The
+public half is derived from the private key, so there is no second value to keep in sync. The private
+key travels only on `ssh`'s stdin, never on a command line.
+
+The deploy keeps strad's copy of the host key correct by pinning the *host*, rather than by writing
+each new key into strad. That second design would need a strad write credential in CI, and that is
+more blast radius than one more Actions secret.
+
+**Why not Terraform's `ssh_host_ed25519_key`.** The module already has that variable, and production
+uses it from the private repo. Staging deliberately does not, because it is delivered through
+`user_data`, and every process on the droplet can read `user_data` from the DigitalOcean metadata
+service. That includes every agent-session container. Over SSH, the key lands only in a root-owned
+`0600` file.
+
+### What strad's `ssh-tadasant-zimmer-staging` slug holds
+
+| Parameter | Value |
+| --- | --- |
+| `SSH_HOST` | `staging.zimmer.tadasant.com`. The deploy re-points that A record at the droplet's tailnet address on every run, so it follows a rebuild. strad dials it through its tailnet sidecar, because the address is in `100.64.0.0/10`. |
+| `SSH_PORT` | `2222`. Do not use 22: tailnet `:22` is Tailscale SSH, which ignores publickey and has no SSH rule for strad's node. `:2222` is real OpenSSH. |
+| `SSH_USERNAME` | `root`. It is the only login user on the box, key-only (`PermitRootLogin prohibit-password`). |
+| `SSH_PRIVATE_KEY` | The private half of `STRAD_SSH_PUBKEY`. |
+| `SSH_HOST_KEY` | The public half of `STAGING_SSH_HOST_ED25519_KEY`, as one `ssh-ed25519 AAAA…` line. Pin ed25519 only. The box also has RSA and ECDSA host keys, and those still change on every rebuild. |
+
+The tailnet policy needs nothing new for `:2222`: it is plain TCP to a tailnet address, and the
+network-level grant covers it. Turning the sidecar on, and seeding the slug, are strad-production
+config. Nothing in this repository does either.
 
 ## Why sshd is configured the way it is
 

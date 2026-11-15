@@ -225,7 +225,10 @@ variable "ssh_host_ed25519_key" {
     the off-box orchestrator's SSH MCP server) instead of tripping a host-key-changed
     error on every re-provision. NOT for a Zimmer agent session: those run ON this box
     and are deliberately not authorized on it (docs/operate/ssh-access.md).
-    Empty (staging) = a fresh host key each boot, which is fine for a disposable box.
+    Empty = a fresh host key each boot. Staging leaves this empty on purpose and pins its
+    host key from the deploy instead (STAGING_SSH_HOST_ED25519_KEY, installed over SSH by
+    scripts/converge-ssh-identity.sh), because user_data -- where this variable lands -- is
+    readable by every process on the droplet through the metadata service.
   EOT
 }
 
