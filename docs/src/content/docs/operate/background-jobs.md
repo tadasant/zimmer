@@ -63,6 +63,7 @@ From `config.good_job.cron`:
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
 | 1m | `OutcomeAnalysisBatchPumpJob` | Advance every running Outcomes "Analyze All" batch: reconcile in-flight analyses, spawn the next wave. A stopped batch with analyses still in flight is reconciled too, and spawns nothing |
 | 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
+| 1m | `GithubRateLimitSnapshotJob` | Read each GitHub credential's rate-limit budgets with `gh api rate_limit`, which GitHub does not count. Ordinary `gh` callers then leave a reserve for the trigger poller, and a spent budget trips the breaker before any caller is refused. See [When the core budget runs out](/sessions/triggers/#when-the-core-budget-runs-out) |
 | 1m | `FleetIdleCheckerJob` | Fire the `no_sessions_in_progress` trigger event once the deployment has had fewer turns on a worker than its configured ceiling — 3 by default; `waiting` sessions do not count, and neither does a turn waiting behind the `agents` worker pool or a `running` row asleep on its own future wake with nothing queued for it — for the whole of its configured stretch (5 minutes by default), with nothing parked on an outage and a pool that can serve. Idleness is a level, not an edge, so `FleetIdleMonitor` measures the stretch from the moment the fleet crossed *below* the ceiling — only reaching the ceiling again starts a new one — and paces repeat fires on a cooldown floor (60 minutes by default) the fleet cannot touch, because the session the fire spawns would otherwise re-qualify it by running. While the work backlog has had nothing new since the last fire (nothing queued since, nothing started from what is left), the floor is the longer quiet interval instead (240 minutes by default), so an idle fleet with an empty backlog does not poll itself every cooldown. All four numbers are set from the **Backlog top-up** card on `/inference`. Production and staging only — the fire spawns a real session. See [Triggers](/sessions/triggers/#no_sessions_in_progress). |
 | 1m | `WarmClonePoolReplenishJob` | Keep ready clones in `<clones base>/.warm-clones/` of each (repository, branch) `WarmPoolPolicy` names, so a starting session claims one instead of running a `git clone` — the bulk of a cold start. That is the router root's repository alone by default, or every recently active root's with Settings → Experimental → Warm clones for every active root. Builds a clone for each key that is short, in rank order, and a key that fails does not stop the rest. Recycles clones older than 45 minutes and drops the pools of keys that are no longer targets; a pass over a full pool does nothing. The last pass is shown on `/health`. `AgentSessionJob` also enqueues it on every claim, so this tick is the backstop. Production and staging only (`QUICK_ROUTER_WARM_CLONES` overrides the size; `0` turns it off). See [Spawning](/sessions/spawning/#the-warm-clone-pool). |
 | 1m | `WarmProcessPoolReplenishJob` | Keep an idle Claude Code process booted for the router root, with its MCP servers connected, so a Quick Router request hands its prompt to it instead of spawning one. Only when Settings → Experimental → Warm Quick Router process is on. Replaces a process that has exited, is older than 60 minutes, booted on an account, token, CLI binary, router configuration or catalog that has since changed, reports a failed MCP server, or does not answer its probe, then builds up to `WARM_ROUTER_PROCESSES` (default 1), backing off five minutes after a failed build; sweeps entries whose process has exited, never touching a clone a session claimed. Runs on the worker that holds the processes, which is the only one whose agent jobs can claim them. The state is shown on `/health`. `AgentSessionJob` also enqueues it on every claim. Production and staging only. See [Spawning](/sessions/spawning/#the-warm-router-process). |
@@ -1445,7 +1446,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   budget is unchanged.
 - **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob`, `WhatsappTriggerPollerJob`, `EmailTriggerPollerJob`, `McpEventTriggerPollerJob` and `ScheduleReachabilityProbeJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
-  `GithubPrPollPassJob`, `GithubOrphanedPrConflictSweepJob`,
+  `GithubPrPollPassJob`, `GithubOrphanedPrConflictSweepJob`, `GithubRateLimitSnapshotJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
   `ElicitationEndpointHealthCheckJob`, `SystemHealthMonitorJob`, `MangledCloneReportJob` and
   `LiveCloneIntegrityJob`.
@@ -1999,7 +2000,11 @@ treatment, one level up: it ends the whole sweep rather than one condition, beca
 to the credential and every condition left would spend a `gh` call to be told the same thing. One
 WARN, no page, and no heartbeat unless a condition polled cleanly before the limit was met — so a
 limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages under
-*GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. See
+*GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. A spent
+REST **core** budget does not end the sweep: the preflight reports `:rate_limited` and the poller
+polls anyway, because the search budget is separate. When the GitHub liveness page does fire, its
+details carry `GithubRateLimit.diagnosis`, which lists every budget known to be spent and when it
+resets. See
 [Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.
 
 Three placement details are load-bearing, and all are easy to get backwards:

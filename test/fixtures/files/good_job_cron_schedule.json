@@ -110,6 +110,11 @@
       "class": "SlackOutageMarkerJob",
       "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
     },
+    "github_rate_limit_snapshot": {
+      "cron": "* * * * *",
+      "class": "GithubRateLimitSnapshotJob",
+      "description": "Read each GitHub credential's rate-limit budgets so ordinary gh callers leave a reserve for the trigger poller"
+    },
     "github_trigger_poller": {
       "cron": "* * * * *",
       "class": "GithubTriggerPollerJob",
@@ -446,6 +451,11 @@
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
       "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
+    },
+    "github_rate_limit_snapshot": {
+      "cron": "* * * * *",
+      "class": "GithubRateLimitSnapshotJob",
+      "description": "Read each GitHub credential's rate-limit budgets so ordinary gh callers leave a reserve for the trigger poller"
     },
     "github_trigger_poller": {
       "cron": "* * * * *",

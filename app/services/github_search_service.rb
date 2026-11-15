@@ -179,6 +179,8 @@ class GithubSearchService
   # round-trip.
   AUTH_STATUS_TIMEOUT = 10
 
+  AUTH_STATUS_COMMAND = [ "gh", "auth", "status", "--json", "hosts" ].freeze
+
   # The only host this service searches. `gh auth status` reports every host it knows
   # about, and the preflight is a question about the one we are about to query — so a
   # broken entry for some other host must not read as "this worker has no credential".
@@ -200,10 +202,19 @@ class GithubSearchService
   #   :unknown        We did not get an answer. GitHub was unreachable or degraded, the
   #                   call timed out, or `gh` failed before it could report. Says nothing
   #                   about the credential, and must not be logged as if it did.
+  #   :rate_limited   GitHub refused the check because the credential's REST `core`
+  #                   budget is spent (`API rate limit exceeded for user ID …`), or
+  #                   GithubRateLimit's breaker answered it locally for that reason.
+  #                   GitHub had to identify the user to say that, so the credential is
+  #                   valid. Only `core` is spent; the search budget the trigger sweep uses
+  #                   is separate. `reset_at` says when `core` comes back. This is the
+  #                   2026-11-15 outage, which used to read as :unknown and skip every tick
+  #                   until the window reset.
   PREFLIGHT_AUTHENTICATED = :authenticated
   PREFLIGHT_UNCONFIGURED = :unconfigured
   PREFLIGHT_REJECTED = :rejected
   PREFLIGHT_UNKNOWN = :unknown
+  PREFLIGHT_RATE_LIMITED = :rate_limited
 
   # GitHub refusing the credential, in the wording `gh auth status --json hosts` puts in
   # an account's `error` field:
@@ -229,9 +240,13 @@ class GithubSearchService
 
   # One reading of `gh auth status`, as the poller needs to act on it: which of the four
   # answers above, plus `gh`'s own words for the operator reading the log line.
-  PreflightResult = Struct.new(:state, :detail) do
+  PreflightResult = Struct.new(:state, :detail, :reset_at) do
     def authenticated?
       state == PREFLIGHT_AUTHENTICATED
+    end
+
+    def rate_limited?
+      state == PREFLIGHT_RATE_LIMITED
     end
 
     def unconfigured?
@@ -263,7 +278,8 @@ class GithubSearchService
     # error on a configured host still raises out of search_issues and alerts.
     #
     # Answers ONLY "did GitHub accept the credential", collapsing every way of failing
-    # into a bare false — which is what TriggerPollerLivenessCheckJob's no-baseline guard
+    # into a bare false. A rate-limited preflight counts as accepted: GitHub named the user
+    # it was refusing, so the credential is valid and this host does poll — which is what TriggerPollerLivenessCheckJob's no-baseline guard
     # needs, since it must decline to seed unless the host has demonstrably polled.
     # Callers that report to a human want .auth_preflight instead, which does the actual
     # work: "no credential", "a credential GitHub refused" and "we could not ask" are the
@@ -282,7 +298,7 @@ class GithubSearchService
                           "valid: #{preflight.detail}"
       end
 
-      preflight.authenticated?
+      preflight.authenticated? || preflight.rate_limited?
     end
 
     # The full reading of `gh auth status`: which of the four PREFLIGHT_* states holds,
@@ -327,13 +343,22 @@ class GithubSearchService
       # every agent spawned after it). Idempotent, and never raises — see the class.
       GhTokenProvisioner.ensure!
 
-      result = GithubCli.run([ "gh", "auth", "status", "--json", "hosts" ], timeout: AUTH_STATUS_TIMEOUT)
+      # `priority: :poller`: this check gates the trigger sweep, so it may spend the core
+      # reserve GithubRateLimit holds back from every other caller.
+      result = GithubCli.run(AUTH_STATUS_COMMAND, timeout: AUTH_STATUS_TIMEOUT, priority: :poller)
+
+      # The breaker answered without asking GitHub: core is spent until a known time.
+      return rate_limited_preflight(result.refusal) if result.refused?
 
       # GithubCli for the same reason as `search_issues` below: a nil status (child reaped
       # before the waiter's waitpid) and a hang that hit AUTH_STATUS_TIMEOUT both mean the
       # preflight produced no result. Unlike the old code we do not call that
       # "unconfigured" — we never learned anything, so it is :unknown and the poller says so.
       unless result.success?
+        if result.stderr.to_s.match?(GithubRateLimit::PRIMARY_EXHAUSTION_PATTERN)
+          return rate_limited_preflight(nil, result.stderr)
+        end
+
         return unknown_preflight("gh auth status failed before it could report " \
                                  "(#{result.failure_description})")
       end
@@ -575,6 +600,15 @@ class GithubSearchService
       detail = errors.join("; ").presence ||
         "gh reported no working #{AUTH_HOST} account and gave no reason"
 
+      # GitHub refused the check for a spent budget. Same unanimity as :rejected below:
+      # a mix with a transport error leaves the credential we would use unsettled.
+      if errors.any? && errors.all? { |error| error.match?(GithubRateLimit::PRIMARY_EXHAUSTION_PATTERN) }
+        # `gh auth status` exits 0 here, so GithubCli never saw a failure to report to the
+        # breaker. Report it from here, so the next tick's check is answered locally.
+        GithubRateLimit.observe_failure(AUTH_STATUS_COMMAND, detail)
+        return rate_limited_preflight(nil, detail)
+      end
+
       # ALL of them, not any: with a mix of a refused token and an unreachable API we do
       # not know whether the credential we would actually use is dead, and the honest
       # answer to a question we cannot settle is that we could not settle it.
@@ -583,6 +617,15 @@ class GithubSearchService
       end
 
       unknown_preflight(detail)
+    end
+
+    # A PREFLIGHT_RATE_LIMITED result, carrying the reset time when the breaker knows it.
+    # Without a refusal in hand (GitHub just refused us), the breaker has been told by now
+    # and is asked for the time it learned.
+    def rate_limited_preflight(refusal, detail = nil)
+      refusal ||= GithubRateLimit.refusal_for(AUTH_STATUS_COMMAND, priority: :poller)
+      text = refusal ? refusal.message : preflight_detail(detail)
+      PreflightResult.new(PREFLIGHT_RATE_LIMITED, text, refusal&.reset_at)
     end
 
     def unknown_preflight(detail)
@@ -639,7 +682,7 @@ class GithubSearchService
         # Tested before the retry classifier rather than folded into it, because this is
         # the one transient failure whose remedy is to stop asking rather than to ask
         # again — and because the poller handles it at a different layer entirely.
-        raise RateLimitedError, message if rate_limited_failure?(result.stderr)
+        raise RateLimitedError, message if result.refused? || rate_limited_failure?(result.stderr)
 
         raise TransientRequestError, message if retryable_failure?(result.status, result.stderr)
 

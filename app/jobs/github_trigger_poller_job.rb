@@ -230,7 +230,20 @@ class GithubTriggerPollerJob < ApplicationJob
     # names the wrong fault, so each state now says what actually happened; the states
     # themselves are established in GithubSearchService.auth_preflight.
     preflight = GithubSearchService.auth_preflight
-    unless preflight.authenticated?
+
+    # The credential's REST core budget is spent, which is all the preflight could tell
+    # us. The credential is valid (GitHub named its user in the refusal), and the sweep
+    # below spends only the search budget, which GitHub keeps separately. So poll.
+    # Skipping here is what turned the 2026-11-15 core exhaustion into a 19-minute stop
+    # of every GitHub-triggered gate: all 20 ticks skipped until the window reset. If
+    # search is refused too, the sweep meets a RateLimitedError and
+    # #defer_rate_limited_sweep handles it; if it polls nothing, no heartbeat is stamped
+    # and TriggerPollerLivenessCheckJob still pages.
+    if preflight.rate_limited?
+      Rails.logger.warn "[GithubTriggerPollerJob] GitHub refused the gh credential check because its " \
+                        "REST core budget is spent (#{preflight.detail}). The credential is valid, so " \
+                        "polling anyway; the trigger search spends the separate search budget"
+    elsif !preflight.authenticated?
       Rails.logger.warn "[GithubTriggerPollerJob] #{preflight_skip_reason(preflight)}; " \
                         "skipping GitHub trigger polling this tick"
       return

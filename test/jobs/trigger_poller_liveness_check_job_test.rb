@@ -135,6 +135,47 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
     assert_match(/No successful github trigger poll/, errors.first.last)
   end
 
+  # 2026-11-15: the page fired for a spent rate limit and its text listed only a dead worker,
+  # a hung `gh` and an unreachable GitHub. The page fires exactly as before; its details now
+  # say what this host knows.
+  test "a GitHub stall with a known spent budget pages, and the page names the budget and its reset" do
+    write_heartbeat(:github, 20.minutes.ago)
+    GithubRateLimit.stubs(:diagnosis)
+      .returns("GitHub rate limit: GH_TOKEN's core budget is spent until 2026-11-15T21:27:23Z.")
+
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "GitHub trigger polling stalled" &&
+        opts[:context][:details].include?("rate limit is spent") &&
+        opts[:context][:details].include?("core budget is spent until 2026-11-15T21:27:23Z") &&
+        opts[:context][:diagnosis].include?("2026-11-15T21:27:23Z")
+    end
+
+    entries = capture_log_entries { TriggerPollerLivenessCheckJob.perform_now }
+    error = entries.find { |severity, _message| severity == "ERROR" }
+    assert_includes error.last, "core budget is spent until 2026-11-15T21:27:23Z"
+  end
+
+  # The guard on the whole change: nothing about rate limits may quiet a real outage.
+  test "a GitHub stall with no rate-limit finding still pages, with no diagnosis attached" do
+    write_heartbeat(:github, 20.minutes.ago)
+    GithubRateLimit.stubs(:diagnosis).returns(nil)
+
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      message == "GitHub trigger polling stalled" && !opts[:context].key?(:diagnosis)
+    end
+
+    TriggerPollerLivenessCheckJob.perform_now
+  end
+
+  test "a diagnosis that raises does not cost the page" do
+    write_heartbeat(:github, 20.minutes.ago)
+    GithubRateLimit.stubs(:diagnosis).raises(RuntimeError, "boom")
+
+    ErrorReporter.expects(:report_message).once.with { |message, _opts| message == "GitHub trigger polling stalled" }
+
+    TriggerPollerLivenessCheckJob.perform_now
+  end
+
   test "alerts once the Slack poller has gone quiet past its threshold" do
     # The gap #525 names: the Slack poller had no heartbeat at all, so a wedged singleton
     # or a dead worker was invisible until a feed drifted three hours behind — and the

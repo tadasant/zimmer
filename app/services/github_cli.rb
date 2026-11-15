@@ -38,6 +38,13 @@
 # argv (`gh api search/issues`) passes `owner:` itself. A call with no owner, or
 # an owner with no token of its own, inherits the default GH_TOKEN.
 #
+# The fourth is the rate-limit breaker (GithubRateLimit). Before a call is sent, the
+# wrapper asks whether its budget is spent or held in reserve. If it is, the call is answered
+# locally with a failed Result whose `refusal` says why and until when, and GitHub never
+# sees it. After a call fails, the wrapper hands GitHub's words to the breaker, so the first
+# primary rate-limit refusal stops the next thousand. A refused Result is a failure like a
+# timeout: no exit code, "ask again next tick", never a definite negative.
+#
 # Only the timeout is converted. `Errno::ENOENT` — no `gh` binary at all — still
 # propagates, because that is a local, permanent condition callers distinguish
 # (see `GithubSearchService#auth_preflight`) rather than a failed request.
@@ -49,13 +56,24 @@ module GithubCli
   # ways a call can fail to produce a trustworthy answer — non-zero exit, lost exit
   # code, timeout — all reach the same branch.
   class Result
-    attr_reader :stdout, :stderr, :status, :timeout_message
+    attr_reader :stdout, :stderr, :status, :timeout_message, :refusal
 
-    def initialize(stdout:, stderr:, status:, timeout_message: nil)
+    def initialize(stdout:, stderr:, status:, timeout_message: nil, refusal: nil)
       @stdout = stdout
       @stderr = stderr
       @status = status
       @timeout_message = timeout_message
+      @refusal = refusal
+    end
+
+    # A call the rate-limit breaker answered without sending (see GithubRateLimit).
+    def self.refused(refusal)
+      new(stdout: "", stderr: refusal.message, status: nil, refusal: refusal)
+    end
+
+    # True when this call was never sent because its budget was spent or reserved.
+    def refused?
+      !@refusal.nil?
     end
 
     # True when the deadline was hit and the process group was killed.
@@ -64,7 +82,7 @@ module GithubCli
     end
 
     def success?
-      return false if timed_out?
+      return false if timed_out? || refused?
 
       SubprocessStatus.success?(status)
     end
@@ -73,7 +91,7 @@ module GithubCli
     # specific code (`exit_code == 8` for "checks still pending") falls through to
     # its failure branch on a hang instead of reading a meaning into it.
     def exit_code
-      return nil if timed_out?
+      return nil if timed_out? || refused?
 
       SubprocessStatus.exit_code(status)
     end
@@ -87,6 +105,7 @@ module GithubCli
     # "TimeoutError" keep matching.
     def failure_description
       return "#{BoundedSubprocess::TimeoutError}: #{timeout_message}" if timed_out?
+      return refusal.message if refused?
 
       SubprocessStatus.describe_failure(status, stderr)
     end
@@ -98,15 +117,26 @@ module GithubCli
   # @param timeout [Numeric] wall-clock seconds before the process group is killed
   # @param owner [String, nil] the repository owner whose token to use; inferred
   #   from the argv when omitted
+  # @param priority [Symbol] :poller lets the call spend the reserve GithubRateLimit
+  #   keeps for the trigger poller; every other caller leaves it alone
   # @return [Result] never raises TimeoutError; a hang comes back as a failed Result
-  def run(command, timeout:, owner: nil)
+  def run(command, timeout:, owner: nil, priority: :normal)
     env = GithubTokens.env_for(owner || owner_for(command))
+
+    refusal = GithubRateLimit.refusal_for(command, env: env, priority: priority)
+    return Result.refused(refusal) if refusal
+
     stdout, stderr, status = if env.empty?
       BoundedSubprocess.run(command, timeout: timeout)
     else
       BoundedSubprocess.run(command, timeout: timeout, env: env)
     end
-    Result.new(stdout: stdout, stderr: stderr, status: status)
+    result = Result.new(stdout: stdout, stderr: stderr, status: status)
+    # Unconditional rather than `unless result.success?`: the breaker matches GitHub's
+    # rate-limit sentence, which only a refused call prints, and the call site owns the
+    # one read of the status it decides on.
+    GithubRateLimit.observe_failure(command, stderr, env: env)
+    result
   rescue BoundedSubprocess::TimeoutError => e
     Result.new(stdout: "", stderr: "", status: nil, timeout_message: e.message)
   end

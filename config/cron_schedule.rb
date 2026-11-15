@@ -231,6 +231,12 @@ module CronSchedule
       description: "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands",
       environments: %i[production staging development]
     },
+    github_rate_limit_snapshot: {
+      cron: "* * * * *", # Every minute — `gh api rate_limit` per token, which GitHub does not count
+      class: "GithubRateLimitSnapshotJob",
+      description: "Read each GitHub credential's rate-limit budgets so ordinary gh callers leave a reserve for the trigger poller",
+      environments: %i[production staging]
+    },
     github_trigger_poller: {
       cron: "* * * * *", # Every minute — one search request per condition, against a 30/min budget
       class: "GithubTriggerPollerJob",

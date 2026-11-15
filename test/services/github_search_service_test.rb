@@ -113,6 +113,70 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     assert GithubSearchService.auth_preflight.unknown?
   end
 
+  # ── a spent core budget (2026-11-15) ──
+  #
+  # `gh auth status` spends the REST core budget. When that is spent GitHub refuses the
+  # check, and the refusal names the user, so the credential is valid. The poller must be
+  # told "rate-limited until <reset>", which it polls through, not "could not reach GitHub",
+  # which it skips on.
+  def core_spent_json
+    unreachable_json("non-200 OK status code: 403 Forbidden body: \"{\\\"message\\\":\\\"API rate limit " \
+                     "exceeded for user ID 3900899.\\\"}\"")
+  end
+
+  def rate_limit_probe_json(core_reset_at)
+    { "resources" => {
+      "core" => { "limit" => 5000, "remaining" => 0, "reset" => core_reset_at.to_i },
+      "search" => { "limit" => 30, "remaining" => 30, "reset" => 1.minute.from_now.to_i }
+    } }.to_json
+  end
+
+  def with_memory_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
+
+  test "auth_preflight is :rate_limited, with the reset time, when GitHub refuses it for a spent budget" do
+    with_memory_cache do
+      reset_at = 19.minutes.from_now
+      stub_auth_status(core_spent_json)
+      BoundedSubprocess.expects(:run).with([ "gh", "api", "rate_limit" ], timeout: GithubRateLimit::PROBE_TIMEOUT)
+        .returns([ rate_limit_probe_json(reset_at), "", status(true) ])
+
+      preflight = GithubSearchService.auth_preflight
+      assert preflight.rate_limited?
+      refute preflight.unknown?, "a spent budget is not 'could not reach GitHub'"
+      assert_equal reset_at.to_i, preflight.reset_at.to_i
+      assert_includes preflight.detail, reset_at.utc.iso8601
+    end
+  end
+
+  test "once the breaker is open, the preflight answers :rate_limited without asking GitHub" do
+    with_memory_cache do
+      reset_at = 15.minutes.from_now
+      stub_auth_status(core_spent_json)
+      BoundedSubprocess.expects(:run).with([ "gh", "api", "rate_limit" ], timeout: GithubRateLimit::PROBE_TIMEOUT)
+        .returns([ rate_limit_probe_json(reset_at), "", status(true) ])
+      GithubSearchService.auth_preflight
+
+      # The next tick: nothing is sent.
+      BoundedSubprocess.expects(:run).never
+      preflight = GithubSearchService.auth_preflight
+      assert preflight.rate_limited?
+      assert_equal reset_at.to_i, preflight.reset_at.to_i
+    end
+  end
+
+  test "a rate-limited preflight counts as configured: the credential demonstrably works" do
+    GithubSearchService.stubs(:auth_preflight)
+      .returns(GithubSearchService::PreflightResult.new(GithubSearchService::PREFLIGHT_RATE_LIMITED, "spent"))
+
+    assert GithubSearchService.configured?
+  end
+
   test "auth_preflight is :unknown when the preflight hangs and is killed" do
     # A degraded GitHub API can hang `gh auth status`. The watchdog kills it so the hang
     # cannot wedge the singleton — but the tick skips as "we could not ask", not as
@@ -555,6 +619,10 @@ class GithubSearchServiceTest < ActiveSupport::TestCase
     # allows 30 requests a minute and a secondary limit's Retry-After is usually 60s+, so
     # no retry inside this budget can succeed — and since a retry re-runs the whole search,
     # it would spend more of the very quota that produced the failure.
+    #
+    # The primary limit also trips GithubRateLimit's breaker, which probes `gh api
+    # rate_limit`; that probe is not a retry and is covered in github_rate_limit_test.rb.
+    GithubRateLimit.stubs(:observe_failure)
     [ GithubSearchStderrFixtures::PRIMARY_RATE_LIMIT,
       GithubSearchStderrFixtures::SECONDARY_RATE_LIMIT,
       "gh: API rate limit exceeded (HTTP 429)" ].each do |stderr|
