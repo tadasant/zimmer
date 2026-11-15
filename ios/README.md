@@ -131,7 +131,7 @@ nothing is impossible.
 | `ios/bin/ci-swift` | `swift build && swift test` on the package | Swift (Linux or Mac) |
 | `ios/bin/install-swift-toolchain [dir]` | Swift 6.2 for Linux into `dir` (default `~/.zimmer-ios/swift`), once; prints the shim path | Linux |
 | `ios/bin/build-app [--configuration …] [--api-base-url https://…]` | Simulator build, unsigned | Xcode |
-| `ios/bin/testflight check` | Ad hoc signed Release archive + assertions on the archived app, its signed entitlements, and the entitlements guard | Xcode |
+| `ios/bin/testflight check` | Ad hoc signed Release archive + assertions on the archived app (including a purpose string for every protected API its binaries reference), its signed entitlements, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
 | `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
 | `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
