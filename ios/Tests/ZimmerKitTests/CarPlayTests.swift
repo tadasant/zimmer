@@ -406,8 +406,60 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(retry.tile(callIsActive: false), .retrying, "a retry looking up is still retrying")
     }
 
+    /// OpenAI out of credits: the 2026-11-15 outage, where every retry met the same refusal and
+    /// the tile kept offering Tap to retry. No retry is spent on it; the tile says why, alone,
+    /// with the voice settings beside it; a tap tries once more and clears it.
+    func testABlockedCallIsNotRetriedAndTheTileSaysWhy() {
+        var retry = LiveRetry()
+        retry.asked()
+        retry.gaveUp(blockedBy: .outOfCredits)
+        XCTAssertFalse(retry.wanted)
+        XCTAssertNil(retry.failed(), "nothing is retried")
+        XCTAssertEqual(retry.tile(callIsActive: false), .blocked(.outOfCredits))
+        XCTAssertEqual(retry.tile(callIsActive: false).titleVariants.first, "OpenAI is out of credits")
+        XCTAssertNil(retry.tile(callIsActive: false).choice, "a tap asks for the same call again")
+        for open in [true, false, nil] as [Bool?] {
+            XCTAssertEqual(retry.tiles(callIsActive: false, conversationOpen: open), [.blocked(.outOfCredits)])
+        }
+        XCTAssertTrue(retry.offersSettings(callIsActive: false), "the voice engine may be the way round it")
+
+        retry.asked()
+        XCTAssertNil(retry.blocked, "a tap is a fresh try")
+        XCTAssertEqual(retry.tile(callIsActive: false), .continueConversation)
+        XCTAssertEqual(retry.failed(), .seconds(2), "and an ordinary failure after it is retried as before")
+
+        var hungUp = LiveRetry()
+        hungUp.asked()
+        hungUp.gaveUp(blockedBy: .outOfCredits)
+        hungUp.stopped()
+        XCTAssertEqual(hungUp.tile(callIsActive: false), .continueConversation)
+    }
+
+    /// The error ends the call before the socket's close can: the close says only "Socket is not
+    /// connected", and the car would retry it. The car reads the block before deciding to retry.
+    func testTheCallEndsOnABlockingErrorAndTheCarDoesNotRetryIt() async throws {
+        let call = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix("Live/LiveCall.swift") }?.text)
+        let source = Self.code(call).map(\.line).joined(separator: "\n")
+        let received = try XCTUnwrap(source.range(of: "private func received(text: String?, failure: String?, generation: Int)"))
+        let rest = String(source[received.upperBound...])
+        let block = try XCTUnwrap(rest.range(of: "LiveBlock(realtimeEvent: event)"), "received reads the block")
+        let conductor = try XCTUnwrap(rest.range(of: "conductor.handle(event)"))
+        XCTAssertLessThan(block.lowerBound, conductor.lowerBound, "before the conductor turns it into a passing error")
+        XCTAssertTrue(rest.contains("fail(block.message, blockedBy: block, generation: generation)"))
+        let fail = try XCTUnwrap(source.range(of: "private func fail("))
+        let failBody = String(source[fail.lowerBound...])
+        let setBlocked = try XCTUnwrap(failBody.range(of: "blocked = block"))
+        let setError = try XCTUnwrap(failBody.range(of: "lastError = message"))
+        XCTAssertLessThan(setBlocked.lowerBound, setError.lowerBound, "set before lastError publishes")
+
+        let car = try XCTUnwrap(Self.appSources.first { $0.name.hasSuffix("CarPlay/CarPlayLive.swift") }?.text)
+        let carSource = Self.code(car).map(\.line).joined(separator: "\n")
+        let changed = try XCTUnwrap(carSource.range(of: "private func errorChanged("))
+        XCTAssertTrue(String(carSource[changed.upperBound...]).contains("if let block = call.blocked"))
+    }
+
     func testEveryTileSaysSomethingOnANarrowScreen() {
-        for tile in [LiveTalkTile.continueConversation, .newConversation, .connecting, .inCall, .retrying, .unavailable] {
+        for tile in [LiveTalkTile.continueConversation, .newConversation, .connecting, .inCall, .retrying, .unavailable, .blocked(.outOfCredits)] {
             XCTAssertEqual(tile.titleVariants.count, 2)
             XCTAssertLessThanOrEqual(tile.titleVariants[1].count, 10, "\(tile)")
             XCTAssertFalse(tile.symbol.isEmpty)

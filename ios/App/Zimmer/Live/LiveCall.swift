@@ -70,6 +70,9 @@ final class LiveCall: ObservableObject {
     @Published private(set) var conversationID: Int?
     @Published private(set) var muted = false
     @Published private(set) var lastError: String?
+    /// Why the last call cannot connect until someone puts it right (`LiveBlock`), set before
+    /// `lastError` says so; nil for a failure a retry may fix.
+    private(set) var blocked: LiveBlock?
     /// The microphone has been out long enough to say so: nothing said is reaching the call.
     @Published private(set) var microphoneLost = false
     /// Bumped on every recorded line or tool call, so an open thread knows to read again.
@@ -266,6 +269,7 @@ final class LiveCall: ObservableObject {
         lookedForMove = Self.now
         saidGoodbye = false
         lastError = nil
+        blocked = nil
         engineNote = nil
         engine = LiveVoiceEngine.realtime
         muted = startsMuted
@@ -1074,6 +1078,14 @@ final class LiveCall: ObservableObject {
         if holdingMicrophone, event["type"]?.string == "session.updated" { warmUpdated = true }
         health.heard(at: Self.now)
         for entry in timeline.observe(event, at: Self.now) { telemetry.track(entry) }
+        // OpenAI closes the socket after an error like this one, and the close says only
+        // "Socket is not connected". End the call on the error, with its reason, and not on the
+        // close: no retry will connect until someone puts it right, and a warm start falling
+        // back to cold would only meet it again.
+        if let block = LiveBlock(realtimeEvent: event) {
+            fail(block.message, blockedBy: block, generation: generation)
+            return
+        }
         for entry in sendNowLog.observe(event, at: Self.now) { telemetry.track(entry) }
         let was = conductor.listening
         let effects = conductor.handle(event)
@@ -1169,11 +1181,12 @@ final class LiveCall: ObservableObject {
         }
     }
 
-    private func fail(_ message: String, generation: Int) {
+    private func fail(_ message: String, blockedBy block: LiveBlock? = nil, generation: Int) {
         guard generation == self.generation else { return }
         log.error("live call ended: \(message, privacy: .public)")
         telemetry.track(.callFailed(message, state: state))
         end(reason: "failed", farewell: cues.dropped())
+        blocked = block
         lastError = message
         // The car retries first, and says so itself (`CarPlayLive`). The phone has only this.
         if surface == .ios { soundUnavailable() }
