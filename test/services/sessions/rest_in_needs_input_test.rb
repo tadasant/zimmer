@@ -229,6 +229,113 @@ class Sessions::RestInNeedsInputTest < ActionDispatch::IntegrationTest
     assert session.reload.waiting?, "with the hand-back over, #1212's re-sleep applies again"
   end
 
+  # --- The human's reply ends the hand-back -----------------------------------
+  #
+  # Session 28288: it handed back with a watcher and a 21:15Z backstop armed, the
+  # operator replied, it answered "nothing more needed from you" — and sat in the
+  # action queue, because only arming a new wake released the hand-back.
+
+  def follow_up_from_web_ui(session, prompt: "i merged the catalog pr")
+    post follow_up_session_url(session), params: { follow_up_prompt: prompt }
+  end
+
+  def handed_back_with_backstop
+    session = sessions(:running)
+    backstop = schedule_wake(session)
+    watch(session, sessions(:waiting))
+    Sessions::RestInNeedsInput.call(session: session.reload)
+    session.reload.pause!
+    assert session.reload.needs_input?
+    assert session.handed_back_to_human?
+    [ session, backstop ]
+  end
+
+  test "a human reply ends the hand-back, and the answering turn goes back to sleep on its wakes" do
+    session, backstop = handed_back_with_backstop
+
+    assert_difference -> { session.human_messages.count }, 1 do
+      follow_up_from_web_ui(session)
+    end
+    session.reload.start!
+    session.pause!
+
+    assert session.reload.waiting?, "an answered hand-back must not hold the session in the action queue"
+    assert_not session.handed_back_to_human?
+    assert_equal Sessions::StopRecord::FOLLOW_UP_RESLEEP, session.metadata[Sessions::StopRecord::REASON]
+    assert Trigger.exists?(backstop.id), "the wakes it was resting on are still armed"
+    assert session.armed_one_time_wake?
+  end
+
+  test "a machine follow-up leaves an unanswered hand-back in needs_input" do
+    session, = handed_back_with_backstop
+
+    assert_no_difference -> { session.human_messages.count } do
+      follow_up_over_mcp(session, prompt: "GitHub: PR #1247 was merged")
+    end
+    session.reload.start!
+    session.pause!
+
+    assert session.reload.needs_input?, "nobody has answered the question yet"
+    assert session.handed_back_to_human?
+  end
+
+  test "a human reply whose turn hands back again stays in needs_input" do
+    session, = handed_back_with_backstop
+
+    follow_up_from_web_ui(session, prompt: "which PR?")
+    session.reload.start!
+    self_tool.call("action" => "rest_in_needs_input", "session_id" => session.id)
+    session.reload.pause!
+
+    assert session.reload.needs_input?
+    assert session.handed_back_to_human?
+  end
+
+  # The routes the follow-up resume does not see: a message queued onto the
+  # running turn that handed back, delivered by the handoff with no resume.
+  test "a human reply queued while the handing-back turn is still running releases it when its own turn ends" do
+    session = sessions(:running)
+    schedule_wake(session)
+    Sessions::RestInNeedsInput.call(session: session.reload)
+
+    follow_up_from_web_ui(session, prompt: "merged it")
+    assert_equal 1, session.enqueued_messages.pending.count
+
+    EnqueuedMessageProcessorService.new(session.reload).process_next_message
+    session.reload
+    session.start! if session.may_start?
+    session.reload.pause! if session.running?
+
+    assert session.reload.waiting?
+    assert_not session.handed_back_to_human?
+  end
+
+  test "a human message from before the hand-back does not answer it" do
+    session = sessions(:running)
+    schedule_wake(session)
+    session.human_messages.create!(author: "tadasant", channel: HumanMessage::WEB_UI, content: "go ahead",
+                                   occurred_at: 1.second.ago)
+    Sessions::RestInNeedsInput.call(session: session.reload)
+    session.reload.pause!
+
+    assert session.reload.needs_input?
+    assert session.handed_back_to_human?
+  end
+
+  test "with only a watcher armed, an answered hand-back rests in needs_input as before" do
+    session = sessions(:running)
+    watch(session, sessions(:waiting))
+    Sessions::RestInNeedsInput.call(session: session.reload)
+    session.reload.pause!
+
+    follow_up_from_web_ui(session)
+    session.reload.start!
+    session.pause!
+
+    assert session.reload.needs_input?, "a watcher alone does not back a re-sleep (#648)"
+    assert_not session.handed_back_to_human?
+  end
+
   test "a group a wake fired into this turn does not count as still armed" do
     session = sessions(:needs_input)
     trigger = schedule_wake(session)

@@ -392,6 +392,8 @@ Reaching `needs_input` on purpose takes one call when the session has armed a wa
 turn that arms a wake ends asleep in `waiting`, and while a `wake_me_up_later` backstop is armed so
 does every later turn, even one that answered a human, so the prompt tells it to call
 `action_session` with `rest_in_needs_input` as the last thing in a turn that hands back to a human.
+The hand-back holds through machine turns and ends when the human replies: the turn carrying the
+reply goes back to sleep on the session's armed wakes unless it hands back again.
 See [Handing back with a wake armed](/sessions/lifecycle/#handing-back-with-a-wake-armed).
 
 Anything else — including "the user will want to read this" — goes in the final message, or in

@@ -54,9 +54,14 @@ module Sessions
   # router's follow-up, a Slack message — would write a fresh wake-backed
   # re-sleep and bury the question again. So the hand-back is also stamped
   # (SessionStateMachine::HANDED_BACK_TO_HUMAN), and both re-sleep branches skip
-  # a session carrying it. Arming a new wake clears the stamp, because that is
-  # the session deciding to wait again — which is also why a wake armed AFTER
-  # this call in the same turn puts the session back to sleep. Call it last.
+  # a session carrying it. Two things clear the stamp. Arming a new wake, because
+  # that is the session deciding to wait again — which is also why a wake armed
+  # AFTER this call in the same turn puts the session back to sleep. Call it
+  # last. And the human replying (a HumanMessage recorded after the stamp),
+  # because that answers it: the turn carrying the reply goes back to sleep on
+  # the wakes still armed, unless it calls this again. A machine turn — a wake,
+  # a poller notice, a router's follow-up — answers nothing and releases
+  # nothing. See SessionStateMachine::HANDED_BACK_TO_HUMAN.
   #
   # Refused on a session already asleep: a `waiting` session is not in a turn, so
   # there is nothing to come to rest, and a self-session caller is never there.
@@ -100,7 +105,7 @@ module Sessions
           dropped = session.metadata[Sessions::StopRecord::PENDING_SLEEP_REASON].presence || "wake-backed"
           session.remove_metadata!(SessionStateMachine::PENDING_SLEEP_KEYS)
         end
-        session.merge_metadata!(SessionStateMachine::HANDED_BACK_TO_HUMAN => Time.current.utc.iso8601)
+        session.merge_metadata!(SessionStateMachine::HANDED_BACK_TO_HUMAN => Time.current.utc.iso8601(6))
 
         session.logs.create!(content: log_line(cancelled, dropped), level: "info")
       end
