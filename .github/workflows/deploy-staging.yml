@@ -379,7 +379,10 @@ jobs:
           set -euo pipefail
           keys=""
           if [ -n "${ADMIN_SSH_PUBKEYS:-}" ]; then
-            keys=$(jq -r '.[]' <<<"$ADMIN_SSH_PUBKEYS")
+            if ! keys=$(jq -er 'if type == "array" then .[] else error("not a list") end' <<<"$ADMIN_SSH_PUBKEYS" 2>/dev/null); then
+              echo "::error::ADMIN_SSH_PUBKEYS is set but is not a JSON list of strings."
+              exit 1
+            fi
           fi
           if [ -n "${STRAD_SSH_PUBKEY:-}" ]; then
             keys=$(printf '%s\n%s' "$keys" "$STRAD_SSH_PUBKEY")
