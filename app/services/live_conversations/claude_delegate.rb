@@ -37,7 +37,7 @@ module LiveConversations
     CHUNK_CHARS = 1_400
     PENDING_MAX_CHARS = 4_000
     ENGINE = VoiceEngine::GPT_LIVE
-    FALLBACK_MODEL = "claude-haiku-5-5"
+    FALLBACK_MODEL = ModelCatalog::LIVE_CLAUDE_FALLBACK
     # How long a model refused on the subscription is skipped, so only the
     # first delegation in that window pays for the refusal.
     REFUSAL_TTL = 1.hour
