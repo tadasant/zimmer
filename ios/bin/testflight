@@ -245,6 +245,46 @@ expect ZimmerDefaultWebBaseURL "$web_url"
 [ -f "$app/PrivacyInfo.xcprivacy" ] || fail "no privacy manifest in the app bundle"
 if grep -aq '\$(' "$plist"; then fail "Info.plist carries a malformed \$(...) build setting"; fi
 
+# ITMS-90683: App Store Connect scans every binary in the bundle, the embedded frameworks'
+# included, and refuses a build that references a protected API without its purpose string —
+# whether or not the app ever calls it. Build 108.1 was refused for the camera, which only
+# the WebRTC framework references. Asked of the same bytes here: each row is an API name and
+# the key it demands. Only APIs this app or its frameworks are likely to reach are listed.
+printf '==> checking purpose strings for the protected APIs the bundle references\n'
+binaries="$work/binaries"
+# Every Mach-O in the bundle, found by its magic number rather than its execute bit.
+python3 -c '
+import os, sys
+magics = {bytes.fromhex(m) for m in ("feedfacf", "cffaedfe", "feedface", "cefaedfe", "cafebabe", "bebafeca")}
+for root, _, files in os.walk(sys.argv[1]):
+    for name in files:
+        path = os.path.join(root, name)
+        if not os.path.islink(path):
+            with open(path, "rb") as f:
+                if f.read(4) in magics:
+                    print(path)
+' "$app" >"$binaries"
+[ -s "$binaries" ] || fail "found no Mach-O binary in the archived app"
+while read -r api key; do
+  hit=""
+  while IFS= read -r binary; do
+    if grep -aqF "$api" "$binary"; then hit="$binary"; break; fi
+  done <"$binaries"
+  [ -n "$hit" ] || continue
+  /usr/libexec/PlistBuddy -c "Print :$key" "$plist" >/dev/null 2>&1 ||
+    fail "${hit#"$app"/} references $api, so App Store Connect requires $key in Info.plist (ITMS-90683)"
+  present "$key"
+done <<'APIS'
+AVCaptureDevice NSCameraUsageDescription
+AVAudioApplication NSMicrophoneUsageDescription
+requestRecordPermission NSMicrophoneUsageDescription
+PHPhotoLibrary NSPhotoLibraryUsageDescription
+UIImageWriteToSavedPhotosAlbum NSPhotoLibraryAddUsageDescription
+CLLocationManager NSLocationWhenInUseUsageDescription
+CNContactStore NSContactsUsageDescription
+SFSpeechRecognizer NSSpeechRecognitionUsageDescription
+APIS
+
 # The archived app's signature carries every admitted key — what export will sign in. A
 # signature made with a team adds its own keys (application-identifier and the like), so
 # this asks that each admitted key is present, not that nothing else is.
