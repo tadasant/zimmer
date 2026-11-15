@@ -650,8 +650,9 @@ The producer side had to be fixed for any of it to hold. `Session#deliver_follow
 marker, but the two routes that deliver a follow-up straight into an idle session —
 `Mcp::Tools::ActionSession#direct_follow_up` and `POST /api/v1/sessions/:id/follow_up` — did not, so
 for them the accepted prompt existed **only** as the argument of the job they enqueued. A worker
-shutdown discards that job, and with it the only copy. Both now stamp it, immediately after the
-resume, so a reader who sees the marker is guaranteed to also see `running`.
+shutdown discards that job, and with it the only copy. Both now deliver through
+`Session#deliver_follow_up!` (by way of `Sessions::DeliverFollowUp`), which stamps it immediately
+after the resume, so a reader who sees the marker is guaranteed to also see `running`.
 
 The interrupt path is the same loss reached from the other side, and `AgentSessionJob`'s
 `#preserve_interrupted_prompt` closes it: when `handle_interrupt_error` throws a job away and

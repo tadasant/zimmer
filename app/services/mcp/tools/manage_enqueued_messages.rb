@@ -282,6 +282,7 @@ module Mcp
           session: session,
           prompt: content,
           goal: args["goal"].to_s.strip.presence,
+          source_context: context.turn_source.to_h,
           actor: "mcp_send_now"
         ) do
           # Before the interrupt, as SessionsController does for the browser: the

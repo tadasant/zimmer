@@ -1922,17 +1922,11 @@ class Session < ApplicationRecord
   # the delivery path had to be made five times. The heartbeat sweep said so in a comment.
   # Those five now share this one copy.
   #
-  # Three direct-delivery paths deliberately do NOT route here, and it is worth knowing
-  # which: `Api::V1::SessionsController#follow_up` and
-  # `Mcp::Tools::ActionSession#direct_follow_up`, which each own a transaction of their
-  # own around a goal update and an uncle edge, and `EnqueuedMessageProcessorService`,
+  # The REST and MCP `follow_up` doors route here too, through Sessions::DeliverFollowUp,
+  # which wraps this call in the transaction that also writes their goal and uncle edge.
+  # One direct-delivery path deliberately does NOT: `EnqueuedMessageProcessorService`,
   # which delivers a message it has already claimed from a queue, under different
-  # locking. #105 is not fully closed by this method.
-  #
-  # The first two DO stamp `pending_follow_up_prompt`, inline and after their own
-  # resume, and it is not optional for them: until #1023 they left an accepted prompt
-  # living only as the argument of the job they enqueued, which a worker shutdown
-  # discards.
+  # locking.
   #
   # Callers keep what is genuinely theirs (validation, logging, broadcasting) and pass
   # only what differs. The prompt is stamped AFTER the state transition, so a reader who
@@ -2040,9 +2034,8 @@ class Session < ApplicationRecord
   end
 
   # A follow-up as it should be delivered, and the metadata that records its
-  # source. The two direct-delivery paths that do not go through
-  # #deliver_follow_up! (REST and MCP `follow_up`) call this too, so every path
-  # tags the same way.
+  # source. #deliver_follow_up! calls it, and so does every other path that
+  # delivers a tagged turn, so every path tags the same way.
   #
   # It is also where a follow-up from CarPlay is recognized, on every one of
   # those paths: a CarPlay turn records the engagement and keeps the session in
