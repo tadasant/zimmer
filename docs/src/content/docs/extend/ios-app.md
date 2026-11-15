@@ -579,6 +579,11 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   settings Zimmer could not send) shows under the call's status, and in CarPlay's status row, while
   the call is still up, until a reply comes through.
   The call keeps going with the screen locked (`UIBackgroundModes` `audio`), and the car shares it.
+  When the [voice engine](/sessions/live/#voice-engines) is `gpt_live_claude`, the same Talk runs
+  GPT-Live as the voice over WebRTC, with Claude doing the work through Zimmer (`GptLiveCall`,
+  `GptLiveConductor`). The call's screen says *GPT-Live voice · Claude reasoning*. When the chosen
+  engine cannot run, the call is Realtime and the reason shows under its status. The engine is the
+  *Voice engine* section of Live settings, and a row on the car's voice settings panel.
 - **Says which deployment a build is for.** A Staging or development build shows a strip at the top,
   and Settings prints `env=… host=… source=…`.
 

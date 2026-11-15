@@ -506,6 +506,90 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  # The iOS app, phone or car, on the `gpt_live_claude` engine: the same Actions
+  # the web dock reaches, over the API and its sign-in.
+  test "the app runs a GPT-Live call: told the engine, starts the session, has Claude answer, reports its cost" do
+    conversation = create_live_conversation(mode: "voice")
+    use_voice_engine("gpt_live_claude")
+    base = "/api/v1/live_conversations/#{conversation.id}"
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.7.0")
+
+    post "#{base}/client_secret", params: { listening_modes: "1", engines: [ "gpt_live_claude" ] }, headers: car, as: :json
+    assert_response :success
+    assert_equal "gpt_live_claude", response.parsed_body["engine"]
+    assert_equal "gpt-live-1", response.parsed_body["model"]
+    assert_equal "debug", response.parsed_body["telemetry"]
+    assert_nil response.parsed_body["client_secret"]
+    assert_equal [ "gpt_live_claude", "carplay" ], conversation.reload.values_at(:voice_engine, :client_surface)
+
+    LiveConversations::GptLiveSession.expects(:start).with(conversation, sdp: "v=0 offer").returns({ session_id: "live_1", sdp: "v=0 answer", model: "gpt-live-1" })
+    post "#{base}/gpt_live_session", params: { sdp: "v=0 offer" }, headers: car, as: :json
+    assert_response :success
+    assert_equal [ "live_1", "v=0 answer" ], response.parsed_body.values_at("session_id", "sdp")
+
+    claude = LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Two sessions are running.") ])
+    LiveConversations::ClaudeClient.stubs(:new).returns(claude)
+    post "#{base}/delegations", params: { delegation_id: "item_d1", pending_user_text: "What's running?" }, headers: car, as: :json
+    assert_response :success
+    assert_equal [ "Two sessions are running." ], response.parsed_body["chunks"]
+    assert_equal false, response.parsed_body["end_call"]
+
+    post "#{base}/usage", params: { events: [ { engine: "gpt_live_claude", operation: "voice_session", key: "ios1.1", seconds: 60 },
+                                              { engine: "gpt_live_claude", operation: "turn_latency", key: "ios1.2", first_audio_ms: 900 } ] },
+                          headers: car, as: :json
+    assert_response :created
+    assert_equal 2, response.parsed_body["recorded"]
+    assert_equal %w[delegation voice_session turn_latency], LiveUsageEvent.order(:id).pluck(:operation)
+  end
+
+  test "an app that does not say it runs GPT-Live falls back to Realtime, saying why" do
+    conversation = create_live_conversation(mode: "voice")
+    use_voice_engine("gpt_live_claude")
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", model: "gpt-realtime-2.1-mini" })
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { listening_modes: "1" }, headers: @headers, as: :json
+
+    assert_response :success
+    assert_equal [ "ek_1", "openai_realtime" ], response.parsed_body.values_at("client_secret", "engine")
+    assert_match(/cannot run gpt_live_claude/, response.parsed_body.dig("voice_engine", "fallback_reason"))
+  end
+
+  test "GPT-Live unavailable for the app (no Claude Code account): Realtime, with the reason, and no GPT-Live session" do
+    conversation = create_live_conversation(mode: "voice")
+    use_voice_engine("gpt_live_claude")
+    without_claude_code_account
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_1", model: "gpt-realtime-2.1-mini" })
+    base = "/api/v1/live_conversations/#{conversation.id}"
+
+    post "#{base}/client_secret", params: { engines: [ "gpt_live_claude" ] }, headers: @headers, as: :json
+    assert_equal "openai_realtime", response.parsed_body["engine"]
+    assert response.parsed_body.dig("voice_engine", "fallback_reason").present?
+
+    LiveConversations::GptLiveSession.expects(:start).never
+    post "#{base}/gpt_live_session", params: { sdp: "v=0" }, headers: @headers, as: :json
+    assert_response :conflict
+  end
+
+  test "the car pre-warms no Realtime connection for a call that will run on GPT-Live" do
+    conversation = create_live_conversation(mode: "voice")
+    use_voice_engine("gpt_live_claude")
+    LiveConversations::RealtimeSession.any_instance.expects(:create_secret).never
+
+    post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1", engines: [ "gpt_live_claude" ] },
+                                                                        headers: @headers.merge("X-Zimmer-Client" => "carplay/1.7.0"), as: :json
+    assert_response :conflict
+    assert_match(/no connection to pre-warm/, response.parsed_body["message"])
+  end
+
+  test "an API key cannot start a GPT-Live session, ask Claude, or write the cost ledger" do
+    conversation = create_live_conversation(mode: "voice")
+    base = "/api/v1/live_conversations/#{conversation.id}"
+    [ [ "gpt_live_session", { sdp: "v=0" } ], [ "delegations", { delegation_id: "d" } ], [ "usage", { events: [] } ] ].each do |action, params|
+      post "#{base}/#{action}", params: params, headers: @key_headers, as: :json
+      assert_response :forbidden, action
+    end
+  end
+
   test "an unknown conversation is a 404" do
     get "/api/v1/live_conversations/999999", headers: @headers
     assert_response :not_found

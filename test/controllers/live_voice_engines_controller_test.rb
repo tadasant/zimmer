@@ -70,10 +70,10 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal "openai_realtime", response.parsed_body["engine"]
-    assert_match(/only the web call dock/, response.parsed_body.dig("voice_engine", "fallback_reason"))
+    assert_match(/cannot run gpt_live_claude/, response.parsed_body.dig("voice_engine", "fallback_reason"))
     fallback = LiveUsageEvent.sole
     assert_equal [ "gpt_live_claude", "engine_fallback" ], [ fallback.engine, fallback.operation ]
-    assert_match(/only the web call dock/, @conversation.reload.voice_engine_fallback)
+    assert_match(/cannot run gpt_live_claude/, @conversation.reload.voice_engine_fallback)
   end
 
   test "a GPT-Live session is decided again when it starts: a cap reached or an engine switched since is refused" do

@@ -1,0 +1,223 @@
+import Foundation
+import ZimmerKit
+import os
+
+/// One call on the `gpt_live_claude` engine: GPT-Live as the voice over WebRTC (`GptLiveLink`),
+/// Claude behind it through Zimmer. `LiveCall` owns the call — its state, cues, health and
+/// screens — and hands this the part that differs from Realtime, as the web dock hands it to
+/// `GptLiveCall` (app/javascript/lib/gpt_live_call.js).
+///
+///   start        WebRTC offer → `startGptLiveSession` → Zimmer starts the session with OpenAI
+///                and returns its answer
+///   events       each one to `GptLiveConductor`, and its effects performed: commentary and
+///                closes to the data channel, finished lines to the thread, delegations to Zimmer
+///                (Claude), ledger rows batched to `reportLiveUsage`
+///   end          `session.close`, then `session.closed` (its usage) or the grace: the last lines,
+///                the last rows, and the connection let go. `LiveCall` hears nothing more from a
+///                call it ended, which keeps itself alive until that is done.
+@MainActor
+final class GptLiveCall {
+    enum Signal {
+        /// `session.started`: the call is up.
+        case started
+        /// GPT-Live said something: the connection is alive.
+        case heard
+        case state(LiveVoiceState)
+        case firstAudio
+        /// A line was written to the thread.
+        case recorded
+        /// Claude answered a delegation, or did not.
+        case delegated(ms: TimeInterval, ok: Bool)
+        /// The backend ended the call and the goodbye has been said.
+        case hangUp
+        /// An error GPT-Live reported; the call carries on.
+        case failure(String)
+        /// The connection went.
+        case dropped(String)
+    }
+
+    /// Ledger rows wait this long to go in one request, at most `maxBatch` at a time.
+    private static let flushAfter: TimeInterval = 5
+    private static let maxBatch = 50
+    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    private static let log = Logger(subsystem: "com.tadasant.zimmer", category: "gpt-live")
+
+    /// The client driving the call: every request names it, as the Realtime path's do.
+    var surface: ClientSource.Surface
+    let conversation: Int
+    private let link: GptLiveLink
+    private var conductor = GptLiveConductor()
+    /// Nil once `LiveCall` let go of this call: nothing more reaches it.
+    private var signal: ((Signal) -> Void)?
+    private var usage: [LiveUsageEvent] = []
+    private var flushing: Task<Void, Never>?
+    private var ticking: Task<Void, Never>?
+    private var ending = false
+    /// Held from `end()` until the session has closed, after `LiveCall` has let go of it.
+    private var keepAlive: GptLiveCall?
+
+    private var api: any LiveAPI { AppEnvironment.shared.connection.api.live(from: surface) }
+
+    init(conversation: Int, surface: ClientSource.Surface, muted: Bool, signal: @escaping (Signal) -> Void) throws {
+        self.conversation = conversation
+        self.surface = surface
+        self.signal = signal
+        link = try GptLiveLink(muted: muted)
+        link.onEvent = { [weak self] text in self?.received(text) }
+        link.onDropped = { [weak self] reason in self?.dropped(reason) }
+    }
+
+    /// Offer, have Zimmer start the session, take OpenAI's answer. The call is up when GPT-Live
+    /// says `session.started` (`Signal.started`).
+    func start() async throws {
+        let offer = try await link.offer()
+        // Hung up while the offer was made: no session for Zimmer to start.
+        guard !ending else { return }
+        let answer = try await api.startGptLiveSession(conversation, sdp: offer)
+        conductor.sessionStarted(id: answer.sessionID)
+        // Hung up while Zimmer was starting it: never connect a session nobody wants.
+        guard !ending else {
+            link.close()
+            return
+        }
+        try await link.accept(answer: answer.sdp)
+        tick()
+    }
+
+    var isConnected: Bool { link.isConnected }
+
+    /// The backend ended the call and its goodbye is being said: the call is over in a moment.
+    var hangingUp: Bool { conductor.hangingUp }
+
+    func setMuted(_ muted: Bool) {
+        link.setMuted(muted)
+    }
+
+    /// `LiveCall` is done with this call: close the session, wait for its final usage, then let go.
+    func end() {
+        guard !ending else { return }
+        ending = true
+        keepAlive = self
+        signal = nil
+        perform(conductor.close(at: Self.now))
+        // Started, or still starting: the tick ends it after `closeGrace` if nothing answers.
+        tick()
+    }
+
+    // MARK: - Internals
+
+    private func tick() {
+        guard ticking == nil else { return }
+        ticking = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, !Task.isCancelled else { return }
+                self.perform(self.conductor.tick(at: Self.now))
+                if self.conductor.ended { return }
+            }
+        }
+    }
+
+    private func received(_ text: String) {
+        guard let event = JSONValue.parse(text) else { return }
+        signal?(.heard)
+        perform(conductor.handle(event, at: Self.now))
+    }
+
+    private func dropped(_ reason: String) {
+        let signal = self.signal
+        perform(conductor.finish(at: Self.now))
+        signal?(.dropped(reason))
+    }
+
+    private func perform(_ effects: [GptLiveConductor.Effect]) {
+        for effect in effects {
+            switch effect {
+            case let .send(event):
+                if !link.send(event.encoded()) { Self.log.error("gpt-live event not sent: the channel is not open") }
+            case let .record(role, text):
+                let api = self.api
+                let conversation = self.conversation
+                Task { [weak self] in
+                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text, gated: false)
+                    self?.signal?(.recorded)
+                }
+            case let .delegate(id, pending):
+                delegate(id: id, pending: pending)
+            case let .state(next):
+                signal?(.state(next))
+            case .started:
+                signal?(.started)
+            case .firstAudio:
+                signal?(.firstAudio)
+            case let .report(event):
+                usage.append(event)
+                scheduleFlush()
+            case .hangUp:
+                signal?(.hangUp)
+            case .closed:
+                finished()
+            case let .failure(message):
+                Self.log.error("gpt-live error: \(message, privacy: .public)")
+                signal?(.failure(message))
+            }
+        }
+    }
+
+    private func delegate(id: String, pending: String) {
+        let api = self.api
+        let conversation = self.conversation
+        let asked = Self.now
+        Task { [weak self] in
+            var answer: LiveDelegation?
+            var failure: String?
+            do {
+                answer = try await api.answerLiveDelegation(conversation, delegationID: id, pendingUserText: pending)
+            } catch let error as ZimmerError {
+                failure = error.userMessage
+            } catch {
+                failure = nil
+            }
+            guard let self else { return }
+            self.signal?(.delegated(ms: Self.now - asked, ok: answer != nil))
+            self.perform(self.conductor.delegated(id: id, answer: answer, failure: failure, at: Self.now))
+        }
+    }
+
+    private func scheduleFlush() {
+        if usage.count >= Self.maxBatch { return flush() }
+        guard flushing == nil else { return }
+        flushing = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.flushAfter))
+            guard let self else { return }
+            self.flushing = nil
+            self.flush()
+        }
+    }
+
+    private func flush() {
+        flushing?.cancel()
+        flushing = nil
+        let api = self.api
+        let conversation = self.conversation
+        while !usage.isEmpty {
+            let batch = Array(usage.prefix(Self.maxBatch))
+            usage.removeFirst(batch.count)
+            Task {
+                do {
+                    try await api.reportLiveUsage(conversation, events: batch)
+                } catch {
+                    Self.log.error("gpt-live usage not reported: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    private func finished() {
+        flush()
+        ticking?.cancel()
+        ticking = nil
+        link.close()
+        keepAlive = nil
+    }
+}

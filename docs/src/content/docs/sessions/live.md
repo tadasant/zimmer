@@ -717,7 +717,7 @@ until somebody picks one.
 | Engine | What runs the call | Where |
 | --- | --- | --- |
 | `openai_realtime` | OpenAI Realtime, as described under [Voice](#voice): one model is the voice and the reasoning, at the voice model and reasoning effort the settings name. The default, and a full mode in its own right, measured the same way as the other two | web, phone, car |
-| `gpt_live_claude` | OpenAI's GPT-Live (`gpt-live-1`) as the full-duplex voice, with Claude doing the work | web call dock only |
+| `gpt_live_claude` | OpenAI's GPT-Live (`gpt-live-1`) as the full-duplex voice, with Claude doing the work | web, phone, car |
 | `livekit_claude` | A LiveKit Agents cascade: speech-to-text, then Claude, then text-to-speech | not built; always falls back |
 
 **`gpt_live_claude`.** GPT-Live has no tools of its own. Its instructions are the root's AGENTS.md,
@@ -730,6 +730,20 @@ sentences. The dock appends the answer to the call as commentary for GPT-Live to
 the GPT-Live session with the browser's WebRTC offer, so the OpenAI key and the session config stay
 on the server, and the audio goes between the browser and OpenAI as it does on the default engine.
 Claude reads the thread and the request as text; no audio goes to Anthropic.
+
+**On the phone and in the car** the call is the same, with the iOS app in the dock's place. GPT-Live
+takes a WebSocket only from a server holding the OpenAI key, so the app makes a WebRTC offer too
+(Google's libwebrtc, the `stasel/WebRTC` package) and posts it to the same `gpt_live_session`
+route; libwebrtc carries the microphone and GPT-Live's voice, with its own echo canceller, and the
+app's audio engine plays only the [cues](/extend/ios-app/#carplay). What to do with each event is
+`GptLiveConductor` in ZimmerKit, the dock's `GptLiveCall` rules tested on Linux. Everything else is
+the phone's call as on Realtime: the cues, hang-up by voice, the hand-over between phone and car, and
+following Live Mode to another conversation. A GPT-Live call that cannot start (OpenAI refusing the session, WebRTC
+failing before `session.started`) starts again on Realtime once, saying why, so the engine never
+leaves the phone or the car without a voice. The car does not [pre-warm](#carplay-pre-warm) a
+GPT-Live call: Zimmer refuses a pre-warm while the settings pick it, because the session starts from
+the tap's own offer. The engine is a row on the phone's Live settings and on the car's voice
+settings panel, where Reset to defaults leaves it as it is.
 
 **Claude runs on Zimmer's own credential.** Nobody supplies an Anthropic key. `ClaudeClient` calls
 the Messages API with the access token of Zimmer's current Claude Code account, the subscription
@@ -772,8 +786,11 @@ sequenceDiagram
 **Falling back.** An engine that cannot run sends the call to `openai_realtime` and says why on the
 dock: a missing credential (`gpt_live_claude` needs `LIVE_OPENAI_API_KEY` and a current Claude Code
 account in Zimmer's pool), a
-client that cannot run it (only the web dock tells Zimmer it can run `gpt_live_claude`; the iOS app
-and CarPlay stay on Realtime), or a spend cap reached. So choosing an engine never leaves Live Mode
+client that cannot run it (the web dock and the iOS app, phone and car, tell Zimmer they can run
+`gpt_live_claude`; an iOS build from before that does not, and stays on Realtime), or a spend cap
+reached. The phone shows the reason under the call's state, and a call from the car says it out
+loud: Zimmer's reason is put to the Realtime model as its first line, unrecorded, as the line a
+call that moved conversations opens with. So choosing an engine never leaves Live Mode
 without a voice. Each fallback is a ledger row, so [Live costs](#live-costs) counts them.
 
 **Spend caps.** Two settings bound what each experimental engine may spend, at list price: **Per-conversation cap**
@@ -794,7 +811,7 @@ Every billable or measured step of a voice call is a row in the voice-engine led
 | --- | --- | --- |
 | `voice_tokens` | `openai_realtime` | the dock, from each `response.done`: text and audio tokens, cached separately |
 | `transcription` | `openai_realtime` | the dock, from each transcription's usage |
-| `voice_session` | `gpt_live_claude` | the dock, every minute and when the call ends (or the tab closes): GPT-Live's billed seconds, totalled from `session.closed` when it comes, else the seconds the dock saw. Client-reported, and accepted only for a conversation whose call runs on GPT-Live |
+| `voice_session` | `gpt_live_claude` | the dock or the iOS app, every minute and when the call ends (or the tab closes): GPT-Live's billed seconds, totalled from `session.closed` when it comes, else the seconds the client saw. Client-reported, and accepted only for a conversation whose call runs on GPT-Live |
 | `delegation` | `gpt_live_claude` | Zimmer, for each Claude call: model, input, output, cache read and cache write tokens, round-trip time |
 | `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
 | `turn_latency` | any | the dock (no cost). On Realtime, from `speech_stopped` to the first audio of the answer; on GPT-Live, which reports no speech boundaries, from the last fragment of the person's transcript to the first fragment of the answer's. Close, not identical |

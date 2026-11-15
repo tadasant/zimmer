@@ -49,6 +49,17 @@ import os
 /// is still sounding or still to come. Talking over the goodbye stops it, so the call ends sooner.
 /// A move to another conversation is not followed meanwhile. `endedByVoice` says so, so the car
 /// treats it as the driver's End and not as a drop to retry.
+///
+/// **A call runs on the voice engine Zimmer picks** (`LiveCallGrant`). The app says on every mint
+/// that it can run `gpt_live_claude`; when the Live settings choose it and it can run, the call is
+/// GPT-Live as the voice over WebRTC with Claude behind it (`GptLiveCall`), and everything else
+/// here — the state, the cues, the health, hang-up, the car — is the same call. GPT-Live has its
+/// own microphone and voice in libwebrtc, so the audio engine plays only the cues
+/// (`LiveAudioEngine.startCues`); it does its own turn-taking, so Listening and Send now do
+/// nothing on it; its instructions are fixed when it starts, so a settings change or a hand-over
+/// reaches it from the next call; and a call that follows Live Mode to another conversation
+/// reconnects without speaking first. When the chosen engine cannot run, the call is Realtime and
+/// `engineNote` says why — on the phone's screen, and from the car spoken by the call itself.
 @MainActor
 final class LiveCall: ObservableObject {
     static let shared = LiveCall()
@@ -69,6 +80,11 @@ final class LiveCall: ObservableObject {
     /// Turn detection heard speech it has not ended the turn on: Send now would send it
     /// (`RealtimeConductor.canEndTurn`). Follows the conductor through every change to it.
     @Published private(set) var canSendNow = false
+    /// What Zimmer said about this call's engine: why the chosen one could not run, or how close it
+    /// is to a spend cap (`LiveEngineChoice.note`). Nil when there is nothing to say.
+    @Published private(set) var engineNote: String?
+    /// The engine this call runs on (`LiveVoiceEngine`).
+    @Published private(set) var engine = LiveVoiceEngine.realtime
 
     private var conductor = RealtimeConductor() {
         didSet { if conductor.canEndTurn != canSendNow { canSendNow = conductor.canEndTurn } }
@@ -80,6 +96,8 @@ final class LiveCall: ObservableObject {
     /// the thread carries it, which it does not for the line a call that moved opens with.
     private var pendingOpening: (text: String, recorded: Bool)?
     private var socket: URLSessionWebSocketTask?
+    /// The call on GPT-Live, when that is the engine (`GptLiveCall`); nil on Realtime.
+    private var gptLive: GptLiveCall?
     private let audio = LiveAudioEngine()
     /// Moves on with every start and hang-up, so a late answer from an old call is ignored.
     private var generation = 0
@@ -248,6 +266,8 @@ final class LiveCall: ObservableObject {
         lookedForMove = Self.now
         saidGoodbye = false
         lastError = nil
+        engineNote = nil
+        engine = LiveVoiceEngine.realtime
         muted = startsMuted
         telemetry.beginCall(conversation: conversation)
         telemetry.updateClient { $0.surface = surface.rawValue }
@@ -263,29 +283,147 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             mintedFor = self.surface
             let asked = Self.now
-            let secret = try await mintSecret(conversation)
+            let grant = try await mintGrant(conversation)
             guard mine == generation else { return }
-            telemetry.adopt(secret.telemetry)
-            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            adopt(grant, asked: asked)
+            guard let secret = grant.realtime else {
+                try await startGptLiveOrFallBack(conversation, generation: mine)
+                return
+            }
             conductor = RealtimeConductor(listening: secret.listening)
             openSocket(secret, generation: mine)
-            health.stage = .microphone
-            microphoneGeneration = mine
-            let audioToken = try await audio.start(
-                frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: mine) } },
-                failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
-            )
-            // Hung up, or replaced by a newer call, while the microphone was opening: close only
-            // what this start opened.
-            guard mine == generation else { audio.stop(token: audioToken); return }
-            watchdog.arm(at: Self.now)
-            microphoneOpen = true
-            health.stage = .session
-            connectIfReady(generation: mine)
+            try await openMicrophone(generation: mine)
         } catch is CancellationError {
             return
         } catch {
             fail(Self.describe(error), generation: mine)
+        }
+    }
+
+    /// The microphone, for a Realtime call: frames up the socket once OpenAI has the session.
+    private func openMicrophone(generation mine: Int) async throws {
+        health.stage = .microphone
+        microphoneGeneration = mine
+        let audioToken = try await audio.start(
+            frames: { [weak self] pcm in Task { @MainActor in self?.sendAudio(pcm, microphone: mine) } },
+            failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
+        )
+        // Hung up, or replaced by a newer call, while the microphone was opening: close only
+        // what this start opened.
+        guard mine == generation else { audio.stop(token: audioToken); return }
+        watchdog = MicWatchdog()
+        watchdog.arm(at: Self.now)
+        microphoneOpen = true
+        health.stage = .session
+        connectIfReady(generation: mine)
+    }
+
+    /// What Zimmer decided about the engine: logged, kept for the screen, and — from the car, where
+    /// nothing is read — a fallback said by the call itself before anything else.
+    private func adopt(_ grant: LiveCallGrant, asked: TimeInterval, speaks: Bool = true) {
+        telemetry.adopt(grant.telemetry)
+        telemetry.track(.secretMinted(ms: Self.now - asked, model: grant.model, listening: grant.listening, telemetry: grant.telemetry))
+        telemetry.track(.engineChosen(grant))
+        engine = grant.isGptLive ? LiveVoiceEngine.gptLive : LiveVoiceEngine.realtime
+        engineNote = grant.choice?.note
+        if speaks, surface == .carplay, let spoken = grant.choice?.spokenFallback { sayFirst(spoken) }
+    }
+
+    /// From the car: put `line` to the Realtime model ahead of whatever the call opens with. A line
+    /// the thread records (the person's own) is kept apart, so the thread never carries Zimmer's.
+    private func sayFirst(_ line: String) {
+        switch pendingOpening {
+        case nil: pendingOpening = (text: line, recorded: false)
+        case let opening? where !opening.recorded: pendingOpening = (text: "\(line) \(opening.text)", recorded: false)
+        default: break
+        }
+    }
+
+    /// GPT-Live, or — when it cannot start (OpenAI refusing the session, WebRTC failing before
+    /// `session.started`) — Realtime instead, once, saying why: choosing an engine must never leave
+    /// Live Mode without a voice. The fallback mint names no engine this app can run, so Zimmer
+    /// records it as the fallback it is.
+    private func startGptLiveOrFallBack(_ conversation: Int, generation mine: Int) async throws {
+        do {
+            try await startGptLive(conversation, generation: mine)
+            return
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard mine == generation else { return }
+            let reason = Self.describe(error)
+            log.error("gpt-live could not start, falling back to realtime: \(reason, privacy: .public)")
+            telemetry.track(.gptLiveFellBack(reason))
+            gptLive?.end()
+            gptLive = nil
+            microphoneOpen = false
+            sessionOpen = false
+            let asked = Self.now
+            let grant = try await mintGrant(conversation, engines: [])
+            guard mine == generation else { return }
+            adopt(grant, asked: asked, speaks: false)
+            let note = "On OpenAI Realtime: GPT-Live could not start (\(reason))."
+            engineNote = note
+            if surface == .carplay { sayFirst(LiveEngineChoice.spokenLine(note)) }
+            guard let secret = grant.realtime else { throw error }
+            conductor = RealtimeConductor(listening: secret.listening)
+            openSocket(secret, generation: mine)
+            try await openMicrophone(generation: mine)
+        }
+    }
+
+    /// A call on GPT-Live (`GptLiveCall`): the cues on an engine with no microphone, GPT-Live's
+    /// microphone and voice in libwebrtc, and the session Zimmer starts from the offer. The call is
+    /// up at `session.started`.
+    private func startGptLive(_ conversation: Int, generation mine: Int) async throws {
+        health.stage = .microphone
+        microphoneGeneration = mine
+        watchdog = MicWatchdog()
+        let audioToken = try await audio.startCues(
+            failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
+        )
+        guard mine == generation else { audio.stop(token: audioToken); return }
+        let call = try GptLiveCall(conversation: conversation, surface: surface, muted: muted) { [weak self] signal in
+            self?.handleGptLive(signal, generation: mine)
+        }
+        gptLive = call
+        microphoneOpen = true
+        health.stage = .session
+        try await call.start()
+    }
+
+    /// What the GPT-Live call says, for this call's state, cues, health and log.
+    private func handleGptLive(_ signal: GptLiveCall.Signal, generation mine: Int) {
+        guard mine == generation else { return }
+        switch signal {
+        case .started:
+            health.heard(at: Self.now)
+            sessionOpen = true
+            connectIfReady(generation: mine)
+        case .heard:
+            health.heard(at: Self.now)
+        case let .state(next):
+            // Connecting ends in one place, `connectIfReady`.
+            guard health.isConnected else { return }
+            if next == .speaking { lastError = nil }
+            state = next
+        case .firstAudio:
+            if let from = firstAudioFrom {
+                firstAudioFrom = nil
+                telemetry.track(.firstAudio(sinceTap: Self.now - from, path: startPath))
+            }
+        case .recorded:
+            activity += 1
+        case let .delegated(ms, ok):
+            telemetry.track(.toolCall("delegation", ms: ms, ok: ok))
+            activity += 1
+        case .hangUp:
+            hangUpByVoice(generation: mine)
+        case let .failure(message):
+            lastError = message
+        case let .dropped(reason):
+            telemetry.track(.socketClosed(reason))
+            fail("The call dropped: \(reason)", generation: mine)
         }
     }
 
@@ -348,10 +486,17 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             mintedFor = surface
             let asked = Self.now
-            let secret = try await mintSecret(conversation)
+            let grant = try await mintGrant(conversation)
             guard mine == generation else { return }
-            telemetry.adopt(secret.telemetry)
-            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            adopt(grant, asked: asked)
+            guard let secret = grant.realtime else {
+                // The warm connection was Realtime's and the call is GPT-Live's: its microphone
+                // goes to libwebrtc.
+                holdingMicrophone = false
+                microphoneOpen = false
+                try await startGptLiveOrFallBack(conversation, generation: mine)
+                return
+            }
             conductor = RealtimeConductor(listening: secret.listening)
             openSocket(secret, generation: mine)
         }
@@ -404,6 +549,12 @@ final class LiveCall: ObservableObject {
         let mine = generation
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        // A call on GPT-Live had its microphone in libwebrtc: the next connection opens its own.
+        if let gptLive {
+            gptLive.end()
+            self.gptLive = nil
+            microphoneOpen = false
+        }
         _ = audio.stopPlayback(arriving: nil)
         perform(.stopCues)
         telemetry.track(.callEnded(reason: "switched", duration: timeline.sinceStart(Self.now), summary: timeline.summary))
@@ -438,12 +589,20 @@ final class LiveCall: ObservableObject {
         watch(generation: mine)
         do {
             let asked = Self.now
-            let secret = try await mintSecret(conversation)
+            let grant = try await mintGrant(conversation)
             guard mine == generation else { return }
-            telemetry.adopt(secret.telemetry)
-            telemetry.track(.secretMinted(ms: Self.now - asked, model: secret.model, listening: secret.listening, telemetry: secret.telemetry))
+            adopt(grant, asked: asked)
+            guard let secret = grant.realtime else {
+                try await startGptLiveOrFallBack(conversation, generation: mine)
+                return
+            }
             conductor = RealtimeConductor(listening: secret.listening)
             openSocket(secret, generation: mine)
+            guard microphoneOpen else {
+                // From GPT-Live to Realtime: the microphone is this engine's again.
+                try await openMicrophone(generation: mine)
+                return
+            }
             health.stage = .session
         } catch is CancellationError {
             return
@@ -484,7 +643,9 @@ final class LiveCall: ObservableObject {
             guard mine == generation else { return }
             let first = pendingOpening
             pendingOpening = nil
-            if let first { open(with: first.text, recorded: first.recorded) }
+            // GPT-Live does its own turn-taking and has no way to be handed a line to answer: a
+            // call on it starts by listening.
+            if let first, gptLive == nil { open(with: first.text, recorded: first.recorded) }
         }
     }
 
@@ -546,6 +707,8 @@ final class LiveCall: ObservableObject {
         watching = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        gptLive?.end()
+        gptLive = nil
         microphoneGeneration = nil
         microphoneLost = false
         // The engine stays up just long enough to play the goodbye.
@@ -642,6 +805,7 @@ final class LiveCall: ObservableObject {
     /// Muted, the microphone sends silence rather than nothing (`RealtimeConductor.appendAudio`).
     func toggleMute() {
         muted.toggle()
+        gptLive?.setMuted(muted)
         telemetry.track(.muted(muted))
     }
 
@@ -671,6 +835,7 @@ final class LiveCall: ObservableObject {
     func carryOn(on surface: ClientSource.Surface) async {
         guard isActive, surface != self.surface else { return }
         self.surface = surface
+        gptLive?.surface = surface
         telemetry.updateClient { $0.surface = surface.rawValue }
         telemetry.track(.handedOver(to: surface.rawValue))
         await refreshSession()
@@ -718,10 +883,10 @@ final class LiveCall: ObservableObject {
     }
 
     /// The conversation may still be reading its AGENTS.md (409); give it a moment.
-    private func mintSecret(_ conversation: Int) async throws -> LiveClientSecret {
+    private func mintGrant(_ conversation: Int, engines: [String] = LiveVoiceEngine.runnable) async throws -> LiveCallGrant {
         for _ in 0..<6 {
             do {
-                return try await api.liveClientSecret(conversation)
+                return try await api.liveCallGrant(conversation, engines: engines)
             } catch let ZimmerError.http(status, message) where status == 409 && (message ?? "").localizedCaseInsensitiveContains("still reading") {
                 try await Task.sleep(for: .milliseconds(1_500))
             }
@@ -778,7 +943,7 @@ final class LiveCall: ObservableObject {
                 if Self.drillHoldsTheCall { self.health.started(at: Self.now) }
                 #endif
                 // Hanging up: the call is over in a moment, wherever Live Mode has gone.
-                if self.health.isConnected, !self.conductor.hangingUp, Self.now - self.lookedForMove >= Self.followEvery {
+                if self.health.isConnected, !self.conductor.hangingUp, self.gptLive?.hangingUp != true, Self.now - self.lookedForMove >= Self.followEvery {
                     self.lookedForMove = Self.now
                     self.followCurrent(generation: generation)
                 }
@@ -814,6 +979,11 @@ final class LiveCall: ObservableObject {
     /// A quiet socket can be a dead one. The answer counts as hearing from OpenAI; an error means
     /// the socket has gone.
     private func ping(generation: Int) {
+        if let gptLive {
+            // No ping on a data channel: ICE says whether the connection is still there.
+            if gptLive.isConnected { health.pong(at: Self.now) } else { fail("The call dropped: the connection went quiet.", generation: generation) }
+            return
+        }
         guard let socket else { return }
         let asked = Self.now
         socket.sendPing { [weak self] error in
@@ -1012,6 +1182,7 @@ final class LiveCall: ObservableObject {
     private static func describe(_ error: Error) -> String {
         if let zimmer = error as? ZimmerError { return zimmer.userMessage }
         if let audio = error as? LiveAudioEngine.Failure { return audio.description }
+        if let link = error as? GptLiveLink.Failure { return link.description }
         return error.localizedDescription
     }
 }

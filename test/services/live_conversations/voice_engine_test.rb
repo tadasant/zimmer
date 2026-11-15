@@ -52,14 +52,14 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
     assert_equal "Zimmer has no current Claude Code account", resolution.fallback_reason
   end
 
-  test "a client that cannot run the engine (the iOS app today) falls back" do
+  test "a client that cannot run the engine (an iOS build from before it) falls back" do
     stub_live_key
     use_voice_engine("gpt_live_claude")
 
     resolution = LiveConversations::VoiceEngine.resolve(@conversation, client_engines: [])
 
     assert_equal "openai_realtime", resolution.engine
-    assert_match(/only the web call dock/, resolution.fallback_reason)
+    assert_match(/cannot run gpt_live_claude/, resolution.fallback_reason)
   end
 
   test "the LiveKit engine is not built, so it always falls back" do
