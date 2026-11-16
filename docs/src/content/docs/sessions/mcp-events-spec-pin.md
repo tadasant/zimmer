@@ -19,7 +19,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | | |
 | --- | --- |
 | Proposal | SEP-3415, "Events Extension" (status Accepted, Extensions Track; the PR is still open and unmerged) |
-| Source | `seps/3415-events-extension.md` in the proposal, with an identical docs copy at `docs/seps/3415-events-extension.mdx` |
+| Source | `seps/3415-events-extension.md` in the proposal, with a docs copy that has the same body at `docs/seps/3415-events-extension.mdx` |
 | Revision | `4165cc2` (head of the proposal on 2026-11-16) |
 | Extension id | `io.modelcontextprotocol/events` |
 
@@ -79,7 +79,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
   `seps/3415-events-extension.md`, and the proposal added a docs copy with the same body. Changes,
   classified: status Draft → Accepted (editorial, out of scope); push heartbeat interval negotiation
   (`heartbeatMs` suggested on `events/stream`, granted on `notifications/events/active`, dead stream
-  at three times the grant, 30 seconds now only the recommended default) and reconnect jitter
+  at three times the grant rather than twice the interval, 30 seconds now only the recommended default) and reconnect jitter
   (additive, push only, out of scope: Zimmer has no push); the Server Card members `signingKeys` and
   `egressIpRanges` move from `remotes[].extensions[...]` to `remotes[].extensionsInfo[...]`, and a
   cross-origin card's keys MUST NOT be used (webhook, out of scope: Zimmer neither verifies `v1a,` nor
