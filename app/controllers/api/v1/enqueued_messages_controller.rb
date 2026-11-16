@@ -125,8 +125,8 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
       return
     end
 
-    old_position = @enqueued_message.position
-    @enqueued_message.reorder_to(new_position)
+    old_position = @enqueued_message.reorder_to(new_position)
+    raise ActiveRecord::RecordNotFound, "Enqueued message #{@enqueued_message.id} no longer exists" if old_position.nil?
 
     @session.logs.create!(content: "Enqueued message moved from position #{old_position} to #{new_position}", level: "info")
 

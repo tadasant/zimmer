@@ -226,8 +226,8 @@ module Mcp
         raise ToolError, '"position" is required for the "reorder" action.' if args["position"].nil?
         raise ToolError, "Invalid position: Position must be >= 1" if new_position < 1
 
-        old_position = message.position
-        message.reorder_to(new_position)
+        old_position = message.reorder_to(new_position)
+        raise ToolError, "Enqueued message not found: #{message.id}" if old_position.nil?
         session.logs.create!(content: "Enqueued message moved from position #{old_position} to #{new_position}", level: "info")
 
         [

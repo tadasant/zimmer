@@ -284,6 +284,16 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, json["enqueued_message"]["position"]
   end
 
+  test "a reorder whose message is gone by the time it takes the queue lock is a 404 and logs no move" do
+    EnqueuedMessage.any_instance.stubs(:reorder_to).returns(nil)
+
+    assert_no_difference -> { @session.logs.where("content LIKE ?", "Enqueued message moved%").count } do
+      patch reorder_api_v1_session_enqueued_message_path(@session, @msg3), params: { position: 1 }, headers: @headers
+    end
+
+    assert_response :not_found
+  end
+
   test "should reject invalid position" do
     patch reorder_api_v1_session_enqueued_message_path(@session, @msg1), params: {
       position: 0
