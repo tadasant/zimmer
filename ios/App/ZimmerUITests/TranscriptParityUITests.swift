@@ -231,22 +231,31 @@ final class TranscriptParityUITests: XCTestCase {
         button.tap()
     }
 
-    /// `item` in the open menu, scrolled to if it is below the fold. The session menu is taller
-    /// than the screen, and its rows are laid out lazily: XCUITest finds only the rows on it, so
-    /// 1038's Precedence row stopped existing when the menu gained Move to backlog (#1539).
-    /// Swiping the menu's own list brings the row into being, however long the menu grows.
+    /// `item` in the open menu, scrolled to if it is below the fold. 1038's session menu is
+    /// taller than the screen, and its rows are laid out lazily: XCUITest finds only the rows near
+    /// the visible part of it, so a row further down does not exist until the menu is dragged.
     private func menuItem(_ app: XCUIApplication, _ item: String) -> XCUIElement {
         let button = app.buttons[item].firstMatch
         if button.waitForExistence(timeout: 3) { return button }
-        // The menu's list, by an item only it has; a submenu has no Edit Notes, and its items
-        // are on screen.
+        // The menu's list, by an item only it has (a submenu has no Edit Notes, and its items are
+        // on screen). Its frame is read once: Edit Notes is near the top, so after a drag or two
+        // it is no longer laid out and the query would match nothing.
         let list = app.collectionViews.containing(NSPredicate(format: "label == %@", "Edit Notes")).firstMatch
         guard list.waitForExistence(timeout: timeout) else { return button }
-        // A wait before each swipe, not a bare `exists`: a menu still opening on a slow runner
-        // has the row on screen a moment later, and a swipe then would scroll it away.
-        for _ in 0..<6 {
+        let frame = list.frame
+        let top = max(frame.minY, app.frame.minY)
+        let bottom = min(frame.maxY, app.frame.maxY)
+        func point(_ y: CGFloat) -> XCUICoordinate {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: y))
+        }
+        // A wait before each drag, not a bare `exists`: a menu still opening on a slow runner has
+        // the row a moment later, and a drag then would scroll it away. Each drag is a third of
+        // the visible menu, held at the end so it does not fling past the row.
+        for _ in 0..<8 {
             if button.waitForExistence(timeout: 2) { break }
-            list.swipeUp(velocity: .slow)
+            point(top + (bottom - top) * 0.7)
+                .press(forDuration: 0.1, thenDragTo: point(top + (bottom - top) * 0.35),
+                       withVelocity: .default, thenHoldForDuration: 0.3)
         }
         return button
     }
