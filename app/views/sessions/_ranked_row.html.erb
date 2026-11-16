@@ -55,12 +55,12 @@
       and no URL-keyed cache can serve it the frameless body. See
       SessionsController#drawer.
 
-      turbo_prefetch: false is a cost measure, not a correctness one — an
-      intercepted click never navigates to this href, so hover-prefetching the
-      full page would always be wasted work. %>
+      session_list_link_data also makes the link a session-prefetch target: the
+      dashboard fetches what a click on it will load in the background, and keeps
+      Turbo's hover prefetch of the full page off. %>
   <%= link_to agent_session.title.presence || "Untitled session",
         session_path(agent_session),
-        data: session_drawer_link_data(agent_session, turbo_prefetch: false),
+        data: session_list_link_data(agent_session),
         class: "min-w-0 flex-1 break-words font-medium text-gray-800 hover:text-indigo-600 max-sm:line-clamp-2 sm:order-3 sm:truncate" %>
 
   <%# Row actions behind a "⋮", the same overflow-menu controller the session card

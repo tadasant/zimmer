@@ -207,10 +207,10 @@
               at, so no URL-keyed cache can hand it the frameless body. See
               SessionsController#drawer.
 
-              turbo_prefetch: false is a cost measure, not a correctness one — a
-              plain left-click never navigates to this href, so prefetching a
-              ~900 KB full page on hover would always be wasted work. %>
-          <%= link_to session_path(agent_session), class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "View session details", "aria-label" => "View session #{agent_session.id}", data: session_drawer_link_data(agent_session, turbo_prefetch: false) do %>
+              session_list_link_data also makes the link a session-prefetch
+              target: the dashboard fetches what a click on it will load in the
+              background, and keeps Turbo's hover prefetch of the full page off. %>
+          <%= link_to session_path(agent_session), class: "inline-flex items-center px-3 py-1.5 border border-transparent text-xs font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500", title: "View session details", "aria-label" => "View session #{agent_session.id}", data: session_list_link_data(agent_session) do %>
             View
           <% end %>
         </div>

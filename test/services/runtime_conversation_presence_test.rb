@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 # Tests for RuntimeConversationPresence — the "has the runtime written anything
 # yet?" question every recovery branch trusts before it abandons a conversation.
@@ -133,6 +134,32 @@ class RuntimeConversationPresenceTest < ActiveSupport::TestCase
     refute RuntimeConversationPresence.conversation?("", session: @session)
   end
 
+  # The detail page asks stored_transcript_conversation? on every render, so the
+  # common answer comes from a prefix of the first chunk, not the chunk whole.
+  test "stored_transcript_conversation? answers from the transcript's head without walking chunks" do
+    @session.update!(transcript: ([ ai_title_stub.chomp ] + Array.new(400) { |i| user_line(i) }).join("\n") + "\n")
+    stored = Session.find(@session.id)
+    stored.expects(:each_transcript_line).never
+
+    assert RuntimeConversationPresence.stored_transcript_conversation?(stored)
+  end
+
+  test "stored_transcript_conversation? falls back to the chunks when the head holds no whole conversation line" do
+    long_title = { "type" => "ai-title", "aiTitle" => "x" * (RuntimeConversationPresence::HEAD_CHARS * 2) }.to_json
+    @session.update!(transcript: "#{long_title}\n#{user_line(0)}\n")
+    stored = Session.find(@session.id)
+
+    assert_empty stored.transcript_head_lines(RuntimeConversationPresence::HEAD_CHARS),
+      "a line cut off by the prefix is not a line"
+    assert RuntimeConversationPresence.stored_transcript_conversation?(stored)
+  end
+
+  test "stored_transcript_conversation? is still false for a stored title stub read from chunks" do
+    @session.update!(transcript: ai_title_stub)
+
+    refute RuntimeConversationPresence.stored_transcript_conversation?(Session.find(@session.id))
+  end
+
   test "false for a nil session" do
     refute RuntimeConversationPresence.persisted?(
       session: nil, working_directory: @working_directory, file_system: @file_system
@@ -145,6 +172,10 @@ class RuntimeConversationPresenceTest < ActiveSupport::TestCase
     RuntimeConversationPresence.persisted?(
       session: @session, working_directory: @working_directory, file_system: @file_system
     )
+  end
+
+  def user_line(index)
+    { "type" => "user", "message" => { "content" => "message #{index}" } }.to_json
   end
 
   def ai_title_stub

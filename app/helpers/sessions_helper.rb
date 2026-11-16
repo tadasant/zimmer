@@ -573,6 +573,18 @@ module SessionsHelper
   # session_drawer_composer: false leaves that composer out for a session the
   # link already knows is archived — the body would bring no composer to hand
   # the typing to. A bare id cannot say, so it gets the composer.
+  # The data attributes of a session row's View link on a dashboard list: the
+  # drawer pair above, plus the target session_prefetch_controller.js fetches in
+  # the background so the click paints from the browser's cache.
+  #
+  # turbo_prefetch: false keeps Turbo's own hover prefetch off these links. It
+  # would fetch the full page, which a plain click (the drawer) never loads, and
+  # its in-memory cache holds one entry; the list prefetcher fetches what the
+  # click will load, for every row, into the HTTP cache instead.
+  def session_list_link_data(agent_session)
+    session_drawer_link_data(agent_session, turbo_prefetch: false, session_prefetch_target: "link")
+  end
+
   def session_drawer_link_data(session_or_id, **extra)
     session_id = session_or_id.is_a?(Session) ? session_or_id.id : session_or_id
     data = { turbo_frame: "_top",

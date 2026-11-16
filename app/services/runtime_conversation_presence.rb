@@ -40,6 +40,10 @@
 # TranscriptNormalizer#conversation_record?, which deny-lists the bookkeeping
 # record types so an unrecognized one still counts as conversation.
 module RuntimeConversationPresence
+  # How much of the stored transcript's head stored_transcript_conversation?
+  # reads before it falls back to reading whole chunks.
+  HEAD_CHARS = 16_384
+
   module_function
 
   # @param session [Session]
@@ -73,15 +77,25 @@ module RuntimeConversationPresence
   # first few lines, so the answer costs one chunk rather than the whole document
   # — which is what lets the session detail page ask it on every render (the
   # Status panel's Regenerate button) without loading a 30 MB transcript to do so.
+  #
+  # It reads the first HEAD_CHARS of the first chunk before it reads any chunk
+  # whole: that prefix holds the opening records of every ordinary transcript, so
+  # the common answer costs a few kilobytes. Only a transcript whose head has no
+  # conversation in it (a session wedged in its opening seconds, or one opening
+  # on a record longer than the prefix) goes on to the chunk-at-a-time walk.
   def stored_transcript_conversation?(session)
     return false unless session.transcript_present?
 
     normalizer = TranscriptRuntime.normalizer_for(session)
     source = TranscriptRuntime.source_for(session)
-    session.each_transcript_line(0, session.transcript_line_count) do |_index, line|
-      next if line.strip.empty?
+    conversation = lambda do |line|
+      !line.strip.empty? && normalizer.conversation_record?(source.parse_events(line).first || {})
+    end
 
-      return true if normalizer.conversation_record?(source.parse_events(line).first || {})
+    return true if session.transcript_head_lines(HEAD_CHARS).any?(&conversation)
+
+    session.each_transcript_line(0, session.transcript_line_count) do |_index, line|
+      return true if conversation.call(line)
     end
 
     false

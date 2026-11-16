@@ -3,6 +3,7 @@
 # Service class for managing agent root configurations.
 # Reads agent root entries from AirCatalogService, which discovers them via air.json.
 class AgentRootsConfig
+  MEMO_KEY = :agent_roots_config_memo
   class AgentRootNotFoundError < StandardError; end
   class ConfigurationError < StandardError; end
 
@@ -120,7 +121,26 @@ class AgentRootsConfig
   class << self
     # Get all available agent roots (auto-reloads via AirCatalogService TTL).
     def all
-      build_roots
+      memo = ActiveSupport::IsolatedExecutionState[MEMO_KEY]
+      return build_roots unless memo
+
+      memo[:roots] ||= build_roots
+    end
+
+    # Within the block, #all builds the catalog once and hands every later
+    # caller that same list. For one render that asks the same question from
+    # several partials (SessionsController#show and #drawer) — not for anything
+    # long-lived, because the catalog and AppSetting can change under it.
+    # Nested calls share the outer memo.
+    def memoized
+      return yield if ActiveSupport::IsolatedExecutionState[MEMO_KEY]
+
+      begin
+        ActiveSupport::IsolatedExecutionState[MEMO_KEY] = {}
+        yield
+      ensure
+        ActiveSupport::IsolatedExecutionState.delete(MEMO_KEY)
+      end
     end
 
     # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short

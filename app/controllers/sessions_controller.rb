@@ -148,6 +148,22 @@ class SessionsController < ApplicationController
 
   before_action :load_form_data, only: %i[new create]
 
+  # The detail body asks the agent-roots catalog for the session's root from
+  # several partials (metadata, header, joystick, cost line), and each ask
+  # rebuilt every AgentRoot from scratch. One build per request is enough.
+  around_action :memoize_agent_roots, only: %i[show drawer]
+
+  # How long the browser may reuse a detail body the dashboard prefetched.
+  #
+  # The dashboard's list views fetch every visible row's detail in the background
+  # (session_prefetch_controller.js) so that clicking View paints at once. That
+  # only works if the browser is allowed to keep the answer: a prefetch response
+  # is `private, max-age=PREFETCH_MAX_AGE`, every other response keeps Rails'
+  # `max-age=0, must-revalidate`. Long enough to cover reading a list and then
+  # clicking, short enough that a page shown from it is never far behind — and
+  # the page catches up the moment it is shown anyway (session_activation).
+  PREFETCH_MAX_AGE = 2.minutes
+
   # GET /
   #
   # The dashboard's shell: header, menu, Filters, the Quick Router and the view
@@ -602,6 +618,7 @@ class SessionsController < ApplicationController
   # nothing that has to be walked or parsed to produce. See load_session_detail.
   def show
     load_session_detail
+    allow_prefetch_reuse
   end
 
   # GET /sessions/:id/drawer
@@ -626,6 +643,7 @@ class SessionsController < ApplicationController
   def drawer
     @in_drawer = true
     load_session_detail
+    allow_prefetch_reuse
     render :show, layout: false
   end
 
@@ -3131,6 +3149,39 @@ class SessionsController < ApplicationController
     return false unless request.format.html?
 
     !prefetch_request?
+  end
+
+  # Lets the browser keep a prefetched detail body for PREFETCH_MAX_AGE, so the
+  # click that follows is answered from its HTTP cache: the drawer's frame load,
+  # a same-tab Turbo visit and a new tab alike, in Chrome and Safari.
+  #
+  # Only a prefetch gets this. A body a human asked for keeps Rails' default
+  # revalidate-every-time headers, so nothing but a prefetch can put a reusable
+  # copy in the cache.
+  #
+  # A body served from the cache never reached this action as a view, so it
+  # carries the `session-activation` marker (_detail.html.erb): when the page is
+  # actually shown, that controller re-requests it for real. That one request
+  # is the view — it marks notifications read and records the touch, which the
+  # prefetch skipped — and its answer brings the page's live regions up to date.
+  #
+  # `Vary: Turbo-Frame` rather than Rails' `Vary: Accept`. The bodies here are
+  # HTML whatever the Accept header says, and a browser navigation sends a
+  # different Accept from the fetch that prefetched it, so varying on Accept
+  # would make a new tab miss the cache every time. A frame request and a page
+  # request are what really differ (turbo-rails picks a layout off the header),
+  # so that is what the cache is keyed on; the prefetcher sends the drawer
+  # frame's header for a drawer url and none for a page url, as the click will.
+  def allow_prefetch_reuse
+    return unless prefetch_request? && request.format.html?
+
+    @prefetched_detail = true
+    expires_in PREFETCH_MAX_AGE, public: false
+    response.headers["Vary"] = "Turbo-Frame"
+  end
+
+  def memoize_agent_roots(&)
+    AgentRootsConfig.memoized(&)
   end
 
   # Mark all unread notifications for a session as read

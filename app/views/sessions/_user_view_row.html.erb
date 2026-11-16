@@ -51,7 +51,7 @@
           working top to bottom is the one thing this screen must not do. %>
       <%= link_to agent_session.title.presence || "Untitled session",
             session_path(agent_session),
-            data: session_drawer_link_data(agent_session, turbo_prefetch: false),
+            data: session_list_link_data(agent_session),
             class: "min-w-0 flex-1 basis-full break-words text-sm font-medium text-gray-800 hover:text-indigo-600 sm:basis-auto sm:truncate" %>
 
       <%# The priority/spot affordance. The list is not split into two sections, so
