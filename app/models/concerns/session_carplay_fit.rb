@@ -202,6 +202,15 @@ module SessionCarplayFit
     carplay_fit_current? ? carplay_fit : nil
   end
 
+  # Which side of the listing filter this session falls on: `carplay_ok`,
+  # `laptop_only`, or `untagged` (never marked, or marked against an earlier
+  # transcript). The dashboard's card envelope carries it so an open page can judge
+  # a live update against its own CarPlay-fit filter — `not_laptop_only` is then
+  # "anything but `laptop_only`", the same as the scope.
+  def carplay_fit_bucket
+    effective_carplay_fit || FILTER_UNTAGGED
+  end
+
   # Transcript lines written since the mark. Zero while it is current (always,
   # for the sticky CarPlay default).
   def carplay_fit_messages_since

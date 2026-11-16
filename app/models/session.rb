@@ -2916,9 +2916,15 @@ class Session < ApplicationRecord
   # Minimum interval between broadcasts triggered by last_timeline_entry_at changes
   BROADCAST_THROTTLE_INTERVAL = 30.seconds
 
+  # The Turbo Stream the dashboard's card grid (the two flat sort views) listens
+  # on, and the hidden element its card envelopes are appended to. See
+  # #broadcast_update_to_sessions_index.
+  SESSIONS_INDEX_STREAM = "sessions_index_individual".freeze
+  CARD_DELIVERIES_TARGET = "sessions_grid_deliveries".freeze
+
   # The Turbo Stream the Ranked view (/?view=ranked) listens on. It is separate
   # from "sessions_index_individual" because the two carry different things: that
-  # one replaces a whole session card keyed on dom_id, and a ranked row is neither
+  # one delivers whole session cards keyed on dom_id, and a ranked row is neither
   # a card nor keyed on dom_id, so a ranked row was simply never a target of it —
   # which is why the queue's statuses went stale until the page was reloaded.
   #
@@ -3195,6 +3201,16 @@ class Session < ApplicationRecord
       saved_change_to_metadata? ||
       saved_change_to_custom_metadata? ||
       saved_change_to_is_autonomous? ||
+      # Not on the card's face so much as the dashboard's filters: board
+      # visibility, scheduling class and CarPlay fit are three of them, and a card
+      # whose session moved out of (or into) a page's filter has to be re-judged
+      # there. See #broadcast_update_to_sessions_index.
+      saved_change_to_visibility? ||
+      saved_change_to_snoozed_until? ||
+      saved_change_to_scheduling_class? ||
+      saved_change_to_carplay_fit? ||
+      saved_change_to_carplay_fit_source? ||
+      saved_change_to_carplay_fit_line_count? ||
       (saved_change_to_session_notes? && (session_notes_previously_was.blank? != session_notes.blank?))
 
     # For last_timeline_entry_at changes, throttle broadcasts to avoid overwhelming the index page
@@ -3307,17 +3323,22 @@ class Session < ApplicationRecord
     SessionTitleJob.set(wait: 2.minutes).perform_later(id)
   end
 
+  # Offer this session's card to every open dashboard card grid.
+  #
+  # The grid broadcasts on ONE stream, `sessions_index_individual`, and every
+  # open page has its own filters — the operator watching only `needs_input` and
+  # the one who ticked "Archived" to go through the trash are on the same
+  # channel. A `replace` of the card would keep a session on the first page after
+  # it left `needs_input`; a `remove` on archive would take it off the second page
+  # that asked to see it. Neither is the server's call.
+  #
+  # So it ships an envelope (`_card_delivery`): the session's filterable facts and
+  # the card rendered inside an inert <template>, and `session-grid` judges it
+  # against the filters THAT page was rendered with — replace the card, take it
+  # away, insert it in sort order, or ignore it. The Ranked view does the same
+  # thing on its own stream; see #broadcast_ranked_membership.
   def broadcast_update_to_sessions_index
-    # If session is now archived, remove it from the index instead of updating it.
-    # The /sessions page filters out archived sessions by default, so broadcasting
-    # a REPLACE would incorrectly show the archived session.
-    if archived?
-      broadcast_remove_from_sessions_index
-      return
-    end
-
-    # Replace the session's card in place, wherever it currently lives in the grid.
-    delivered = broadcast_individual_card_to_sessions_index(:replace)
+    delivered = broadcast_card_delivery
 
     # Record broadcast time for throttling (only for last_timeline_entry_at changes)
     # Use update_column to avoid triggering callbacks.
@@ -3329,40 +3350,28 @@ class Session < ApplicationRecord
     update_column(:last_broadcast_to_index_at, Time.current) if delivered && saved_change_to_last_timeline_entry_at?
   end
 
+  # A new session is offered exactly like a changed one: a page whose filters do
+  # not admit it (a `running` session arriving on a needs-input board) declines it.
   def broadcast_create_to_sessions_index
-    # New sessions prepend into the grid (target "sessions_grid").
-    broadcast_individual_card_to_sessions_index(:prepend)
+    broadcast_card_delivery
   end
 
+  # A destroyed row has no facts left to judge, and no filter keeps a card for a
+  # session that does not exist, so this one is a plain removal.
   def broadcast_remove_from_sessions_index
-    broadcaster.broadcast_removal(stream: "sessions_index_individual", target: dom_id(self))
+    broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: dom_id(self))
   end
 
-  # Renders this session as an individual card and broadcasts to the individual-view channel.
-  # Supports :replace (for updates) and :prepend (for new sessions).
-  def broadcast_individual_card_to_sessions_index(action)
-    if action == :prepend
-      broadcaster.broadcast_html(
-        action: :prepend,
-        stream: "sessions_index_individual",
-        target: "sessions_grid"
-      ) { render_index_card_html }
-    else
-      broadcaster.broadcast_html(
-        action: :replace,
-        stream: "sessions_index_individual",
-        target: dom_id(self)
-      ) { render_index_card_html }
+  def broadcast_card_delivery
+    broadcaster.broadcast_html(
+      action: :append,
+      stream: SESSIONS_INDEX_STREAM,
+      target: CARD_DELIVERIES_TARGET
+    ) do
+      # Through SessionsController: the card is full of route helpers and this
+      # runs from background jobs.
+      SessionsController.render(partial: "sessions/card_delivery", locals: { agent_session: self })
     end
-  end
-
-  # Renders this session as an individual card wrapped in a turbo frame.
-  # Used by individual-view broadcasts.
-  def render_index_card_html
-    SessionsController.render(
-      inline: "<%= turbo_frame_tag dom_id(agent_session) do %><%= render 'sessions/session_card', agent_session: agent_session %><% end %>",
-      locals: { agent_session: self }
-    )
   end
 
   def broadcast_status_change

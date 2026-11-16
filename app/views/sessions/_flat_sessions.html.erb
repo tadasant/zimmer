@@ -5,25 +5,30 @@
 
     Locals:
       sessions - a Kaminari-paginated relation, already ordered by the controller
-      title    - section heading describing the active sort %>
+      title    - section heading describing the active sort
+
+    Rendered even when nothing matches, hidden, so a card that starts matching
+    the filters live has a grid to land in — `session-grid` shows the section and
+    hides the empty state when it does, and the reverse when the last card goes. %>
 <%# One grouped query for every card's cost badge, instead of one per card. %>
 <% preload_session_costs(sessions) %>
-<section class="mb-8" id="flat_sessions">
+<section class="mb-8" id="flat_sessions" data-session-grid-target="section" <%= "hidden" if sessions.empty? %>>
   <div class="flex items-center gap-2 min-w-0 mb-3">
     <h2 class="text-lg font-semibold text-gray-800 truncate"><%= title %></h2>
     <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 text-gray-600 text-xs font-medium px-2 py-0.5 min-w-[1.5rem]"
+          data-session-grid-target="count"
+          data-count="<%= sessions.total_count %>"
           title="<%= pluralize(sessions.total_count, "session") %>"><%= sessions.total_count %></span>
   </div>
   <%# Grid keeps id="sessions_grid" so real-time broadcasts that prepend new
       cards still land here (the category grid that normally owns this id is not
       rendered in the flat views). %>
   <div id="sessions_grid" data-live-region="sync"
+       data-session-grid-target="grid"
        data-live-page="<%= sessions.respond_to?(:current_page) ? sessions.current_page : 1 %>"
        class="<%= session_card_grid_classes %>">
     <% sessions.each do |session| %>
-      <%= turbo_frame_tag dom_id(session) do %>
-        <%= render "session_card", agent_session: session %>
-      <% end %>
+      <%= render "sessions/session_card_frame", agent_session: session %>
     <% end %>
   </div>
   <% if sessions.total_pages > 1 %>

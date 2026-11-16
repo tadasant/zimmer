@@ -1013,11 +1013,12 @@ class SessionsController < ApplicationController
     # Only respond if the operation succeeded
     return if result == false
 
-    # #archive removed this card from the dashboard, so the restore's
-    # broadcast_update_to_sessions_index has nothing left to replace. Put the
-    # card back into its own section's grid — that is what "Undo" means to the
-    # user standing on the dashboard, and it is why undo stays there instead of
-    # navigating to the session (the HTML fallback still redirects).
+    # #archive removed this card from the dashboard. The restore's own broadcast
+    # offers it back to every open grid, but that rides a cable that can be
+    # silently dead, so the reply offers it too. Putting the card back is what
+    # "Undo" means to the user standing on the dashboard, and it is why undo
+    # stays there instead of navigating to the session (the HTML fallback still
+    # redirects).
     respond_with_flash(
       notice: "Session restored from trash.",
       location: @session,
@@ -1025,15 +1026,19 @@ class SessionsController < ApplicationController
     )
   end
 
-  # Re-inserts a session's card at the top of the grid it belongs to. Turbo
-  # de-duplicates by element id on prepend, so this is safe if the card somehow
-  # never left; on the session's own page neither target exists and the stream
-  # is a silent no-op.
+  # Offers the restored card to the grid the same way a live update does: as a
+  # card delivery, which the page's `session-grid` controller inserts in sort
+  # order if its filters admit the restored session and ignores if they do not.
+  # A plain prepend would put the card on top of any page, filtered or not.
+  # `restore: true` lets it back onto the page it was trashed from even when that
+  # is not the first page, which a live arrival may not do. On
+  # the session's own page, and in the User and Ranked views, the target is
+  # absent and the stream is a silent no-op.
   def restored_card_stream(session)
-    turbo_stream.prepend(
-      restored_card_target(session),
-      partial: "sessions/session_card_frame",
-      locals: { agent_session: session }
+    turbo_stream.append(
+      Session::CARD_DELIVERIES_TARGET,
+      partial: "sessions/card_delivery",
+      locals: { agent_session: session, restore: true }
     )
   end
   private :restored_card_stream
@@ -1078,18 +1083,6 @@ class SessionsController < ApplicationController
   end
   private :session_chrome_streams
 
-  # Where an Undo puts the card back. There is one grid now: the per-category
-  # grids went with the categories view, and every surface that still renders
-  # cards (the two flat sort views) renders them all into "sessions_grid".
-  #
-  # The User view renders rows rather than cards and has no "sessions_grid" at
-  # all, so this prepend is a no-op there; #restored_row_stream is what puts the
-  # row back on that page.
-  def restored_card_target(_session)
-    "sessions_grid"
-  end
-  private :restored_card_target
-
   def bulk_archive
     # No per-user authorization: there is no "their own sessions" to scope to.
     # See the authorization note at the top of this class.
@@ -1133,8 +1126,9 @@ class SessionsController < ApplicationController
     # Only respond if the operation succeeded
     return if result == false
 
-    # Each archived session broadcasts its own card removal
-    # (broadcast_remove_from_sessions_index), so the stream only owes the count.
+    # Each archived session delivers its own card to every open dashboard
+    # (Session#broadcast_update_to_sessions_index), which takes it off the boards
+    # whose filters exclude the trash, so the stream only owes the count.
     notice = "#{archived_count} session(s) moved to trash."
     if skipped_with_queue.positive?
       notice += " #{skipped_with_queue} skipped — they have queued messages that archiving would discard; " \

@@ -1,0 +1,42 @@
+<%# One card delivery for the dashboard's card grid.
+    (See Session#broadcast_update_to_sessions_index and session_grid_controller.js.)
+
+    The grid broadcasts on ONE stream, `sessions_index_individual`, but every
+    open page has its own filters. The server therefore cannot decide whether a
+    card belongs on your screen, so it does not try. It ships this envelope: the
+    session's filterable facts, plus the card already rendered, and the page
+    decides — replace the card, take it away, insert it, or ignore it.
+
+    The card travels inside a <template>. Its contents are inert and its ids are
+    not in the document, so an envelope for a session the page filters out never
+    puts a second `session_<id>` on the page. `session-grid#deliveryTargetConnected`
+    reads the envelope, acts on it, and removes it.
+
+    The facts mirror the dashboard's filters one for one: status, scheduling
+    class, board visibility and CarPlay fit can change under an open page, so they
+    decide removal as well as insertion. Genesis and agent root never change after
+    a session is created; they only decide whether a session the page has never
+    rendered may be inserted. The agent root is resolved the way the dashboard's
+    filter resolves it: the recorded key, else the catalog root matching the
+    session's repository and subdirectory.
+
+    Locals:
+      agent_session - the session
+      restore       - true for the Undo reply (SessionsController#unarchive):
+                      the operator is putting back a card this page just took
+                      away, so it may return to whichever page it left %>
+<div data-session-grid-target="delivery"
+     hidden
+     data-session-id="<%= agent_session.id %>"
+     data-status="<%= agent_session.status %>"
+     data-scheduling-class="<%= agent_session.priority_class %>"
+     data-on-board="<%= agent_session.board_visible? %>"
+     data-backlogged="<%= agent_session.backlogged? %>"
+     data-carplay-fit="<%= agent_session.carplay_fit_bucket %>"
+     data-genesis="<%= agent_session.genesis %>"
+     data-agent-root="<%= agent_session.agent_root_key %>"
+     data-restore="<%= local_assigns.fetch(:restore, false) %>">
+  <template>
+    <%= render "sessions/session_card_frame", agent_session: agent_session %>
+  </template>
+</div>

@@ -2,6 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 import { Turbo } from "@hotwired/turbo-rails"
 import { csrfHeaders } from "lib/csrf"
 import { showAlert } from "lib/toast"
+import { markPendingRemoval, clearPendingRemoval } from "lib/optimistic_actions"
 
 // Connects to data-controller="visibility"
 //
@@ -117,6 +118,12 @@ export default class extends Controller {
     this._setStatus(confirmation)
     this._close()
     const removed = this._takeOffBoard(body.visibility)
+    // While the PATCH is in flight, a live card delivery rendered before it
+    // committed still says "on board", and the dashboard's grid would put the
+    // card straight back. The same guard Trash uses keeps it out until the
+    // request settles.
+    const sessionId = removed ? this._sessionId() : null
+    if (sessionId) markPendingRemoval("session", sessionId)
 
     let data
     try {
@@ -133,6 +140,8 @@ export default class extends Controller {
     } catch (error) {
       this._putBack(removed, "Network error — visibility unchanged.")
       return
+    } finally {
+      if (sessionId) clearPendingRemoval("session", sessionId)
     }
 
     this.dispatch("changed", { detail: data, prefix: "visibility" })
@@ -156,8 +165,18 @@ export default class extends Controller {
     return place
   }
 
+  // The session this control acts on, read off its own PATCH URL
+  // (`/sessions/:id/visibility`).
+  _sessionId() {
+    const match = /\/sessions\/(\d+)\//.exec(this.urlValue)
+    return match ? match[1] : null
+  }
+
   _putBack(removed, message) {
-    if (removed && removed.parent && removed.parent.isConnected) {
+    // Something already put a card with this id back (a live update that won
+    // the race): a second copy would leave two.
+    const duplicate = removed && removed.element.id && document.getElementById(removed.element.id)
+    if (removed && !duplicate && removed.parent && removed.parent.isConnected) {
       const next = removed.next && removed.next.parentNode === removed.parent ? removed.next : null
       removed.parent.insertBefore(removed.element, next)
     }

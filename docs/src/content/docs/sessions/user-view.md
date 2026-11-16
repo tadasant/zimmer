@@ -179,6 +179,44 @@ Each row's status summary is markdown, and turning it into the row's inline HTML
 costs about 4ms of HTML sanitizing. Both results are kept in memory, keyed on the summary's text,
 so a board of a few hundred rows pays that once per summary rather than on every page load.
 
+## The card views follow their filters live
+
+The two card views (**Sort By Last Touched** and **Created**) update over one Turbo Stream,
+`sessions_index_individual`, that every open dashboard shares. The server cannot tell which page is
+filtered to what, so a changed or new session is not sent as a `replace` of its card. It goes out
+as an envelope (`_card_delivery`, from `Session#broadcast_update_to_sessions_index` and
+`#broadcast_create_to_sessions_index`). The envelope carries the session's filterable facts and its
+card, rendered inside an inert `<template>`. The page's `session-grid` controller judges it against
+the filters that page was rendered with:
+
+| The page's filters say | What happens |
+| --- | --- |
+| it is on the page and still matches | the card is replaced in place |
+| it is on the page and no longer matches | the card leaves |
+| it is not on the page, matches, and the page may insert | the card is inserted where the sort puts it |
+| anything else | the envelope is discarded |
+
+So with **Status** set to *Needs input* alone, a card whose session goes back to `waiting` leaves,
+and one that comes to rest in `needs_input` arrives without a reload. Status, scheduling class,
+board visibility and CarPlay fit can all change under an open page. A change to any of them
+re-sends the card, so each can take a card away or bring one in. Genesis and agent root never
+change after a session is created, so they only decide whether a session the page has never shown
+may be inserted.
+
+Archiving is the same delivery. A board of live work drops the card, and a board whose operator
+ticked *Archived* keeps it, reading *Trashed*. The exception is a card you trashed from this page:
+it stays gone even on a board that shows every status. **Undo** puts it back through the same
+envelope, so it lands in sort order, and only on a page whose filters admit the restored session. The count beside the heading and the
+empty state follow the grid however a card arrived or left. That includes Trash, a snooze, Undo
+and a live update. Deleting a session still sends a plain `remove`, because there is nothing left
+to judge.
+
+An insert happens only on the first page. A later page cannot tell an arrival that belongs on it
+from one that belongs on an earlier page. A card that lands inside a full first page pushes the last
+card on to the next page. The grid does not insert anything while a text search is narrowing it,
+because only the server can evaluate the search. Cards still leave under a search. The gaps are
+listed in [Limitations](/limitations/#the-card-grids-live-filtering-is-approximate-at-the-edges).
+
 ## What replaced what
 
 The User view replaced the **Categories** view — the category-grouped card grid that was the

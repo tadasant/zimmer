@@ -1,3 +1,19 @@
-<%= turbo_frame_tag dom_id(agent_session) do %>
+<%# One session card in the dashboard grid, inside the turbo-frame every live
+    update and every card action replaces.
+
+    The data attributes are what `session-grid` sorts and judges on: an arriving
+    card is inserted where the server's ORDER BY would have put it, which needs
+    every card already on the page to say where it sorts. Keyed in epoch
+    milliseconds so the client compares numbers. `last-touched-at` is
+    Session#last_user_activity_at, the Ruby twin of Session::LAST_TOUCHED_ORDER.
+
+    Locals:
+      agent_session - the session %>
+<%= turbo_frame_tag dom_id(agent_session), data: {
+      session_grid_target: "card",
+      session_id: agent_session.id,
+      last_touched_at: (agent_session.last_user_activity_at.to_f * 1000).to_i,
+      created_at: (agent_session.created_at.to_f * 1000).to_i
+    } do %>
   <%= render "sessions/session_card", agent_session: agent_session %>
 <% end %>

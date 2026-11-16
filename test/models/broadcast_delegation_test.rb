@@ -131,22 +131,22 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     ], with_goal_check.map { |b| [ b.action, b.stream, b.target ] }
   end
 
-  test "broadcast_update_to_sessions_index replaces this session's card on the index stream" do
+  test "broadcast_update_to_sessions_index delivers this session's card to the grid's deliveries" do
     assert_broadcast_arguments(
       -> { @session.send(:broadcast_update_to_sessions_index) },
-      action: :replace,
+      action: :append,
       stream: "sessions_index_individual",
-      target: ActionView::RecordIdentifier.dom_id(@session),
+      target: "sessions_grid_deliveries",
       html: true
     )
   end
 
-  test "broadcast_create_to_sessions_index prepends the card into the uncategorized grid" do
+  test "broadcast_create_to_sessions_index delivers the card the same way" do
     assert_broadcast_arguments(
       -> { @session.send(:broadcast_create_to_sessions_index) },
-      action: :prepend,
+      action: :append,
       stream: "sessions_index_individual",
-      target: "sessions_grid",
+      target: "sessions_grid_deliveries",
       html: true
     )
   end
@@ -160,11 +160,11 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     )
   end
 
-  test "an archived session is removed from the index rather than replaced on it" do
+  test "an archived session is delivered like any other, for the page's filter to judge" do
     @session.update!(status: :archived)
     captured = capture_turbo_broadcasts { @session.send(:broadcast_update_to_sessions_index) }
 
-    assert_equal [ [ :remove, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(@session) ] ],
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
                  captured.map { |b| [ b.action, b.stream, b.target ] }
   end
 

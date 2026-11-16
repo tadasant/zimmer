@@ -92,9 +92,9 @@ module SessionsHelper
   # The DOM id of a session's row in the dashboard's User view.
   #
   # Deliberately NOT `dom_id(session)`. That id belongs to the session CARD, and
-  # Session#broadcast_individual_card_to_sessions_index replaces whatever holds it
-  # with a freshly rendered card on every update — which on a User view page would
-  # swap a row for a card mid-scroll. One spelling, here, because the controller
+  # the card grid's live updates (Session#broadcast_update_to_sessions_index)
+  # replace whatever holds it with a freshly rendered card — which on a User view
+  # page would swap a row for a card mid-scroll. One spelling, here, because the controller
   # (which sends the removal stream when a row is trashed) and the partial (which
   # renders the id) have to agree.
   def user_view_row_dom_id(session)
@@ -166,6 +166,27 @@ module SessionsHelper
   # unaffected, since `min()` picks the 320px there.
   def session_card_grid_classes
     "grid gap-6 grid-cols-[repeat(auto-fill,minmax(min(320px,100%),400px))] justify-center"
+  end
+
+  # The agent root the dashboard is filtered to, as the catalog name a card
+  # delivery carries (Session#agent_root_key) and `session-grid` compares it with. Blank when there is no filter, or when the
+  # filter names no root (the server then shows nothing, and live insert is off).
+  def dashboard_agent_root_filter_name(agent_root_filter)
+    return "" if agent_root_filter.blank?
+
+    AgentRootsConfig.find(agent_root_filter)&.name.to_s
+  end
+
+  # Whether the card grid may insert a session it has never rendered. Off under
+  # a text search, which only the server can evaluate, and under an agent-root
+  # filter that names no root. Removal stays on regardless: a card on screen
+  # already matched the search, so judging it on the other filters alone is
+  # sound.
+  def dashboard_card_live_insert?(search_query, agent_root_filter)
+    return false if search_query.present?
+    return true if agent_root_filter.blank?
+
+    dashboard_agent_root_filter_name(agent_root_filter).present?
   end
 
   # ---------------------------------------------------------------------------
