@@ -97,8 +97,13 @@ REST and MCP `follow_up` with `force_immediate`, `manage_enqueued_messages` `sen
 `message_parent` with `force_immediate`. It stages the message at the tail through the same locked
 read (`Sessions::QueueTail`), commits it, then hands it to `Sessions::InterruptService`. If the
 interrupt fails, or the surface's pre-interrupt step raises, it withdraws the staged message while it is still `pending`, so it never
-turns up later as a surprise queued follow-up. A message a concurrent interrupt already claimed is
-left to be delivered. The web "Send Now" button on a queued message is not on this path: it promotes
+turns up later as a surprise queued follow-up. The withdrawal goes through
+`Sessions::RemoveQueuedMessage.withdraw_pending`: the same queue lock and gap-closing renumber as a
+delete, with the `pending` check made under that lock and the row itself locked, and no log row.
+A message a concurrent interrupt or the end-of-turn drain already claimed is left to be delivered,
+and the surface keeps its attachments. Because `InterruptService` promotes the message to position 1
+before it dispatches, a failure after the promotion withdraws it from the head, and the rows behind
+it move up. The web "Send Now" button on a queued message is not on this path: it promotes
 a row that already exists, so it calls `InterruptService` directly.
 
 **Every writer that appends to the queue reads its position the same way**, through

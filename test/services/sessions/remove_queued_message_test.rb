@@ -8,7 +8,8 @@ require "mocha/minitest"
 # `delete`. What matters here is that it takes the queue lock, closes the gap
 # from the position the row really holds (read under that lock, not from the
 # caller's copy), leaves a vanished row's neighbours alone, and writes one log
-# row with the position it really removed from.
+# row with the position it really removed from. `withdraw_pending` does the
+# same, only while the row is still `pending`, and writes no log row.
 class Sessions::RemoveQueuedMessageTest < ActiveSupport::TestCase
   setup do
     @session = sessions(:running)
@@ -60,6 +61,38 @@ class Sessions::RemoveQueuedMessageTest < ActiveSupport::TestCase
     Sessions::RemoveQueuedMessage.call(@a)
 
     assert_equal [ 1, 2, 3 ], other_rows.map { |m| m.reload.position }
+  end
+
+  test "withdraw_pending removes a pending message and closes the gap without a log row" do
+    assert_no_difference -> { @session.logs.count } do
+      assert_equal 2, Sessions::RemoveQueuedMessage.withdraw_pending(@b)
+    end
+
+    assert_equal [ [ "A", 1 ], [ "C", 2 ], [ "D", 3 ] ], queue
+  end
+
+  test "withdraw_pending takes the session's queue lock" do
+    Sessions::QueueTail.expects(:lock!).with(@session.id).once
+
+    Sessions::RemoveQueuedMessage.withdraw_pending(@b)
+  end
+
+  test "withdraw_pending leaves a message that is no longer pending" do
+    stale = EnqueuedMessage.find(@b.id)
+    @b.update!(status: "processing")
+
+    assert_nil Sessions::RemoveQueuedMessage.withdraw_pending(stale)
+
+    assert_equal [ [ "A", 1 ], [ "B", 2 ], [ "C", 3 ], [ "D", 4 ] ], queue
+  end
+
+  test "withdraw_pending on a row deleted since it was loaded removes nothing" do
+    stale = EnqueuedMessage.find(@b.id)
+    @b.destroy!
+
+    assert_nil Sessions::RemoveQueuedMessage.withdraw_pending(stale)
+
+    assert_equal [ [ "A", 1 ], [ "C", 3 ], [ "D", 4 ] ], queue
   end
 
   private

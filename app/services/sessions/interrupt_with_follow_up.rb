@@ -27,10 +27,12 @@ module Sessions
   #    message to the head of the queue and dispatches it.
   #
   # All-or-nothing. When the interrupt fails, or the caller's block raises, the
-  # staged message is withdrawn — destroyed if it is still
-  # `pending` — so it does not arrive later as a surprise queued follow-up. A
-  # concurrent interrupt may already have claimed it, in which case it is being
-  # delivered and is left alone; `withdrawn?` on the result says which.
+  # staged message is withdrawn — removed through
+  # Sessions::RemoveQueuedMessage.withdraw_pending if it is still `pending`, with
+  # the rows behind it moved up — so it does not arrive later as a surprise
+  # queued follow-up. A concurrent interrupt may already have claimed it, in
+  # which case it is being delivered and is left alone; `withdrawn?` on the
+  # result says which.
   # InterruptService answers its own failures with a result, so the rescue
   # around it is defensive; the block is what can realistically raise.
   #
@@ -132,16 +134,13 @@ module Sessions
       )
     end
 
+    # Through Sessions::RemoveQueuedMessage, under the queue lock: the status
+    # check and the delete see the same row, and the rows behind it close the
+    # gap. A message a concurrent interrupt claimed or delivered is left alone.
+    #
     # @return [Boolean] whether this call destroyed the message
     def withdraw(enqueued_message)
-      enqueued_message.reload
-      return false unless enqueued_message.status == "pending"
-
-      enqueued_message.destroy!
-      true
-    rescue ActiveRecord::RecordNotFound
-      # A concurrent interrupt claimed and delivered it: nothing to withdraw.
-      false
+      !Sessions::RemoveQueuedMessage.withdraw_pending(enqueued_message).nil?
     end
   end
 end
