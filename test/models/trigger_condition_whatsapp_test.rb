@@ -54,7 +54,7 @@ class TriggerConditionWhatsappTest < ActiveSupport::TestCase
   end
 
   test "describes itself by chat and mode" do
-    assert_equal "WhatsApp: every message in Event", build("chat_id" => CHAT, "chat_name" => "Event", "mode" => "listen").description
+    assert_equal "WhatsApp: every message in Party", build("chat_id" => CHAT, "chat_name" => "Party", "mode" => "listen").description
     assert_equal "WhatsApp: messages addressing Zimmer in #{CHAT}", build("chat_id" => CHAT, "mode" => "addressed").description
   end
 

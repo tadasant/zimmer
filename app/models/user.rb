@@ -14,7 +14,7 @@
 #   * WHICH external account belongs to which human — `slack_user_ids`.
 #
 # Slack IDs are deployment configuration, and this repository is public, so the
-# seeded rows ship with an EMPTY array and a deployment fills them in at
+# seeded row ships with an EMPTY array and a deployment fills them in at
 # /supervisor/users. Until it does, no Slack message is attributed to anybody —
 # which is why the roster is a table and not a file: switching attribution on is
 # a row edit, not a deploy.
@@ -38,26 +38,20 @@ class User < ApplicationRecord
   KEY_FORMAT = /\A[a-z0-9][a-z0-9_.-]*\z/
 
   # The roster as shipped, for `db:seed` on a fresh install. The migration that
-  # creates the table inserts the same two rows in raw SQL — deliberately
+  # creates the table inserts the same row in raw SQL — deliberately
   # duplicated, because a migration replayed years from now must not depend on
-  # what this file says then. `slack_user_ids` is absent from both: it is
-  # deployment configuration and this repository is public.
+  # what this file says then.
+  #
+  # Only the admin ships, and without an email. Email addresses, Slack IDs and
+  # every other human are deployment configuration, and this repository is
+  # public: a deployment adds them at /supervisor/users.
   SEEDED = [
     {
-      key: "tadasant",
+      key: DEFAULT_ADMIN_KEY,
       display_name: "Tadas",
-      email: "owner@example.com",
       notes: "Owns and operates this Zimmer deployment, and is its admin: " \
              "anything typed into the Zimmer web UI is his. When his instruction " \
              "conflicts with an inference you drew, his instruction wins."
-    },
-    {
-      key: "operator-b",
-      display_name: "Operator B",
-      email: "operator_b@example.com",
-      notes: "The other named human in this deployment's circle of trust. Her " \
-             "messages are genuine human instruction, but she is not the admin: " \
-             "web UI actions are not attributed to her."
     }
   ].freeze
 

@@ -5,8 +5,8 @@
 # The named humans this deployment knows about.
 #
 # Existing rows are left ALONE — `slack_user_ids` and `notes` are edited at
-# /supervisor/users, and a re-run of `db:seed` must not undo that. The same two
-# rows are inserted by the migration that creates the table (a deployment with
+# /supervisor/users, and a re-run of `db:seed` must not undo that. The same
+# row is inserted by the migration that creates the table (a deployment with
 # an existing database never runs seeds), so this is the fresh-install path.
 User::SEEDED.each do |attrs|
   next if User.exists?(key: attrs[:key])

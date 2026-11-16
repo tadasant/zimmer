@@ -24,7 +24,7 @@
 #     { "repos" => ["owner/a"], "exclude_labels" => ["hold issue work gate"] }
 # - "whatsapp": Fires when new messages land in one WhatsApp chat (usually a group), read
 #     through a WhatsApp bridge MCP server (WhatsappService) by WhatsappTriggerPollerJob.
-#     { "chat_id" => "1203...@g.us", "chat_name" => "Event", "mode" => "listen" }
+#     { "chat_id" => "1203...@g.us", "chat_name" => "Party", "mode" => "listen" }
 #     `mode` "listen" fires on every new message; "addressed" only on a batch in which someone
 #     @mentions the linked account, replies to it, or writes one of `keywords`.
 # - "email": Fires once per mail thread when new mail lands in a mailbox, read through a

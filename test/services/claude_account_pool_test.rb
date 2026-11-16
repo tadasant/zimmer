@@ -238,18 +238,18 @@ class ClaudeAccountPoolTest < ActiveSupport::TestCase
     five_hour_back = 232.minutes.from_now
 
     # 5-hour window empty, week spent: nothing to wait for but the week.
-    seed(account("sam@example.com"), five_hour: 0.0, weekly: 1.0,
+    seed(account("pool-4@example.com"), five_hour: 0.0, weekly: 1.0,
       reset_5h: 10.minutes.from_now, reset_7d: weekly_back)
-    seed(account("jon@example.com"), five_hour: 0.0, weekly: 1.0,
+    seed(account("pool-5@example.com"), five_hour: 0.0, weekly: 1.0,
       reset_5h: 15.minutes.from_now, reset_7d: 44.hours.from_now)
     seed(account("pool-3@example.com"), five_hour: 0.0, weekly: 1.0,
       reset_5h: 25.minutes.from_now, reset_7d: 83.hours.from_now)
     # Over its 5-hour cap, week still there: back when the 5-hour window rolls.
-    seed(account("matt@example.com"), five_hour: 1.03, weekly: 0.79,
+    seed(account("pool-6@example.com"), five_hour: 1.03, weekly: 0.79,
       reset_5h: five_hour_back, reset_7d: 5.days.from_now)
-    seed(account("bob@example.com"), five_hour: 1.0, weekly: 0.10,
+    seed(account("pool-7@example.com"), five_hour: 1.0, weekly: 0.10,
       reset_5h: 262.minutes.from_now, reset_7d: 6.days.from_now)
-    seed(account("tadas@example.com"), five_hour: 1.0, weekly: 0.10,
+    seed(account("pool-8@example.com"), five_hour: 1.0, weekly: 0.10,
       reset_5h: 262.minutes.from_now, reset_7d: 6.days.from_now)
 
     measure = ClaudeAccountPool.measure

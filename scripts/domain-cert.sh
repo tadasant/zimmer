@@ -25,7 +25,8 @@
 #   DOMAIN         e.g. zimmer.tadasant.com
 #   CF_ZONE_ID     Cloudflare zone id for the parent zone
 #   CF_API_TOKEN   Cloudflare token (Zone:DNS:Edit + Zone:Zone:Read)
-#   ACME_EMAIL     contact email for the ACME account
+#   ACME_EMAIL     contact email for the ACME account. Needed only when a cert is issued:
+#                  lego will not register without one
 # and exactly one way to reach the droplet:
 #   TS_HOST        tailnet hostname, resolved to its 100.x IP via `tailscale status`
 #                  (production: zimmer; staging: zimmer-staging). SSH goes over
@@ -45,7 +46,7 @@
 #   FORCE_ISSUE    "true" to issue regardless of the current cert
 set -euo pipefail
 
-: "${DOMAIN:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}" "${ACME_EMAIL:?}"
+: "${DOMAIN:?}" "${CF_ZONE_ID:?}" "${CF_API_TOKEN:?}"
 LEGO_VERSION="${LEGO_VERSION:-v4.19.2}"
 ACME_CA="${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}"
 RENEW_DAYS="${RENEW_DAYS:-30}"
@@ -180,6 +181,9 @@ if [ "$need_issue" != "true" ]; then
 fi
 
 if [ "$need_issue" = "true" ]; then
+  # Checked here rather than up front: only issuance needs it, and a run that finds the cert
+  # still valid must not fail on it.
+  : "${ACME_EMAIL:?is not set: lego will not register an ACME account without a contact email (in CI: the ACME_EMAIL Actions secret)}"
   log "issuing via ACME DNS-01 (Cloudflare), lego ${LEGO_VERSION}"
   tmp="$(mktemp -d)" # removed by cleanup() on exit
   curl -fsSL "https://github.com/go-acme/lego/releases/download/${LEGO_VERSION}/lego_${LEGO_VERSION}_linux_amd64.tar.gz" \

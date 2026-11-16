@@ -22,7 +22,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     @api_key = "test_api_key_oauth_flow"
     ENV["API_KEYS"] = @api_key
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     # The web sign-in wall is off unless a test turns it on.
     WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: nil))
     ENV["ZIMMER_DEV_WEB_USER_EMAIL"] = "owner@example.com"
@@ -697,7 +697,7 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
 
   test "the allowed domains fall back to the web sign-in's" do
     ENV.delete("OAUTH_SERVER_ALLOWED_DOMAINS")
-    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: "example.org, tadasant.com"))
+    WebAuth::Configuration.stubs(:current).returns(web_auth_configuration_with(client_id: nil, allowed_domains: "example.org, example.com"))
     _, challenge = pkce
 
     get "/oauth/authorize", params: authorize_params(register["client_id"], challenge)

@@ -150,6 +150,8 @@ resize command.
 | `STAGING_OPERATOR_SSH_KEY` | base64 of the operator SSH **private** key — the identity agent sessions SSH with ([below](#the-ssh-identity-an-agent-session-holds)). Optional: without it the app boots fine and only the `ssh-*` MCP servers fail |
 | `STAGING_ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` | base64 of the `zimmer-secrets-staging` resolver service-account key — the first link of the `${VAR}` chain ([Parameter Store](/operate/secrets-parameter-store/#staging-gets-its-own-project-and-one-more-link-than-production)). Optional: without it the app boots fine and every `${VAR}` resolves from `staging.yml.enc` as before |
 | `STAGING_CLOUDFLARE_TUNNEL_TOKEN` | the [optional Cloudflare edge](/operate/deploying/#optional-cloudflare-edge)'s connector, passed to `scripts/install-cloudflared.sh` by the deploy. Optional: unset, the converge changes nothing. Deliberately **not** a Terraform variable, so it never lands in `user_data` |
+| `CLOUDFLARE_API_TOKEN` | `domain-cert-staging.yml`: the ACME DNS-01 challenge and the `domain → tailnet IP` A record ([TLS](/operate/deploying/)) |
+| `ACME_EMAIL` | `domain-cert-staging.yml`: the contact address the ACME account is registered with. lego refuses to issue without one, so a run that has to issue fails when it is unset. A secret rather than a literal in the workflow because a public repo's workflow logs are public |
 | `SLACK_BOT_TOKEN` / `SLACK_ALERTS_CHANNEL_ID` | `alert-ci-failure.yml`, posting main-branch CI failures to #alerts ([below](#slack-ci-failure-alerts)) |
 
 ## GitHub Actions variables

@@ -16,7 +16,7 @@ class AssistantHumanMessageCaptureTest < ActionDispatch::IntegrationTest
   setup do
     @saved_env = ENV_KEYS.index_with { |k| ENV[k] }
     ENV["OAUTH_SERVER_ISSUER"] = ISSUER
-    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "tadasant.com"
+    ENV["OAUTH_SERVER_ALLOWED_DOMAINS"] = "example.com"
     @api_key = "test_api_key_assistant_capture"
     ENV["API_KEYS"] = @api_key
 

@@ -4,7 +4,7 @@ require "test_helper"
 
 class WebIdentityTest < ActiveSupport::TestCase
   def google_identity(sub: "sub-1", email: "owner@example.com")
-    WebAuth::GoogleOauth::Identity.new(sub: sub, email: email, hosted_domain: "tadasant.com", name: "Tadas")
+    WebAuth::GoogleOauth::Identity.new(sub: sub, email: email, hosted_domain: "example.com", name: "Tadas")
   end
 
   def enrolled_identity(at: Time.current)
