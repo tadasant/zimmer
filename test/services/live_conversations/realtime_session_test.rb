@@ -26,8 +26,10 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert_equal "gpt-4o-mini-transcribe", session.dig("audio", "input", "transcription", "model")
     assert_equal "semantic_vad", session.dig("audio", "input", "turn_detection", "type")
     # The turn detection a call starts with: OpenAI ends the turn and answers it.
-    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "high", "create_response" => true, "interrupt_response" => true },
                  session.dig("audio", "input", "turn_detection"))
+    assert_equal({ "type" => "far_field" }, session.dig("audio", "input", "noise_reduction"), "the shipped default is sent, not left out")
+    assert_in_delta 1.2, session.dig("audio", "output", "speed")
     assert_equal "debug", minted[:telemetry], "the app reports every step of a call until the setting is turned down"
     assert session["instructions"].start_with?("# Live\nBe brief.")
     assert_includes session["instructions"], "## Right now: spoken"
@@ -82,7 +84,7 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     detection = session.dig("audio", "input", "turn_detection")
     assert_equal "server_vad", detection["type"]
     assert_equal 800, detection["silence_duration_ms"]
-    assert_in_delta 0.5, detection["threshold"]
+    assert_in_delta 0.75, detection["threshold"]
     assert session["instructions"].end_with?("Talk like a pilot.")
   end
 
@@ -141,6 +143,37 @@ class LiveConversations::RealtimeSessionTest < ActiveSupport::TestCase
     assert update[:instructions].end_with?("Shorter.")
     assert update.dig(:audio, :input).key?(:noise_reduction)
     assert_includes update[:tools].map { |t| t[:name] }, "update_live_settings"
+  end
+
+  test "noise reduction off is left out of a new call and turned off by name mid-call" do
+    LiveConversations::SettingsUpdate.call({ "voice_noise_reduction" => "off" }, actor: LiveConversations::SettingsUpdate::Actor.human("test"))
+    conversation = create_live_conversation(mode: "voice")
+    client = LiveConversationHelpers::FakeOpenai.new
+
+    LiveConversations::RealtimeSession.mint(conversation, client: client)
+
+    assert_not client.secret_requests.sole.dig("session", "audio", "input").key?("noise_reduction")
+    input = LiveConversations::RealtimeSession.new(conversation).session_update.dig(:audio, :input)
+    assert input.key?(:noise_reduction)
+    assert_nil input[:noise_reduction]
+  end
+
+  test "a reset puts the tuned voice defaults back" do
+    actor = LiveConversations::SettingsUpdate::Actor.human("test")
+    LiveConversations::SettingsUpdate.call(
+      { "voice_listening" => "always", "voice_vad_eagerness" => "auto", "voice_noise_reduction" => "near_field",
+        "voice_vad_threshold" => 0.5, "voice_vad_silence_duration_ms" => 500, "voice_speed" => 1.0 }, actor: actor
+    )
+    LiveConversations::SettingsUpdate.call({}, actor: actor, reset: true)
+    setting = LiveSetting.current
+
+    assert_equal(
+      { voice_listening: "wake_word", voice_vad_eagerness: "high", voice_noise_reduction: "far_field", voice_vad_threshold: 0.75,
+        voice_vad_silence_duration_ms: 900, voice_speed: 1.2, voice_turn_detection: "semantic_vad" },
+      %i[voice_listening voice_vad_eagerness voice_noise_reduction voice_vad_threshold voice_vad_silence_duration_ms voice_speed voice_turn_detection]
+        .index_with { |key| setting.effective(key) }
+    )
+    assert_empty LiveSetting::KEYS.select { |key| setting.overridden?(key) }
   end
 
   test "a call's instructions and its mid-call update carry the scratchpad" do

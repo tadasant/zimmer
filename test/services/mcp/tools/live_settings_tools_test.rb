@@ -23,14 +23,14 @@ class Mcp::Tools::LiveSettingsToolsTest < ActiveSupport::TestCase
     result = @get.call({})
 
     LiveSetting::KEYS.each { |key| assert_includes result, "- #{key} = " }
-    assert_includes result, "voice_speed = 1.0 (default)"
+    assert_includes result, "voice_speed = 1.2 (default)"
     assert_includes result, "choices: gpt-realtime-2.1-mini, gpt-realtime-2.1, gpt-realtime-2"
     assert_includes result, "Live mode guidance:\n(empty)"
     assert_includes result, "https://zimmer.example.com/live/settings"
   end
 
   test "the read marks what the mode leaves unused, and update says when a write has no effect" do
-    assert_match(/voice_vad_threshold = 0\.5 \(default\).*NO EFFECT now/, @get.call({}))
+    assert_match(/voice_vad_threshold = 0\.75 \(default\).*NO EFFECT now/, @get.call({}))
 
     result = @action.call({ "action" => "update", "settings" => { "voice_vad_threshold" => 0.75 } })
     assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, result)

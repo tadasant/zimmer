@@ -16,7 +16,7 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     assert_equal "gpt-6-luna", setting.effective(:text_model)
     assert_equal "gpt-realtime-2.1-mini", setting.effective(:voice_model)
     assert_equal "marin", setting.effective(:voice_name)
-    assert_in_delta 1.0, setting.effective(:voice_speed)
+    assert_in_delta 1.2, setting.effective(:voice_speed)
     assert_equal "semantic_vad", setting.effective(:voice_turn_detection)
     assert_nil setting.effective(:text_temperature)
     assert_equal "", setting.guidance_text

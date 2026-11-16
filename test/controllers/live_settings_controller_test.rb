@@ -15,7 +15,7 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     LiveSetting::KEYS.each { |key| assert_select "[data-live-setting-field=#{key}]" }
     assert_select "select#live_setting_voice_model option[value=?]", "gpt-realtime-2.1"
-    assert_select "input#live_setting_voice_speed[min='0.25'][max='1.5'][placeholder=?]", "Default (1.0)"
+    assert_select "input#live_setting_voice_speed[min='0.25'][max='1.5'][placeholder=?]", "Default (1.2)"
     assert_select "textarea#live_setting_guidance"
     assert_select "[data-controller=live-settings-saved]", count: 0
 
@@ -47,13 +47,13 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "saving a knob the mode does not use says so, whether or not it changed anything" do
-    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" }, loaded: { voice_vad_threshold: "" } }
+    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.6" }, loaded: { voice_vad_threshold: "" } }
 
     assert_match(/Threshold \(silence\) has no effect under Semantic turn detection/, flash[:alert])
-    assert_equal "Saved. Threshold (silence): default (0.5) → 0.75", flash[:notice]
+    assert_equal "Saved. Threshold (silence): default (0.75) → 0.6", flash[:notice]
     follow_redirect!
 
-    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.75" } }
+    patch live_settings_path, params: { live_setting: { voice_vad_threshold: "0.6" } }
     assert_match(/Threshold \(silence\) has no effect/, flash[:alert])
     assert_equal "Nothing changed.", flash[:notice]
     follow_redirect!

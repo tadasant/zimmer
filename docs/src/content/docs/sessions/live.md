@@ -410,8 +410,8 @@ answers:
 
 | Mode | Answers | For |
 | --- | --- | --- |
-| Always (default) | every line it hears | a private space, the car |
-| Wake word | a line that says "Zimmer", anywhere in it, or a follow-up within ten seconds of the last line kept or spoken | a room with other people in it |
+| Always | every line it hears | a private space, the car |
+| Wake word (default) | a line that says "Zimmer", anywhere in it, or a follow-up within ten seconds of the last line kept or spoken | a room with other people in it |
 | Dynamic | the same, or a line a text model judges was said to Zimmer | the same, without the wake word |
 
 In Always, OpenAI's turn detection starts each reply itself. In the two gated modes, Zimmer builds
@@ -516,7 +516,8 @@ spoken (`SystemPrompt`), so "how do I make you stop listening?" gets a straight 
 `/live/settings` holds what is worth tuning about how Live Mode thinks, sounds and listens. There is
 one set for the whole deployment, a single `LiveSetting` row. Reach it from the gear on a
 conversation's page, from `/live`, or from Settings. Every field is blank until somebody sets it,
-and blank means the shipped default: the behaviour from before any of this was tunable.
+and blank means the shipped default. The voice defaults are the values Live Mode was tuned to by
+use: a wake word, far field noise reduction, high eagerness and a speed of 1.2.
 **Reset settings to defaults** writes blanks back. It leaves the guidance alone.
 
 | Setting | Path | Default | Choices or range | Applies |
@@ -527,13 +528,13 @@ and blank means the shipped default: the behaviour from before any of this was t
 | Voice model | voice | `gpt-realtime-2.1-mini` (or `LIVE_VOICE_MODEL`) | `gpt-realtime-2.1-mini`, `gpt-realtime-2.1`, `gpt-realtime-2` | next call |
 | Voice reasoning effort | voice | the model's | `minimal` … `xhigh` | next call |
 | Voice | voice | `marin` (or `LIVE_VOICE_VOICE`) | OpenAI's ten voices | next call |
-| Speaking speed | voice | 1.0 | 0.25–1.5 | mid-call |
+| Speaking speed | voice | 1.2 | 0.25–1.5 | mid-call |
 | Voice max output tokens | voice | no cap | 1,024–4,096 ([why the floor](#the-voice-output-cap)) | mid-call |
-| Listening | voice | `always` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call, except on a call that has been on the car |
+| Listening | voice | `wake_word` | `always`, `wake_word`, `dynamic` ([Listening](#listening-which-lines-get-an-answer)) | mid-call, except on a call that has been on the car |
 | Turn detection | voice | `semantic_vad` | `semantic_vad`, `server_vad` | mid-call |
-| Eagerness (semantic) | voice | `auto` | `auto`, `low`, `medium`, `high` | mid-call |
-| Threshold, prefix padding, silence duration (silence) | voice | 0.5, 300 ms, 500 ms | 0.1–0.95, 0–1,000 ms, 200–3,000 ms | mid-call |
-| Noise reduction | voice | off | `near_field`, `far_field` | mid-call |
+| Eagerness (semantic) | voice | `high` | `auto`, `low`, `medium`, `high` | mid-call |
+| Threshold, prefix padding, silence duration (silence) | voice | 0.75, 300 ms, 900 ms | 0.1–0.95, 0–1,000 ms, 200–3,000 ms | mid-call |
+| Noise reduction | voice | `far_field` | `off`, `near_field`, `far_field` | mid-call |
 | Transcription model | voice | `gpt-4o-mini-transcribe` | that, `gpt-4o-transcribe` | mid-call |
 | Call telemetry (iOS app) | voice | `debug` | `debug`, `info`, `warn`, `off` ([Call telemetry](#call-telemetry)) | the app's next batch |
 | Voice engine | engine | `openai_realtime` | `openai_realtime`, `gpt_live_claude`, `livekit_claude` ([Voice engines](#voice-engines)) | next call |

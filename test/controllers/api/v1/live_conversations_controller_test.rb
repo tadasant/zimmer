@@ -218,7 +218,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal false, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response"), "the phone asks for its own replies"
 
     post "/api/v1/live_conversations/#{conversation.id}/session_update", params: { listening_modes: "1" }, headers: car
-    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "high", "create_response" => true, "interrupt_response" => true },
                  response.parsed_body.dig("session", "audio", "input", "turn_detection"),
                  "handed to the car, OpenAI ends each turn and answers it")
 
@@ -296,7 +296,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "always", response.parsed_body["listening"]
 
     post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
-    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "high", "create_response" => true, "interrupt_response" => true },
                  response.parsed_body.dig("session", "audio", "input", "turn_detection"))
     assert_equal "ios", conversation.reload.client_surface, "the hand-over is still noted: the instructions stop saying car"
 

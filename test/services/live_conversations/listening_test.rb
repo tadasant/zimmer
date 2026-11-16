@@ -98,10 +98,14 @@ class LiveConversations::ListeningTest < ActiveSupport::TestCase
   end
 
   test "the mode is the setting for a client that can gate, and always for one that cannot" do
-    assert_equal "always", LiveConversations::Listening.mode
-    listen("wake_word")
+    assert_equal "wake_word", LiveConversations::Listening.mode, "the shipped default"
+    assert_equal "always", LiveConversations::Listening.mode(capable: false)
+    listen("always")
 
-    assert_equal "wake_word", LiveConversations::Listening.mode
+    assert_equal "always", LiveConversations::Listening.mode
+    listen("dynamic")
+
+    assert_equal "dynamic", LiveConversations::Listening.mode
     assert_equal "always", LiveConversations::Listening.mode(capable: false)
   end
 
