@@ -2,7 +2,7 @@
 
 module Webhooks
   # Standard Webhooks request signing, the scheme MCP Events webhook delivery profiles (SEP-3415 @
-  # b08e4f9, "Webhook security"):
+  # 4165cc2, "Webhook security"):
   #
   #   webhook-id         the message id, reused across retries of one message
   #   webhook-timestamp  Unix seconds of THIS attempt; a retry regenerates it

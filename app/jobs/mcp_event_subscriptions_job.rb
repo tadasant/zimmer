@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Holds the MCP Events webhook subscriptions behind `mcp_event` conditions (SEP-3415 @ b08e4f9,
+# Holds the MCP Events webhook subscriptions behind `mcp_event` conditions (SEP-3415 @ 4165cc2,
 # "Webhook-Based Delivery"). Every minute it does two passes.
 #
 #   1. RETIRE. A row whose condition was deleted, whose trigger is no longer enabled, whose

@@ -18,8 +18,9 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 
 | | |
 | --- | --- |
-| Proposal | SEP-3415, "Events Extension" (draft, Extensions Track) |
-| Revision | `b08e4f9` (head of the proposal on 2026-10-28) |
+| Proposal | SEP-3415, "Events Extension" (status Accepted, Extensions Track; the PR is still open and unmerged) |
+| Source | `seps/3415-events-extension.md` in the proposal, with a docs copy that has the same body at `docs/seps/3415-events-extension.mdx` |
+| Revision | `4165cc2` (head of the proposal on 2026-11-16) |
 | Extension id | `io.modelcontextprotocol/events` |
 
 ## What is implemented
@@ -37,7 +38,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | `Mcp-Method` / `Mcp-Name` headers | Sent on `events/poll`; `Mcp-Method` on `events/list` |
 | Error codes (provisional numbers) | Named in one place, `McpEvents::ERROR_CODES` |
 | Payloads are untrusted | `{{event.<field>\|untrusted}}` / `\|id` only; a bare field is refused |
-| `events/stream` (push) | **Not implemented** |
+| `events/stream` (push), including `heartbeatMs` negotiation and reconnect jitter | **Not implemented** |
 | `events/subscribe` (webhook), with client-generated `whsec_` secret, `cursor` and `ttlMs` | `McpEvents::Client#subscribe`, held by `McpEventSubscriptionsJob`: asks for six hours, refreshes before `refreshBefore` with the last cursor |
 | `events/unsubscribe` | `McpEvents::Client#unsubscribe` when a condition is disabled, edited or deleted; `NotFound` counts as done |
 | Webhook delivery: Standard Webhooks signature, 5-minute timestamp window, multi-signature rotation | `Webhooks::StandardWebhooksSignature`, checked against the Standard Webhooks reference vector |
@@ -48,7 +49,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | `gap` / `terminated` envelopes | Cursor kept / subscription re-created on the next sweep |
 | `410` for a delivery not wanted | Sent for a condition disabled or edited and not yet unsubscribed |
 | `deliveryStatus` | `active: false` shows the condition as `suspended`; only the SEP's `lastError` categories are shown |
-| `v1a,` (ed25519 server identity) | **Not verified**; skipped, as the SEP allows |
+| `v1a,` (ed25519 server identity), Server Card `signingKeys` / `egressIpRanges` | **Not verified** and the Server Card is not read; skipped, as the SEP allows |
 | `notifications/events/list_changed` | **Not implemented.** The six-hourly sweep re-reads `events/list` |
 
 ## Deliberate deviations
@@ -74,3 +75,15 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 - **2026-11-11, still `b08e4f9`.** The SEP has not moved since the pin. Webhook mode
   (`events/subscribe`, `events/unsubscribe`, signed delivery, challenge echo) was implemented against
   the same revision. No drift to classify.
+- **2026-11-16, `b08e4f9` → `4165cc2`.** The SEP file moved from `seps/0000-events-extension.md` to
+  `seps/3415-events-extension.md`, and the proposal added a docs copy with the same body. Changes,
+  classified: status Draft → Accepted (editorial, out of scope); push heartbeat interval negotiation
+  (`heartbeatMs` suggested on `events/stream`, granted on `notifications/events/active`, dead stream
+  at three times the grant rather than twice the interval, 30 seconds now only the recommended default) and reconnect jitter
+  (additive, push only, out of scope: Zimmer has no push); the Server Card members `signingKeys` and
+  `egressIpRanges` move from `remotes[].extensions[...]` to `remotes[].extensionsInfo[...]`, and a
+  cross-origin card's keys MUST NOT be used (webhook, out of scope: Zimmer neither verifies `v1a,` nor
+  reads the card); a new rationale paragraph and Open Question 6 (non-normative). `events/list`,
+  `events/poll`, `events/subscribe`, `events/unsubscribe`, delivery and its signature, the capability
+  shape, the extension id, cursor semantics, error codes and the `Mcp-Name` header are unchanged. No
+  wire-breaking change, no code change beyond `McpEvents::SPEC_REVISION`.

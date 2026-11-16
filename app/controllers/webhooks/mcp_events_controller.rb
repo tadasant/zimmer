@@ -2,7 +2,7 @@
 
 module Webhooks
   # The MCP Events webhook receiver: `POST /webhooks/mcp_events/:token`, one URL per
-  # McpEventWebhookSubscription (SEP-3415 @ b08e4f9, "Webhook event delivery").
+  # McpEventWebhookSubscription (SEP-3415 @ 4165cc2, "Webhook event delivery").
   #
   # In production the path sits behind a Cloudflare Access service-token policy of its own, which
   # the delivering server satisfies with CF-Access-Client-Id / -Secret headers. Nothing here reads
