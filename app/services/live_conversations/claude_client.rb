@@ -30,9 +30,12 @@ module LiveConversations
   #   --disable-slash-commands  the request cannot open a skill or command
   #
   # Claude Code's own system prompt is kept and the delegation's instructions
-  # are appended to it (`--append-system-prompt`), so the run is the same shape
-  # as every other subscription call Zimmer makes. The transcript is kept, so
-  # TokenUsageIngestionService accounts for it like any other headless call.
+  # are appended to it, so the run is the same shape as every other subscription
+  # call Zimmer makes. Nothing private goes on the command line, where `ps`
+  # shows it: the MCP config (with its token) and the instructions are mode-0600
+  # files in the run's own directory, and the request goes on stdin. That
+  # directory is named for headless inference, so TokenUsageIngestionService
+  # accounts for the run's transcript like any other headless `claude -p` call.
   class ClaudeClient
     # A delegation is waited on by a voice call; a slow one is worth less than a
     # quick "I could not get that" the person hears.
@@ -45,16 +48,23 @@ module LiveConversations
     # 5 to 47 seconds against the same stand-in API; with them off, 4 to 5.
     QUIET_ENV = { "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" => "1" }.freeze
 
-    # `status` is the CLI's exit status (nil for a timeout); `kind` what went
-    # wrong, for ClaudeDelegate to say: :auth (Claude Code is not signed in or
-    # its credential was refused), :rate_limited, :timeout, :failed.
-    class Error < StandardError
-      attr_reader :kind, :status
+    # The prefix TokenUsageIngestionService::HEADLESS_DIR recognises once
+    # Claude Code turns the directory into a project name.
+    RUN_DIR_PREFIX = "headless_inference_live_delegation_"
 
-      def initialize(message = nil, kind: :failed, status: nil)
+    # `status` is the CLI's exit status (nil for a timeout or a run that never
+    # started); `kind` what went wrong, for ClaudeDelegate to say: :auth (Claude
+    # Code is not signed in or its credential was refused), :rate_limited,
+    # :timeout, :max_turns, :failed. `usage` is what the run spent before it
+    # failed, when the CLI reported it.
+    class Error < StandardError
+      attr_reader :kind, :status, :usage
+
+      def initialize(message = nil, kind: :failed, status: nil, usage: nil)
         super(message)
         @kind = kind
         @status = status
+        @usage = usage
       end
     end
 
@@ -122,23 +132,29 @@ module LiveConversations
     # @return [Answer]
     # @raise [Error]
     def run(prompt:, system:, model:, mcp_token:)
-      temp_dir = Dir.mktmpdir("live_delegation_")
+      temp_dir = Dir.mktmpdir(RUN_DIR_PREFIX)
+      files = write_inputs(temp_dir, prompt, system, mcp_token)
       out_file = File.join(temp_dir, "out.json")
       err_file = File.join(temp_dir, "err.txt")
-      pid = @process_manager.spawn(@env, *command(prompt, system, model, mcp_token),
-                                   chdir: temp_dir, out: [ out_file, "w" ], err: [ err_file, "w" ])
+      pid = @process_manager.spawn(@env, *command(model, files), chdir: temp_dir,
+                                   in: [ files[:prompt], "r" ], out: [ out_file, "w" ], err: [ err_file, "w" ])
       status = Timeout.timeout(@timeout) { @process_manager.wait(pid) }
-      exit_status = status.is_a?(Array) ? status[1]&.exitstatus : nil
-      answer_from(File.read(out_file), exit_status, File.exist?(err_file) ? File.read(err_file) : "")
+      process_status = status.is_a?(Array) ? status[1] : nil
+      answer_from(File.read(out_file), process_status, File.exist?(err_file) ? File.read(err_file) : "")
     rescue Timeout::Error
       terminate(pid)
       raise Error.new("Claude Code did not answer within #{@timeout}s", kind: :timeout)
+    rescue SystemCallError, IOError => e
+      # The binary missing, the run directory unwritable: a run that never
+      # started is a failure to say, not a 500 for the client.
+      @logger.warn("[live.claude] could not run claude: #{e.class}: #{e.message.truncate(STDERR_LOG_CHARS)}")
+      raise Error.new("Claude Code could not be started (#{e.class})", kind: :failed)
     ensure
       FileUtils.rm_rf(temp_dir) if temp_dir
     end
 
-    def command(prompt, system, model, mcp_token)
-      mcp_config = { mcpServers: { MCP_SERVER => { type: "http", url: @mcp_url, headers: { "Authorization" => "Bearer #{mcp_token}" } } } }
+    # @param files [Hash] the paths write_inputs returned
+    def command(model, files)
       [ @claude_binary,
         "--model", model,
         "--output-format", "json",
@@ -147,16 +163,29 @@ module LiveConversations
         "--setting-sources", "",
         "--disable-slash-commands",
         "--strict-mcp-config",
-        "--mcp-config", mcp_config.to_json,
+        "--mcp-config", files[:mcp_config],
         "--allowedTools", "mcp__#{MCP_SERVER}",
-        "--append-system-prompt", system,
-        "-p", prompt ]
+        "--append-system-prompt-file", files[:system],
+        "-p" ]
     end
 
     private
 
+    def write_inputs(dir, prompt, system, mcp_token)
+      mcp_config = { mcpServers: { MCP_SERVER => { type: "http", url: @mcp_url, headers: { "Authorization" => "Bearer #{mcp_token}" } } } }
+      { prompt: private_file(dir, "prompt.txt", prompt.to_s), system: private_file(dir, "system.txt", system.to_s),
+        mcp_config: private_file(dir, "mcp.json", mcp_config.to_json) }
+    end
+
+    def private_file(dir, name, content)
+      path = File.join(dir, name)
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(content) }
+      path
+    end
+
     # `claude -p --output-format json` prints one result object, error or not.
-    def answer_from(stdout, exit_status, stderr)
+    def answer_from(stdout, process_status, stderr)
+      exit_status = process_status&.exitstatus
       result = begin
         JSON.parse(stdout.to_s.strip.lines.last.to_s)
       rescue JSON::ParserError
@@ -168,8 +197,11 @@ module LiveConversations
       end
 
       text = result["result"].to_s
-      if result["is_error"] || !exit_status.to_i.zero? || result["subtype"].to_s.start_with?("error")
-        raise Error.new("Claude Code: #{(text.presence || result['subtype']).to_s.truncate(300)}", kind: kind_of(text), status: exit_status)
+      subtype = result["subtype"].to_s
+      if result["is_error"] || subtype.start_with?("error") || !process_status&.success?
+        kind = subtype == "error_max_turns" ? :max_turns : kind_of(text)
+        raise Error.new("Claude Code: #{(text.presence || subtype.presence || 'no answer').truncate(300)}",
+                        kind: kind, status: exit_status, usage: result["usage"])
       end
 
       Answer.new(text: text, usage: result["usage"] || {}, num_turns: result["num_turns"].to_i,
@@ -178,7 +210,7 @@ module LiveConversations
 
     def kind_of(text)
       case text
-      when /not logged in|\/login|invalid api key|oauth|authenticat|credential|unauthori[sz]ed|forbidden/i then :auth
+      when /not logged in|please run \/login|authentication_error|oauth token|invalid (api key|bearer)|\b401\b/i then :auth
       when /rate.?limit|usage limit|overloaded|\b429\b|\b529\b/i then :rate_limited
       else :failed
       end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class LiveDelegationMcpControllerTest < ActionDispatch::IntegrationTest
   setup do
@@ -64,6 +65,35 @@ class LiveDelegationMcpControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   ensure
     previous.nil? ? ENV.delete(ApiKey::ENV_VAR) : ENV[ApiKey::ENV_VAR] = previous
+  end
+
+  test "a token opens nothing once its call has ended or left gpt_live_claude" do
+    @conversation.update!(status: LiveConversation::ENDED)
+    rpc("tools/list")
+    assert_response :unauthorized
+
+    @conversation.update!(status: LiveConversation::ACTIVE, voice_engine: "openai_realtime")
+    rpc("tools/list")
+    assert_response :unauthorized
+  end
+
+  test "a failing tool is an MCP error result, not a failed request" do
+    rpc("tools/call", { name: "switch_live_conversation", arguments: {} })
+
+    assert_response :success
+    assert response.parsed_body.dig("result", "isError")
+    assert LiveUsageEvent.find_by!(operation: "tool_call").error.present?
+  end
+
+  test "a function the MCP SDK will not take is skipped, not the whole list" do
+    good = { type: "function", name: "get_live_settings", description: "ok", parameters: { type: "object", properties: {} } }
+    bad = { type: "function", name: "bad name with spaces" * 10, description: "no", parameters: { type: "object", properties: {} } }
+    LiveConversations::ToolBridge.any_instance.stubs(:realtime_tools).returns([ bad, good ])
+
+    rpc("tools/list")
+
+    assert_response :success
+    assert_equal [ "get_live_settings" ], response.parsed_body.dig("result", "tools").map { |tool| tool["name"] }
   end
 
   test "a token for a conversation that no longer exists opens nothing" do

@@ -387,13 +387,12 @@ confirmation. Only merging does.
 ### The GPT-Live engine has never run against OpenAI or Anthropic
 
 The `gpt_live_claude` voice engine is built from OpenAI's published GPT-Live protocol (WebRTC session
-start, `session.delegation.created`, `session.commentary.append`, `session.closed`) and the
-Anthropic Messages API, and is tested against scripted stand-ins for both, on the web dock and in
-the iOS app (see below). No call has been made
-against the real services, because no GPT-Live access has been confirmed. Four things are guesses
-until one has: whether the Messages API serves Sonnet and Opus to a Claude Code subscription token
-outside Claude Code (Zimmer's quota probe only proves it for Haiku; a refusal is spoken as "I
-couldn't reach my reasoning backend" and the call carries on), the field names in `session.closed`'s
+start, `session.delegation.created`, `session.commentary.append`, `session.closed`), and its Claude
+half is a Claude Code run on the subscription. Both are tested against scripted stand-ins, on the web
+dock and in the iOS app (see below); the Claude half was also run end to end with the real `claude`
+binary against a stand-in API. Calls on 2026-11-15 reached GPT-Live, but every delegation then went
+through the Messages API and was refused, so no Claude answer has been heard on a call yet. Three
+things are guesses until one has: the field names in `session.closed`'s
 `usage` (the dock and the app read `seconds`, `duration_seconds`, `session_seconds` or `duration_ms`, and otherwise price
 the seconds it saw itself), whether GPT-Live takes the Live settings' voice (Zimmer retries without
 one when it is refused), and how GPT-Live speaks commentary that arrives while the person is
@@ -416,11 +415,11 @@ subscription delegation through this path will be the first time it runs in prod
 the evidence that the subscription serves Opus to it is that every agent session runs Opus on that
 same account through Claude Code.
 
-The delegation also holds a Puma request thread while Claude Code runs, as the Messages API loop did
-before it, and Claude Code's tool calls come back to the same Puma over HTTP. With the default three
-threads, a delegation leaves two for its own tool calls and everything else. They queue rather than
-deadlock, but three delegations at once on one Puma process would starve each other's tools until
-the 90-second timeout.
+The delegation also holds a Puma request thread while Claude Code runs, and Claude Code's tool calls
+come back to the same Puma over HTTP. So one delegation runs at a time per Puma process with the
+default three threads, and a second one is answered "still working on the last request". That is
+enough for one person's calls. Other long requests on the same Puma, such as an MCP `sync: true`
+call, can still hold the remaining threads and slow a delegation's tool calls until they free up.
 
 ### Live Mode's Claude shares the agent fleet's quota
 

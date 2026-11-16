@@ -15,6 +15,10 @@ tools. If the caller is an agent rather than a script, that is the surface to po
 → [Zimmer's MCP server](/extend/mcp-server/).
 :::
 
+`POST /live/delegation_mcp` is internal and takes no API key: it is the MCP server a Live Mode
+delegation's own Claude Code run calls its tools through, on a token Zimmer signs for that one
+delegation. See [Voice engines](/sessions/live/#voice-engines).
+
 :::caution[API keys have names, not scopes]
 Any valid full-API key can do anything to any session or trigger, with one exception: the User
 view's Merge (`POST /sessions/:id/authorize_merge`), which only a person may give. Each key has a name, and

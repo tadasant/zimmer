@@ -87,7 +87,7 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
   end
 
   test "each failure kind is spoken as what it was" do
-    { rate_limited: /rate limited or overloaded/, timeout: /took too long/, failed: /Claude failed on that one/ }.each do |kind, said|
+    { rate_limited: /rate limited or overloaded/, timeout: /took too long/, max_turns: /more steps/, failed: /Claude failed on that one/ }.each do |kind, said|
       claude = LiveConversationHelpers::FakeClaude.new(responses: [ claude_failure(kind) ])
       result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d-#{kind}", client: claude)
       assert_match said, result.text
@@ -103,19 +103,68 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     end
   end
 
-  test "a hang-up Claude made through the tools ends the call once the goodbye is said" do
+  # What LiveDelegationMcpController writes when Claude calls hang_up.
+  def hang_up_during(claude, delegation_id)
     conversation = @conversation
-    claude = LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Bye for now.") ])
     claude.define_singleton_method(:run) do |**params|
-      conversation.turns.create!(role: "tool", tool_name: "hang_up", call_id: "mcp_1", tool_arguments: {}, tool_output: "ok", tool_error: false)
+      LiveUsageEvent.record!(engine: "gpt_live_claude", live_conversation: conversation, operation: "tool_call", vendor: "zimmer",
+                             model: "hang_up", count: 1, details: { delegation_id: delegation_id })
       super(**params)
     end
+    claude
+  end
+
+  test "a hang-up Claude made through the tools ends the call once the goodbye is said" do
+    claude = hang_up_during(LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Bye for now.") ]), "d")
 
     result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
 
     assert result.end_call
     assert result.hung_up
     assert_equal "Bye for now.", result.text
+  end
+
+  test "a hang-up still ends the call when the run fails after it, and another delegation's hang-up does not" do
+    claude = hang_up_during(LiveConversationHelpers::FakeClaude.new(responses: [ claude_failure(:max_turns) ]), "d1")
+    assert LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d1", client: claude).end_call
+
+    other = LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Here you go.") ])
+    assert_not LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d2", client: other).end_call
+  end
+
+  test "a failed run's spend is on the ledger, and running out of steps is said as that" do
+    error = LiveConversations::ClaudeClient::Error.new("Claude Code: error_max_turns", kind: :max_turns, status: 0,
+                                                         usage: { "input_tokens" => 1_000_000, "output_tokens" => 0 })
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d",
+                                                    client: LiveConversationHelpers::FakeClaude.new(responses: [ error ]))
+
+    assert_match(/more steps than I can take on a call/, result.text)
+    row = LiveUsageEvent.find_by!(operation: "delegation")
+    assert_equal 1_000_000, row.input_tokens
+    assert_operator row.cost_usd.to_f, :>, 0
+  end
+
+  test "a second delegation while one is running says so instead of starving the first one's tool calls" do
+    stub_const_running = LiveConversations::ClaudeDelegate::RUNNING
+    stub_const_running[:count] = LiveConversations::ClaudeDelegate::MAX_CONCURRENT
+    claude = LiveConversationHelpers::FakeClaude.new
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
+
+    assert_match(/still working on the last request/, result.text)
+    assert_empty claude.requests
+    assert_equal "busy", LiveUsageEvent.find_by!(operation: "delegation").details["kind"]
+  ensure
+    stub_const_running[:count] = 0
+  end
+
+  test "the slot is released after a run, failed or not" do
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "a",
+                                           client: LiveConversationHelpers::FakeClaude.new(responses: [ claude_failure(:failed) ]))
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "b",
+                                           client: LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversationHelpers::FakeClaude.text("Ok.") ]))
+
+    assert_equal 0, LiveConversations::ClaudeDelegate::RUNNING[:count]
   end
 
   test "an engine at its spend cap does not call Claude: it says so and ends the call" do

@@ -832,14 +832,21 @@ instructions to it.
 The run gets Live Mode's tools and nothing else. It has no built-in tools (`--tools ""`), no settings,
 hooks or CLAUDE.md, and one MCP server: this conversation's tool bridge, served at
 `POST /live/delegation_mcp` (`LiveDelegationMcpController`). That endpoint takes only a token Zimmer
-signs for the one delegation (`DelegationToken`, three minutes), never an API key. The CLI reaches it
-at Zimmer's own address (`AppUrl`), the way agent sessions reach `/mcp`. Each tool call is recorded
-as a tool turn and a `tool_call` row, as before.
+signs for the one delegation (`DelegationToken`, three minutes), never an API key. It opens nothing
+once the conversation has ended or left `gpt_live_claude`. The CLI reaches it at Zimmer's own address
+(`AppUrl`), the way agent sessions reach `/mcp`. The token, the request and the instructions go to the
+CLI in mode-0600 files and on stdin, never on its command line. Each tool call is recorded as a tool
+turn and a `tool_call` row under the delegation's id, which is also how Zimmer learns that Claude hung
+up.
 
 A failure is loud. It is logged at WARN as `[live.claude] delegation failed kind=… exit=… model=…
-message=…`, goes on the ledger with its kind, and the voice says what it was: Claude Code not signed
-in, rate limited, too slow, or failing. It never says the tools are unreachable, and no other model
-is substituted. A delegation costs a Claude Code start, about two seconds measured against a
+message=…`, and it goes on the ledger with its kind and whatever the run spent. The voice says what
+it was: Claude Code not signed in, rate limited, too slow, out of steps, or failing. It never says
+the tools are unreachable, and no other model is substituted. A delegation holds a Puma thread while
+Claude Code runs, and its tool calls come back to the same Puma. So at most the Puma threads less two
+run at once per process, which is one with the default three. A delegation over that is answered
+"still working on the last request" rather than starving the tool calls the other one is waiting
+on. A delegation costs a Claude Code start, about two seconds measured against a
 stand-in API, on top of Claude's own time. The token is read for every delegation, so an account
 rotation or a token refresh reaches Live Mode without a restart. Claude's use is subscription-billed
 and draws on the same 5-hour and weekly quota windows as the fleet. With no current account, or one

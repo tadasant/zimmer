@@ -10,7 +10,7 @@
 # - `voice_tokens`      a Realtime response's tokens (openai_realtime)
 # - `transcription`     the Realtime transcription of one user line
 # - `voice_session`     a GPT-Live session's billed seconds (gpt_live_claude)
-# - `delegation`        one Claude Messages call made to answer a delegation
+# - `delegation`        one Claude Code run made to answer a delegation
 # - `tool_call`         one Zimmer tool Claude ran (unbilled; counted)
 # - `turn_latency`      a turn's timings as the client measured them (unbilled)
 # - `engine_fallback`   a call that asked for an engine and ran on another
@@ -23,9 +23,9 @@
 #
 # `cost_usd` is always the list price. `billing_basis` says whether that money
 # was billed (`metered`) or covered by a flat plan (`subscription`): Claude's
-# rows are subscription when Claude ran on Zimmer's own Claude Code
-# subscription and metered when it ran on Live Mode's Anthropic API key
-# (ClaudeClient, which the writer says); every other vendor is metered.
+# rows are subscription, because Claude runs on Zimmer's own Claude Code
+# subscription (ClaudeClient), unless the writer says otherwise; every other
+# vendor is metered.
 # The "billed" figures count only metered money, and the list price is kept
 # beside it so a subscription's value stays visible. The caps count list price:
 # see SpendGuard.

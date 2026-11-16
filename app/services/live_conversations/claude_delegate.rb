@@ -22,9 +22,17 @@ module LiveConversations
   # capped engine answers with the cap and `end_call`, and the client ends the
   # call (VoiceEngine sends the next one to the default engine).
   #
-  # A failure is logged at WARN (`[live.claude]`), recorded on the ledger, and
-  # said aloud as what it was: Claude Code not signed in or refused, rate
-  # limited, too slow, or failing. Never as the tools being unreachable.
+  # A failure is logged at WARN (`[live.claude]`), recorded on the ledger with
+  # whatever the run spent, and said aloud as what it was: Claude Code not
+  # signed in or refused, rate limited, too slow, out of steps, or failing.
+  # Never as the tools being unreachable.
+  #
+  # The delegation holds a Puma request thread while Claude Code runs, and the
+  # run's tool calls come back to the same Puma over HTTP. So at most
+  # MAX_CONCURRENT run at once per process — the threads less two, one for the
+  # tool calls and one for everything else — and a delegation over that answers
+  # "still working on the last one" rather than starving the tool calls it
+  # would be waiting on.
   #
   # The answer is split into chunks under GPT-Live's 500-token limit on one
   # `session.commentary.append`.
@@ -35,6 +43,9 @@ module LiveConversations
     CHUNK_CHARS = 1_400
     PENDING_MAX_CHARS = 4_000
     ENGINE = VoiceEngine::GPT_LIVE
+    MAX_CONCURRENT = [ ConnectionBudget.puma_threads - 2, 1 ].max
+    RUNNING = { count: 0 }
+    RUNNING_LOCK = Mutex.new
 
     # `cost_usd` is the list price of what this delegation used; `billed_usd`
     # the part of it that was billed (nothing, for Claude on a subscription).
@@ -64,23 +75,54 @@ module LiveConversations
                       "you'll be on the standard voice.", end_call: true, warning: check.reason, rounds: 0)
       end
 
-      started_at = Time.current
+      return busy_result unless claim_slot
+
+      begin
+        run_claude(check)
+      ensure
+        release_slot
+      end
+    end
+
+    private
+
+    def run_claude(check)
       started = monotonic_ms
       answer = client.run(prompt: request_text, system: system_prompt, model: model,
                           mcp_token: DelegationToken.mint(@conversation, delegation_id: @delegation_id))
       record_answer(answer, monotonic_ms - started)
-      hung_up = hung_up_since?(started_at)
+      hung_up = hung_up?
       text = answer.text.squish
       text = "I couldn't finish that in time. Ask again, or narrow it down." if text.blank? && !hung_up
       result(text, end_call: hung_up, hung_up: hung_up, warning: check.warning, rounds: answer.num_turns)
     rescue ClaudeClient::NotConfiguredError
       raise
     rescue ClaudeClient::Error => e
-      record_failure(e, started ? monotonic_ms - started : nil)
+      record_failure(e, monotonic_ms - started)
+      # A goodbye already asked for still ends the call, whatever came after it.
+      return result("Okay, hanging up.", end_call: true, hung_up: true, warning: nil, rounds: 0) if hung_up?
+
       result(failure_text(e), end_call: false, warning: nil, rounds: 0)
     end
 
-    private
+    def claim_slot
+      RUNNING_LOCK.synchronize do
+        next false if RUNNING[:count] >= MAX_CONCURRENT
+
+        RUNNING[:count] += 1
+        true
+      end
+    end
+
+    def release_slot = RUNNING_LOCK.synchronize { RUNNING[:count] -= 1 }
+
+    def busy_result
+      Rails.logger.warn("[live.claude] delegation refused: #{MAX_CONCURRENT} already running in this process " \
+                        "(conversation=#{@conversation.id} delegation=#{@delegation_id})")
+      record(operation: "delegation", vendor: "anthropic", model: model, error: "busy: #{MAX_CONCURRENT} delegations already running",
+             details: { delegation_id: @delegation_id, kind: "busy", via: "claude_code" })
+      result("I'm still working on the last request. Ask me again in a moment.", end_call: false, warning: nil, rounds: 0)
+    end
 
     def result(text, end_call:, warning:, rounds:, hung_up: false)
       Result.new(text: text, chunks: self.class.chunk(text), end_call: end_call, hung_up: hung_up, warning: warning,
@@ -106,7 +148,10 @@ module LiveConversations
     def record_failure(error, latency_ms)
       Rails.logger.warn("[live.claude] delegation failed kind=#{error.kind} exit=#{error.status.inspect} model=#{model} " \
                         "conversation=#{@conversation.id} delegation=#{@delegation_id} message=#{error.message.squish.truncate(200).inspect}")
+      usage = error.usage || {}
       record(operation: "delegation", vendor: "anthropic", model: model, error: error.message.truncate(250), latency_ms: latency_ms,
+             input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
+             cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
              details: { delegation_id: @delegation_id, kind: error.kind.to_s, exit: error.status, via: "claude_code" }.compact)
     end
 
@@ -120,16 +165,19 @@ module LiveConversations
         "Claude is rate limited or overloaded on Zimmer's subscription right now. Try again in a moment."
       when :timeout
         "Claude took too long on that one. Ask again, or narrow it down."
+      when :max_turns
+        "That took more steps than I can take on a call. Ask for less at once, or have me start a background session for it."
       else
         "Claude failed on that one. Try again in a moment, or switch back to the standard voice."
       end
     end
 
     # The person asked to hang up if Claude called `hang_up` during this run.
-    # The call ran in the MCP endpoint's request, so it is read back off the
-    # conversation's tool turns.
-    def hung_up_since?(time)
-      @conversation.turns.where(role: "tool", tool_name: ToolBridge::HANG_UP, tool_error: false).where(created_at: time..).exists?
+    # The call ran in the MCP endpoint's request, which wrote it to the ledger
+    # under this delegation's id, so it is read back from there.
+    def hung_up?
+      LiveUsageEvent.where(live_conversation: @conversation, operation: "tool_call", model: ToolBridge::HANG_UP, error: nil)
+                    .where("details->>'delegation_id' = ?", @delegation_id).exists?
     end
 
     def record(**attributes)
