@@ -27,25 +27,54 @@ module Sessions
   # INITIALLY DEFERRED and checked once at COMMIT against the final state
   # (#353).
   #
-  # Scope: the delete, the renumber and one Log row, committed together.
-  # Renders nothing and checks nothing about the session's status.
+  # One variant, `withdraw_pending`, is for a writer taking back a message it
+  # staged itself: Sessions::InterruptWithFollowUp, when the interrupt it was
+  # staged for fails. It removes the row only while it is still `pending`. A
+  # delivery claims the message (`processing`) under the session's row lock,
+  # which the queue lock waits for, so a claim either commits first and the
+  # withdrawal finds the row gone, or waits for the withdrawal. The row itself
+  # is locked for the status read, because retiring a message as `undelivered`
+  # (EnqueuedMessage#retire_as_stale!) writes the status without the session
+  # lock; the read waits for that write and sees its result. It writes no Log
+  # row: nobody asked for the message to be deleted, and the failure that
+  # caused the withdrawal is reported by the caller.
+  #
+  # Scope: the delete, the renumber and (for `call`) one Log row, committed
+  # together. Renders nothing and checks nothing about the session's status.
   class RemoveQueuedMessage
     # @param message [EnqueuedMessage]
     # @return [Integer, nil] the position the message was removed from, read
     #   under the lock, or nil when the row no longer exists
     def self.call(message)
+      remove(message) do |position|
+        message.session.logs.create!(content: "Enqueued message at position #{position} removed", level: "info")
+      end
+    end
+
+    # @param message [EnqueuedMessage]
+    # @return [Integer, nil] the position the message was removed from, or nil
+    #   when the row no longer exists or is no longer `pending`
+    def self.withdraw_pending(message)
+      remove(message, only_status: "pending")
+    end
+
+    # The transaction behind both entry points. Yields the removed position
+    # inside it, so a caller's Log row commits with the delete or not at all.
+    def self.remove(message, only_status: nil)
       EnqueuedMessage.transaction do
         QueueTail.lock!(message.session_id)
-        position = EnqueuedMessage.where(id: message.id).pick(:position)
+        position, status = EnqueuedMessage.where(id: message.id).lock.pick(:position, :status)
         next nil if position.nil?
+        next nil if only_status && status != only_status
 
         message.destroy!
         EnqueuedMessage.where(session_id: message.session_id)
                        .where("position > ?", position)
                        .update_all("position = position - 1")
-        message.session.logs.create!(content: "Enqueued message at position #{position} removed", level: "info")
+        yield position if block_given?
         position
       end
     end
+    private_class_method :remove
   end
 end

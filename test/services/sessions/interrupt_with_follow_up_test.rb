@@ -185,6 +185,30 @@ class Sessions::InterruptWithFollowUpTest < ActiveSupport::TestCase
     refute result.withdrawn?
   end
 
+  test "a failed interrupt that had promoted the message withdraws it and closes the gap" do
+    session = make_session
+    session.enqueued_messages.create!(content: "ahead", position: 1, status: "pending")
+    session.enqueued_messages.create!(content: "behind", position: 2, status: "pending")
+    # InterruptService promotes the message to the head of the queue before it
+    # dispatches, so a failure after that leaves it at 1: staged 1, ahead 2, behind 3.
+    stub_interrupt(Sessions::Result.new(success: false, error: "dispatch failed")) { |message| message.reorder_to(1) }
+
+    result = send_now(session)
+
+    assert result.withdrawn?
+    assert_equal [ [ "ahead", 1 ], [ "behind", 2 ] ], session.enqueued_messages.order(:position).pluck(:content, :position)
+  end
+
+  test "withdraws through the locked writer" do
+    session = make_session
+    stub_interrupt(Sessions::Result.new(success: false, error: "nope"))
+    Sessions::RemoveQueuedMessage.expects(:withdraw_pending)
+                                 .with { |message| message.content == "Stop and fix the test" }
+                                 .returns(1)
+
+    assert send_now(session).withdrawn?
+  end
+
   test "an interrupt that raises withdraws the message and re-raises" do
     session = make_session
     stub_interrupt { raise "kaboom" }
