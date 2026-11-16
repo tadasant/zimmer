@@ -225,13 +225,13 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
   test "the live model reads and changes its own settings, and the change is recorded as its own" do
     listing = @bridge.execute("get_live_settings", "{}", call_id: "c1")
-    assert_match(/voice_speed = 1\.0 \(default\)/, listing.output)
+    assert_match(/voice_speed = 1\.2 \(default\)/, listing.output)
 
     result = @bridge.execute("update_live_settings", JSON.generate(voice_speed: 1.3, append_guidance: "Talk faster by default."), call_id: "c2")
 
     assert_not result.error
     assert result.session_changed
-    assert_match(/Speaking speed: default \(1\.0\) → 1\.3/, result.output)
+    assert_match(/Speaking speed: default \(1\.2\) → 1\.3/, result.output)
     assert_in_delta 1.3, LiveSetting.current.voice_speed
     change = LiveSettingChange.sole
     assert_equal "agent", change.actor_kind
@@ -274,7 +274,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
   test "reading the settings marks what the mode leaves unused" do
     listing = @bridge.execute("get_live_settings", "{}", call_id: "r1").output
 
-    assert_match(/voice_vad_threshold = 0\.5 \(default\).*NO EFFECT now: used only under server_vad/, listing)
+    assert_match(/voice_vad_threshold = 0\.75 \(default\).*NO EFFECT now: used only under server_vad/, listing)
     assert_no_match(/voice_vad_eagerness = .*NO EFFECT/, listing)
   end
 

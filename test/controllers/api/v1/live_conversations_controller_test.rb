@@ -218,7 +218,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal false, response.parsed_body.dig("session", "audio", "input", "turn_detection", "create_response"), "the phone asks for its own replies"
 
     post "/api/v1/live_conversations/#{conversation.id}/session_update", params: { listening_modes: "1" }, headers: car
-    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "high", "create_response" => true, "interrupt_response" => true },
                  response.parsed_body.dig("session", "audio", "input", "turn_detection"),
                  "handed to the car, OpenAI ends each turn and answers it")
 
@@ -296,7 +296,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "always", response.parsed_body["listening"]
 
     post "#{url}/session_update", params: { listening_modes: "1" }, headers: phone
-    assert_equal({ "type" => "semantic_vad", "eagerness" => "auto", "create_response" => true, "interrupt_response" => true },
+    assert_equal({ "type" => "semantic_vad", "eagerness" => "high", "create_response" => true, "interrupt_response" => true },
                  response.parsed_body.dig("session", "audio", "input", "turn_detection"))
     assert_equal "ios", conversation.reload.client_surface, "the hand-over is still noted: the instructions stop saying car"
 
@@ -395,7 +395,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     get "/api/v1/live/settings", headers: @key_headers
     assert_response :success
     body = response.parsed_body
-    assert_in_delta 1.0, body.dig("settings", "voice_speed")
+    assert_in_delta 1.2, body.dig("settings", "voice_speed")
     speed = body["fields"].find { |f| f["key"] == "voice_speed" }
     assert_equal [ 0.25, 1.5 ], [ speed["min"], speed["max"] ]
     assert speed["mid_call"]
@@ -430,7 +430,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Be brief.", response.parsed_body["guidance"]
 
     post "/api/v1/live/settings/reset", headers: @headers
-    assert_in_delta 1.0, response.parsed_body.dig("settings", "voice_speed")
+    assert_in_delta 1.2, response.parsed_body.dig("settings", "voice_speed")
     assert_equal "Be brief.", response.parsed_body["guidance"]
   end
 
@@ -457,13 +457,13 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     patch "/api/v1/live/settings", params: written.transform_values { nil }, headers: @headers, as: :json
     assert_response :success
     assert_empty response.parsed_body["overrides"]
-    assert_equal "always", response.parsed_body.dig("settings", "voice_listening")
+    assert_equal "wake_word", response.parsed_body.dig("settings", "voice_listening")
     assert_nil response.parsed_body.dig("settings", "voice_max_output_tokens")
     assert_equal [ "human", "the iOS app" ], LiveSettingChange.recent_first.first.then { |c| [ c.actor_kind, c.actor ] }
 
     config = LiveConversations::RealtimeSession.new(conversation, setting: LiveSetting.current).session_config
     assert_not config.key?(:max_output_tokens), "a call minted after the reset has no cap"
-    assert_equal({ type: "semantic_vad", eagerness: "auto", create_response: true, interrupt_response: true },
+    assert_equal({ type: "semantic_vad", eagerness: "high", create_response: true, interrupt_response: true },
       config.dig(:audio, :input, :turn_detection))
   end
 

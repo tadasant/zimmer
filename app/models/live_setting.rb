@@ -2,8 +2,8 @@
 
 # Live Mode's tunable settings and its guidance — one row for the deployment.
 #
-# Every column is nullable, and NULL means "the shipped default": the value Live
-# Mode ran with before any of this was tunable. So a reset writes NULLs, and the
+# Every column is nullable, and NULL means "the shipped default" (default_for).
+# So a reset writes NULLs, and the
 # row only ever records what somebody chose. FIELDS is the one list of what is
 # tunable, read by the settings page, the REST API, the MCP tools and the live
 # model's own `update_live_settings` function, so a field added here shows up on
@@ -113,7 +113,11 @@ class LiveSetting < ApplicationRecord
     "dynamic" => "Dynamic — answers only lines it judges were said to it"
   }.freeze
 
+  # "off" is a value of its own because the default filters: a NULL means
+  # far field, so turning the filter off has to be something you can write.
+  NOISE_REDUCTION_OFF = "off"
   NOISE_REDUCTION = {
+    NOISE_REDUCTION_OFF => "off — no filtering",
     "near_field" => "near field — headphones, a phone at your ear",
     "far_field" => "far field — laptop or car microphone"
   }.freeze
@@ -204,7 +208,7 @@ class LiveSetting < ApplicationRecord
               help: "How long a pause ends your turn.",
               options: nil, min: 200, max: 3_000),
     Field.new(key: :voice_noise_reduction, path: :voice, type: :enum, label: "Noise reduction",
-              help: "Filters the microphone before the model hears it. Blank is off.",
+              help: "Filters the microphone before the model hears it.",
               options: NOISE_REDUCTION, min: nil, max: nil),
     Field.new(key: :voice_transcription_model, path: :voice, type: :enum, label: "Transcription model",
               help: "Writes down what you said, for the thread on the page.",
@@ -242,21 +246,25 @@ class LiveSetting < ApplicationRecord
 
   validate :only_one_row, on: :create
 
-  # The defaults are today's behaviour. The three env variables predate this
-  # table and still pick the shipped default, so a deployment that set one keeps
-  # what it chose until somebody overrides it here.
+  # The defaults are the values Live Mode was tuned to by use: a wake word, far
+  # field noise reduction, eager semantic turn detection and a slightly fast
+  # voice. The silence-detection threshold and pause are tuned too, though they
+  # do nothing until somebody picks Silence turn detection. The three env
+  # variables predate this table and still pick the shipped default, so a
+  # deployment that set one keeps what it chose until somebody overrides it here.
   def self.default_for(key)
     case key.to_sym
     when :text_model then ENV.fetch("LIVE_MODE_MODEL", "").presence || "gpt-6-luna"
     when :voice_model then ENV.fetch("LIVE_VOICE_MODEL", "").presence || "gpt-realtime-2.1-mini"
     when :voice_name then ENV.fetch("LIVE_VOICE_VOICE", "").presence || "marin"
-    when :voice_speed then 1.0
-    when :voice_listening then "always"
+    when :voice_speed then 1.2
+    when :voice_listening then "wake_word"
     when :voice_turn_detection then "semantic_vad"
-    when :voice_vad_eagerness then "auto"
-    when :voice_vad_threshold then 0.5
+    when :voice_vad_eagerness then "high"
+    when :voice_vad_threshold then 0.75
     when :voice_vad_prefix_padding_ms then 300
-    when :voice_vad_silence_duration_ms then 500
+    when :voice_vad_silence_duration_ms then 900
+    when :voice_noise_reduction then "far_field"
     when :voice_transcription_model then "gpt-4o-mini-transcribe"
     # Verbose: everything a call does is reported. Turned down on the Live
     # settings page, without a deploy.

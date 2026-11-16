@@ -125,8 +125,13 @@ module LiveConversations
       {
         transcription: { model: @setting.effective(:voice_transcription_model) },
         turn_detection: turn_detection,
-        noise_reduction: (@setting.effective(:voice_noise_reduction).presence&.then { |type| { type: type } })
+        noise_reduction: noise_reduction
       }
+    end
+
+    def noise_reduction
+      type = @setting.effective(:voice_noise_reduction)
+      { type: type } unless type.blank? || type == LiveSetting::NOISE_REDUCTION_OFF
     end
 
     def turn_detection
