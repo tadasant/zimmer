@@ -2,16 +2,15 @@
 
 # How often GithubTriggerPollerJob polls, and every window that has to move with it.
 #
-# The poller's timing used to be counted in ticks — a removal grace of three ticks, a page after
-# five incomplete searches in a row — which was the same thing as a time while the poller ran every
-# minute. Once GitHub's webhook carries the triggers, the poller becomes a slow backstop, and a
-# 15-minute tick would stretch a three-tick grace to 45 minutes and a five-tick page to 75. So the
-# windows are written here in TIME, and each turns into a tick count for whatever interval is set.
+# The poller's windows are written here in TIME, and each turns into a tick count for whatever
+# interval is set. Counted in ticks they would stretch with the interval: once GitHub's webhook carries
+# the triggers the poller becomes a slow backstop, and at 15 minutes a three-tick grace would be 45
+# minutes and a five-tick page 75.
 #
 # The interval is `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES`, read like the ingest mode (encrypted
 # credentials, then ENV), a whole number of minutes from 1 to 60. Unset, blank or invalid reads as
-# one minute — the cadence the cron entry runs at — and at one minute every number below is the
-# tick count the poller has always used.
+# one minute — the cadence the cron entry runs at — and at one minute the windows are 3 misses, 5
+# sweeps, a 1-hour streak TTL and a 15-minute liveness threshold.
 #
 # The cron entry still enqueues every minute. A longer interval is enforced by #due?, which lets a
 # sweep through only once the previous one started at least an interval ago.
@@ -40,13 +39,14 @@ class GithubTriggerPollCadence
   STREAK_TTL_INTERVALS = 4
 
   # TriggerPollerLivenessCheckJob pages when no sweep has succeeded for this long: two intervals
-  # plus slack, never under the quarter-hour it has always used.
+  # plus slack, never under a quarter-hour.
   LIVENESS_FLOOR = 15.minutes
   LIVENESS_SLACK = 5.minutes
 
-  # Cron enqueues on the minute and a sweep starts a few seconds later, so the gap between two
-  # starts that are one interval apart can read as a little under it.
-  DUE_SLACK = 20.seconds
+  # Cron enqueues on the minute and a sweep starts some seconds later — more when the `pollers` queue
+  # is busy — so two starts one interval apart can read as up to most of a minute under it. Anything
+  # less than one cron period keeps a late start from costing the next sweep a whole extra tick.
+  DUE_SLACK = 50.seconds
 
   LAST_SWEEP_KEY = "github_trigger_poller:last_sweep_started_at"
 
@@ -70,10 +70,9 @@ class GithubTriggerPollCadence
 
   # Once per value per process: this is read on every tick.
   def self.warn_invalid(raw)
-    @warned ||= Set.new
-    return if @warned.include?(raw)
+    @warned ||= Concurrent::Set.new
+    return unless @warned.add?(raw)
 
-    @warned << raw
     Rails.logger.warn("[GithubTriggerPollCadence] #{SETTING_KEY}=#{raw.inspect} is not a whole number of minutes " \
                       "from 1 to #{MAX_INTERVAL.in_minutes.to_i}; polling every minute")
   end

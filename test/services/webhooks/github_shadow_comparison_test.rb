@@ -62,6 +62,26 @@ class Webhooks::GithubShadowComparisonTest < ActiveSupport::TestCase
     assert_equal [ 60 ], [ report[:latency][:median_seconds] ]
   end
 
+  test "a second delivery for an event the webhook already saw folds into it" do
+    # `issues.opened` carrying the label, then `issues.labeled` for it: two webhook rows, one event.
+    observe(@label, "github:r#9:label:x", "webhook", 2.hours)
+    observe(@label, "github:r#9:label:x", "webhook", 2.hours - 1.second)
+    observe(@label, "github:r#9:label:x", "poll", 2.hours - 50.seconds)
+
+    assert_equal({ matched: 1, webhook_only: 0, poll_only: 0, pending: 0 }, report[:totals])
+    assert_equal 50, report[:latency][:median_seconds]
+  end
+
+  test "one dropped delivery does not shift the pairs after it" do
+    observe(@label, "github:r#9:label:x", "poll", 5.hours)
+    observe(@label, "github:r#9:label:x", "webhook", 2.hours)
+    observe(@label, "github:r#9:label:x", "poll", 2.hours - 30.seconds)
+
+    result = report
+    assert_equal({ matched: 1, webhook_only: 0, poll_only: 1, pending: 0 }, result[:totals])
+    assert_equal 30, result[:latency][:median_seconds]
+  end
+
   test "an event that straddles the window's start pairs, and one wholly before it is not counted" do
     observe(@issue, "github:r#1:opened", "webhook", 24.hours + 30.seconds)
     observe(@issue, "github:r#1:opened", "poll", 24.hours - 30.seconds)

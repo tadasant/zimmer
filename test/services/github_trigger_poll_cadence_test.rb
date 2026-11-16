@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class GithubTriggerPollCadenceTest < ActiveSupport::TestCase
   KEY = GithubTriggerPollCadence::SETTING_KEY
@@ -68,7 +69,13 @@ class GithubTriggerPollCadenceTest < ActiveSupport::TestCase
 
     refute cadence.due?(now: now + 1.minute)
     refute cadence.due?(now: now + 4.minutes)
-    assert cadence.due?(now: now + 4.minutes + 45.seconds), "a cron tick a few seconds early is still due"
+    assert cadence.due?(now: now + 4.minutes + 15.seconds), "a sweep that started late does not cost the next one a tick"
     assert cadence.due?(now: now + 5.minutes)
+  end
+
+  test "a cache that cannot be read polls" do
+    Rails.cache.stubs(:read).raises(Redis::CannotConnectError)
+
+    assert at(15).due?
   end
 end

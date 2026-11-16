@@ -102,8 +102,12 @@ module Webhooks
 
       if !reading[:accepting]
         "#{name}: webhook is switched on but has no signing secret, so its endpoint answers 404"
-      elsif (shadow = reading[:shadow]) && (shadow[:totals][:webhook_only] + shadow[:totals][:poll_only]).positive?
+      elsif (shadow = reading[:shadow])
+        # In shadow the poller claims nothing, so a poll claim in the window is left from an earlier
+        # fallback spell and says nothing about the webhook now.
         totals = shadow[:totals]
+        return nil unless (totals[:webhook_only] + totals[:poll_only]).positive?
+
         "#{name}: shadow — in the last #{window_label} the webhook would have fired #{totals[:webhook_only]} event(s) the " \
           "poller did not, and missed #{totals[:poll_only]} the poller fired (#{totals[:matched]} matched)"
       elsif reading[:poll_claims_in_window].positive?

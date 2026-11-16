@@ -62,7 +62,7 @@
   <%# IngestSummary asks for the unmatched events only; the filter keeps this honest if it ever does not. %>
   <% misses = shadow[:recent].reject { |event| event[:status] == "matched" } %>
   <% if misses.any? %>
-    <h6 class="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">Unmatched, newest first</h6>
+    <h6 class="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">Not matched (yet), newest first</h6>
     <ul class="mt-2 space-y-1">
       <% misses.each do |event| %>
         <li class="text-xs text-gray-700">

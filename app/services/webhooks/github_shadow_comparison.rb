@@ -6,9 +6,13 @@ module Webhooks
   # GitHub to `webhook_with_poll_fallback`: in shadow the poller still fires everything, so a
   # webhook that agrees with it on every event, ahead of it, is a webhook that can take over.
   #
-  # Reads TriggerShadowObservation, which both paths write in shadow mode, and pairs one condition's
-  # observations of one event key: the i-th webhook observation with the i-th poll observation, in
-  # time order, so a label that comes off and goes back on is two events, not one. Each event is
+  # Reads TriggerShadowObservation, which both paths write in shadow mode, and walks one condition's
+  # observations of one event key in time order. An observation joins the event still open for that
+  # key when it is from the other path and within the grace of the event's first observation;
+  # otherwise it starts a new event. So a label that comes off and goes back on later is two events,
+  # one dropped delivery does not shift every later pair, and a second webhook row for an event the
+  # webhook already saw (an `opened` and a `labeled` delivery for one label, or a hook installed on
+  # both the repo and the org) folds into it rather than counting as a webhook-only event. Each event is
   #
   #   matched       both paths saw it. Latency is the poll's time minus the webhook's: positive
   #                 when the webhook was ahead, which it should be by about a poll interval.
@@ -91,12 +95,9 @@ module Webhooks
       horizon = @now - @grace
 
       observations.group_by { |condition_id, key, _path, _at| [ condition_id, key ] }.flat_map do |(condition_id, key), rows|
-        webhook = rows.select { |row| row[2] == "webhook" }.map(&:last)
-        poll = rows.select { |row| row[2] == "poll" }.map(&:last)
-
-        Array.new([ webhook.size, poll.size ].max) do |i|
-          webhook_at = webhook[i]
-          poll_at = poll[i]
+        events_for(rows).map do |sightings|
+          webhook_at = sightings["webhook"]
+          poll_at = sightings["poll"]
           first_at = [ webhook_at, poll_at ].compact.min
           status = if webhook_at && poll_at then "matched"
           elsif first_at > horizon then "pending"
@@ -107,6 +108,29 @@ module Webhooks
           { condition_id: condition_id, event: key, status: status, first_at: first_at, webhook_at: webhook_at, poll_at: poll_at }
         end
       end.select { |event| event[:first_at] >= @since }
+    end
+
+    # One key's rows, in time order, grouped into events: { "webhook" => at, "poll" => at }, either
+    # half possibly absent. A row joins the open event while it is within the grace of the event's
+    # first sighting and the event lacks the other path, or is a repeat of a webhook sighting the
+    # event already has. A repeated poll row is a second fire, so it starts a new event.
+    def events_for(rows)
+      events = []
+      open = nil
+
+      rows.each do |_condition_id, _key, path, at|
+        joins = open && at - open.values.min <= @grace &&
+                (!open.key?(path) || (path == "webhook" && !open.key?("poll")))
+        if joins
+          open[path] ||= at
+        else
+          events << open if open
+          open = { path => at }
+        end
+      end
+
+      events << open if open
+      events
     end
 
     def counts(events)

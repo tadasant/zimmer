@@ -151,7 +151,8 @@ class GithubEventJob < ApplicationJob
   def fire_or_observe(delivery_id, condition, item, event:, label: nil)
     return fire(condition, item, event: event, via: "webhook", label: label) unless @shadow
 
-    TriggerShadowObservation.record!(condition, github_claim_key(condition, item, label), path: "webhook", delivery_id: delivery_id)
+    TriggerShadowObservation.record!(condition, github_claim_key(condition, item, label),
+                                     path: "webhook", delivery_id: delivery_id)
     Rails.logger.info "[GithubEventJob] Shadow: GitHub delivery #{delivery_id} would fire condition #{condition.id} " \
                       "for #{item_key(item)} (#{event}); firing nothing, the poller owns it"
   end

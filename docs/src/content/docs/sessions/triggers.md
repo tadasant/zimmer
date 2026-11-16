@@ -1759,9 +1759,11 @@ for this event, keyed by the claim key the fire would have taken. The poller fir
 on `poll`, takes no claim, and records a row for each fire it makes. So nothing a user sees changes,
 and the poller stays the only path that spawns sessions.
 
-`Webhooks::GithubShadowComparison` pairs the two paths' rows per condition and event key — the first
-webhook row with the first poll row, the second with the second, so a label taken off and put back is
-two events — and classifies each event:
+`Webhooks::GithubShadowComparison` pairs the two paths' rows per condition and event key, in time
+order: a row joins the open event when it is from the other path and within the grace of the event's
+first sighting, and otherwise starts a new one. So a label taken off and put back later is two events,
+and a second delivery for one event (an `opened` and a `labeled` for the same label) folds into the
+first rather than reading as webhook-only. Each event is classified:
 
 | Status | Meaning |
 | --- | --- |
@@ -1797,11 +1799,11 @@ poller claims nothing and records nothing, and a job already queued for a delive
 `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` (encrypted credentials first, then ENV) sets how often
 `GithubTriggerPollerJob` sweeps: a whole number of minutes from 1 to 60. Unset, blank or out of range
 means one minute, and an invalid value logs a WARN once. The cron entry still enqueues every minute;
-at a longer interval a tick sweeps only when the last sweep started at least an interval ago (20
-seconds of slack, so a cron tick a few seconds early is not skipped).
+at a longer interval a tick sweeps only when the last sweep started at least an interval ago (50
+seconds of slack, so a sweep that started late does not push the next one a whole tick later).
 
-Every window the poller used to count in ticks is written in time and turned into ticks for the
-interval set (`GithubTriggerPollCadence`):
+Every poller window is written in time and turned into ticks for the interval set
+(`GithubTriggerPollCadence`):
 
 | Window | In time | 1 min | 5 min | 15 min |
 | --- | --- | --- | --- | --- |
@@ -1810,7 +1812,7 @@ interval set (`GithubTriggerPollCadence`):
 | Streak expiry in the cache | 1 hour, never fewer than 4 intervals | 1 h | 1 h | 1 h |
 | `TriggerPollerLivenessCheckJob` stall threshold | 2 intervals + 5 minutes, never under 15 minutes | 15 min | 15 min | 35 min |
 
-At one minute each is exactly what the poller has always done. The floors of two are deliberate:
+At one minute these are 3 misses, 5 sweeps, one hour and 15 minutes. The floors of two are deliberate:
 one empty search is the index blip the grace exists for, and one degraded sweep is a blip too, so at
 a slow cadence a removal or a page waits for the second sweep in a row rather than the first.
 
