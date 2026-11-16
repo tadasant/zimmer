@@ -2006,6 +2006,52 @@ existing `Github::CommentEvaluator` spends from the core bucket, so the two neve
 Polling every minute holds comfortably: ~10 conditions is a third of the search budget, and adding
 repos to a condition is free.
 
+#### When the core budget runs out
+
+The core budget is 5,000 requests an hour **per user**, shared by every token that user holds.
+Zimmer's own callers share it with every agent session that runs `gh` as the same user, and Zimmer
+cannot limit the sessions. On 2026-11-15 it ran out at 21:08Z. The trigger poller's `gh auth status`
+preflight spends core, so it failed on every tick until the window reset at 21:27Z. That skipped
+every sweep and stopped every GitHub-triggered gate for 19 minutes. Meanwhile
+`Github::CommentEvaluator` and `Github::PrSnapshot` sent 586 more calls that GitHub refused, and
+every refused call still counted against the budget.
+
+`GithubRateLimit` handles that case, and `GithubCli`, which every `gh` call goes through, applies it:
+
+- **A breaker per credential and per budget.** When GitHub refuses a call with a primary rate limit,
+  Zimmer reads `gh api rate_limit`, which GitHub does not count, to learn which budgets are spent and
+  when each resets. Until then, every call against a spent budget is answered locally: a failed
+  `GithubCli::Result` whose `refusal` names the budget and the reset time. GitHub never sees the call.
+  Callers treat it like a timeout, as a failed call to retry later and never as an answer. Budgets
+  are tracked separately (`core`, `graphql`, `search`), so a spent core budget does not stop
+  searches. The breaker logs one WARN when it opens, not one per call.
+- **The poller polls through a spent core budget.** A rate-limited preflight is `:rate_limited`, and
+  the poller logs which budget is spent and until when, then sweeps. If search is refused too, the
+  sweep ends as described in the note below, and the five-sweep streak pages. If a search fails some
+  other way, the sweep ends with one WARN. A preflight the breaker answered never checked the
+  credential, so a revoked token or a GitHub outage shows up first as a failing search, and the
+  preflight's rule for that is one WARN and a skipped tick, not an alert per condition.
+- **A minute-by-minute reading.** `GithubRateLimitSnapshotJob` reads every credential's budgets once a
+  minute, for free. A budget it finds spent trips the breaker before any caller is refused, and the
+  reading feeds the liveness page's diagnosis.
+
+There is no reserve that holds Zimmer's other callers back to save budget for the poller. The
+poller's sweep spends search, not core, and it polls through a spent core budget, so a core reserve
+would buy it nothing. It would only cost the merge gate its PR reads in the last stretch of a busy
+hour.
+
+None of this touches the liveness page. If the poller polls nothing for 15 minutes for any reason,
+including a dead worker, a hung `gh`, bad credentials or both budgets spent, `TriggerPollerLivenessCheckJob`
+pages. Its details include `GithubRateLimit.diagnosis`: every budget known to be spent or under 500
+remaining, with its reset time. That way a rate-limited stall reads as a rate limit, not as GitHub
+being down.
+
+Everything here fails open. A cache that cannot be read, or a probe that cannot be parsed, means no
+breaker. The call then goes ahead as it would without this code.
+
+A GitHub App installation token would give the pollers a budget of their own that no session can
+spend. That is a credential change, not a code change, and it is not made here.
+
 :::caution[The query syntax is pinned on purpose]
 GitHub is migrating its issue-search API to an "advanced" query syntax, and the two syntaxes are
 mutually incompatible for the multi-repo query this poller is built on — legacy wants
@@ -2036,7 +2082,7 @@ so it fails during a GitHub outage too — and its human-readable output then as
 invalid" about a credential it never managed to check. Taking that at face value is how a GitHub
 degradation once got reported as a missing credential, in text byte-identical to a revoked token's.
 So the preflight reads `gh auth status --json hosts` instead, which carries the transport error `gh`
-swallows on its way to that prose, and reports one of four states:
+swallows on its way to that prose, and reports one of five states:
 
 | State | What `gh` reported | The poller's WARN says |
 | --- | --- | --- |
@@ -2044,9 +2090,13 @@ swallows on its way to that prose, and reports one of four states:
 | `:unconfigured` | an empty `hosts` map, or no `gh` binary | `gh CLI is not authenticated (no gh auth login / GH_TOKEN)` |
 | `:rejected` | `401` / `Bad credentials` | GitHub rejected the credential; it likely needs rotating |
 | `:unknown` | a 5xx, a DNS failure, a timeout, anything else | it could not reach GitHub, so the credential's validity is **unknown** |
+| `:rate_limited` | `API rate limit exceeded for user ID …` (an unauthenticated per-IP limit stays `:unknown`), or the rate-limit breaker answered for GitHub | the REST core budget is spent; the credential is valid, so **it polls anyway** |
 
 Only `:unconfigured` keeps the original wording, because it is the only state that ever deserved it.
-None of them alerts: a preflight failure is by construction the *total* case, and the total case is
+`:rate_limited` is the one state that does not skip. GitHub had to identify the user to refuse it, so
+the credential is fine, and the sweep spends the search budget, which is separate from the core
+budget `gh auth status` spends. See [When the core budget runs out](#when-the-core-budget-runs-out).
+None of the others alerts: a preflight failure is by construction the *total* case, and the total case is
 already reported by the stale heartbeat that `TriggerPollerLivenessCheckJob` pages on within 15
 minutes. What changed is that the WARNs an operator reads while that counts down now name the right
 fault — a credential to provision, a credential to rotate, or githubstatus.com.

@@ -1737,6 +1737,54 @@ class GithubTriggerPollerJobHeartbeatTest < ActiveJob::TestCase
     assert_nil heartbeat
   end
 
+  # 2026-11-15: the REST core budget ran out, the preflight (which spends core) failed every
+  # tick, and the sweep (which spends only the separate search budget) never ran. A
+  # rate-limited preflight proves the credential is valid, so the poller sweeps.
+  test "a rate-limited preflight still polls, and stamps the heartbeat when the search answers" do
+    stub_preflight(GithubSearchService::PREFLIGHT_RATE_LIMITED,
+                   "not sent to GitHub: GitHub's API rate limit exceeded for GH_TOKEN's core budget " \
+                   "until 2026-11-15T21:27:23Z")
+
+    warns = nil
+    stub_search(label: [ item(number: 1, labels: [ "ready to merge" ]) ]) do
+      warns = capture_warns { GithubTriggerPollerJob.perform_now }
+    end
+
+    assert_equal [ "tadasant/zimmer#1:ready to merge" ], @label_condition.reload.github_seen_items, "the sweep ran"
+    assert_not_nil heartbeat, "a sweep that polled is liveness, whatever core's budget says"
+    line = warns.sole
+    assert_includes line, "REST core budget is spent"
+    assert_includes line, "2026-11-15T21:27:23Z", "the reset time, so nobody goes looking for an outage"
+    assert_includes line, "polling anyway"
+    assert_not_includes line, "could not reach GitHub"
+  end
+
+  test "a rate-limited preflight whose search is refused too stamps nothing, so the liveness page still fires" do
+    stub_preflight(GithubSearchService::PREFLIGHT_RATE_LIMITED, "core budget spent")
+    GithubSearchService.stubs(:search_issues)
+      .raises(GithubSearchService::RateLimitedError, "gh api search/issues failed: API rate limit exceeded (HTTP 403)")
+
+    GithubTriggerPollerJob.perform_now
+
+    assert_nil heartbeat
+  end
+
+  # Through an open breaker the preflight never reached GitHub, so a revoked token or a
+  # GitHub outage shows up first as failing searches. That must be one WARN, as the
+  # preflight would have given, not an alert per condition per minute.
+  test "after a rate-limited preflight, a search that fails another way ends the sweep with one WARN" do
+    stub_preflight(GithubSearchService::PREFLIGHT_RATE_LIMITED, "core budget spent")
+    GithubSearchService.expects(:search_issues).once
+      .raises(GithubSearchService::SearchError, "gh api search/issues failed: gh: Bad credentials (HTTP 401)")
+    ErrorReporter.expects(:report_exception).never
+
+    warns = capture_warns { GithubTriggerPollerJob.perform_now }
+
+    assert_includes warns.last, "credential could not be checked; ending this sweep"
+    assert_includes warns.last, "Bad credentials"
+    assert_nil heartbeat, "nothing polled, so the liveness page still fires if this lasts"
+  end
+
   test "a heartbeat write failure does not break an otherwise successful poll" do
     Rails.cache.stubs(:write).raises(StandardError, "Redis connection refused")
 

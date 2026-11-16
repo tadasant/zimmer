@@ -53,7 +53,11 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
   #               lasts hours pages once per dedup window rather than once per run. The age
   #               rides in the details, which do not group.
   #   details:    the page's body, given the stall's age in minutes and the last heartbeat.
-  Poller = Data.define(:key, :threshold, :watched, :seedable, :title, :details)
+  #   diagnosis:  what this host knows right now about why the feed might be stalled, or nil.
+  #               Appended to the details and carried as its own context field. It is
+  #               evidence for the human reading the page and never decides whether to page:
+  #               the page fires on the stale heartbeat alone, whatever this says.
+  Poller = Data.define(:key, :threshold, :watched, :seedable, :title, :details, :diagnosis)
 
   POLLERS = [
     Poller.new(
@@ -72,9 +76,14 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
         "No GitHub trigger poll has completed successfully in ~#{minutes} minutes " \
           "(last success #{last_at}). Label and issue triggers — including the `ready to merge` " \
           "merge gate — are not firing. Likely causes: the `pollers` GoodJob worker is down, a " \
-          "`gh` call is hung against a degraded GitHub API, or GitHub is unreachable. Check the " \
-          "GoodJob dashboard (/jobs) and githubstatus.com."
-      end
+          "`gh` call is hung against a degraded GitHub API, GitHub is unreachable, or the " \
+          "credential's GitHub rate limit is spent. Check the GoodJob dashboard (/jobs) and " \
+          "githubstatus.com."
+      end,
+      # A spent budget is the one cause on that list this host can state as fact, with
+      # the time it ends (2026-11-15: a 19-minute stall that read as an outage). A dead
+      # worker or a hung `gh` still pages, because the threshold does not consult this.
+      diagnosis: -> { GithubRateLimit.diagnosis }
     ),
     Poller.new(
       key: :slack,
@@ -100,7 +109,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "holding the singleton slot, or Slack has been refusing every sweep for longer than " \
           "the poller's own deferral chain. Check the GoodJob dashboard (/jobs) and " \
           "status.slack.com."
-      end
+      end,
+      diagnosis: -> { nil }
     ),
     Poller.new(
       key: :whatsapp,
@@ -120,7 +130,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "longer linked to the account (the phone was offline for 14+ days, or the linked device " \
           "was removed — call the bridge's whatsapp_status, then whatsapp_pair to re-link), the " \
           "bridge is down, or the `pollers` GoodJob worker is down. Check the GoodJob dashboard (/jobs)."
-      end
+      end,
+      diagnosis: -> { nil }
     ),
     Poller.new(
       key: :email,
@@ -139,7 +150,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "the mailbox's slug and check EMAIL_MCP_URL / EMAIL_MCP_TOKEN), the mailbox server is down, " \
           "or the `pollers` GoodJob worker is down. The poller's WARN log line names the error. " \
           "Check the GoodJob dashboard (/jobs)."
-      end
+      end,
+      diagnosis: -> { nil }
     ),
     Poller.new(
       key: :mcp_event,
@@ -157,7 +169,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
           "names refuses Zimmer or is down (for a strad slug, check strad's /health and the slug's " \
           "entitlement), the event type is gone from its events/list, or the `pollers` GoodJob worker " \
           "is down. The poller's WARN log line names the error. Check the GoodJob dashboard (/jobs)."
-      end
+      end,
+      diagnosis: -> { nil }
     )
   ].freeze
 
@@ -200,18 +213,30 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
     return if age < poller.threshold
 
     minutes = (age / 60).round
+    diagnosis = diagnose(poller)
     # .error, not .warn: this line IS the page — the ERROR record is what reaches
     # #alerts, and the stall does not self-resolve.
     Rails.logger.error "[TriggerPollerLivenessCheckJob] No successful #{poller.key} trigger poll " \
-                       "in ~#{minutes}m (last success #{last_at})"
+                       "in ~#{minutes}m (last success #{last_at})#{" — #{diagnosis}" if diagnosis}"
     ErrorReporter.report_message(
       poller.title,
       level: :error,
       context: {
         source: "TriggerPollerLivenessCheckJob",
         poller: poller.key.to_s,
-        details: poller.details.call(minutes, last_at)
-      }
+        details: [ poller.details.call(minutes, last_at), diagnosis ].compact.join(" "),
+        diagnosis: diagnosis
+      }.compact
     )
+  end
+
+  # The poller's diagnosis, or nil. A diagnosis that raises must not cost the page it was
+  # meant to explain.
+  def diagnose(poller)
+    poller.diagnosis.call.presence
+  rescue => e
+    Rails.logger.warn "[TriggerPollerLivenessCheckJob] Could not diagnose the #{poller.key} stall: " \
+                      "#{e.class}: #{e.message}"
+    nil
   end
 end
