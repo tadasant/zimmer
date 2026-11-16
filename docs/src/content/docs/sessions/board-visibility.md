@@ -23,7 +23,7 @@ whose only job is deciding whether the card is on screen.
 
 `backlogged` is "snooze indefinitely". It is for a session that has made real progress — work you
 want kept, not thrown away — but that you do not mean to continue for now because something else
-matters more. Snoozing it to a far-off date was the workaround; the backlog says what you meant.
+matters more.
 
 It differs from `hidden` in one way that matters: it is its own pile. *Snoozed & hidden* is where
 cards go to be out of the way for a while; the backlog is somewhere you go back to on purpose when
@@ -108,8 +108,7 @@ sheet.
 ## Finding a session you hid
 
 The dashboard's **Filters → Board visibility** control has four settings: *On board* (the default),
-*Snoozed & hidden*, *Backlogged*, and *All*. *All* is every session, whatever its visibility — it
-was called *Both* when there were only two piles. When anything is tucked away or backlogged, the
+*Snoozed & hidden*, *Backlogged*, and *All*. *All* is every session, whatever its visibility. When anything is tucked away or backlogged, the
 legend says how many of each ("2 sessions tucked away · 5 backlogged"), so a board
 that is holding cards back always says so. The number arrives with the board itself, a moment after
 the page: it is counted through every other filter, so it costs what the board costs (see

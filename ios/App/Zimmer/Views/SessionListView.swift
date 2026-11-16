@@ -539,6 +539,13 @@ private struct SessionContextMenu: View {
             } label: {
                 Label("Put back on the board", systemImage: "eye")
             }
+            if session.boardVisibility != .backlogged {
+                Button {
+                    Task { await model.perform("Moved to the backlog", on: session.id, optimistic: { $0.expect(.backlogged) }) { try await $0.setVisibility(session.id, .backlogged) } }
+                } label: {
+                    Label("Move to backlog", systemImage: "archivebox")
+                }
+            }
         }
         // Every PR, as the session menu lists them: the row's line has room for the newest only.
         if session.pullRequests.count == 1, let pr = session.pullRequests.first {

@@ -97,7 +97,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - show_archived: Include archived sessions (default: false)
   #   - visibility: board visibility, the presentation-only axis. "on_board" for the
   #     sessions a tidied dashboard shows, "off_board" for the hidden and snoozed
-  #     ones, "backlogged" for the backlog, "all" for every one. OMITTED BY DEFAULT — this listing is unfiltered on that axis, so an
+  #     ones, "backlogged" for the backlog, "all" for every one. OMITTED BY
+  #     DEFAULT — this listing is unfiltered on that axis, so an
   #     agent checking whether work is already in flight is never shown fewer
   #     sessions because a human tidied their board.
   #   - carplay_fit: the driver's triage axis — "carplay_ok", "laptop_only",

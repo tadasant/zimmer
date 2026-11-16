@@ -1308,6 +1308,13 @@ struct SessionDetailView: View {
                     } label: {
                         Label("Put back on the board", systemImage: "eye")
                     }
+                    if session.boardVisibility != .backlogged {
+                        Button {
+                            Task { await model.apply("Moved to the backlog", optimistic: { $0.expect(.backlogged) }) { try await $0.setVisibility(session.id, .backlogged) } }
+                        } label: {
+                            Label("Move to backlog", systemImage: "archivebox")
+                        }
+                    }
                 }
                 carplayFitMenu(session)
                 Button {

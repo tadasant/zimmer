@@ -265,7 +265,8 @@ the change either way.
 
 A session has a second field beside `status`, and the two have nothing to do with each other.
 `status` is where the session is in its lifecycle. `visibility` is whether its card is on the
-operator's dashboard: `visible`, `hidden`, or `snoozed` until `snoozed_until`.
+operator's dashboard: `visible`, `hidden`, `snoozed` until `snoozed_until`, or `backlogged` (parked
+as low priority, with no end time).
 
 **It is a visual-organization device with no effect on scheduling or execution.** No scheduler,
 queue, gate or state machine reads it. A snoozed session starts, runs, ranks and finishes exactly as

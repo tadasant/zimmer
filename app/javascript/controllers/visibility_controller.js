@@ -5,8 +5,7 @@ import { showAlert } from "lib/toast"
 
 // Connects to data-controller="visibility"
 //
-// Board visibility: "Snooze until…", "Hide" and "Move to backlog" — the
-// presentation-only axis that
+// Board visibility: "Snooze until…", "Hide" and "Move to backlog" — the presentation-only axis that
 // tidies the dashboard. It changes what is on screen and nothing else: no
 // session is started, stopped, slept or woken by anything in this file. Nothing
 // in the web UI sleeps a session at all; that is `wake_me_up_later` and
