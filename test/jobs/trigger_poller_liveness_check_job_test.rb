@@ -102,7 +102,7 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
   test "does not alert just under each poller's own threshold" do
     ErrorReporter.expects(:report_message).never
 
-    write_heartbeat(:github, (github_poller.threshold - 1.minute).ago)
+    write_heartbeat(:github, (github_poller.threshold.call - 1.minute).ago)
     write_heartbeat(:slack, (slack_poller.threshold - 1.minute).ago)
     TriggerPollerLivenessCheckJob.perform_now
   end
@@ -111,7 +111,7 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
     # The Slack poller's own deferral chain holds the singleton for ~15 minutes across five
     # backoffs and then pages by itself; a liveness threshold inside that window would page
     # a second time for an outage the poller is already reporting.
-    assert_operator slack_poller.threshold, :>, github_poller.threshold
+    assert_operator slack_poller.threshold, :>, github_poller.threshold.call
     assert_operator slack_poller.threshold, :>=, 30.minutes
   end
 
@@ -273,6 +273,45 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
   end
 
   # ── Placement ──────────────────────────────────────────────────────────────
+
+  # ── A slowed GitHub poller (GithubTriggerPollCadence) ───────────────────────
+
+  def with_github_interval(minutes)
+    saved = ENV[GithubTriggerPollCadence::SETTING_KEY]
+    ENV[GithubTriggerPollCadence::SETTING_KEY] = minutes.to_s
+    yield
+  ensure
+    saved.nil? ? ENV.delete(GithubTriggerPollCadence::SETTING_KEY) : ENV[GithubTriggerPollCadence::SETTING_KEY] = saved
+  end
+
+  test "the GitHub threshold is the quarter-hour at the default interval and at five minutes" do
+    assert_equal 15.minutes, github_poller.threshold.call
+    with_github_interval(5) { assert_equal 15.minutes, github_poller.threshold.call }
+  end
+
+  test "a poller slowed to fifteen minutes does not page through one ordinary gap between sweeps" do
+    ErrorReporter.expects(:report_message).never
+    write_heartbeat(:slack, 1.minute.ago)
+    write_heartbeat(:github, 29.minutes.ago)
+
+    with_github_interval(15) { TriggerPollerLivenessCheckJob.perform_now }
+  end
+
+  test "a poller slowed to fifteen minutes still pages on a real stall" do
+    write_heartbeat(:slack, 1.minute.ago)
+    write_heartbeat(:github, 36.minutes.ago)
+    expect_page("GitHub trigger polling stalled")
+
+    with_github_interval(15) { TriggerPollerLivenessCheckJob.perform_now }
+  end
+
+  test "at the default interval a sixteen-minute-old heartbeat pages, as it always has" do
+    write_heartbeat(:slack, 1.minute.ago)
+    write_heartbeat(:github, 16.minutes.ago)
+    expect_page("GitHub trigger polling stalled")
+
+    TriggerPollerLivenessCheckJob.perform_now
+  end
 
   test "runs on default, not on the pollers queue it watches" do
     assert_equal "default", TriggerPollerLivenessCheckJob.new.queue_name

@@ -1,0 +1,75 @@
+<%# GitHub's webhook in `webhook_shadow`: what it would have fired, paired with what the poller fired. %>
+<%#
+  Webhooks::GithubShadowComparison over the card's window. The webhook fires nothing in this mode,
+  so the numbers that matter are webhook-only and poll-only: both at zero, with the webhook ahead,
+  is the evidence for `webhook_with_poll_fallback`. `compare_github_webhook_shadow` (MCP) is the
+  same reading with a chosen window. Stacked per condition so it fits a phone.
+%>
+<% totals = shadow[:totals] %>
+<% latency = shadow[:latency] %>
+<% lead = ->(seconds) { seconds.nil? ? "—" : (seconds.negative? ? "−#{HealthMonitorService.format_wait(-seconds)}" : HealthMonitorService.format_wait(seconds)) } %>
+<div class="mt-4 rounded-md border border-gray-200 p-4" data-testid="github-shadow-comparison">
+  <h5 class="text-sm font-semibold text-gray-900">Shadow comparison</h5>
+  <p class="mt-1 text-xs text-gray-500">
+    What the webhook would have fired, against what the poller fired (it polls every
+    <%= HealthMonitorService.format_wait(shadow[:poll_interval_seconds]) %>). An event waits
+    <%= HealthMonitorService.format_wait(shadow[:grace_seconds]) %> for the other path before it counts as a miss.
+  </p>
+  <dl class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-5">
+    <div class="text-center">
+      <dt class="text-sm font-medium text-gray-500">Matched</dt>
+      <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= totals[:matched] %></dd>
+    </div>
+    <div class="text-center">
+      <dt class="text-sm font-medium text-gray-500">Webhook only</dt>
+      <dd class="mt-1 text-2xl font-semibold <%= totals[:webhook_only].positive? ? 'text-yellow-600' : 'text-gray-900' %>"><%= totals[:webhook_only] %></dd>
+    </div>
+    <div class="text-center">
+      <dt class="text-sm font-medium text-gray-500">Poll only</dt>
+      <dd class="mt-1 text-2xl font-semibold <%= totals[:poll_only].positive? ? 'text-yellow-600' : 'text-gray-900' %>"><%= totals[:poll_only] %></dd>
+    </div>
+    <div class="text-center">
+      <dt class="text-sm font-medium text-gray-500">Pending</dt>
+      <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= totals[:pending] %></dd>
+    </div>
+    <div class="text-center col-span-2 sm:col-span-1">
+      <dt class="text-sm font-medium text-gray-500">Webhook lead</dt>
+      <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= lead.call(latency[:median_seconds]) %></dd>
+      <dd class="text-xs text-gray-500">median · p90 <%= lead.call(latency[:p90_seconds]) %></dd>
+    </div>
+  </dl>
+
+  <% if shadow[:conditions].any? %>
+    <ul class="mt-4 divide-y divide-gray-100 border-t border-gray-100">
+      <% shadow[:conditions].each do |row| %>
+        <li class="py-2 text-sm">
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <span class="font-medium text-gray-900 break-words"><%= row[:trigger_name] || "Condition #{row[:condition_id]}" %></span>
+            <span class="font-mono text-xs text-gray-500"><%= row[:condition_type] %> #<%= row[:condition_id] %></span>
+          </div>
+          <div class="mt-1 text-xs text-gray-600">
+            <%= row[:counts][:matched] %> matched ·
+            <span class="<%= row[:counts][:webhook_only].positive? ? 'text-yellow-700 font-semibold' : '' %>"><%= row[:counts][:webhook_only] %> webhook only</span> ·
+            <span class="<%= row[:counts][:poll_only].positive? ? 'text-yellow-700 font-semibold' : '' %>"><%= row[:counts][:poll_only] %> poll only</span> ·
+            <%= row[:counts][:pending] %> pending ·
+            lead <%= lead.call(row[:latency][:median_seconds]) %>
+          </div>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+
+  <%# IngestSummary asks for the unmatched events only; the filter keeps this honest if it ever does not. %>
+  <% misses = shadow[:recent].reject { |event| event[:status] == "matched" } %>
+  <% if misses.any? %>
+    <h6 class="mt-4 text-xs font-semibold uppercase tracking-wide text-gray-500">Unmatched, newest first</h6>
+    <ul class="mt-2 space-y-1">
+      <% misses.each do |event| %>
+        <li class="text-xs text-gray-700">
+          <span class="font-mono break-all"><%= event[:event] %></span>
+          <span class="ml-1 text-gray-500">(#<%= event[:condition_id] %>) — <%= event[:status].tr("_", " ") %></span>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+</div>

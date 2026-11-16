@@ -203,6 +203,47 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_match "slack: the poller claimed 1 of 2 trigger event(s) in the last 24h", response.body
   end
 
+  test "dashboard shows the GitHub shadow comparison while GitHub ingest is in webhook_shadow" do
+    condition = trigger_conditions(:github_label_condition)
+    TriggerShadowObservation.record!(condition, "github:tadasant/zimmer#5:label:ready to merge", path: "webhook", delivery_id: "d5", now: 2.hours.ago)
+    TriggerShadowObservation.record!(condition, "github:tadasant/zimmer#5:label:ready to merge", path: "poll", now: 2.hours.ago + 50.seconds)
+    TriggerShadowObservation.record!(condition, "github:tadasant/zimmer#6:label:ready to merge", path: "poll", now: 3.hours.ago)
+
+    with_github_ingest_env(mode: "webhook_shadow", secret: "s3cret") do
+      get health_dashboard_url
+    end
+    assert_response :success
+
+    assert_select "h4 span", text: "webhook_shadow"
+    assert_select "[data-testid=github-shadow-comparison]" do
+      assert_select "dt", text: "Matched"
+      assert_select "dt", text: "Poll only"
+      assert_select "dd.text-yellow-600", text: "1"
+      assert_select "li", text: /#{Regexp.escape(condition.trigger.name)}/
+      assert_select "li span.font-mono", text: "github:tadasant/zimmer#6:label:ready to merge"
+    end
+    assert_match "missed 1 the poller fired (1 matched)", response.body
+  end
+
+  test "dashboard shows no shadow comparison on poll" do
+    with_github_ingest_env(mode: nil, secret: nil) do
+      get health_dashboard_url
+    end
+
+    assert_select "[data-testid=github-shadow-comparison]", count: 0
+  end
+
+  def with_github_ingest_env(mode:, secret:)
+    keys = %w[GITHUB_TRIGGER_INGEST_MODE GITHUB_WEBHOOK_SECRET]
+    saved = keys.to_h { |key| [ key, ENV[key] ] }
+    { "GITHUB_TRIGGER_INGEST_MODE" => mode, "GITHUB_WEBHOOK_SECRET" => secret }.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+    yield
+  ensure
+    saved.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+  end
+
   def with_slack_ingest_env(mode:, secret:)
     keys = %w[SLACK_TRIGGER_INGEST_MODE SLACK_SIGNING_SECRET]
     saved = keys.to_h { |key| [ key, ENV[key] ] }

@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 # Deletes webhook dedup rows past their retention: WebhookDelivery after
-# WebhookDelivery::RETENTION (7 days) and TriggerEventClaim after TriggerEventClaim::RETENTION
-# (30 days). Without it both tables grow with every Slack message the bot can see, forever.
+# WebhookDelivery::RETENTION (7 days), and TriggerEventClaim and TriggerShadowObservation after
+# their RETENTION (30 days). Without it the tables grow with every Slack message the bot can see, forever.
 #
 # Idempotent — a run with nothing expired deletes nothing — and batched, so a backlog after a
 # long gap drains a slice at a time instead of in one statement.
@@ -19,15 +19,17 @@ class InboundEventRetentionJob < ApplicationJob
   def perform(now: Time.current)
     deliveries = prune(WebhookDelivery, WebhookDelivery.expired(now))
     claims = prune(TriggerEventClaim, TriggerEventClaim.expired(now))
+    observations = prune(TriggerShadowObservation, TriggerShadowObservation.expired(now))
 
-    if deliveries.positive? || claims.positive?
+    if deliveries.positive? || claims.positive? || observations.positive?
       Rails.logger.info(
         "[InboundEventRetentionJob] deleted #{deliveries} webhook deliver#{deliveries == 1 ? 'y' : 'ies'} older than " \
-        "#{WebhookDelivery::RETENTION.inspect} and #{claims} trigger event claim(s) older than #{TriggerEventClaim::RETENTION.inspect}"
+        "#{WebhookDelivery::RETENTION.inspect} and #{claims} trigger event claim(s) older than #{TriggerEventClaim::RETENTION.inspect}" \
+        "#{", and #{observations} shadow observation(s)" if observations.positive?}"
       )
     end
 
-    { deliveries: deliveries, claims: claims }
+    { deliveries: deliveries, claims: claims, shadow_observations: observations }
   end
 
   private

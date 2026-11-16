@@ -5706,12 +5706,30 @@ it does not cover yet:
   fires nothing on `poll`, but a delivery that fired just before the switch has a claim the poller no
   longer reads, and the poller can fire that event a second time.
 - **A re-added label inside the grace window is one event, not two.** A `github_label` claim is
-  released when the poller drops its seen-set key, which takes `REMOVAL_GRACE_TICKS` consecutive
-  misses — about three minutes. The webhook knows the label came off the instant it did, because
+  released when the poller drops its seen-set key, which takes the removal grace — three consecutive
+  misses, about three minutes, at the one-minute default, and two misses (one poll interval) at a
+  slower [poll interval](/sessions/triggers/#the-poll-interval). The webhook knows the label came off the instant it did, because
   GitHub sends an `unlabeled` delivery, but it does not act on one: the seen-set belongs to the
   poller, and a webhook that edited it would be two writers on one piece of state. So a label taken
   off and put back inside that window fires once, from either path. This is the poller's behaviour
   exactly, which is the point — the webhook is latency, not different semantics.
+- **Shadow mode compares, it does not prove.** `webhook_shadow`
+  ([Shadow mode](/sessions/triggers/#shadow-mode-and-the-rollout-to-webhooks)) pairs the webhook's
+  would-fire with the poller's fire by condition and event key, in time order. Three readings are not
+  what they look like. A delivery the job processes after the poller has already fired the event is
+  recorded by the poller alone — the webhook's match skips an event the seen-set already holds, as it
+  would in `webhook_with_poll_fallback` — so it counts as `poll_only`. A poll fire that spawned no
+  session (burst control, a pending session) is retried by the poller later and records then, so it
+  can read as a slow match. And the comparison measures whether the two paths agree, not whether the
+  webhook's fire would have succeeded: the spawn, the claim race and burst control under
+  `webhook_with_poll_fallback` are not exercised until that mode is on.
+- **A slower poll interval is slower for everything the poller still owns.** Raising
+  `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` delays every event the webhook did not deliver by up to the
+  interval, and the removal grace and degradation pages can only act once per sweep, so at 15 minutes a
+  removed label takes 15 minutes to register and a stuck search index pages after 15, not 5. The
+  windows are floored at two sweeps on purpose (one sweep is the blip they exist to ignore), so they
+  are as short as a slow cadence allows, not as short as they are at one minute. Raise the interval
+  only after the webhook is primary.
 - **The webhook cannot see a label that arrives some other way.** `issues.transferred`, a label
   applied while the item was closed and still there when it reopens outside the delivered events, and
   anything GitHub does not send a webhook for at all, reach a condition only at the next poll.
@@ -5883,7 +5901,8 @@ condition is not polled and its trigger does not fire, with nothing in `#alerts`
 label added and removed inside that window is never seen at all.
 
 The escalation for a degradation that does not clear is a per-condition consecutive-skip counter in
-Redis (`CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks). It fails **quiet**, not loud: if the
+Redis (`GithubTriggerPollCadence#sweeps_before_alert`: 5 ticks at the default interval, 2 at 5 minutes or
+more). It fails **quiet**, not loud: if the
 cache is unreachable the streak can never be counted, so a sustained single-condition degradation
 would page only if it were broad enough to stall the poller's heartbeat too. That direction is
 deliberate — inventing a streak from a failed cache read would page for a Redis blip on the first

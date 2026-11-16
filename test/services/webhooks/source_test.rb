@@ -77,4 +77,25 @@ class Webhooks::SourceTest < ActiveSupport::TestCase
   ensure
     saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
+
+  test "webhook_shadow is not a Slack mode, so a Slack source given it polls" do
+    ENV["SLACK_TRIGGER_INGEST_MODE"] = "webhook_shadow"
+    ENV["SLACK_SIGNING_SECRET"] = "s3cret"
+
+    assert_equal "poll", @source.mode
+    refute_predicate @source, :shadow?
+    refute_predicate @source, :accepting?
+  end
+
+  test "a source that supports it accepts webhook_shadow: receiving, accepting, and not firing" do
+    ENV["SLACK_TRIGGER_INGEST_MODE"] = "webhook_shadow"
+    ENV["SLACK_SIGNING_SECRET"] = "s3cret"
+    source = Webhooks::Source.new(name: "github", mode_key: KEYS[0], secret_key: KEYS[1], shadow_supported: true)
+
+    assert_equal "webhook_shadow", source.mode
+    assert_predicate source, :shadow?
+    assert_predicate source, :receiving?
+    assert_predicate source, :accepting?
+    refute_predicate source, :webhook_enabled?
+  end
 end

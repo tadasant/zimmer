@@ -20,8 +20,14 @@ module Webhooks
   #
   # A claim is one event for one condition, not one session: a coalesced burst is a claim per
   # message, and a message two conditions match is two claims.
+  #
+  # A source in `webhook_shadow` (GitHub only) claims nothing, so its claim counts stay at zero. Its
+  # reading carries `shadow` instead: Webhooks::GithubShadowComparison over the same window, which
+  # pairs what the webhook would have fired with what the poller fired. There the number that says
+  # the webhook is ready is webhook-only plus poll-only staying at zero.
   class IngestSummary
     WINDOW = 24.hours
+    SHADOW_RECENT = 10
 
     def self.report(now: Time.current)
       new(now: now).report
@@ -54,6 +60,8 @@ module Webhooks
         name: source.name,
         mode: source.mode,
         webhook_enabled: source.webhook_enabled?,
+        shadow: source.shadow? ? GithubShadowComparison.report(now: @now, since: @since, recent: SHADOW_RECENT, recent_unmatched: true) : nil,
+        receiving: source.receiving?,
         accepting: source.accepting?,
         last_delivery_at: deliveries.where(created_at: (@now - WebhookDelivery::RETENTION)..)
                                     .order(created_at: :desc).limit(1).pick(:created_at),
@@ -78,7 +86,7 @@ module Webhooks
     # and one the poller has had to back up. Healthy otherwise, including a source that polls: that
     # is the default and changes nothing.
     def status(readings)
-      enabled = readings.select { |_source, reading| reading[:webhook_enabled] }
+      enabled = readings.select { |_source, reading| reading[:receiving] }
       return healthy("Every source polls; no webhook is switched on") if enabled.empty?
 
       warnings = enabled.filter_map { |source, reading| warning_message(source, reading) }
@@ -94,6 +102,10 @@ module Webhooks
 
       if !reading[:accepting]
         "#{name}: webhook is switched on but has no signing secret, so its endpoint answers 404"
+      elsif (shadow = reading[:shadow]) && (shadow[:totals][:webhook_only] + shadow[:totals][:poll_only]).positive?
+        totals = shadow[:totals]
+        "#{name}: shadow — in the last #{window_label} the webhook would have fired #{totals[:webhook_only]} event(s) the " \
+          "poller did not, and missed #{totals[:poll_only]} the poller fired (#{totals[:matched]} matched)"
       elsif reading[:poll_claims_in_window].positive?
         total = reading[:webhook_claims_in_window] + reading[:poll_claims_in_window]
         "#{name}: the poller claimed #{reading[:poll_claims_in_window]} of #{total} trigger event(s) in the last " \
@@ -107,8 +119,21 @@ module Webhooks
     def healthy_message(reading)
       last = reading[:last_delivery_at]
       delivered = last ? "last delivery #{HealthMonitorService.format_wait(@now - last)} ago" : "no delivery in the last #{retention_label}"
+      return "#{reading[:name]}: #{delivered}; #{shadow_message(reading[:shadow])}" if reading[:shadow]
+
       "#{reading[:name]}: #{delivered}; the webhook claimed #{reading[:webhook_claims_in_window]} trigger event(s) in the last " \
         "#{window_label}, the poller none"
+    end
+
+    def shadow_message(shadow)
+      totals = shadow[:totals]
+      lead = shadow[:latency][:median_seconds]
+      ahead = if lead.nil? then ""
+      elsif lead.negative? then ", the poller ahead by a median #{HealthMonitorService.format_wait(-lead)}"
+      else ", the webhook ahead by a median #{HealthMonitorService.format_wait(lead)}"
+      end
+      "shadow — the webhook and the poller agreed on all #{totals[:matched]} event(s) in the last #{window_label}#{ahead}" \
+        "#{"; #{totals[:pending]} still pending" if totals[:pending].positive?}"
     end
 
     def retention_label

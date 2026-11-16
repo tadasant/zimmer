@@ -198,7 +198,7 @@ class GithubLabelEventJobTest < ActiveJob::TestCase
     # The label comes off. Inside the grace window the poller still holds the key, so a re-add is
     # not an event for either path — the webhook mirrors the poller here rather than second-guessing
     # it, exactly as it does everywhere else.
-    (GithubTriggerPollerJob::REMOVAL_GRACE_TICKS - 1).times do
+    (GithubTriggerPollCadence.new.removal_grace_misses - 1).times do
       poll_label_items([])
       assert_equal 1, TriggerEventClaim.count, "the claim must live as long as the key does"
       assert_equal 0, fires(pull_request), "inside the grace window the poller would not fire either"
@@ -219,7 +219,7 @@ class GithubLabelEventJobTest < ActiveJob::TestCase
     pull_request = searched_pull_request(github_pull_request(number: 43, labels: [ LABEL ]))
 
     assert_difference(-> { Session.count }, 1) { poll_label_items([ pull_request ]) }
-    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times { poll_label_items([]) }
+    GithubTriggerPollCadence.new.removal_grace_misses.times { poll_label_items([]) }
     assert_equal 0, TriggerEventClaim.count
 
     assert_difference(-> { Session.count }, 1) { poll_label_items([ pull_request ]) }
@@ -244,7 +244,7 @@ class GithubLabelEventJobTest < ActiveJob::TestCase
     fresh = github_pull_request(number: 46, labels: [ LABEL ])
 
     poll_label_items([ searched_pull_request(old) ])
-    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times { poll_label_items([]) }
+    GithubTriggerPollCadence.new.removal_grace_misses.times { poll_label_items([]) }
 
     # The webhook fires #46 while a tick whose search predates the label is still in flight.
     deliver_label(fresh)

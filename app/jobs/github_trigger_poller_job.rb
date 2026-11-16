@@ -43,9 +43,10 @@
 #   eventually consistent, so a still-labelled PR can vanish from one tick's results and
 #   return on the next. Dropping it immediately would re-fire a duplicate session (the label
 #   poller's version of the index lag the github_issue path below guards against). A missing
-#   key is therefore retained through REMOVAL_GRACE_TICKS consecutive misses — tracked in the
-#   companion `seen_missing_counts` — and only then accepted as genuinely unlabelled. A real
-#   removal simply takes that many ticks to register before a re-add counts as a new event.
+#   key is therefore retained through GithubTriggerPollCadence#removal_grace_misses consecutive
+#   misses — tracked in the companion `seen_missing_counts` — and only then accepted as genuinely
+#   unlabelled. A real removal simply takes that many ticks to register before a re-add counts as
+#   a new event.
 #   This is also why a `github_label` claim cannot have a fixed lifetime. The claim exists so
 #   that this poller and Webhooks::GithubController do not both fire one label event, so it has
 #   to stop existing at exactly the moment this seen-set stops calling the label seen: the tick
@@ -113,14 +114,14 @@ class GithubTriggerPollerJob < ApplicationJob
   # after being opened is missed; observed lag in practice is on the order of seconds.
   INDEX_LAG_GRACE = 30.minutes
 
-  # The github_label seen-set's defense against that same eventually-consistent index: a
-  # seen key that disappears from the search is retained for this many consecutive misses
-  # before being accepted as genuinely unlabelled and dropped. A transient under-return (the
-  # PR is still open and labelled, GitHub's index just did not return it this tick) is thus
-  # absorbed rather than re-firing the item next tick. At the one-minute poll cadence this is
-  # roughly three minutes of sustained absence — well beyond observed index blips, yet short
-  # enough that a real remove-then-re-add of the label still fires again promptly.
-  REMOVAL_GRACE_TICKS = 3
+  # The github_label seen-set's defense against that same eventually-consistent index is a
+  # removal grace: a seen key that disappears from the search is retained for
+  # GithubTriggerPollCadence#removal_grace_misses consecutive misses before being accepted as
+  # genuinely unlabelled and dropped. A transient under-return (the PR is still open and
+  # labelled, GitHub's index just did not return it this tick) is thus absorbed rather than
+  # re-firing the item next tick. The grace is written in time (three minutes) and never
+  # fewer than two misses, so it stays well beyond observed index blips at any poll interval,
+  # yet short enough that a real remove-then-re-add of the label still fires again promptly.
 
   # How many seen-set keys the baseline-reset alert lists by name. They are there for a
   # human to check by hand, and a Slack block has a hard size limit, so the list is
@@ -146,14 +147,13 @@ class GithubTriggerPollerJob < ApplicationJob
   # cursor is set, so it costs at most a minute of detection latency.
 
   # How many consecutive ticks a condition may skip on an incomplete search index before
-  # the skips stop being read as a transient and page.
+  # the skips stop being read as a transient and page: GithubTriggerPollCadence#sweeps_before_alert.
   #
   # GitHub's search index times out occasionally and recovers by itself — on the order of
   # once a month on the busiest condition here, and GithubSearchService has already re-run
-  # the search before it gives up — so a single skip is noise, not an incident. Five in a
-  # row at a one-minute cadence is not: that is a degradation that is not clearing, and
-  # the condition has been dark for five minutes.
-  CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT = 5
+  # the search before it gives up — so a single skip is noise, not an incident. Five minutes
+  # of it in a row is not (five ticks at the one-minute default, two at fifteen): that is a
+  # degradation that is not clearing, and the condition has been dark the whole time.
 
   # Rails cache (Redis) key holding the current run of consecutive incomplete searches,
   # keyed per condition — per condition because one condition's query being too expensive
@@ -162,9 +162,9 @@ class GithubTriggerPollerJob < ApplicationJob
   # unbroken. Same shape as SystemHealthMonitorJob::STREAK_CACHE_KEY.
   INCOMPLETE_SEARCH_STREAK_KEY_PREFIX = "github_trigger_poller:incomplete_search_streak:"
 
-  # Comfortably beyond the tick interval so a missed tick can't silently reset a streak,
-  # short enough that a count from an old degradation doesn't linger into a new one.
-  INCOMPLETE_SEARCH_STREAK_TTL = 1.hour
+  # Both streaks expire after GithubTriggerPollCadence#streak_ttl: comfortably beyond the tick
+  # interval so a missed tick can't silently reset a streak, short enough that a count from an
+  # old degradation doesn't linger into a new one.
 
   def self.incomplete_search_streak_key(condition_id)
     "#{INCOMPLETE_SEARCH_STREAK_KEY_PREFIX}#{condition_id}"
@@ -177,11 +177,10 @@ class GithubTriggerPollerJob < ApplicationJob
   # this poller's one-minute cadence already IS that pause — the next tick is normally
   # clean, which is why the first occurrence is noise rather than an incident. Production
   # bore that out on 2026-09-09: one occurrence in seven days, self-cleared, one page.
-  # Five in a row is a different animal — the fleet is asking for more than GitHub will
-  # give it at this cadence, no amount of waiting fixes that, and the triggers have been
-  # dark for five minutes. Same shape and same threshold as the incomplete-search streak
-  # above, kept as its own constant because the two degradations are free to diverge.
-  CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT = 5
+  # Five minutes of it in a row is a different animal — the fleet is asking for more than
+  # GitHub will give it at this cadence, no amount of waiting fixes that, and the triggers
+  # have been dark the whole time. Same threshold as the incomplete-search streak above
+  # (GithubTriggerPollCadence#sweeps_before_alert).
 
   # Rails cache (Redis) key holding the run of consecutive rate-limited sweeps.
   #
@@ -192,11 +191,13 @@ class GithubTriggerPollerJob < ApplicationJob
   # finishes without a rate limit clears it, so a streak only survives while unbroken.
   RATE_LIMITED_STREAK_KEY = "github_trigger_poller:rate_limited_streak"
 
-  # Comfortably beyond the tick interval so a missed tick can't silently reset a streak,
-  # short enough that a count from an old episode doesn't linger into a new one.
-  RATE_LIMITED_STREAK_TTL = 1.hour
-
   def perform
+    # The cron enqueues every minute; a slower configured interval lets only every Nth tick
+    # through. At the one-minute default every tick is due.
+    return unless cadence.due?
+
+    cadence.record_sweep_started
+
     conditions = TriggerCondition.github
       .joins(:trigger)
       .where(triggers: { status: "enabled" })
@@ -370,6 +371,28 @@ class GithubTriggerPollerJob < ApplicationJob
     PollerHeartbeat.stamp(:github)
   end
 
+  # In `webhook_shadow`, record the fire the poller just made, for Webhooks::GithubShadowComparison
+  # to pair with the webhook's would-fire. On any other mode this writes nothing. A failure here
+  # costs one comparison row and must never cost the tick, so it is logged and swallowed.
+  def observe_shadow_poll(condition, item, label = nil)
+    return unless shadow_mode?
+
+    TriggerShadowObservation.record!(condition, github_claim_key(condition, item, label), path: "poll")
+  rescue => e
+    Rails.logger.warn "[GithubTriggerPollerJob] Could not record the shadow comparison for condition " \
+                      "#{condition.id} (#{item_key(item)}): #{e.class}: #{e.message}"
+  end
+
+  def shadow_mode?
+    @shadow_mode = Webhooks::Source.github.shadow? if @shadow_mode.nil?
+    @shadow_mode
+  end
+
+  # Read once per sweep, so every window in one sweep agrees on the interval.
+  def cadence
+    @cadence ||= GithubTriggerPollCadence.current
+  end
+
   # A search whose index timed out is refused exactly like any other short read — the
   # seen-set is never derived from a partial result, which is the whole point of the raise
   # in GithubSearchService — but on its own it is not an incident worth a human's evening.
@@ -380,7 +403,7 @@ class GithubTriggerPollerJob < ApplicationJob
   #
   # Sustained degradation still surfaces, by two independent routes:
   #   - this condition alone (an expensive query the index keeps timing out on): the
-  #     consecutive-skip streak below crosses CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+  #     consecutive-skip streak below crosses GithubTriggerPollCadence#sweeps_before_alert
   #     and pages;
   #   - every condition at once (GitHub search broadly degraded): nothing sets any_polled,
   #     so the heartbeat is never stamped, and TriggerPollerLivenessCheckJob pages when it
@@ -393,7 +416,7 @@ class GithubTriggerPollerJob < ApplicationJob
   def skip_incomplete_search(condition, error)
     streak = bump_incomplete_search_streak(condition)
 
-    if streak.nil? || streak < CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+    if streak.nil? || streak < cadence.sweeps_before_alert
       run = streak ? "#{streak} consecutive" : "streak untracked"
 
       # .warn, not .error: an ERROR record pages on its own (see the logging
@@ -429,7 +452,7 @@ class GithubTriggerPollerJob < ApplicationJob
   def bump_incomplete_search_streak(condition)
     key = self.class.incomplete_search_streak_key(condition.id)
     streak = Rails.cache.read(key).to_i + 1
-    Rails.cache.write(key, streak, expires_in: INCOMPLETE_SEARCH_STREAK_TTL)
+    Rails.cache.write(key, streak, expires_in: cadence.streak_ttl)
     streak
   rescue => e
     Rails.logger.warn "[GithubTriggerPollerJob] Failed to track incomplete-search streak " \
@@ -462,7 +485,7 @@ class GithubTriggerPollerJob < ApplicationJob
     streak = bump_rate_limited_streak
     remainder = skipped.zero? ? "" : "; #{skipped} further condition#{'s' unless skipped == 1} not polled this tick"
 
-    if streak.nil? || streak < CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT
+    if streak.nil? || streak < cadence.sweeps_before_alert
       run = streak ? "#{streak} consecutive" : "streak untracked"
 
       # .warn, not .error: an ERROR record pages on its own (see the logging
@@ -495,7 +518,7 @@ class GithubTriggerPollerJob < ApplicationJob
   # The new streak length, or nil when the cache could not be reached.
   def bump_rate_limited_streak
     streak = Rails.cache.read(RATE_LIMITED_STREAK_KEY).to_i + 1
-    Rails.cache.write(RATE_LIMITED_STREAK_KEY, streak, expires_in: RATE_LIMITED_STREAK_TTL)
+    Rails.cache.write(RATE_LIMITED_STREAK_KEY, streak, expires_in: cadence.streak_ttl)
     streak
   rescue => e
     Rails.logger.warn "[GithubTriggerPollerJob] Failed to track rate-limited streak: #{e.message}"
@@ -580,6 +603,7 @@ class GithubTriggerPollerJob < ApplicationJob
       item, label = candidates[key]
       next unless fire(condition, item, event: "label added: #{label}", label: label)
 
+      observe_shadow_poll(condition, item, label)
       fired << key
       # Record the key the instant its session exists, rather than only in the
       # end-of-tick write below. Everything between here and there can fail —
@@ -594,15 +618,15 @@ class GithubTriggerPollerJob < ApplicationJob
     # index is eventually consistent, so a still-labelled PR can vanish from one tick's
     # results and return on the next; dropping its key immediately makes it look new again
     # and re-fires a duplicate session — the label poller's version of the index-lag the
-    # github_issue path guards against. Instead we retain the key through REMOVAL_GRACE_TICKS
-    # consecutive misses, and only once it has been absent that long do we accept the label
+    # github_issue path guards against. Instead we retain the key through
+    # GithubTriggerPollCadence#removal_grace_misses consecutive misses, and only once it has been absent that long do we accept the label
     # as genuinely removed and drop it — at which point a real remove-then-re-add fires again.
     grace_retained = Set.new
     dropped = Set.new
     next_missing = {}
     (seen - current_keys).each do |key|
       misses = missing_counts.fetch(key, 0) + 1
-      if misses >= REMOVAL_GRACE_TICKS
+      if misses >= cadence.removal_grace_misses
         dropped << key
         next
       end
@@ -801,6 +825,8 @@ class GithubTriggerPollerJob < ApplicationJob
 
     fresh.each do |item|
       break unless fire(condition, item, event: "issue opened")
+
+      observe_shadow_poll(condition, item)
 
       fired_keys << item_key(item)
       newest_at = item["created_at"] if item["created_at"].to_s > newest_at.to_s

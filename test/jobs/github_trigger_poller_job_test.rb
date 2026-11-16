@@ -143,8 +143,8 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
     end
 
     # The label is genuinely removed. The key survives the grace window — absent but held —
-    # for REMOVAL_GRACE_TICKS - 1 ticks, so a real removal takes the full window to register.
-    (GithubTriggerPollerJob::REMOVAL_GRACE_TICKS - 1).times do
+    # for removal_grace_misses - 1 ticks, so a real removal takes the full window to register.
+    (GithubTriggerPollCadence.new.removal_grace_misses - 1).times do
       stub_search(label: []) do
         assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
       end
@@ -152,7 +152,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
                    "the key must be held through the grace window, not dropped on first miss"
     end
 
-    # The tick that reaches REMOVAL_GRACE_TICKS consecutive misses accepts the removal.
+    # The tick that reaches removal_grace_misses consecutive misses accepts the removal.
     stub_search(label: []) do
       assert_no_difference("Session.count") { GithubTriggerPollerJob.perform_now }
     end
@@ -182,7 +182,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
                  "reappearing must clear the miss streak")
 
     # A fresh removal still gets the full grace window before dropping.
-    (GithubTriggerPollerJob::REMOVAL_GRACE_TICKS - 1).times do
+    (GithubTriggerPollCadence.new.removal_grace_misses - 1).times do
       stub_search(label: []) { GithubTriggerPollerJob.perform_now }
       assert_equal [ "tadasant/zimmer#7:ready to merge" ], @label_condition.reload.github_seen_items
     end
@@ -373,7 +373,7 @@ class GithubTriggerPollerJobTest < ActiveJob::TestCase
       assert_difference("Session.count", 1) { GithubTriggerPollerJob.perform_now }
     end
 
-    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times do
+    GithubTriggerPollCadence.new.removal_grace_misses.times do
       stub_search(label: []) { GithubTriggerPollerJob.perform_now }
     end
     assert_equal [], @label_condition.reload.github_seen_items
@@ -1852,7 +1852,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
   end
 
   test "a run of incomplete searches below the threshold never pages" do
-    below = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT - 1
+    below = GithubTriggerPollCadence.new.sweeps_before_alert - 1
 
     titles = capture_alerts { below.times { poll } }
 
@@ -1860,7 +1860,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
   end
 
   test "an incomplete search index that will not clear pages once the streak is unbroken" do
-    threshold = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+    threshold = GithubTriggerPollCadence.new.sweeps_before_alert
 
     titles = capture_alerts { threshold.times { poll } }
 
@@ -1871,7 +1871,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
   test "a single clean poll resets the streak, so scattered blips never accumulate into a page" do
     # The distinction that makes the threshold mean "consecutive" rather than "total":
     # blips a week apart must not add up to an alert.
-    below = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT - 1
+    below = GithubTriggerPollCadence.new.sweeps_before_alert - 1
 
     titles = capture_alerts do
       below.times { poll }
@@ -1900,7 +1900,7 @@ class GithubTriggerPollerJobIncompleteSearchTest < ActiveJob::TestCase
   end
 
   test "the streak is tracked per condition, so one bad query does not escalate another's" do
-    threshold = GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT
+    threshold = GithubTriggerPollCadence.new.sweeps_before_alert
     threshold.times { poll }
 
     assert_equal threshold,
@@ -2107,7 +2107,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
   end
 
   test "a run of rate limits below the threshold never pages" do
-    below = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT - 1
+    below = GithubTriggerPollCadence.new.sweeps_before_alert - 1
 
     titles = capture_alerts { below.times { poll } }
 
@@ -2117,7 +2117,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
   test "a rate limit that will not clear pages once the streak is unbroken" do
     # Nothing is suppressed: a limit the cadence cannot ride out is a real problem and
     # stays loud, five minutes in rather than on the first tick.
-    threshold = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT
+    threshold = GithubTriggerPollCadence.new.sweeps_before_alert
 
     titles = capture_alerts { threshold.times { poll } }
 
@@ -2128,7 +2128,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
   test "a clean sweep resets the streak, so scattered bursts never accumulate into a page" do
     # What makes the threshold mean "consecutive" rather than "total": one occurrence a
     # week, which is the observed rate, must never add up to an alert.
-    below = GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT - 1
+    below = GithubTriggerPollCadence.new.sweeps_before_alert - 1
 
     titles = capture_alerts do
       below.times { poll }
@@ -2195,7 +2195,7 @@ class GithubTriggerPollerJobRateLimitTest < ActiveJob::TestCase
     Rails.cache.stubs(:read).raises(Redis::BaseConnectionError, "connection refused")
     ErrorReporter.expects(:report_exception).never
 
-    warns = capture_warns { (GithubTriggerPollerJob::CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT + 1).times { poll } }
+    warns = capture_warns { (GithubTriggerPollCadence.new.sweeps_before_alert + 1).times { poll } }
 
     assert warns.any? { |line| line.include?("streak untracked") },
            "an untrackable streak must say so rather than inventing a count"

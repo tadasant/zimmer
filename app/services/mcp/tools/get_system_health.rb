@@ -188,7 +188,7 @@ module Mcp
         status = inbound[:status]
         return [] if status.nil?
 
-        enabled = (inbound[:sources] || []).select { |s| s[:webhook_enabled] }
+        enabled = (inbound[:sources] || []).select { |s| s[:webhook_enabled] || s[:shadow] }
 
         [
           "- **Webhook ingest:** #{status.message}",
@@ -258,9 +258,22 @@ module Mcp
         last = source[:last_delivery_at]&.utc&.strftime("%Y-%m-%d %H:%M UTC") || "none in the last #{retention_days} days"
         window = "#{(Webhooks::IngestSummary::WINDOW / 1.hour).to_i}h"
 
-        "  - `#{source[:name]}` (#{source[:mode]}): last delivery #{last}; last #{window}: " \
-          "#{source[:deliveries_in_window]} deliveries, #{source[:webhook_claims_in_window]} trigger events claimed via webhook, " \
-          "#{source[:poll_claims_in_window]} via poll"
+        line = "  - `#{source[:name]}` (#{source[:mode]}): last delivery #{last}; last #{window}: " \
+               "#{source[:deliveries_in_window]} deliveries, "
+        return line + shadow_summary(source[:shadow]) if source[:shadow]
+
+        line + "#{source[:webhook_claims_in_window]} trigger events claimed via webhook, " \
+               "#{source[:poll_claims_in_window]} via poll"
+      end
+
+      # `webhook_shadow`: the webhook fires nothing, so what it is measured on is agreement with the
+      # poller. `compare_github_webhook_shadow` has the per-event detail.
+      def shadow_summary(shadow)
+        totals = shadow[:totals]
+        lead = shadow[:latency][:median_seconds]
+        "shadow comparison #{totals[:matched]} matched, #{totals[:webhook_only]} webhook-only, " \
+          "#{totals[:poll_only]} poll-only, #{totals[:pending]} pending" \
+          "#{"; median webhook lead #{lead}s" if lead} (detail: `compare_github_webhook_shadow`)"
       end
 
       def recovered_key_line(reading)

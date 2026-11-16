@@ -7,10 +7,17 @@ module Webhooks
   # Both settings resolve from encrypted credentials first and process ENV second, the order
   # every other Slack setting uses (see SlackService#slack_bot_token).
   #
-  # The mode is per source so one provider can move without the other. Two values are accepted:
+  # The mode is per source so one provider can move without the other. Three values are accepted:
   #
   #   poll                        the default, and what an unset or unrecognised value means.
   #                               The webhook endpoint is inert.
+  #   webhook_shadow              GitHub only. The endpoint accepts and records signed deliveries,
+  #                               and GithubEventJob evaluates every condition against them, but it
+  #                               fires nothing and claims nothing: it records what it WOULD have
+  #                               fired (TriggerShadowObservation). The poller fires exactly as on
+  #                               `poll` and records what it fired, and
+  #                               Webhooks::GithubShadowComparison lines the two up. It is the
+  #                               rehearsal before `webhook_with_poll_fallback`.
   #   webhook_with_poll_fallback  the endpoint accepts signed deliveries and fires triggers
   #                               from them; the poller keeps running as the backstop, and
   #                               TriggerEventClaim keeps the two from firing one event twice.
@@ -21,8 +28,9 @@ module Webhooks
   # the poller, not by a switch that parks it.
   class Source
     POLL = "poll"
+    WEBHOOK_SHADOW = "webhook_shadow"
     WEBHOOK_WITH_POLL_FALLBACK = "webhook_with_poll_fallback"
-    MODES = [ POLL, WEBHOOK_WITH_POLL_FALLBACK ].freeze
+    MODES = [ POLL, WEBHOOK_SHADOW, WEBHOOK_WITH_POLL_FALLBACK ].freeze
 
     attr_reader :name, :mode_key, :secret_key
 
@@ -46,7 +54,8 @@ module Webhooks
       @github ||= new(
         name: "github", mode_key: "GITHUB_TRIGGER_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
         served_conditions: -> { TriggerCondition.github },
-        expects_daily_deliveries: false
+        expects_daily_deliveries: false,
+        shadow_supported: true
       )
     end
 
@@ -57,8 +66,10 @@ module Webhooks
 
     attr_reader :expects_daily_deliveries
 
-    def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none }, expects_daily_deliveries: true)
+    def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none }, expects_daily_deliveries: true,
+                   shadow_supported: false)
       @name = name
+      @shadow_supported = shadow_supported
       @mode_key = mode_key
       @secret_key = secret_key
       @served_conditions = served_conditions
@@ -76,16 +87,32 @@ module Webhooks
     def mode
       raw = setting(mode_key).to_s.strip
       return POLL if raw.empty?
-      return raw if MODES.include?(raw)
+      return raw if modes.include?(raw)
 
       warn_unrecognised(raw)
       POLL
     end
 
-    # Whether this source's webhook path is switched on. Says nothing about whether it can
-    # verify a delivery — see #accepting?.
+    # The modes this source accepts. `webhook_shadow` only where the webhook job knows how to
+    # evaluate without firing.
+    def modes
+      @shadow_supported ? MODES : MODES - [ WEBHOOK_SHADOW ]
+    end
+
+    # Whether this source's webhook FIRES triggers. Says nothing about whether it can verify a
+    # delivery — see #accepting?. False in `webhook_shadow`, where the poller alone fires.
     def webhook_enabled?
       mode == WEBHOOK_WITH_POLL_FALLBACK
+    end
+
+    # Whether the webhook only records what it would fire. See `webhook_shadow` above.
+    def shadow?
+      mode == WEBHOOK_SHADOW
+    end
+
+    # Whether the endpoint takes deliveries at all: firing them, or shadowing them.
+    def receiving?
+      webhook_enabled? || shadow?
     end
 
     def signing_secret
@@ -96,7 +123,7 @@ module Webhooks
     # switched-on source with no secret could verify nothing, so it stays as inert as a
     # switched-off one.
     def accepting?
-      webhook_enabled? && signing_secret.present?
+      receiving? && signing_secret.present?
     end
 
     private
@@ -115,8 +142,10 @@ module Webhooks
       why = if raw == "webhook"
         "`webhook` without a poller is not a mode: a poller is replaced by deleting it " \
         "(tadasant/zimmer#141), not by switching it off. Use `#{WEBHOOK_WITH_POLL_FALLBACK}`."
+      elsif raw == WEBHOOK_SHADOW
+        "`#{WEBHOOK_SHADOW}` is a GitHub-only mode."
       else
-        "Expected one of #{MODES.join(', ')}."
+        "Expected one of #{modes.join(', ')}."
       end
       Rails.logger.warn("[Webhooks::Source] #{mode_key}=#{raw.inspect} is not a mode Zimmer accepts; treating #{name} as `#{POLL}`. #{why}")
     end

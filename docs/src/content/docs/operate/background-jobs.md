@@ -62,7 +62,7 @@ From `config.good_job.cron`:
 | 1m | `QueueRecoveryModeExpiryJob` | Lift queue recovery mode once its TTL has elapsed |
 | 1m | `ScheduleTriggerJob` | Fire due schedule triggers |
 | 1m | `OutcomeAnalysisBatchPumpJob` | Advance every running Outcomes "Analyze All" batch: reconcile in-flight analyses, spawn the next wave. A stopped batch with analyses still in flight is reconciled too, and spawns nothing |
-| 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions |
+| 1m | `GithubTriggerPollerJob` | Poll GitHub for label-added and new-issue trigger conditions. The cron enqueues every minute; `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` (1–60, default 1) lets a sweep through only once per interval, and the removal grace, the degradation pages and the liveness threshold scale with it ([The poll interval](/sessions/triggers/#the-poll-interval)). In `webhook_shadow` it also records each fire for the [shadow comparison](/sessions/triggers/#shadow-mode-and-the-rollout-to-webhooks) |
 | 1m | `GithubRateLimitSnapshotJob` | Read each GitHub credential's rate-limit budgets with `gh api rate_limit`, which GitHub does not count. A spent budget trips the rate-limit breaker before any caller is refused, and the readings feed the GitHub liveness page's diagnosis. See [When the core budget runs out](/sessions/triggers/#when-the-core-budget-runs-out) |
 | 1m | `FleetIdleCheckerJob` | Fire the `no_sessions_in_progress` trigger event once the deployment has had fewer turns on a worker than its configured ceiling — 3 by default; `waiting` sessions do not count, and neither does a turn waiting behind the `agents` worker pool or a `running` row asleep on its own future wake with nothing queued for it — for the whole of its configured stretch (5 minutes by default), with nothing parked on an outage and a pool that can serve. Idleness is a level, not an edge, so `FleetIdleMonitor` measures the stretch from the moment the fleet crossed *below* the ceiling — only reaching the ceiling again starts a new one — and paces repeat fires on a cooldown floor (60 minutes by default) the fleet cannot touch, because the session the fire spawns would otherwise re-qualify it by running. While the work backlog has had nothing new since the last fire (nothing queued since, nothing started from what is left), the floor is the longer quiet interval instead (240 minutes by default), so an idle fleet with an empty backlog does not poll itself every cooldown. All four numbers are set from the **Backlog top-up** card on `/inference`. Production and staging only — the fire spawns a real session. See [Triggers](/sessions/triggers/#no_sessions_in_progress). |
 | 1m | `WarmClonePoolReplenishJob` | Keep ready clones in `<clones base>/.warm-clones/` of each (repository, branch) `WarmPoolPolicy` names, so a starting session claims one instead of running a `git clone` — the bulk of a cold start. That is the router root's repository alone by default, or every recently active root's with Settings → Experimental → Warm clones for every active root. Builds a clone for each key that is short, in rank order, and a key that fails does not stop the rest. Recycles clones older than 45 minutes and drops the pools of keys that are no longer targets; a pass over a full pool does nothing. The last pass is shown on `/health`. `AgentSessionJob` also enqueues it on every claim, so this tick is the backstop. Production and staging only (`QUICK_ROUTER_WARM_CLONES` overrides the size; `0` turns it off). See [Spawning](/sessions/spawning/#the-warm-clone-pool). |
@@ -87,7 +87,7 @@ From `config.good_job.cron`:
 | 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
-| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` rows older than 30 — the dedup stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
+| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` and `trigger_shadow_observations` rows older than 30 — the dedup and comparison stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -1954,7 +1954,9 @@ merge gate) quietly stop firing. Two mechanisms close that:
   (`stamp(:github)` / `stamp(:slack)`, one key per poller, `PollerHeartbeat::TTL` of 7 days so the
   key holds its last-success time through an outage) on every sweep that genuinely polled its feed.
   `TriggerPollerLivenessCheckJob` reads both every 5 minutes and pages `#alerts` when either is older
-  than its threshold — 15 minutes for GitHub, 30 for Slack. It reports the same message per poller
+  than its threshold — for GitHub two poll intervals plus five minutes, never under 15 minutes (15 at
+  the one-minute default and at five, 35 at fifteen; see
+  [The poll interval](/sessions/triggers/#the-poll-interval)), and 30 for Slack. It reports the same message per poller
   every run (*GitHub trigger polling stalled*, *Slack trigger polling stalled*), so a long outage is
   one GlitchTip issue and one Grafana alert group rather than a notification per run.
 
@@ -1993,13 +1995,15 @@ it is still short the poller skips that condition with a WARN instead of paging,
 tick re-derives the whole seen-set anyway. A skipped condition does not stamp the heartbeat — so a
 broad search-index degradation that hits *every* condition still ages the heartbeat out and pages
 here, with no separate alarm needed. A single condition stuck on it pages on its own consecutive-skip
-streak (`GithubTriggerPollerJob::CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT`, 5 ticks).
+streak (`GithubTriggerPollCadence#sweeps_before_alert`: 5 minutes, which is 5 ticks at the one-minute
+default and never fewer than 2 at a slower interval).
 
 A **GitHub rate limit** is refused-but-not-an-incident for the same reason and gets the same shape of
 treatment, one level up: it ends the whole sweep rather than one condition, because the limit belongs
 to the credential and every condition left would spend a `gh` call to be told the same thing. One
 WARN, no page, and no heartbeat unless a condition polled cleanly before the limit was met — so a
-limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages under
+limit that outlasts `GithubTriggerPollCadence#sweeps_before_alert` (5 sweeps at the default interval)
+pages under
 *GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. A spent
 REST **core** budget does not end the sweep: the preflight reports `:rate_limited` and the poller
 polls anyway, because the search budget is separate. When the GitHub liveness page does fire, its

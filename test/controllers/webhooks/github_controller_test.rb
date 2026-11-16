@@ -488,7 +488,7 @@ class Webhooks::GithubLabelDeliveryTest < ActionDispatch::IntegrationTest
     end
     poll_label_items([ searched_pull_request(pull_request) ])
 
-    GithubTriggerPollerJob::REMOVAL_GRACE_TICKS.times { poll_label_items([]) }
+    GithubTriggerPollCadence.new.removal_grace_misses.times { poll_label_items([]) }
     assert_equal 0, TriggerEventClaim.count, "the claim must be released with the key"
 
     assert_difference -> { Session.count }, 1 do
