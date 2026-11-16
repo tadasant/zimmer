@@ -19,6 +19,15 @@ module LiveConversations
   #
   # The answer is split into chunks under GPT-Live's 500-token limit on one
   # `session.commentary.append`.
+  #
+  # Claude failing is logged at WARN (`[live.claude]`: status, Anthropic's
+  # message, model, which credential — never the credential) as well as
+  # recorded on the ledger, and spoken as what happened: Claude refusing the
+  # credential is not the tools being unreachable. On the subscription
+  # credential, a model Anthropic refuses outside Claude Code is retried once
+  # on FALLBACK_MODEL, and the rest of the delegation stays on it, so the
+  # engine answers rather than failing every turn until an API key is set
+  # (ClaudeClient).
   class ClaudeDelegate
     MAX_ROUNDS = 6
     MAX_TOKENS = 4_096
@@ -28,6 +37,10 @@ module LiveConversations
     CHUNK_CHARS = 1_400
     PENDING_MAX_CHARS = 4_000
     ENGINE = VoiceEngine::GPT_LIVE
+    FALLBACK_MODEL = ModelCatalog::LIVE_CLAUDE_FALLBACK
+    # How long a model refused on the subscription is skipped, so only the
+    # first delegation in that window pays for the refusal.
+    REFUSAL_TTL = 1.hour
 
     # `cost_usd` is the list price of what this delegation used; `billed_usd`
     # the part of it that was billed (nothing, for Claude on a subscription).
@@ -85,10 +98,8 @@ module LiveConversations
     rescue ClaudeClient::NotConfiguredError
       raise
     rescue ClaudeClient::Error => e
-      record(operation: "delegation", vendor: "anthropic", model: model, error: e.message.truncate(250),
-             details: { delegation_id: @delegation_id })
-      result("I couldn't reach my reasoning backend just now (#{e.message.truncate(120)}). Try again in a moment.",
-             end_call: false, warning: nil, rounds: rounds.to_i)
+      record_failure(e)
+      result(failure_text(e), end_call: false, warning: nil, rounds: rounds.to_i)
     end
 
     private
@@ -98,13 +109,50 @@ module LiveConversations
                  rounds: rounds, cost_usd: @cost, billed_usd: @billed)
     end
 
-    def model = @setting.effective(:voice_claude_model)
+    def configured_model = @setting.effective(:voice_claude_model)
+
+    def model = @fallback_model || configured_model
 
     def client = @client ||= ClaudeClient.new
+
+    # What the client ran on; nil leaves it to LiveUsageEvent (a Claude row
+    # is subscription).
+    def billing_basis = @client&.credential&.billing_basis
 
     # `last`: the final round may not call tools, so it has to answer with
     # what it has rather than start work whose results nobody would read.
     def claude_call(messages, round, last: false)
+      fall_back! if @fallback_model.nil? && client.credential&.subscription? && refused_recently?(model)
+      attempt(messages, round, last: last)
+    rescue ClaudeClient::Error => e
+      raise unless fall_back?(e)
+
+      record_failure(e)
+      Rails.cache.write(refusal_key(model), true, expires_in: REFUSAL_TTL)
+      fall_back!
+      attempt(messages, round, last: last)
+    end
+
+    def fall_back?(error)
+      error.subscription_refused? && @fallback_model.nil? && model != FALLBACK_MODEL
+    end
+
+    def fall_back!
+      Rails.logger.warn("[live.claude] falling back to #{FALLBACK_MODEL}: #{model} was refused on the subscription credential " \
+                        "(conversation=#{@conversation.id} delegation=#{@delegation_id}); set #{ClaudeClient::API_KEY_VARIABLE} to use it")
+      @fallback_from = model
+      @fallback_model = FALLBACK_MODEL
+    end
+
+    def refusal_key(name) = "live.claude.subscription_refused.#{name}"
+
+    def refused_recently?(name)
+      name != FALLBACK_MODEL && Rails.cache.read(refusal_key(name)).present?
+    rescue StandardError
+      false
+    end
+
+    def attempt(messages, round, last:)
       started = monotonic_ms
       params = {
         model: model,
@@ -125,8 +173,36 @@ module LiveConversations
              input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
              cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
              count: 1, latency_ms: monotonic_ms - started,
-             details: { delegation_id: @delegation_id, round: round, stop_reason: response["stop_reason"], response_model: response["model"].to_s })
+             details: { delegation_id: @delegation_id, round: round, stop_reason: response["stop_reason"], response_model: response["model"].to_s,
+                        fallback_from: @fallback_from }.compact)
       response
+    end
+
+    def record_failure(error)
+      Rails.logger.warn("[live.claude] delegation failed status=#{error.status.inspect} model=#{model} " \
+                        "credential=#{error.credential_kind || 'unknown'} conversation=#{@conversation.id} " \
+                        "delegation=#{@delegation_id} message=#{(error.api_message.presence || error.message).to_s.squish.truncate(200).inspect}")
+      record(operation: "delegation", vendor: "anthropic", model: model, error: error.message.truncate(250),
+             details: { delegation_id: @delegation_id, status: error.status, credential: error.credential_kind&.to_s }.compact)
+    end
+
+    # Spoken, so short and plain; the status and message are on the ledger
+    # and in the log.
+    def failure_text(error)
+      if error.subscription_refused?
+        "Claude turned down Zimmer's Claude Code subscription for this, so I can't answer on this voice engine. Your " \
+          "tools are fine. Live Mode needs an Anthropic API key, or switch back to the standard voice."
+      elsif error.credential_refused? && error.credential_kind == :api_key
+        "Claude refused Live Mode's Anthropic key, so I can't answer on this voice engine. Your tools are fine. Check the " \
+          "key, or switch back to the standard voice."
+      elsif error.credential_refused?
+        "Claude refused Zimmer's Claude Code account, so I can't answer on this voice engine. Your tools are fine. The " \
+          "account may need re-authenticating, or Live Mode needs an Anthropic API key."
+      elsif error.status == 429 || error.status == 529
+        "Claude is rate limited or overloaded right now. Try again in a moment."
+      else
+        "I couldn't reach Claude just now. Try again in a moment."
+      end
     end
 
     def run_tool(use)
@@ -141,8 +217,8 @@ module LiveConversations
 
     def record(**attributes)
       event = LiveUsageEvent.record!(engine: ENGINE, live_conversation: @conversation,
-                                     mode: VoiceEngine.mode_for(ENGINE, setting: @setting, claude_model: model),
-                                     **attributes)
+                                     mode: VoiceEngine.mode_for(ENGINE, setting: @setting, claude_model: configured_model),
+                                     billing_basis: (billing_basis if attributes[:vendor] == "anthropic"), **attributes)
       @cost += event.cost_usd.to_f
       @billed += event.billed_cost_usd
       event

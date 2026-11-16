@@ -819,17 +819,34 @@ GPT-Live call: Zimmer refuses a pre-warm while the settings pick it, because the
 the tap's own offer. The engine is a row on the phone's Live settings and on the car's voice
 settings panel, where Reset to defaults leaves it as it is.
 
-**Claude runs on Zimmer's own credential.** Nobody supplies an Anthropic key. `ClaudeClient` calls
-the Messages API with the access token of Zimmer's current Claude Code account, the subscription
-the agent sessions run on and the token they are handed as `CLAUDE_CODE_OAUTH_TOKEN`. It is sent as a
-Bearer token with the `oauth-2025-04-20` beta header, the way the quota probe already sends it. The
-token is read for every delegation, so an account rotation or a token refresh reaches Live Mode
-without a restart. Claude's use is therefore subscription-billed and draws on the same 5-hour and
-weekly quota windows as the fleet. With no current account, or one without credentials, the engine
-falls back to Realtime and says so. So does a current account that is out of quota, waiting to be
-re-authenticated, or refused by Anthropic: the same test the session spawn path applies
-(`ClaudeAccount#usable_as_current?`). Live Mode does not rotate accounts itself; the next session
-spawn does.
+**Claude runs on an Anthropic API key when there is one, else on Zimmer's own credential.**
+`ClaudeClient` first resolves `LIVE_ANTHROPIC_API_KEY` through the
+[secrets chain](/operate/secrets-parameter-store/), the same way as [the OpenAI key](#the-openai-key),
+at `/zimmer/<env>/secrets/static/LIVE_ANTHROPIC_API_KEY`. With it, every Claude model answers, the
+key goes as `x-api-key`, and Claude's rows on the ledger are `metered`. It is not named
+`ANTHROPIC_API_KEY` because Claude Code reads that name itself, and a key set for Live must not
+change how agent sessions authenticate or bill. A new value reaches the next delegation with no
+redeploy.
+
+Without the key, `ClaudeClient` uses the access token of Zimmer's current Claude Code account, the
+subscription the agent sessions run on and the token they are handed as `CLAUDE_CODE_OAUTH_TOKEN`.
+It is sent as a Bearer token with the `oauth-2025-04-20` beta header, the way the quota probe already
+sends it. Anthropic limits that token to Claude Code: outside it, Opus and Sonnet are refused with a
+429 `rate_limit_error` whose message is just `Error`, while the fleet on the same account works.
+`ClaudeDelegate` treats that refusal as one. It retries the round once on `claude-haiku-5-5` and stays
+on Haiku for the rest of the delegation. For the next hour it skips the refused model and goes straight to Haiku, so
+only one turn pays for the refusal. The ledger's mode stays the configured model's, and each row's
+`model` says which one answered. If Haiku is refused too, the voice says Claude turned down the
+subscription, that the tools are fine, and that Live Mode needs an Anthropic API key. Every Claude
+failure is logged at WARN as `[live.claude] delegation failed status=… model=… credential=…
+message=…`, and every fallback as `[live.claude] falling back to claude-haiku-5-5`. Both also go on
+the ledger, with the status and credential kind in the row's details. The token is read for every
+delegation, so an account rotation or a token refresh reaches Live Mode without a restart. Claude's use on
+it is subscription-billed and draws on the same 5-hour and weekly quota windows as the fleet. With
+no key and no current account, or one without credentials, the engine falls back to Realtime and
+says so. So does a current account that is out of quota, waiting to be re-authenticated, or refused
+by Anthropic: the same test the session spawn path applies (`ClaudeAccount#usable_as_current?`).
+Live Mode does not rotate accounts itself; the next session spawn does.
 
 A GPT-Live call does less than a Realtime one in three ways. It answers every line, whatever
 [Listening](#listening-which-lines-get-an-answer) says, because GPT-Live does its own turn-taking
@@ -901,10 +918,9 @@ under it. The one exception is Claude's own rows, which name the Claude model th
 setting applies from the next delegation, so a change mid-call shows up as a second mode.
 
 **Billed and list.** Every row records the raw usage and its list price. Its **billing basis** says
-whether that money was charged: `metered` for OpenAI, `subscription` for Claude (Claude rows
-written while Claude ran on an API key stay `metered`, which is what they were). Claude's rows are
-recorded at list price but billed at $0, because Claude runs on Zimmer's flat Claude Code
-subscription. Every figure on the page is shown as billed and list, so the subscription's value
+whether that money was charged: `metered` for OpenAI and for Claude on `LIVE_ANTHROPIC_API_KEY`,
+`subscription` for Claude on Zimmer's Claude Code account. Subscription rows are recorded at list
+price but billed at $0, because they ran on Zimmer's flat Claude Code subscription. Every figure on the page is shown as billed and list, so the subscription's value
 stays visible. The caps count list price, Claude included: its tokens cost nothing at the margin,
 but they use the quota windows the agent sessions share, and list price is the measure of how much.
 
@@ -949,7 +965,8 @@ how those sessions authenticate or bill.
 | `LIVE_VOICE_MODEL` | `gpt-realtime-2.1-mini` | The voice default model, likewise |
 | `LIVE_VOICE_VOICE` | `marin` | The default voice it speaks in, likewise |
 | `LIVE_OPENAI_BASE_URL` | `https://api.openai.com/v1` | An OpenAI-compatible endpoint instead |
-| `LIVE_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | An Anthropic-compatible endpoint instead. Zimmer's Claude Code subscription token is sent there, so point it only at something you trust with it |
+| `LIVE_ANTHROPIC_API_KEY` | none | An Anthropic Console API key for the `gpt_live_claude` engine's Claude. Optional, but without it only Haiku answers (see above) |
+| `LIVE_ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | An Anthropic-compatible endpoint instead. The Anthropic key, or Zimmer's Claude Code subscription token, is sent there, so point it only at something you trust with it |
 | `ZIMMER_STORE_CONSOLE_URL` | none | The console over Zimmer's own store, linked from the key panel. Unset, the panel shows the path without a link |
 | `ZIMMER_STORE_CONSOLE_STORE_NAME` | none | What that console calls the store, shown beside the link |
 

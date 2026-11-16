@@ -116,11 +116,13 @@ ActiveSupport::TestCase.teardown { LiveConversationHelpers.root_overrides = nil 
 # A scripted Claude for the experimental voice engines (LiveConversations::ClaudeClient).
 module LiveConversationHelpers
   class FakeClaude
-    attr_reader :requests
+    attr_reader :requests, :credential
 
-    def initialize(responses: [])
+    # `credential`: what a real client would say it runs on (nil: unsaid).
+    def initialize(responses: [], credential: nil)
       @responses = responses.dup
       @requests = []
+      @credential = credential
     end
 
     def create_message(**params)

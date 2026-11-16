@@ -216,7 +216,7 @@ class LiveSetting < ApplicationRecord
               help: "What runs a voice call. Takes effect on the next call. An engine that cannot run — a missing OpenAI key or Claude Code account, an app that cannot speak it, a spend cap reached — falls back to OpenAI Realtime, and the call says why.",
               options: VOICE_ENGINES, min: nil, max: nil),
     Field.new(key: :voice_claude_model, path: :engine, type: :enum, label: "Claude model",
-              help: "The model the experimental engines reason and run tools with, on Zimmer's own Claude Code subscription — the account agent sessions run on, so its use counts against the same quota windows. No Anthropic key is needed. Takes effect on the next delegation.",
+              help: "The model the experimental engines reason and run tools with. It runs on LIVE_ANTHROPIC_API_KEY when that is set (metered). Otherwise it runs on Zimmer's own Claude Code subscription, which Anthropic accepts outside Claude Code for Haiku at most, so a refused model falls back to Haiku. Takes effect on the next delegation.",
               options: CLAUDE_MODELS, min: nil, max: nil),
     Field.new(key: :voice_engine_conversation_cap_usd, path: :engine, type: :float, label: "Per-conversation cap (USD)",
               help: "The most an experimental engine may spend on one conversation. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",

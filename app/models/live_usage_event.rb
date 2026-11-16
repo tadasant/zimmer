@@ -23,8 +23,9 @@
 #
 # `cost_usd` is always the list price. `billing_basis` says whether that money
 # was billed (`metered`) or covered by a flat plan (`subscription`): Claude's
-# rows are subscription, because Claude runs on Zimmer's own Claude Code
-# subscription (ClaudeClient); every other vendor is metered.
+# rows are subscription when Claude ran on Zimmer's own Claude Code
+# subscription and metered when it ran on Live Mode's Anthropic API key
+# (ClaudeClient, which the writer says); every other vendor is metered.
 # The "billed" figures count only metered money, and the list price is kept
 # beside it so a subscription's value stays visible. The caps count list price:
 # see SpendGuard.
@@ -47,6 +48,10 @@ class LiveUsageEvent < ApplicationRecord
   validates :occurred_at, presence: true
   validates :idempotency_key, uniqueness: true, allow_nil: true
   validates :billing_basis, inclusion: { in: BILLING_BASES }
+
+  # No default in Ruby, so a writer's explicit `metered` is told apart from
+  # the column default (`metered`) that Claude's rows must not inherit.
+  attribute :billing_basis, :string, default: nil
 
   before_validation :apply_price, :apply_basis_and_mode, on: :create
 
@@ -84,9 +89,9 @@ class LiveUsageEvent < ApplicationRecord
   # (everything else is metered), and a mode is the engine's under the
   # current settings.
   def apply_basis_and_mode
+    self.billing_basis ||= vendor.to_s == "anthropic" ? "subscription" : "metered"
     return if engine.blank?
 
-    self.billing_basis = "subscription" if vendor.to_s == "anthropic" && !billing_basis_changed?
     self.mode ||= LiveConversations::VoiceEngine.mode_for(engine)
   end
 

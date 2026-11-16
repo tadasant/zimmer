@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "mocha/minitest"
+require "socket"
 
 class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
   setup do
@@ -106,14 +107,176 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     assert_empty claude.requests
   end
 
-  test "Claude failing is said aloud and recorded, not raised" do
+  test "Claude failing is said aloud, recorded and logged at WARN, not raised" do
     claude = LiveConversationHelpers::FakeClaude.new(responses: [ LiveConversations::ClaudeClient::Error.new("Claude: overloaded") ])
+
+    logs = capture_warn_logs { @result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude) }
+
+    assert_match(/couldn't reach Claude/, @result.text)
+    assert_not @result.end_call
+    assert_equal "Claude: overloaded", LiveUsageEvent.find_by!(operation: "delegation").error
+    assert_match(/\[live\.claude\] delegation failed status=nil .*message="Claude: overloaded"/, logs)
+  end
+
+  # What production saw: the subscription token refused for Opus outside
+  # Claude Code, as a 429 whose message is just "Error".
+  def subscription_refusal
+    LiveConversations::ClaudeClient::Error.new("Claude: rate_limit_error", status: 429, api_message: "Error", credential_kind: :subscription)
+  end
+
+  def subscription = LiveConversations::ClaudeClient::Credential.new(kind: :subscription, secret: "sk-ant-oat-x")
+
+  test "a model refused on the subscription falls back to Haiku for the rest of the delegation, logged and on the ledger" do
+    LiveSetting.editable.update!(voice_claude_model: "claude-opus-5-5")
+    claude = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [
+      subscription_refusal,
+      LiveConversationHelpers::FakeClaude.tool("get_live_settings", model: "claude-haiku-5-5"),
+      LiveConversationHelpers::FakeClaude.text("You're on the standard voice.", model: "claude-haiku-5-5")
+    ])
+
+    logs = capture_warn_logs { @result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude) }
+
+    assert_equal "You're on the standard voice.", @result.text
+    assert_equal %w[claude-opus-5-5 claude-haiku-5-5 claude-haiku-5-5], claude.requests.map { |r| r["model"] }
+    rows = LiveUsageEvent.where(operation: "delegation").order(:id)
+    assert_equal %w[claude-opus-5-5 claude-haiku-5-5 claude-haiku-5-5], rows.map(&:model)
+    assert_equal 429, rows.first.details["status"]
+    assert_equal "subscription", rows.first.details["credential"]
+    assert_equal "claude-opus-5-5", rows.second.details["fallback_from"]
+    assert rows.all? { |row| row.billing_basis == "subscription" }
+    assert_equal "metered", LiveUsageEvent.find_by!(operation: "tool_call").billing_basis
+    assert_match(/delegation failed status=429 model=claude-opus-5-5 credential=subscription/, logs)
+    assert_match(/falling back to claude-haiku-5-5: claude-opus-5-5 was refused.*set LIVE_ANTHROPIC_API_KEY/, logs)
+  end
+
+  test "Haiku refused too is spoken as Claude refusing the credential, not as the tools being unreachable" do
+    claude = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ subscription_refusal, subscription_refusal ])
 
     result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
 
-    assert_match(/couldn't reach my reasoning backend/, result.text)
-    assert_not result.end_call
-    assert_equal "Claude: overloaded", LiveUsageEvent.find_by!(operation: "delegation").error
+    assert_match(/turned down Zimmer's Claude Code subscription/, result.text)
+    assert_match(/tools are fine/, result.text)
+    assert_match(/Anthropic API key/, result.text)
+    assert_equal 2, claude.requests.size
+    assert_equal %w[claude-sonnet-5-5 claude-haiku-5-5], LiveUsageEvent.where(operation: "delegation").order(:id).map(&:model)
+  end
+
+  test "a real rate limit (a message that says what) and any failure on the API key do not fall back" do
+    limited = LiveConversations::ClaudeClient::Error.new("Claude: limit", status: 429, api_message: "Number of request tokens has exceeded your per-minute rate limit",
+                                                         credential_kind: :subscription)
+    claude = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ limited ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
+    assert_match(/rate limited or overloaded/, result.text)
+    assert_equal 1, claude.requests.size
+
+    api_key = LiveConversations::ClaudeClient::Credential.new(kind: :api_key, secret: "sk-ant-api-x")
+    refused = LiveConversations::ClaudeClient::Error.new("Claude: invalid x-api-key", status: 401, api_message: "invalid x-api-key", credential_kind: :api_key)
+    claude = LiveConversationHelpers::FakeClaude.new(credential: api_key, responses: [ refused ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d2", client: claude)
+    assert_match(/refused Live Mode's Anthropic key/, result.text)
+    assert_equal 1, claude.requests.size
+
+    expired = LiveConversations::ClaudeClient::Error.new("Claude: unauthorized", status: 401, api_message: "invalid token", credential_kind: :subscription)
+    claude = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ expired ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d3", client: claude)
+    assert_match(/refused Zimmer's Claude Code account/, result.text)
+    assert_no_match(/Anthropic key/, result.text)
+  end
+
+  test "a refusal is remembered: the next delegation goes straight to Haiku, and the mode stays the configured model's" do
+    LiveSetting.editable.update!(voice_claude_model: "claude-opus-5-5")
+    previous_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    first = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [
+      subscription_refusal, LiveConversationHelpers::FakeClaude.text("One.", model: "claude-haiku-5-5")
+    ])
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d1", client: first)
+
+    second = LiveConversationHelpers::FakeClaude.new(credential: subscription, responses: [ LiveConversationHelpers::FakeClaude.text("Two.", model: "claude-haiku-5-5") ])
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d2", client: second)
+
+    assert_equal "Two.", result.text
+    assert_equal %w[claude-haiku-5-5], second.requests.map { |r| r["model"] }
+    assert_equal "claude-opus-5-5", LiveUsageEvent.where(operation: "delegation").order(:id).last.details["fallback_from"]
+    assert LiveUsageEvent.where(operation: "delegation").all? { |row| row.mode.include?("claude-opus-5-5") }
+
+    # On the API key, a remembered subscription refusal does not apply.
+    api_key = LiveConversations::ClaudeClient::Credential.new(kind: :api_key, secret: "sk-ant-api-x")
+    third = LiveConversationHelpers::FakeClaude.new(credential: api_key, responses: [ LiveConversationHelpers::FakeClaude.text("Three.", model: "claude-opus-5-5") ])
+    LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d3", client: third)
+    assert_equal %w[claude-opus-5-5], third.requests.map { |r| r["model"] }
+  ensure
+    Rails.cache = previous_cache
+  end
+
+  test "Claude on the API key is metered on the ledger" do
+    api_key = LiveConversations::ClaudeClient::Credential.new(kind: :api_key, secret: "sk-ant-api-x")
+    claude = LiveConversationHelpers::FakeClaude.new(credential: api_key, responses: [ LiveConversationHelpers::FakeClaude.text("Done.", input: 1_000_000) ])
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", client: claude)
+
+    row = LiveUsageEvent.sole
+    assert_equal "metered", row.billing_basis
+    assert_in_delta row.cost_usd.to_f, result.billed_usd, 0.000001
+    assert_operator result.billed_usd, :>, 0
+  end
+
+  # End to end through the real gem: a stand-in for api.anthropic.com that
+  # answers Opus the way production did on 2026-11-15 (429, message "Error")
+  # and Haiku with an answer.
+  test "end to end on the real client: Opus refused on the subscription, Haiku answers, the person hears it" do
+    LiveSetting.editable.update!(voice_claude_model: "claude-opus-5-5")
+    server = TCPServer.new("127.0.0.1", 0)
+    seen = []
+    acceptor = Thread.new do
+      loop do
+        socket = server.accept
+        headers = {}
+        while (line = socket.gets) && line != "\r\n"
+          name, value = line.split(":", 2)
+          headers[name.downcase] = value.to_s.strip if value
+        end
+        model = JSON.parse(socket.read(headers["content-length"].to_i))["model"]
+        seen << [ model, headers["authorization"].to_s.start_with?("Bearer "), headers["anthropic-beta"] ]
+        status, body =
+          if model == "claude-haiku-5-5"
+            [ "200 OK", { id: "m", type: "message", role: "assistant", model: model, stop_reason: "end_turn",
+                          content: [ { type: "text", text: "Two sessions need you." } ], usage: { input_tokens: 9, output_tokens: 5 } }.to_json ]
+          else
+            [ "429 Too Many Requests", '{"type":"error","error":{"type":"rate_limit_error","message":"Error"},"request_id":"req_x"}' ]
+          end
+        socket.write("HTTP/1.1 #{status}\r\nContent-Type: application/json\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n#{body}")
+        socket.close
+      end
+    rescue IOError, Errno::EBADF
+      nil
+    end
+    credential = LiveConversations::ClaudeClient.credential(chain: SecretProviders::Chain.new([ SecretProviders::Env.new({}) ]))
+    client = LiveConversations::ClaudeClient.new(credential: credential, base_url: "http://127.0.0.1:#{server.addr[1]}")
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d", pending_user_text: "What needs me?", client: client)
+
+    assert_equal "Two sessions need you.", result.text
+    assert_equal "claude-haiku-5-5", seen.last.first
+    assert seen.all? { |_model, bearer, beta| bearer && beta == "oauth-2025-04-20" }
+    rows = LiveUsageEvent.where(operation: "delegation").order(:id)
+    assert_equal [ 429, nil ], rows.map { |row| row.details["status"] }
+    assert_equal %w[claude-opus-5-5 claude-haiku-5-5], rows.map(&:model)
+  ensure
+    server&.close
+    acceptor&.kill
+  end
+
+  def capture_warn_logs
+    io = StringIO.new
+    logger = ActiveSupport::Logger.new(io)
+    logger.level = Logger::WARN
+    previous = Rails.logger
+    Rails.logger = logger
+    yield
+    io.string
+  ensure
+    Rails.logger = previous
   end
 
   test "the Claude model is a Live setting" do
