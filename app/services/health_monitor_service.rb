@@ -381,6 +381,8 @@ class HealthMonitorService
       warm_clone_pool_health: warm_clone_pool_health,
       # Also absent — see #warm_process_pool_health.
       warm_process_pool_health: warm_process_pool_health,
+      # Also absent — see #trigger_poller_health.
+      trigger_poller_health: trigger_poller_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -599,6 +601,22 @@ class HealthMonitorService
       message: "#{ready} of #{report[:targets].size} pooled #{'key'.pluralize(report[:targets].size)} " \
                "#{ready == 1 ? 'has' : 'have'} a ready clone (#{report[:scope]} scope)."
     )
+  end
+
+  # Each trigger poller's liveness and any spent or low GitHub budget, from TriggerPollerHealth.
+  #
+  # Deliberately NOT folded into `overall_status`. A stalled poller is paged by
+  # TriggerPollerLivenessCheckJob on its own threshold, and folding it in here would make
+  # SystemHealthMonitorJob a second pager for the same stall. This section is where a
+  # responder reads what that page means, including whether a spent rate limit explains it.
+  def trigger_poller_health
+    TriggerPollerHealth.report
+  rescue StandardError => e
+    @logger.warn("Trigger poller health could not be read", error: e.message)
+    {
+      pollers: [], github_rate_limit: [],
+      status: HealthStatus.new(status: :warning, message: "Trigger poller health could not be read: #{e.message}")
+    }
   end
 
   # The warm router process: whether one is booted, how old it is, the last

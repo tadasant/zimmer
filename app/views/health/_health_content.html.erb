@@ -668,6 +668,8 @@
 
 <%= render "health/post_deploy_tasks", health_report: health_report %>
 
+<%= render "health/trigger_pollers", health_report: health_report %>
+
 <%= render "health/cron_freshness", health_report: health_report %>
 
 <%= render "health/log_retention", health_report: health_report %>

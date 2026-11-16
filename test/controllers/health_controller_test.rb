@@ -94,6 +94,28 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", text: "System Health Dashboard"
   end
 
+  test "the Trigger Polling card says a GitHub poller is rate-limited, whose budget, and when it resets" do
+    TriggerPollerHealth.stubs(:report).returns(
+      pollers: [
+        { key: "github", name: "GitHub", state: "rate_limited",
+          message: "GitHub trigger polling is paused: GH_TOKEN (tadasant)'s GitHub search budget is spent until 2026-11-15 21:16 UTC (in under a minute); last poll 20m ago." }
+      ],
+      github_rate_limit: [
+        { resource: "search", spent: true,
+          message: "GH_TOKEN (tadasant)'s search budget is spent: 0/30 left, resets 2026-11-15 21:16 UTC (in under a minute). GitHub trigger polling is paused until then." }
+      ],
+      status: HealthMonitorService::HealthStatus.new(status: :warning, message: "GitHub trigger polling is paused")
+    )
+
+    get health_dashboard_url
+    assert_response :success
+    assert_select "[data-testid=trigger-poller-health]" do
+      assert_select "h3", "Trigger Polling"
+      assert_select "li", /rate-limited\s+GitHub trigger polling is paused: GH_TOKEN \(tadasant\)'s GitHub search budget is spent until 2026-11-15 21:16 UTC/
+      assert_select "[data-testid=github-rate-limit] li", /search spent\s+GH_TOKEN \(tadasant\)'s search budget is spent: 0\/30 left/
+    end
+  end
+
   test "dashboard displays health sections" do
     get health_dashboard_url
     assert_response :success

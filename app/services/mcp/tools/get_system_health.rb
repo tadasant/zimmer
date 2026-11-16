@@ -48,6 +48,7 @@ module Mcp
           *queue_recovery_mode_lines,
           *ready_backlog_lines(report),
           *in_flight_lines(report),
+          *trigger_poller_lines(report),
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
           *root_data_lines(report),
@@ -178,6 +179,24 @@ module Mcp
           *behind.map { |r| "  - `#{r[:key]}` (#{r[:state]}): #{r[:reason]}" },
           *recovered.map { |r| recovered_key_line(r) }
         ]
+      end
+
+      # The Trigger Polling card on /health: each watched poller that is not simply polling
+      # (stalled, paused by a spent GitHub search budget, no heartbeat yet), then every spent or
+      # low GitHub budget with its reset and whether polling continues through it.
+      def trigger_poller_lines(report)
+        pollers = report[:trigger_poller_health] || {}
+        status = pollers[:status]
+        return [] if status.nil?
+
+        rows = [
+          *Array(pollers[:pollers]).reject { |p| p[:state] == "polling" }.map { |p| "  - #{p[:name]} (#{p[:state]}): #{p[:message]}" },
+          *Array(pollers[:github_rate_limit]).map { |r| "  - GitHub #{r[:resource]} budget (#{r[:spent] ? 'spent' : 'low'}): #{r[:message]}" }
+        ]
+        # The rows carry a stall or a spent budget; with none, the summary says what there is
+        # to say, including why the section could not be read.
+        headline = status.status == :healthy || rows.empty? ? status.message : status.status.to_s
+        [ "- **Trigger polling:** #{headline}", *rows ]
       end
 
       # Whether each webhook source is delivering, and whether the poller has had to fire for it —

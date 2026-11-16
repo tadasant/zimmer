@@ -154,6 +154,7 @@ module Mcp
           "- **MCP Servers:** #{mcp_servers_summary(trigger)}",
           "- **Skills / Hooks / Plugins:** #{catalog_lists_summary(trigger)}"
         ]
+        lines.concat(github_rate_limit_lines([ trigger ]))
         # Only meaningful on a reuse trigger — the model clears both otherwise —
         # and worth reading before changing either, because with enqueue_messages
         # off a fire onto a busy session is dropped without a trace.
@@ -233,6 +234,8 @@ module Mcp
           lines << "## Triggers\n\nNo triggers found."
         else
           lines.push("## Triggers (#{total_count} total, page #{page} of #{total_pages})", "")
+          rate_limit = github_rate_limit_lines(triggers)
+          lines.push(*rate_limit, "") if rate_limit.any?
           triggers.each do |trigger|
             lines << "### #{trigger.name} (ID: #{trigger.id})"
             lines << "- **Conditions:** #{condition_types_summary(trigger)} | **Status:** #{trigger.status} | " \
@@ -253,6 +256,16 @@ module Mcp
         lines.concat(whatsapp_chat_lines) if args["include_whatsapp_chats"]
 
         lines.join("\n")
+      end
+
+      # The banner /triggers and a GitHub trigger's page show while a GitHub budget is spent:
+      # one line per spent budget, saying until when and whether polling continues. Read from
+      # GithubRateLimitReport's cache, never from GitHub. Empty when no trigger listed polls
+      # GitHub, or nothing is spent.
+      def github_rate_limit_lines(triggers)
+        return [] unless triggers.any? { |trigger| trigger.trigger_conditions.any?(&:github_condition?) }
+
+        GithubRateLimitReport.spent.map { |reading| "- ⚠️ **GitHub rate limit:** #{reading.message}" }
       end
 
       def find_trigger(id)

@@ -87,7 +87,16 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
       # A spent budget is the one cause on that list this host can state as fact, with
       # the time it ends (2026-11-15: a 19-minute stall that read as an outage). A dead
       # worker or a hung `gh` still pages, because the threshold does not consult this.
-      diagnosis: -> { GithubRateLimit.diagnosis }
+      # GithubRateLimitReport builds on GithubRateLimit's breakers and snapshot, adding the
+      # login, remaining/limit, "resets in N min", and whether polling continues through each
+      # spent budget. It falls back to GithubRateLimit.diagnosis if it cannot.
+      #
+      # The title does not change with it. GitHub's search window is a minute long, so a
+      # search budget spent at the moment of the check cannot explain fifteen minutes without
+      # a poll, and a search limit that does hold the sweep is paged on its own, as
+      # "GitHub search API rate limit not clearing". The readings ride in the details and
+      # the ERROR line, with their reset times, for the responder to weigh.
+      diagnosis: -> { GithubRateLimitReport.diagnosis }
     ),
     Poller.new(
       key: :slack,
@@ -228,7 +237,9 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
       context: {
         source: "TriggerPollerLivenessCheckJob",
         poller: poller.key.to_s,
-        details: [ poller.details.call(minutes, last_at), diagnosis ].compact.join(" "),
+        # The diagnosis leads: when it names a spent budget, that is the first thing the
+        # responder should read, ahead of the list of causes it rules in or out.
+        details: [ diagnosis, poller.details.call(minutes, last_at) ].compact.join(" "),
         diagnosis: diagnosis
       }.compact
     )

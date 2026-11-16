@@ -1,0 +1,28 @@
+<%#
+  Spent and low GitHub rate-limit budgets, one line each, from GithubRateLimitReport (hashes,
+  as Reading#to_h makes them). Shared by the Trigger Polling card on /health and the banner
+  on the trigger pages, so both say the same thing in the same words as get_system_health
+  and search_triggers. Renders nothing when `readings` is empty.
+%>
+<% if readings.present? %>
+  <div class="rounded-md border <%= readings.any? { |r| r[:spent] } ? 'border-amber-300 bg-amber-50' : 'border-yellow-200 bg-yellow-50' %> p-4" data-testid="github-rate-limit">
+    <h4 class="text-sm font-semibold text-amber-900">
+      <%= readings.any? { |r| r[:spent] } ? "GitHub rate limit spent" : "GitHub rate limit running low" %>
+    </h4>
+    <ul class="mt-2 space-y-2 text-sm text-amber-900">
+      <% readings.each do |reading| %>
+        <li class="break-words">
+          <span class="inline-flex items-center px-2 py-0.5 mr-1 rounded-full text-xs font-medium <%= reading[:spent] ? 'bg-red-100 text-red-800' : 'bg-yellow-100 text-yellow-800' %>">
+            <%= reading[:resource] %> <%= reading[:spent] ? "spent" : "low" %>
+          </span>
+          <%= reading[:message] %>
+        </li>
+      <% end %>
+    </ul>
+    <p class="mt-2 text-xs text-amber-800">
+      GitHub counts the 5000/hr REST budget per user across every token that user holds, so agent
+      sessions running <code>gh</code> as the same user spend it too. Zimmer stops calling a spent
+      budget until it resets.
+    </p>
+  </div>
+<% end %>

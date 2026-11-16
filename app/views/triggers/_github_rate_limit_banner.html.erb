@@ -1,0 +1,11 @@
+<%#
+  Shown on /triggers and a GitHub trigger's page while a GitHub budget is spent, so a quiet
+  GitHub trigger reads as rate-limited until a stated time rather than broken. Whether
+  polling continues is in each line: the sweep spends only the search budget.
+  `search_triggers` carries the same lines for agents.
+%>
+<% if readings.present? %>
+  <div class="mb-6">
+    <%= render "shared/github_rate_limit", readings: readings %>
+  </div>
+<% end %>

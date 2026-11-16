@@ -39,6 +39,27 @@ class Api::V1::HealthControllerTest < ActionDispatch::IntegrationTest
     assert json.key?("ruby_version")
   end
 
+  test "the health report carries trigger polling and a spent GitHub budget, read from the cache alone" do
+    extend GithubRateLimitStateHelpers
+    use_test_gh_token
+    GithubCli.expects(:run).never
+    open_rate_limit_breaker("core", 12.minutes.from_now)
+    write_rate_limit_snapshot("core" => [ 0, 5000, 12.minutes.from_now ], "search" => [ 29, 30, 40.seconds.from_now ])
+    Rails.cache.write(PollerHeartbeat.cache_key(:github), 1.minute.ago.utc.iso8601)
+
+    get api_v1_health_path, headers: @headers
+    assert_response :success
+
+    section = JSON.parse(response.body).dig("health_report", "trigger_poller_health")
+    reading = section["github_rate_limit"].sole
+    assert_equal [ "core", true, "continues" ], reading.values_at("resource", "spent", "trigger_polling")
+    assert_includes reading["message"], "GitHub trigger polling continues through it"
+    assert_equal "polling", section["pollers"].find { |p| p["key"] == "github" }["state"]
+    assert_equal "warning", section.dig("status", "status")
+  ensure
+    restore_gh_tokens
+  end
+
   test "should return JSON with correct content type" do
     get api_v1_health_path, headers: @headers
     assert_equal "application/json; charset=utf-8", response.content_type

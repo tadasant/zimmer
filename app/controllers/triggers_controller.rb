@@ -15,6 +15,7 @@ class TriggersController < ApplicationController
     # Read once for the whole list rather than per row — see
     # Trigger.catalog_agent_root_names.
     @catalog_agent_root_names = Trigger.catalog_agent_root_names
+    @github_rate_limit = github_rate_limit_for(@triggers)
   end
 
   def show
@@ -23,6 +24,7 @@ class TriggersController < ApplicationController
       .for_trigger(@trigger.id)
       .order(created_at: :desc)
       .limit(10)
+    @github_rate_limit = github_rate_limit_for([ @trigger ])
   end
 
   def new
@@ -181,6 +183,14 @@ class TriggersController < ApplicationController
   end
 
   private
+
+  # Spent GitHub budgets, for the banner on a page that shows a GitHub condition. Read from
+  # GithubRateLimitReport's cache, never from GitHub; empty when no trigger shown polls GitHub.
+  def github_rate_limit_for(triggers)
+    return [] unless triggers.any? { |trigger| trigger.trigger_conditions.any?(&:github_condition?) }
+
+    GithubRateLimitReport.spent.map(&:to_h)
+  end
 
   # A toggle answered where it was clicked. The index lists each trigger in a
   # `trigger_<id>` frame, which the row partial replaces in place; the show page

@@ -2011,8 +2011,10 @@ as a rate limit here too: a spent search budget, a secondary-limit backoff (whic
 about 16 minutes, past the five-sweep streak, so a backoff that is not clearing still pages) or the
 few seconds of jitter after a reset. Zimmer's other search callers are held to the share the poller
 does not need, which makes them an unlikely cause of one. When the GitHub liveness page does fire, its
-details carry `GithubRateLimit.diagnosis`, which lists every budget known to be spent and when it
-resets. See
+details lead with every budget known to be spent or low: whose it is, remaining/limit, when it resets,
+and whether polling continues through it. The title does not change. The **Trigger Polling** card
+on `/health` and `get_system_health` show the same state, and they show it before anything pages. See
+[Where a spent budget shows](/sessions/triggers/#where-a-spent-budget-shows) and
 [Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.
 
 Three placement details are load-bearing, and all are easy to get backwards:

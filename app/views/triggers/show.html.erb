@@ -89,6 +89,8 @@
       </div>
     </div>
 
+    <%= render "triggers/github_rate_limit_banner", readings: @github_rate_limit %>
+
     <!-- Failure Panel -->
     <% if @trigger.failed? %>
       <div class="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
