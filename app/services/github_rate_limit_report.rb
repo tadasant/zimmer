@@ -25,7 +25,9 @@ module GithubRateLimitReport
   # The budget GithubTriggerPollerJob's sweep spends.
   SWEEP_RESOURCE = "search"
 
-  Reading = Data.define(:credential, :login, :resource, :remaining, :limit, :reset_at, :spent, :polling) do
+  # `backoff` is a breaker GithubRateLimit opened on a secondary (burst) limit rather than a
+  # spent budget: calls are held back the same way, but the budget itself may have room.
+  Reading = Data.define(:credential, :login, :resource, :remaining, :limit, :reset_at, :spent, :polling, :backoff) do
     # `credential (login)`, or the variable name alone when the login is not known.
     def whose
       login ? "#{credential} (#{login})" : credential
@@ -41,9 +43,12 @@ module GithubRateLimitReport
     # 2026-11-15 21:27 UTC (in 12 min). GitHub trigger polling continues through it: its sweep
     # spends only the search budget (28/30 left)."
     def message(now: Time.current)
-      head = spent ? "spent" : "running low"
-      text = "#{whose}'s #{resource} budget is #{head}"
-      text += ": #{remaining_text} left" if remaining_text
+      if backoff
+        text = "#{whose}'s #{resource} calls are backing off after a secondary rate limit"
+      else
+        text = "#{whose}'s #{resource} budget is #{spent ? 'spent' : 'running low'}"
+        text += ": #{remaining_text} left" if remaining_text
+      end
       text += ", resets #{GithubRateLimitReport.reset_text(reset_at, now: now)}."
       note = polling_note
       note ? "#{text} #{note}" : text
@@ -68,7 +73,7 @@ module GithubRateLimitReport
     def to_h(now: Time.current)
       {
         credential: credential, login: login, resource: resource,
-        remaining: remaining, limit: limit, reset_at: reset_at.utc.iso8601, spent: spent,
+        remaining: remaining, limit: limit, reset_at: reset_at.utc.iso8601, spent: spent, backoff: backoff,
         trigger_polling: case polling
                          when :paused, :paused_by_search then "paused"
                          when Hash then "continues"
@@ -154,23 +159,27 @@ module GithubRateLimitReport
 
     GithubRateLimit::RESOURCES.filter_map do |resource|
       budget = budgets[resource]
-      exhausted_until = GithubRateLimit.read_exhausted(credential, resource)
+      hold = GithubRateLimit.read_hold(credential, resource)
+      exhausted_until = hold && hold[:reset_at].future? ? hold[:reset_at] : nil
+      backoff = exhausted_until.present? && hold[:kind] == :backoff
       snapshot_spent = budget && budget[:remaining].zero? && budget[:reset_at].future?
 
       if exhausted_until || snapshot_spent
         Reading.new(credential: credential[:label], login: login, resource: resource,
-                    # A breaker means spent, whatever an older snapshot last counted.
-                    remaining: 0, limit: budget&.dig(:limit),
+                    # A breaker on a spent budget means 0 left, whatever an older snapshot
+                    # counted. A backoff says nothing about the count, so none is given.
+                    remaining: backoff ? nil : 0, limit: budget&.dig(:limit),
                     reset_at: exhausted_until || budget[:reset_at], spent: true,
                     polling: if resource == SWEEP_RESOURCE then :paused
                              elsif search == :paused then :paused_by_search
                              else search
-                             end)
+                             end,
+                    backoff: backoff)
       elsif budget && resource != SWEEP_RESOURCE && budget[:remaining] < GithubRateLimit::LOW_WATER &&
             budget[:reset_at].future?
         Reading.new(credential: credential[:label], login: login, resource: resource,
                     remaining: budget[:remaining], limit: budget[:limit], reset_at: budget[:reset_at],
-                    spent: false, polling: nil)
+                    spent: false, polling: nil, backoff: false)
       end
     end
   end

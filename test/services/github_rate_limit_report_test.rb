@@ -169,4 +169,17 @@ class GithubRateLimitReportTest < ActiveSupport::TestCase
     assert_nil GithubTokenStatus.cached_login(TEST_GH_TOKEN)
     assert_nil GithubTokenStatus.cached_login(nil)
   end
+
+  test "a secondary-limit backoff reads as backing off, not as a spent budget, and still pauses polling" do
+    Rails.cache.write(GithubRateLimit.exhausted_key(rate_limit_credential, "search"),
+                      { "reset" => (@now + 2.minutes).to_f, "spread" => 5, "kind" => "backoff" })
+    write_rate_limit_snapshot("search" => [ 22, 30, @now + 40.seconds ])
+
+    reading = GithubRateLimitReport.readings.sole
+    assert reading.backoff
+    assert_equal "GH_TOKEN's search calls are backing off after a secondary rate limit, resets 2026-11-15 21:17 UTC (in 2 min). " \
+                 "GitHub trigger polling is paused until then.", reading.message
+    assert GithubRateLimitReport.sweep_blocked?([ reading ])
+    assert_equal true, reading.to_h[:backoff]
+  end
 end

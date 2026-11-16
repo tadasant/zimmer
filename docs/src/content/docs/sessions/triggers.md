@@ -2164,6 +2164,10 @@ since its whole budget is 30 a minute), it gives:
   spent `search` budget says *polling is paused until then*. With no `search` reading in the
   snapshot, it says neither.
 
+A breaker opened on a secondary (burst) limit holds calls back the same way, but its budget is not
+spent. It reads as *backing off after a secondary rate limit* until its reset, with no remaining
+count.
+
 | Surface | What it shows |
 | --- | --- |
 | `/health`, **Trigger Polling** card | Each poller with an enabled trigger: `polling`, `stalled`, `rate-limited` or no heartbeat yet, with when it last polled. `rate-limited` means the heartbeat is still inside its threshold and every token's `search` budget is spent. A heartbeat past its threshold is `stalled` whatever is spent, because a one-minute search window cannot account for a quarter of an hour. A GitHub stall says what the spent budgets do and do not explain: a spent `core` or `graphql` budget never stops the sweep. Every spent or low budget is listed below. The card stays out of the overall status, because paging belongs to the liveness job. |

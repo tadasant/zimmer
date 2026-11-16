@@ -1626,7 +1626,7 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
   def spent_search_reading
     GithubRateLimitReport::Reading.new(
       credential: "GH_TOKEN", login: "tadasant", resource: "search", remaining: 0, limit: 30,
-      reset_at: 40.seconds.from_now, spent: true, polling: :paused
+      reset_at: 40.seconds.from_now, spent: true, polling: :paused, backoff: false
     )
   end
 

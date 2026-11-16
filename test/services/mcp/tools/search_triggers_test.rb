@@ -332,7 +332,7 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
   def spent_core_reading
     GithubRateLimitReport::Reading.new(
       credential: "GH_TOKEN", login: "tadasant", resource: "core", remaining: 0, limit: 5000,
-      reset_at: 12.minutes.from_now, spent: true, polling: { search: "28/30 left" }
+      reset_at: 12.minutes.from_now, spent: true, polling: { search: "28/30 left" }, backoff: false
     )
   end
 
