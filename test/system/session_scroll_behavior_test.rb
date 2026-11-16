@@ -54,10 +54,24 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     false
   end
 
-  # Current number of timeline items in the DOM. Uses wait: 0 so each poll is a
-  # single synchronous query rather than incurring Capybara's implicit wait.
+  # Number of visible timeline items, counted in one cheap script.
+  #
+  # Not `page.all("[data-timeline-item]").count`: Capybara's Selenium driver
+  # fetches every match as a WebDriver element and then hands all of them back
+  # to the browser in one `execute_script` that runs Selenium's isDisplayed atom
+  # on each. With ~1000 items that is ~2s per call on an idle machine, and on a
+  # loaded CI runner a single call ran past chromedriver's 30s script timeout
+  # (Selenium::WebDriver::Error::ScriptTimeoutError, CI run 43802561208).
+  # `checkVisibility()` treats `display: none` (how the log-level filter hides
+  # items) as hidden, which is the part of `page.all`'s visible-only rule these
+  # tests rely on; isDisplayed is stricter about opacity and clipping. Returning
+  # a bare integer costs milliseconds at any item count.
   def timeline_item_count
-    page.all("[data-timeline-item]", wait: 0).count
+    page.evaluate_script(<<~JS)
+      Array.from(document.querySelectorAll("[data-timeline-item]"))
+        .filter((el) => el.checkVisibility())
+        .length
+    JS
   end
 
   # Whether the infinite-scroll controller still reports older items to load.
@@ -138,7 +152,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     sleep 0.8
 
     # The tail, plus at most what INITIAL_WINDOW allows for — never all 300.
-    loaded_items = page.all("[data-timeline-item]").count
+    loaded_items = timeline_item_count
     assert_includes INITIAL_WINDOW, loaded_items, "Should load limited items initially (got #{loaded_items})"
 
     # Should show "Load more" indicator when there are more items
@@ -242,7 +256,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     sleep 0.8
 
     # Count initial loaded items
-    initial_count = page.all("[data-timeline-item]").count
+    initial_count = timeline_item_count
     assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Trigger loading older items and wait deterministically for the next batch
@@ -266,7 +280,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     sleep 0.8
 
     # Count initial items to verify we have limited load
-    initial_count = page.all("[data-timeline-item]").count
+    initial_count = timeline_item_count
     assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Capture the scroll position before loading older items. The page is pinned
@@ -336,7 +350,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     # Wait for initial scroll to bottom and IntersectionObserver to be set up
     sleep 0.8
 
-    initial_count = page.all("[data-timeline-item]").count
+    initial_count = timeline_item_count
     assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially (got #{initial_count})"
 
     # Track loading progress
@@ -383,7 +397,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     sleep 0.8
 
     # Count initial loaded items
-    initial_count = page.all("[data-timeline-item]").count
+    initial_count = timeline_item_count
     assert_includes INITIAL_WINDOW, initial_count, "Should have limited items initially"
 
     # Load all items by repeatedly triggering the next batch
