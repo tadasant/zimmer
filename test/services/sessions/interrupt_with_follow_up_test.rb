@@ -190,7 +190,7 @@ class Sessions::InterruptWithFollowUpTest < ActiveSupport::TestCase
     session.enqueued_messages.create!(content: "ahead", position: 1, status: "pending")
     session.enqueued_messages.create!(content: "behind", position: 2, status: "pending")
     # InterruptService promotes the message to the head of the queue before it
-    # dispatches, so a failure after that leaves it at 1: staged 3, ahead 2, behind 3.
+    # dispatches, so a failure after that leaves it at 1: staged 1, ahead 2, behind 3.
     stub_interrupt(Sessions::Result.new(success: false, error: "dispatch failed")) { |message| message.reorder_to(1) }
 
     result = send_now(session)

@@ -100,10 +100,11 @@ interrupt fails, or the surface's pre-interrupt step raises, it withdraws the st
 turns up later as a surprise queued follow-up. The withdrawal goes through
 `Sessions::RemoveQueuedMessage.withdraw_pending`: the same queue lock and gap-closing renumber as a
 delete, with the `pending` check made under that lock and the row itself locked, and no log row.
-A message a concurrent interrupt or the end-of-turn drain already claimed is left to be delivered,
-and the surface keeps its attachments. Because `InterruptService` promotes the message to position 1
-before it dispatches, a failure after the promotion withdraws it from the head, and the rows behind
-it move up. The web "Send Now" button on a queued message is not on this path: it promotes
+A message that is no longer `pending` is left alone. If a concurrent interrupt or the end-of-turn
+drain claimed it, it is delivered and the surface keeps its attachments. A message retired
+`undelivered` in the meantime is left as well. `InterruptService` promotes the message to position 1
+before it dispatches. If a failure after the promotion leaves it `pending`, it is withdrawn from
+the head and the rows behind it move up. The web "Send Now" button on a queued message is not on this path: it promotes
 a row that already exists, so it calls `InterruptService` directly.
 
 **Every writer that appends to the queue reads its position the same way**, through

@@ -29,11 +29,14 @@ module Sessions
   #
   # One variant, `withdraw_pending`, is for a writer taking back a message it
   # staged itself: Sessions::InterruptWithFollowUp, when the interrupt it was
-  # staged for fails. It removes the row only while it is still `pending`, and
-  # checks that under the same lock, with the row itself locked, so a delivery
-  # that claims the message (`processing`, under the session's row lock) either
-  # finishes first and the withdrawal finds nothing, or waits for it. It writes
-  # no Log row: nobody asked for the message to be deleted, and the failure that
+  # staged for fails. It removes the row only while it is still `pending`. A
+  # delivery claims the message (`processing`) under the session's row lock,
+  # which the queue lock waits for, so a claim either commits first and the
+  # withdrawal finds the row gone, or waits for the withdrawal. The row itself
+  # is locked for the status read, because retiring a message as `undelivered`
+  # (EnqueuedMessage#retire_as_stale!) writes the status without the session
+  # lock; the read waits for that write and sees its result. It writes no Log
+  # row: nobody asked for the message to be deleted, and the failure that
   # caused the withdrawal is reported by the caller.
   #
   # Scope: the delete, the renumber and (for `call`) one Log row, committed

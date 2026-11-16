@@ -97,6 +97,7 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     withdrawn = nil
     contender_blocked = race(
       holding: -> {
+        # The locking of EnqueuedMessageProcessorService#process_next_message.
         session = Session.find(@session.id)
         session.lock!
         claimed = session.process_next_enqueued_message!
@@ -110,6 +111,23 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     assert_nil withdrawn, "a message the processor claimed is not the sender's to withdraw"
     assert_equal %w[B C D], queue_contents
     assert_equal [ 1, 2, 3 ], @session.enqueued_messages.order(:position).pluck(:position)
+  end
+
+  test "a withdrawal waits for an open retirement and leaves the retired message" do
+    # A is retired `undelivered` by a writer that takes no session lock
+    # (EnqueuedMessage#retire_as_stale!), held open. A withdrawal that read the
+    # status without locking the row would see `pending`, then delete the row
+    # once the retirement committed.
+    stale = EnqueuedMessage.find(@a.id)
+    withdrawn = nil
+    contender_blocked = race(holding: -> { EnqueuedMessage.find(@a.id).retire_as_stale! }) do
+      withdrawn = Sessions::RemoveQueuedMessage.withdraw_pending(stale)
+    end
+
+    assert contender_blocked, "the withdrawal must wait while the row's status is being written"
+    assert_nil withdrawn
+    assert_equal [ [ "A", 1, "undelivered" ], [ "B", 2, "pending" ], [ "C", 3, "pending" ], [ "D", 4, "pending" ] ],
+                 @session.enqueued_messages.order(:position).pluck(:content, :position, :status)
   end
 
   private
