@@ -152,7 +152,7 @@ final class TranscriptParityUITests: XCTestCase {
         app.alerts.buttons["Set"].tap()
         XCTAssertTrue(waitForDisappearance(app.alerts.firstMatch))
         app.buttons["detail.actions"].tap()
-        XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the menu says the precedence in force")
+        XCTAssertTrue(menuItem(app, "Precedence: 40").exists, "the menu says the precedence in force")
 
         // Spot, as the web select sends it: the class alone, so the precedence just set is the
         // rank it runs at in the spot queue.
@@ -160,9 +160,10 @@ final class TranscriptParityUITests: XCTestCase {
         tapMenuItem(app, "Spot")
         XCTAssertTrue(waitForDisappearance(app.buttons["Spot"].firstMatch), "the menu closes on the choice")
         app.buttons["detail.actions"].tap()
-        XCTAssertTrue(app.buttons["Scheduling class: spot"].firstMatch.waitForExistence(timeout: timeout), "the menu says the class in force")
-        XCTAssertTrue(app.buttons["Precedence: 40"].firstMatch.waitForExistence(timeout: timeout), "the demotion kept the precedence")
-        app.buttons["Precedence: 40"].firstMatch.tap()
+        XCTAssertTrue(menuItem(app, "Scheduling class: spot").exists, "the menu says the class in force")
+        let precedence = menuItem(app, "Precedence: 40")
+        XCTAssertTrue(precedence.exists, "the demotion kept the precedence")
+        precedence.tap()
         XCTAssertTrue(app.alerts.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Higher is worked first")).firstMatch.waitForExistence(timeout: timeout),
                       "the note follows the class")
         app.alerts.buttons["Cancel"].tap()
@@ -225,9 +226,29 @@ final class TranscriptParityUITests: XCTestCase {
     }
 
     private func tapMenuItem(_ app: XCUIApplication, _ item: String) {
-        let button = app.buttons[item].firstMatch
-        XCTAssertTrue(button.waitForExistence(timeout: timeout), "the menu offers \(item)")
+        let button = menuItem(app, item)
+        XCTAssertTrue(button.exists, "the menu offers \(item)")
         button.tap()
+    }
+
+    /// `item` in the open menu, scrolled to if it is below the fold. The session menu is taller
+    /// than the screen, and its rows are laid out lazily: XCUITest finds only the rows on it, so
+    /// 1038's Precedence row stopped existing when the menu gained Move to backlog (#1539).
+    /// Swiping the menu's own list brings the row into being, however long the menu grows.
+    private func menuItem(_ app: XCUIApplication, _ item: String) -> XCUIElement {
+        let button = app.buttons[item].firstMatch
+        if button.waitForExistence(timeout: 3) { return button }
+        // The menu's list, by an item only it has; a submenu has no Edit Notes, and its items
+        // are on screen.
+        let list = app.collectionViews.containing(NSPredicate(format: "label == %@", "Edit Notes")).firstMatch
+        guard list.waitForExistence(timeout: timeout) else { return button }
+        // A wait before each swipe, not a bare `exists`: a menu still opening on a slow runner
+        // has the row on screen a moment later, and a swipe then would scroll it away.
+        for _ in 0..<6 {
+            if button.waitForExistence(timeout: 2) { break }
+            list.swipeUp(velocity: .slow)
+        }
+        return button
     }
 
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
