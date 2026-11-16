@@ -76,6 +76,15 @@ class SessionCarplayFitTest < ActiveSupport::TestCase
     end
   end
 
+  # The dashboard's card delivery carries this, and the grid judges its CarPlay-fit
+  # filter on it — so it has to land on the same side as the scope.
+  test "carplay_fit_bucket names the side of the filter the scope puts the session on" do
+    assert_equal "carplay_ok", marked(SessionCarplayFit::CARPLAY_OK).carplay_fit_bucket
+    assert_equal "laptop_only", marked(SessionCarplayFit::LAPTOP_ONLY).carplay_fit_bucket
+    assert_equal "untagged", marked(SessionCarplayFit::LAPTOP_ONLY, line_count: 3).carplay_fit_bucket, "a stale mark is untagged"
+    assert_equal "untagged", make_session.carplay_fit_bucket
+  end
+
   test "the summary names the mark, the reason, the source and the freshness" do
     session = marked(SessionCarplayFit::LAPTOP_ONLY, carplay_fit_reason: "credential")
     assert_equal "Laptop only (a credential) · auto · current", session.carplay_fit_summary

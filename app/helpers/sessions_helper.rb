@@ -168,9 +168,8 @@ module SessionsHelper
     "grid gap-6 grid-cols-[repeat(auto-fill,minmax(min(320px,100%),400px))] justify-center"
   end
 
-  # The agent root the dashboard is filtered to, as the name a session records in
-  # `metadata["agent_root_key"]` — which is what a card delivery carries and what
-  # `session-grid` compares it with. Blank when there is no filter, or when the
+  # The agent root the dashboard is filtered to, as the catalog name a card
+  # delivery carries (Session#agent_root_key) and `session-grid` compares it with. Blank when there is no filter, or when the
   # filter names no root (the server then shows nothing, and live insert is off).
   def dashboard_agent_root_filter_name(agent_root_filter)
     return "" if agent_root_filter.blank?

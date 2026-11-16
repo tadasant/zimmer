@@ -136,6 +136,26 @@ class SessionGridLiveFiltersTest < ApplicationSystemTestCase
     assert page_never_navigated?
   end
 
+  # Undo puts the card back through the same envelope, inside the grace window
+  # that otherwise refuses deliveries for a card this page just took away.
+  test "Undo puts a card trashed from a filtered board back on it" do
+    doomed = make(title: "Trash me, then think better of it")
+
+    visit_grid_showing("needs_input")
+    assert_selector card_selector(doomed)
+    before = shown_count
+
+    within(card_selector(doomed)) { click_on "Trash" }
+    assert_selector "#flash", text: "Session moved to trash."
+    assert_no_selector card_selector(doomed)
+
+    within("#flash") { click_on "Undo" }
+
+    assert_selector card_selector(doomed), text: "Needs Input", wait: 5
+    assert_equal before, shown_count
+    assert page_never_navigated?
+  end
+
   test "a card snoozed elsewhere leaves a board showing only on-board sessions" do
     snoozed = make(title: "Snooze me from another tab")
 

@@ -16,10 +16,15 @@
     class, board visibility and CarPlay fit can change under an open page, so they
     decide removal as well as insertion. Genesis and agent root never change after
     a session is created; they only decide whether a session the page has never
-    rendered may be inserted.
+    rendered may be inserted. The agent root is resolved the way the dashboard's
+    filter resolves it: the recorded key, else the catalog root matching the
+    session's repository and subdirectory.
 
     Locals:
-      agent_session - the session %>
+      agent_session - the session
+      restore       - true for the Undo reply (SessionsController#unarchive):
+                      the operator is putting back a card this page just took
+                      away, so it may return to whichever page it left %>
 <div data-session-grid-target="delivery"
      hidden
      data-session-id="<%= agent_session.id %>"
@@ -28,7 +33,8 @@
      data-on-board="<%= agent_session.board_visible? %>"
      data-carplay-fit="<%= agent_session.carplay_fit_bucket %>"
      data-genesis="<%= agent_session.genesis %>"
-     data-agent-root="<%= agent_session.metadata&.dig("agent_root_key") %>">
+     data-agent-root="<%= agent_session.agent_root_key %>"
+     data-restore="<%= local_assigns.fetch(:restore, false) %>">
   <template>
     <%= render "sessions/session_card_frame", agent_session: agent_session %>
   </template>

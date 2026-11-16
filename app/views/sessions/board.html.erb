@@ -66,7 +66,10 @@
         <%= render "sessions/content_scan_notice", scan: @content_scan %>
       <% end %>
       <%= render "sessions/flat_sessions", sessions: @flat_sessions, title: @flat_view_title %>
-      <%= render "sessions/board_empty_state", search_active: @search_active, content_scan: @content_scan, visible: !@any_sessions %>
+      <%# The scan notice is already above the grid when there were cards, so the
+          empty state only carries it when it is the one showing at load. %>
+      <%= render "sessions/board_empty_state", search_active: @search_active,
+            content_scan: (@any_sessions ? nil : @content_scan), visible: !@any_sessions %>
     </div>
   <% end %>
 

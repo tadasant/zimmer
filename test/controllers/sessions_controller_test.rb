@@ -1763,8 +1763,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_not session.reload.archived?
-    # Uncategorized sessions land in the Uncategorized grid.
-    assert_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
+    # The card goes back as a restore delivery, so the page's own filters decide
+    # where (and whether) it lands, rather than a prepend onto any grid.
+    assert_match(/<turbo-stream\s+action="append"\s+target="#{Session::CARD_DELIVERIES_TARGET}"/, response.body)
+    assert_match(/data-restore="true"/, response.body)
+    assert_no_match(/<turbo-stream\s+action="prepend"\s+target="sessions_grid"/, response.body)
     assert_match(/id="session_#{session.id}"/, response.body)
     assert_match(/<turbo-stream\s+action="replace"\s+target="flash"/, response.body)
     assert_match(/Session restored from trash\./, response.body)

@@ -22,6 +22,10 @@ import { isPendingRemoval } from "lib/optimistic_actions"
 // The "N sessions" badge and the empty state are kept in step by watching the
 // grid itself rather than every path that changes it, so a card taken away by
 // Trash, a snooze, a delivery or a reconnect backfill all move the count.
+// How long after someone on this page takes a card away that every delivery for
+// it is refused, whatever it says.
+const DEPARTURE_GRACE_MS = 5000
+
 export default class extends Controller {
   static targets = ["delivery", "grid", "card", "count", "section", "empty"]
   static values = {
@@ -55,12 +59,14 @@ export default class extends Controller {
     // — the operator's Trash, a snooze, the archive response's stream — is a
     // departure this page asked for, recorded in `departed`.
     this.ownRemovals = new WeakSet()
-    // Session ids someone on this page took off the grid. A page showing every
-    // status admits a trashed session, so without this the archive broadcast
-    // that follows a Trash click would put the card straight back, reading
-    // "Trashed". Only an archived delivery is refused: if the session comes back
-    // to life elsewhere, it may return.
-    this.departed = new Set()
+    // Session ids someone on this page took off the grid, and when. A page
+    // showing every status admits a trashed session, so without this the archive
+    // broadcast that follows a Trash click would put the card straight back,
+    // reading "Trashed". For a few seconds after the departure every delivery is
+    // refused, because one rendered before the archive committed can arrive after
+    // it; after that only an archived one is, so a session that comes back to
+    // life elsewhere may return.
+    this.departed = new Map()
 
     if (this.hasGridTarget) {
       this.gridObserver = new MutationObserver((mutations) => this.gridChanged(mutations))
@@ -98,6 +104,8 @@ export default class extends Controller {
       carplayFit: element.dataset.carplayFit,
       genesis: element.dataset.genesis || "",
       agentRoot: element.dataset.agentRoot || "",
+      // The Undo reply: the operator putting back a card this page took away.
+      restore: element.dataset.restore === "true",
       card: source ? document.importNode(source, true) : null
     }
   }
@@ -117,10 +125,10 @@ export default class extends Controller {
     }
 
     if (!this.mayInsert(envelope)) return
-    if (envelope.status === "archived" && this.departed.has(envelope.id)) return
-    // A card this page took away at the click, whose archive the server has not
-    // answered yet: a broadcast queued before the archive committed must not put
-    // it back.
+    if (!envelope.restore && this.refusedAsDeparted(envelope)) return
+    // A card this page took away at the click (Trash, Snooze, Hide), whose
+    // request the server has not answered yet: a broadcast queued before it
+    // committed must not put it back.
     if (isPendingRemoval("session", envelope.id)) return
     this.insertCard(envelope.card)
   }
@@ -145,11 +153,18 @@ export default class extends Controller {
   // page inserts: a later page cannot tell an arrival that belongs on it from
   // one that belongs on an earlier page.
   mayInsert(envelope) {
-    if (!envelope.card || !this.liveInsertValue || this.pageValue > 1) return false
+    if (!envelope.card || !this.liveInsertValue) return false
+    if (this.pageValue > 1 && !envelope.restore) return false
     if (!this.stillAdmitted(envelope)) return false
     if (this.genesisFilterValue && this.genesisFilterValue !== envelope.genesis) return false
     if (this.agentRootFilterValue && this.agentRootFilterValue !== envelope.agentRoot) return false
     return true
+  }
+
+  refusedAsDeparted(envelope) {
+    if (!this.departed.has(envelope.id)) return false
+    if (envelope.status === "archived") return true
+    return Date.now() - this.departed.get(envelope.id) < DEPARTURE_GRACE_MS
   }
 
   // Mirrors SessionCarplayFit's `carplay_fit_filter` scope over the bucket the
@@ -206,7 +221,7 @@ export default class extends Controller {
         if (this.ownRemovals.has(node)) {
           this.ownRemovals.delete(node)
         } else {
-          this.departed.add(node.dataset.sessionId)
+          this.departed.set(node.dataset.sessionId, Date.now())
         }
         if (this.overflowed.has(node)) {
           this.overflowed.delete(node)

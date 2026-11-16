@@ -36,6 +36,17 @@ export function isPendingRemoval(kind, id) {
   return pendingRemovals.has(`${kind}:${id}`)
 }
 
+// For a control outside this module that also takes a row away before its
+// request is answered (the visibility menu's Snooze and Hide). Mark it at the
+// click and clear it when the request settles, either way.
+export function markPendingRemoval(kind, id) {
+  pendingRemovals.add(`${kind}:${id}`)
+}
+
+export function clearPendingRemoval(kind, id) {
+  pendingRemovals.delete(`${kind}:${id}`)
+}
+
 // --- rules -------------------------------------------------------------------
 //
 // Each rule matches a submission by its path and HTTP method and returns the

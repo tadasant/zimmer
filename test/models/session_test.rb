@@ -1026,8 +1026,12 @@ class SessionTest < ActiveSupport::TestCase
     session.update!(scheduling_class: SessionGenesis::SPOT)
     session.update!(carplay_fit: SessionCarplayFit::LAPTOP_ONLY, carplay_fit_source: SessionCarplayFit::SOURCE_HUMAN,
                     carplay_fit_line_count: session.transcript_line_count.to_i)
+    # Re-marking a stale mark with the same fit and source moves only the line
+    # count, and flips the session from "untagged" back to "laptop_only".
+    session.update!(carplay_fit_line_count: session.carplay_fit_line_count + 1)
+    session.update!(snoozed_until: 1.day.from_now)
 
-    assert_equal 3, calls
+    assert_equal 5, calls
   end
 
   # Test git_root validations

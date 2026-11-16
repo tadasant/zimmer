@@ -2,6 +2,19 @@ require "test_helper"
 require "mocha/minitest"
 
 class SessionsHelperTest < ActionView::TestCase
+  test "the card grid inserts live unless a text search or an unknown agent root narrows it" do
+    root = AgentRootsConfig.all.first
+
+    assert dashboard_card_live_insert?("", "")
+    assert_not dashboard_card_live_insert?("needle", "")
+    assert dashboard_card_live_insert?("", root.name)
+    assert_not dashboard_card_live_insert?("", "no-such-root-anywhere")
+
+    assert_equal root.name, dashboard_agent_root_filter_name(root.name)
+    assert_equal "", dashboard_agent_root_filter_name("no-such-root-anywhere")
+    assert_equal "", dashboard_agent_root_filter_name("")
+  end
+
   test "session_drawer_link_data names the session for the drawer's provisional composer" do
     session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", status: :needs_input)
 

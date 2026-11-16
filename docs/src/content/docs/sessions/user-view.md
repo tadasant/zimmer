@@ -205,7 +205,8 @@ may be inserted.
 
 Archiving is the same delivery. A board of live work drops the card, and a board whose operator
 ticked *Archived* keeps it, reading *Trashed*. The exception is a card you trashed from this page:
-it stays gone even on a board that shows every status. The count beside the heading and the
+it stays gone even on a board that shows every status. **Undo** puts it back through the same
+envelope, so it lands in sort order, and only on a page whose filters admit the restored session. The count beside the heading and the
 empty state follow the grid however a card arrived or left. That includes Trash, a snooze, Undo
 and a live update. Deleting a session still sends a plain `remove`, because there is nothing left
 to judge.

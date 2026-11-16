@@ -3210,6 +3210,7 @@ class Session < ApplicationRecord
       saved_change_to_scheduling_class? ||
       saved_change_to_carplay_fit? ||
       saved_change_to_carplay_fit_source? ||
+      saved_change_to_carplay_fit_line_count? ||
       (saved_change_to_session_notes? && (session_notes_previously_was.blank? != session_notes.blank?))
 
     # For last_timeline_entry_at changes, throttle broadcasts to avoid overwhelming the index page

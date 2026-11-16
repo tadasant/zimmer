@@ -9342,10 +9342,13 @@ A reload is always exact. The live page can be off in these places:
 - **Only the first page inserts, and a text search inserts nothing.** A session that starts
   matching while you are on page 2, or while a search is narrowing the grid, appears on the next
   load. Cards still leave in both cases.
-- **The count can drift by one on a full first page.** An arrival that sorts below the last card
-  of a full page belongs on a later page and is not inserted, so the count does not go up for it.
-  A card on page 2 whose last-touched time jumps it onto page 1 is inserted and counted, although
-  it was already counted.
+- **The count drifts on a full first page, by one per event, until the next load.** An arrival
+  that sorts below the last card of a full page belongs on a later page and is not inserted, so the
+  count does not go up for it. A card on page 2 whose last-touched time jumps it onto page 1 is
+  inserted and counted again, although it was already counted; in Last Touched that happens on
+  every follow-up to an older session. And on a first page that is short only because cards left
+  live, an arrival that sorts after the last card is appended, although the true next card may be
+  on page 2.
 - **An expiring snooze brings nothing back.** A snooze ends by being read, not by a write. No
   broadcast goes out when it passes, so the card returns on the next load or the session's next
   change.
@@ -9356,7 +9359,11 @@ A reload is always exact. The live page can be off in these places:
   whose last-touched time moved keeps its position until the next load. The card views have always
   done this.
 - **A card trashed from a page showing every status stays gone on that page** until a reload, even
-  though the filter admits trashed sessions. If it is restored elsewhere it can come back.
+  though the filter admits trashed sessions. If it is restored, by Undo or elsewhere, it can come
+  back.
+- **Reclassifying a genesis in Settings sends nothing.** It changes the effective scheduling class
+  of every session with that genesis without writing their rows, so a grid filtered to Priority or
+  Spot stays as it was until the next load.
 
 ## Open questions
 
