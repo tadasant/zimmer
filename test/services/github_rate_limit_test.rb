@@ -179,17 +179,32 @@ class GithubRateLimitTest < ActiveSupport::TestCase
                "a burst limit on core holds core only"
   end
 
-  test "a secondary limit honours Retry-After when the response carries it" do
-    headers = "HTTP/2.0 403 Forbidden\r\nRetry-After: 120\r\nContent-Type: application/json\r\n\r\n{}"
-    BoundedSubprocess.stubs(:run).returns([ headers, SECONDARY_RATE_LIMIT, status(false) ])
-    GithubRateLimit.stubs(:random).returns(0.0)
-    GithubCli.run(%w[gh api -i repos/a/b], timeout: 5)
+  test "concurrent refusals of one limit count as one step, not one each" do
+    GithubRateLimit.stubs(:random).returns(1.0)
+    BoundedSubprocess.stubs(:run).returns([ "", SECONDARY_RATE_LIMIT, status(false) ])
+    # Several calls were already in flight when the limit hit; each comes back refused.
+    3.times { GithubRateLimit.observe(%w[gh api repos/a/b], SECONDARY_RATE_LIMIT) }
 
     refusal = GithubRateLimit.refusal_for(%w[gh api repos/a/b])
-    assert_in_delta 120.seconds.from_now, refusal.reset_at, 2
-    travel_to(121.seconds.from_now) do
-      assert_nil GithubRateLimit.refusal_for(%w[gh api repos/a/b])
-    end
+    assert_in_delta (GithubRateLimit::SECONDARY_FLOOR + GithubRateLimit::BACKOFF_BASE).seconds.from_now,
+                    refusal.retry_at, 2
+  end
+
+  test "only a served call resets the backoff: a 404, a dropped connection or a refusal on stdout do not" do
+    GithubRateLimit.stubs(:random).returns(1.0)
+    credential = GithubRateLimit.credential_for({})
+    key = GithubRateLimit.backoff_key(credential, "core")
+    2.times { GithubRateLimit.bump_backoff(credential, "core") }
+
+    GithubRateLimit.observe(%w[gh api repos/a/b], "gh: Not Found (HTTP 404)")
+    GithubRateLimit.observe(%w[gh api repos/a/b], "dial tcp: lookup api.github.com: no such host")
+    # `gh auth status --json` exits 0 with GitHub's refusal in its JSON.
+    GithubRateLimit.observe(%w[gh auth status --json hosts], "",
+                            stdout: '{"hosts":{"github.com":[{"error":"API rate limit exceeded for user ID 1."}]}}')
+    assert_equal 2, Rails.cache.read(key, raw: true).to_i
+
+    GithubRateLimit.observe(%w[gh api repos/a/b], "", stdout: "{}")
+    assert_nil Rails.cache.read(key, raw: true)
   end
 
   test "a bare 429 is a secondary limit; a rate-limit sentence beside a 404 is not a limit at all" do

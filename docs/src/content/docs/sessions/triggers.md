@@ -2045,16 +2045,20 @@ every refused call still counted against the budget.
   window that just passed) and a refusal met again right after a reopen all hold the breaker on a
   capped exponential backoff with full jitter. The n-th hold in a row is `floor + rand(0 ..
   min(15 min, 60s × 2^(n-1)))`. The floor is 60 seconds for a secondary limit, which is GitHub's
-  own rule, and 5 seconds otherwise. A secondary limit whose response carries `Retry-After` holds for
-  exactly that, plus the per-call jitter. The first call GitHub answers without a rate limit resets the
-  count. A secondary limit is recognised by GitHub's whole sentence or a bare 429, and only when every
+  own rule for a limit with no `Retry-After`, and 5 seconds otherwise. (`gh` prints response headers
+  only with `gh api -i`, which no caller uses, so Zimmer never sees a `Retry-After`.) Concurrent
+  refusals of one limit count as one step. The first call GitHub serves resets the count. A 404, a
+  dropped connection or a refusal reported on stdout does not. A secondary limit is recognised by GitHub's whole sentence or a bare 429, and only when every
   status `gh` printed is 403 or 429, so a query echoed in an error cannot forge one.
 - **The poller keeps its share of the search budget.** GitHub allows 30 searches a minute per user.
   A cold Issues page load spends about 25 of them, and the hourly trigger health check spends one
   per condition. Either could take the poller's tick. So searches outside the poller's sweep
   (`GithubRateLimit.on_poller_budget`) may spend only what the poller's next tick will not need:
   30 less one search per enabled GitHub condition, with that reserve capped at 15. Past that they
-  are answered locally until the window ends. The Issues page names the repo it could not read, and
+  are answered locally until the window ends. The reserve is a lower bound, since a multi-page or
+  retried search spends more. Zimmer's window is dated from the first search, as GitHub dates its own,
+  but the two are not the same window. So a burst at the end of one window and another at the start
+  of the next can still land in one of GitHub's. The share makes a lost tick unlikely, not impossible. The Issues page names the repo it could not read, and
   the health check stops for the hour, as both already do for a rate limit.
 
 Every `GithubCli.run` call site treats a refused call as "ask again later": one call, no retry in the

@@ -2006,7 +2006,7 @@ polls anyway, because the search budget is separate. A search the rate-limit bre
 as a rate limit here too: a spent search budget, a secondary-limit backoff (which grows to at most
 about 16 minutes, past the five-sweep streak, so a backoff that is not clearing still pages) or the
 few seconds of jitter after a reset. Zimmer's other search callers are held to the share the poller
-does not need, so they cannot cause one. When the GitHub liveness page does fire, its
+does not need, which makes them an unlikely cause of one. When the GitHub liveness page does fire, its
 details carry `GithubRateLimit.diagnosis`, which lists every budget known to be spent and when it
 resets. See
 [Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.

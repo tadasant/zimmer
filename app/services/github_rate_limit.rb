@@ -41,9 +41,8 @@
 #   4. **Back off where GitHub gives no reset time.** A secondary rate limit (GitHub's
 #      burst limit, answered 403 or 429), a primary refusal the probe cannot date, and a
 #      refusal met again right after a reopen all hold the breaker on a capped exponential
-#      backoff with full jitter (.backoff_hold), or for exactly GitHub's `Retry-After` when
-#      the response carries one. The attempt count is per credential and budget, and the
-#      first call GitHub answers without a rate limit resets it.
+#      backoff with full jitter (.backoff_hold). The attempt count is per credential and budget, and the
+#      first call GitHub answers successfully resets it.
 #   5. **Keep the trigger poller's search budget.** GitHub's search budget is 30 a minute,
 #      and the trigger poller spends it once a minute, one search per condition. Zimmer's
 #      other search callers (the Issues page, the hourly trigger health check) are bursty,
@@ -97,7 +96,7 @@ module GithubRateLimit
   # which is full jitter above a floor. The floor is GitHub's own rule for a secondary
   # limit with no Retry-After ("wait for at least one minute before retrying"), and a few
   # seconds where the probe merely failed. The base matches that minute; the cap keeps a
-  # long run of refusals from holding a budget past a quarter of an hour, which is also
+  # long run of refusals from holding a budget past about 16 minutes (cap plus floor), which is also
   # past GithubTriggerPollerJob's five-tick streak alarm, so a backoff that is not clearing
   # still pages.
   BACKOFF_BASE = 60
@@ -142,7 +141,8 @@ module GithubRateLimit
   # GitHub's wording for a spent primary budget, from REST (`API rate limit exceeded
   # for user ID 3900899.`) and from GraphQL (`API rate limit already exceeded for user
   # ID …`). A secondary limit (`You have exceeded a secondary rate limit`) is a
-  # different thing, a burst limit with a Retry-After, and does not trip a breaker.
+  # different thing, a burst limit with no reset time, and backs off instead
+  # (SECONDARY_LIMIT_PATTERN).
   #
   # A match only triggers a probe. The probe is what trips the breaker, and it trips
   # only the budgets GitHub reports as spent. A stray match (a label named after this
@@ -162,9 +162,6 @@ module GithubRateLimit
 
   # The statuses GitHub answers a rate limit with. A 429 is only ever a rate limit.
   RATE_LIMIT_STATUSES = [ 403, 429 ].freeze
-
-  # A `Retry-After` header, present when the caller asked `gh api` to include headers.
-  RETRY_AFTER_PATTERN = /^Retry-After:\s*(\d+)\s*$/i
 
   # The same refusal, made to an authenticated request: GitHub names the user it is
   # refusing. Only this form says the credential is valid. An unauthenticated request is
@@ -289,10 +286,15 @@ module GithubRateLimit
   end
 
   # Called by GithubCli with what every sent call printed. A rate-limit refusal is recorded
-  # (.observe_failure); any other answer means GitHub served this budget, so the backoff
-  # for it starts over.
+  # (.observe_failure). A call that looks served (nothing on stderr, and no rate-limit
+  # sentence in its output) resets the backoff for its budget. The exit status is not read
+  # here: the call site owns that one read. Any other failure (a 404, a 5xx, a dropped
+  # connection) leaves the count alone, and so does `gh auth status`, which exits 0 with
+  # GitHub's refusal on stdout.
   def observe(command, stderr, stdout: "", env: {})
-    return if observe_failure(command, stderr, stdout: stdout, env: env)
+    return if observe_failure(command, stderr, env: env)
+    return unless stderr.to_s.strip.empty?
+    return if stdout.to_s.match?(PRIMARY_EXHAUSTION_PATTERN) || stdout.to_s.match?(SECONDARY_LIMIT_PATTERN)
 
     resource = resource_for(command)
     return unless resource
@@ -308,10 +310,12 @@ module GithubRateLimit
   # A primary limit probes the budgets and trips a breaker on every one of them that is
   # spent. If the probe fails, or does not show this call's budget as spent with a reset
   # still ahead, the breaker holds on .backoff_hold instead. A secondary limit holds on
-  # `Retry-After` when the response carries one, and on .backoff_hold otherwise.
+  # .backoff_hold with GitHub's one-minute floor. `gh` does not print a secondary limit's
+  # `Retry-After` header unless asked to (`gh api -i`), and no caller asks, so the floor is
+  # GitHub's documented rule for a limit with no Retry-After.
   #
   # @return [Refusal, nil] the breaker now covering this call's budget, if GitHub refused it
-  def observe_failure(command, text, stdout: "", env: {})
+  def observe_failure(command, text, env: {})
     kind = rate_limit_kind(text)
     return nil unless kind
 
@@ -322,7 +326,7 @@ module GithubRateLimit
     if kind == :primary
       record_exhaustion(credential, fallback_resource: resource)
     else
-      record_secondary(credential, resource, retry_after_in(text, stdout))
+      record_secondary(credential, resource)
     end
   rescue => e
     Rails.logger.warn "[GithubRateLimit] Could not record a rate-limit refusal (#{e.class}: #{e.message})"
@@ -434,6 +438,8 @@ module GithubRateLimit
 
   def record_exhaustion(credential, fallback_resource:)
     budgets = refresh(credential)
+    # A hold already open means another caller met the same refusal first and has counted
+    # it. Counting each concurrent refusal would jump the backoff several steps at once.
     unless read_exhausted(credential, fallback_resource)
       # GitHub refused the call for a spent budget, and the probe either failed or cannot
       # say until when. GitHub's refusal is the stronger evidence, so hold, briefly at
@@ -445,12 +451,8 @@ module GithubRateLimit
     refusal_after_trip(credential, fallback_resource)
   end
 
-  def record_secondary(credential, resource, retry_after)
-    if retry_after
-      bump_backoff(credential, resource)
-      trip(credential, resource, retry_after.seconds.from_now, kind: :backoff,
-           spread: REOPEN_JITTER.fetch(resource, DEFAULT_REOPEN_JITTER), why: "secondary rate limit, Retry-After #{retry_after}s")
-    else
+  def record_secondary(credential, resource)
+    unless read_exhausted(credential, resource)
       trip(credential, resource, backoff_hold(credential, resource, floor: SECONDARY_FLOOR).from_now,
            kind: :backoff, spread: 0, why: "secondary rate limit")
     end
@@ -474,17 +476,19 @@ module GithubRateLimit
   end
 
   # The attempt number this one is, 1 for the first in a run.
+  # Atomic, so two refusals counted at once are two steps, not one.
   def bump_backoff(credential, resource)
-    key = backoff_key(credential, resource)
-    attempt = Rails.cache.read(key).to_i + 1
-    # Capped so the exponent cannot grow without bound; BACKOFF_CAP is reached long before.
-    Rails.cache.write(key, [ attempt, 32 ].min, expires_in: BACKOFF_MEMORY)
-    attempt
+    attempt = Rails.cache.increment(backoff_key(credential, resource), 1, expires_in: BACKOFF_MEMORY).to_i
+    # Clamped so the exponent stays small; BACKOFF_CAP is reached long before.
+    attempt.clamp(1, 32)
   end
 
   # Count this search against the non-poller share, and refuse it if the share for this
   # window is spent. The counter's expiry is set by the first search in a window and not
-  # moved by the rest, which is how GitHub dates its own search window. A cache that cannot
+  # moved by the rest, which is how GitHub dates its own search window. The two windows are
+  # not the same window, so a burst at the end of one counter window and another at the
+  # start of the next can still land in one of GitHub's. That makes the reserve likely
+  # rather than guaranteed, and a refusal's time an upper bound (at most a minute). A cache that cannot
   # count (nil) lets the search through. The reserve is read only once the count is past
   # the point where it could matter.
   def charge_search_share(credential)
@@ -497,7 +501,8 @@ module GithubRateLimit
   end
 
   # Searches one trigger poller tick spends: one per enabled GitHub condition, capped at
-  # MAX_POLLER_RESERVE. Cached briefly; a database that cannot answer reserves nothing.
+  # MAX_POLLER_RESERVE. A lower bound: a condition whose results run past one page, or
+  # whose search is retried, spends more. Cached briefly; a database that cannot answer reserves nothing.
   def poller_search_reserve
     Rails.cache.fetch("#{CACHE_PREFIX}:poller_search_reserve", expires_in: POLLER_RESERVE_TTL) do
       TriggerCondition.github.joins(:trigger).where(triggers: { status: "enabled" }).count
@@ -518,7 +523,7 @@ module GithubRateLimit
     existing = read_hold(credential, resource)
     return if existing && existing[:reset_at] >= reset_at - 1
 
-    value = { "reset" => reset_at.to_i, "spread" => spread.to_i, "kind" => kind.to_s }
+    value = { "reset" => reset_at.to_f, "spread" => spread.to_i, "kind" => kind.to_s }
     # Kept a few seconds past the last moment any caller can be held, then dropped.
     expires_in = (reset_at - Time.current) + spread + 5
     opened = Rails.cache.write(key, value, expires_in: expires_in, unless_exist: existing.nil?)
@@ -543,7 +548,7 @@ module GithubRateLimit
     when Integer
       { reset_at: Time.zone.at(value), spread: REOPEN_JITTER.fetch(resource, DEFAULT_REOPEN_JITTER), kind: :exhausted }
     when Hash
-      { reset_at: Time.zone.at(value["reset"].to_i), spread: value["spread"].to_i,
+      { reset_at: Time.zone.at(value["reset"].to_f), spread: value["spread"].to_i,
         kind: value["kind"].to_s == "backoff" ? :backoff : :exhausted }
     end
   end
@@ -570,14 +575,6 @@ module GithubRateLimit
     return :primary if text.match?(PRIMARY_EXHAUSTION_PATTERN)
     return :secondary if statuses.any? && statuses.all?(429)
 
-    nil
-  end
-
-  def retry_after_in(*texts)
-    texts.each do |text|
-      seconds = text.to_s[RETRY_AFTER_PATTERN, 1]&.to_i
-      return seconds if seconds&.positive?
-    end
     nil
   end
 
