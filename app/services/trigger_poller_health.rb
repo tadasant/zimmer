@@ -38,6 +38,9 @@ module TriggerPollerHealth
 
   def describe(poller, now:, sweep_blocked:, rate_limit:)
     last_at = PollerHeartbeat.last_at(poller.key)
+    # A duration, or a lambda for one that follows a setting (GitHub's poll cadence), resolved
+    # the way TriggerPollerLivenessCheckJob#threshold_for resolves it.
+    threshold = poller.threshold.respond_to?(:call) ? poller.threshold.call : poller.threshold
     age = last_at && (now - last_at)
     name = NAMES.fetch(poller.key, poller.key.to_s.humanize)
     since = last_at ? "last poll #{HealthMonitorService.format_wait(age)} ago" : "no poll recorded on this host yet"
@@ -47,10 +50,10 @@ module TriggerPollerHealth
     # Under the threshold, a sweep that every token's spent search budget is holding reads
     # as paused, with the time it ends.
     state, message =
-      if last_at && age >= poller.threshold
+      if last_at && age >= threshold
         [ "stalled",
           "#{name} trigger polling stalled: no successful poll in ~#{(age / 60).round} min " \
-            "(pages past #{(poller.threshold / 60).round} min). #{stall_cause(poller, rate_limit)}".strip ]
+            "(pages past #{(threshold / 60).round} min). #{stall_cause(poller, rate_limit)}".strip ]
       elsif sweep_blocked
         search = rate_limit.find { |reading| reading.spent && reading.resource == GithubRateLimitReport::SWEEP_RESOURCE }
         [ "rate_limited",
@@ -65,7 +68,7 @@ module TriggerPollerHealth
     {
       key: poller.key.to_s, name: name, state: state, message: message,
       last_poll_at: last_at&.utc&.iso8601, age_seconds: age&.round,
-      threshold_seconds: poller.threshold.to_i
+      threshold_seconds: threshold.to_i
     }
   end
 
