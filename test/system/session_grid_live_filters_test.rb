@@ -168,6 +168,25 @@ class SessionGridLiveFiltersTest < ApplicationSystemTestCase
     assert page_never_navigated?
   end
 
+  # The backlog is its own visibility bucket: a card moved there leaves the
+  # tidied board and arrives on a board showing the backlog.
+  test "a card moved to the backlog leaves the board and arrives on the backlog" do
+    parked = make(title: "Park me in the backlog")
+
+    visit_grid_showing("needs_input")
+    assert_selector card_selector(parked)
+    parked.update!(visibility: SessionVisibility::BACKLOGGED)
+    assert_no_selector card_selector(parked), wait: 5
+
+    later = make(title: "Park me too")
+    visit_grid_showing("needs_input", visibility: SessionVisibility::FILTER_BACKLOGGED)
+    assert_selector card_selector(parked)
+    assert_no_selector card_selector(later)
+    later.update!(visibility: SessionVisibility::BACKLOGGED)
+    assert_selector card_selector(later), wait: 5
+    assert page_never_navigated?
+  end
+
   test "a card whose scheduling class leaves the filter leaves the page" do
     demoted = make(title: "Demote me", scheduling_class: SessionGenesis::PRIORITY)
 

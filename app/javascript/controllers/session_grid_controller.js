@@ -33,7 +33,7 @@ export default class extends Controller {
     statusFilter: Array,
     // "spot", "priority", or "" for both.
     priorityClassFilter: String,
-    // "on_board" (the default), "off_board", or "all".
+    // "on_board" (the default), "off_board", "backlogged", or "all".
     visibilityFilter: String,
     // "", "carplay_ok", "laptop_only", "untagged" or "not_laptop_only".
     carplayFitFilter: String,
@@ -101,6 +101,7 @@ export default class extends Controller {
       schedulingClass: element.dataset.schedulingClass,
       // The string "true"/"false" the server rendered.
       onBoard: element.dataset.onBoard !== "false",
+      backlogged: element.dataset.backlogged === "true",
       carplayFit: element.dataset.carplayFit,
       genesis: element.dataset.genesis || "",
       agentRoot: element.dataset.agentRoot || "",
@@ -144,7 +145,10 @@ export default class extends Controller {
       return false
     }
     if (this.visibilityFilterValue === "on_board" && !envelope.onBoard) return false
-    if (this.visibilityFilterValue === "off_board" && envelope.onBoard) return false
+    // "off_board" is snoozed and hidden; the backlog is its own bucket, as in
+    // SessionVisibility's scopes.
+    if (this.visibilityFilterValue === "off_board" && (envelope.onBoard || envelope.backlogged)) return false
+    if (this.visibilityFilterValue === "backlogged" && !envelope.backlogged) return false
     if (!this.carplayFitAdmits(envelope.carplayFit)) return false
     return true
   }

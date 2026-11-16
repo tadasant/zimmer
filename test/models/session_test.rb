@@ -777,6 +777,7 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "needs_input", envelope["data-status"]
     assert_equal "spot", envelope["data-scheduling-class"]
     assert_equal "false", envelope["data-on-board"]
+    assert_equal "false", envelope["data-backlogged"]
     assert_equal "untagged", envelope["data-carplay-fit"]
     assert_equal SessionGenesis::WEB_UI, envelope["data-genesis"]
     assert_equal "zimmer", envelope["data-agent-root"]
