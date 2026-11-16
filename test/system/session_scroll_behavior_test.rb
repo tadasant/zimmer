@@ -54,7 +54,7 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
     false
   end
 
-  # Number of rendered timeline items, counted in one cheap script.
+  # Number of visible timeline items, counted in one cheap script.
   #
   # Not `page.all("[data-timeline-item]").count`: Capybara's Selenium driver
   # fetches every match as a WebDriver element and then hands all of them back
@@ -62,8 +62,10 @@ class SessionScrollBehaviorTest < ApplicationSystemTestCase
   # on each. With ~1000 items that is ~2s per call on an idle machine, and on a
   # loaded CI runner a single call ran past chromedriver's 30s script timeout
   # (Selenium::WebDriver::Error::ScriptTimeoutError, CI run 43802561208).
-  # `checkVisibility()` keeps the same visible-only rule `page.all` applies by
-  # default, and returning a bare integer costs milliseconds at any item count.
+  # `checkVisibility()` treats `display: none` (how the log-level filter hides
+  # items) as hidden, which is the part of `page.all`'s visible-only rule these
+  # tests rely on; isDisplayed is stricter about opacity and clipping. Returning
+  # a bare integer costs milliseconds at any item count.
   def timeline_item_count
     page.evaluate_script(<<~JS)
       Array.from(document.querySelectorAll("[data-timeline-item]"))
