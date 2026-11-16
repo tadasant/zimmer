@@ -3111,6 +3111,11 @@ itself. An idle dashboard does not refresh itself. Expired copies are fetched ag
 comes back into view or the reader moves, and hovering a row moves it to the front. Signing out
 sends `Clear-Site-Data: "cache"`, so no prefetched page outlives the sign-in.
 
+The server keys on the header, not on who sent it, so Turbo's own hover prefetch of a session link
+elsewhere (the health page's **View** links, say) gets the same cacheable, marked answer. That is
+deliberate: Turbo already served such a click from its prefetch, and before the marker existed that
+click was never counted as a view.
+
 `test/controllers/sessions_controller_prefetch_test.rb` pins the server's half: the headers, the
 marker, and that a prefetch marks nothing read while the activation request does.
 
