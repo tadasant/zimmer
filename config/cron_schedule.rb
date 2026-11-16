@@ -140,6 +140,12 @@ module CronSchedule
       description: "Sweep recent transcripts into the token-spend ledger",
       environments: %i[production staging]
     },
+    cycle_time_sweep: {
+      cron: "*/15 * * * *", # Every 15 minutes; one indexed query once history is covered
+      class: "CycleTimeSweepJob",
+      description: "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days",
+      environments: %i[production staging development]
+    },
     token_usage_backfill: {
       cron: "*/5 * * * *", # Every 5 minutes; a no-op once history has been swept
       class: "TokenUsageBackfillJob",

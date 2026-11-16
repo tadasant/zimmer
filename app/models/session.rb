@@ -74,6 +74,11 @@ class Session < ApplicationRecord
   # SessionStatusSummary and SessionStatusSummaryGenerator.
   has_one :status_summary, class_name: "SessionStatusSummary", dependent: :destroy
 
+  # The Cycle Time row of the hierarchy this session is the ROOT of, if it has
+  # settled. Derived data — recomputable from the hierarchy — so it goes with
+  # the root. See CycleTimes::Analyzer.
+  has_one :cycle_time_analysis, foreign_key: :root_session_id, inverse_of: :root_session, dependent: :destroy
+
   belongs_to :parent_session, class_name: "Session", optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 

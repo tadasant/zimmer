@@ -40,6 +40,11 @@
       "class": "TokenUsageIngestionJob",
       "description": "Sweep recent transcripts into the token-spend ledger"
     },
+    "cycle_time_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "CycleTimeSweepJob",
+      "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
+    },
     "token_usage_backfill": {
       "cron": "*/5 * * * *",
       "class": "TokenUsageBackfillJob",
@@ -382,6 +387,11 @@
       "class": "TokenUsageIngestionJob",
       "description": "Sweep recent transcripts into the token-spend ledger"
     },
+    "cycle_time_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "CycleTimeSweepJob",
+      "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
+    },
     "token_usage_backfill": {
       "cron": "*/5 * * * *",
       "class": "TokenUsageBackfillJob",
@@ -713,6 +723,11 @@
       "cron": "0 * * * *",
       "class": "StaleCloneCleanupJob",
       "description": "Clean up stale clone directories from archived sessions"
+    },
+    "cycle_time_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "CycleTimeSweepJob",
+      "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
     },
     "post_deploy_tasks": {
       "cron": "*/2 * * * *",
