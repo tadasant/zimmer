@@ -231,17 +231,17 @@ final class TranscriptParityUITests: XCTestCase {
         button.tap()
     }
 
-    /// `item` in the open menu, scrolled to if it is below the fold. 1038's session menu is
-    /// taller than the screen, and its rows are laid out lazily: XCUITest finds only the rows near
-    /// the visible part of it, so a row further down does not exist until the menu is dragged.
+    /// `item` in the open menu, scrolled to if it is below the fold. A session menu taller than
+    /// the screen (1038's is) lays its rows out lazily: XCUITest finds only the rows near the
+    /// visible part of it, so a row further down does not exist until the menu is dragged.
     private func menuItem(_ app: XCUIApplication, _ item: String) -> XCUIElement {
         let button = app.buttons[item].firstMatch
         if button.waitForExistence(timeout: 3) { return button }
-        // The menu's list, by an item only it has (a submenu has no Edit Notes, and its items are
-        // on screen). Its frame is read once: Edit Notes is near the top, so after a drag or two
-        // it is no longer laid out and the query would match nothing.
+        // The menu's list, by an item the session menu has and its submenus do not; this assumes
+        // the menu is still at its top, as it is when it has just opened. Its frame is read once:
+        // Edit Notes is near the top, so after a drag or two it is no longer laid out.
         let list = app.collectionViews.containing(NSPredicate(format: "label == %@", "Edit Notes")).firstMatch
-        guard list.waitForExistence(timeout: timeout) else { return button }
+        guard list.waitForExistence(timeout: 3) else { return button }
         let frame = list.frame
         let top = max(frame.minY, app.frame.minY)
         let span = app.frame.maxY - top
@@ -249,13 +249,15 @@ final class TranscriptParityUITests: XCTestCase {
             app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: top + span * fraction))
         }
         // The drag stays in the top half: the list's frame runs to the foot of the screen, but the
-        // menu drawn over the page ends about two thirds of the way down, and a press below it lands
-        // on the page, which closes the menu. A wait before each drag, not a bare `exists`: a menu
-        // still opening on a slow runner has the row a moment later. Held at the end, so no fling.
+        // menu drawn over the page is shorter (on the CI simulator it ends near y=616 of 912), and
+        // a press below it lands on the page, which closes the menu. A wait before each drag, not a
+        // bare `exists`: a menu still opening on a slow runner has the row a moment later. Held at
+        // the end, so no fling.
         for _ in 0..<6 {
             if button.waitForExistence(timeout: 2) { break }
             point(0.5).press(forDuration: 0.1, thenDragTo: point(0.1), withVelocity: .default, thenHoldForDuration: 0.3)
         }
+        _ = button.waitForExistence(timeout: 2)
         return button
     }
 
