@@ -113,37 +113,31 @@ AgentRootsConfig.singleton_class.prepend(LiveConversationHelpers::RootOverride)
 ActiveSupport::TestCase.include(LiveConversationHelpers)
 ActiveSupport::TestCase.teardown { LiveConversationHelpers.root_overrides = nil }
 
-# A scripted Claude for the experimental voice engines (LiveConversations::ClaudeClient).
+# A scripted Claude for the experimental voice engines: stands in for
+# LiveConversations::ClaudeClient, one Claude Code run per scripted answer.
 module LiveConversationHelpers
   class FakeClaude
-    attr_reader :requests, :credential
+    attr_reader :requests
 
-    # `credential`: what a real client would say it runs on (nil: unsaid).
-    def initialize(responses: [], credential: nil)
+    def initialize(responses: [])
       @responses = responses.dup
       @requests = []
-      @credential = credential
     end
 
-    def create_message(**params)
-      @requests << params.deep_stringify_keys
+    def run(**params)
+      @requests << params.stringify_keys
       response = @responses.shift || raise("FakeClaude ran out of scripted responses")
       raise response if response.is_a?(Exception)
 
       response
     end
 
-    def self.usage(input: 1_000, output: 100, cache_read: 0, cache_write: 0)
-      { "input_tokens" => input, "output_tokens" => output, "cache_read_input_tokens" => cache_read, "cache_creation_input_tokens" => cache_write }
-    end
-
-    def self.text(content, model: "claude-sonnet-5-5", **usage)
-      { "model" => model, "stop_reason" => "end_turn", "content" => [ { "type" => "text", "text" => content } ], "usage" => usage(**usage) }
-    end
-
-    def self.tool(name, input = {}, id: "toolu_1", model: "claude-sonnet-5-5", **usage)
-      { "model" => model, "stop_reason" => "tool_use",
-        "content" => [ { "type" => "tool_use", "id" => id, "name" => name, "input" => input } ], "usage" => usage(**usage) }
+    def self.text(content, model: "claude-sonnet-5-5", turns: 1, input: 1_000, output: 100, cache_read: 0, cache_write: 0)
+      LiveConversations::ClaudeClient::Answer.new(
+        text: content, num_turns: turns, models: [ model ], duration_ms: 1_000,
+        usage: { "input_tokens" => input, "output_tokens" => output, "cache_read_input_tokens" => cache_read,
+                 "cache_creation_input_tokens" => cache_write }
+      )
     end
   end
 

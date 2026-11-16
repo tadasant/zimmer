@@ -789,9 +789,7 @@ name within the 10-second negative TTL. No redeploy.
 
 Some values in this store are for Zimmer's own use, not for an MCP server:
 `OPENROUTER_API_KEY`, the provider key every Pi session runs on;
-`LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key);
-`LIVE_ANTHROPIC_API_KEY`, the Anthropic key the `gpt_live_claude` voice engine's Claude runs on
-(optional, see [Voice engines](/sessions/live/#voice-engines)); and
+`LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key); and
 `TESTFLIGHT_ASC_ISSUER_ID`, `TESTFLIGHT_ASC_KEY_ID` and `TESTFLIGHT_ASC_KEY_P8`, the App Store
 Connect API key that [TestFlight crash collection](/operate/observability/#testflight-crash-reports)
 reads with. Keep that one store-only: a name in `mcp_secrets` is in every session's environment.
@@ -861,8 +859,7 @@ Claude Code or Codex session has no use for it, so it is not published
 process-wide. A value in the clone's own `.env` still wins, like every other step
 there.
 
-`OpenaiClient` reads `LIVE_OPENAI_API_KEY` through the same chain, and
-`LiveConversations::ClaudeClient` reads `LIVE_ANTHROPIC_API_KEY`.
+`OpenaiClient` reads `LIVE_OPENAI_API_KEY` through the same chain.
 `CliStatusService` reads `OPENROUTER_API_KEY` through it too, rather than bare
 `ENV`, so the CLIs page answers the same question the session will.
 

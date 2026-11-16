@@ -31,7 +31,6 @@ class LiveConversations::VoiceEngineTest < ActiveSupport::TestCase
   test "no Anthropic key is needed: Claude runs on Zimmer's current Claude Code account" do
     stub_live_key
     use_voice_engine("gpt_live_claude")
-    ENV.delete("LIVE_ANTHROPIC_API_KEY")
 
     assert_nil LiveConversations::VoiceEngine.unavailable_reason("gpt_live_claude")
     assert_equal "gpt_live_claude", LiveConversations::VoiceEngine.resolve(@conversation, client_engines: %w[gpt_live_claude]).engine
