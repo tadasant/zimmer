@@ -179,6 +179,10 @@ Rails.application.routes.draw do
   # `external_app` grant, which /mcp refuses, and serving a fixed two-tool list —
   # list_triggers and invoke_trigger — whatever the query string says.
   match "mcp/external_app", to: "external_app_mcp#handle", via: [ :post, :get, :delete ], as: :external_app_mcp
+  # A `gpt_live_claude` delegation's Claude Code process calls this conversation's
+  # Live tools here, on a short-lived token minted for that delegation
+  # (LiveDelegationMcpController, LiveConversations::DelegationToken).
+  match "live/delegation_mcp", to: "live_delegation_mcp#handle", via: [ :post, :get, :delete ], as: :live_delegation_mcp
 
   # Zimmer as an OAuth 2.1 authorization server for /mcp (OauthServer), so a
   # remote MCP client such as a Claude.ai custom connector connects with no API

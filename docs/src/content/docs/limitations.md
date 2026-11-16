@@ -406,26 +406,24 @@ LiveKit agent worker deployed next to Zimmer, speech-to-text and text-to-speech 
 LiveKit client on the web dock and the phone. Unlike the other engines, its audio would pass
 through infrastructure Zimmer runs.
 
-### Without an Anthropic key, Live Mode's Claude is Haiku at best
+### Live Mode's Claude pays a Claude Code start on every delegation
 
-Anthropic refuses Zimmer's Claude Code subscription token for Opus and Sonnet when the request is
-not Claude Code: production saw a 429 `rate_limit_error` with the message `Error` on every
-`gpt_live_claude` delegation on 2026-11-15. Zimmer does not disguise its requests as Claude Code to
-get past that. Without `LIVE_ANTHROPIC_API_KEY`, `ClaudeDelegate` retries a refused model on
-`claude-haiku-5-5`. Whether Anthropic accepts the subscription token for Haiku outside Claude Code
-has not been seen in production. If it does not, the engine answers only with "Claude turned down
-Zimmer's Claude Code subscription" until a key is set.
+Each `gpt_live_claude` delegation is a fresh `claude -p` run, because Anthropic serves the
+subscription for Opus and Sonnet only through Claude Code. Starting the CLI and connecting it to the
+delegation's MCP endpoint takes about two seconds against a stand-in API, before Claude does anything.
+A warm, long-lived Claude Code process per call would remove that, and is not built. The first real
+subscription delegation through this path will be the first time it runs in production. Until then,
+the evidence that the subscription serves Opus to it is that every agent session runs Opus on that
+same account through Claude Code.
 
 ### Live Mode's Claude shares the agent fleet's quota
 
-Without `LIVE_ANTHROPIC_API_KEY`, the `gpt_live_claude` engine calls Claude on Zimmer's current
-Claude Code account, so every delegation draws on the same 5-hour and weekly windows as the agent
-sessions. Nothing in the
-quota pacing (`SpotGateService`, the burn-rate sampler) knows about it: Live Mode's use is not in
-`SessionTokenUsage`, so a long call is invisible to the spot gate until the account's own quota
-reading moves. A window the fleet has used up fails a delegation mid-call, which is spoken as a
-failure. The spend caps, counted at list price, are the only bound on it. Whether Anthropic's terms
-allow a subscription token to drive a custom app's reasoning loop has not been confirmed.
+The `gpt_live_claude` engine runs Claude on Zimmer's current Claude Code account, so every
+delegation draws on the same 5-hour and weekly windows as the agent sessions. Nothing in the
+quota pacing (`SpotGateService`, the burn-rate sampler) sees a delegation until its transcript is
+swept into the token ledger, like any other headless `claude -p` call. A window the fleet has used up fails a delegation mid-call, which is spoken as a
+failure. The spend caps, counted at list price, are the only bound on it. It runs through Claude Code
+itself, the way the rest of the fleet does.
 
 ### `live_settings.voice_claude_billing` is still on the table, ignored
 

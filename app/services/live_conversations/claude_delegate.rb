@@ -3,44 +3,38 @@
 module LiveConversations
   # Claude answering one GPT-Live delegation (the `gpt_live_claude` engine):
   # the front end decided the person's request needs Zimmer or real thought,
-  # and this does it — a Messages API tool loop over the same ToolBridge every
-  # other Live path uses — and returns words for the front end to say.
+  # and this does it — one Claude Code run (ClaudeClient) with this
+  # conversation's Live tools over MCP (LiveDelegationMcpController) — and
+  # returns words for the front end to say.
+  #
+  # Claude runs on Zimmer's Claude Code subscription, on the model the Live
+  # settings name (`voice_claude_model`), and nothing else: no Anthropic API
+  # key, and no quieter model when the configured one is refused.
   #
   # A delegation carries no task text (GPT-Live hands over an id, not the
   # request), so Claude reads the request from the thread: the recent turns,
   # plus the person's line the client had not yet written as a turn.
   #
-  # Every Messages call is one LiveUsageEvent (`delegation`: model, tokens,
-  # cache reads and writes, latency) and every tool Claude runs is one
-  # (`tool_call`), so /live/costs can say what each delegation cost. The spend
-  # cap is checked before Claude is called: a capped engine answers with the
-  # cap and `end_call`, and the client ends the call (VoiceEngine sends the
-  # next one to the default engine).
+  # The run is one LiveUsageEvent (`delegation`: model, tokens across its turns,
+  # cache reads and writes, latency) and every tool it calls is one
+  # (`tool_call`, written by the MCP endpoint), so /live/costs can say what
+  # each delegation cost. The spend cap is checked before Claude is called: a
+  # capped engine answers with the cap and `end_call`, and the client ends the
+  # call (VoiceEngine sends the next one to the default engine).
+  #
+  # A failure is logged at WARN (`[live.claude]`), recorded on the ledger, and
+  # said aloud as what it was: Claude Code not signed in or refused, rate
+  # limited, too slow, or failing. Never as the tools being unreachable.
   #
   # The answer is split into chunks under GPT-Live's 500-token limit on one
   # `session.commentary.append`.
-  #
-  # Claude failing is logged at WARN (`[live.claude]`: status, Anthropic's
-  # message, model, which credential — never the credential) as well as
-  # recorded on the ledger, and spoken as what happened: Claude refusing the
-  # credential is not the tools being unreachable. On the subscription
-  # credential, a model Anthropic refuses outside Claude Code is retried once
-  # on FALLBACK_MODEL, and the rest of the delegation stays on it, so the
-  # engine answers rather than failing every turn until an API key is set
-  # (ClaudeClient).
   class ClaudeDelegate
-    MAX_ROUNDS = 6
-    MAX_TOKENS = 4_096
     HISTORY_TURNS = 40
     TURN_CHARS = 1_500
     # ~4 characters a token keeps a chunk well under GPT-Live's 500 tokens.
     CHUNK_CHARS = 1_400
     PENDING_MAX_CHARS = 4_000
     ENGINE = VoiceEngine::GPT_LIVE
-    FALLBACK_MODEL = ModelCatalog::LIVE_CLAUDE_FALLBACK
-    # How long a model refused on the subscription is skipped, so only the
-    # first delegation in that window pays for the refusal.
-    REFUSAL_TTL = 1.hour
 
     # `cost_usd` is the list price of what this delegation used; `billed_usd`
     # the part of it that was billed (nothing, for Claude on a subscription).
@@ -59,7 +53,6 @@ module LiveConversations
       @pending = pending_user_text.to_s.strip.truncate(PENDING_MAX_CHARS)
       @setting = setting
       @client = client
-      @bridge = ToolBridge.new(conversation, can_reattach: false, can_hang_up: true)
       @cost = 0.0
       @billed = 0.0
     end
@@ -71,35 +64,20 @@ module LiveConversations
                       "you'll be on the standard voice.", end_call: true, warning: check.reason, rounds: 0)
       end
 
-      messages = [ { role: "user", content: request_text } ]
-      texts = []
-      rounds = 0
-      hung_up = false
-      while rounds < MAX_ROUNDS
-        rounds += 1
-        response = claude_call(messages, rounds, last: rounds == MAX_ROUNDS)
-        content = Array(response["content"])
-        texts = content.select { |block| block["type"] == "text" }.map { |block| block["text"].to_s }.reject(&:blank?)
-        uses = content.select { |block| block["type"] == "tool_use" }
-        break if uses.empty? || response["stop_reason"] != "tool_use"
-
-        # Replayed as the API sent it, minus the nulls the gem's serializer
-        # fills in for fields the block did not carry.
-        messages << { role: "assistant", content: content.map(&:compact) }
-        results = uses.map { |use| run_tool(use) }
-        messages << { role: "user", content: results }
-        hung_up = @hung_up
-        break if hung_up
-      end
-
-      text = texts.join(" ").squish
+      started_at = Time.current
+      started = monotonic_ms
+      answer = client.run(prompt: request_text, system: system_prompt, model: model,
+                          mcp_token: DelegationToken.mint(@conversation, delegation_id: @delegation_id))
+      record_answer(answer, monotonic_ms - started)
+      hung_up = hung_up_since?(started_at)
+      text = answer.text.squish
       text = "I couldn't finish that in time. Ask again, or narrow it down." if text.blank? && !hung_up
-      result(text, end_call: hung_up, hung_up: hung_up, warning: check.warning, rounds: rounds)
+      result(text, end_call: hung_up, hung_up: hung_up, warning: check.warning, rounds: answer.num_turns)
     rescue ClaudeClient::NotConfiguredError
       raise
     rescue ClaudeClient::Error => e
-      record_failure(e)
-      result(failure_text(e), end_call: false, warning: nil, rounds: rounds.to_i)
+      record_failure(e, started ? monotonic_ms - started : nil)
+      result(failure_text(e), end_call: false, warning: nil, rounds: 0)
     end
 
     private
@@ -109,116 +87,55 @@ module LiveConversations
                  rounds: rounds, cost_usd: @cost, billed_usd: @billed)
     end
 
-    def configured_model = @setting.effective(:voice_claude_model)
-
-    def model = @fallback_model || configured_model
+    def model = @setting.effective(:voice_claude_model)
 
     def client = @client ||= ClaudeClient.new
 
-    # What the client ran on; nil leaves it to LiveUsageEvent (a Claude row
-    # is subscription).
-    def billing_basis = @client&.credential&.billing_basis
-
-    # `last`: the final round may not call tools, so it has to answer with
-    # what it has rather than start work whose results nobody would read.
-    def claude_call(messages, round, last: false)
-      fall_back! if @fallback_model.nil? && client.credential&.subscription? && refused_recently?(model)
-      attempt(messages, round, last: last)
-    rescue ClaudeClient::Error => e
-      raise unless fall_back?(e)
-
-      record_failure(e)
-      Rails.cache.write(refusal_key(model), true, expires_in: REFUSAL_TTL)
-      fall_back!
-      attempt(messages, round, last: last)
-    end
-
-    def fall_back?(error)
-      error.subscription_refused? && @fallback_model.nil? && model != FALLBACK_MODEL
-    end
-
-    def fall_back!
-      Rails.logger.warn("[live.claude] falling back to #{FALLBACK_MODEL}: #{model} was refused on the subscription credential " \
-                        "(conversation=#{@conversation.id} delegation=#{@delegation_id}); set #{ClaudeClient::API_KEY_VARIABLE} to use it")
-      @fallback_from = model
-      @fallback_model = FALLBACK_MODEL
-    end
-
-    def refusal_key(name) = "live.claude.subscription_refused.#{name}"
-
-    def refused_recently?(name)
-      name != FALLBACK_MODEL && Rails.cache.read(refusal_key(name)).present?
-    rescue StandardError
-      false
-    end
-
-    def attempt(messages, round, last:)
-      started = monotonic_ms
-      params = {
-        model: model,
-        max_tokens: MAX_TOKENS,
-        # The tools and this prompt are the same on every round of the loop, so
-        # one breakpoint after them makes rounds two onwards cache reads.
-        system_: [ { type: "text", text: system_prompt, cache_control: { type: "ephemeral" } } ],
-        tools: tools,
-        messages: messages
-      }
-      params[:tool_choice] = { type: "none" } if last
-      response = client.create_message(**params)
-      usage = response["usage"] || {}
-      # Priced on the model asked for, which is the price table's key: the API
-      # can answer with a dated snapshot id the table does not list, and an
-      # unpriced row would never count toward a cap.
+    # Priced on the model asked for, which is the price table's key: the CLI
+    # can report a dated snapshot id the table does not list, and an unpriced
+    # row would never count toward a cap.
+    def record_answer(answer, latency_ms)
+      usage = answer.usage
       record(operation: "delegation", vendor: "anthropic", model: model,
              input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
              cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
-             count: 1, latency_ms: monotonic_ms - started,
-             details: { delegation_id: @delegation_id, round: round, stop_reason: response["stop_reason"], response_model: response["model"].to_s,
-                        fallback_from: @fallback_from }.compact)
-      response
+             count: 1, latency_ms: latency_ms,
+             details: { delegation_id: @delegation_id, turns: answer.num_turns, response_models: answer.models, via: "claude_code" })
     end
 
-    def record_failure(error)
-      Rails.logger.warn("[live.claude] delegation failed status=#{error.status.inspect} model=#{model} " \
-                        "credential=#{error.credential_kind || 'unknown'} conversation=#{@conversation.id} " \
-                        "delegation=#{@delegation_id} message=#{(error.api_message.presence || error.message).to_s.squish.truncate(200).inspect}")
-      record(operation: "delegation", vendor: "anthropic", model: model, error: error.message.truncate(250),
-             details: { delegation_id: @delegation_id, status: error.status, credential: error.credential_kind&.to_s }.compact)
+    def record_failure(error, latency_ms)
+      Rails.logger.warn("[live.claude] delegation failed kind=#{error.kind} exit=#{error.status.inspect} model=#{model} " \
+                        "conversation=#{@conversation.id} delegation=#{@delegation_id} message=#{error.message.squish.truncate(200).inspect}")
+      record(operation: "delegation", vendor: "anthropic", model: model, error: error.message.truncate(250), latency_ms: latency_ms,
+             details: { delegation_id: @delegation_id, kind: error.kind.to_s, exit: error.status, via: "claude_code" }.compact)
     end
 
-    # Spoken, so short and plain; the status and message are on the ledger
-    # and in the log.
+    # Spoken, so short and plain; the detail is on the ledger and in the log.
     def failure_text(error)
-      if error.subscription_refused?
-        "Claude turned down Zimmer's Claude Code subscription for this, so I can't answer on this voice engine. Your " \
-          "tools are fine. Live Mode needs an Anthropic API key, or switch back to the standard voice."
-      elsif error.credential_refused? && error.credential_kind == :api_key
-        "Claude refused Live Mode's Anthropic key, so I can't answer on this voice engine. Your tools are fine. Check the " \
-          "key, or switch back to the standard voice."
-      elsif error.credential_refused?
-        "Claude refused Zimmer's Claude Code account, so I can't answer on this voice engine. Your tools are fine. The " \
-          "account may need re-authenticating, or Live Mode needs an Anthropic API key."
-      elsif error.status == 429 || error.status == 529
-        "Claude is rate limited or overloaded right now. Try again in a moment."
+      case error.kind
+      when :auth
+        "Claude Code isn't signed in on Zimmer's subscription right now, so I can't do that on this voice engine. Your " \
+          "tools are fine. Re-authenticate the account on the inference page, or switch back to the standard voice."
+      when :rate_limited
+        "Claude is rate limited or overloaded on Zimmer's subscription right now. Try again in a moment."
+      when :timeout
+        "Claude took too long on that one. Ask again, or narrow it down."
       else
-        "I couldn't reach Claude just now. Try again in a moment."
+        "Claude failed on that one. Try again in a moment, or switch back to the standard voice."
       end
     end
 
-    def run_tool(use)
-      started = monotonic_ms
-      outcome = @bridge.execute(use["name"].to_s, use["input"] || {}, call_id: use["id"].to_s)
-      @hung_up ||= outcome.hung_up
-      record(operation: "tool_call", vendor: "zimmer", model: use["name"].to_s.truncate(120), count: 1,
-             latency_ms: monotonic_ms - started, error: (outcome.output.to_s.truncate(250) if outcome.error),
-             details: { delegation_id: @delegation_id, call_id: use["id"].to_s })
-      { type: "tool_result", tool_use_id: use["id"].to_s, content: outcome.output.to_s, is_error: outcome.error ? true : false }
+    # The person asked to hang up if Claude called `hang_up` during this run.
+    # The call ran in the MCP endpoint's request, so it is read back off the
+    # conversation's tool turns.
+    def hung_up_since?(time)
+      @conversation.turns.where(role: "tool", tool_name: ToolBridge::HANG_UP, tool_error: false).where(created_at: time..).exists?
     end
 
     def record(**attributes)
       event = LiveUsageEvent.record!(engine: ENGINE, live_conversation: @conversation,
-                                     mode: VoiceEngine.mode_for(ENGINE, setting: @setting, claude_model: configured_model),
-                                     billing_basis: (billing_basis if attributes[:vendor] == "anthropic"), **attributes)
+                                     mode: VoiceEngine.mode_for(ENGINE, setting: @setting, claude_model: model),
+                                     **attributes)
       @cost += event.cost_usd.to_f
       @billed += event.billed_cost_usd
       event
@@ -228,22 +145,15 @@ module LiveConversations
       nil
     end
 
-    # ToolBridge's functions in the Messages API's shape, with the call-only
-    # ones (hang up): a GPT-Live call is a voice call.
-    def tools
-      @tools ||= @bridge.realtime_tools.map do |tool|
-        { name: tool[:name], description: tool[:description].to_s, input_schema: tool[:parameters].presence || { type: "object", properties: {} } }
-      end
-    end
-
     def system_prompt
       @system_prompt ||= "#{SystemPrompt.build(@conversation, setting: @setting)}\n\n" \
         "## You are answering a delegation (written by Zimmer)\n\n" \
         "This is a voice call. A separate voice model (GPT-Live) is talking with the person; it handed you their latest " \
-        "request because it needs Zimmer's tools or careful thought. Do what the request needs with your functions, then " \
-        "answer in two or three short spoken sentences: the voice model will say your answer aloud. No markdown, no lists, " \
-        "no URLs, no ids unless the person needs one. Anything that takes more than a few seconds goes to a background " \
-        "session, as above. If the person asked to hang up, call `#{ToolBridge::HANG_UP}` and say goodbye."
+        "request because it needs Zimmer's tools or careful thought. Your functions are the `#{ClaudeClient::MCP_SERVER}` " \
+        "MCP server's tools. Do what the request needs with them, then answer in two or three short spoken sentences: the " \
+        "voice model will say your answer aloud. No markdown, no lists, no URLs, no ids unless the person needs one. " \
+        "Anything that takes more than a few seconds goes to a background session, as above. If the person asked to hang " \
+        "up, call `#{ToolBridge::HANG_UP}` and say goodbye."
     end
 
     def request_text

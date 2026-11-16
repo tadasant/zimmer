@@ -99,9 +99,6 @@ class ModelCatalog
     "claude-haiku-5-5" => "claude-haiku-5-5 — cheapest, $0.10/$0.50 per MTok"
   }.freeze
   LIVE_CLAUDE_DEFAULT = LIVE_CLAUDE_MODELS.keys.first
-  # What a delegation on Zimmer's Claude Code subscription falls back to when
-  # Anthropic refuses the configured model outside Claude Code.
-  LIVE_CLAUDE_FALLBACK = "claude-haiku-5-5"
 
   MODELS = {
     "claude_code" => [

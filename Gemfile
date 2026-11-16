@@ -75,9 +75,6 @@ gem "redcarpet"
 # Syntax highlighting for code blocks
 gem "rouge", "~> 5.0"
 
-# Anthropic API client for title generation
-gem "anthropic", "~> 1.55"
-
 # State machine for session lifecycle management
 gem "aasm"
 
