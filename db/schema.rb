@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_16_153712) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_16_203000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -265,6 +265,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_153712) do
     t.index ["is_current"], name: "index_claude_accounts_on_is_current"
     t.index ["runtime"], name: "index_claude_accounts_on_runtime"
     t.index ["status", "priority"], name: "index_claude_accounts_on_status_and_priority"
+  end
+
+  create_table "cycle_time_analyses", force: :cascade do |t|
+    t.string "agent_root"
+    t.integer "algorithm_version", null: false
+    t.jsonb "category_seconds", default: {}, null: false
+    t.datetime "computed_at", null: false
+    t.datetime "created_at", null: false
+    t.string "dominant_wait_category"
+    t.boolean "eligible", default: false, null: false
+    t.datetime "finished_at", null: false
+    t.jsonb "hierarchy_segments", default: [], null: false
+    t.text "ineligible_detail"
+    t.string "ineligible_reason"
+    t.string "initiator"
+    t.string "initiator_detail"
+    t.jsonb "lanes", default: [], null: false
+    t.bigint "root_session_id", null: false
+    t.jsonb "session_category_seconds", default: {}, null: false
+    t.integer "session_count", default: 0, null: false
+    t.datetime "started_at", null: false
+    t.string "title"
+    t.jsonb "top_segments", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.float "wall_seconds", default: 0.0, null: false
+    t.index ["eligible", "finished_at"], name: "index_cycle_time_analyses_on_eligible_and_finished_at"
+    t.index ["root_session_id"], name: "index_cycle_time_analyses_on_root_session_id", unique: true
   end
 
   create_table "elicitations", force: :cascade do |t|
@@ -1423,6 +1450,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_153712) do
   add_foreign_key "category_feedback_events", "categories", column: "replay_category_id", on_delete: :nullify
   add_foreign_key "category_feedback_events", "sessions", on_delete: :nullify
   add_foreign_key "claude_account_quota_snapshots", "claude_accounts", on_delete: :nullify
+  add_foreign_key "cycle_time_analyses", "sessions", column: "root_session_id", on_delete: :cascade
   add_foreign_key "elicitations", "sessions", on_delete: :cascade
   add_foreign_key "enqueued_messages", "sessions", on_delete: :cascade
   add_foreign_key "external_app_triggers", "external_apps", on_delete: :cascade

@@ -147,6 +147,7 @@ export default defineConfig({
             { label: "Background jobs", slug: "operate/background-jobs" },
             { label: "Observability", slug: "operate/observability" },
             { label: "Token spend", slug: "operate/costs" },
+            { label: "Cycle time", slug: "operate/cycle-time" },
             { label: "The gate decision ledger", slug: "operate/gate-decisions" },
             { label: "The work backlog", slug: "operate/work-backlog" },
             { label: "The Issues view", slug: "operate/issues-view" },

@@ -51,6 +51,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/work_backlog_items` | list, show, hold; `start_now`, `pin`, `unpin` and `remove` — the human-only levers — only on a grant that acts as you (403 otherwise) — not `create` or `pull`, which are the gate's and the groomer's |
 | `GET /api/v1/gate_decisions`, `GET /api/v1/gate_decisions/:id` | read the ledger — not `create`, a gate's write |
 | `GET /api/v1/outcome_analyses`, `GET /api/v1/outcome_analyses/:id`, `GET /api/v1/goal_checks` | read the Outcomes ledger, one analysis with its tree, and the goal-check tally — not `create`, an analyzer session's write |
+| `GET /api/v1/cycle_times`, `GET /api/v1/cycle_times/:id` | read the Cycle Time view — the window's aggregate and one hierarchy's breakdown |
 | `/api/v1/clis/status`, `/clis/refresh`, `/clis/clear_cache` | everything the /clis page offers |
 | `/api/v1/inference` and its routes | read the Inference page (an in-flight login's link and code only on a grant that acts as you); every write and the login poll — refresh, activate, delete or add an account, drive a CLI login, change the spot, top-up or genesis policy — only on a grant that acts as you (403 otherwise, and for an API key) |
 | `GET /api/v1/sessions/:id/elicitations`, `PATCH /api/v1/elicitations/:id/respond` | list a session's open prompts; answer one only on a grant that acts as you (403 otherwise) — not create or poll |
@@ -1784,6 +1785,22 @@ curl "$BASE_URL/work_backlog_items?estimated_cost=small&per_page=5" -H "X-API-Ke
 
 curl -X POST "$BASE_URL/work_backlog_items/zimmer%23498/start_now" -H "X-API-Key: $API_KEY"
 ```
+
+## Cycle time
+
+The read side of the [Cycle Time view](/operate/cycle-time/), and the REST half of `get_cycle_time`.
+Both read `CycleTimes::Report` over precomputed rows, so they return the same numbers and never parse
+a transcript on the request.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /cycle_times` | Where autonomous tasks that **finished** in the window spent their wall-clock. Window: `days` (1–365, default 7) or `from`/`to` (YYYY-MM-DD, inclusive). Filters: `agent_root`. `limit` caps the listed tasks (default 20, max 200), listed newest first. `get_cycle_time` lists them slowest first |
+| `GET /cycle_times/:id` | One task's breakdown. `:id` is the hierarchy's **root session** id. `include_segments=true` adds every session's segments and the rolled-up lane; 404 while the hierarchy is in flight or not analyzed yet |
+
+`GET /cycle_times` returns `{window, agent_root, eligible_hierarchies, ineligible_hierarchies
+(by reason), pending_hierarchies, wall_seconds, wall_percentiles {p50, p90, max}, categories,
+families, top_wait_categories, session_time_categories, top_segments, hierarchies}`. Each category
+row is `{category, label, family, seconds, share}`; `share` is of the summed wall-clock.
 
 ## Outcome analyses
 

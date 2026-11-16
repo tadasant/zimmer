@@ -32,6 +32,9 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: rows are derived data, written by CycleTimes::Analyzer and
+    # recomputed by CycleTimeSweepJob; an edit would be overwritten.
+    resources :cycle_time_analyses, only: [ :index, :show ]
     # Read-only: every write to root data goes through RootData::Store, which
     # holds the caps and keeps the counters in the same transaction.
     resources :agent_root_records, only: [ :index, :show ]
@@ -428,6 +431,10 @@ Rails.application.routes.draw do
       # REST half of get_outcome_analysis's goal_checks view and /outcomes/goal_checks.
       resources :goal_checks, only: [ :index ]
 
+      # Cycle Time: where autonomous tasks' wall-clock went. Read-only, the REST
+      # half of `get_cycle_time`; :id is the hierarchy's ROOT session id.
+      resources :cycle_times, only: [ :index, :show ]
+
       # MCP server fallback elicitations. An MCP server speaks the protocol on the
       # token routes: the path carries its session's token (ElicitationEndpoint),
       # because the client sends no auth header and appends /<request-id> to the
@@ -656,6 +663,11 @@ Rails.application.routes.draw do
   post "outcomes/:id/analyze", to: "outcomes#analyze", as: :analyze_outcome
   # Last in the group so it cannot shadow "stats" or "goal_checks" as a session identifier.
   get "outcomes/:id", to: "outcomes#show", as: :outcome
+
+  # Cycle Time: tasks completed end to end autonomously, and where their
+  # wall-clock went. Read-only — rows are computed by CycleTimeAnalysisJob and
+  # CycleTimeSweepJob; :id is the hierarchy's root session id.
+  resources :cycle_times, only: [ :index, :show ]
 
   # Gate Decisions: the browsable ledger of every rating the PR-merge and
   # issue-work gates have made. Read-only — decisions are append-only and written

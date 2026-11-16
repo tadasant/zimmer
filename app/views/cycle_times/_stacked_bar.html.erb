@@ -1,0 +1,17 @@
+<%#
+  One horizontal bar split by category, in Categories order so the same
+  category sits in the same place on every row. Each part carries its own
+  hover data; the 2px surface gap between parts is the dataviz spacer.
+
+  locals: totals (Hash{key => seconds}), total (Float), height (CSS class)
+%>
+<% height = local_assigns.fetch(:height, "h-3") %>
+<div class="flex w-full <%= height %> gap-[2px] rounded overflow-hidden bg-gray-100" role="img"
+     aria-label="<%= CycleTimes::Categories.ordered(totals).map { |key, s| "#{CycleTimes::Categories.label(key)} #{cycle_share(s, total)}" }.join(', ') %>">
+  <% CycleTimes::Categories.ordered(totals).each do |key, seconds| %>
+    <% width = total.to_f.positive? ? (seconds / total * 100) : 0 %>
+    <% next if width < 0.05 %>
+    <div class="h-full shrink-0" style="width: <%= width.round(3) %>%; <%= cycle_category_style(key) %>"
+         <%= tag.attributes(data: cycle_segment_data(category: key, seconds: seconds, detail: "#{cycle_share(seconds, total)} of the total")) %>></div>
+  <% end %>
+</div>

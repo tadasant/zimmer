@@ -25,6 +25,9 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # Nullify: a root's data belongs to the root, not to the session that last
     # wrote it, so deleting that session must not take the record with it.
     [ "agent_root_records", "writing_session_id", :nullify ],
+    # Cascade: a Cycle Time row is derived from its root's hierarchy and
+    # recomputable, so it has nothing to say once the root is gone.
+    [ "cycle_time_analyses", "root_session_id", :cascade ],
     # Nullify. Categories are gone from the app, but the table and this key stay
     # until their two-phase drop lands (tadasant/zimmer#16), and while they exist
     # a session delete must still not trip over the orphaned rows.

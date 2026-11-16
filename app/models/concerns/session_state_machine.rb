@@ -597,11 +597,37 @@ module SessionStateMachine
     # bookkeeping; FleetIdleMonitor.record_session_started! swallows its own
     # failures for the same reason.
     after_commit :report_start_to_fleet_idle_monitor, if: -> { saved_change_to_status? && running? }
+
+    # An archive may be the last one its hierarchy was waiting on, which is the
+    # moment its Cycle Time row can be computed. The job finds the root and
+    # decides; this only says "look". CycleTimeSweepJob converges anything this
+    # misses (an `update_column` archive, a lost enqueue).
+    after_commit :enqueue_cycle_time_analysis, if: -> { saved_change_to_status? && archived? && !status_summary_fork? }
+
+    # A restore puts the hierarchy back in flight, so a row describing it as
+    # finished must go. The same job does it: the analyzer drops the row of a
+    # hierarchy that is not settled. Immediately, not after SETTLE — there is
+    # no transcript to wait for.
+    after_commit :enqueue_cycle_time_invalidation, if: -> { saved_change_to_status? && status_before_last_save == "archived" && !status_summary_fork? }
   end
 
   # See the after_commit above.
   def report_start_to_fleet_idle_monitor
     FleetIdleMonitor.record_session_started!
+  end
+
+  # See the after_commit above. Never raises: losing the enqueue costs only
+  # latency, because the sweep picks the hierarchy up on its next tick.
+  def enqueue_cycle_time_analysis
+    CycleTimeAnalysisJob.set(wait: CycleTimeAnalysisJob::SETTLE).perform_later(id)
+  rescue => e
+    Rails.logger.warn("[CycleTime] could not enqueue the analysis for session #{id}: #{e.class}: #{e.message}")
+  end
+
+  def enqueue_cycle_time_invalidation
+    CycleTimeAnalysisJob.perform_later(id)
+  rescue => e
+    Rails.logger.warn("[CycleTime] could not enqueue the invalidation for session #{id}: #{e.class}: #{e.message}")
   end
 
   class_methods do

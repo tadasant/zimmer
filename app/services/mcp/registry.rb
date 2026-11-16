@@ -90,6 +90,11 @@ module Mcp
       # only an archived session has an analysis, so there is no "my own" one for
       # a live session to read.
       Definition.new(klass: "Mcp::Tools::GetOutcomeAnalysis", group: "sessions", write: false),
+      # The Cycle Time view's read side, beside Outcomes for the same reason: a
+      # fleet-level reading of archived sessions, read-only, available wherever a
+      # caller can already read sessions. Not in self_session — a session has no
+      # cycle time of its own until its whole hierarchy is archived.
+      Definition.new(klass: "Mcp::Tools::GetCycleTime", group: "sessions", write: false),
       # The dashboard's User view, as an agent reads it. In `sessions` rather than
       # a group of its own because it is a session listing — it just carries the
       # three facts a decision on that board turns on (the root, the generated
