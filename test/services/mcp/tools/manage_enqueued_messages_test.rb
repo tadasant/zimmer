@@ -146,6 +146,25 @@ class Mcp::Tools::ManageEnqueuedMessagesTest < ActiveSupport::TestCase
     assert_includes output, "## Message Deleted"
   end
 
+  test "delete removes through Sessions::RemoveQueuedMessage" do
+    first = @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
+    Sessions::RemoveQueuedMessage.expects(:call).with { |m| m.id == first.id }.returns(1)
+
+    output = @tool.call("session_id" => @session.id, "action" => "delete", "message_id" => first.id)
+
+    assert_includes output, "## Message Deleted"
+  end
+
+  test "delete of a message gone by the time it takes the queue lock is a not-found error" do
+    first = @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
+    Sessions::RemoveQueuedMessage.expects(:call).returns(nil)
+
+    error = assert_raises(Mcp::ToolError) do
+      @tool.call("session_id" => @session.id, "action" => "delete", "message_id" => first.id)
+    end
+    assert_includes error.message, "not found"
+  end
+
   test "reorder moves a message to a new position" do
     first = @session.enqueued_messages.create!(content: "First", position: 1, status: "pending")
     second = @session.enqueued_messages.create!(content: "Second", position: 2, status: "pending")

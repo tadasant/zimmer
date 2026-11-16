@@ -225,6 +225,22 @@ class Api::V1::EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_response :no_content
   end
 
+  test "delete removes through Sessions::RemoveQueuedMessage" do
+    Sessions::RemoveQueuedMessage.expects(:call).with { |m| m.id == @msg2.id }.returns(2)
+
+    delete api_v1_session_enqueued_message_path(@session, @msg2), headers: @headers
+
+    assert_response :no_content
+  end
+
+  test "a delete whose message is gone by the time it takes the queue lock is a 404" do
+    Sessions::RemoveQueuedMessage.expects(:call).returns(nil)
+
+    delete api_v1_session_enqueued_message_path(@session, @msg2), headers: @headers
+
+    assert_response :not_found
+  end
+
   test "should renumber positions after delete" do
     delete api_v1_session_enqueued_message_path(@session, @msg1), headers: @headers
     assert_response :no_content

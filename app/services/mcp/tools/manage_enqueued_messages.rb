@@ -204,18 +204,8 @@ module Mcp
 
       def destroy(session, args)
         message = find_message(session, args)
-        position = message.position
-
-        ActiveRecord::Base.transaction do
-          message.destroy!
-          # Correct under any scan order only because (session_id, position)
-          # uniqueness is deferred to commit — see the DELETE path in
-          # Api::V1::EnqueuedMessagesController.
-          session.enqueued_messages
-                 .where("position > ?", position)
-                 .update_all("position = position - 1")
-          session.logs.create!(content: "Enqueued message at position #{position} removed", level: "info")
-        end
+        removed = Sessions::RemoveQueuedMessage.call(message)
+        raise ToolError, "Enqueued message not found: #{message.id}" if removed.nil?
 
         "## Message Deleted\n\nEnqueued message #{message.id} has been removed from the queue."
       end

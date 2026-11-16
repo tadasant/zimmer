@@ -157,27 +157,12 @@ class EnqueuedMessagesController < ApplicationController
   end
 
   # DELETE /sessions/:session_id/enqueued_messages/:id
-  # Deletes an enqueued message and re-numbers remaining positions
+  # Deletes an enqueued message and re-numbers remaining positions, through
+  # Sessions::RemoveQueuedMessage. A message already gone by the time it takes
+  # the queue lock is not an error here: the page asked for it to be gone.
   def destroy
     result = with_db_retry do
-      ActiveRecord::Base.transaction do
-        position = @enqueued_message.position
-
-        # Delete the message
-        @enqueued_message.destroy!
-
-        # Re-number remaining messages with higher positions. Correct under any
-        # scan order only because (session_id, position) uniqueness is deferred
-        # to commit — see the DELETE path in Api::V1::EnqueuedMessagesController.
-        @session.enqueued_messages
-                .where("position > ?", position)
-                .update_all("position = position - 1")
-
-        @session.logs.create!(
-          content: "Enqueued message at position #{position} removed",
-          level: "info"
-        )
-      end
+      Sessions::RemoveQueuedMessage.call(@enqueued_message)
     end
 
     # Check if we already redirected (max retries exceeded)

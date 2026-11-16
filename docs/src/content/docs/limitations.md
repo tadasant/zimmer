@@ -7228,19 +7228,6 @@ Tracked in [#847](https://github.com/tadasant/zimmer/issues/847).
 
 ---
 
-## Deleting a queued message races a move
-
-Moving a queued message (`EnqueuedMessage#reorder_to`) and appending one both take the session's
-queue lock, so they take turns. Deleting one does not: the web, REST and MCP delete paths decrement
-the positions behind the deleted row with one `update_all`, from a position read before their
-transaction began. Racing a move on the same queue, a delete can leave a gap in the positions, fail
-at COMMIT on the deferred `(session_id, position)` unique constraint, or deadlock with the move,
-which Postgres resolves by aborting one of the two. A gap is harmless, because delivery reads the
-queue by order rather than by number. The other two surface as one failed request that succeeds on
-retry. Moving the three delete paths onto the same lock closes it.
-
----
-
 ## The spot gate holds turns, but not queue position
 
 `SpotSessionHold` gates every turn that would spend Claude quota — a first start, a fired wake
