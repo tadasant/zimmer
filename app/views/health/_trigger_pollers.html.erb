@@ -1,0 +1,47 @@
+<%# Trigger polling: each watched poller's liveness, and any spent or low GitHub budget. %>
+<%#
+  TriggerPollerHealth, the same object GET /api/v1/health and get_system_health return.
+  Paging stays with TriggerPollerLivenessCheckJob; this card is where its page is read,
+  including whether a spent GitHub rate limit explains a stall. Stacked rows so it fits a phone.
+%>
+<% pollers = health_report[:trigger_poller_health] %>
+<div class="mt-6 bg-white rounded-lg shadow" data-testid="trigger-poller-health">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Trigger Polling</h3>
+        <p class="mt-1 text-sm text-gray-500">When each poller with an enabled trigger last polled successfully.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+        <%= status_badge(pollers[:status]) %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6 space-y-4">
+    <% if pollers[:pollers].any? %>
+      <ul class="divide-y divide-gray-100">
+        <% pollers[:pollers].each do |poller| %>
+          <% state_class = { "polling" => "bg-green-100 text-green-800", "stalled" => "bg-red-100 text-red-800",
+                             "rate_limited" => "bg-amber-100 text-amber-800" }.fetch(poller[:state], "bg-gray-100 text-gray-800") %>
+          <li class="py-3 flex flex-col gap-1 sm:flex-row sm:items-start sm:gap-3">
+            <div class="flex items-center gap-2 sm:w-40 sm:flex-shrink-0">
+              <span class="text-sm font-semibold text-gray-900"><%= poller[:name] %></span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium <%= state_class %>">
+                <%= poller[:state].humanize(capitalize: false).sub("rate limited", "rate-limited") %>
+              </span>
+            </div>
+            <p class="text-sm text-gray-700 break-words min-w-0"><%= poller[:message] %></p>
+          </li>
+        <% end %>
+      </ul>
+    <% end %>
+
+    <%= render "shared/github_rate_limit", readings: pollers[:github_rate_limit] %>
+
+    <%# The rows above already carry a stall or a spent budget; the summary line is for the quiet case, or a section that could not be read. %>
+    <% if pollers[:status].status == :healthy || (pollers[:pollers].empty? && pollers[:github_rate_limit].empty?) %>
+      <p class="text-sm text-gray-500"><%= pollers[:status].message %></p>
+    <% end %>
+  </div>
+</div>

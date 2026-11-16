@@ -326,4 +326,36 @@ class Mcp::Tools::SearchTriggersTest < ActiveSupport::TestCase
 
     refute_includes output, "Enqueue Messages"
   end
+
+  # The same lines the /triggers banner shows, so an agent reading a quiet GitHub trigger
+  # sees the spent budget, its reset and whether polling continues.
+  def spent_core_reading
+    GithubRateLimitReport::Reading.new(
+      credential: "GH_TOKEN", login: "tadasant", resource: "core", remaining: 0, limit: 5000,
+      reset_at: 12.minutes.from_now, spent: true, polling: { search: "28/30 left" }, backoff: false
+    )
+  end
+
+  test "a GitHub trigger's view names a spent GitHub budget, and a Slack trigger's does not" do
+    GithubRateLimitReport.stubs(:spent).returns([ spent_core_reading ])
+
+    github = @tool.call("id" => triggers(:github_label_trigger).id)
+    assert_includes github, "- ⚠️ **GitHub rate limit:** GH_TOKEN (tadasant)'s core budget is spent: 0/5000 left, resets "
+    assert_includes github, "GitHub trigger polling continues through it"
+
+    refute_includes @tool.call("id" => triggers(:enabled_slack_trigger).id), "GitHub rate limit"
+  end
+
+  test "the list names a spent GitHub budget once, above the triggers" do
+    GithubRateLimitReport.stubs(:spent).returns([ spent_core_reading ])
+
+    output = @tool.call({})
+    assert_equal 1, output.scan("**GitHub rate limit:**").size
+  end
+
+  test "nothing spent, nothing said" do
+    GithubRateLimitReport.stubs(:spent).returns([])
+
+    refute_includes @tool.call("id" => triggers(:github_label_trigger).id), "GitHub rate limit"
+  end
 end

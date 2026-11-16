@@ -554,4 +554,40 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     chain.get("ZIMMER_APP_URL") if warm
     SecretProviders.stubs(:chain).returns(chain)
   end
+
+  test "reports trigger polling: a rate-limited GitHub poller and each spent budget with its reset" do
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        trigger_poller_health: {
+          pollers: [
+            { key: "github", name: "GitHub", state: "rate_limited",
+              message: "GitHub trigger polling is paused: GH_TOKEN (tadasant)'s GitHub search budget is spent until 2026-11-15 21:16 UTC (in under a minute); last poll 20m ago." },
+            { key: "slack", name: "Slack", state: "polling", message: "Slack trigger polling is running: last poll 1m ago." }
+          ],
+          github_rate_limit: [
+            { resource: "search", spent: true,
+              message: "GH_TOKEN (tadasant)'s search budget is spent: 0/30 left, resets 2026-11-15 21:16 UTC (in under a minute). GitHub trigger polling is paused until then." }
+          ],
+          status: HealthMonitorService::HealthStatus.new(status: :warning, message: "GitHub trigger polling is paused: ...")
+        } }
+    )
+    result = @tool.call({})
+
+    assert_includes result, "- **Trigger polling:** warning"
+    assert_includes result, "  - GitHub (rate_limited): GitHub trigger polling is paused: GH_TOKEN (tadasant)'s GitHub search budget is spent until 2026-11-15 21:16 UTC"
+    assert_includes result, "  - GitHub search budget (spent): GH_TOKEN (tadasant)'s search budget is spent: 0/30 left"
+    refute_includes result, "Slack (polling)", "a poller that is simply polling adds no line"
+  end
+
+  test "trigger polling, when quiet, is one summary line" do
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        trigger_poller_health: {
+          pollers: [ { key: "github", name: "GitHub", state: "polling", message: "x" } ], github_rate_limit: [],
+          status: HealthMonitorService::HealthStatus.new(status: :healthy, message: "1 trigger poller polling within its thresholds.")
+        } }
+    )
+
+    assert_includes @tool.call({}), "- **Trigger polling:** 1 trigger poller polling within its thresholds."
+  end
 end

@@ -1620,4 +1620,37 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal [ "keeper" ], @trigger.reload.mcp_servers
   end
+
+  # --- GitHub rate limit banner ----------------------------------------------
+
+  def spent_search_reading
+    GithubRateLimitReport::Reading.new(
+      credential: "GH_TOKEN", login: "tadasant", resource: "search", remaining: 0, limit: 30,
+      reset_at: 40.seconds.from_now, spent: true, polling: :paused, backoff: false
+    )
+  end
+
+  test "a GitHub trigger's page and the list show a spent GitHub budget, its reset and whether polling continues" do
+    GithubRateLimitReport.stubs(:spent).returns([ spent_search_reading ])
+
+    get trigger_path(triggers(:github_label_trigger))
+    assert_response :success
+    assert_select "[data-testid=github-rate-limit]" do
+      assert_select "h4", "GitHub rate limit spent"
+      assert_select "li", /GH_TOKEN \(tadasant\)'s search budget is spent: 0\/30 left, resets .* UTC \(in under a minute\)\. GitHub trigger polling is paused until then\./
+    end
+
+    get triggers_path
+    assert_select "[data-testid=github-rate-limit]", 1
+  end
+
+  test "a trigger with no GitHub condition shows no GitHub banner, and nothing spent shows none" do
+    GithubRateLimitReport.stubs(:spent).returns([ spent_search_reading ])
+    get trigger_path(triggers(:enabled_slack_trigger))
+    assert_select "[data-testid=github-rate-limit]", 0
+
+    GithubRateLimitReport.stubs(:spent).returns([])
+    get trigger_path(triggers(:github_label_trigger))
+    assert_select "[data-testid=github-rate-limit]", 0
+  end
 end

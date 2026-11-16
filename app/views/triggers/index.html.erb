@@ -22,6 +22,8 @@
       </div>
     </div>
 
+    <%= render "triggers/github_rate_limit_banner", readings: @github_rate_limit %>
+
     <% if @triggers.empty? %>
       <!-- Empty State -->
       <div class="text-center py-12 bg-white rounded-lg shadow">

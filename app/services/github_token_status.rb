@@ -72,13 +72,30 @@ module GithubTokenStatus
   end
 
   def probe(token)
-    key = "github_token_status/#{Digest::SHA256.hexdigest(token.to_s)}"
+    key = cache_key(token)
     cached = Rails.cache.read(key)
     return cached if cached
 
     result = fetch(token)
     Rails.cache.write(key, result, expires_in: result.error ? FAILURE_CACHE_TTL : CACHE_TTL)
     result
+  end
+
+  # The GitHub login a token belongs to, if a probe has already learned it, or nil.
+  # Cache only: it never calls GitHub, so a surface that is reporting a spent rate limit
+  # can name whose budget it is without spending more of it.
+  def cached_login(token)
+    return nil if token.blank?
+
+    probe = Rails.cache.read(cache_key(token))
+    probe.respond_to?(:login) ? probe.login.presence : nil
+  rescue StandardError
+    nil
+  end
+
+  # Keyed by a digest of the token, never the token.
+  def cache_key(token)
+    "github_token_status/#{Digest::SHA256.hexdigest(token.to_s)}"
   end
 
   # `GET /user` with the token in the Authorization header — never in an argv.

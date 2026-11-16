@@ -4,6 +4,8 @@ require "test_helper"
 require "mocha/minitest"
 
 class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
+  include GithubRateLimitStateHelpers
+
   # The production cache is null_store in test, which would make every heartbeat read
   # return nil and every write a no-op — the job would only ever exercise its
   # seed-and-skip branch. Swap in a real MemoryStore so the staleness comparison is
@@ -17,10 +19,12 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
     # graceful-degradation early return.
     GithubSearchService.stubs(:configured?).returns(true)
     SlackService.stubs(:configured?).returns(true)
+    use_test_gh_token
   end
 
   teardown do
     Rails.cache = @original_cache
+    restore_gh_tokens
   end
 
   def write_heartbeat(poller, at)
@@ -138,30 +142,64 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
   # 2026-11-15: the page fired for a spent rate limit and its text listed only a dead worker,
   # a hung `gh` and an unreachable GitHub. The page fires exactly as before; its details now
   # say what this host knows.
-  test "a GitHub stall with a known spent budget pages, and the page names the budget and its reset" do
+  test "a GitHub stall beside a spent core budget pages under the usual title, and says polling continues through it" do
     write_heartbeat(:github, 20.minutes.ago)
-    GithubRateLimit.stubs(:diagnosis)
-      .returns("GitHub rate limit: GH_TOKEN's core budget is spent until 2026-11-15T21:27:23Z.")
+    reset = 12.minutes.from_now
+    open_rate_limit_breaker("core", reset)
+    write_rate_limit_snapshot("core" => [ 0, 5000, reset ], "search" => [ 28, 30, 40.seconds.from_now ])
+    remember_github_login("tadasant")
+    reset_text = reset.utc.strftime("%Y-%m-%d %H:%M UTC")
 
     ErrorReporter.expects(:report_message).once.with do |message, opts|
+      details = opts[:context][:details]
       message == "GitHub trigger polling stalled" &&
-        opts[:context][:details].include?("rate limit is spent") &&
-        opts[:context][:details].include?("core budget is spent until 2026-11-15T21:27:23Z") &&
-        opts[:context][:diagnosis].include?("2026-11-15T21:27:23Z")
+        # The diagnosis leads the details, and the generic causes follow it.
+        details.start_with?("GitHub rate limit: GH_TOKEN (tadasant)'s core budget is spent: 0/5000 left, resets #{reset_text} (in 12 min).") &&
+        details.include?("GitHub trigger polling continues through it") &&
+        details.include?("rate limit is spent") &&
+        opts[:context][:diagnosis].include?(reset_text) &&
+        !details.include?(TEST_GH_TOKEN)
     end
 
     entries = capture_log_entries { TriggerPollerLivenessCheckJob.perform_now }
     error = entries.find { |severity, _message| severity == "ERROR" }
-    assert_includes error.last, "core budget is spent until 2026-11-15T21:27:23Z"
+    assert_match(/\[TriggerPollerLivenessCheckJob\] No successful github trigger poll/, error.last)
+    assert_includes error.last, "core budget is spent: 0/5000 left, resets #{reset_text}"
+  end
+
+  test "a GitHub stall while the search budget is spent keeps the usual title, and the details lead with the reading" do
+    write_heartbeat(:github, 20.minutes.ago)
+    write_rate_limit_snapshot("core" => [ 4000, 5000, 30.minutes.from_now ], "search" => [ 0, 30, 40.seconds.from_now ])
+
+    ErrorReporter.expects(:report_message).once.with do |message, opts|
+      # A one-minute search window cannot explain a quarter of an hour, so the title does
+      # not claim it as the cause; the reading rides in the details for the responder.
+      message == "GitHub trigger polling stalled" &&
+        opts[:level] == :error &&
+        opts[:context][:details].start_with?("GitHub rate limit: GH_TOKEN's search budget is spent: 0/30 left") &&
+        opts[:context][:details].include?("GitHub trigger polling is paused until then.")
+    end
+
+    entries = capture_log_entries { TriggerPollerLivenessCheckJob.perform_now }
+    errors = entries.select { |severity, _message| severity == "ERROR" }
+    assert_equal 1, errors.size, "still exactly one ERROR record: the page"
+  end
+
+  test "a spent search budget with a fresh heartbeat does not page" do
+    write_heartbeat(:github, 2.minutes.ago)
+    write_rate_limit_snapshot("search" => [ 0, 30, 40.seconds.from_now ])
+
+    ErrorReporter.expects(:report_message).never
+    TriggerPollerLivenessCheckJob.perform_now
   end
 
   # The guard on the whole change: nothing about rate limits may quiet a real outage.
-  test "a GitHub stall with no rate-limit finding still pages, with no diagnosis attached" do
+  test "a GitHub stall with no rate-limit finding still pages, with the generic text and no diagnosis attached" do
     write_heartbeat(:github, 20.minutes.ago)
-    GithubRateLimit.stubs(:diagnosis).returns(nil)
 
     ErrorReporter.expects(:report_message).once.with do |message, opts|
-      message == "GitHub trigger polling stalled" && !opts[:context].key?(:diagnosis)
+      message == "GitHub trigger polling stalled" && !opts[:context].key?(:diagnosis) &&
+        opts[:context][:details].start_with?("No GitHub trigger poll has completed successfully in ~20 minutes")
     end
 
     TriggerPollerLivenessCheckJob.perform_now
@@ -169,7 +207,7 @@ class TriggerPollerLivenessCheckJobTest < ActiveJob::TestCase
 
   test "a diagnosis that raises does not cost the page" do
     write_heartbeat(:github, 20.minutes.ago)
-    GithubRateLimit.stubs(:diagnosis).raises(RuntimeError, "boom")
+    GithubRateLimitReport.stubs(:diagnosis).raises(RuntimeError, "boom")
 
     ErrorReporter.expects(:report_message).once.with { |message, _opts| message == "GitHub trigger polling stalled" }
 

@@ -2143,11 +2143,42 @@ There is no core or graphql reserve for the poller. Its sweep spends search, not
 through a spent core budget, so a core reserve would buy it nothing. It would only cost the merge
 gate its PR reads in the last stretch of a busy hour. The search share above is the only reserve.
 
-None of this touches the liveness page. If the poller polls nothing for 15 minutes for any reason,
-including a dead worker, a hung `gh`, bad credentials or both budgets spent, `TriggerPollerLivenessCheckJob`
-pages. Its details include `GithubRateLimit.diagnosis`: every budget known to be spent or under 500
-remaining, with its reset time. That way a rate-limited stall reads as a rate limit, not as GitHub
-being down.
+None of this changes when the liveness page fires. If the poller polls nothing for 15 minutes for any
+reason, including a dead worker, a hung `gh`, bad credentials or both budgets spent,
+`TriggerPollerLivenessCheckJob` pages. Only its wording depends on the rate limit, as the next section
+describes.
+
+#### Where a spent budget shows
+
+Every surface that reports trigger polling or GitHub's health reads the same state:
+`GithubRateLimitReport` over the breakers and the minute-by-minute snapshot above. It makes no
+GitHub call of its own. For each budget that is spent, or under 500 remaining (`search` excepted,
+since its whole budget is 30 a minute), it gives:
+
+- the budget (`core`, `graphql` or `search`) and the variable holding the token, with the token's
+  GitHub login when the CLIs page's token probe has already learned it. It never gives the token;
+- remaining/limit;
+- the reset, as a UTC time and as "in N min";
+- whether trigger polling continues through it. The sweep spends only `search`, so a spent `core`
+  or `graphql` budget says *polling continues through it* along with what is left of `search`. A
+  spent `search` budget says *polling is paused until then*. With no `search` reading in the
+  snapshot, it says neither.
+
+A breaker opened on a secondary (burst) limit holds calls back the same way, but its budget is not
+spent. It reads as *backing off after a secondary rate limit* until its reset, with no remaining
+count.
+
+| Surface | What it shows |
+| --- | --- |
+| `/health`, **Trigger Polling** card | Each poller with an enabled trigger: `polling`, `stalled`, `rate-limited` or no heartbeat yet, with when it last polled. `rate-limited` means the heartbeat is still inside its threshold and every token's `search` budget is spent. A heartbeat past its threshold is `stalled` whatever is spent, because a one-minute search window cannot account for a quarter of an hour. A GitHub stall says what the spent budgets do and do not explain: a spent `core` or `graphql` budget never stops the sweep. Every spent or low budget is listed below. The card stays out of the overall status, because paging belongs to the liveness job. |
+| `GET /api/v1/health`, `get_system_health` | The same section, as `trigger_poller_health`. `get_system_health` adds one line per poller that is not simply polling and one per budget. |
+| `/triggers` and a GitHub trigger's page | A banner while a budget is spent, so a quiet GitHub trigger reads as rate-limited until a stated time rather than broken. |
+| `search_triggers` | The same lines, on a GitHub trigger's view and once at the top of a list that contains one. |
+| The liveness page (GlitchTip and its ERROR line) | The details and the ERROR line carry the readings, ahead of the generic causes in the details. The title stays **GitHub trigger polling stalled**. A search limit that really does hold the sweep pages on its own, as *GitHub search API rate limit not clearing*. |
+
+The page fires in exactly the cases it fired in before, under the same title, and only its text is
+more accurate. If the report cannot read the state, the page falls back to `GithubRateLimit.diagnosis`.
+If that fails too, it goes out with the generic text.
 
 Everything here fails open. A cache that cannot be read, or a probe that cannot be parsed, means no
 breaker. The call then goes ahead as it would without this code.
