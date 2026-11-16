@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # A webhook subscription Zimmer holds on a catalog MCP server for one `mcp_event` condition: the
-# MCP Events extension's webhook mode (SEP-3415 @ b08e4f9, "Webhook-Based Delivery").
+# MCP Events extension's webhook mode (SEP-3415 @ 4165cc2, "Webhook-Based Delivery").
 #
 # The server POSTs each event to `callback_url` — `/webhooks/mcp_events/<token>` on Zimmer's public
 # base URL — signed with `secret`, which Zimmer generates (the SEP has the client supply it) and

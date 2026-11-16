@@ -26,7 +26,7 @@ module McpEvents
   EXTENSION_ID = "io.modelcontextprotocol/events"
 
   # The SEP-3415 head commit this implementation follows.
-  SPEC_REVISION = "b08e4f9dd684f39d846d94089487fbeb28e666f5"
+  SPEC_REVISION = "4165cc2e580afa795842002f631edbbe17c63757"
 
   # The extension's error codes, by name. The SEP calls the numbers provisional, so nothing else
   # names them.
