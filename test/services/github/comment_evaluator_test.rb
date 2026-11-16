@@ -1330,6 +1330,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     failing_builder = mock
     failing_builder.stubs(:actionable?).returns(false)
     failing_builder.stubs(:visibility_lookup_failed?).returns(true)
+    failing_builder.stubs(:visibility_lookup_refused?).returns(false)
     GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
 
     job = TestEvaluatorWithUnknownVisibilityComment.new
@@ -1353,6 +1354,7 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     failing_builder = mock
     failing_builder.stubs(:actionable?).returns(false)
     failing_builder.stubs(:visibility_lookup_failed?).returns(true)
+    failing_builder.stubs(:visibility_lookup_refused?).returns(false)
     GithubCommentPromptBuilder.stubs(:new).returns(failing_builder)
 
     job = TestEvaluatorWithUnknownVisibilityComment.new
@@ -1363,6 +1365,29 @@ class Github::CommentEvaluatorTest < ActiveSupport::TestCase
     end
 
     assert_equal "skipped:visibility_unknown", stored_pr_comments(session).first["dispatch_state"]
+  end
+
+  # A lookup the rate-limit breaker held back never reached GitHub. It says nothing about
+  # the repo and cost nothing, so it must not age a human's comment out: once the breaker
+  # reopens, the lookup is asked for real.
+  test "a visibility lookup the rate-limit breaker refused defers the comment even past the window" do
+    session = trusted_pr_session
+
+    refused_builder = mock
+    refused_builder.stubs(:actionable?).returns(false)
+    refused_builder.stubs(:visibility_lookup_failed?).returns(true)
+    refused_builder.stubs(:visibility_lookup_refused?).returns(true)
+    GithubCommentPromptBuilder.stubs(:new).returns(refused_builder)
+
+    job = TestEvaluatorWithUnknownVisibilityComment.new
+    job.created_at
+
+    travel (Github::CommentEvaluator::VISIBILITY_RETRY_WINDOW_SECONDS + 60).seconds do
+      job.evaluate(session, Github::PrRef.for_session(session), {})
+    end
+
+    assert_equal "deferred", stored_pr_comments(session).first["dispatch_state"]
+    assert_equal 0, session.reload.enqueued_messages.count
   end
 
   test "a public repo outside our control is still terminal, not retried" do

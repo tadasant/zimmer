@@ -21,8 +21,8 @@
 #      reset time GitHub reports. Every later call against it is answered locally, with a
 #      failed GithubCli::Result that never reaches GitHub. The reset time comes from
 #      `gh api rate_limit`, which GitHub does not count against any budget. `gh`'s own
-#      error line does not carry it. If that probe fails too, the breaker holds for
-#      FALLBACK_HOLD and the next refused call probes again.
+#      error line does not carry it. If that probe fails too, or contradicts the refusal,
+#      the breaker holds on an exponential backoff instead (rule 4).
 #   2. **Let the trigger poller run through it.** The poller's sweep spends only the
 #      search budget, so a spent core budget costs it nothing but its `gh auth status`
 #      preflight, and GithubTriggerPollerJob polls through a rate-limited preflight. That
@@ -33,7 +33,25 @@
 #      GithubRateLimitSnapshotJob reads every credential's budgets once a minute. A
 #      budget it finds spent trips the breaker before any caller is refused, and the
 #      readings feed .diagnosis.
-#   3. **Say what happened.** A spent budget is reported as rate-limited until a stated
+#   3. **Do not all come back at once.** Every caller shares one breaker, so a breaker that
+#      reopened at exactly `reset` would release every waiting caller in the same second,
+#      and the first second of the new window would go to whoever's tick landed first.
+#      Each call draws its own reopen time from [reset, reset + REOPEN_JITTER[budget]], so
+#      Zimmer's callers come back spread across that window instead (see REOPEN_JITTER).
+#   4. **Back off where GitHub gives no reset time.** A secondary rate limit (GitHub's
+#      burst limit, answered 403 or 429), a primary refusal the probe cannot date, and a
+#      refusal met again right after a reopen all hold the breaker on a capped exponential
+#      backoff with full jitter (.backoff_hold), or for exactly GitHub's `Retry-After` when
+#      the response carries one. The attempt count is per credential and budget, and the
+#      first call GitHub answers without a rate limit resets it.
+#   5. **Keep the trigger poller's search budget.** GitHub's search budget is 30 a minute,
+#      and the trigger poller spends it once a minute, one search per condition. Zimmer's
+#      other search callers (the Issues page, the hourly trigger health check) are bursty,
+#      and a cold Issues page load alone spends most of a minute's budget. Outside
+#      .on_poller_budget they may spend only what the poller's next tick will not need
+#      (.charge_search_share); past that their searches are answered locally until the
+#      window ends.
+#   6. **Say what happened.** A spent budget is reported as rate-limited until a stated
 #      time, in GithubSearchService.auth_preflight's state, in the poller's WARN, and in
 #      the stalled-polling page's details (.diagnosis). It is not reported as GitHub being
 #      unreachable.
@@ -58,10 +76,54 @@ module GithubRateLimit
   # page in the minutes before exhaustion still names the cause. Reporting only.
   LOW_WATER = 500
 
-  # How long a breaker holds when GitHub refused a call with a primary rate limit but
-  # the free probe could not tell us when the window resets. Short, so a wrong guess
-  # costs a minute; the next refused call after it probes again.
-  FALLBACK_HOLD = 60.seconds
+  # How far past GitHub's reset a call may be held back, per budget. Each call draws its
+  # own reopen time uniformly from [reset, reset + this], so the callers queued behind a
+  # breaker come back spread across the window rather than in the same second.
+  #
+  # core and graphql reset hourly. 30 seconds is at most 0.8% of the new window, and it
+  # is longer than the tick of the busiest caller (the PR poll pass, every 30 seconds), so
+  # a full round of Zimmer's callers spreads across it instead of landing at once. search
+  # resets every minute and its one regular spender, the trigger poller, ticks once a
+  # minute. Holding it back 30 seconds would cost the poller half a window and make a
+  # skipped tick likely, so it gets 5.
+  REOPEN_JITTER = { "core" => 30, "graphql" => 30, "search" => 5 }.freeze
+  DEFAULT_REOPEN_JITTER = 30
+
+  # Backoff for a rate limit GitHub gave no reset time for (see .backoff_hold). The
+  # n-th consecutive hold is
+  #
+  #   floor + rand(0 .. min(BACKOFF_CAP, BACKOFF_BASE * 2**(n - 1)))
+  #
+  # which is full jitter above a floor. The floor is GitHub's own rule for a secondary
+  # limit with no Retry-After ("wait for at least one minute before retrying"), and a few
+  # seconds where the probe merely failed. The base matches that minute; the cap keeps a
+  # long run of refusals from holding a budget past a quarter of an hour, which is also
+  # past GithubTriggerPollerJob's five-tick streak alarm, so a backoff that is not clearing
+  # still pages.
+  BACKOFF_BASE = 60
+  BACKOFF_CAP = 15.minutes.to_i
+  SECONDARY_FLOOR = 60
+  UNDATED_FLOOR = 5
+
+  # How long a run of backoff attempts is remembered with no call in between. A call
+  # GitHub answers without a rate limit clears it sooner.
+  BACKOFF_MEMORY = 1.hour
+
+  # GitHub's search budget per window, for every token the user holds.
+  SEARCH_BUDGET = 30
+
+  # How much of each search window Zimmer's callers other than the trigger poller may spend
+  # on one credential (rule 5): SEARCH_BUDGET less what one poller tick spends, which is one
+  # search per enabled GitHub trigger condition. That reserve is capped at MAX_POLLER_RESERVE,
+  # so the others always keep at least half. The Issues page needs about 25 searches for a
+  # cold load and the poller a handful, so a fixed split would cut one of them short for no
+  # reason; this one costs the page only what the poller is actually going to spend.
+  #
+  # It cannot protect against agent sessions running `gh search` as the same user. Nothing
+  # in Zimmer can.
+  MAX_POLLER_RESERVE = 15
+  POLLER_RESERVE_TTL = 5.minutes
+  SEARCH_WINDOW = 60
 
   # A snapshot older than this is not reported. GithubRateLimitSnapshotJob refreshes it
   # every minute; a snapshot this old means the job is not running, and an aged reading of
@@ -87,21 +149,55 @@ module GithubRateLimit
   # sentence, echoed back in a search error) costs one free call.
   PRIMARY_EXHAUSTION_PATTERN = /API rate limit (?:already )?exceeded/i
 
+  # GitHub's wording for a secondary (burst) limit, matched as GitHub's whole sentences for
+  # the reason GithubSearchService::GH_RATE_LIMIT_PATTERN gives: `gh` echoes a search query
+  # back in its error, and a fragment would let a label of that name forge one.
+  SECONDARY_LIMIT_PATTERN = /
+    You\ have\ exceeded\ a\ secondary\ rate\ limit
+    | You\ have\ triggered\ an\ abuse\ detection\ mechanism
+  /xi
+
+  # `gh` prints the status on its error line: `… (HTTP 403)`.
+  HTTP_STATUS_PATTERN = /\(HTTP (\d{3})\)/
+
+  # The statuses GitHub answers a rate limit with. A 429 is only ever a rate limit.
+  RATE_LIMIT_STATUSES = [ 403, 429 ].freeze
+
+  # A `Retry-After` header, present when the caller asked `gh api` to include headers.
+  RETRY_AFTER_PATTERN = /^Retry-After:\s*(\d+)\s*$/i
+
   # The same refusal, made to an authenticated request: GitHub names the user it is
   # refusing. Only this form says the credential is valid. An unauthenticated request is
   # refused per IP (`API rate limit exceeded for 203.0.113.7`), which proves nothing.
   CREDENTIAL_EXHAUSTION_PATTERN = /API rate limit (?:already )?exceeded for user ID/i
 
-  # Why a call was answered locally instead of being sent: GitHub refused this budget,
-  # and its window has not reset.
+  # Why a call was answered locally instead of being sent.
   #
   #   resource:    "core", "graphql" or "search"
-  #   reset_at:    when GitHub's window resets, so when this stops applying
+  #   reset_at:    when GitHub's window resets (kind :exhausted), when the backoff hold ends
+  #                (:backoff), or when the search window ends (:share)
   #   credential:  which variable holds the token, e.g. "GH_TOKEN" — a name, never a value
-  Refusal = Data.define(:resource, :reset_at, :credential) do
+  #   retry_at:    when this call would have been let through: reset_at plus this call's
+  #                share of REOPEN_JITTER. Always at or after reset_at.
+  #   kind:        :exhausted (GitHub said the budget is spent), :backoff (a rate limit with
+  #                no reset time), or :share (the poller's share of the search budget)
+  Refusal = Data.define(:resource, :reset_at, :credential, :retry_at, :kind) do
+    def initialize(resource:, reset_at:, credential:, retry_at: reset_at, kind: :exhausted)
+      super
+    end
+
     def message
-      "not sent to GitHub: GitHub's API rate limit exceeded for #{credential}'s #{resource} " \
-        "budget until #{reset_at.utc.iso8601}"
+      case kind
+      when :backoff
+        "not sent to GitHub: backing off after GitHub rate-limited #{credential}'s #{resource} " \
+          "budget, until #{retry_at.utc.iso8601}"
+      when :share
+        "not sent to GitHub: Zimmer's searches outside the trigger poller have spent their " \
+          "share of #{credential}'s search budget for this minute, until #{retry_at.utc.iso8601}"
+      else
+        "not sent to GitHub: GitHub's API rate limit exceeded for #{credential}'s #{resource} " \
+          "budget until #{reset_at.utc.iso8601}"
+      end
     end
   end
 
@@ -139,7 +235,8 @@ module GithubRateLimit
     end
   end
 
-  # The Refusal for a call about to be made, or nil to let it through.
+  # The Refusal for a call about to be made, or nil to let it through. Reads only; see
+  # .admit for the check GithubCli makes, which also charges the search share.
   #
   # @param command [Array<String>] the `gh` argv
   # @param env [Hash] the extra environment GithubCli will run it with
@@ -148,30 +245,111 @@ module GithubRateLimit
     return nil unless resource
 
     credential = credential_for(env)
-    exhausted_until = read_exhausted(credential, resource)
-    return nil unless exhausted_until
+    hold = read_hold(credential, resource)
+    return nil unless hold
 
-    Refusal.new(resource: resource, reset_at: exhausted_until, credential: credential[:label])
+    # Drawn per call, so callers queued behind one breaker reopen at different moments.
+    retry_at = hold[:reset_at] + (random * hold[:spread])
+    return nil unless retry_at.future?
+
+    Refusal.new(resource: resource, reset_at: hold[:reset_at], credential: credential[:label],
+                retry_at: retry_at, kind: hold[:kind])
   rescue => e
     Rails.logger.warn "[GithubRateLimit] Could not check the rate-limit breaker (#{e.class}: #{e.message}); " \
                       "letting the call through"
     nil
   end
 
-  # Called with the text of a `gh` call that failed. If GitHub refused it with a primary
-  # rate limit, probe the budgets and trip a breaker on every one of them that is spent.
+  # What GithubCli asks before sending a call: .refusal_for, and, for a search sent outside
+  # .on_poller_budget, a charge against the non-poller share (.charge_search_share).
+  def admit(command, env: {})
+    refusal = refusal_for(command, env: env)
+    return refusal if refusal
+    return nil unless resource_for(command) == "search" && !on_poller_budget?
+
+    charge_search_share(credential_for(env))
+  rescue => e
+    Rails.logger.warn "[GithubRateLimit] Could not check the search share (#{e.class}: #{e.message}); " \
+                      "letting the call through"
+    nil
+  end
+
+  # Run the block with its searches on the trigger poller's budget: exempt from the
+  # non-poller share. Only GithubTriggerPollerJob's sweep should use this.
+  def on_poller_budget
+    previous = ActiveSupport::IsolatedExecutionState[:github_rate_limit_poller]
+    ActiveSupport::IsolatedExecutionState[:github_rate_limit_poller] = true
+    yield
+  ensure
+    ActiveSupport::IsolatedExecutionState[:github_rate_limit_poller] = previous
+  end
+
+  def on_poller_budget?
+    ActiveSupport::IsolatedExecutionState[:github_rate_limit_poller] == true
+  end
+
+  # Called by GithubCli with what every sent call printed. A rate-limit refusal is recorded
+  # (.observe_failure); any other answer means GitHub served this budget, so the backoff
+  # for it starts over.
+  def observe(command, stderr, stdout: "", env: {})
+    return if observe_failure(command, stderr, stdout: stdout, env: env)
+
+    resource = resource_for(command)
+    return unless resource
+
+    Rails.cache.delete(backoff_key(credential_for(env), resource))
+  rescue => e
+    Rails.logger.warn "[GithubRateLimit] Could not reset the rate-limit backoff (#{e.class}: #{e.message})"
+    nil
+  end
+
+  # Called with the text of a `gh` call that GitHub may have rate-limited.
   #
-  # @return [Refusal, nil] the breaker now covering this call's budget, if any
-  def observe_failure(command, text, env: {})
-    return nil unless text.to_s.match?(PRIMARY_EXHAUSTION_PATTERN)
+  # A primary limit probes the budgets and trips a breaker on every one of them that is
+  # spent. If the probe fails, or does not show this call's budget as spent with a reset
+  # still ahead, the breaker holds on .backoff_hold instead. A secondary limit holds on
+  # `Retry-After` when the response carries one, and on .backoff_hold otherwise.
+  #
+  # @return [Refusal, nil] the breaker now covering this call's budget, if GitHub refused it
+  def observe_failure(command, text, stdout: "", env: {})
+    kind = rate_limit_kind(text)
+    return nil unless kind
 
     resource = resource_for(command)
     return nil unless resource
 
-    record_exhaustion(credential_for(env), fallback_resource: resource)
+    credential = credential_for(env)
+    if kind == :primary
+      record_exhaustion(credential, fallback_resource: resource)
+    else
+      record_secondary(credential, resource, retry_after_in(text, stdout))
+    end
   rescue => e
     Rails.logger.warn "[GithubRateLimit] Could not record a rate-limit refusal (#{e.class}: #{e.message})"
     nil
+  end
+
+  # The next moment Zimmer will send a call on each budget it is holding back, for a status
+  # surface that wants it: one entry per credential and budget with a breaker open.
+  #
+  # @return [Array<Hash>] { credential:, resource:, kind:, reset_at:, retry_by: } where
+  #   retry_by is the latest any caller is held back (reset_at plus the full jitter window)
+  def holds(env: ENV)
+    credentials(env: env).flat_map do |credential|
+      RESOURCES.filter_map do |resource|
+        hold = read_hold(credential, resource)
+        next unless hold
+
+        retry_by = hold[:reset_at] + hold[:spread]
+        next unless retry_by.future?
+
+        { credential: credential[:label], resource: resource, kind: hold[:kind],
+          reset_at: hold[:reset_at], retry_by: retry_by }
+      end
+    end
+  rescue => e
+    Rails.logger.warn "[GithubRateLimit] Could not read rate-limit holds (#{e.class}: #{e.message})"
+    []
   end
 
   # Probe one credential's budgets and remember them. Trips a breaker on every budget
@@ -255,36 +433,157 @@ module GithubRateLimit
   end
 
   def record_exhaustion(credential, fallback_resource:)
-    refresh(credential) || trip(credential, fallback_resource, FALLBACK_HOLD.from_now)
+    budgets = refresh(credential)
+    unless read_exhausted(credential, fallback_resource)
+      # GitHub refused the call for a spent budget, and the probe either failed or cannot
+      # say until when. GitHub's refusal is the stronger evidence, so hold, briefly at
+      # first and longer if it keeps happening.
+      trip(credential, fallback_resource, backoff_hold(credential, fallback_resource, floor: UNDATED_FLOOR).from_now,
+           kind: :backoff, spread: 0, why: budgets ? "the rate-limit probe still shows budget left" : "the rate-limit probe failed")
+    end
 
-    reset_at = read_exhausted(credential, fallback_resource)
-    return nil unless reset_at
-
-    Refusal.new(resource: fallback_resource, reset_at: reset_at, credential: credential[:label])
+    refusal_after_trip(credential, fallback_resource)
   end
 
-  # Open a breaker. Logs once per breaker, not once per call: `unless_exist` makes the
-  # first writer the only one that logs.
-  def trip(credential, resource, reset_at)
-    # A few seconds past GitHub's reset, so the first call after it lands in the new window.
-    expires_in = (reset_at - Time.current) + 5
-    return if expires_in <= 0
+  def record_secondary(credential, resource, retry_after)
+    if retry_after
+      bump_backoff(credential, resource)
+      trip(credential, resource, retry_after.seconds.from_now, kind: :backoff,
+           spread: REOPEN_JITTER.fetch(resource, DEFAULT_REOPEN_JITTER), why: "secondary rate limit, Retry-After #{retry_after}s")
+    else
+      trip(credential, resource, backoff_hold(credential, resource, floor: SECONDARY_FLOOR).from_now,
+           kind: :backoff, spread: 0, why: "secondary rate limit")
+    end
 
-    opened = Rails.cache.write(exhausted_key(credential, resource), reset_at.to_i,
-                               expires_in: expires_in, unless_exist: true)
+    refusal_after_trip(credential, resource)
+  end
+
+  def refusal_after_trip(credential, resource)
+    hold = read_hold(credential, resource)
+    return nil unless hold && hold[:reset_at].future?
+
+    Refusal.new(resource: resource, reset_at: hold[:reset_at], credential: credential[:label], kind: hold[:kind])
+  end
+
+  # How long to hold for the next attempt in a run of undated rate limits on this credential
+  # and budget: `floor + rand(0 .. min(BACKOFF_CAP, BACKOFF_BASE * 2**(n - 1)))`. Bumps n.
+  def backoff_hold(credential, resource, floor:)
+    attempt = bump_backoff(credential, resource)
+    ceiling = [ BACKOFF_CAP, BACKOFF_BASE * (2**(attempt - 1)) ].min
+    (floor + (random * ceiling)).seconds
+  end
+
+  # The attempt number this one is, 1 for the first in a run.
+  def bump_backoff(credential, resource)
+    key = backoff_key(credential, resource)
+    attempt = Rails.cache.read(key).to_i + 1
+    # Capped so the exponent cannot grow without bound; BACKOFF_CAP is reached long before.
+    Rails.cache.write(key, [ attempt, 32 ].min, expires_in: BACKOFF_MEMORY)
+    attempt
+  end
+
+  # Count this search against the non-poller share, and refuse it if the share for this
+  # window is spent. The counter's expiry is set by the first search in a window and not
+  # moved by the rest, which is how GitHub dates its own search window. A cache that cannot
+  # count (nil) lets the search through. The reserve is read only once the count is past
+  # the point where it could matter.
+  def charge_search_share(credential)
+    count = Rails.cache.increment(search_share_key(credential), 1, expires_in: SEARCH_WINDOW)
+    return nil unless count && count > SEARCH_BUDGET - MAX_POLLER_RESERVE
+    return nil unless count > SEARCH_BUDGET - poller_search_reserve
+
+    reset_at = SEARCH_WINDOW.seconds.from_now
+    Refusal.new(resource: "search", reset_at: reset_at, credential: credential[:label], kind: :share)
+  end
+
+  # Searches one trigger poller tick spends: one per enabled GitHub condition, capped at
+  # MAX_POLLER_RESERVE. Cached briefly; a database that cannot answer reserves nothing.
+  def poller_search_reserve
+    Rails.cache.fetch("#{CACHE_PREFIX}:poller_search_reserve", expires_in: POLLER_RESERVE_TTL) do
+      TriggerCondition.github.joins(:trigger).where(triggers: { status: "enabled" }).count
+    end.to_i.clamp(0, MAX_POLLER_RESERVE)
+  rescue => e
+    Rails.logger.warn "[GithubRateLimit] Could not count the trigger poller's conditions (#{e.class}: #{e.message})"
+    0
+  end
+
+  # Open a breaker until reset_at. Logs once per breaker, not once per call: `unless_exist`
+  # makes the first writer the only one that logs. A breaker already covering reset_at is
+  # left alone; one that is only still in its jitter window is replaced.
+  def trip(credential, resource, reset_at, kind: :exhausted, spread: nil, why: nil)
+    spread ||= REOPEN_JITTER.fetch(resource, DEFAULT_REOPEN_JITTER)
+    return if reset_at <= Time.current
+
+    key = exhausted_key(credential, resource)
+    existing = read_hold(credential, resource)
+    return if existing && existing[:reset_at] >= reset_at - 1
+
+    value = { "reset" => reset_at.to_i, "spread" => spread.to_i, "kind" => kind.to_s }
+    # Kept a few seconds past the last moment any caller can be held, then dropped.
+    expires_in = (reset_at - Time.current) + spread + 5
+    opened = Rails.cache.write(key, value, expires_in: expires_in, unless_exist: existing.nil?)
     return unless opened
 
-    Rails.logger.warn "[GithubRateLimit] GitHub's #{resource} rate limit is spent for #{credential[:label]} " \
-                      "until #{reset_at.utc.iso8601}; Zimmer's #{resource} calls on that credential are " \
-                      "answered locally until then instead of being refused by GitHub"
+    if kind == :backoff
+      Rails.logger.warn "[GithubRateLimit] GitHub rate-limited #{credential[:label]}'s #{resource} budget " \
+                        "(#{why}); Zimmer's #{resource} calls on that credential back off until " \
+                        "#{reset_at.utc.iso8601}"
+    else
+      Rails.logger.warn "[GithubRateLimit] GitHub's #{resource} rate limit is spent for #{credential[:label]} " \
+                        "until #{reset_at.utc.iso8601}; Zimmer's #{resource} calls on that credential are " \
+                        "answered locally until then instead of being refused by GitHub"
+    end
   end
 
-  def read_exhausted(credential, resource)
+  # The breaker on this credential and budget: { reset_at:, spread:, kind: }, or nil.
+  # An Integer is a breaker written before the jitter existed: a reset time, kind :exhausted.
+  def read_hold(credential, resource)
     value = Rails.cache.read(exhausted_key(credential, resource))
-    return nil unless value
+    case value
+    when Integer
+      { reset_at: Time.zone.at(value), spread: REOPEN_JITTER.fetch(resource, DEFAULT_REOPEN_JITTER), kind: :exhausted }
+    when Hash
+      { reset_at: Time.zone.at(value["reset"].to_i), spread: value["spread"].to_i,
+        kind: value["kind"].to_s == "backoff" ? :backoff : :exhausted }
+    end
+  end
 
-    reset_at = Time.zone.at(value.to_i)
-    reset_at.future? ? reset_at : nil
+  # GitHub's reset time while it is still ahead, for the breaker on this credential and budget.
+  def read_exhausted(credential, resource)
+    hold = read_hold(credential, resource)
+    return nil unless hold
+
+    hold[:reset_at].future? ? hold[:reset_at] : nil
+  end
+
+  # :primary, :secondary or nil for the text of a call GitHub may have refused.
+  #
+  # Every status `gh` printed must be a rate-limit status, the unanimity
+  # GithubSearchService#rate_limited_failure? demands, so an echoed query cannot drag a 404
+  # into a breaker. A primary refusal from GraphQL carries no status at all, which is allowed.
+  def rate_limit_kind(text)
+    text = text.to_s
+    statuses = text.scan(HTTP_STATUS_PATTERN).flatten.map(&:to_i)
+    return nil unless statuses.all? { |status| RATE_LIMIT_STATUSES.include?(status) }
+
+    return :secondary if text.match?(SECONDARY_LIMIT_PATTERN)
+    return :primary if text.match?(PRIMARY_EXHAUSTION_PATTERN)
+    return :secondary if statuses.any? && statuses.all?(429)
+
+    nil
+  end
+
+  def retry_after_in(*texts)
+    texts.each do |text|
+      seconds = text.to_s[RETRY_AFTER_PATTERN, 1]&.to_i
+      return seconds if seconds&.positive?
+    end
+    nil
+  end
+
+  # A float in [0, 1). Its own method so tests can pin it.
+  def random
+    Kernel.rand
   end
 
   def snapshot(credential)
@@ -328,6 +627,14 @@ module GithubRateLimit
 
   def exhausted_key(credential, resource)
     "#{CACHE_PREFIX}:exhausted:#{credential[:id]}:#{resource}"
+  end
+
+  def backoff_key(credential, resource)
+    "#{CACHE_PREFIX}:backoff:#{credential[:id]}:#{resource}"
+  end
+
+  def search_share_key(credential)
+    "#{CACHE_PREFIX}:search_share:#{credential[:id]}"
   end
 
   def snapshot_key(credential)

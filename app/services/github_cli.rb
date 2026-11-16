@@ -42,8 +42,10 @@
 # wrapper asks whether its budget is spent. If it is, the call is answered
 # locally with a failed Result whose `refusal` says why and until when, and GitHub never
 # sees it. After a call fails, the wrapper hands GitHub's words to the breaker, so the first
-# primary rate-limit refusal stops the next thousand. A refused Result is a failure like a
-# timeout: no exit code, "ask again next tick", never a definite negative.
+# primary rate-limit refusal stops the next thousand, and a secondary limit backs off. A
+# search sent outside the trigger poller's sweep is also charged against the share of the
+# search budget the poller does not need (GithubRateLimit.charge_search_share). A refused
+# Result is a failure like a timeout: no exit code, "ask again next tick", never a definite negative.
 #
 # Only the timeout is converted. `Errno::ENOENT` — no `gh` binary at all — still
 # propagates, because that is a local, permanent condition callers distinguish
@@ -121,7 +123,7 @@ module GithubCli
   def run(command, timeout:, owner: nil)
     env = GithubTokens.env_for(owner || owner_for(command))
 
-    refusal = GithubRateLimit.refusal_for(command, env: env)
+    refusal = GithubRateLimit.admit(command, env: env)
     return Result.refused(refusal) if refusal
 
     stdout, stderr, status = if env.empty?
@@ -131,9 +133,9 @@ module GithubCli
     end
     result = Result.new(stdout: stdout, stderr: stderr, status: status)
     # Unconditional rather than `unless result.success?`: the breaker matches GitHub's
-    # rate-limit sentence, which only a refused call prints, and the call site owns the
-    # one read of the status it decides on.
-    GithubRateLimit.observe_failure(command, stderr, env: env)
+    # rate-limit sentences, which only a refused call prints, and the call site owns the
+    # one read of the status it decides on. Any other answer resets the backoff.
+    GithubRateLimit.observe(command, stderr, stdout: stdout, env: env)
     result
   rescue BoundedSubprocess::TimeoutError => e
     Result.new(stdout: "", stderr: "", status: nil, timeout_message: e.message)

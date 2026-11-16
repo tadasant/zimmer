@@ -251,7 +251,14 @@ module Github
       sha = fetch_merge_commit_sha(ref)
       return { merge_commit_sha: nil, runs: [] } if sha.blank?
 
-      { merge_commit_sha: sha, runs: fetch_post_merge_runs(ref, sha) || [] }
+      # A runs lookup that did not complete is "we could not tell", like an unreadable sha,
+      # not "no runs". An empty list would tell the session to check with `gh run list` and
+      # archive if it cannot, and the usual reason this call fails is a spent REST budget
+      # (GithubRateLimit), which the session's own `gh` shares.
+      runs = fetch_post_merge_runs(ref, sha)
+      return { merge_commit_sha: nil, runs: [] } if runs.nil?
+
+      { merge_commit_sha: sha, runs: runs }
     end
 
     # The SHA the merge landed as, or nil if GitHub would not say.
@@ -272,7 +279,7 @@ module Github
     end
 
     # The workflow runs GitHub has created on `sha`, or nil when the call did not
-    # complete — which the caller treats as an empty list rather than as a claim.
+    # complete, which the caller treats like an unreadable merge commit.
     #
     # Queried by head SHA rather than by branch or by workflow name, deliberately.
     # It is the only question with one right answer: "which runs exist because THIS

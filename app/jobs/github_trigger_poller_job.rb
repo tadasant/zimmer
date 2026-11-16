@@ -103,6 +103,11 @@ class GithubTriggerPollerJob < ApplicationJob
     total_limit: 1
   )
 
+  # The sweep's searches spend the search budget GithubRateLimit keeps for the poller:
+  # Zimmer's other search callers may spend only what this tick will not need (one search
+  # per enabled condition), so an Issues page load or the hourly health check cannot take it.
+  around_perform { |_job, block| GithubRateLimit.on_poller_budget(&block) }
+
   # The fire itself, shared with GithubEventJob so a webhook delivery renders and spawns exactly
   # as a poll does. It brings GithubTriggerSearch, the searches and item readers shared with
   # GithubTriggerHealthCheckJob so the freshness probe asks GitHub exactly what the poller asks.

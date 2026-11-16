@@ -581,7 +581,9 @@ module Github
         # publicly on a repo we couldn't check is worse than answering late -- but a
         # transient rate limit or network blip must not drop a real comment forever, so
         # retry on later polls until the lookup answers or the comment ages out.
-        if visibility_retry_window_open?(comment_info)
+        # A lookup the rate-limit breaker held back was never asked, so it does not count
+        # toward the window: the window bounds what an unanswerable repo costs in calls.
+        if builder.visibility_lookup_refused? || visibility_retry_window_open?(comment_info)
           Rails.logger.warn "[Github::CommentEvaluator] Deferring comment #{comment_info.dig(:data, 'id')} on #{comment_info[:owner]}/#{comment_info[:repo]} for session #{session.id}: repo visibility lookup failed, will retry"
           return DISPATCH_DEFERRED
         end
