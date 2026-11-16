@@ -739,63 +739,77 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   # Test Turbo Stream broadcasts for sessions index page
-  test "render_index_card_html renders archive_session_path for non-archived sessions" do
-    session = sessions(:running) # Running session should show archive button
-
-    rendered_html = session.send(:render_index_card_html)
-
-    # Verify archive_session_path route helper works - should contain archive path
-    # Non-archived sessions display a "Trash" button with this path
-    assert_match(/archive/, rendered_html)
-    assert_match(/\/sessions\/#{session.id}\/archive/, rendered_html)
+  # The card grid's live update is an envelope: the session's filterable facts
+  # plus the card inside a <template>, judged by each open page's session-grid
+  # controller against its own filters. See Session#broadcast_update_to_sessions_index.
+  def card_delivery_html(session)
+    captured = capture_turbo_broadcasts { session.send(:broadcast_update_to_sessions_index) }
+    assert_equal 1, captured.size, "expected one index broadcast, got #{captured.inspect}"
+    captured.first.html
   end
 
-  test "render_index_card_html renders session_card partial wrapped in turbo frame" do
+  test "the card delivery carries the card, with working route helpers, inside a template" do
     session = sessions(:running)
 
-    rendered_html = session.send(:render_index_card_html)
+    html = Nokogiri::HTML.fragment(card_delivery_html(session))
+    envelope = html.at_css("[data-session-grid-target='delivery']")
 
-    # Verify the rendered HTML contains a turbo-frame tag with correct ID
-    assert_match(/<turbo-frame/, rendered_html)
-    assert_match(/id="#{ActionView::RecordIdentifier.dom_id(session)}"/, rendered_html)
-    # Verify it contains session card content (prompt text)
-    assert_match(/#{Regexp.escape(session.prompt)}/, rendered_html)
-    # Verify status badge is present
-    assert_match(/Running|Waiting|Needs Input|Trashed|Failed/i, rendered_html)
-    # Verify route helpers work
-    assert_match(/href="\/sessions\//, rendered_html)
+    assert envelope, "expected a delivery envelope"
+    assert envelope.key?("hidden")
+    card = envelope.at_css("template turbo-frame##{ActionView::RecordIdentifier.dom_id(session)}")
+    assert card, "expected the card's turbo-frame inside the template"
+    assert_equal session.id.to_s, card["data-session-id"]
+    assert_equal (session.last_user_activity_at.to_f * 1000).to_i.to_s, card["data-last-touched-at"]
+    assert_equal (session.created_at.to_f * 1000).to_i.to_s, card["data-created-at"]
+    assert_match(/#{Regexp.escape(session.prompt)}/, card.to_html)
+    assert_match(%r{/sessions/#{session.id}/archive}, card.to_html)
   end
 
-  test "broadcast_update broadcasts to the individual channel" do
+  test "the card delivery states every fact the dashboard filters on" do
+    session = sessions(:needs_input)
+    session.update_columns(scheduling_class: SessionGenesis::SPOT, genesis: SessionGenesis::WEB_UI,
+                           visibility: "hidden",
+                           metadata: (session.metadata || {}).merge("agent_root_key" => "zimmer"))
+
+    envelope = Nokogiri::HTML.fragment(card_delivery_html(session.reload)).at_css("[data-session-grid-target='delivery']")
+
+    assert_equal session.id.to_s, envelope["data-session-id"]
+    assert_equal "needs_input", envelope["data-status"]
+    assert_equal "spot", envelope["data-scheduling-class"]
+    assert_equal "false", envelope["data-on-board"]
+    assert_equal "untagged", envelope["data-carplay-fit"]
+    assert_equal SessionGenesis::WEB_UI, envelope["data-genesis"]
+    assert_equal "zimmer", envelope["data-agent-root"]
+  end
+
+  test "broadcast_update delivers the card to the grid's deliveries on the individual channel" do
     session = sessions(:running)
 
     captured = capture_turbo_broadcasts { session.send(:broadcast_update_to_sessions_index) }
 
-    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
-                 captured.map { |b| [ b.action, b.stream, b.target ] },
-                 "Expected a replace of this session's card on the sessions_index_individual channel"
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] }
   end
 
-  test "broadcast_create broadcasts to the individual channel" do
+  test "broadcast_create delivers the card the same way, for the page to judge" do
     session = Session.new(git_root: "https://github.com/test/repo.git", prompt: "Individual channel create test", title: "Individual channel", status: :waiting)
     session.save!
 
     captured = capture_turbo_broadcasts { session.send(:broadcast_create_to_sessions_index) }
 
-    assert_equal [ [ :prepend, "sessions_index_individual", "sessions_grid" ] ],
-                 captured.map { |b| [ b.action, b.stream, b.target ] },
-                 "Expected a prepend into the uncategorized grid on the sessions_index_individual channel"
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] }
   end
 
-  test "child session update broadcasts individual card to sessions_index_individual" do
+  test "child session update delivers its own card to sessions_index_individual" do
     parent = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Parent", status: :running)
     child = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Child", parent_session_id: parent.id, status: :running)
 
     captured = capture_turbo_broadcasts { child.send(:broadcast_update_to_sessions_index) }
 
-    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(child) ] ],
-                 captured.map { |b| [ b.action, b.stream, b.target ] },
-                 "Expected child session to broadcast its own card to sessions_index_individual"
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] }
+    assert_includes captured.first.html, "data-session-id=\"#{child.id}\""
   end
 
   test "creating a spawned child broadcasts a refreshed provenance panel to the parent detail page" do
@@ -977,34 +991,43 @@ class SessionTest < ActiveSupport::TestCase
     assert broadcast_called, "Expected broadcast to be called when title changes even if transcript also changes"
   end
 
-  # Test broadcast_remove when session is archived (Issue pulsemcp/agents#701)
-  # When a session is archived, the index page filters it out by default,
-  # so we need to broadcast a REMOVE action instead of REPLACE
-  test "should broadcast remove when session is archived" do
+  # Archiving used to broadcast a REMOVE (pulsemcp/agents#701), which was right
+  # for a board of live work and wrong for one whose operator ticked "Archived"
+  # to look at the trash. It is now a delivery like any other, and the page's
+  # session-grid controller removes the card only where the filter excludes it.
+  test "archiving delivers the card with its archived status rather than removing it" do
     session = sessions(:running)
 
-    # Track which broadcast method was called for the sessions_index channel
-    # Archive the session - this should trigger broadcast_update_to_sessions_index
-    # which should call broadcast_remove_from_sessions_index instead of a replace
     captured = capture_turbo_broadcasts { session.update!(status: :archived) }
     index_broadcasts = captured.select { |b| b.stream.to_s.start_with?("sessions_index_") }
 
-    assert_equal [ [ :remove, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
-                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] },
-                 "Expected the archived session's card to be REMOVED from the index, not replaced on it"
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] }
+    assert_includes index_broadcasts.first.html, 'data-status="archived"'
   end
 
-  test "should broadcast replace when session status changes to non-archived status" do
+  test "a status change delivers the card with its new status" do
     session = sessions(:needs_input)
 
-    # Track which broadcast method was called for the sessions_index channel
-    # Change to running status - should trigger a replace, not a remove
     captured = capture_turbo_broadcasts { session.update!(status: :running) }
     index_broadcasts = captured.select { |b| b.stream.to_s.start_with?("sessions_index_") }
 
-    assert_equal [ [ :replace, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(session) ] ],
-                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] },
-                 "Expected the card to be REPLACED on the index when the status changes to a non-archived one"
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 index_broadcasts.map { |b| [ b.action, b.stream, b.target ] }
+    assert_includes index_broadcasts.first.html, 'data-status="running"'
+  end
+
+  test "a change to a dashboard filter's column re-delivers the card" do
+    session = sessions(:needs_input)
+    calls = 0
+    session.define_singleton_method(:broadcast_update_to_sessions_index) { calls += 1 }
+
+    session.update!(visibility: "hidden")
+    session.update!(scheduling_class: SessionGenesis::SPOT)
+    session.update!(carplay_fit: SessionCarplayFit::LAPTOP_ONLY, carplay_fit_source: SessionCarplayFit::SOURCE_HUMAN,
+                    carplay_fit_line_count: session.transcript_line_count.to_i)
+
+    assert_equal 3, calls
   end
 
   # Test git_root validations

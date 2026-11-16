@@ -9333,6 +9333,31 @@ nobody opens Zimmer on it, the next foreground still lands on the call, which is
 the scene connects. CarPlay running the app with no phone scene, then the phone opening, has not been
 run on a device or in the Simulator.
 
+## The card grid's live filtering is approximate at the edges
+
+The dashboard's card views drop and add cards live as sessions move across the page's filters
+(see [The card views follow their filters live](/sessions/user-view/#the-card-views-follow-their-filters-live)).
+A reload is always exact. The live page can be off in these places:
+
+- **Only the first page inserts, and a text search inserts nothing.** A session that starts
+  matching while you are on page 2, or while a search is narrowing the grid, appears on the next
+  load. Cards still leave in both cases.
+- **The count can drift by one on a full first page.** An arrival that sorts below the last card
+  of a full page belongs on a later page and is not inserted, so the count does not go up for it.
+  A card on page 2 whose last-touched time jumps it onto page 1 is inserted and counted, although
+  it was already counted.
+- **An expiring snooze brings nothing back.** A snooze ends by being read, not by a write. No
+  broadcast goes out when it passes, so the card returns on the next load or the session's next
+  change.
+- **A CarPlay-fit mark that goes stale is re-judged at the next card update, not at once.** A mark
+  goes stale as the transcript grows past it. The grid re-judges it when the card is next sent:
+  a visible change, or the throttled activity update every 30 seconds.
+- **Cards already on the page are not re-sorted.** An update replaces a card in place, so a card
+  whose last-touched time moved keeps its position until the next load. The card views have always
+  done this.
+- **A card trashed from a page showing every status stays gone on that page** until a reload, even
+  though the filter admits trashed sessions. If it is restored elsewhere it can come back.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

@@ -1,0 +1,46 @@
+<%# The board's page-level empty state, for the views that render it outside
+    their own list: Ranked, and the two flat card views. In the card views it is
+    always rendered and `session-grid` toggles it, because a live update can empty
+    the grid or fill it again.
+
+    Locals:
+      search_active - a search, agent root or genesis is narrowing the board
+      content_scan  - the transcript scan's outcome, or nil
+      visible       - false to render it hidden (default true) %>
+<div class="text-center py-12" data-session-grid-target="empty" <%= "hidden" unless local_assigns.fetch(:visible, true) %>>
+  <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+  </svg>
+  <h3 class="mt-2 text-sm font-medium text-gray-900">No sessions<% if search_active %> found<% end %></h3>
+  <p class="mt-1 text-sm text-gray-500">
+    <% if search_active %>
+      No sessions match your search. Try adjusting your search terms.
+    <% else %>
+      Get started by creating a new agent session.
+    <% end %>
+  </p>
+  <%# "No matches" and "I stopped looking" are different answers, and this is
+      the screen where confusing them is most costly. %>
+  <% if content_scan %>
+    <div class="mx-auto mt-4 max-w-xl text-left">
+      <%= render "sessions/content_scan_notice", scan: content_scan %>
+    </div>
+  <% end %>
+  <div class="mt-6">
+    <% if search_active %>
+      <%# Drops the search terms but keeps the filter selection — the user is
+          abandoning a query, not resetting how they filter. "Reset filters"
+          in the Filters section is the control for the latter. %>
+      <%= link_to root_path(request.query_parameters.except("q", "agent_root", "genesis", "search_contents", "page")), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+        Clear Search
+      <% end %>
+    <% else %>
+      <%= link_to new_session_path, class: "inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+        <svg class="-ml-1 mr-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
+        </svg>
+        New Session
+      <% end %>
+    <% end %>
+  </div>
+</div>
