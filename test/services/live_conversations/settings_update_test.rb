@@ -35,7 +35,7 @@ class LiveConversations::SettingsUpdateTest < ActiveSupport::TestCase
     change = LiveSettingChange.sole
     assert_equal "human", change.actor_kind
     assert_equal({ "voice_speed" => [ nil, 1.3 ], "voice_model" => [ nil, "gpt-realtime-2.1" ], "guidance" => [ "", "Be terse." ] }, change.changeset)
-    assert_match(/Speaking speed: default \(1\.0\) → 1\.3/, result.summary)
+    assert_match(/Speaking speed: default \(1\.2\) → 1\.3/, result.summary)
     assert result.mid_call_changed?
   end
 

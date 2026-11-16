@@ -110,7 +110,7 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
 
     get live_conversation_path(conversation)
 
-    assert_select "[data-live-settings-change]", text: /Speaking speed: default \(1\.0\) → 1\.3/
+    assert_select "[data-live-settings-change]", text: /Speaking speed: default \(1\.2\) → 1\.3/
   end
 
   test "a write with no effect shows in the thread as one, without the line meant for the live model" do

@@ -40,9 +40,9 @@ class Mcp::Tools::LiveSettingsToolsTest < ActiveSupport::TestCase
   end
 
   test "update changes settings and guidance as an agent's change; a bad value changes nothing" do
-    result = @action.call({ "action" => "update", "settings" => { "voice_speed" => 1.2 }, "append_guidance" => "Be brief." })
+    result = @action.call({ "action" => "update", "settings" => { "voice_speed" => 1.3 }, "append_guidance" => "Be brief." })
 
-    assert_match(/Speaking speed: default \(1\.0\) → 1\.2/, result)
+    assert_match(/Speaking speed: default \(1\.2\) → 1\.3/, result)
     assert_equal "Be brief.", LiveSetting.current.guidance_text
     change = LiveSettingChange.sole
     assert_equal "agent", change.actor_kind

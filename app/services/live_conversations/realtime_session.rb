@@ -130,8 +130,8 @@ module LiveConversations
     end
 
     def noise_reduction
-      type = @setting.effective(:voice_noise_reduction).presence
-      { type: type } unless type.nil? || type == LiveSetting::NOISE_REDUCTION_OFF
+      type = @setting.effective(:voice_noise_reduction)
+      { type: type } unless type.blank? || type == LiveSetting::NOISE_REDUCTION_OFF
     end
 
     def turn_detection

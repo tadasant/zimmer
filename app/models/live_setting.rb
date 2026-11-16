@@ -2,8 +2,8 @@
 
 # Live Mode's tunable settings and its guidance — one row for the deployment.
 #
-# Every column is nullable, and NULL means "the shipped default": the value Live
-# Mode ran with before any of this was tunable. So a reset writes NULLs, and the
+# Every column is nullable, and NULL means "the shipped default" (default_for).
+# So a reset writes NULLs, and the
 # row only ever records what somebody chose. FIELDS is the one list of what is
 # tunable, read by the settings page, the REST API, the MCP tools and the live
 # model's own `update_live_settings` function, so a field added here shows up on

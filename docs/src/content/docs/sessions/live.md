@@ -517,7 +517,9 @@ spoken (`SystemPrompt`), so "how do I make you stop listening?" gets a straight 
 one set for the whole deployment, a single `LiveSetting` row. Reach it from the gear on a
 conversation's page, from `/live`, or from Settings. Every field is blank until somebody sets it,
 and blank means the shipped default. The voice defaults are the values Live Mode was tuned to by
-use: a wake word, far field noise reduction, high eagerness and a speed of 1.2.
+use: a wake word, far field noise reduction, high eagerness and a speed of 1.2. A blank setting follows
+the default, so a deployment that never set Listening answers only lines that say "Zimmer" on the
+phone and in the browser until somebody picks Always.
 **Reset settings to defaults** writes blanks back. It leaves the guidance alone.
 
 | Setting | Path | Default | Choices or range | Applies |

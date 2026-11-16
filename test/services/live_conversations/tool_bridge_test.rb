@@ -231,7 +231,7 @@ class LiveConversations::ToolBridgeTest < ActiveSupport::TestCase
 
     assert_not result.error
     assert result.session_changed
-    assert_match(/Speaking speed: default \(1\.0\) → 1\.3/, result.output)
+    assert_match(/Speaking speed: default \(1\.2\) → 1\.3/, result.output)
     assert_in_delta 1.3, LiveSetting.current.voice_speed
     change = LiveSettingChange.sole
     assert_equal "agent", change.actor_kind
