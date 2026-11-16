@@ -2,9 +2,9 @@ import { Controller } from "@hotwired/stimulus"
 
 // Connects to data-controller="session-prefetch"
 //
-// Fetches the detail of every session row on the dashboard in the background,
-// so that clicking View paints from the browser's HTTP cache instead of waiting
-// on the server.
+// Fetches the detail of the session rows on screen in the background, so that
+// clicking View paints from the browser's HTTP cache instead of waiting on the
+// server.
 //
 // What it fetches is what the click will load, because that is the only copy
 // the click can reuse:
@@ -27,21 +27,26 @@ import { Controller } from "@hotwired/stimulus"
 // fills the HTTP cache — no document is built, so no socket opens and no panel
 // loads until a click.
 //
-// Load on the server is kept small on purpose:
-//   - nothing starts until the page has loaded and the browser is idle;
-//   - at most `concurrency` requests are in flight, top row first;
-//   - nothing is fetched on Save-Data, a 2G connection, or a hidden tab;
+// Every prefetch is a full detail render on a web server with three threads,
+// which also serve the agents' MCP calls. So the load is kept small on purpose:
+//   - only rows on screen or within a screen of it are fetched, not the whole
+//     list (a User view can hold hundreds);
+//   - one request at a time, top row first, and nothing until the page has
+//     loaded and the browser is idle;
+//   - opening the drawer aborts the request in flight and holds the queue, so
+//     the session being read has the server to itself;
+//   - nothing on Save-Data, a 2G connection, or a hidden tab;
 //   - a url fetched in the last FRESH_MS is not fetched again — that memory is
 //     module-level, so it survives Turbo visits back to the dashboard;
-//   - the queue pauses while the drawer is open, so the session being read gets
-//     the server to itself;
-//   - an idle dashboard does not refresh itself. A sweep for expired copies runs
-//     when the tab comes back into view or the reader moves after the copies
-//     have expired, and hovering a row moves it to the front.
+//   - a dashboard nobody is using does not refresh itself. A row a broadcast
+//     re-renders is fetched only if it never was; expired copies are fetched
+//     again when the tab comes back into view or the reader moves, and hovering
+//     a row with a mouse moves it to the front.
 const FRESH_MS = 100 * 1000 // under the server's max-age=120, so a "fresh" url is still in the cache
 const ACCEPT = "text/html, application/xhtml+xml" // what Turbo sends for a frame load or a visit
 const DRAWER_FRAME = "session_detail"
 const SM_BREAKPOINT = 640 // session_drawer_controller's: below it, View navigates instead
+const NEAR_SCREEN_MARGIN = "100% 0px" // a screen above and below the viewport
 const NEW_TAB_KEY = "zimmer:session-prefetch:new-tab-at"
 const NEW_TAB_MEMORY_MS = 14 * 24 * 60 * 60 * 1000
 
@@ -66,11 +71,12 @@ function whenIdle(callback) {
 
 export default class extends Controller {
   static targets = ["link"]
-  static values = { concurrency: { type: Number, default: 3 } }
+  static values = { concurrency: { type: Number, default: 1 } }
 
   initialize() {
     this.queue = []
-    this.inFlight = new Set()
+    this.inFlight = new Map() // url -> { entry, abortController }
+    this.near = new Set()
     this.started = false
     this.paused = false
     this.lastSweepAt = 0
@@ -80,14 +86,19 @@ export default class extends Controller {
     this.abortController = new AbortController()
     if (!this.allowed) return
 
+    this.observer = new IntersectionObserver((entries) => this.handleIntersections(entries), {
+      rootMargin: NEAR_SCREEN_MARGIN
+    })
+    for (const link of this.linkTargets) this.observer.observe(link)
+
     const options = { signal: this.abortController.signal }
     const passive = { ...options, passive: true }
     document.addEventListener("visibilitychange", () => this.handleVisible(), options)
     this.element.addEventListener("pointerover", (event) => this.handleHover(event), passive)
     this.element.addEventListener("click", (event) => this.noteNewTabIntent(event), { ...options, capture: true })
     this.element.addEventListener("auxclick", (event) => this.noteNewTabIntent(event), { ...options, capture: true })
-    for (const type of ["pointermove", "keydown", "scroll", "touchstart"]) {
-      window.addEventListener(type, () => this.handleActivity(), passive)
+    for (const type of ["pointermove", "keydown", "scroll"]) {
+      window.addEventListener(type, () => this.sweepIfStale(), passive)
     }
 
     whenIdle(() => {
@@ -99,24 +110,49 @@ export default class extends Controller {
 
   disconnect() {
     this.abortController.abort()
-    this.queue = []
+    this.observer?.disconnect()
+    for (const { abortController } of this.inFlight.values()) abortController.abort()
     this.inFlight.clear()
+    this.queue = []
+    this.near.clear()
     this.started = false
   }
 
-  // Rows arrive with the board's frame, and again whenever a broadcast replaces
-  // one; each is queued unless its copy is still fresh.
   linkTargetConnected(link) {
-    if (this.started) this.enqueue(link)
+    this.observer?.observe(link)
   }
 
   linkTargetDisconnected(link) {
+    this.observer?.unobserve(link)
+    this.near.delete(link)
     this.queue = this.queue.filter((entry) => entry.link !== link)
   }
 
-  // session-drawer dispatches these on the same element.
+  // A row coming near the screen is fetched unless its copy is still fresh. A
+  // row a broadcast re-rendered arrives here as a new element; it is fetched
+  // only if its url never was, so a busy session does not cost a render per
+  // broadcast on a dashboard nobody is touching.
+  handleIntersections(entries) {
+    for (const { target, isIntersecting } of entries) {
+      if (isIntersecting) {
+        this.near.add(target)
+        if (this.started) this.enqueue(target, { onlyIfNeverFetched: true })
+      } else {
+        this.near.delete(target)
+        this.queue = this.queue.filter((entry) => entry.link !== target)
+      }
+    }
+  }
+
+  // session-drawer dispatches these on the same element. The request in flight
+  // is aborted and goes back to the front of the queue.
   pause() {
     this.paused = true
+    for (const [url, { entry, abortController }] of this.inFlight) {
+      abortController.abort()
+      this.inFlight.delete(url)
+      this.push(entry, { front: true })
+    }
   }
 
   resume() {
@@ -127,15 +163,23 @@ export default class extends Controller {
   sweep() {
     this.lastSweepAt = Date.now()
     for (const link of this.linkTargets) {
+      if (!this.near.has(link)) continue
       for (const entry of this.requestsFor(link)) this.push(entry)
     }
     this.pump()
   }
 
-  // The pump is deferred a tick, so that a board's worth of rows connecting in
-  // one render are all queued — and so ordered by tier — before any is fetched.
-  enqueue(link, { front = false } = {}) {
-    for (const entry of this.requestsFor(link)) this.push(entry, { front })
+  sweepIfStale() {
+    if (this.started && Date.now() - this.lastSweepAt >= FRESH_MS) this.sweep()
+  }
+
+  // The pump is deferred a tick, so that a board's worth of rows arriving in one
+  // render are all queued — and so ordered by tier — before any is fetched.
+  enqueue(link, { front = false, onlyIfNeverFetched = false } = {}) {
+    for (const entry of this.requestsFor(link)) {
+      if (onlyIfNeverFetched && fetchedAt.has(entry.url)) continue
+      this.push(entry, { front })
+    }
     if (front) {
       this.pump()
     } else if (!this.pumpScheduled) {
@@ -186,29 +230,35 @@ export default class extends Controller {
     }
   }
 
-  async prefetch({ url, frame }) {
-    this.inFlight.add(url)
+  async prefetch(entry) {
+    const abortController = new AbortController()
+    this.inFlight.set(entry.url, { entry, abortController })
     const headers = { Accept: ACCEPT, "X-Sec-Purpose": "prefetch" }
-    if (frame) headers["Turbo-Frame"] = frame
+    if (entry.frame) headers["Turbo-Frame"] = entry.frame
 
+    let aborted = false
     try {
-      const response = await fetch(url, {
+      // `reload`: always ask the server and store what it answers. A refetch of
+      // an expiring copy answered from the cache would leave the copy to expire
+      // on its old clock while this one counted it fresh.
+      const response = await fetch(entry.url, {
         headers,
         credentials: "same-origin",
+        cache: "reload",
         priority: "low",
-        signal: this.abortController.signal
+        signal: abortController.signal
       })
       // The cache only keeps a response it has read to the end.
       await response.blob()
     } catch (_error) {
-      // Aborted or offline. Remembered all the same, so a failing url is not
-      // retried in a tight loop; a later sweep tries it again.
+      // Aborted (the drawer opened, or the page went away) or offline. An abort
+      // is not remembered — pause() has already put the entry back — but a
+      // failure is, so a failing url is not retried in a tight loop.
+      aborted = abortController.signal.aborted
     } finally {
-      if (!this.abortController.signal.aborted) {
-        fetchedAt.set(url, Date.now())
-        this.inFlight.delete(url)
-        this.pump()
-      }
+      if (this.inFlight.get(entry.url)?.abortController === abortController) this.inFlight.delete(entry.url)
+      if (!aborted) fetchedAt.set(entry.url, Date.now())
+      this.pump()
     }
   }
 
@@ -218,17 +268,11 @@ export default class extends Controller {
     this.pump()
   }
 
-  handleActivity() {
-    this.sweepIfStale()
-  }
-
-  sweepIfStale() {
-    if (this.started && Date.now() - this.lastSweepAt >= FRESH_MS) this.sweep()
-  }
-
-  // Hovering a row is the best hint of the next click there is.
+  // Hovering a row with a mouse is the best hint of the next click there is. A
+  // tap fires pointerover too, an instant before the navigation it starts; that
+  // one would only race the click for the same render.
   handleHover(event) {
-    if (!this.started) return
+    if (!this.started || event.pointerType !== "mouse") return
     const link = event.target.closest?.("[data-session-prefetch-target~='link']")
     if (link && this.element.contains(link)) this.enqueue(link, { front: true })
   }
@@ -259,6 +303,7 @@ export default class extends Controller {
   }
 
   get allowed() {
+    if (typeof IntersectionObserver !== "function") return false
     const connection = navigator.connection
     if (connection?.saveData) return false
     if (/(^|-)2g$/.test(connection?.effectiveType || "")) return false

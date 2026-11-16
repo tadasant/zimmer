@@ -289,6 +289,18 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_redirected_to second_factor_path
   end
 
+  # The dashboard prefetches session pages into the HTTP cache with a short
+  # max-age, which a browser serves without asking the server. Signing out
+  # empties that cache so none of them outlives the sign-in.
+  test "signing out clears this browser's cache for the site" do
+    enable_web_auth
+    sign_in_and_enroll
+
+    delete logout_path
+    assert_redirected_to login_path
+    assert_equal '"cache"', response.headers["Clear-Site-Data"]
+  end
+
   test "the deployment's second-factor reset sends an enrolled account back to setup" do
     enable_web_auth
     sign_in_and_enroll

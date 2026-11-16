@@ -6300,6 +6300,12 @@ Also:
   until the next broadcast or a reload. The prefetch has been verified in Chromium (drawer, phone
   visit and new tab all served from the HTTP cache); Safari's HTTP cache follows the same rules,
   but it has not been driven in Safari or on an iPhone.
+- A prefetched session page can be read from the browser's cache for up to two minutes without the
+  server checking the sign-in. Signing out in that browser clears the cache (`Clear-Site-Data`), but
+  **Sign out everywhere** cannot reach the other browsers' caches, and neither does a sign-in cookie
+  simply expiring. Safari's support for the `"cache"` directive has not been checked.
+- Changing the viewport across the `sm` breakpoint does not re-plan the prefetch: rows prefetched as
+  drawer bodies are not fetched as full pages until the next sweep.
 - Prefetching moves the server's share of opening a session off the click, not the browser's.
   Parsing and rendering the ~230 KB detail body — about half of it the phone joystick and the
   metadata selectors, rendered into the desktop drawer as well — still takes a few hundred

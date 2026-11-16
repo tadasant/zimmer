@@ -149,13 +149,13 @@ class SessionsController < ApplicationController
   before_action :load_form_data, only: %i[new create]
 
   # The detail body asks the agent-roots catalog for the session's root from
-  # several partials (metadata, header, joystick, cost line), and each ask
-  # rebuilt every AgentRoot from scratch. One build per request is enough.
+  # several partials (metadata, header, joystick, cost line). Without the memo
+  # each ask builds every AgentRoot from scratch; one build per request is enough.
   around_action :memoize_agent_roots, only: %i[show drawer]
 
   # How long the browser may reuse a detail body the dashboard prefetched.
   #
-  # The dashboard's list views fetch every visible row's detail in the background
+  # The dashboard's list views fetch the detail of the rows on screen in the background
   # (session_prefetch_controller.js) so that clicking View paints at once. That
   # only works if the browser is allowed to keep the answer: a prefetch response
   # is `private, max-age=PREFETCH_MAX_AGE`, every other response keeps Rails'

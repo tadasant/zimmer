@@ -107,6 +107,6 @@ class SessionsControllerPrefetchTest < ActionDispatch::IntegrationTest
     get drawer_session_path(@session), headers: { "Accept" => "text/html, application/xhtml+xml" }
 
     assert_response :success
-    assert_operator calls, :<=, 1
+    assert_equal 1, calls
   end
 end

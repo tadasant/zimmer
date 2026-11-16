@@ -3,9 +3,10 @@
 # Service class for managing agent root configurations.
 # Reads agent root entries from AirCatalogService, which discovers them via air.json.
 class AgentRootsConfig
-  MEMO_KEY = :agent_roots_config_memo
   class AgentRootNotFoundError < StandardError; end
   class ConfigurationError < StandardError; end
+
+  MEMO_KEY = :agent_roots_config_memo
 
   # The default agent root selected on the new session form
   DEFAULT_ROOT = ENV.fetch("AO_DEFAULT_AGENT_ROOT", "general-agent").freeze
@@ -124,7 +125,7 @@ class AgentRootsConfig
       memo = ActiveSupport::IsolatedExecutionState[MEMO_KEY]
       return build_roots unless memo
 
-      memo[:roots] ||= build_roots
+      memo[:roots] ||= build_roots.freeze
     end
 
     # Within the block, #all builds the catalog once and hands every later
@@ -241,6 +242,7 @@ class AgentRootsConfig
 
     def reload!
       AirCatalogService.reload!
+      ActiveSupport::IsolatedExecutionState[MEMO_KEY]&.delete(:roots)
       all
     end
 

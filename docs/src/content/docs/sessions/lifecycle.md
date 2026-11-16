@@ -3072,8 +3072,8 @@ answers with a bare frame and no chrome — it is the drawer's own address.
 
 Every session row on the dashboard — the card grid's **View**, a Ranked row's title, a User view
 row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
-browser is idle, it fetches each row's detail in the background, so a click paints from the
-browser's HTTP cache instead of waiting on the server.
+browser is idle, it fetches the detail of the rows on screen (and a screen's worth either side) in
+the background, so a click paints from the browser's HTTP cache instead of waiting on the server.
 
 It fetches what the click will load, because that is the only copy the click can reuse. At `sm`
 and wider a plain click opens the drawer, so the row's **drawer url** is fetched, with the frame's
@@ -3096,25 +3096,35 @@ differently in exactly three ways (`SessionsController#allow_prefetch_reuse`):
 That last point means a click served from the cache never reaches the server as a view. So the
 prefetched body carries a hidden `session-activation` marker. Nothing runs while the body sits in
 the cache — it is bytes, not a document, so no socket opens, no deferred panel loads and no
-polling starts. Once the body is actually rendered, the marker waits for the page's stream
-subscriptions to be confirmed and then re-requests the same URL for real. That request is the view
-(notifications read, touch recorded), and its answer is reconciled into the page's
-`data-live-region`s with the same code as [the reopen backfill](#the-reopen-backfill), scoped to
-the detail body, so anything broadcast since the prefetch lands in place. It is fetched with
-`cache: "reload"`, which replaces the prefetched copy with an ordinary must-revalidate one. The
-marker then removes itself.
+polling starts. Once the body is actually rendered, the marker removes itself (so a Turbo snapshot
+cannot replay it) and re-requests the same URL for real, at once. That request is the view
+(notifications read, touch recorded), and it is not cancelled if the drawer closes a second later,
+so a quick look still counts. Its answer is reconciled into the page's `data-live-region`s with the
+same code as [the reopen backfill](#the-reopen-backfill), scoped to the detail body, so anything
+broadcast since the prefetch lands in place. It is fetched with `cache: "reload"`, which replaces
+the prefetched copy with an ordinary must-revalidate one.
 
-The load is kept small on purpose: at most three requests in flight, top row first; nothing on
-Save-Data, a 2G connection or a hidden tab; a url fetched in the last 100 seconds is not fetched
-again; the queue pauses while the drawer is open, so the session being read has the server to
-itself. An idle dashboard does not refresh itself. Expired copies are fetched again when the tab
-comes back into view or the reader moves, and hovering a row moves it to the front. Signing out
-sends `Clear-Site-Data: "cache"`, so no prefetched page outlives the sign-in.
+Every prefetch is a full detail render on a web server with three threads, which also serve the
+agents' MCP calls, so the load is kept small on purpose:
+
+- Only rows on or near the screen, never the whole list — a User view can hold hundreds.
+- One request at a time, top row first, starting once the page has loaded and the browser is idle.
+- Opening the drawer aborts the request in flight and holds the queue, so the session being read
+  has the server to itself.
+- Nothing on Save-Data, a 2G connection or a hidden tab.
+- A url fetched in the last 100 seconds is not fetched again; prefetches use `cache: "reload"`, so
+  that clock and the cached copy's 120-second lifetime start together.
+- A dashboard nobody is using does not refresh itself. A row a broadcast re-renders is fetched only
+  if it never was. Expired copies are fetched again when the tab comes back into view or the reader
+  moves or scrolls, and hovering a row with a mouse moves it to the front.
+
+Signing out sends `Clear-Site-Data: "cache"`, so no prefetched page outlives the sign-in in that
+browser.
 
 The server keys on the header, not on who sent it, so Turbo's own hover prefetch of a session link
 elsewhere (the health page's **View** links, say) gets the same cacheable, marked answer. That is
-deliberate: Turbo already served such a click from its prefetch, and before the marker existed that
-click was never counted as a view.
+deliberate: Turbo serves such a click from its own prefetch, so without the marker that click
+would never be counted as a view.
 
 `test/controllers/sessions_controller_prefetch_test.rb` pins the server's half: the headers, the
 marker, and that a prefetch marks nothing read while the activation request does.

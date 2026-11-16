@@ -573,6 +573,16 @@ module SessionsHelper
   # session_drawer_composer: false leaves that composer out for a session the
   # link already knows is archived — the body would bring no composer to hand
   # the typing to. A bare id cannot say, so it gets the composer.
+  def session_drawer_link_data(session_or_id, **extra)
+    session_id = session_or_id.is_a?(Session) ? session_or_id.id : session_or_id
+    data = { turbo_frame: "_top",
+             action: "click->session-drawer#open",
+             session_drawer_url: drawer_session_path(session_or_id),
+             session_drawer_session_id: session_id }
+    data[:session_drawer_composer] = false if session_or_id.is_a?(Session) && session_or_id.archived?
+    data.merge(extra)
+  end
+
   # The data attributes of a session row's View link on a dashboard list: the
   # drawer pair above, plus the target session_prefetch_controller.js fetches in
   # the background so the click paints from the browser's cache.
@@ -583,16 +593,6 @@ module SessionsHelper
   # click will load, for every row, into the HTTP cache instead.
   def session_list_link_data(agent_session)
     session_drawer_link_data(agent_session, turbo_prefetch: false, session_prefetch_target: "link")
-  end
-
-  def session_drawer_link_data(session_or_id, **extra)
-    session_id = session_or_id.is_a?(Session) ? session_or_id.id : session_or_id
-    data = { turbo_frame: "_top",
-             action: "click->session-drawer#open",
-             session_drawer_url: drawer_session_path(session_or_id),
-             session_drawer_session_id: session_id }
-    data[:session_drawer_composer] = false if session_or_id.is_a?(Session) && session_or_id.archived?
-    data.merge(extra)
   end
 
   # What clicking Restart is about to do to this session, as a sentence to

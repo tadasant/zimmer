@@ -238,8 +238,10 @@ module ChunkedTranscript
   def transcript_head_lines(chars)
     return [] if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript?
 
-    head = SessionTranscriptChunk.where(session_id: id).order(:seq)
-                                 .pick(Arel.sql("substring(content from 1 for #{Integer(chars)})"))
+    prefix = Arel::Nodes::NamedFunction.new(
+      "substr", [ SessionTranscriptChunk.arel_table[:content], Arel::Nodes.build_quoted(1), Arel::Nodes.build_quoted(Integer(chars)) ]
+    )
+    head = SessionTranscriptChunk.where(session_id: id).order(:seq).pick(prefix)
     return [] if head.nil?
 
     lines = head.lines
