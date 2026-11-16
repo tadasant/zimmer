@@ -60,9 +60,11 @@ ssh_key_fingerprints = [] # DO-registered SSH key fingerprints. Leave EMPTY: thi
 # (zimmer/admin_authorized_keys.pub) and is converged live by its own workflow. Nothing in
 # THIS repo authorizes a key on production.
 #
-# Either way the list takes effect on the NEXT droplet creation only -- cloud-init runs
-# once, and the droplet's lifecycle block ignores user_data changes -- so a live box also
-# needs the key appended to /root/.ssh/authorized_keys by hand.
+# Through Terraform the list takes effect on the NEXT droplet creation only -- cloud-init
+# runs once, and the droplet's lifecycle block ignores user_data changes. The staging deploy
+# covers a live box: every run appends ADMIN_SSH_PUBKEYS (and STRAD_SSH_PUBKEY, strad's SSH
+# client key) to /root/.ssh/authorized_keys over Tailscale SSH, via
+# scripts/converge-ssh-identity.sh. See docs/operate/ssh-access.md#the-ssh-identity-is-converged-on-every-deploy.
 
 # Custom-domain HTTPS over the tailnet: turns on the Caddy TLS terminator on :443,
 # fronting kamal-proxy. The cert and the `domain -> tailnet IP` A record are managed

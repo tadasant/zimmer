@@ -736,10 +736,10 @@ there is an accepted trade. See [who is authorized where](/operate/ssh-access/#w
 the list does not revoke it from a running droplet — that needs a rebuild or a manual edit. Adding
 does not reach a running droplet either (the list rides `user_data`, which cloud-init reads once at
 creation), so the variable is really "who gets authorized on the next rebuild", not a live
-access-control list. A key can be [appended live over Tailscale
-SSH](/operate/ssh-access/#adding-a-key-does-not-touch-a-running-droplet) — which is how production
-converges, since it cannot be casually rebuilt — but that is a separate action, not something the
-variable does.
+access-control list. On staging the deploy closes that half: [every `deploy-staging` run appends
+`ADMIN_SSH_PUBKEYS` and `STRAD_SSH_PUBKEY` live](/operate/ssh-access/#the-ssh-identity-is-converged-on-every-deploy).
+It appends only, too, so removal is still a rebuild or a by-hand edit. Production converges from its
+own file in the private repo.
 
 ### Staging's admin key list is invisible state in an Actions variable
 

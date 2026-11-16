@@ -354,6 +354,43 @@ jobs:
           STAGING_HOST: ${{ steps.host.outputs.staging_host }}
         run: bash scripts/clear-root-password-expiry.sh "$STAGING_HOST"
 
+      # The box's SSH identity, converged on EVERY deploy rather than only at droplet creation:
+      # cloud-init runs once and user_data is ignored after that, so without this a key added to
+      # the list never reaches a box that already exists, and a rebuilt box comes up with a fresh
+      # host key. strad's SSH server pins the host key strictly, so either loss breaks its
+      # `ssh-tadasant-zimmer-staging` slug until a human re-seeds it. See
+      # docs/operate/ssh-access.md#the-ssh-identity-is-converged-on-every-deploy.
+      #
+      #   ADMIN_SSH_PUBKEYS (variable)            JSON list; the same list Terraform hands cloud-init.
+      #   STRAD_SSH_PUBKEY (variable)             strad's SSH client public key, one line. Its
+      #                                           private half is the slug's SSH_PRIVATE_KEY in strad.
+      #   STAGING_SSH_HOST_ED25519_KEY (secret)   the pinned host private key; strad's SSH_HOST_KEY is
+      #                                           its public half. Unset = keep whatever key the box has.
+      #
+      # All three are optional, so a fork that sets none of them deploys exactly as before. When a
+      # host key is pinned, the script fails the deploy unless tailnet :2222 then presents it.
+      - name: Converge SSH identity (authorized keys + pinned host key)
+        env:
+          STAGING_HOST: ${{ steps.host.outputs.staging_host }}
+          ADMIN_SSH_PUBKEYS: ${{ vars.ADMIN_SSH_PUBKEYS }}
+          STRAD_SSH_PUBKEY: ${{ vars.STRAD_SSH_PUBKEY }}
+          SSH_HOST_ED25519_KEY: ${{ secrets.STAGING_SSH_HOST_ED25519_KEY }}
+        run: |
+          set -euo pipefail
+          keys=""
+          if [ -n "${ADMIN_SSH_PUBKEYS:-}" ]; then
+            if ! keys=$(jq -er 'if type == "array" then .[] else error("not a list") end' <<<"$ADMIN_SSH_PUBKEYS" 2>/dev/null); then
+              echo "::error::ADMIN_SSH_PUBKEYS is set but is not a JSON list of strings."
+              exit 1
+            fi
+          fi
+          if [ -n "${STRAD_SSH_PUBKEY:-}" ]; then
+            keys=$(printf '%s\n%s' "$keys" "$STRAD_SSH_PUBKEY")
+          else
+            echo "::notice::STRAD_SSH_PUBKEY is unset, so strad's SSH client key is not authorized by this deploy."
+          fi
+          AUTHORIZED_PUBKEYS="$keys" bash scripts/converge-ssh-identity.sh "$STAGING_HOST"
+
       # Ruby matching .ruby-version, with a user-writable gem dir. (The runner's stock
       # system Ruby installs into /var/lib/gems, which needs root -- `gem install`
       # there fails with Gem::FilePermissionError.)
