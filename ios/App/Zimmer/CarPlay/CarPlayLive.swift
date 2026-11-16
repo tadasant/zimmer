@@ -420,15 +420,25 @@ final class CarPlayLive {
     private func errorChanged(_ error: String?) {
         // An error while the call is up leaves it up; one that ended the call is a failure. A call the phone started is the phone's to retry.
         guard let error, !call.isActive, call.surface == .carplay else { return }
+        // OpenAI out of credits stays out however often the car retries: the tile says so.
+        if let block = call.blocked {
+            failed(error, retryable: false, blockedBy: block)
+            return
+        }
         // The microphone switched off for Zimmer stays off however often the car retries.
         failed(error, retryable: error != LiveAudioEngine.Failure.microphoneDenied.description)
     }
 
-    private func failed(_ reason: String, retryable: Bool) {
+    private func failed(_ reason: String, retryable: Bool, blockedBy block: LiveBlock? = nil) {
         log.error("live call from the car failed: \(reason, privacy: .public)")
-        if !retryable { retry.gaveUp() }
+        if let block {
+            retry.gaveUp(blockedBy: block)
+        } else if !retryable {
+            retry.gaveUp()
+        }
         guard retryable, let wait = retry.failed() else {
-            telemetry.track(.carPlay("retry_gave_up", level: .warn, ["reason": .string(reason), "retryable": .bool(retryable)]))
+            telemetry.track(.carPlay("retry_gave_up", level: .warn, ["reason": .string(reason), "retryable": .bool(retryable),
+                                                                    "blocked": block.map { JSONValue.string($0.rawValue) } ?? .null]))
             call.soundUnavailable()
             onChange?()
             return

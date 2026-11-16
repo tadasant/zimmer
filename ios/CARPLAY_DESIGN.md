@@ -315,6 +315,13 @@ comes up earns it back, and ending the call stops the retries. A call that never
 engine to play the notes, so it gets a short-lived one for them, in the call's own audio category
 and for as long as they sound (`LiveAudioEngine.playAlone`).
 
+**A refusal no retry can fix says why, and is not retried.** OpenAI out of credits sends an `error`
+event and then closes the socket; read only as the close, every retry looks like a dropped call and
+meets the same refusal. `LiveCall` ends the call on the error (`LiveBlock`), and the car gives up at
+once (`LiveRetry.gaveUp(blockedBy:)`): one tile, *OpenAI is out of credits*, with Voice settings
+beside it as at any rest. A tap tries once more. Only the Realtime engine reads the refusal; on
+GPT-Live it still reads as a drop and is retried.
+
 **A call that will not connect gives up in 15 seconds.** The driver's answer comes quickly or it is
 no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and
 OpenAI has said `session.created`, so *Listening* and the connected notes mean somebody can hear
@@ -367,6 +374,8 @@ flowchart TD
   retry -- a retry connects --> call
   retry -- retries spent --> tap["tiles: Live Mode unavailable. Tap to retry, and New\nfalling notes"]
   tap -- Retry or New --> call
+  call -- "OpenAI refuses it: out of credits" --> blocked["tile: OpenAI is out of credits\nfalling notes, no retry"]
+  blocked -- tap --> call
 ```
 
 | Screen | Template | Why this template |

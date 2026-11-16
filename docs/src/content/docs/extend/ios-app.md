@@ -825,6 +825,14 @@ seconds gives up. The button reads *Live Mode unavailable, retrying…* and the 
 are spent, or 30 seconds have gone since you tapped or the call dropped, it reads *Live Mode
 unavailable. Tap to retry*. Ending the call ends the retries.
 
+**A failure no retry can fix is not retried.** When OpenAI refuses a Realtime call because its account is
+out of credits (a Realtime `error` with `insufficient_quota`, `credit_balance_exhausted` or a billing
+limit), it closes the socket straight after, and on its own that close only says "Socket is not
+connected". The app reads the error instead (`LiveBlock`). The call ends at once with that reason,
+which the phone shows. The car does not retry: its tile reads *OpenAI is out of credits*, beside
+Voice settings, until you tap it to try once more. Other errors are retried as above. The GPT-Live
+engine does not read the refusal yet ([limitations](/limitations/#out-of-credits-on-gpt-live-is-retried-as-a-drop)).
+
 **A dropped call is noticed.** A socket error ends the call straight away. A socket that just goes
 quiet is pinged, and a call that has had a pong and then hears nothing for 20 seconds has dropped. In
 the car the retries above start a new call on the same conversation. On the phone the falling notes

@@ -8,6 +8,9 @@ import Foundation
 /// use it up, and the tile then says Live Mode is unavailable until the driver taps it
 /// again. Hanging up ends the wish for a call, so nothing is retried after it.
 ///
+/// A failure no retry can fix (`LiveBlock`: OpenAI is out of credits) is not retried at all: the
+/// tile says what is wrong instead of *Tap to retry*, until the driver taps it to try again.
+///
 /// The budget is time as well as tries. A call that fails at once uses all three retries; one
 /// that hangs until `LiveCallHealth.connectDeadline` would take over a minute to, so no wait
 /// starts that would run past `budget`, and a driver hears the outcome in about half a minute.
@@ -24,6 +27,8 @@ public struct LiveRetry: Hashable, Sendable {
     /// Finding the conversation to call, the part of a tap that comes before the call exists.
     /// A second tap in the meantime is not a second attempt.
     public private(set) var lookingUp = false
+    /// Why Live Mode cannot connect until someone puts it right, when the last failure said so.
+    public private(set) var blocked: LiveBlock?
     /// When this run of trying began: the tap, or a good call's drop. Nil while a call is up.
     private var since: TimeInterval?
 
@@ -33,6 +38,7 @@ public struct LiveRetry: Hashable, Sendable {
     public mutating func asked(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         wanted = true
         failures = 0
+        blocked = nil
         since = now
     }
 
@@ -49,6 +55,7 @@ public struct LiveRetry: Hashable, Sendable {
     /// The call came up: the next drop gets the whole budget again.
     public mutating func connected() {
         failures = 0
+        blocked = nil
         since = nil
     }
 
@@ -58,10 +65,18 @@ public struct LiveRetry: Hashable, Sendable {
         failures = max(failures, 1)
     }
 
+    /// A failure that says Live Mode cannot connect until `block` is put right: stop at once,
+    /// and say why.
+    public mutating func gaveUp(blockedBy block: LiveBlock) {
+        gaveUp()
+        blocked = block
+    }
+
     /// The driver hung up, or the car went away: nothing more to retry.
     public mutating func stopped() {
         wanted = false
         failures = 0
+        blocked = nil
     }
 
     /// The call failed. How long to wait before trying again, or nil when the car should stop
@@ -85,6 +100,7 @@ public struct LiveRetry: Hashable, Sendable {
     public func tile(callIsActive: Bool) -> LiveTalkTile {
         if callIsActive { return .inCall }
         guard failures > 0 else { return lookingUp ? .connecting : .continueConversation }
+        if !wanted, let blocked { return .blocked(blocked) }
         // Waiting to retry, or a retry connecting: either way it is still trying.
         return wanted ? .retrying : .unavailable
     }
@@ -94,7 +110,8 @@ public struct LiveRetry: Hashable, Sendable {
     /// moment and the panel would have to come down under it; the call screen has its own gear.
     public func offersSettings(callIsActive: Bool) -> Bool {
         switch tile(callIsActive: callIsActive) {
-        case .continueConversation, .unavailable: return true
+        // Blocked too: nothing is under way, so nothing can come up over the panel.
+        case .continueConversation, .unavailable, .blocked: return true
         case .newConversation, .connecting, .inCall, .retrying: return false
         }
     }
@@ -113,6 +130,9 @@ public struct LiveRetry: Hashable, Sendable {
             return conversationOpen == false ? [.newConversation] : [.continueConversation, .newConversation]
         case .unavailable:
             return [.unavailable, .newConversation]
+        case .blocked:
+            // A new conversation is blocked the same way: one tile, saying why.
+            return [first]
         case .newConversation, .connecting, .inCall, .retrying:
             return [first]
         }
@@ -134,6 +154,8 @@ public enum CarHomeSettingsTile {
 /// is there.
 public enum LiveTalkTile: Hashable, Sendable {
     case continueConversation, newConversation, connecting, inCall, retrying, unavailable
+    /// Live Mode cannot connect until someone puts this right. Tapping it tries once more.
+    case blocked(LiveBlock)
 
     /// Longest first, as CarPlay chooses among them.
     public var titleVariants: [String] {
@@ -144,6 +166,7 @@ public enum LiveTalkTile: Hashable, Sendable {
         case .inCall: return ["Back to the call", "Call"]
         case .retrying: return ["Live Mode unavailable, retrying…", "Retrying…"]
         case .unavailable: return ["Live Mode unavailable. Tap to retry", "Retry"]
+        case let .blocked(block): return block.titleVariants
         }
     }
 
@@ -156,6 +179,7 @@ public enum LiveTalkTile: Hashable, Sendable {
         case .inCall: return "waveform"
         case .retrying: return "arrow.triangle.2.circlepath"
         case .unavailable: return "exclamationmark.triangle.fill"
+        case .blocked: return "exclamationmark.octagon.fill"
         }
     }
 
@@ -165,7 +189,7 @@ public enum LiveTalkTile: Hashable, Sendable {
         switch self {
         case .continueConversation: return .continueOpen
         case .newConversation: return .startNew
-        case .connecting, .inCall, .retrying, .unavailable: return nil
+        case .connecting, .inCall, .retrying, .unavailable, .blocked: return nil
         }
     }
 }
