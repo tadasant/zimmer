@@ -84,9 +84,13 @@ message starts from where the row really is. A message deleted or delivered befo
 the lock moves nothing: REST answers `404`, MCP a not-found error, and no "moved" row is logged.
 Every surface logs the position the row really moved from, read under the lock.
 
-Deleting a queued message renumbers the rows behind it without this lock, from a position read before
-its transaction began. Racing a move, a delete can leave a gap in the positions, fail at COMMIT on the
-unique position, or deadlock with the move.
+Deleting a queued message — the web delete, `DELETE /api/v1/sessions/:id/enqueued_messages/:mid` and
+`manage_enqueued_messages` `delete` — goes through `Sessions::RemoveQueuedMessage`, which takes the same
+queue lock and re-reads the message's position under it before closing the gap behind it. A delete and
+a move on one queue at once therefore apply one after the other, and a delete made from a stale copy
+closes the gap where the row really was. A message already gone when the delete gets the lock removes
+nothing and logs nothing: REST answers `404`, MCP a not-found error, and the web page treats it as
+removed.
 
 Sending a *new* message "right now" has one writer too, `Sessions::InterruptWithFollowUp`: the
 REST and MCP `follow_up` with `force_immediate`, `manage_enqueued_messages` `send_now`, and a child's
@@ -108,9 +112,9 @@ consecutive positions, instead of one failing on the deferred `(session_id, posi
 constraint at commit. The ones that already locked the session with `lock!` were already ordered
 this way, because `FOR UPDATE` conflicts with `FOR NO KEY UPDATE`; the widget, spot-hold and
 skipped-prompt writers took no lock before. `test/services/sessions/queue_tail_writers_test.rb`
-fails on a `maximum(:position)` read anywhere else in `app/`. Reordering or deleting a queued
-message does not take the lock: it renumbers rows already in the queue rather than appending one,
-and racing an append it can at worst leave a gap in the positions.
+fails on a `maximum(:position)` read anywhere else in `app/`. Reordering and deleting a queued
+message take the same lock (`Sessions::QueueTail.lock!`) without reading the tail, since they renumber
+rows already in the queue rather than append one.
 
 **What did not change is any ceiling's denominator.** `RunningTurns#on_a_worker` counted `running`
 rows whose job had a `performed_at`, and it still does — the pre-spawn window is reported as

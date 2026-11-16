@@ -92,21 +92,12 @@ class Api::V1::EnqueuedMessagesController < Api::BaseController
   end
 
   # DELETE /api/v1/sessions/:session_id/enqueued_messages/:id
-  # Delete an enqueued message and re-number remaining positions.
+  # Delete an enqueued message and re-number remaining positions, through
+  # Sessions::RemoveQueuedMessage. A message gone by the time it takes the
+  # queue lock is a 404, as it would have been had it gone before the request.
   def destroy
-    position = @enqueued_message.position
-
-    ActiveRecord::Base.transaction do
-      @enqueued_message.destroy!
-      # A bulk decrement transiently puts two rows on the same position unless
-      # the planner happens to visit them in ascending order, and nothing here
-      # pins that order. This is correct only because uniqueness on
-      # (session_id, position) is DEFERRABLE INITIALLY DEFERRED, so the check
-      # runs once at commit against the final state.
-      @session.enqueued_messages
-              .where("position > ?", position)
-              .update_all("position = position - 1")
-      @session.logs.create!(content: "Enqueued message at position #{position} removed", level: "info")
+    if Sessions::RemoveQueuedMessage.call(@enqueued_message).nil?
+      raise ActiveRecord::RecordNotFound, "Enqueued message #{@enqueued_message.id} no longer exists"
     end
 
     head :no_content

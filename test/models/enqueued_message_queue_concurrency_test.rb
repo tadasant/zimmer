@@ -2,8 +2,8 @@
 
 require "test_helper"
 
-# EnqueuedMessage#reorder_to run against another writer holding the same queue
-# open on a second connection.
+# EnqueuedMessage#reorder_to and Sessions::RemoveQueuedMessage run against
+# another writer holding the same queue open on a second connection.
 #
 # The reorder renumbers its neighbours from positions it reads. Read without
 # the queue lock, those positions can belong to a queue another transaction is
@@ -14,7 +14,7 @@ require "test_helper"
 #
 # Non-transactional deliberately: the question is what one connection sees of
 # another's uncommitted work, and a transactional test hides exactly that.
-class EnqueuedMessageReorderConcurrencyTest < ActiveSupport::TestCase
+class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
   self.use_transactional_tests = false
 
   setup do
@@ -58,6 +58,31 @@ class EnqueuedMessageReorderConcurrencyTest < ActiveSupport::TestCase
 
     assert contender_blocked, "the reorder must wait while an append holds the queue lock"
     assert_equal %w[B C D A E], queue_contents
+  end
+
+  test "a delete waits for an open reorder and closes the gap where the row ended up" do
+    # A moves to 3 and holds its transaction open: B1 C2 A3 D4, uncommitted.
+    # B, loaded at 2 before that, is deleted meanwhile. Read from the stale 2,
+    # the gap would close behind the wrong row and collide at COMMIT.
+    contender_blocked = race(holding: -> { EnqueuedMessage.find(@a.id).reorder_to(3) }) do
+      Sessions::RemoveQueuedMessage.call(@b)
+    end
+
+    assert contender_blocked, "the delete must wait while a reorder holds the queue lock"
+    assert_equal %w[C A D], queue_contents
+    assert_equal [ 1, 2, 3 ], @session.enqueued_messages.order(:position).pluck(:position)
+  end
+
+  test "a reorder waits for an open delete and moves within the queue it left" do
+    # B is deleted and the delete held open: A1 C2 D3, uncommitted. D, loaded at
+    # 4 before that, moves to 1 meanwhile.
+    contender_blocked = race(holding: -> { Sessions::RemoveQueuedMessage.call(EnqueuedMessage.find(@b.id)) }) do
+      @d.reorder_to(1)
+    end
+
+    assert contender_blocked, "the reorder must wait while a delete holds the queue lock"
+    assert_equal %w[D A C], queue_contents
+    assert_equal [ 1, 2, 3 ], @session.enqueued_messages.order(:position).pluck(:position)
   end
 
   private

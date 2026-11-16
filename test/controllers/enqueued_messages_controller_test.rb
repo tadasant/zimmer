@@ -277,6 +277,27 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "destroy removes through Sessions::RemoveQueuedMessage" do
+    message = @session.enqueued_messages.create!(content: "Test message", position: 1)
+    Sessions::RemoveQueuedMessage.expects(:call).with { |m| m.id == message.id }.returns(1)
+
+    delete session_enqueued_message_url(@session, message)
+
+    assert_redirected_to session_path(@session)
+  end
+
+  test "destroy of a message gone by the time it takes the queue lock still succeeds and logs nothing" do
+    message = @session.enqueued_messages.create!(content: "Test message", position: 1)
+    Sessions::RemoveQueuedMessage.expects(:call).returns(nil)
+
+    assert_no_difference -> { @session.logs.count } do
+      delete session_enqueued_message_url(@session, message)
+    end
+
+    assert_redirected_to session_path(@session)
+    assert_equal "Message removed successfully", flash[:notice]
+  end
+
   test "should renumber remaining messages after destroy" do
     msg1 = @session.enqueued_messages.create!(content: "First", position: 1)
     msg2 = @session.enqueued_messages.create!(content: "Second", position: 2)
