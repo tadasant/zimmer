@@ -416,6 +416,12 @@ subscription delegation through this path will be the first time it runs in prod
 the evidence that the subscription serves Opus to it is that every agent session runs Opus on that
 same account through Claude Code.
 
+The delegation also holds a Puma request thread while Claude Code runs, as the Messages API loop did
+before it, and Claude Code's tool calls come back to the same Puma over HTTP. With the default three
+threads, a delegation leaves two for its own tool calls and everything else. They queue rather than
+deadlock, but three delegations at once on one Puma process would starve each other's tools until
+the 90-second timeout.
+
 ### Live Mode's Claude shares the agent fleet's quota
 
 The `gpt_live_claude` engine runs Claude on Zimmer's current Claude Code account, so every
