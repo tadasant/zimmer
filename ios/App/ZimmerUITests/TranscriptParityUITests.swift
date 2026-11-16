@@ -244,18 +244,17 @@ final class TranscriptParityUITests: XCTestCase {
         guard list.waitForExistence(timeout: timeout) else { return button }
         let frame = list.frame
         let top = max(frame.minY, app.frame.minY)
-        let bottom = min(frame.maxY, app.frame.maxY)
-        func point(_ y: CGFloat) -> XCUICoordinate {
-            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: y))
+        let span = app.frame.maxY - top
+        func point(_ fraction: CGFloat) -> XCUICoordinate {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.midX, dy: top + span * fraction))
         }
-        // A wait before each drag, not a bare `exists`: a menu still opening on a slow runner has
-        // the row a moment later, and a drag then would scroll it away. Each drag is a third of
-        // the visible menu, held at the end so it does not fling past the row.
-        for _ in 0..<8 {
+        // The drag stays in the top half: the list's frame runs to the foot of the screen, but the
+        // menu drawn over the page ends about two thirds of the way down, and a press below it lands
+        // on the page, which closes the menu. A wait before each drag, not a bare `exists`: a menu
+        // still opening on a slow runner has the row a moment later. Held at the end, so no fling.
+        for _ in 0..<6 {
             if button.waitForExistence(timeout: 2) { break }
-            point(top + (bottom - top) * 0.7)
-                .press(forDuration: 0.1, thenDragTo: point(top + (bottom - top) * 0.35),
-                       withVelocity: .default, thenHoldForDuration: 0.3)
+            point(0.5).press(forDuration: 0.1, thenDragTo: point(0.1), withVelocity: .default, thenHoldForDuration: 0.3)
         }
         return button
     }
