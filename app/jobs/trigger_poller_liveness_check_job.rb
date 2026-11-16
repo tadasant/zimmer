@@ -40,7 +40,8 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
   # two feeds lives here; the check itself is the same for both.
   #
   #   key:        the PollerHeartbeat key.
-  #   threshold:  how long the poller may go without a genuine poll before we page.
+  #   threshold:  how long the poller may go without a genuine poll before we page. A duration,
+  #               or a lambda returning one for a poller whose cadence is configurable.
   #   watched:    whether there is anything for the poller to poll. With nothing enabled the
   #               poller has nothing to do, its heartbeat says nothing, and there is no stall
   #               to report.
@@ -62,10 +63,13 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
   POLLERS = [
     Poller.new(
       key: :github,
-      # The poller runs every minute, so this is ~15 consecutive missed/failed ticks — far
-      # beyond any transient blip or a slow multi-page search, yet tight enough to catch a
-      # real freeze within the quarter-hour rather than the ~50 minutes the incident ran.
-      threshold: 15.minutes,
+      # Two poll intervals plus five minutes, never under 15 minutes
+      # (GithubTriggerPollCadence#liveness_threshold). At the one-minute default that is the
+      # quarter-hour — ~15 consecutive missed/failed ticks, far beyond any transient blip or a
+      # slow multi-page search, yet tight enough to catch a real freeze well inside the ~50
+      # minutes the incident ran. A poller slowed to 15 minutes gets 35, so one ordinary gap
+      # between sweeps never pages and two missed sweeps in a row do.
+      threshold: -> { GithubTriggerPollCadence.current.liveness_threshold },
       watched: -> { TriggerCondition.github.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
       # `configured?` shells out to `gh auth status` — a live API call that a GitHub outage
       # makes fail. It is consulted here and nowhere else, and the placement is the whole
@@ -210,7 +214,7 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
     end
 
     age = Time.current - last_at
-    return if age < poller.threshold
+    return if age < threshold_for(poller)
 
     minutes = (age / 60).round
     diagnosis = diagnose(poller)
@@ -228,6 +232,10 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
         diagnosis: diagnosis
       }.compact
     )
+  end
+
+  def threshold_for(poller)
+    poller.threshold.respond_to?(:call) ? poller.threshold.call : poller.threshold
   end
 
   # The poller's diagnosis, or nil. A diagnosis that raises must not cost the page it was

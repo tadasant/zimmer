@@ -1651,10 +1651,10 @@ settings turn it on, read from encrypted credentials first and ENV second:
 
 | Setting | Value |
 | --- | --- |
-| `GITHUB_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means) or `webhook_with_poll_fallback` |
+| `GITHUB_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means), `webhook_shadow` (see [Shadow mode](#shadow-mode-and-the-rollout-to-webhooks)) or `webhook_with_poll_fallback` |
 | `GITHUB_WEBHOOK_SECRET` | the secret set on the GitHub webhook |
 
-With both set, `POST /webhooks/github` is the webhook's payload URL. With either missing it answers
+With a webhook mode and the secret both set, `POST /webhooks/github` is the webhook's payload URL. With either missing it answers
 every request with a 404 and reads nothing. It is the same ingress as
 [Slack Events API delivery](#slack-events-api-delivery), and a delivery goes through the same checks
 in the same order: a body over a megabyte is a 413; `X-Hub-Signature-256` must be `sha256=` and the
@@ -1711,7 +1711,7 @@ An issue is opened once and can never be opened again, so a fixed retention is t
 for its claim. **A label is different: removing it and adding it back is a second, legitimate
 event**, and the seen-set is the only thing that knows when that has happened. So a label claim
 lives exactly as long as the poller's key for the same item and label — the tick that accepts a
-removal (after `REMOVAL_GRACE_TICKS` consecutive misses) deletes the key and the claim in one
+removal (after the [removal grace](#the-poll-interval)) deletes the key and the claim in one
 transaction. Re-add the label after that and it fires again, from whichever path sees it first.
 
 Two consequences worth knowing. **Inside the grace window a re-add fires nothing**, from either
@@ -1748,6 +1748,74 @@ warn for GitHub the way it does for Slack, because GitHub sends an event only wh
 request changes. One reading there is not a miss: when a delivery spawned nothing because of burst
 control or a pending session, its claim is released, and the poller's later fire of that event counts
 as a poll claim.
+
+#### Shadow mode and the rollout to webhooks
+
+`webhook_shadow` is the rehearsal for `webhook_with_poll_fallback`. With it and the secret set, the
+endpoint accepts, verifies and records deliveries exactly as above, and `GithubEventJob` matches each
+one against every GitHub condition by the same rules — then **fires nothing and claims nothing**. It
+records a row in `trigger_shadow_observations` instead: this delivery would have fired this condition
+for this event, keyed by the claim key the fire would have taken. The poller fires exactly as it does
+on `poll`, takes no claim, and records a row for each fire it makes. So nothing a user sees changes,
+and the poller stays the only path that spawns sessions.
+
+`Webhooks::GithubShadowComparison` pairs the two paths' rows per condition and event key, in time
+order: a row joins the open event when it is from the other path and within the grace of the event's
+first sighting, and otherwise starts a new one. So a label taken off and put back later is two events,
+and a second delivery for one event (an `opened` and a `labeled` for the same label) folds into the
+first rather than reading as webhook-only. Each event is classified:
+
+| Status | Meaning |
+| --- | --- |
+| `matched` | both paths saw it; the webhook's lead is the poll's time minus the webhook's |
+| `webhook_only` | the webhook would have fired it and the poller never did — in `webhook_with_poll_fallback` that would be a session the poller would not have spawned |
+| `poll_only` | the poller fired it and no delivery matched: a dropped delivery, a hook missing an event type, or a delivery that arrived after the poll |
+| `pending` | one path has seen it and it is younger than the grace (two poll intervals plus five minutes, at least 15 minutes) |
+
+The comparison is on `/health`, in the GitHub row of the *Webhook Ingest* panel, over the last 24
+hours: the four counts, the median and p90 webhook lead, a line per condition, and the unmatched
+events by key. The same reading is in `GET /api/v1/health` (`health_report.inbound_event_health.sources[].shadow`) and `get_system_health`, and
+`compare_github_webhook_shadow` (MCP, triggers group, read-only) takes its own window, grace and
+condition. A source in shadow warns on the panel when webhook-only or poll-only is above zero; like the
+rest of the panel it never moves the overall status. Rows are kept 30 days and listed one by one at
+`/supervisor/trigger_shadow_observations`.
+
+The rollout, in phases, each a setting change and nothing else:
+
+1. **Shadow.** `GITHUB_TRIGGER_INGEST_MODE=webhook_shadow`, the secret set, the hook added on GitHub.
+   Leave it until the comparison has shown matched events with a positive lead and no webhook-only or
+   poll-only ones across ordinary use — a few days of merge-gate traffic.
+2. **Webhook-primary.** `GITHUB_TRIGGER_INGEST_MODE=webhook_with_poll_fallback`. The webhook fires and
+   claims; the poller is the backstop, and its claims on the panel are the deliveries the webhook
+   missed.
+3. **Slower poller.** `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` raised (see
+   [The poll interval](#the-poll-interval)), which is what spends less of GitHub's API budget.
+
+**Rollback** from any phase is `GITHUB_TRIGGER_INGEST_MODE=poll` (or unsetting it), plus unsetting
+`GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` if it was raised. On `poll` the endpoint answers 404, the
+poller claims nothing and records nothing, and a job already queued for a delivery fires nothing.
+
+#### The poll interval
+
+`GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` (encrypted credentials first, then ENV) sets how often
+`GithubTriggerPollerJob` sweeps: a whole number of minutes from 1 to 60. Unset, blank or out of range
+means one minute, and an invalid value logs a WARN once. The cron entry still enqueues every minute;
+at a longer interval a tick sweeps only when the last sweep started at least an interval ago (50
+seconds of slack, so a sweep that started late does not push the next one a whole tick later).
+
+Every poller window is written in time and turned into ticks for the interval set
+(`GithubTriggerPollCadence`):
+
+| Window | In time | 1 min | 5 min | 15 min |
+| --- | --- | --- | --- | --- |
+| Removal grace — consecutive misses before a seen label key is dropped | 3 minutes, never fewer than 2 misses | 3 | 2 | 2 |
+| Incomplete-search and rate-limited streaks — consecutive degraded sweeps before a page | 5 minutes, never fewer than 2 sweeps | 5 | 2 | 2 |
+| Streak expiry in the cache | 1 hour, never fewer than 4 intervals | 1 h | 1 h | 1 h |
+| `TriggerPollerLivenessCheckJob` stall threshold | 2 intervals + 5 minutes, never under 15 minutes | 15 min | 15 min | 35 min |
+
+At one minute these are 3 misses, 5 sweeps, one hour and 15 minutes. The floors of two are deliberate:
+one empty search is the index blip the grace exists for, and one degraded sweep is a blip too, so at
+a slow cadence a removal or a page waits for the second sweep in a row rather than the first.
 
 #### Opting an issue out, with a label
 
@@ -1850,9 +1918,10 @@ eventually consistent, so a still-open, still-labelled PR can vanish from one ti
 return on the next. Treating that single miss as a label removal drops the key, and the reappearing
 PR then looks new and re-fires a duplicate session — the label poller's version of the index lag the
 `github_issue` path below guards against. So a missing key is **retained through a short grace
-window** (`GithubTriggerPollerJob::REMOVAL_GRACE_TICKS` consecutive misses — roughly three minutes at
-the one-minute cadence, tracked in the companion `seen_missing_counts`) before it is accepted as
-genuinely unlabelled. A real removal simply takes that long to register.
+window** (`GithubTriggerPollCadence#removal_grace_misses` consecutive misses — three at the
+one-minute default, about three minutes, and never fewer than two at a slower
+[poll interval](#the-poll-interval); tracked in the companion `seen_missing_counts`) before it is
+accepted as genuinely unlabelled. A real removal simply takes that long to register.
 
 The seen-set carries a companion, `baseline_scope`: the repos, target and labels it was built
 against. It exists to answer the one question the set alone cannot — *is this item new, or has it
@@ -2161,8 +2230,9 @@ boundary moved underneath the pagination. Whole read or nothing, on every attemp
 
 A degradation that does *not* clear still surfaces, by two routes. One condition stuck on it —
 an expensive query the index keeps timing out on — pages once its consecutive-skip streak reaches
-`CONSECUTIVE_INCOMPLETE_SEARCHES_TO_ALERT` (5 ticks ≈ 5 minutes, tracked per condition in Redis and
-cleared by any clean poll). Every condition stuck on it stamps no heartbeat at all, so
+`GithubTriggerPollCadence#sweeps_before_alert` (5 minutes: 5 ticks at the default, never fewer than 2
+at a slower [poll interval](#the-poll-interval); tracked per condition in Redis and cleared by any
+clean poll). Every condition stuck on it stamps no heartbeat at all, so
 `TriggerPollerLivenessCheckJob` pages on the stale value — see
 [background jobs](/operate/background-jobs/#trigger-poll-liveness-and-freshness).
 :::
@@ -2233,8 +2303,8 @@ So `GithubSearchService` raises the narrower `RateLimitedError`, and `GithubTrig
   semantics a skipped tick costs nothing: the next one re-derives the whole set.
 - **logs one WARN**, naming how many conditions went unpolled when any did. Not ERROR, which pages
   by itself.
-- **pages only if it does not clear** — `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps ≈ 5
-  minutes) raises *GitHub search API rate limit not clearing*. The streak is global rather than per
+- **pages only if it does not clear** — `GithubTriggerPollCadence#sweeps_before_alert` (5 sweeps ≈ 5
+  minutes at the default interval, never fewer than 2) raises *GitHub search API rate limit not clearing*. The streak is global rather than per
   condition, because the limit is a property of the credential and the sweep stops at whichever
   condition met it first; any sweep that finishes without one clears it.
 

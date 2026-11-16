@@ -14,9 +14,19 @@ class InboundEventRetentionJobTest < ActiveJob::TestCase
 
     result = InboundEventRetentionJob.perform_now(now: now)
 
-    assert_equal({ deliveries: 1, claims: 1 }, result)
+    assert_equal({ deliveries: 1, claims: 1, shadow_observations: 0 }, result)
     assert_equal %w[Ev_new], WebhookDelivery.pluck(:delivery_id)
     assert_equal %w[slack:C1:2.000001], TriggerEventClaim.pluck(:event_key)
+  end
+
+  test "deletes shadow observations past their retention" do
+    condition = trigger_conditions(:github_issue_condition)
+    now = Time.current
+    TriggerShadowObservation.record!(condition, "github:r#1:opened", path: "poll", now: now - TriggerShadowObservation::RETENTION - 1.hour)
+    TriggerShadowObservation.record!(condition, "github:r#2:opened", path: "poll", now: now - 1.day)
+
+    assert_equal 1, InboundEventRetentionJob.perform_now(now: now)[:shadow_observations]
+    assert_equal %w[github:r#2:opened], TriggerShadowObservation.pluck(:event_key)
   end
 
   test "a second run deletes nothing" do
@@ -24,7 +34,7 @@ class InboundEventRetentionJobTest < ActiveJob::TestCase
 
     InboundEventRetentionJob.perform_now
 
-    assert_equal({ deliveries: 0, claims: 0 }, InboundEventRetentionJob.perform_now)
+    assert_equal({ deliveries: 0, claims: 0, shadow_observations: 0 }, InboundEventRetentionJob.perform_now)
   end
 
   test "a backlog bigger than one batch drains in one run" do

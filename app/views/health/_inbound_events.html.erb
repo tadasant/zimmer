@@ -3,6 +3,7 @@
   The summary of webhook_deliveries and trigger_event_claims, which /supervisor lists row by row.
   Same object as the REST health report and `get_system_health`. The number that matters is
   "claimed via poll" while a webhook is on: each one is an event the webhook did not deliver first.
+  A source in `webhook_shadow` also shows its shadow comparison (_github_shadow_comparison).
   Stacked per source rather than a table, so it fits a phone.
 %>
 <% inbound = health_report[:inbound_event_health] %>
@@ -60,6 +61,9 @@
             </dd>
           </div>
         </dl>
+        <% if source[:shadow] %>
+          <%= render "health/github_shadow_comparison", shadow: source[:shadow] %>
+        <% end %>
       </div>
     <% end %>
 
