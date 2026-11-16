@@ -19,6 +19,20 @@ final class ExpectedChangesTests: XCTestCase {
         XCTAssertEqual(row.effectiveVisibility, .visible, "the board reads the effective visibility, so it follows too")
     }
 
+    func testTheBacklogIsItsOwnBoard() {
+        var row = SessionSummary(id: 1, status: .needsInput, visibility: .visible)
+        row.expect(.backlogged)
+        XCTAssertEqual(row.boardVisibility, .backlogged)
+        XCTAssertNil(row.snoozedUntil)
+        XCTAssertEqual(VisibilityChange.backlogged.body, ["visibility": "backlogged"])
+        XCTAssertEqual(BoardFilter.backlogged.query, ["visibility": "backlogged"])
+        XCTAssertTrue(BoardFilter.backlogged.admits(row))
+        XCTAssertFalse(BoardFilter.onBoard.admits(row), "the default board leaves the backlog out")
+        XCTAssertFalse(BoardFilter.offBoard.admits(row), "Snoozed & hidden is a separate pile from the backlog")
+        XCTAssertTrue(BoardFilter.all.admits(row))
+        XCTAssertEqual(BoardFilter.all.label, "All")
+    }
+
     func testTrashAndRestore() {
         var row = SessionSummary(id: 1, status: .running)
         row.expectTrashed(at: until)

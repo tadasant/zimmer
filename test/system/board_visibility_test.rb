@@ -101,4 +101,36 @@ class BoardVisibilityTest < ApplicationSystemTestCase
     assert_selector "#off-board-count", text: "1 session tucked away"
     assert_no_selector "#user_view_list", text: "Tucked away"
   end
+
+  # The removal decision is the browser's: visibility_controller.js takes a row off
+  # the page when the board on screen does not show the visibility it is moving to.
+  test "moving a row to the backlog takes it off the default board and counts it" do
+    create_session(title: "Still on the board")
+    create_session(title: "Low priority, half done")
+
+    visit root_path(view: SessionsController::VIEW_MODE_USER)
+    row = find("#user_view_list [id^='user_view_row_']", text: "Low priority, half done")
+    row.find("[data-action='visibility#toggle']").click
+    row.click_on "Move to backlog"
+
+    assert_no_selector "#user_view_list", text: "Low priority, half done"
+    assert_selector "#user_view_list", text: "Still on the board"
+    assert_equal SessionVisibility::BACKLOGGED, Session.find_by!(title: "Low priority, half done").visibility
+
+    visit root_path(view: SessionsController::VIEW_MODE_USER)
+    assert_selector "#off-board-count", text: "1 backlogged"
+  end
+
+  test "on the All board a backlogged row stays and is redrawn with its badge" do
+    create_session(title: "Low priority, half done")
+
+    visit root_path(view: SessionsController::VIEW_MODE_USER,
+                    SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all")
+    row = find("#user_view_list [id^='user_view_row_']", text: "Low priority, half done")
+    row.find("[data-action='visibility#toggle']").click
+    row.click_on "Move to backlog"
+
+    assert_selector "#user_view_list [id^='user_view_row_']", text: /Low priority, half done.*Backlog/m
+    assert_equal SessionVisibility::BACKLOGGED, Session.find_by!(title: "Low priority, half done").visibility
+  end
 end

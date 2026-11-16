@@ -700,6 +700,7 @@ extension FakeZimmerAPI {
             switch change {
             case .visible: session.visibility = .visible; session.snoozedUntil = nil
             case .hidden: session.visibility = .hidden; session.snoozedUntil = nil
+            case .backlogged: session.visibility = .backlogged; session.snoozedUntil = nil
             case let .snoozed(until): session.visibility = .snoozed; session.snoozedUntil = until
             }
             session.effectiveVisibility = session.visibility

@@ -97,7 +97,8 @@ class Api::V1::SessionsController < Api::BaseController
   #   - show_archived: Include archived sessions (default: false)
   #   - visibility: board visibility, the presentation-only axis. "on_board" for the
   #     sessions a tidied dashboard shows, "off_board" for the hidden and snoozed
-  #     ones. OMITTED BY DEFAULT — this listing is unfiltered on that axis, so an
+  #     ones, "backlogged" for the backlog, "all" for every one. OMITTED BY
+  #     DEFAULT — this listing is unfiltered on that axis, so an
   #     agent checking whether work is already in flight is never shown fewer
   #     sessions because a human tidied their board.
   #   - carplay_fit: the driver's triage axis — "carplay_ok", "laptop_only",
@@ -1297,10 +1298,10 @@ class Api::V1::SessionsController < Api::BaseController
   # POST /api/v1/sessions/:id/sleep.
   #
   # Params:
-  #   - visibility: "visible" | "hidden" | "snoozed" (required)
+  #   - visibility: "visible" | "hidden" | "snoozed" | "backlogged" (required)
   #   - snoozed_until: required with "snoozed". A naive wall-clock ISO-8601
   #     datetime ("2026-09-05T09:00:00") read in `timezone`, and it must be in the
-  #     future. Cleared automatically for the other two values.
+  #     future. Cleared automatically for the other values.
   #   - timezone: IANA name `snoozed_until` is expressed in. Default "UTC".
   #
   # A snooze expires by being READ: once `snoozed_until` passes, the session is
@@ -1845,11 +1846,7 @@ class Api::V1::SessionsController < Api::BaseController
   # because a human tidied their board: that produces duplicate work with no
   # visible cause. An unrecognized value narrows nothing, for the same reason.
   def apply_visibility_filter(scope)
-    case params[:visibility].to_s
-    when SessionVisibility::FILTER_ON_BOARD then scope.board_visible
-    when SessionVisibility::FILTER_OFF_BOARD then scope.board_hidden
-    else scope
-    end
+    scope.board_visibility_filter(params[:visibility], unset_means_all: true)
   end
 
   def set_session

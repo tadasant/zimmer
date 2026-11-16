@@ -330,8 +330,9 @@ them — `verbose: true` for the full rows, `get_session` for one session in ful
 
 `action_session`'s `set_visibility` action writes a session's
 [board visibility](/sessions/board-visibility/) — whether its card is on the human's dashboard,
-`visible` / `hidden` / `snoozed` until a time. It is a visual-organization device and nothing else:
-no scheduler reads the field, and a snoozed session runs exactly when it would have run anyway. Reach
+`visible` / `hidden` / `snoozed` until a time / `backlogged` (parked as low priority, no end time).
+It is a visual-organization device and nothing else: no scheduler reads the field, and a snoozed or
+backlogged session runs exactly when it would have run anyway. Reach
 for `pause`, `pause_into_spot_queue` or `change_precedence` when the intent is to defer *work*. The
 field is reported by `quick_search_sessions` and `get_session` (as a `**Visibility:**` line, only
 when a session is tucked away) and is an optional `visibility` filter on the search — **unset by

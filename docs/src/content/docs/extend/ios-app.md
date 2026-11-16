@@ -55,7 +55,7 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   them in a cookie. Over the default filters *Ranked* shows waiting, running, needs-input and failed
   together, worked out each time as the web does, so leaving Ranked is back to *Needs input*. With no status ticked the list is every status but Archived, where the web reads ticking
   nothing as everything. Board visibility is *On board* by default, like the web UI's board, with
-  *Snoozed & hidden* and *Both* in the view menu and the form. Pull to refresh. Rows sit on one surface with hairlines between them,
+  *Snoozed & hidden*, *Backlogged* and *All* in the view menu and the form; a row's menu and the session menu offer *Move to backlog* beside *Hide*. Pull to refresh. Rows sit on one surface with hairlines between them,
   as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; then the web rows' facts on one quiet line — the agent root

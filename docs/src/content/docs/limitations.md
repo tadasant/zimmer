@@ -268,6 +268,13 @@ closes that, and neither is configured. If a collision gets through, the release
 boot. Either way the deploy fails instead of silently skipping a migration, and production stays on
 the old image until someone renumbers the migration.
 
+### An iOS build older than the backlog reads a backlogged session as on the board
+
+The iOS app decodes a board-visibility value it does not know as `visible`. A build installed before
+`backlogged` existed therefore draws a backlogged session as an ordinary row when its list updates
+locally, and offers *Snooze* rather than *Put back on the board*. The server still filters the On
+board list, so a fresh load is right. Updating the app fixes it; nothing on the server can.
+
 ### A row's long press in the iOS UI tests absorbs one accessibility timeout
 
 Before XCUITest presses anything, it asks SpringBoard which applications are focused, to check

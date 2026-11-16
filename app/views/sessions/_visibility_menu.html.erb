@@ -1,4 +1,7 @@
-<%# "Snooze until…" / "Hide" — the board-visibility control.
+<%# "Snooze until…" / "Hide" / "Backlog" — the board-visibility control.
+
+    Backlog is "snooze indefinitely, because it is low priority": the card leaves
+    the board with no end time and is shown only on the Backlogged and All views.
 
     This is presentation and nothing else. It does not pause, start, stop, sleep
     or wake a session, and it never touches status, precedence or the spot queue;
@@ -27,6 +30,7 @@
 <% compact = local_assigns.fetch(:compact, false) %>
 <% inline_variant = variant != :button %>
 <% tucked_away = !agent_session.board_visible? %>
+<% backlogged = agent_session.backlogged? %>
 <div class="<%= inline_variant ? "block" : "inline-flex" %>"
      data-controller="visibility"
      data-visibility-url-value="<%= update_visibility_session_path(agent_session) %>"
@@ -59,10 +63,10 @@
             data-action="visibility#toggle"
             data-visibility-target="button"
             aria-expanded="false"
-            title="Snooze or hide this card. Visual only — it does not pause, start or stop the session."
+            title="Snooze, hide or backlog this card. Visual only — it does not pause, start or stop the session."
             class="inline-flex items-center border border-slate-300 font-medium rounded-md text-slate-700 bg-slate-50 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500 <%= compact ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm shadow-sm" %>">
-      <%= render "sessions/visibility_icon", classes: "h-4 w-4" %>
-      <span class="<%= compact ? "ml-1.5" : "ml-2" %>"><%= tucked_away ? "Snoozed / hidden" : "Snooze" %></span>
+      <%= render(backlogged ? "sessions/backlog_icon" : "sessions/visibility_icon", classes: "h-4 w-4") %>
+      <span class="<%= compact ? "ml-1.5" : "ml-2" %>"><%= backlogged ? "Backlogged" : (tucked_away ? "Snoozed / hidden" : "Snooze") %></span>
     </button>
   <% end %>
 
@@ -128,6 +132,14 @@
           <span class="whitespace-nowrap font-medium">Hide</span>
           <span class="text-[11px] text-gray-400 shrink-0 whitespace-nowrap">no end time</span>
         </button>
+        <% unless backlogged %>
+          <button type="button"
+                  data-action="visibility#backlog"
+                  class="w-full flex items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-900 focus:outline-none focus:bg-amber-50">
+            <span class="whitespace-nowrap font-medium">Move to backlog</span>
+            <span class="text-[11px] text-gray-400 shrink-0 whitespace-nowrap">low priority, no end time</span>
+          </button>
+        <% end %>
       </div>
     <% end %>
 
@@ -144,6 +156,15 @@
       </svg>
       Hide
     </button>
+    <% unless backlogged %>
+      <button type="button"
+              data-action="visibility#backlog"
+              role="menuitem"
+              class="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50 focus:outline-none focus:bg-gray-50 text-left">
+        <%= render "sessions/backlog_icon", classes: "h-4 w-4 text-gray-400 shrink-0" %>
+        Move to backlog
+      </button>
+    <% end %>
     <% if tucked_away %>
       <button type="button"
               data-action="visibility#restore"
@@ -167,6 +188,16 @@
       </span>
       <span class="flex-1 font-medium">Hide</span>
     </button>
+    <% unless backlogged %>
+      <button type="button"
+              data-action="visibility#backlog"
+              class="flex items-center w-full px-4 py-3 text-left text-sm text-gray-800 hover:bg-gray-50 active:bg-gray-100">
+        <span class="w-9 h-9 rounded-full bg-amber-50 text-amber-700 inline-flex items-center justify-center mr-3">
+          <%= render "sessions/backlog_icon", classes: "h-5 w-5" %>
+        </span>
+        <span class="flex-1 font-medium">Move to backlog</span>
+      </button>
+    <% end %>
     <% if tucked_away %>
       <button type="button"
               data-action="visibility#restore"

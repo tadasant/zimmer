@@ -507,6 +507,9 @@ struct SnoozeButtons: View {
         Button("Hide") {
             Task { await model.perform("Hidden", on: session.id, optimistic: { $0.expect(.hidden) }) { try await $0.setVisibility(session.id, .hidden) } }
         }
+        Button("Move to backlog") {
+            Task { await model.perform("Moved to the backlog", on: session.id, optimistic: { $0.expect(.backlogged) }) { try await $0.setVisibility(session.id, .backlogged) } }
+        }
     }
 }
 
@@ -535,6 +538,13 @@ private struct SessionContextMenu: View {
                 Task { await model.perform("Back on the board", on: session.id, optimistic: { $0.expect(.visible) }) { try await $0.setVisibility(session.id, .visible) } }
             } label: {
                 Label("Put back on the board", systemImage: "eye")
+            }
+            if session.boardVisibility != .backlogged {
+                Button {
+                    Task { await model.perform("Moved to the backlog", on: session.id, optimistic: { $0.expect(.backlogged) }) { try await $0.setVisibility(session.id, .backlogged) } }
+                } label: {
+                    Label("Move to backlog", systemImage: "archivebox")
+                }
             }
         }
         // Every PR, as the session menu lists them: the row's line has room for the newest only.

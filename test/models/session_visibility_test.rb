@@ -94,17 +94,55 @@ class SessionVisibilityTest < ActiveSupport::TestCase
     end
   end
 
-  test "the two scopes are exact complements" do
+  test "the three scopes partition the table" do
     make_session
     make_session(visibility: SessionVisibility::HIDDEN)
     make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 1.day.from_now)
     make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 1.day.ago)
+    make_session(visibility: SessionVisibility::BACKLOGGED)
     make_session.update_columns(visibility: SessionVisibility::SNOOZED, snoozed_until: nil)
     # Fixture sessions count too — every row in the table has to land in exactly
-    # one of the two scopes, which is the property being asserted.
+    # one of the three scopes, which is the property being asserted.
 
-    assert_equal Session.count, Session.board_visible.count + Session.board_hidden.count
+    assert_equal Session.count,
+      Session.board_visible.count + Session.board_hidden.count + Session.board_backlogged.count
     assert_empty Session.board_visible.where(id: Session.board_hidden.select(:id))
+    assert_empty Session.board_visible.where(id: Session.board_backlogged.select(:id))
+    assert_empty Session.board_hidden.where(id: Session.board_backlogged.select(:id))
+  end
+
+  test "a backlogged session is off the board, has no end time, and is its own pile" do
+    session = make_session(visibility: SessionVisibility::BACKLOGGED)
+
+    assert session.valid?
+    assert session.backlogged?
+    assert_not session.board_visible?
+    assert_not session.snooze_active?
+    assert_equal SessionVisibility::BACKLOGGED, session.effective_visibility
+    assert_includes session.visibility_summary, "Backlogged"
+    assert_includes Session.board_backlogged.pluck(:id), session.id
+    assert_not_includes Session.board_visible.pluck(:id), session.id
+    assert_not_includes Session.board_hidden.pluck(:id), session.id
+  end
+
+  test "board_visibility_filter maps each filter option onto its scope" do
+    visible = make_session
+    hidden = make_session(visibility: SessionVisibility::HIDDEN)
+    snoozed = make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 3.days.from_now)
+    backlogged = make_session(visibility: SessionVisibility::BACKLOGGED)
+    mine = Session.where(id: [ visible, hidden, snoozed, backlogged ].map(&:id))
+    ids = ->(filter, **opts) { mine.board_visibility_filter(filter, **opts).pluck(:id).sort }
+
+    assert_equal [ visible.id ], ids.("on_board")
+    assert_equal [ hidden.id, snoozed.id ].sort, ids.("off_board")
+    assert_equal [ backlogged.id ], ids.("backlogged")
+    assert_equal mine.pluck(:id).sort, ids.("all")
+    # Unset or unknown: the dashboard falls back to the tidied board, the listings
+    # to everything.
+    assert_equal [ visible.id ], ids.(nil)
+    assert_equal [ visible.id ], ids.("somewhen")
+    assert_equal mine.pluck(:id).sort, ids.(nil, unset_means_all: true)
+    assert_equal mine.pluck(:id).sort, ids.("somewhen", unset_means_all: true)
   end
 
   test "a snooze with no end time is refused on write" do

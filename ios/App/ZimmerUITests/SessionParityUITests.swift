@@ -43,7 +43,7 @@ final class SessionParityUITests: XCTestCase {
 
         // Restore from the trash with a swipe.
         app.buttons["board.menu"].tap()
-        app.buttons["Both"].firstMatch.tap()
+        app.buttons["All"].firstMatch.tap()
         tapFilter(app, "archived")
         let trashed = row(app, 1019)
         XCTAssertTrue(trashed.waitForExistence(timeout: timeout))

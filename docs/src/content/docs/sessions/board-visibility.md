@@ -1,6 +1,6 @@
 ---
 title: Board visibility
-description: Snooze or hide a session's card to tidy the dashboard. A second axis beside status that decides nothing — it changes what is drawn, never what runs.
+description: Snooze, hide or backlog a session's card to tidy the dashboard. A second axis beside status that decides nothing — it changes what is drawn, never what runs.
 sidebar:
   order: 11
 ---
@@ -17,6 +17,21 @@ whose only job is deciding whether the card is on screen.
 | `visible` | On the board. The default; every session starts here. |
 | `hidden` | Off the board until you put it back. No end time. |
 | `snoozed` | Off the board until `snoozed_until`, then back on its own. |
+| `backlogged` | In the backlog: off the board with no end time, because it is low priority. Shown only on the *Backlogged* and *All* views. |
+
+## The backlog
+
+`backlogged` is "snooze indefinitely". It is for a session that has made real progress — work you
+want kept, not thrown away — but that you do not mean to continue for now because something else
+matters more.
+
+It differs from `hidden` in one way that matters: it is its own pile. *Snoozed & hidden* is where
+cards go to be out of the way for a while; the backlog is somewhere you go back to on purpose when
+you have room, so the board shows it on its own rather than mixed in with the rest.
+
+Like the other values, it decides nothing. A backlogged session keeps its status, scheduling class
+and precedence, and runs exactly when it would have. If the work itself should wait, that is
+`change_precedence`, `change_scheduling_class` or `pause` — not the backlog.
 
 ## It decides nothing
 
@@ -63,38 +78,44 @@ The stored choice is left alone. A session whose snooze ran out last week still 
 the column; it is `effective_visibility` that reports `"visible"`. Read the first to know whether a
 snooze was ever set, the second to decide whether to draw something.
 
-`board_hidden` is the exact complement, and `Session#board_visible?` is the row-level counterpart
+`board_hidden` (snoozed & hidden) and `board_backlogged` (the backlog) are the other two parts of a
+partition — every session is in exactly one of the three — and `Session#board_visible?` is the row-level counterpart
 that must answer identically — the dashboard filters with the scope and draws badges with the
 predicate, and the two disagreeing would put a card on screen that the page believes is not there.
 
 ## Using it
 
-**On a card.** The ⋮ menu on every session card — in both flat sort views — offers *Snooze until…*
-and *Hide*. The snooze panel holds a
+**On a card.** The ⋮ menu on every session card — in both flat sort views — offers *Snooze until…*,
+*Hide* and *Move to backlog*. The snooze panel holds a
 handful of presets (later today, tomorrow, in 3 days, this weekend, next week) and a
 date/time picker for anything else. The presets are computed in **your browser's** timezone, so
 "Tomorrow" means your 9am.
 
 **In the User view.** Every row carries a **Snooze** button of its own, next to Merge and Trash —
-the same panel, opened inline rather than from behind a ⋮. That view is the board an operator is
+the same panel, opened inline rather than from behind a ⋮, with *Hide* and *Move to backlog* at its
+foot. That view is the board an operator is
 actually tidying, so the control is one click rather than two.
 
-**In the Ranked view.** The compact row's ⋮ menu carries the same two entries and the same panel.
+**In the Ranked view.** The compact row's ⋮ menu carries the same three entries and the same panel.
 The ranked queue is a list of work that has not started, which makes it exactly the list worth
 thinning out — and snoozing a row there leaves its precedence untouched, so the queue behind it does
 not move.
 
-**On the session page.** A *Snooze* pill in the header; on a phone, a row in the bottom sheet.
+**On the session page.** A *Snooze* pill in the header (it reads *Backlogged* while the session is
+in the backlog), whose popover carries *Hide* and *Move to backlog*; on a phone, rows in the bottom
+sheet.
 
 ## Finding a session you hid
 
-The dashboard's **Filters → Board visibility** control has three settings: *On board* (the default),
-*Snoozed & hidden*, and *Both*. When anything is tucked away, the legend says how many, so a board
+The dashboard's **Filters → Board visibility** control has four settings: *On board* (the default),
+*Snoozed & hidden*, *Backlogged*, and *All*. *All* is every session, whatever its visibility. When anything is tucked away or backlogged, the
+legend says how many of each ("2 sessions tucked away · 5 backlogged"), so a board
 that is holding cards back always says so. The number arrives with the board itself, a moment after
 the page: it is counted through every other filter, so it costs what the board costs (see
 [how the page loads](/sessions/user-view/#how-the-page-loads)).
 
-Revealed cards carry a badge saying which kind of tucking-away it is and, for a snooze, when it ends
+Revealed cards carry a badge saying which kind of tucking-away it is (*Hidden*, *Snoozed*, or an
+amber *Backlog*) and, for a snooze, when it ends
 — and their menu grows a *Put back on the board* row. Nothing is ever unrecoverable.
 
 ## Over the API and MCP
@@ -107,10 +128,12 @@ whether work runs.
   `snoozed_until` on every serialized session. See
   [Board visibility](/extend/rest-api/#board-visibility).
 - **MCP** — `action_session` with `action: "set_visibility"`, and a `**Visibility:**` line on
-  `quick_search_sessions` and `get_session` results whenever a session is tucked away.
+  `quick_search_sessions` and `get_session` results whenever a session is tucked away. The filter
+  values are `on_board`, `off_board` (snoozed & hidden), `backlogged` and `all`; `get_user_view`
+  defaults to `on_board`, the search to unfiltered.
 
 One default is deliberate and worth knowing about: **agent-facing session search is unfiltered on
-this axis.** `quick_search_sessions` and `GET /sessions` return hidden and snoozed sessions unless
+this axis.** `quick_search_sessions` and `GET /sessions` return hidden, snoozed and backlogged sessions unless
 you explicitly pass `visibility`. Zimmer's own agents call that search to check whether a piece of
 work already has a session; a session a human tidied off their board is still that session, and
 hiding it from a duplicate check would produce duplicate work with no visible cause. Human-facing

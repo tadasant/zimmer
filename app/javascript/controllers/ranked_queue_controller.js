@@ -45,7 +45,7 @@ export default class extends Controller {
     // "spot", "priority", or "" for both.
     priorityClassFilter: String,
     // Which board this is: "on_board" (the default, which leaves snoozed and
-    // hidden rows out), "off_board", or "all". Presentation only — it decides
+    // hidden rows out), "off_board", "backlogged", or "all". Presentation only — it decides
     // what is drawn and nothing about what runs.
     visibilityFilter: String,
     // False when a search, an agent root or a genesis is narrowing this page.
@@ -135,6 +135,7 @@ export default class extends Controller {
       precedence: element.dataset.precedence,
       // The string "true"/"false" the server rendered; compared as such below.
       onBoard: element.dataset.onBoard !== "false",
+      backlogged: element.dataset.backlogged === "true",
       row: source ? document.importNode(source, true) : null
     }
   }
@@ -183,7 +184,8 @@ export default class extends Controller {
     // pushed back onto their queue by its next status change — the one way a
     // presentation-only axis could look like it was not working.
     if (this.visibilityFilterValue === "on_board" && !envelope.onBoard) return false
-    if (this.visibilityFilterValue === "off_board" && envelope.onBoard) return false
+    if (this.visibilityFilterValue === "off_board" && (envelope.onBoard || envelope.backlogged)) return false
+    if (this.visibilityFilterValue === "backlogged" && !envelope.backlogged) return false
     return true
   }
 

@@ -166,15 +166,92 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     assert_select board_row(legacy), text: /Snoozed/
   end
 
-  test "the both filter shows everything" do
+  test "the all filter shows everything" do
     on_board = make_session(title: "On the board")
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
+    backlogged = make_session(title: "Parked", visibility: SessionVisibility::BACKLOGGED)
 
     get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
 
     assert_response :success
     assert_select board_row(on_board), 1
     assert_select board_row(hidden), 1
+    assert_select board_row(backlogged), 1
+  end
+
+  # ---- The backlog -----------------------------------------------------------
+
+  test "backlogs a session and answers with the board state" do
+    session = make_session(status: :waiting, scheduling_class: "spot", precedence: 777)
+
+    patch update_visibility_session_path(session),
+      params: { visibility: "backlogged" }.to_json,
+      headers: { "Content-Type" => "application/json", "Accept" => "application/json" }
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal "backlogged", body["visibility"]
+    assert_equal false, body["board_visible"]
+    session.reload
+    assert_equal SessionVisibility::BACKLOGGED, session.visibility
+    assert_nil session.snoozed_until
+    # Presentation only: nothing the scheduler reads moved.
+    assert_equal "waiting", session.status
+    assert_equal "spot", session.scheduling_class
+    assert_equal 777, session.precedence
+  end
+
+  test "the backlog is off the default board and out of Snoozed & hidden" do
+    on_board = make_session(title: "On the board")
+    hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
+    backlogged = make_session(title: "Parked", visibility: SessionVisibility::BACKLOGGED)
+
+    get dashboard_board_path
+    assert_select board_row(on_board), 1
+    assert_select board_row(backlogged), 0
+
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "off_board" }
+    assert_select board_row(hidden), 1
+    assert_select board_row(backlogged), 0
+  end
+
+  test "the backlogged filter shows the backlog and only that, with a badge and a way back" do
+    on_board = make_session(title: "On the board")
+    hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
+    backlogged = make_session(title: "Parked", visibility: SessionVisibility::BACKLOGGED)
+
+    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "backlogged" }
+
+    assert_response :success
+    assert_select board_row(backlogged), 1
+    assert_select board_row(backlogged), text: /Backlog/
+    assert_select "#{board_row(backlogged)} [data-action='visibility#restore']", minimum: 1
+    assert_select "#{board_row(backlogged)} [data-action='visibility#backlog']", 0,
+      "an already-backlogged row is not offered the backlog again"
+    assert_select board_row(on_board), 0
+    assert_select board_row(hidden), 0
+  end
+
+  test "the board counts the backlog apart from the tucked-away sessions" do
+    make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
+    make_session(title: "Parked", visibility: SessionVisibility::BACKLOGGED)
+    make_session(title: "Also parked", visibility: SessionVisibility::BACKLOGGED)
+
+    get dashboard_board_path
+
+    assert_select "turbo-stream[action=update][target=off-board-count] template",
+      text: /1 session tucked away · 2 backlogged/
+  end
+
+  test "the Filters section offers the four board-visibility options" do
+    get root_path
+
+    assert_response :success
+    %w[on_board off_board backlogged all].each do |value|
+      assert_select "input[type=radio][name=visibility][value=#{value}]", 1
+    end
+    assert_select "label[for=visibility-filter-backlogged]", text: /Backlogged/
+    assert_select "label[for=visibility-filter-all]", text: /All/
   end
 
   test "the board says how many sessions it is holding back" do

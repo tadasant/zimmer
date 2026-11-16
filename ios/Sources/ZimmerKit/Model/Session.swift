@@ -91,7 +91,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     public var trashAfter: Date?
     public var goal: String?
     public var notes: String?
-    /// The stored board-visibility choice: `visible`, `hidden` or `snoozed`.
+    /// The stored board-visibility choice: `visible`, `hidden`, `snoozed` or `backlogged`.
     public var visibility: SessionVisibility?
     /// That choice with an expired snooze already resolved back to visible — what a board draws.
     public var effectiveVisibility: SessionVisibility?
@@ -334,7 +334,7 @@ public struct McpServerStatus: Hashable, Sendable, Codable {
 /// Board visibility: how a person tidies their board. It never starts, stops or reorders a
 /// session — that is `status`. A snoozed session comes back on its own when the time passes.
 public enum SessionVisibility: String, Hashable, Sendable, Codable {
-    case visible, hidden, snoozed
+    case visible, hidden, snoozed, backlogged
 
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)

@@ -5,7 +5,7 @@ import { showAlert } from "lib/toast"
 
 // Connects to data-controller="visibility"
 //
-// Board visibility: "Snooze until…" and "Hide" — the presentation-only axis that
+// Board visibility: "Snooze until…", "Hide" and "Move to backlog" — the presentation-only axis that
 // tidies the dashboard. It changes what is on screen and nothing else: no
 // session is started, stopped, slept or woken by anything in this file. Nothing
 // in the web UI sleeps a session at all; that is `wake_me_up_later` and
@@ -80,7 +80,16 @@ export default class extends Controller {
     this._post({ visibility: "hidden" }, "Hidden from the board.")
   }
 
-  // Put a hidden or snoozed session back. Only rendered while the session is
+  // Park the session in the backlog: off the board with no end time, shown only
+  // on the Backlogged and All views. Like a snooze, it changes nothing about when
+  // the session runs.
+  backlog(event) {
+    event.preventDefault()
+    event.stopPropagation()
+    this._post({ visibility: "backlogged" }, "Moved to the backlog.")
+  }
+
+  // Put a hidden, snoozed or backlogged session back. Only rendered while the session is
   // tucked away, which is only while the board is revealing them.
   restore(event) {
     event.preventDefault()
@@ -107,8 +116,7 @@ export default class extends Controller {
   async _post(body, confirmation) {
     this._setStatus(confirmation)
     this._close()
-    const leaving = body.visibility !== "visible"
-    const removed = leaving ? this._takeOffBoard() : null
+    const removed = this._takeOffBoard(body.visibility)
 
     let data
     try {
@@ -133,12 +141,12 @@ export default class extends Controller {
     Turbo.visit(window.location.href, { action: "replace" })
   }
 
-  // The card or row this control sits in, off the board — unless the board is
-  // revealing tucked-away sessions, the one case it still belongs there. Returns
-  // what left and where it was, for `_putBack`; null when nothing left.
-  _takeOffBoard() {
+  // The card or row this control sits in, off the board — unless the board on
+  // screen shows sessions with the visibility it is changing to. Returns what left
+  // and where it was, for `_putBack`; null when nothing left.
+  _takeOffBoard(visibility) {
     const unit = this.element.closest("[data-visibility-unit]")
-    if (!unit || this._boardReveals()) return null
+    if (!unit || this._boardShows(visibility)) return null
     // A card sits inside its own <turbo-frame>; taking the frame with it stops
     // an empty frame being left behind for a live status broadcast to fill.
     const parent = unit.parentElement
@@ -157,14 +165,21 @@ export default class extends Controller {
     showAlert(`${message} Nothing changed.`)
   }
 
-  // Whether the page currently on screen is showing tucked-away sessions. The
-  // dashboard states its own filter; anywhere else (the session detail page) has
-  // no board to take a card off, so the answer is "yes, keep it".
-  _boardReveals() {
+  // Whether the page currently on screen shows a session with `visibility`. The
+  // dashboard states its own filter — the four of SessionVisibility::FILTER_OPTIONS;
+  // anywhere else (the session detail page) has no board to take a card off, so
+  // the answer is "yes, keep it". An unrecognized filter keeps the card too: the
+  // server's redraw is the safer judge than a guess here.
+  _boardShows(visibility) {
     const board = document.querySelector("[data-board-visibility-filter]")
     if (!board) return true
 
-    return board.dataset.boardVisibilityFilter !== "on_board"
+    switch (board.dataset.boardVisibilityFilter) {
+      case "on_board": return visibility === "visible"
+      case "off_board": return visibility === "hidden" || visibility === "snoozed"
+      case "backlogged": return visibility === "backlogged"
+      default: return true
+    }
   }
 
   // --- presets ---

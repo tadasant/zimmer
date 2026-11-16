@@ -24,6 +24,15 @@ class Sessions::SetVisibilityTest < ActiveSupport::TestCase
     }.merge(attrs))
   end
 
+  test "backlogs a session, clearing any snooze time" do
+    session = make_session(visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
+
+    Sessions::SetVisibility.call(session: session, visibility: "backlogged")
+
+    assert_equal SessionVisibility::BACKLOGGED, session.reload.visibility
+    assert_nil session.snoozed_until
+  end
+
   test "hides a session" do
     session = make_session
 
