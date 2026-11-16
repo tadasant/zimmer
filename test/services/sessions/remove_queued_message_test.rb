@@ -53,6 +53,15 @@ class Sessions::RemoveQueuedMessageTest < ActiveSupport::TestCase
     assert_equal [ [ "A", 1 ], [ "C", 3 ], [ "D", 4 ] ], queue
   end
 
+  test "closes the gap in the message's own session only" do
+    other = sessions(:needs_input)
+    other_rows = (1..3).map { |i| other.enqueued_messages.create!(content: "other #{i}", status: "pending", position: i) }
+
+    Sessions::RemoveQueuedMessage.call(@a)
+
+    assert_equal [ 1, 2, 3 ], other_rows.map { |m| m.reload.position }
+  end
+
   private
 
   def queue

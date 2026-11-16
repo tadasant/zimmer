@@ -10,10 +10,10 @@ module Sessions
   #
   # It runs under the session's queue lock (Sessions::QueueTail.lock!), the one
   # every append and every EnqueuedMessage#reorder_to takes, and re-reads the
-  # message's position under it. Without the lock a delete decremented the rows
-  # behind a position read before its transaction began, so racing a move it
-  # could leave a gap, fail the deferred `(session_id, position)` unique
-  # constraint at COMMIT, or deadlock on the rows both were shifting.
+  # message's position under it. A position read outside the lock can belong to
+  # a queue another writer is halfway through rewriting; decrementing from it
+  # leaves a gap, fails the deferred `(session_id, position)` unique constraint
+  # at COMMIT, or deadlocks on the rows both writers are shifting.
   #
   # A message deleted, delivered or reordered away from the caller's copy is
   # handled by the re-read: a row that is gone is left alone (shifting its old
