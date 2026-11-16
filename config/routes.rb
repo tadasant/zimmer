@@ -76,6 +76,7 @@ Rails.application.routes.draw do
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
     # already answered.
     resources :trigger_event_claims, only: [ :index, :show ]
+    resources :trigger_shadow_observations, only: [ :index, :show ]
     resources :webhook_deliveries, only: [ :index, :show ]
     # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
     resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]

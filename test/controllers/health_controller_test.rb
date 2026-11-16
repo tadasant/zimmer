@@ -216,6 +216,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
 
     assert_select "h4 span", text: "webhook_shadow"
     assert_select "[data-testid=github-shadow-comparison]" do
+      assert_select "a[href='#{supervisor_trigger_shadow_observations_path}']"
       assert_select "dt", text: "Matched"
       assert_select "dt", text: "Poll only"
       assert_select "dd.text-yellow-600", text: "1"
