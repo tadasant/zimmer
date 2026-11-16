@@ -43,6 +43,19 @@
   <%= turbo_stream_from "session_#{@session.id}_status" %>
   <%= turbo_stream_from "session_#{@session.id}_elicitations" %>
 
+  <% if @prefetched_detail %>
+    <%# This body answered a background prefetch from the dashboard's list
+        (SessionsController#allow_prefetch_reuse), so the browser may show it from
+        its cache up to two minutes later, and the server never saw that showing.
+        session-activation runs only once the body is actually on screen — a
+        cached response sitting in the HTTP cache runs nothing — and re-requests
+        it for real: that request records the view, and its answer reconciles the
+        live regions with anything broadcast since the prefetch. %>
+    <div hidden data-controller="session-activation"
+         data-session-activation-url-value="<%= request.fullpath %>"
+         <% if in_drawer %>data-session-activation-frame-value="session_detail"<% end %>></div>
+  <% end %>
+
   <% if @session.recently_recovered? %>
     <%# Recovery is announced, not acted on: the cable-reconnect controller above
         re-subscribes any stream source that is actually dead, keyed on the

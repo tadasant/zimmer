@@ -583,6 +583,18 @@ module SessionsHelper
     data.merge(extra)
   end
 
+  # The data attributes of a session row's View link on a dashboard list: the
+  # drawer pair above, plus the target session_prefetch_controller.js fetches in
+  # the background so the click paints from the browser's cache.
+  #
+  # turbo_prefetch: false keeps Turbo's own hover prefetch off these links. It
+  # would fetch the full page, which a plain click (the drawer) never loads, and
+  # its in-memory cache holds one entry; the list prefetcher fetches what the
+  # click will load, for every row, into the HTTP cache instead.
+  def session_list_link_data(agent_session)
+    session_drawer_link_data(agent_session, turbo_prefetch: false, session_prefetch_target: "link")
+  end
+
   # What clicking Restart is about to do to this session, as a sentence to
   # confirm before it happens — or nil where the button should just fire.
   #

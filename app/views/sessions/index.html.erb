@@ -26,7 +26,8 @@
     with its badge) on one that is revealing them. %>
 <div class="min-h-screen bg-gray-50"
      data-board-visibility-filter="<%= @visibility_filter %>"
-     data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery session-drawer">
+     data-controller="pull-to-refresh dashboard-notes stream-visibility-recovery session-drawer session-prefetch"
+     data-action="session-drawer:opened->session-prefetch#pause session-drawer:closed->session-prefetch#resume">
   <%= turbo_stream_from "sessions_index_individual" %>
   <%= turbo_stream_from "notification_badge" %>
   <!-- Ultrawide: sidebar + content layout. Below 2xl: stacked layout -->

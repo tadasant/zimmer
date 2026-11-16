@@ -8,6 +8,21 @@ class AgentRootsConfigTest < ActiveSupport::TestCase
   # than a live check.
   CLONABLE_ROOT_URLS = [ "https://github.com/tadasant/zimmer.git" ].freeze
 
+  test "memoized builds the catalog once for the block and not after it" do
+    outside = AgentRootsConfig.all
+    inner = nil
+
+    AgentRootsConfig.memoized do
+      inner = AgentRootsConfig.all
+      assert_same inner, AgentRootsConfig.all, "one build inside the block"
+      AgentRootsConfig.memoized { assert_same inner, AgentRootsConfig.all, "a nested block shares the memo" }
+      assert_same inner, AgentRootsConfig.all, "a nested block does not end the outer memo"
+    end
+
+    assert_not_same inner, AgentRootsConfig.all, "the memo ends with the block"
+    assert_not_same outside, AgentRootsConfig.all
+  end
+
   test "loads agent roots from config file" do
     agent_roots = AgentRootsConfig.all
 

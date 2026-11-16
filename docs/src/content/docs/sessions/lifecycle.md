@@ -3068,6 +3068,67 @@ controller tests pin the `transcript` param itself, including that only the exac
 the disclosure. Opening `/sessions/:id/drawer` by hand is not a supported way to read a session — it
 answers with a bare frame and no chrome — it is the drawer's own address.
 
+### The dashboard prefetches what View opens
+
+Every session row on the dashboard — the card grid's **View**, a Ranked row's title, a User view
+row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
+browser is idle, it fetches the detail of the rows on screen (and a screen's worth either side) in
+the background, so a click paints from the browser's HTTP cache instead of waiting on the server.
+
+It fetches what the click will load, because that is the only copy the click can reuse. At `sm`
+and wider a plain click opens the drawer, so the row's **drawer url** is fetched, with the frame's
+`Turbo-Frame: session_detail` header. Below `sm` the drawer declines and the link navigates, so
+the link's **full-page** href is fetched. A browser that has opened a session from a list in a new
+tab (⌘/Ctrl/Shift-click or middle-click) in the last fortnight gets the full pages too, after
+every drawer url — a second pass that doubles the requests, so it is not made for everyone.
+
+The prefetch is an ordinary `fetch()` with `X-Sec-Purpose: prefetch`, which the server answers
+differently in exactly three ways (`SessionsController#allow_prefetch_reuse`):
+
+- **It is cacheable.** `Cache-Control: private, max-age=120`. Every request a human makes keeps
+  Rails' `max-age=0, must-revalidate`, so only a prefetch can put a reusable copy in the cache.
+- **It is keyed on `Turbo-Frame`, not `Accept`.** These bodies are HTML whatever `Accept` says,
+  and a browser navigation (a new tab) sends a different `Accept` from the `fetch()` that
+  prefetched it, so `Vary: Accept` would make every new tab miss.
+- **It records nothing.** Like Turbo's hover prefetch, it neither marks the session's notifications
+  read nor counts as a view (`SpeculativeRequest`).
+
+That last point means a click served from the cache never reaches the server as a view. So the
+prefetched body carries a hidden `session-activation` marker. Nothing runs while the body sits in
+the cache — it is bytes, not a document, so no socket opens, no deferred panel loads and no
+polling starts. Once the body is actually rendered, the marker removes itself (so a Turbo snapshot
+cannot replay it) and re-requests the same URL for real, at once. That request is the view
+(notifications read, touch recorded), and it is not cancelled if the drawer closes a second later,
+so a quick look still counts. Its answer is reconciled into the page's `data-live-region`s with the
+same code as [the reopen backfill](#the-reopen-backfill), scoped to the detail body, so anything
+broadcast since the prefetch lands in place. It is fetched with `cache: "reload"`, which replaces
+the prefetched copy with an ordinary must-revalidate one.
+
+Every prefetch is a full detail render on a web server with three threads, which also serve the
+agents' MCP calls, so the load is kept small on purpose:
+
+- Only rows on or near the screen, never the whole list — a User view can hold hundreds.
+- One request at a time, top row first, starting once the page has loaded and the browser is idle.
+- Opening the drawer aborts the request in flight and holds the queue, so the session being read
+  has the server to itself.
+- Nothing on Save-Data, a 2G connection or a hidden tab.
+- A url fetched in the last 100 seconds is not fetched again; prefetches use `cache: "reload"`, so
+  that clock and the cached copy's 120-second lifetime start together.
+- A dashboard nobody is using does not refresh itself. A row a broadcast re-renders is fetched only
+  if it never was. Expired copies are fetched again when the tab comes back into view or the reader
+  moves or scrolls, and hovering a row with a mouse moves it to the front.
+
+Signing out sends `Clear-Site-Data: "cache"`, so no prefetched page outlives the sign-in in that
+browser.
+
+The server keys on the header, not on who sent it, so Turbo's own hover prefetch of a session link
+elsewhere (the health page's **View** links, say) gets the same cacheable, marked answer. That is
+deliberate: Turbo serves such a click from its own prefetch, so without the marker that click
+would never be counted as a view.
+
+`test/controllers/sessions_controller_prefetch_test.rb` pins the server's half: the headers, the
+marker, and that a prefetch marks nothing read while the activation request does.
+
 ### The reopen backfill
 
 iOS suspends a backgrounded standalone PWA. The process stops and the WebSocket dies with it, so

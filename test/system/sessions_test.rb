@@ -1047,7 +1047,12 @@ class SessionsTest < ApplicationSystemTestCase
     # server runs in this process, so a queue is enough to gate it.
     release = Queue.new
     original = SessionsController.instance_method(:drawer)
+    # The dashboard's background prefetch reaches this action too. It is refused
+    # here: a prefetched copy would answer the click from the cache, and the
+    # prefetch would take the release meant for the click.
     SessionsController.define_method(:drawer) do
+      next head(:service_unavailable) if prefetch_request?
+
       release.pop(timeout: 15)
       original.bind_call(self)
     end
@@ -1107,7 +1112,12 @@ class SessionsTest < ApplicationSystemTestCase
 
     release = Queue.new
     original = SessionsController.instance_method(:drawer)
+    # The dashboard's background prefetch reaches this action too. It is refused
+    # here: a prefetched copy would answer the click from the cache, and the
+    # prefetch would take the release meant for the click.
     SessionsController.define_method(:drawer) do
+      next head(:service_unavailable) if prefetch_request?
+
       release.pop(timeout: 15)
       original.bind_call(self)
     end

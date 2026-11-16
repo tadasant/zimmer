@@ -192,10 +192,14 @@ function syncChildren(live, source) {
 
 // Reconcile every marked region in `document` against the same region in a
 // freshly fetched copy of the page. Returns the number of regions changed.
-export function backfillLiveRegions(freshDocument) {
+//
+// `within` narrows that to the regions inside one element. The drawer passes its
+// detail body: the fresh copy is a drawer body, and a dashboard region that
+// happens to share an id with something in it is not the drawer's to rewrite.
+export function backfillLiveRegions(freshDocument, { within = document } = {}) {
   let changed = 0
 
-  for (const live of document.querySelectorAll("[data-live-region][id]")) {
+  for (const live of within.querySelectorAll("[data-live-region][id]")) {
     // A region nested inside one that was just replaced is already current, and
     // its node is no longer in the document.
     if (!live.isConnected) continue

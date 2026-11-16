@@ -63,6 +63,7 @@ class WebSignInsController < ApplicationController
   def destroy
     WebAuth::Cookies.sign_out(cookies)
     reset_session
+    forget_cached_pages
     redirect_to login_path, notice: "Signed out."
   end
 
@@ -71,10 +72,19 @@ class WebSignInsController < ApplicationController
     current_web_identity&.sign_out_everywhere!
     WebAuth::Cookies.sign_out(cookies)
     reset_session
+    forget_cached_pages
     redirect_to login_path, notice: "Signed out on every device."
   end
 
   private
+
+  # The dashboard prefetches session pages into the HTTP cache with a short
+  # max-age (SessionsController#allow_prefetch_reuse), which a browser serves
+  # without asking the server — and so without checking the sign-in. Signing out
+  # empties this origin's cache, so none of them outlives the sign-in.
+  def forget_cached_pages
+    response.headers["Clear-Site-Data"] = '"cache"'
+  end
 
   def require_enabled_gate
     redirect_to root_path unless web_auth_configuration.enabled?

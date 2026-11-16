@@ -202,10 +202,14 @@ export default class extends Controller {
     // underneath toward the panel's layout position — the exact "the page jumps
     // when I open the drawer" jiggle we want to avoid.
     this.panelTarget.focus({ preventScroll: true })
+    // session-prefetch holds its background queue while the drawer is out, so
+    // the session being read has the server to itself.
+    this.dispatch("opened")
   }
 
   close() {
     if (this.isClosed) return
+    this.dispatch("closed")
     // Move focus back to the trigger BEFORE hiding the panel, so focus is never
     // left inside an aria-hidden subtree. preventScroll keeps the dashboard from
     // jumping if the trigger sits just outside the viewport.

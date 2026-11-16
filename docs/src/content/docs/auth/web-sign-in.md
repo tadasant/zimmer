@@ -172,8 +172,12 @@ It has three buttons:
 - **Set up a new authenticator.** The old one keeps working until the new one is confirmed.
   Confirming issues a fresh set of recovery codes and signs you out of every other browser. This is
   how you move to a new phone.
-- **Sign out.** This browser only.
-- **Sign out everywhere.** Every browser signed in as you, this one included.
+- **Sign out.** This browser only. It also empties the browser's cache for Zimmer
+  (`Clear-Site-Data: "cache"`), so none of the session pages the dashboard
+  [prefetched](/sessions/lifecycle/#the-dashboard-prefetches-what-view-opens) outlives the sign-in.
+- **Sign out everywhere.** Every browser signed in as you, this one included. The other browsers'
+  caches are out of reach, so a page they prefetched stays readable there for up to two minutes
+  ([limitation](/limitations/)).
 
 `/supervisor/web_identities` lists everyone who has signed in. The rows are read-only. Deleting one
 signs that person out everywhere and voids their authenticator, so their next sign-in sets up a new

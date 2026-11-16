@@ -225,6 +225,30 @@ module ChunkedTranscript
     end
   end
 
+  # The complete lines in the first +chars+ characters of the stored transcript,
+  # read as a prefix of the first chunk rather than the chunk whole (a chunk is
+  # SessionTranscriptChunk::TARGET_BYTES). For a question about how the
+  # transcript begins — RuntimeConversationPresence asks one on every detail
+  # render — that is a few kilobytes instead of a quarter of a megabyte.
+  #
+  # The last line is dropped unless it ends inside the prefix, so every line
+  # returned is whole. Empty when the row cannot answer from chunks (a staged or
+  # legacy value), or when the first line alone is longer than the prefix: the
+  # caller then has to read the transcript the long way.
+  def transcript_head_lines(chars)
+    return [] if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript?
+
+    prefix = Arel::Nodes::NamedFunction.new(
+      "substr", [ SessionTranscriptChunk.arel_table[:content], Arel::Nodes.build_quoted(1), Arel::Nodes.build_quoted(Integer(chars)) ]
+    )
+    head = SessionTranscriptChunk.where(session_id: id).order(:seq).pick(prefix)
+    return [] if head.nil?
+
+    lines = head.lines
+    lines.pop unless lines.last&.end_with?("\n")
+    lines
+  end
+
   def reload(*)
     forget_transcript_cache
     super
