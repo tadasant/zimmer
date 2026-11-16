@@ -2002,7 +2002,11 @@ WARN, no page, and no heartbeat unless a condition polled cleanly before the lim
 limit that outlasts `CONSECUTIVE_RATE_LIMITED_SWEEPS_TO_ALERT` (5 sweeps) pages under
 *GitHub search API rate limit not clearing*, and a stale heartbeat backstops it either way. A spent
 REST **core** budget does not end the sweep: the preflight reports `:rate_limited` and the poller
-polls anyway, because the search budget is separate. When the GitHub liveness page does fire, its
+polls anyway, because the search budget is separate. A search the rate-limit breaker refuses counts
+as a rate limit here too: a spent search budget, a secondary-limit backoff (which grows to at most
+about 16 minutes, past the five-sweep streak, so a backoff that is not clearing still pages) or the
+few seconds of jitter after a reset. Zimmer's other search callers are held to the share the poller
+does not need, which makes them an unlikely cause of one. When the GitHub liveness page does fire, its
 details carry `GithubRateLimit.diagnosis`, which lists every budget known to be spent and when it
 resets. See
 [Rate-limit budget](/sessions/triggers/#rate-limit-budget), whose closing note covers this in full.

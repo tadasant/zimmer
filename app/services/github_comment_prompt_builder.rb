@@ -41,6 +41,13 @@ class GithubCommentPromptBuilder
     @visibility_lookup_failed.present?
   end
 
+  # True when the failed lookup was never sent: GithubRateLimit held it back. That says
+  # nothing about the repo, and it cost GitHub nothing, so it is no reason to give up on
+  # the comment. The breaker always reopens, and the lookup is asked for real then.
+  def visibility_lookup_refused?
+    @visibility_lookup_refused == true
+  end
+
   def build
     comment_data = comment_info[:data]
     comment_type = comment_info[:type]
@@ -289,6 +296,7 @@ class GithubCommentPromptBuilder
       # Default to true (treat as public) if API fails - better to skip a comment than to
       # act publicly on a repo we couldn't check. See #visibility_lookup_failed?
       @visibility_lookup_failed = true
+      @visibility_lookup_refused = result.refused?
       @repo_visibility_cache[cache_key] = true
       true
     end

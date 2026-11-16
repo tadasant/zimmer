@@ -2034,11 +2034,45 @@ every refused call still counted against the budget.
 - **A minute-by-minute reading.** `GithubRateLimitSnapshotJob` reads every credential's budgets once a
   minute, for free. A budget it finds spent trips the breaker before any caller is refused, and the
   reading feeds the liveness page's diagnosis.
+- **Callers come back spread out.** Every caller shares one breaker, so reopening it at exactly
+  GitHub's reset would send every waiting caller in the same second. Instead each call draws its own
+  reopen time between the reset and the reset plus `REOPEN_JITTER`: 30 seconds for core and graphql,
+  whose windows are an hour, and 5 seconds for search, whose window is a minute and whose one regular
+  caller, this poller, ticks once a minute. The refusal's `reset_at` stays GitHub's reset. Its
+  `retry_at` is that call's own reopen time.
+- **Exponential backoff where GitHub gives no reset time.** A secondary (burst) limit, a primary
+  refusal the probe cannot date (the probe failed, or still shows budget left, or still shows the
+  window that just passed) and a refusal met again right after a reopen all hold the breaker on a
+  capped exponential backoff with full jitter. The n-th hold in a row is `floor + rand(0 ..
+  min(15 min, 60s × 2^(n-1)))`. The floor is 60 seconds for a secondary limit, which is GitHub's
+  own rule for a limit with no `Retry-After`, and 5 seconds otherwise. (`gh` prints response headers
+  only with `gh api -i`, which no caller uses, so Zimmer never sees a `Retry-After`.) Concurrent
+  refusals of one limit count as one step. The first call GitHub serves resets the count. A 404, a
+  dropped connection or a refusal reported on stdout does not. A secondary limit is recognised by GitHub's whole sentence or a bare 429, and only when every
+  status `gh` printed is 403 or 429, so a query echoed in an error cannot forge one.
+- **The poller keeps its share of the search budget.** GitHub allows 30 searches a minute per user.
+  A cold Issues page load spends about 25 of them, and the hourly trigger health check spends one
+  per condition. Either could take the poller's tick. So searches outside the poller's sweep
+  (`GithubRateLimit.on_poller_budget`) may spend only what the poller's next tick will not need:
+  30 less one search per enabled GitHub condition, with that reserve capped at 15. Past that they
+  are answered locally until the window ends. The reserve is a lower bound, since a multi-page or
+  retried search spends more. Zimmer's window is dated from the first search, as GitHub dates its own,
+  but the two are not the same window. So a burst at the end of one window and another at the start
+  of the next can still land in one of GitHub's. The share makes a lost tick unlikely, not impossible. The Issues page names the repo it could not read, and
+  the health check stops for the hour, as both already do for a rate limit.
 
-There is no reserve that holds Zimmer's other callers back to save budget for the poller. The
-poller's sweep spends search, not core, and it polls through a spent core budget, so a core reserve
-would buy it nothing. It would only cost the merge gate its PR reads in the last stretch of a busy
-hour.
+Every `GithubCli.run` call site treats a refused call as "ask again later": one call, no retry in the
+same tick, and no definite answer built on it. `test/services/github_rate_limit_call_sites_test.rb`
+holds each of them to that. A job that ticks every 30 seconds against an open breaker is fine,
+because a refused call sends nothing. No GitHub failure reaches an ActiveJob `retry_on`. The two
+post-deploy importers raise into `PostDeployTaskJob`, which backs off from one minute to an hour. Two
+callers needed changes. A refused post-merge runs lookup is "could not tell", like an unreadable
+merge commit, and not "no runs". A repo-visibility lookup the breaker refused does not age a
+comment out of its one-hour retry window.
+
+There is no core or graphql reserve for the poller. Its sweep spends search, not core, and it polls
+through a spent core budget, so a core reserve would buy it nothing. It would only cost the merge
+gate its PR reads in the last stretch of a busy hour. The search share above is the only reserve.
 
 None of this touches the liveness page. If the poller polls nothing for 15 minutes for any reason,
 including a dead worker, a hung `gh`, bad credentials or both budgets spent, `TriggerPollerLivenessCheckJob`
@@ -2049,7 +2083,10 @@ being down.
 Everything here fails open. A cache that cannot be read, or a probe that cannot be parsed, means no
 breaker. The call then goes ahead as it would without this code.
 
-A GitHub App installation token would give the pollers a budget of their own that no session can
+None of this can hold back agent sessions. They run `gh` as the same user, outside `GithubCli`, so
+they spend core and search without asking the breaker or the share. A session's `gh search` can still
+take the poller's tick. A GitHub App installation token is the real fix for that. It would give the
+pollers a budget of their own, counted per installation rather than per user, that no session can
 spend. That is a credential change, not a code change, and it is not made here.
 
 :::caution[The query syntax is pinned on purpose]

@@ -567,6 +567,12 @@ class Github::PrStatusEvaluatorTest < ActiveSupport::TestCase
       evaluator.send(:post_merge_automation, MERGED_PR_URL)
     )
 
+    # Runs that could not be read are "we could not tell", like an unreadable merge commit,
+    # never "this merge fired nothing": that text tells the session to archive if it cannot
+    # check, and a spent REST budget stops the session's own `gh run list` too.
+    evaluator.stubs(:fetch_post_merge_runs).returns(nil)
+    assert_equal({ merge_commit_sha: nil, runs: [] }, evaluator.send(:post_merge_automation, MERGED_PR_URL))
+
     # An unreadable merge commit stops the second call from being worth making.
     evaluator.stubs(:fetch_merge_commit_sha).returns(nil)
     evaluator.expects(:fetch_post_merge_runs).never

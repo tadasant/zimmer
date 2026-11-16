@@ -399,6 +399,18 @@ class GithubCommentPromptBuilderTest < ActiveSupport::TestCase
     end
   end
 
+  test "a visibility lookup the rate-limit breaker held back is failed, and says it was refused" do
+    comment_info = build_comment_info_with_owner(type: "pr", body: "Test", author: "someone", owner: "outsider", repo: "repo")
+    builder = GithubCommentPromptBuilder.new(session: @session, comment_info: comment_info)
+    refusal = GithubRateLimit::Refusal.new(resource: "core", reset_at: 10.minutes.from_now, credential: "GH_TOKEN")
+    GithubRateLimit.stubs(:admit).returns(refusal)
+    BoundedSubprocess.expects(:run).never
+
+    assert builder.send(:public_repo?), "unanswered, so assumed public"
+    assert builder.visibility_lookup_failed?
+    assert builder.visibility_lookup_refused?
+  end
+
   test "public_repo? returns true when API call fails to err on side of caution" do
     comment_info = build_comment_info(
       type: "pr",
