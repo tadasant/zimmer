@@ -64,7 +64,7 @@ module Mcp
         - Monitor sessions that need human attention (status: "needs_input")
         - Read the spot queue in the order it will be worked: `status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`
 
-        **Board visibility is NOT a scheduling signal.** Sessions carry a second, entirely separate field — `visibility`: `visible`, `hidden`, or `snoozed` until a time — whose only purpose is letting a human tidy their dashboard. It does not affect whether, when, or in what order Zimmer runs anything, and no scheduler reads it. A result marked `**Visibility:**` is running, queued and ranked exactly as it would be otherwise; the human just is not looking at its card right now. **This search is unfiltered on that axis by default, deliberately** — a session hidden from a board must never be hidden from a duplicate check — so leave `visibility` unset unless you specifically want one side of it.
+        **Board visibility is NOT a scheduling signal.** Sessions carry a second, entirely separate field — `visibility`: `visible`, `hidden`, `snoozed` until a time, or `backlogged` (parked as low priority, no end time) — whose only purpose is letting a human tidy their dashboard. It does not affect whether, when, or in what order Zimmer runs anything, and no scheduler reads it. A result marked `**Visibility:**` is running, queued and ranked exactly as it would be otherwise; the human just is not looking at its card right now. **This search is unfiltered on that axis by default, deliberately** — a session hidden from a board must never be hidden from a duplicate check — so leave `visibility` unset unless you specifically want one side of it.
 
         **CarPlay fit** is a third axis, for a driver: whether what a session needs next from the human can be done by voice from a car (`carplay_ok`), needs a screen or keyboard (`laptop_only`), or has not been judged. Zimmer derives it from the status summary at every rest; a session started, followed up or acted on from CarPlay is marked `carplay_ok` with source `carplay`, a mark that does not go stale and is demoted only when a later judgement clearly finds a laptop-only step. A row reports its mark, with who wrote it and whether it is current. Filter on it with `carplay_fit` only when you are triaging for a driver — like visibility, it is unset by default and says nothing about scheduling.
 
@@ -143,8 +143,8 @@ module Mcp
           },
           visibility: {
             type: "string",
-            enum: [ "on_board", "off_board" ],
-            description: "Filter by BOARD VISIBILITY — presentation only, and unset by default. \"on_board\" is what a tidied dashboard shows (visible, plus snoozed sessions whose snooze has run out); \"off_board\" is the hidden and snoozed ones. This says nothing about scheduling: a snoozed session runs exactly when it otherwise would. Leave it unset for duplicate checks and any other question about what work exists — filtering here can only hide sessions that do exist."
+            enum: SessionVisibility::FILTER_OPTIONS,
+            description: "Filter by BOARD VISIBILITY — presentation only, and unset by default. \"on_board\" is what a tidied dashboard shows (visible, plus snoozed sessions whose snooze has run out); \"off_board\" is the hidden and snoozed ones; \"backlogged\" is the backlog (parked as low priority, no end time); \"all\" is every one, the same as leaving it unset. This says nothing about scheduling: a snoozed or backlogged session runs exactly when it otherwise would. Leave it unset for duplicate checks and any other question about what work exists — filtering here can only hide sessions that do exist."
           },
           carplay_fit: {
             type: "string",
@@ -452,12 +452,11 @@ module Mcp
         # that a human snoozed off their dashboard is still very much that session.
         # Filtering it out by default would produce duplicate work with no visible
         # cause.
-        case args["visibility"].to_s
-        when SessionVisibility::FILTER_ON_BOARD then scope = scope.board_visible
-        when SessionVisibility::FILTER_OFF_BOARD then scope = scope.board_hidden
-        when "" then nil
-        else
-          raise ToolError, "Invalid visibility: #{args['visibility']}. Valid: #{SessionVisibility::FILTER_ON_BOARD}, #{SessionVisibility::FILTER_OFF_BOARD}."
+        if (visibility = args["visibility"].to_s).present?
+          unless SessionVisibility::FILTER_OPTIONS.include?(visibility)
+            raise ToolError, "Invalid visibility: #{visibility}. Valid: #{SessionVisibility::FILTER_OPTIONS.join(', ')}."
+          end
+          scope = scope.board_visibility_filter(visibility)
         end
 
         # CarPlay fit: the driver's triage axis, applied only when asked for and for

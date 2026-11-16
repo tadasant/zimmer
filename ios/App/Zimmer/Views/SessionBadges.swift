@@ -102,7 +102,7 @@ struct PullRequestChip: View {
     }
 }
 
-/// "Snoozed until …" or "Hidden": shown wherever a tucked-away session is drawn.
+/// "Snoozed until …", "Hidden" or "Backlog": shown wherever a tucked-away session is drawn.
 struct VisibilityLabel: View {
     let session: SessionSummary
 
@@ -112,6 +112,8 @@ struct VisibilityLabel: View {
             EmptyView()
         case .hidden:
             Label("Hidden", systemImage: "eye.slash")
+        case .backlogged:
+            Label("Backlog", systemImage: "archivebox")
         case .snoozed:
             if let until = session.snoozedUntil {
                 Label {

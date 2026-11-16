@@ -18,7 +18,8 @@
 
     `data-on-board` is the fourth filterable fact, and it is presentation only: a
     page showing just on-board sessions must not have a snoozed or hidden row
-    pushed onto it by a status change elsewhere. Nothing about the session's
+    pushed onto it by a status change elsewhere, and `data-backlogged` keeps the
+    Snoozed & hidden and Backlogged pages apart the same way. Nothing about the session's
     scheduling is implied by it.
 
     Locals:
@@ -29,7 +30,8 @@
      data-status="<%= agent_session.status %>"
      data-scheduling-class="<%= agent_session.priority_class %>"
      data-precedence="<%= agent_session.precedence %>"
-     data-on-board="<%= agent_session.board_visible? %>">
+     data-on-board="<%= agent_session.board_visible? %>"
+     data-backlogged="<%= agent_session.backlogged? %>">
   <template>
     <%= render "sessions/ranked_row",
           agent_session: agent_session,

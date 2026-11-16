@@ -8,7 +8,8 @@
     stream updates the Filters legend the moment the frame lands. %>
 <%= turbo_frame_tag "sessions_board", target: "_top" do %>
   <%= turbo_stream.update "off-board-count",
-        (@off_board_count.to_i.positive? ? "#{pluralize(@off_board_count, "session")} tucked away" : "") %>
+        [ (@off_board_count.to_i.positive? ? "#{pluralize(@off_board_count, "session")} tucked away" : nil),
+          (@backlogged_count.to_i.positive? ? "#{@backlogged_count} backlogged" : nil) ].compact.join(" · ") %>
   <% if @view_mode == SessionsController::VIEW_MODE_USER %>
     <%# The User view: one list of everything the filters match, worked top to
         bottom. Search narrows it exactly as the status and visibility filters

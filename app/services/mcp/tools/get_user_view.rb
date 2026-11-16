@@ -96,7 +96,7 @@ module Mcp
           visibility: {
             type: "string",
             enum: SessionVisibility::FILTER_OPTIONS,
-            description: '"on_board" (default) hides the rows the user has snoozed or hidden — that is the board as drawn. "off_board" is only those; "all" is both.'
+            description: '"on_board" (default) hides the rows the user has snoozed, hidden or backlogged — that is the board as drawn. "off_board" is only the snoozed and hidden ones; "backlogged" is only the backlog (sessions parked as low priority, with no end time); "all" is every row. Presentation only: a snoozed or backlogged session runs exactly when it otherwise would.'
           },
           order: {
             type: "string",
@@ -271,11 +271,7 @@ module Mcp
           scope = scope.where("sessions.metadata->>'agent_root_key' = ?", args["agent_root"].to_s)
         end
 
-        scope = case args["visibility"].presence || SessionVisibility::FILTER_ON_BOARD
-        when SessionVisibility::FILTER_OFF_BOARD then scope.board_hidden
-        when SessionVisibility::FILTER_ALL then scope
-        else scope.board_visible
-        end
+        scope = scope.board_visibility_filter(args["visibility"])
 
         # The driver's axis. Only narrows when asked, and never reorders: a
         # laptop-only row keeps its place for the laptop.

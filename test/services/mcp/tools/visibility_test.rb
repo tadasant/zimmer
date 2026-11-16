@@ -136,6 +136,52 @@ class Mcp::Tools::VisibilityTest < ActiveSupport::TestCase
     assert_not_includes off, "ID: #{on_board.id}"
   end
 
+  test "set_visibility backlogs a session and says it is presentation only" do
+    session = make_session(status: :waiting, scheduling_class: "spot", precedence: 555)
+
+    result = @action.call(
+      "action" => "set_visibility", "session_id" => session.id, "visibility" => "backlogged"
+    )
+
+    assert_includes result, "Board Visibility Set"
+    session.reload
+    assert_equal SessionVisibility::BACKLOGGED, session.visibility
+    assert_equal "waiting", session.status
+    assert_equal 555, session.precedence
+    assert_match(/backlogged.*presentation-only/i, Mcp::Tools::ActionSession::VISIBILITY_DESC)
+  end
+
+  test "search separates the backlog from snoozed and hidden" do
+    hidden = make_session(title: "issue-4343 tidied", visibility: SessionVisibility::HIDDEN)
+    backlogged = make_session(title: "issue-4343 parked", visibility: SessionVisibility::BACKLOGGED)
+
+    unfiltered = @search.call("query" => "issue-4343")
+    assert_includes unfiltered, "ID: #{backlogged.id}"
+    assert_includes unfiltered, "Backlogged"
+
+    off = @search.call("query" => "issue-4343", "visibility" => "off_board")
+    assert_includes off, "ID: #{hidden.id}"
+    assert_not_includes off, "ID: #{backlogged.id}"
+
+    parked = @search.call("query" => "issue-4343", "visibility" => "backlogged")
+    assert_includes parked, "ID: #{backlogged.id}"
+    assert_not_includes parked, "ID: #{hidden.id}"
+  end
+
+  test "get_user_view leaves the backlog out by default and shows it when asked" do
+    on_board = make_session(title: "Working")
+    backlogged = make_session(title: "Parked", visibility: SessionVisibility::BACKLOGGED)
+    view = Mcp::Tools::GetUserView.new(context: Mcp::Context.new(tool_groups: "sessions"))
+
+    default = view.call({})
+    assert_includes default, "#{on_board.id}"
+    assert_not_includes default, "Parked"
+
+    parked = view.call("visibility" => "backlogged")
+    assert_includes parked, "Parked"
+    assert_not_includes parked, "Working"
+  end
+
   test "search rejects an unknown visibility filter" do
     assert_raises(Mcp::ToolError) do
       @search.call("visibility" => "everything-please")

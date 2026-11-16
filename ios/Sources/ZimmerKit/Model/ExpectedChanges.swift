@@ -4,7 +4,7 @@ import Foundation
 /// at the tap, before the server has answered, and the server's own row replaces them when it
 /// does — or the row goes back to what it was when the server refuses.
 extension SessionSummary {
-    /// Snoozed, hidden or back on the board, as `PATCH /visibility` answers.
+    /// Snoozed, hidden, backlogged or back on the board, as `PATCH /visibility` answers.
     public mutating func expect(_ change: VisibilityChange) {
         switch change {
         case .visible:
@@ -12,6 +12,9 @@ extension SessionSummary {
             snoozedUntil = nil
         case .hidden:
             visibility = .hidden
+            snoozedUntil = nil
+        case .backlogged:
+            visibility = .backlogged
             snoozedUntil = nil
         case let .snoozed(until):
             visibility = .snoozed

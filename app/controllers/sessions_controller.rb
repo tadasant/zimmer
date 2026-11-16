@@ -95,8 +95,11 @@ class SessionsController < ApplicationController
 
   # The Filters section's board-visibility control — the reveal affordance for the
   # second, presentation-only axis. "On board" is the default and hides the
-  # sessions the operator has tucked away; the other two are how a hidden session
-  # is always findable again, so nothing here is ever unrecoverable.
+  # sessions the operator has tucked away — snoozed, hidden or backlogged; the
+  # other three are how such a session is always findable again, so nothing here
+  # is ever unrecoverable. The backlog has its own option rather than sharing
+  # "Snoozed & hidden", because it is a pile the operator goes back to on purpose
+  # when they have room, not a card they want out of the way for a while.
   #
   # This narrows nothing else. A snoozed session is running, queued and ranked
   # exactly as it was — the filter decides what is drawn and stops there. The
@@ -104,6 +107,7 @@ class SessionsController < ApplicationController
   # search so all three spell the filter the same way.
   VISIBILITY_ON_BOARD = SessionVisibility::FILTER_ON_BOARD
   VISIBILITY_OFF_BOARD = SessionVisibility::FILTER_OFF_BOARD
+  VISIBILITY_BACKLOGGED = SessionVisibility::FILTER_BACKLOGGED
   VISIBILITY_ALL = SessionVisibility::FILTER_ALL
   VISIBILITY_FILTER_OPTIONS = SessionVisibility::FILTER_OPTIONS
   # The driver's triage axis. "" is the dashboard's default: unfiltered, every
@@ -2699,13 +2703,7 @@ class SessionsController < ApplicationController
     # view can silently forget it. An expired snooze is already "visible" to the
     # scope, which is how a snoozed session returns on its own with nothing having
     # written to its row. See SessionVisibility.
-    board_scope = lambda do |scope|
-      case @visibility_filter
-      when VISIBILITY_OFF_BOARD then scope.board_hidden
-      when VISIBILITY_ALL then scope
-      else scope.board_visible
-      end
-    end
+    board_scope = ->(scope) { scope.board_visibility_filter(@visibility_filter) }
 
     sessions = base_scope.call(Session.all)
 
@@ -2743,6 +2741,7 @@ class SessionsController < ApplicationController
     # somewhere in the table — the number exists to talk them into revealing, and
     # it is only persuasive if revealing actually produces those three.
     @off_board_count = sessions.board_hidden.count
+    @backlogged_count = sessions.board_backlogged.count
     sessions = board_scope.call(sessions)
 
     # The driver's axis, applied only when the Filters form asked for one bucket.
@@ -3495,6 +3494,7 @@ class SessionsController < ApplicationController
     case session.visibility
     when SessionVisibility::HIDDEN then "Session #{session.id} hidden from the board."
     when SessionVisibility::SNOOZED then "Session #{session.id} snoozed until #{session.snoozed_until}."
+    when SessionVisibility::BACKLOGGED then "Session #{session.id} moved to the backlog."
     else "Session #{session.id} is back on the board."
     end
   end

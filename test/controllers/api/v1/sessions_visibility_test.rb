@@ -147,4 +147,33 @@ class Api::V1::SessionsVisibilityTest < ActionDispatch::IntegrationTest
     assert_includes ids, hidden.id
     assert_not_includes ids, on_board.id
   end
+
+  test "the listing separates the backlog from snoozed and hidden" do
+    on_board = make_session
+    hidden = make_session(visibility: SessionVisibility::HIDDEN)
+    backlogged = make_session(visibility: SessionVisibility::BACKLOGGED)
+    listed = lambda do |params|
+      get api_v1_sessions_path, params: params.merge(per_page: 100), headers: @headers
+      assert_response :success
+      JSON.parse(response.body)["sessions"].map { |s| s["id"] }
+    end
+
+    assert_includes listed.({}), backlogged.id, "the default listing is unfiltered, the backlog included"
+    assert_not_includes listed.({ visibility: "on_board" }), backlogged.id
+    assert_not_includes listed.({ visibility: "off_board" }), backlogged.id
+    assert_equal [ backlogged.id ], listed.({ visibility: "backlogged" }) & [ on_board.id, hidden.id, backlogged.id ]
+    assert_equal [ on_board.id, hidden.id, backlogged.id ].sort,
+      (listed.({ visibility: "all" }) & [ on_board.id, hidden.id, backlogged.id ]).sort
+  end
+
+  test "PATCH backlogs a session" do
+    session = make_session
+
+    patch visibility_api_v1_session_path(session), params: { visibility: "backlogged" }, headers: @headers
+
+    assert_response :success
+    assert_equal SessionVisibility::BACKLOGGED, session.reload.visibility
+    body = JSON.parse(response.body)
+    assert_equal "backlogged", body["session"]["visibility"]
+  end
 end

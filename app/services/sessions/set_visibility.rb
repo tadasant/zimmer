@@ -3,7 +3,7 @@
 module Sessions
   # Writes a session's board visibility — and nothing else.
   #
-  # Every surface that can hide or snooze a session (the web UI's menu, PATCH
+  # Every surface that can hide, snooze or backlog a session (the web UI's menu, PATCH
   # /api/v1/sessions/:id/visibility, and the `set_visibility` MCP action) routes
   # through here, so all three agree on what a snooze time means and on which
   # values are refusable.
@@ -30,7 +30,7 @@ module Sessions
     UTC_ZONE_NAMES = %w[UTC Etc/UTC].freeze
 
     # @param session [Session]
-    # @param visibility [String] "visible", "hidden" or "snoozed"
+    # @param visibility [String] "visible", "hidden", "snoozed" or "backlogged"
     # @param snoozed_until [String, Time, nil] required for "snoozed"; a naive
     #   wall-clock string ("2026-09-05T09:00") read in `timezone`, or a Time
     # @param timezone [String] IANA zone the naive string is expressed in
@@ -57,7 +57,7 @@ module Sessions
       if visibility == SessionVisibility::SNOOZED
         session.update!(visibility: visibility, snoozed_until: resolved_snooze_time)
       else
-        # A hidden or visible session carries no snooze time. Clearing it here
+        # A hidden, backlogged or visible session carries no snooze time. Clearing it here
         # rather than leaving it behind is what keeps `snoozed_until` readable as
         # "when this comes back" instead of "when it last would have".
         session.update!(visibility: visibility, snoozed_until: nil)

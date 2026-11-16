@@ -86,6 +86,8 @@ public enum VisibilityChange: Hashable, Sendable {
     case visible
     case hidden
     case snoozed(until: Date)
+    /// Parked as low priority, with no end time. Presentation only, like a snooze.
+    case backlogged
 
     /// The body of `PATCH /api/v1/sessions/:id/visibility`. `snoozed_until` is a naive
     /// wall-clock time read in `timezone`, so it is written in UTC and labelled UTC.
@@ -93,6 +95,7 @@ public enum VisibilityChange: Hashable, Sendable {
         switch self {
         case .visible: return ["visibility": "visible"]
         case .hidden: return ["visibility": "hidden"]
+        case .backlogged: return ["visibility": "backlogged"]
         case let .snoozed(until):
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -136,6 +139,7 @@ public struct SnoozePreset: Hashable, Sendable, Identifiable {
 public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable {
     case onBoard
     case offBoard
+    case backlogged
     case all
 
     public var id: String { rawValue }
@@ -144,7 +148,8 @@ public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable 
         switch self {
         case .onBoard: return "On board"
         case .offBoard: return "Snoozed & hidden"
-        case .all: return "Both"
+        case .backlogged: return "Backlogged"
+        case .all: return "All"
         }
     }
 
@@ -152,6 +157,7 @@ public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable 
         switch self {
         case .onBoard: return ["visibility": "on_board"]
         case .offBoard: return ["visibility": "off_board"]
+        case .backlogged: return ["visibility": "backlogged"]
         case .all: return [:]
         }
     }
@@ -160,7 +166,8 @@ public enum BoardFilter: String, Hashable, Sendable, CaseIterable, Identifiable 
     public func admits(_ session: SessionSummary) -> Bool {
         switch self {
         case .onBoard: return session.boardVisibility == .visible
-        case .offBoard: return session.boardVisibility != .visible
+        case .offBoard: return session.boardVisibility == .hidden || session.boardVisibility == .snoozed
+        case .backlogged: return session.boardVisibility == .backlogged
         case .all: return true
         }
     }

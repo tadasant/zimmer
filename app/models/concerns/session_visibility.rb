@@ -3,8 +3,14 @@
 # Board visibility — the session's SECOND axis, and the one that decides nothing.
 #
 # `status` says what a session is doing. `visibility` says whether the operator
-# wants to look at it right now: `visible`, `hidden`, or `snoozed` until a chosen
-# time. That is the whole of it. It is a way of tidying a board.
+# wants to look at it right now: `visible`, `hidden`, `snoozed` until a chosen
+# time, or `backlogged`. That is the whole of it. It is a way of tidying a board.
+#
+# `backlogged` is "snooze indefinitely, because it is low priority": a session
+# with real progress the operator wants parked, not lost. It is kept apart from
+# `hidden` so a board can show the backlog on its own — the operator goes looking
+# for it when they have room — rather than mixed in with the cards they tucked
+# away for some other reason. Like `hidden` it has no end time.
 #
 # **It is strictly orthogonal to everything else.** Nothing here reads or writes
 # `status`, `scheduling_class`, `precedence`, the spot queue, triggers, wake-ups
@@ -26,17 +32,21 @@ module SessionVisibility
   VISIBLE = "visible"
   HIDDEN = "hidden"
   SNOOZED = "snoozed"
-  VISIBILITIES = [ VISIBLE, HIDDEN, SNOOZED ].freeze
+  BACKLOGGED = "backlogged"
+  VISIBILITIES = [ VISIBLE, HIDDEN, SNOOZED, BACKLOGGED ].freeze
 
   # How a listing may narrow on this axis: the sessions a tidied board shows, the
-  # ones it is holding back, or both. They live here rather than on the dashboard
+  # ones snoozed or hidden from it, the backlog, or everything. The first three
+  # are a partition — every session is in exactly one of them — and `all` is
+  # their union. They live here rather than on the dashboard
   # controller because every surface filters on them — the dashboard, the REST
   # listings and the MCP search — and an MCP tool should not have to autoload a
   # web controller to name a filter value.
   FILTER_ON_BOARD = "on_board"
   FILTER_OFF_BOARD = "off_board"
+  FILTER_BACKLOGGED = "backlogged"
   FILTER_ALL = "all"
-  FILTER_OPTIONS = [ FILTER_ON_BOARD, FILTER_OFF_BOARD, FILTER_ALL ].freeze
+  FILTER_OPTIONS = [ FILTER_ON_BOARD, FILTER_OFF_BOARD, FILTER_BACKLOGGED, FILTER_ALL ].freeze
 
   # Choices offered by the "Snooze until…" menu, in order. `key` is the contract
   # with visibility_controller.js, which resolves each one to an absolute time in
@@ -80,17 +90,40 @@ module SessionVisibility
       )
     }
 
-    # The complement: everything tucked away right now — hidden, or snoozed to a
-    # time still in the future. The validation above stops a `snoozed` row with a
-    # NULL `snoozed_until` being written, but rows predating it are still counted
-    # as tucked away here and excluded by `board_visible` above, so the two scopes
-    # stay exact complements whatever is in the table.
+    # Snoozed & hidden: hidden, or snoozed to a time still in the future. The
+    # validation above stops a `snoozed` row with a NULL `snoozed_until` being
+    # written, but rows predating it are still counted as tucked away here and
+    # excluded by `board_visible` above. Backlogged sessions are in neither — they
+    # are `board_backlogged` — so the three scopes partition the table whatever is
+    # in it.
     scope :board_hidden, ->(now = Time.current) {
       where(
         "sessions.visibility = :hidden OR (sessions.visibility = :snoozed AND (sessions.snoozed_until IS NULL OR sessions.snoozed_until > :now))",
         hidden: HIDDEN, snoozed: SNOOZED, now: now
       )
     }
+
+    # The backlog: parked as low priority, with no end time.
+    scope :board_backlogged, -> { where(visibility: BACKLOGGED) }
+
+    # One of FILTER_OPTIONS applied to a listing. Anything else — nil, blank, an
+    # unrecognized value — falls back to the tidied board, or with
+    # `unset_means_all: true` to every session: the REST and MCP listings are
+    # unfiltered unless asked, so an agent's duplicate check never loses a session
+    # to a human tidying their board.
+    scope :board_visibility_filter, ->(filter, unset_means_all: false) {
+      case filter.to_s
+      when FILTER_ON_BOARD then board_visible
+      when FILTER_OFF_BOARD then board_hidden
+      when FILTER_BACKLOGGED then board_backlogged
+      when FILTER_ALL then all
+      else unset_means_all ? all : board_visible
+      end
+    }
+  end
+
+  def backlogged?
+    visibility == BACKLOGGED
   end
 
   # True while a snooze is still running. A `snoozed` row whose time has passed is
@@ -104,7 +137,7 @@ module SessionVisibility
   # answering identically.
   def board_visible?(now = Time.current)
     return true if visibility == VISIBLE
-    return false if visibility == HIDDEN
+    return false if visibility == HIDDEN || visibility == BACKLOGGED
 
     # SNOOZED. A snooze whose time has passed is over; one with no time at all is
     # not a snooze that can end, so it stays off the board rather than being
@@ -129,6 +162,7 @@ module SessionVisibility
   def visibility_summary(now = Time.current)
     return nil if board_visible?(now)
     return "Hidden from the board" if visibility == HIDDEN
+    return "Backlogged — parked as low priority, with no end time" if visibility == BACKLOGGED
     # Only reachable for a row written before snoozed_until became required. It
     # renders rather than raising, because the surfaces that call this are a card
     # badge and two MCP listings — one such row must not take a whole page with it.
