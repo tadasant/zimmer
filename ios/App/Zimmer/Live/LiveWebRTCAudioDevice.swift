@@ -99,22 +99,23 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
         let frames = pcm16.count / MemoryLayout<Int16>.size
         guard frames > 0 else { return }
         let taken = lock.withLock { () -> ((any RTCAudioDeviceDelegate), Double)? in
-            guard state.recording, let delegate else { return nil }
+            guard state.recording, let current = self.delegate else { return nil }
             defer { recordedFrames += Double(frames) }
-            return (delegate, recordedFrames)
+            return (current, recordedFrames)
         }
         guard let taken else { return }
-        let delegate = taken.0
+        let recorder = taken.0
+        let sampleTime = taken.1
         var flags = AudioUnitRenderActionFlags()
         var timestamp = AudioTimeStamp()
-        timestamp.mSampleTime = taken.1
+        timestamp.mSampleTime = sampleTime
         timestamp.mFlags = .sampleTimeValid
-        pcm16.withUnsafeBytes { raw in
+        pcm16.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             var list = AudioBufferList(mNumberBuffers: 1,
                                        mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * MemoryLayout<Int16>.size),
                                                              mData: UnsafeMutableRawPointer(mutating: base)))
-            _ = delegate.deliverRecordedData(&flags, &timestamp, 1, UInt32(frames), &list, nil, nil)
+            _ = recorder.deliverRecordedData(&flags, &timestamp, 1, UInt32(frames), &list, nil, nil)
         }
     }
 
@@ -122,7 +123,7 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     /// `output`, through `scratch` (`LiveVoicePull.chunk` samples). Silence while libwebrtc is not
     /// playing; says whether it was.
     func render(into output: UnsafeMutablePointer<Float>, frames: Int, scratch: UnsafeMutablePointer<Int16>) -> Bool {
-        guard let delegate = lock.withLock({ state.playing ? delegate : nil }) else {
+        guard let player = lock.withLock({ state.playing ? self.delegate : nil }) else {
             output.update(repeating: 0, count: frames)
             return false
         }
@@ -132,7 +133,7 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
             var list = AudioBufferList(mNumberBuffers: 1,
                                        mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(count * MemoryLayout<Int16>.size),
                                                              mData: UnsafeMutableRawPointer(samples)))
-            return delegate.getPlayoutData(&flags, &timestamp, 0, UInt32(count), &list) == noErr
+            return player.getPlayoutData(&flags, &timestamp, 0, UInt32(count), &list) == noErr
         }
         return true
     }
@@ -140,10 +141,10 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     /// The engine restarted, or a new call's engine took over: its tap and render threads are new
     /// ones, which libwebrtc is told before it is handed audio from them.
     func audioThreadsChanged() {
-        guard let delegate = lock.withLock({ delegate }) else { return }
-        delegate.dispatchAsync {
-            delegate.notifyAudioInputInterrupted()
-            delegate.notifyAudioOutputInterrupted()
+        guard let module = lock.withLock({ self.delegate }) else { return }
+        module.dispatchAsync {
+            module.notifyAudioInputInterrupted()
+            module.notifyAudioOutputInterrupted()
         }
     }
 }
