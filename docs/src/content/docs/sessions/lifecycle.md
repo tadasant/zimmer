@@ -3112,7 +3112,11 @@ cannot replay it) and re-requests the same URL for real, at once. That request i
 so a quick look still counts. Its answer is reconciled into the page's `data-live-region`s with the
 same code as [the reopen backfill](#the-reopen-backfill), scoped to the detail body, so anything
 broadcast since the prefetch lands in place. It is fetched with `cache: "reload"`, which replaces
-the prefetched copy with an ordinary must-revalidate one.
+the prefetched copy with an ordinary must-revalidate one. While that request is out, the detail
+body's root carries `data-session-activation="pending"`, and `"settled"` once it has finished,
+whatever the outcome. The backfill can rewrite any live region, so a system test that delivers its
+own Turbo Stream into a drawer waits for `pending` to clear first; otherwise a prefetch that
+happened to land before the click lets the backfill overwrite the stream it just delivered.
 
 Every prefetch is a full detail render on a web server with three threads, which also serve the
 agents' MCP calls, so the load is kept small on purpose:
