@@ -62,7 +62,7 @@ jobs:
   # some other way.
   guard:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: staging
     outputs:
@@ -101,7 +101,7 @@ jobs:
     # dependency is skipped, which is exactly what happens on a manual dispatch -- so
     # this has to run past a skipped `guard` while still respecting a real cancellation.
     if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.guard.outputs.proceed == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: staging
     steps:

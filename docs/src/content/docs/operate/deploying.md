@@ -1475,8 +1475,9 @@ wedging the worker.
 
 ## The workflows
 
-Every job runs on a **GitHub-hosted runner**: `ubuntu-latest`, or `macos-latest` for the
-iOS jobs. Hosted runners are free and unmetered on a public repository, and nobody has to
+Every job runs on a **GitHub-hosted runner**: `ubuntu-24.04` for almost every Linux job,
+`ubuntu-latest` for the three that install no toolchain, and `macos-latest` for the iOS
+jobs. Hosted runners are free and unmetered on a public repository, and nobody has to
 keep a runner box alive for CI to run. See [Where CI runs](#where-ci-runs) for what that
 means for a job.
 
@@ -1571,6 +1572,11 @@ and a self-hosted runner executes whatever a pull request's workflow tells it to
 `test/config/github_hosted_runners_test.rb` fails the build on any other `runs-on`, on a
 job with no `timeout-minutes` (GitHub's default is six hours), and on a `ruby/setup-ruby`
 step that asks for a self-hosted toolcache.
+
+Linux jobs pin `ubuntu-24.04` rather than following `ubuntu-latest`, because
+`ruby/setup-ruby` builds only the newest patch of each Ruby series for a newer image: on
+ubuntu-26.04 there is no Ruby 3.4.6, and every Ruby job fails in its setup step. Moving to a
+newer image goes with a Ruby patch bump.
 
 A hosted runner starts empty every time, so a job installs or configures everything it
 needs in-job:

@@ -53,7 +53,7 @@ jobs:
   # it -- harmless (it would find the droplet and proceed) but no longer free.
   guard:
     if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: staging
     outputs:
@@ -93,7 +93,7 @@ jobs:
     # workflow_call -- so this has to run past a skipped `guard` while still respecting
     # a real cancellation.
     if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.guard.outputs.proceed == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: staging
     env:

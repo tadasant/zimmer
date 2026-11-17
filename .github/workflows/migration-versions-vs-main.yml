@@ -37,7 +37,7 @@ jobs:
   sweep:
     # A dispatch from another branch would sweep against that branch's tree.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

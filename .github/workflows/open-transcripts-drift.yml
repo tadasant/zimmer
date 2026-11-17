@@ -54,7 +54,7 @@ jobs:
     # Fork PRs do not run here: the drift check is for this repo's own changes. Scheduled
     # and push events on main carry no pull_request payload and always run.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

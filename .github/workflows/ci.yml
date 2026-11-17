@@ -1,8 +1,10 @@
 name: CI
 
-# Standalone CI for the Zimmer Rails app. Every job runs on a GitHub-hosted runner
-# (`ubuntu-latest`, or `macos-latest` for the iOS jobs), which is free and unmetered on a
-# public repository. `runs-on` is hard-coded, never switched by a variable: a fork PR must
+# Standalone CI for the Zimmer Rails app. Every job runs on a GitHub-hosted runner, which
+# is free and unmetered on a public repository. The Ruby jobs pin `ubuntu-24.04` rather
+# than `ubuntu-latest`: ruby/setup-ruby builds only the newest patch of each Ruby series
+# for a newer image, so on ubuntu-26.04 there is no 3.4.6 to install. The macOS jobs use
+# `macos-latest`. `runs-on` is hard-coded, never switched by a variable: a fork PR must
 # never be able to reach a self-hosted runner. Postgres + Redis come up as service
 # containers on dynamic host ports, and ruby/setup-ruby installs Ruby and caches the bundle
 # (`bundler-cache: true`) — no job relies on anything left on a runner by an earlier run.
@@ -19,7 +21,7 @@ concurrency:
 jobs:
   lint:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # pull-requests: read is for the vs-main step, which lists the PR's files.
     permissions:
@@ -77,7 +79,7 @@ jobs:
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +92,7 @@ jobs:
 
   verify_lockfile:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +112,7 @@ jobs:
   # job below). PARALLEL_WORKERS matches the 4 vCPUs of a standard hosted Linux runner.
   test-unit:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
 
     services:
@@ -181,7 +183,7 @@ jobs:
   # Claude Code binary + a mock Anthropic server. Deferred — tracked in issue #162.
   test-system:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     services:
@@ -282,7 +284,7 @@ jobs:
   # See docs/operate/testing.md and lib/schema_verify_task.rb.
   schema_verify:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     services:
@@ -330,7 +332,7 @@ jobs:
   # one Node-only job.
   docs_site:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -360,7 +362,7 @@ jobs:
   # See docs/operate/deploying.md, "The docs never ship in the image".
   image_excludes_docs:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -377,7 +379,7 @@ jobs:
   # regressed (tadasant/zimmer#91).
   image_includes_extensions:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -391,7 +393,7 @@ jobs:
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -432,7 +434,7 @@ jobs:
   # extracting them from the YAML first.
   shellcheck:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       SHELLCHECK_VERSION: "0.10.0"
@@ -731,7 +733,7 @@ jobs:
   ios_swift_linux:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -780,7 +782,7 @@ jobs:
   #      (This job has no checkout step, so a fork PR never executes fork code here.)
   all-checks-pass:
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs:
       - lint
