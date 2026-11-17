@@ -103,6 +103,25 @@ module TranscriptRedactor
   # escape the rescue around the build and take the poll down with it.
   MAX_JSON_DEPTH = 32
 
+  # Zimmer's own API keys. SelfSessionInjector writes the instance's key into
+  # every session's runtime MCP config as the `zimmer-self-session` server's
+  # `X-API-Key` header, resolved from one of these names whether or not the
+  # catalog references it. Every `API_KEYS` entry authenticates the whole REST
+  # API and MCP endpoint, and none of them carries the `zmr_` shape PATTERNS
+  # knows, so exact-value matching is the only way to catch one.
+  ZIMMER_API_KEY_VARIABLES = %w[ZIMMER_PROD_API_KEY ZIMMER_STAGING_API_KEY ZIMMER_LOCAL_API_KEY].freeze
+
+  # A session's agent process inherits most of the Rails process's environment
+  # (CliSpawnEnv strips only a few names), so `env` or `printenv` in a session
+  # prints its credential-named variables — SECRET_KEY_BASE, RAILS_MASTER_KEY,
+  # the Parameter Store service-account key, the deploy's API keys. Those are
+  # filtered by name (SENSITIVE_KEY, as AirCatalogService#redactable_secrets
+  # does) and then by value, through this: a credential-named variable whose
+  # value is a list of other variables' names, a filesystem path or a URL with
+  # no userinfo is configuration, and exact-matching it would redact those
+  # names and paths out of every transcript.
+  NON_SECRET_ENV_VALUE = %r{\A(?:[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*|~?/(?:[\w.\-]+/)*[\w.\-]*|[a-z][a-z0-9+.\-]*://[^@]*)\z}
+
   # Guards the memoized known-credential set. A constant rather than `@mutex
   # ||= Mutex.new`, which can hand two racing threads two different mutexes.
   MUTEX = Mutex.new
@@ -170,6 +189,16 @@ module TranscriptRedactor
   # boundary and so would still match the `sk-` inside `task-sk-…`.
   TOKEN_START = /(?<![A-Za-z0-9_\-])/
 
+  # An optional quote around a credential's name or value, as written in a
+  # config file (`"X-API-Key": "…"`) AND as that file reads once it is a JSON
+  # string inside a transcript line (`\"X-API-Key\": \"…\"`). Every `cat` of a
+  # JSON or TOML file lands in the transcript the second way, so a bare `["']?`
+  # stops at the backslash and the rule never fires on the one shape an agent
+  # printing its own `.mcp.json` produces. Up to three backslashes covers a
+  # tool result nested one more level (a subagent's transcript, a
+  # `jq`-re-encoded string).
+  OPTIONAL_QUOTE = /(?:\\{0,3}["'])?/
+
   # The two credential nouns that, in the wild, far more often name a *resource*
   # than hold a value. `gcloud secrets versions access --secret=NAME`,
   # `vault kv get secret/NAME`, `?secret=NAME` in a console URL, `secret: NAME`
@@ -195,7 +224,7 @@ module TranscriptRedactor
   # `[A-Za-z0-9_]` and nothing else: `-`, `.`, `/`, space and quote all have to
   # stay admissible, because `--secret=`, `?secret=`, `  secret:` and `"token":`
   # are the framings this exists for.
-  REFERENCE_NOUN = bounded(/(?<![A-Za-z0-9_])(?:secret|token)["']?\z/i)
+  REFERENCE_NOUN = bounded(/(?<![A-Za-z0-9_])(?:secret|token)#{OPTIONAL_QUOTE}\z/io)
 
   # What a public resource identifier looks like, and what a credential does not.
   #
@@ -319,7 +348,7 @@ module TranscriptRedactor
     pattern("GOOGLE_API_KEY", /\bAIza[0-9A-Za-z_\-]{35}\b/),
     pattern("GOOGLE_OAUTH_CLIENT_SECRET", /\bGOCSPX-[A-Za-z0-9_\-]{20,}/),
     pattern("AWS_ACCESS_KEY_ID", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/),
-    pattern("AWS_SECRET_ACCESS_KEY", /aws_secret_access_key["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9\/+=]{40})/i, :value),
+    pattern("AWS_SECRET_ACCESS_KEY", /aws_secret_access_key#{OPTIONAL_QUOTE}[ \t]*[:=][ \t]*#{OPTIONAL_QUOTE}([A-Za-z0-9\/+=]{40})/io, :value),
     # Stripe. Not a credential Zimmer itself issues — carried over from the
     # upstream reference redactor, which Zimmer's pattern set is a superset of
     # (asserted by test/services/open_transcript_drift_test.rb). The `sk_live_`
@@ -357,11 +386,11 @@ module TranscriptRedactor
       "BASIC_AUTH",
       /basic[ \t]+([A-Za-z0-9+\/=]{16,})/i,
       :value,
-      preceded_by: /authorization["']?[ \t]*[:=][ \t]*["']?\z/i
+      preceded_by: /authorization#{OPTIONAL_QUOTE}[ \t]*[:=][ \t]*#{OPTIONAL_QUOTE}\z/io
     ),
     # `X-API-Key: …` headers — how the catalog passes `${ZIMMER_PROD_API_KEY}`
     # and how Zimmer's own REST API is authenticated.
-    pattern("API_KEY_HEADER", /\b(?:x-api-key|api-key|x-auth-token)["']?[ \t]*[:=][ \t]*["']?([A-Za-z0-9+\/=_\-]{16,})/i, :value),
+    pattern("API_KEY_HEADER", /\b(?:x-api-key|api-key|x-auth-token)#{OPTIONAL_QUOTE}[ \t]*[:=][ \t]*#{OPTIONAL_QUOTE}([A-Za-z0-9+\/=_\-]{16,})/io, :value),
     # Credentials embedded in a URL: an authenticated git remote
     # (https://x-access-token:…@github.com) or a database URL.
     pattern("URL_CREDENTIALS", /\bhttps?:\/\/[^:\/\s@"']+:([^@\s\/"']{8,})@/, :value),
@@ -402,9 +431,9 @@ module TranscriptRedactor
     # by the shape of what follows them. See REFERENCE_NOUN.
     pattern(
       "ENV_SECRET",
-      /[:=][ \t]*["']?([A-Za-z0-9+\/=_\-]{16,})/,
+      /[:=][ \t]*#{OPTIONAL_QUOTE}([A-Za-z0-9+\/=_\-]{16,})/o,
       :value,
-      preceded_by: /(?:api[_-]?key|apikey|secret[_-]?key|secret|password|passwd|passphrase|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?token|bot[_-]?token|access[_-]?key|private[_-]?key|client[_-]?secret|master[_-]?key|token)["']?\z/i,
+      preceded_by: /(?:api[_-]?key|apikey|secret[_-]?key|secret|password|passwd|passphrase|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?token|bot[_-]?token|access[_-]?key|private[_-]?key|client[_-]?secret|master[_-]?key|token)#{OPTIONAL_QUOTE}\z/io,
       reject: ->(preceding, value) { REFERENCE_NOUN.match?(preceding) && public_identifier?(value) }
     )
   ].freeze
@@ -849,8 +878,69 @@ module TranscriptRedactor
     def build_known_secrets
       values = {}
       collect_catalog_variables(values)
+      collect_session_secret_bundle(values)
+      collect_zimmer_api_keys(values)
+      collect_sensitive_process_env(values)
       collect_stored_oauth_tokens(values)
+      add_escaped_forms(values)
       values.sort_by { |value, _label| -value.length }
+    end
+
+    # Every secret SessionEnvFile can write into a clone's `.env`. The scoped
+    # subset a given session receives is drawn from this bundle, so covering the
+    # whole bundle covers every session's `.env` whatever its scope, including a
+    # skill-mentioned `${VAR}` no catalog MCP server declares.
+    def collect_session_secret_bundle(values)
+      SecretsLoader.all.each do |name, value|
+        next unless redactable?(value)
+
+        values[value] ||= "ENV:#{name}"
+      end
+    rescue StandardError => e
+      warn_degraded("session secret bundle", e)
+    end
+
+    # Zimmer's own API keys: every `API_KEYS` entry, and the instance key
+    # SelfSessionInjector writes into every session's runtime MCP config. See
+    # ZIMMER_API_KEY_VARIABLES.
+    def collect_zimmer_api_keys(values)
+      ApiKey.env_keys.each do |key|
+        next unless redactable?(key)
+
+        values[key] ||= "ZIMMER_API_KEY"
+      end
+      ZIMMER_API_KEY_VARIABLES.each do |name|
+        value = resolve_variable(name)
+        next unless redactable?(value)
+
+        values[value] ||= "ENV:#{name}"
+      end
+    rescue StandardError => e
+      warn_degraded("Zimmer API keys", e)
+    end
+
+    # The Rails process's own credential-named environment. See
+    # NON_SECRET_ENV_VALUE.
+    def collect_sensitive_process_env(values)
+      ENV.each do |name, value|
+        next unless name.match?(SENSITIVE_KEY)
+        next unless redactable?(value)
+        next if value.match?(NON_SECRET_ENV_VALUE)
+
+        values[value] ||= "ENV:#{name}"
+      end
+    rescue StandardError => e
+      warn_degraded("process environment", e)
+    end
+
+    # A transcript is JSONL, so a value that holds a `"` or `\` appears in it
+    # JSON-escaped, and an exact match on the raw value would miss it. Covers one
+    # level of escaping, which is how a tool result sits in a transcript line.
+    def add_escaped_forms(values)
+      values.to_a.each do |value, label|
+        escaped = value.to_json[1..-2]
+        values[escaped] ||= label unless escaped == value
+      end
     end
 
     # Every `${VAR}` the catalog's MCP servers reference, resolved through the

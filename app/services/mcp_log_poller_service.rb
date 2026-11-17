@@ -202,7 +202,10 @@ class McpLogPollerService
       elsif message.match?(CONNECTION_FAILED_PATTERN)
         # Combine all error messages for a more complete picture
         # The last error is usually "Connection failed", but earlier errors may have root cause
-        combined_error = error_messages.uniq.join(" | ")
+        # Redacted because it is persisted into session metadata and shown on
+        # the session page, and an MCP server's own log can carry the credential
+        # it was launched with (a header echoed in a connection error).
+        combined_error = TranscriptRedactor.redact(error_messages.uniq.join(" | "))
         status = { status: "failed", error: combined_error, failed_at: timestamp }
         # Don't break - continue processing to see if a retry succeeded.
         # Claude Code has built-in retry logic for MCP connections, so a failure

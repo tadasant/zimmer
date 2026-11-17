@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
+require "tmpdir"
 
 class TranscriptRedactorTest < ActiveSupport::TestCase
   setup do
@@ -621,6 +623,158 @@ token=#{'Zz9' * 12}
       redacted = TranscriptRedactor.redact("sk-ant-oat01-#{'A1b2C3d4E5' * 4}")
 
       assert_includes redacted, "[REDACTED:MATCH:ANTHROPIC_OAUTH_TOKEN:"
+    end
+  end
+
+  # --- A session printing its own injected MCP config ----------------------
+  #
+  # Sessions 28990 and 28991 `cat`ed the runtime MCP config Zimmer wrote into
+  # their clone, and the credentials in it reached the stored transcript. These
+  # tests rebuild that config from fixture values (none is a live credential)
+  # and run the agent's tool result through the same entry point the transcript
+  # poller uses.
+
+  INJECTED_ZIMMER_KEY = "fixture0zimmer0instance0key0a1b2c3d4e5f6"
+  INJECTED_API_KEYS_ENTRY = "fixture0api0keys0entry0f6e5d4c3b2a1"
+  INJECTED_STRAD_TOKEN = "fixture:strad:token:0011223344556677"
+  INJECTED_SKILL_SECRET = "fixture/skill/secret/8899aabbccdd"
+
+  # The config as Zimmer writes it: the self-session entry from the real
+  # SelfSessionInjector, a catalog server carrying a bearer token, and a stdio
+  # server carrying a value in its env table.
+  def injected_mcp_config
+    interpolator = Object.new
+    interpolator.define_singleton_method(:get_env_value) do |name|
+      name == "ZIMMER_PROD_API_KEY" ? INJECTED_ZIMMER_KEY : "https://zimmer.example.test"
+    end
+    injector = SelfSessionInjector.new(env: "production", secrets_interpolator: interpolator)
+    injector.stubs(:self_target).returns(base_url: "https://zimmer.example.test", api_key: INJECTED_ZIMMER_KEY)
+
+    JSON.pretty_generate(
+      "mcpServers" => {
+        "zimmer-self-session" => {
+          "type" => "http",
+          "url" => injector.endpoint_url(tool_groups: "self_session", session_id: 1),
+          "headers" => injector.headers
+        },
+        "strad" => {
+          "type" => "http",
+          "url" => "https://strad.example.test/mcp",
+          "headers" => { "Authorization" => "Bearer #{INJECTED_STRAD_TOKEN}" }
+        },
+        "zimmer-admin" => {
+          "type" => "http",
+          "url" => "https://zimmer.example.test/mcp",
+          "headers" => { "X-API-Key" => INJECTED_API_KEYS_ENTRY }
+        },
+        "local-tool" => {
+          "type" => "stdio",
+          "command" => "npx",
+          "env" => { "SKILL_SECRET" => INJECTED_SKILL_SECRET }
+        }
+      }
+    )
+  end
+
+  # One Claude Code transcript event whose tool result is `cat .mcp.json`: the
+  # file's text sits JSON-escaped inside a string, which is the shape the
+  # header patterns used to miss.
+  def transcript_of_cat(file_text)
+    JSON.generate(
+      "type" => "user",
+      "message" => { "role" => "user", "content" => [
+        { "type" => "tool_result", "tool_use_id" => "toolu_fixture", "content" => file_text }
+      ] }
+    ) + "\n"
+  end
+
+  def with_injected_secret_sources(&block)
+    ServersConfig.stubs(:all).returns([])
+    SecretsLoader.stubs(:all).returns("SKILL_SECRET" => INJECTED_SKILL_SECRET, "STRAD_API_KEY" => INJECTED_STRAD_TOKEN)
+    SecretProviders.chain.stubs(:get).returns(nil)
+    SecretProviders.chain.stubs(:get).with("ZIMMER_PROD_API_KEY").returns(INJECTED_ZIMMER_KEY)
+    ApiKey.stubs(:env_keys).returns([ INJECTED_API_KEYS_ENTRY ])
+    TranscriptRedactor.reset_known_secrets!
+    block.call
+  end
+
+  test "a session printing its own injected MCP config yields a transcript with every injected credential redacted" do
+    with_injected_secret_sources do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "session.jsonl")
+        File.write(path, transcript_of_cat(injected_mcp_config))
+
+        redacted = ClaudeTranscriptSource.new(file_system: RealFileSystemAdapter.new).read(path)
+
+        [ INJECTED_ZIMMER_KEY, INJECTED_API_KEYS_ENTRY, INJECTED_STRAD_TOKEN, INJECTED_SKILL_SECRET ].each do |value|
+          refute_includes redacted, value
+        end
+        assert_includes redacted, "[REDACTED:ENV:ZIMMER_PROD_API_KEY:"
+        assert_includes redacted, "[REDACTED:ZIMMER_API_KEY:"
+        assert_includes redacted, "[REDACTED:ENV:STRAD_API_KEY:"
+        assert_includes redacted, "[REDACTED:ENV:SKILL_SECRET:"
+        assert JSON.parse(redacted), "redaction must leave the event parseable"
+      end
+    end
+  end
+
+  test "known secrets include Zimmer's own API keys and the session secret bundle" do
+    with_injected_secret_sources do
+      known = TranscriptRedactor.known_secrets.to_h
+
+      assert_equal "ENV:ZIMMER_PROD_API_KEY", known[INJECTED_ZIMMER_KEY]
+      assert_equal "ZIMMER_API_KEY", known[INJECTED_API_KEYS_ENTRY]
+      assert_equal "ENV:STRAD_API_KEY", known[INJECTED_STRAD_TOKEN]
+      assert_equal "ENV:SKILL_SECRET", known[INJECTED_SKILL_SECRET]
+    end
+  end
+
+  test "known secrets include credential-named process environment, but not configuration that only looks like it" do
+    env = {
+      "FIXTURE_DEPLOY_SECRET_KEY" => "fixture0deploy0secret0key0value",
+      "FIXTURE_EXTRA_KEYS" => "STRAD_API_KEY,OTHER_API_KEY",
+      "FIXTURE_KEY_PATH" => "/home/rails/.ssh/fixture_ed25519",
+      "FIXTURE_TOKEN_URL" => "https://oauth.example.test/token",
+      "FIXTURE_PLAIN" => "fixture0not0credential0named"
+    }
+    with_injected_secret_sources do
+      ENV.stubs(:each).multiple_yields(*env.to_a)
+      known = TranscriptRedactor.known_secrets.to_h
+
+      assert_equal "ENV:FIXTURE_DEPLOY_SECRET_KEY", known["fixture0deploy0secret0key0value"]
+      refute known.key?("STRAD_API_KEY,OTHER_API_KEY"), "a list of variable names is not a credential"
+      refute known.key?("/home/rails/.ssh/fixture_ed25519"), "a path is not a credential"
+      refute known.key?("https://oauth.example.test/token"), "a URL without userinfo is not a credential"
+      refute known.key?("fixture0not0credential0named"), "the name has to say credential"
+    end
+  end
+
+  test "a known value holding a quote is also redacted in its JSON-escaped form" do
+    value = %(fixture"quoted\\secret0value)
+    # Exercise the real escaped-form expansion rather than stubbing its output.
+    values = { value => "ENV:QUOTED" }
+    TranscriptRedactor.send(:add_escaped_forms, values)
+
+    TranscriptRedactor.stub(:known_secrets, values.sort_by { |v, _| -v.length }) do
+      redacted = TranscriptRedactor.redact(JSON.generate("text" => "value is #{value}"))
+
+      refute_includes redacted, value.to_json[1..-2]
+      assert_includes redacted, "[REDACTED:ENV:QUOTED:"
+    end
+  end
+
+  test "header and assignment shapes match through JSON-escaped quotes" do
+    TranscriptRedactor.stub(:known_secrets, []) do
+      {
+        %(\\"X-API-Key\\": \\"fixture0header0value0abcdef\\") => "API_KEY_HEADER",
+        %(\\"api_key\\": \\"fixture0assigned0value0abcdef\\") => "ENV_SECRET",
+        %(\\"Authorization\\": \\"Basic Zml4dHVyZTpmaXh0dXJlLWJhc2lj\\") => "BASIC_AUTH"
+      }.each do |text, label|
+        redacted = TranscriptRedactor.redact(text)
+
+        assert_includes redacted, "[REDACTED:MATCH:#{label}:", "#{label} missed #{text}"
+        refute_match(/fixture0|Zml4dHVyZTpmaXh0dXJlLWJhc2lj/, redacted)
+      end
     end
   end
 

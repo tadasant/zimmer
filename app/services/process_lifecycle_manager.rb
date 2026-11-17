@@ -1720,7 +1720,7 @@ class ProcessLifecycleManager
     content = @file_system.read(@stderr_log_path)
     return nil if content.blank?
 
-    content.strip.split("\n").last(STDERR_TAIL_LINES).join("\n")
+    TranscriptRedactor.redact(content.strip.split("\n").last(STDERR_TAIL_LINES).join("\n"))
   rescue => e
     @logger.error("Failed to read stderr tail", error: e.message)
     nil
@@ -1788,7 +1788,7 @@ class ProcessLifecycleManager
     )
     @log_buffer&.flush
     @logger.error("Turn ended on an unhandled API error",
-      unmatched_output: terminal.text, recognized: terminal.recognized?)
+      unmatched_output: TranscriptRedactor.redact(terminal.text), recognized: terminal.recognized?)
 
     remember_terminal_api_error_line(terminal.line)
 
@@ -1808,13 +1808,14 @@ class ProcessLifecycleManager
         report_unretried_malformed_tool_call("ProcessLifecycleManager#handle_terminal_api_error")
       end
     else
-      report_terminal_api_error(terminal.text)
+      report_terminal_api_error(TranscriptRedactor.redact(terminal.text))
     end
 
     @mutex.synchronize { @state = :idle }
     ExitDecision.new(
       action: :failed,
-      error_message: "Turn ended on an API error no recovery path claimed: #{terminal.text.truncate(300)}"
+      error_message: "Turn ended on an API error no recovery path claimed: " \
+        "#{TranscriptRedactor.redact(terminal.text).truncate(300)}"
     )
   end
 
@@ -1853,7 +1854,7 @@ class ProcessLifecycleManager
       "conversation back and is likely flagged again. The runtime said: "
     add_log(guidance + terminal.text, level: "error")
     @log_buffer&.flush
-    @logger.warn("Turn ended on an Anthropic safeguards rejection", runtime_output: terminal.text)
+    @logger.warn("Turn ended on an Anthropic safeguards rejection", runtime_output: TranscriptRedactor.redact(terminal.text))
 
     remember_terminal_api_error_line(terminal.line)
 
@@ -1861,7 +1862,7 @@ class ProcessLifecycleManager
     # Headroom rather than a cut: the known wording is ~420 characters, so all of
     # it — remedies, support link, request id — reaches `exit_status`. The bound
     # is there for a wording that grows, and 600 keeps the remedies if one does.
-    ExitDecision.new(action: :failed, error_message: guidance + terminal.text.truncate(600))
+    ExitDecision.new(action: :failed, error_message: guidance + TranscriptRedactor.redact(terminal.text).truncate(600))
   end
 
   def report_terminal_api_error(error_text)
@@ -2286,7 +2287,13 @@ class ProcessLifecycleManager
   end
 
   # Add log entry
+  #
+  # Redacted on the way in: a session log row is persisted, broadcast to the
+  # timeline and returned by `get_session include_logs`, and several of the
+  # texts that land here are the agent process's own output rather than
+  # Zimmer's wording — its stderr tail, the runtime's terminal turn error.
   def add_log(content, level: "info")
+    content = TranscriptRedactor.redact(content)
     if @log_buffer
       @log_buffer.add(content, level: level)
     elsif @session

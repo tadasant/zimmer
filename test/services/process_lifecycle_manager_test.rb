@@ -2477,6 +2477,27 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       "the poller's newer capture must survive the release of the id that failed"
   end
 
+  # A session log row is persisted, broadcast and returned by `get_session`, and
+  # the stderr tail is the agent process's own output, so a credential the
+  # process printed must be redacted before it lands there.
+  test "surfacing stderr to the session log redacts a known injected credential" do
+    secret = "fixture0stderr0secret0value0a1b2c3"
+    manager = create_manager
+    manager.adopt(pid: 4244, stderr_log_path: "/tmp/test-clone/claude_stderr.log",
+                  append_system_prompt: nil, model: nil, effort: nil)
+    @mock_file_system.write("/tmp/test-clone/claude_stderr.log", "connecting with X-Custom #{secret}\nfailed\n")
+
+    TranscriptRedactor.stub(:known_secrets, [ [ secret, "ENV:FIXTURE_SECRET" ] ]) do
+      manager.send(:surface_stderr_to_session_log)
+      @log_buffer.flush
+    end
+
+    content = @session.logs.order(:created_at).last.content
+    assert_includes content, "Process stderr:"
+    assert_includes content, "[REDACTED:ENV:FIXTURE_SECRET:"
+    refute_includes content, secret
+  end
+
   private
 
   # Stand in for the session's memory cgroup, via SessionMemoryCgroupHelpers.
