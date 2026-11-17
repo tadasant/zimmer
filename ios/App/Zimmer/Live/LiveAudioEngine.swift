@@ -23,6 +23,13 @@ import os
 /// holds the loop and the other the one-shots, because a buffer scheduled behind a looping
 /// buffer never plays. A cue never talks over the reply: it waits out what is still queued.
 ///
+/// **GPT-Live's audio** runs on the same graph (`LiveAudioPlan.gptLive`): libwebrtc is given
+/// `LiveWebRTCAudioDevice` instead of its own voice-processing audio unit, so the tap hands it the
+/// microphone and a source node pulls its playout onto the main mixer beside the cue players.
+/// Apple's voice processing turns down every sound in the app that does not go through its own
+/// unit; with one engine there is no other sound, so the cues are not ducked under GPT-Live's
+/// voice, and the echo canceller has both as reference.
+///
 /// Every step is reported to `LiveTelemetry`: the permission, the audio session as configured,
 /// the route and its changes, interruptions, the engine starting, restarting or failing.
 ///
@@ -62,11 +69,15 @@ final class LiveAudioEngine {
         private let lock = NSLock()
         private var frames: (@Sendable (Data) -> Void)?
         private var gate = LiveCueGate()
+        /// Off: the gate is kept (the cues still schedule into it) but never closes the microphone
+        /// (`LiveAudioPlan.gatesMicrophone`).
+        private var gated = true
         private var lastBuffer: TimeInterval?
 
-        func set(_ frames: (@Sendable (Data) -> Void)?) {
+        func set(_ frames: (@Sendable (Data) -> Void)?, gated: Bool = true) {
             lock.withLock {
                 self.frames = frames
+                self.gated = gated
                 gate = LiveCueGate()
                 lastBuffer = nil
             }
@@ -85,9 +96,38 @@ final class LiveAudioEngine {
             let now = ProcessInfo.processInfo.systemUptime
             let (frames, closed) = lock.withLock { () -> ((@Sendable (Data) -> Void)?, Bool) in
                 lastBuffer = now
-                return (self.frames, gate.closes(now - seconds, length: seconds))
+                return (self.frames, gated && gate.closes(now - seconds, length: seconds))
             }
             frames?(closed ? Data(count: pcm.count) : pcm)
+        }
+    }
+
+    /// GPT-Live's voice on a call's engine: a source node that pulls libwebrtc's playout
+    /// (`LiveWebRTCAudioDevice.render`) on the render thread. Cut off (`detach`) when its call
+    /// ends, so an engine kept up for a farewell cue never pulls the next call's voice.
+    final class VoiceFeed: @unchecked Sendable {
+        private let lock = NSLock()
+        private var device: LiveWebRTCAudioDevice?
+        private let scratch = UnsafeMutablePointer<Int16>.allocate(capacity: LiveVoicePull.chunk)
+
+        init(device: LiveWebRTCAudioDevice) {
+            self.device = device
+        }
+
+        deinit { scratch.deallocate() }
+
+        func detach() { lock.withLock { device = nil } }
+
+        /// The engine is about to start on new audio threads (`LiveWebRTCAudioDevice.audioThreadsChanged`).
+        func threadsChanging() { lock.withLock { device }?.audioThreadsChanged() }
+
+        /// On the render thread, which is the only one that touches `scratch`.
+        func render(into output: UnsafeMutablePointer<Float>, frames: Int) -> Bool {
+            guard let current = lock.withLock({ self.device }) else {
+                output.update(repeating: 0, count: frames)
+                return false
+            }
+            return current.render(into: output, frames: frames, scratch: scratch)
         }
     }
 
@@ -97,18 +137,18 @@ final class LiveAudioEngine {
         let player: AVAudioPlayerNode
         let cuePlayer: AVAudioPlayerNode
         let loopPlayer: AVAudioPlayerNode
-        /// Opens the microphone. Off for a call whose microphone is WebRTC's (`startCues`): its
-        /// input node is never touched, so this engine never contends for the input with libwebrtc.
-        var listens = true
+        /// What the engine carries besides the cues (`LiveAudioPlan`).
+        let plan: LiveAudioPlan
+        /// GPT-Live's voice and the node that plays it, on a `.webRTC` plan.
+        let voice: (node: AVAudioSourceNode, feed: VoiceFeed)?
 
         func configure(sink: FrameSink, restart: Bool) throws {
-            guard listens else { return try configureCuesOnly(restart: restart) }
             let input = engine.inputNode
             // The echo canceller. Not fatal when refused: the mic still works, and headphones
             // sidestep echo entirely.
-            var voiceProcessing = true
+            var voiceProcessing = plan.voiceProcessing
             do {
-                try input.setVoiceProcessingEnabled(true)
+                try input.setVoiceProcessingEnabled(plan.voiceProcessing)
             } catch {
                 voiceProcessing = false
                 LiveAudioEngine.log.error("voice processing refused, so the reply may echo: \(error.localizedDescription, privacy: .public)")
@@ -126,6 +166,14 @@ final class LiveAudioEngine {
             engine.connect(player, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
             engine.connect(cuePlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
             engine.connect(loopPlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+            // GPT-Live's voice on the same mixer as the cues, so the echo canceller has it as
+            // reference and nothing in the app plays outside this voice-processing graph.
+            if let voice {
+                if voice.node.engine == nil { engine.attach(voice.node) }
+                engine.connect(voice.node, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+                // New tap and render threads: libwebrtc hears of them before they hand it audio.
+                voice.feed.threadsChanging()
+            }
             engine.prepare()
             try engine.start()
             player.play()
@@ -135,28 +183,15 @@ final class LiveAudioEngine {
             let session = AVAudioSession.sharedInstance()
             let latency = session.outputLatency + session.inputLatency + session.ioBufferDuration
             sink.changeGate { $0.latency = latency }
+            let processing = voiceProcessing && input.isVoiceProcessingEnabled
+            LiveAudioEngine.log.notice("live audio engine \(restart ? "restarted" : "started", privacy: .public): \(plan.label, privacy: .public) with the cues on one graph, voice processing \(processing)")
             LiveAudioEngine.telemetry.track(.audioEngineStarted(inputRate: format.sampleRate, inputChannels: Int(format.channelCount),
-                                                                voiceProcessing: voiceProcessing && input.isVoiceProcessingEnabled, restart: restart))
-        }
-
-        /// The players alone, for the cues: no input, no tap, no echo canceller.
-        private func configureCuesOnly(restart: Bool) throws {
-            if player.engine == nil { engine.attach(player) }
-            if cuePlayer.engine == nil { engine.attach(cuePlayer) }
-            if loopPlayer.engine == nil { engine.attach(loopPlayer) }
-            engine.connect(player, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
-            engine.connect(cuePlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
-            engine.connect(loopPlayer, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
-            engine.prepare()
-            try engine.start()
-            player.play()
-            cuePlayer.play()
-            loopPlayer.play()
-            LiveAudioEngine.telemetry.track(.audioEngineStarted(inputRate: 0, inputChannels: 0, voiceProcessing: false, restart: restart))
+                                                                voiceProcessing: processing, plan: plan, restart: restart))
         }
 
         func tearDown(deactivate: Bool) {
-            if listens { engine.inputNode.removeTap(onBus: 0) }
+            voice?.feed.detach()
+            engine.inputNode.removeTap(onBus: 0)
             player.stop()
             cuePlayer.stop()
             loopPlayer.stop()
@@ -236,29 +271,29 @@ final class LiveAudioEngine {
     /// What is queued on the reply player, and how far through it the speaker is.
     private var playout = LiveReplyPlayout()
 
-    /// Whether the engine running now opened the microphone: a call on GPT-Live's engine has its
-    /// microphone in libwebrtc (`GptLiveLink`), and this engine plays only the cues.
-    private var listens = true
-
-    /// The cues alone, for a call whose microphone and voice are WebRTC's (`GptLiveLink`): the same
-    /// players on an engine with no input, so `play`, `startLoop` and `stop(farewell:)` work as on
-    /// a Realtime call. Asks for the microphone permission first, which libwebrtc needs as well and
-    /// would otherwise ask for with no `awaitingPermission` to hold the call's deadline.
-    @discardableResult
-    func startCues(failed: @escaping @Sendable (String) -> Void) async throws -> Int {
-        try await start(listening: false, frames: { _ in }, failed: failed)
-    }
+    /// What the engine running now carries besides the cues.
+    private var plan = LiveAudioPlan.realtime
+    /// GPT-Live's voice on the engine running now, when the plan is `.gptLive`.
+    private var voice: (node: AVAudioSourceNode, feed: VoiceFeed)?
 
     /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a
     /// time. Returns the token `stop(token:)` takes.
     @discardableResult
     func start(frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
-        try await start(listening: true, frames: frames, failed: failed)
+        try await start(plan: .realtime, device: nil, frames: frames, failed: failed)
     }
 
-    private func start(listening: Bool, frames: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
+    /// A call on GPT-Live: the same engine, with libwebrtc's microphone and voice on it through
+    /// `device` (`LiveWebRTCAudioDevice`) in place of the socket's. Asks for the microphone
+    /// permission first, as a Realtime call does, so `awaitingPermission` holds the call's deadline.
+    @discardableResult
+    func start(webRTC device: LiveWebRTCAudioDevice, failed: @escaping @Sendable (String) -> Void) async throws -> Int {
+        try await start(plan: .gptLive, device: device, frames: { pcm in device.deliver(pcm) }, failed: failed)
+    }
+
+    private func start(plan: LiveAudioPlan, device: LiveWebRTCAudioDevice?, frames: @escaping @Sendable (Data) -> Void,
+                       failed: @escaping @Sendable (String) -> Void) async throws -> Int {
         stop()
-        listens = listening
         interrupted = false
         token += 1
         let mine = token
@@ -281,10 +316,14 @@ final class LiveAudioEngine {
         // A newer start (or a stop) came while the permission prompt was up.
         guard token == mine else { throw CancellationError() }
 
+        let voice = plan.voice == .webRTC ? device.map { device -> (node: AVAudioSourceNode, feed: VoiceFeed) in
+            let feed = VoiceFeed(device: device)
+            return (Self.makeVoiceNode(feed), feed)
+        } : nil
         let graph = Graph(engine: AVAudioEngine(), player: AVAudioPlayerNode(), cuePlayer: AVAudioPlayerNode(), loopPlayer: AVAudioPlayerNode(),
-                          listens: listens)
+                          plan: plan, voice: voice)
         let sink = self.sink
-        sink.set(frames)
+        sink.set(frames, gated: plan.gatesMicrophone)
         self.failed = failed
         observe(graph.engine)
         let resetsThen = resets
@@ -318,11 +357,14 @@ final class LiveAudioEngine {
         player = graph.player
         cuePlayer = graph.cuePlayer
         loopPlayer = graph.loopPlayer
+        self.plan = plan
+        self.voice = voice
         return mine
     }
 
     /// Tear an engine down on `queue`. The audio session goes with it unless another call has it.
     private func retire(_ graph: Graph) {
+        graph.voice?.feed.detach()
         let deactivate = engine == nil && bringingUp == 0
         Self.queue.async { graph.tearDown(deactivate: deactivate) }
     }
@@ -336,6 +378,16 @@ final class LiveAudioEngine {
             let samples = Array(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
             let rate = buffer.format.sampleRate
             sink.send(RealtimeAudio.pcm16(from: samples, sampleRate: rate), seconds: Double(buffer.frameLength) / rate)
+        }
+    }
+
+    /// GPT-Live's voice node, made outside the main actor: it renders on the audio thread.
+    private nonisolated static func makeVoiceNode(_ feed: VoiceFeed) -> AVAudioSourceNode {
+        AVAudioSourceNode(format: replyFormat) { isSilence, _, frameCount, buffers in
+            let list = UnsafeMutableAudioBufferListPointer(buffers)
+            guard let output = list.first?.mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+            if !feed.render(into: output, frames: Int(frameCount)) { isSilence.pointee = true }
+            return noErr
         }
     }
 
@@ -394,7 +446,7 @@ final class LiveAudioEngine {
     /// here and do nothing, and a hang-up leaves it to be torn down when it does.
     func recoverIfStopped() {
         guard !interrupted, let engine, let player, let cuePlayer, let loopPlayer, !engine.isRunning else { return }
-        let graph = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, listens: listens)
+        let graph = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, plan: plan, voice: voice)
         let sink = self.sink
         let mine = token
         let resetsThen = resets
@@ -606,7 +658,7 @@ final class LiveAudioEngine {
         }
         var current: Graph?
         if let engine, let player, let cuePlayer, let loopPlayer {
-            current = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, listens: listens)
+            current = Graph(engine: engine, player: player, cuePlayer: cuePlayer, loopPlayer: loopPlayer, plan: plan, voice: voice)
         }
         playout = LiveReplyPlayout()
         let playing = farewell.map { play($0) } ?? false
@@ -616,8 +668,10 @@ final class LiveAudioEngine {
             retire(graph)
             return false
         }
+        // The call's voice ends with it: the farewell's engine plays the cue alone.
+        graph.voice?.feed.detach()
         Self.queue.async {
-            if graph.listens { graph.engine.inputNode.removeTap(onBus: 0) }
+            graph.engine.inputNode.removeTap(onBus: 0)
             graph.player.stop()
             graph.loopPlayer.stop()
         }
@@ -645,6 +699,8 @@ final class LiveAudioEngine {
         player = nil
         cuePlayer = nil
         loopPlayer = nil
+        voice = nil
+        plan = .realtime
         looping = nil
         cuesEnd = 0
         sink.set(nil)

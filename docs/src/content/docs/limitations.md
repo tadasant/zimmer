@@ -466,26 +466,36 @@ lopsided until the phone reports Realtime too.
 The iOS app and CarPlay run `gpt_live_claude` over WebRTC (Google's libwebrtc, from the
 `stasel/WebRTC` binary package), because GPT-Live takes a WebSocket only from a server that holds
 the OpenAI key. CI compiles it, and the event handling is tested on Linux (`GptLiveConductorTests`),
-but no call has run on a phone or in a car. Three things wait on the first real call: that
-libwebrtc's voice-processing audio unit and the cue engine (`LiveAudioEngine.startCues`) share the
-`.playAndRecord` session without one cutting the other off, which matters most on a CarPlay route;
-that the cues, which libwebrtc's echo canceller does not hear, do not reach GPT-Live as speech; and
-that an offer posted before ICE gathering finishes connects, as it does in the browser.
+but no call has run on a phone or in a car.
 
-The cues on this engine may also be too quiet to hear. Apple's voice processing turns down every
-sound in the app that does not go through it, and libwebrtc does not relax that (iOS 17's
-`kAUVoiceIOProperty_OtherAudioDuckingConfiguration` is never set on its audio unit). The cues play
-from `LiveAudioEngine`, outside libwebrtc's unit, so on a call they are likely ducked under GPT-Live's
-voice. The fix is to give libwebrtc a custom audio device (`RTCAudioDevice`) built on
-`LiveAudioEngine`'s voice-processing graph, so the cues, the microphone gate and GPT-Live's voice
-share one engine as they do on Realtime. That has not been built.
+libwebrtc does not run its own audio unit. It is given a custom audio device
+(`LiveWebRTCAudioDevice`) built on the call's `LiveAudioEngine`. That engine's voice-processing input
+supplies the microphone, and a source node plays GPT-Live's voice on the same mixer as the cues, as
+on a Realtime call. Apple's voice processing turns down every sound outside its own unit, and the
+cues are inside it. That should make them audible over GPT-Live's voice, but nobody has heard them
+yet. What is still unchecked on a phone and in a car:
+
+- whether the cues can be heard at normal volume over GPT-Live's voice, on the speaker and over CarPlay;
+- whether libwebrtc's voice comes through the device clean, with no crackle, drift or growing delay.
+  Its playout is pulled at the engine's render rate and its microphone is pushed from the engine's
+  tap, both as 16-bit 24 kHz mono, and neither has run against real audio hardware;
+- whether the echo canceller keeps the cues out of what GPT-Live hears. There is no microphone gate
+  on this engine, because it would cut words;
+- that an offer posted before ICE gathering finishes connects, as it does in the browser.
+
+Only Apple's voice processing cancels echo: libwebrtc turns its own echo canceller, gain control and
+noise suppression off on iOS whatever the audio device.
 
 On both the phone and the web dock, the GPT-Live cues guess where your turn ends. GPT-Live reports
 no speech boundaries, so a call counts you as talking when your transcript starts arriving and as
 heard when it has been quiet for 0.6 s with no answer begun. Whether GPT-Live streams the person's
-transcript while they speak, or only once they stop, has not been checked on a real call. If only
-afterwards, Heard comes late or not at all, and a pause mid-sentence longer than 0.6 s can sound
-Heard early. A CarPlay
+transcript while they speak, or only once they stop, has not been checked on a real call. OpenAI's
+guide says each fragment carries its interval on the session timeline and that delivery can be
+uneven, but not when fragments are sent. If only afterwards, Heard comes late or not at all, and a
+pause mid-sentence longer than 0.6 s can sound Heard early. The phone logs each run of the person's
+transcript as `gpt_live.input_transcript`: how long they spoke by GPT-Live's intervals, over how
+long the fragments arrived, and `streamed` when the second is at least half the first. The first
+real call answers this. A CarPlay
 call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
 Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
 happens only with a connection warmed before the engine was switched, for at most its five minutes.
