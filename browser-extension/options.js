@@ -16,8 +16,10 @@ function setStatus(text, ok) {
   status.className = `status ${ok ? "ok" : "bad"}`;
 }
 
-function pointKeysLinkAt(baseUrl) {
-  keysLink.href = baseUrl ? `${baseUrl}/settings/api_keys` : "#";
+// On the web UI, which can be a different host from the send URL: an API-only
+// host answers /settings/api_keys with a 404.
+async function pointKeysLinkAt(baseUrl) {
+  keysLink.href = baseUrl ? `${await Settings.webUiUrlFor(baseUrl)}/settings/api_keys` : "#";
 }
 
 async function describeCurrent() {

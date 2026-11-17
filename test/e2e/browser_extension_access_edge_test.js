@@ -132,9 +132,19 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     // BASE_URL is http://, so the advice is the https URL; on https it is to sign in.
     assert(refusal.includes('redirected') && refusal.includes('https://'), `the redirect to the login page is reported (${refusal})`);
     assert(!refusal.includes('Quick Router key'), 'it does not blame the key');
+    assert((await host.locator('.error a').count()) === 0, 'an http redirect offers no sign-in link');
     assert((await host.locator('textarea').inputValue()) === 'before signing in', 'the text is kept for a retry');
     assert(received.length === 0, 'nothing reached the ingest');
     await page.keyboard.press('Escape');
+
+    console.log('Step 1b: on an https URL, a redirect is a sign-in to run, on a path Zimmer answers...');
+    // The stand-in edge is http, so the https branch is checked in the worker
+    // directly: an API-only host (zimmer-app.tadasant.com) 404s on `/`, so the
+    // sign-in must not point there.
+    const httpsRefusal = await worker.evaluate(() =>
+      accessProxyRefusal({ type: 'opaqueredirect', headers: new Headers() }, 'https://api-only.example'));
+    assert(httpsRefusal.signInUrl === 'https://api-only.example/api/v1/health', `the sign-in URL is a path Zimmer answers (${httpsRefusal.signInUrl})`);
+    assert(httpsRefusal.error.includes('expired') && !httpsRefusal.error.includes('https://api-only.example in a tab'), `the message names an expired sign-in, not the bare URL (${httpsRefusal.error})`);
 
     console.log('Step 2: once signed in, the same message goes through the edge...');
     const signIn = await context.newPage();
@@ -148,6 +158,14 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     assert(received[0]?.key === 'zmr_quick_router_key', 'with the key in X-API-Key');
     assert(received[0]?.body?.prompt === 'after signing in', 'and the message as the prompt');
     await host.locator('.toast button').click();
+
+    console.log('Step 2a: the options page links to API keys on the web UI Zimmer reported, not the send URL...');
+    const options = await context.newPage();
+    await options.goto(new URL('options.html', worker.url()).href);
+    await options.waitForFunction(() => document.getElementById('keysLink').getAttribute('href') !== '#');
+    const keysHref = await options.locator('#keysLink').getAttribute('href');
+    assert(keysHref === 'https://zimmer-web.example/settings/api_keys', `the API keys link is on the web UI (${keysHref})`);
+    await options.close();
 
     console.log('Step 2b: without a usable session_url, the link falls back to the URL the browser reached...');
     for (const [reported, label] of [[undefined, 'missing'], ['javascript:alert(1)', 'not http(s)']]) {
@@ -188,6 +206,9 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await host.locator('.error').waitFor({ timeout: 30000 });
     const forbidden = await host.locator('.error').innerText();
     assert(forbidden.includes('refused the account') && !forbidden.includes('Quick Router key'), `the 403 names the account (${forbidden})`);
+    // Signing in again would reuse the refused account, so the way out is a sign-out first.
+    assert(forbidden.includes(`${BASE_URL}/cdn-cgi/access/logout`) && forbidden.includes(`${BASE_URL}/api/v1/health`), `the 403 says to sign out, then sign in on a path Zimmer answers (${forbidden})`);
+    assert((await host.locator('.error a').count()) === 0, 'the 403 offers no one-click sign-in, which would reuse the refused account');
     await page.keyboard.press('Escape');
 
     console.log('Step 6: a URL that answers 200 but is not Zimmer is not a sent message...');

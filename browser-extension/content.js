@@ -279,6 +279,7 @@
     .toast { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; background: #065f46; color: #ecfdf5; font-size: 13px; padding: 10px 14px; border-radius: 10px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.25); display: flex; gap: 12px; align-items: center; max-width: calc(100vw - 32px); }
     .toast a { color: #fff; font-weight: 600; }
+    .error a { color: #991b1b; font-weight: 600; }
     .toast button { all: unset; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; }
     @media (max-width: 480px) { .composer { right: 8px; left: 8px; bottom: 8px; width: auto; max-width: none; } }
   `;
@@ -322,6 +323,16 @@
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  // Only an http(s) URL goes into an href.
+  function isWebUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
   }
 
   function arm() {
@@ -442,9 +453,18 @@
     arm();
   }
 
-  function showError(message) {
+  // `signInUrl`, when the access proxy's sign-in is the fix: a link that opens
+  // it in a new tab, so the human does not have to copy a URL out of the text.
+  function showError(message, signInUrl) {
     state.composer?.querySelector(".error")?.remove();
     const error = el("div", "error", message);
+    if (isWebUrl(signInUrl)) {
+      const link = el("a", null, "Sign in ↗");
+      link.href = signInUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      error.append(" ", link);
+    }
     state.composer?.appendChild(error);
     const button = state.composer?.querySelector(".send");
     if (button) {
@@ -484,7 +504,7 @@
     state.sending = false;
 
     if (!result?.ok) {
-      showError(result?.error || "Zimmer did not accept the message.");
+      showError(result?.error || "Zimmer did not accept the message.", result?.signInUrl);
       return;
     }
 

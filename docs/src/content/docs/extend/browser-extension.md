@@ -27,6 +27,11 @@ in the repo — Chrome, Manifest V3, no build step — and is loaded unpacked. (
 3. Open the extension's options (right-click its icon → **Options**), paste the Zimmer URL and the
    key, and **Save**. Saving asks Chrome for permission to talk to that one origin — grant it.
 
+**After the files change, click the extension's reload button on `chrome://extensions`.** Chrome
+keeps running the service worker it cached when the unpacked extension was last loaded, across
+browser restarts too, so new files on disk do nothing until then. The version on that page is the
+one in `manifest.json`, so a copy that is behind shows an older number.
+
 The browser has to reach Zimmer. On a tailnet-only deployment that means a browser on the tailnet,
 using the tailnet address as the URL. On a deployment behind the [Cloudflare
 edge](/operate/deploying/#optional-cloudflare-edge), as Tadas's is, Cloudflare Access checks every
@@ -41,11 +46,23 @@ runs the Google login and the tab lands on a short JSON answer. The extension ca
 itself. The composer says who refused a message, and it blames the key only when Zimmer
 itself refused it:
 
-- **A redirect** is Access sending the request to its login page: sign in as above, then send again.
+- **A redirect** is Access sending the request to its login page, because this browser never signed
+  in there or its sign-in has expired (Access sign-ins last a set time, so this comes back
+  periodically). The error carries a **Sign in** link to `<URL>/api/v1/health`: Access runs the
+  login and the tab ends on Zimmer's short "Invalid or missing API key" reply, which means the
+  browser is through. Then send again; the composer keeps the text.
 - **An Access 401** comes from an Access app that admits service tokens only, and signing in will not
   get past it. Change the URL in the options to one whose Access app admits a browser sign-in.
 - **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
-  with the right account.
+  with the right account. Access would reuse the refused session, so the error says to sign out at
+  `<URL>/cdn-cgi/access/logout` first, then sign in at `<URL>/api/v1/health`.
+
+Neither link points at the bare URL. An API-only host answers everything outside `/api` with a 404
+by design: on Tadas's deployment that includes `https://zimmer-app.tadasant.com/` and
+`https://zimmer-app.tadasant.com/settings/api_keys`. The settings page is on the web UI,
+`https://zimmer.tadasant.com/settings/api_keys`. The options page's **Settings → API keys** link
+goes there once one message has been sent, because the extension remembers the web UI origin from
+the session URL Zimmer reports. Before the first send, the link uses the send URL.
 
 The toast links to the session on the web UI URL Zimmer reports (`ZIMMER_PROD_BASE_URL`), not on
 the URL the extension sends to, because that can be a host that serves the API only. When Zimmer
