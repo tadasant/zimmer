@@ -35,7 +35,7 @@ module CycleTimes
   #                                                         unattributed from the due time on
   #   - needs_input, while a child is alive                 wait_child
   #   - needs_input, otherwise, holding a recorded PR       wait_merge_gate
-  #   - needs_input, otherwise, until the archive           wait_human (parked on the action
+  #   - needs_input, otherwise, until the archive, ROOT     wait_human (parked on the action
   #                                                         queue until something closed it)
   #   - needs_input, otherwise                              unattributed
   #   - an MCP elicitation                                  wait_human
@@ -79,13 +79,17 @@ module CycleTimes
     # @param events [Array<TranscriptEvents::Event>]
     # @param child_windows [Array<Array(Time, Time)>] when each child was alive
     # @param holds_pr [Boolean] whether the session recorded a PR it opened
-    def initialize(span_start:, span_end:, changes:, events:, child_windows: [], holds_pr: false)
+    # @param root [Boolean] whether this is the hierarchy's root. Only a root
+    #   parked until its archive is on the human action queue; a child parked
+    #   until its archive is waiting on the router that will close it.
+    def initialize(span_start:, span_end:, changes:, events:, child_windows: [], holds_pr: false, root: true)
       @span_start = span_start
       @span_end = [ span_end, span_start ].max
       @changes = changes.select { |c| c.at > span_start && c.at < @span_end }.sort_by(&:at)
       @events = events.sort_by(&:at)
       @child_windows = child_windows
       @holds_pr = holds_pr
+      @root = root
     end
 
     # @return [Array<Segment>]
@@ -256,18 +260,18 @@ module CycleTimes
       # waiting on, so the time is shown as such rather than charged to CI.
       @missed_wakes << MissedWake.new(due, to)
       add(from, due, wake.category, wake.detail)
-      add(due, to, "unattributed", "asleep past its scheduled wake (due #{wake.due.utc.iso8601}); the wake did not fire")
+      add(due, to, "unattributed", "asleep past its scheduled wake (due #{due.utc.iso8601}); the wake did not fire")
     end
 
     # The part of a needs_input interval covered by a live child is a wait on
-    # that child; the rest is holding a PR, or — when nothing ever resumed the
-    # session and it sat parked until its archive — on the human action queue,
+    # that child; the rest is holding a PR, or — when nothing ever resumed a
+    # root and it sat parked until its archive — on the human action queue,
     # which is what needs_input means. A stretch something later resumed is
     # unexplained: the resume could have come from an agent or a trigger.
     def add_needs_input(from, to)
       rest =
         if @holds_pr then [ "wait_merge_gate", "needs_input holding an open PR" ]
-        elsif to >= @span_end then [ "wait_human", "needs_input until it was archived (parked on the action queue)" ]
+        elsif @root && to >= @span_end then [ "wait_human", "needs_input until it was archived (parked on the action queue)" ]
         else [ "unattributed", "needs_input until an agent or trigger resumed it" ]
         end
       cursor = from

@@ -131,8 +131,8 @@ Between turns, the lane is cut by why the session wasn't running:
 | asleep more than 15 minutes past that wake's due time | `unattributed` from the due time on ("asleep past its scheduled wake") |
 | `needs_input` while one of its children was alive | `wait_child` |
 | `needs_input` otherwise, holding a PR it recorded | `wait_merge_gate` |
-| `needs_input` otherwise, and nothing resumed it before its archive | `wait_human`: parked on the action queue until something closed it |
-| `needs_input` otherwise, later resumed | `unattributed`: an agent, a trigger or a person could have resumed it |
+| `needs_input` otherwise, a root, and nothing resumed it before its archive | `wait_human`: parked on the action queue until something closed it |
+| `needs_input` otherwise (later resumed, or a child waiting for its router to close it) | `unattributed`: an agent, a trigger or a person could have resumed it |
 | blocked on an MCP elicitation | `wait_human` |
 | failed, then revived | `unattributed` |
 
@@ -165,7 +165,7 @@ time from the due moment on is `unattributed`. More than an hour of it disqualif
 | Worker queue | waiting | A turn ready to run that no worker thread had picked up |
 | Spot-gate hold | waiting | Quota pacing: a spot session held until the window has room |
 | Quota park | waiting | Every account out of quota, or the provider refusing |
-| Waiting on a human | waiting | Elicitations, and a session parked in `needs_input` with nothing armed until its archive. Typically a one-turn answer to a human, left open for them to read |
+| Waiting on a human | waiting | Elicitations, and a root session parked in `needs_input` that nothing resumed before its archive. Typically a one-turn answer to a human, left open for them to read |
 | Turn startup | overhead | Process spawn, MCP servers booting, the CLI resuming its conversation. It recurs on every turn |
 | Unattributed | overhead | Time no recorded event explains. Shown, never spread across the others |
 
@@ -217,6 +217,7 @@ evenly, between 60 and 1,500 per lane. Every total is computed before that cut.
 - **Only the last turn's wakes are read.** A sleep is explained by the wake its last turn armed. A
   `wake_me_up_later` armed in an earlier turn and still pending isn't seen, so that sleep is a generic
   `Timed sleep` with no due time.
+- **A rejected wake still counts.** The classifier reads `wake_me_up_later` calls, not their results, so a call the server refused (a bad `wake_at`) still sets the due time of the sleep that follows.
 - **A parked `needs_input` that something later resumed stays `Unattributed`.** The timeline doesn't
   record who resumed it, so it could have been an agent, a trigger or a person.
 - **A wake's purpose comes from its prompt text.** A prompt that doesn't follow the skills' shapes

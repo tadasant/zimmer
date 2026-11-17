@@ -102,7 +102,8 @@ module CycleTimes
           changes: Array(changes[session.id]),
           events: TranscriptEvents.for(session),
           child_windows: child_windows,
-          holds_pr: Array(session.custom_metadata&.dig("github_pull_request_urls")).any?
+          holds_pr: Array(session.custom_metadata&.dig("github_pull_request_urls")).any?,
+          root: session.id == hierarchy.root.id
         )
         BuiltLane.new(builder.build, builder.missed_wakes)
       end

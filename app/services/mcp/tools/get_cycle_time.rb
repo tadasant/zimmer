@@ -30,7 +30,7 @@ module Mcp
           merge gate), **wait_deploy** (post-merge runs, deploys), **wait_child** (watching a spawned
           session), **wait_sleep** (other timed self-wakes / shell sleeps), **wait_worker_queue** (turn
           queued for a worker), **wait_spot_hold** (spot gate), **wait_quota_park** (quota parks),
-          **wait_human** (MCP elicitation, or parked in needs_input until archived)
+          **wait_human** (MCP elicitation, or a root parked in needs_input until archived)
         - **turn_startup** (worker start → first transcript event) and **unattributed** (wind-down, gaps, and
           sleep past a scheduled wake that did not fire)
 

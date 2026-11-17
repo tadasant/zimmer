@@ -243,4 +243,26 @@ class CycleTimes::LaneBuilderTest < ActiveSupport::TestCase
     assert_includes summary(segments), [ 10, 300, "unattributed" ]
     assert_includes summary(segments), [ 400, 1_000, "wait_human" ]
   end
+
+  test "a child parked until its router archives it is not a wait on a human" do
+    segments = build(span_end: 1_000, changes: [ change(1, :running), change(400, :needs_input) ], root: false)
+
+    assert_equal [ 400, 1_000, "unattributed" ], summary(segments).last
+  end
+
+  test "a wake already due when the sleep began is overdue from the start of the sleep" do
+    wake = { "wake_at" => (T + 5).utc.iso8601, "prompt" => "CI wake 1 on https://github.com/a/b/pull/1" }
+    builder = CycleTimes::LaneBuilder.new(
+      span_start: T, span_end: T + 10_000,
+      changes: [ change(1, :running), change(20, :needs_input), change(21, :sleeping), change(9_000, :queued), change(9_010, :running) ],
+      events: [ ev(2, Types::USER_MESSAGE), call(10, "w", LATER, wake), result(11, "w") ]
+    )
+
+    segments = builder.build
+
+    assert_tiles(segments, 10_000)
+    assert_includes summary(segments), [ 21, 9_000, "unattributed" ]
+    assert_match((T + 21).utc.iso8601, segments.find { |s| s.start == T + 21 }.detail)
+    assert_equal [ [ T + 21, T + 9_000 ] ], builder.missed_wakes.map { |m| [ m.due, m.resumed ] }
+  end
 end
