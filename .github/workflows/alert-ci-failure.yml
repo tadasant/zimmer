@@ -41,10 +41,10 @@ jobs:
     # See the header.
     runs-on: ubuntu-latest
 
-    # Room for the runner-loss re-run below (its step stops at 110 minutes) and then the
+    # Room for the runner-loss re-runs below (their step stops at 180 minutes) and then the
     # alert, short of the 6-hour default. The Slack step carries its own 5-minute limit, so
     # a stalled connection to Slack still dies quickly.
-    timeout-minutes: 125
+    timeout-minutes: 195
 
     # Alert on genuine main-branch CI failures, and nothing else:
     #   conclusion in (failure, startup_failure, timed_out)
@@ -102,15 +102,17 @@ jobs:
       - name: Re-run a job GitHub never gave a runner, and wait for it
         # A hosted job no runner picks up ("not acquired by Runner of type hosted") fails the
         # run with no code at fault, which a macOS arm64 capacity shortage does to the iOS
-        # jobs. One automatic re-run answers it, or the newest run on main does when this one
-        # is superseded; the script says what it found in `note`, and sets `page=false` only
-        # once one of those has answered. Attempt 2 is never re-run, and a failure here falls
-        # through to the alert.
+        # jobs and to TestFlight's upload. Automatic re-runs answer it, for as long as runners
+        # are all that is missing and the budget lasts, or the newest run on main does when
+        # this one is superseded; the script says what it found in `note`, and sets
+        # `page=false` only once one of those has answered. A later attempt this listener
+        # re-ran is answered by the listener that re-ran it, a later attempt anyone else
+        # re-ran pages, and a failure here falls through to the alert.
         id: retry
         if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
         # A step timeout fails the step and lets the job carry on to the alert; a job
-        # timeout would not. The script's own wait (WAIT_MINUTES) ends well inside this.
-        timeout-minutes: 110
+        # timeout would not. The script's own wait (WAIT_MINUTES, 170) ends inside this.
+        timeout-minutes: 180
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

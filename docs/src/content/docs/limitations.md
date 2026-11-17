@@ -1144,20 +1144,27 @@ often imagined to cover. A run given up sooner, with "The job was not acquired b
 conclude `failure` and is handled (see below). Noticing that CI has gone quiet is still a human
 job.
 
-### A hosted macOS runner shortage reddens `main` for up to two hours
+### A hosted macOS runner shortage reddens `main` for up to three hours
 
-The `ios` and `ios_carplay` jobs run on GitHub-hosted `macos-latest`, and GitHub is sometimes short
-of macOS arm64 capacity. A job that waits too long without a runner (about half an hour in run
-40899943842) is given up. The run concludes `failure` and `#alerts` pages, even though no code is
-wrong. The job itself shows as `cancelled`, like a superseded one; the annotation "The job was not
-acquired by Runner of type hosted even after multiple attempts" is what tells them apart.
-`all-checks-pass` fails the run too, deliberately, because the iOS build did not run.
+The `ios` and `ios_carplay` jobs, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on
+GitHub-hosted `macos-latest`, and GitHub is sometimes short of macOS arm64 capacity. A job that
+waits about 15 minutes without a runner is given up by GitHub, and nothing in this repo can change
+that wait. The run concludes `failure` even though no code is wrong. The job itself shows as
+`cancelled`, like a superseded one; the annotation "The job was not acquired by Runner of type
+hosted even after multiple attempts" is what tells them apart. `all-checks-pass` fails the run too,
+deliberately, because the iOS build did not run.
 
-`alert-ci-failure.yml` re-runs such a run once and waits for it, so `#alerts` hears only when
-the re-run fails too ([CI failure alerts](/operate/deploying/#ci-failure-alerts)). Until the
-re-run finishes, `main` shows red, and a shortage that outlasts both attempts still pages. On a
-pull request nothing re-runs automatically: `gh run rerun <id> --failed`. A flaky real failure
-that happens to sit beside a lost runner gets the same one free retry and may never page.
+This is GitHub's capacity, not the account's concurrency limit. On 2026-11-17, while TestFlight's
+`upload` sat without a runner for two 15-minute waits, at most three macOS jobs ran on the account
+at once (the free plan allows five), Linux jobs got runners within seconds, and a pull request's
+macOS jobs were picked up while `upload` was still waiting.
+
+`alert-ci-failure.yml` re-runs such a run, and re-runs it again while runners are all it lost, for
+up to 170 minutes, so `#alerts` hears only when a re-run fails for real or the shortage outlasts
+that ([CI failure alerts](/operate/deploying/#ci-failure-alerts)). Until a re-run passes, `main`
+shows red, and for TestFlight no build ships. On a pull request nothing re-runs automatically:
+`gh run rerun <id> --failed`. A flaky real failure that happens to sit beside a lost runner gets
+one free retry and may never page.
 
 ### The trigger-poll liveness alarm depends on Redis, and fails quiet
 

@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
 # Decide whether a failed main-branch run is GitHub never handing a job a runner, and if so
-# re-run it once and wait for the answer, instead of paging #alerts for a failure no code caused.
+# re-run it and wait for the answer, instead of paging #alerts for a failure no code caused.
 #
 # A hosted job that waits too long for a runner is given up with the check-run annotation
-# "The job was not acquired by Runner of type hosted even after multiple attempts". A macOS
-# arm64 capacity shortage does this to the iOS jobs in `ci.yml` and the shards in
-# `ios-ui-tests.yml`. Re-running the failed jobs is the whole fix.
+# "The job was not acquired by Runner of type hosted even after multiple attempts", about 15
+# minutes after it queued. GitHub does that, not this repo: no setting here moves it. A macOS
+# arm64 capacity shortage does it to the iOS jobs in `ci.yml`, the shards in `ios-ui-tests.yml`
+# and `upload` in `testflight.yml`; GitHub marks such a job "Due to capacity constraints, jobs
+# targeting macOS arm64 runners may experience longer queue times". Re-running the failed jobs
+# is the whole fix, once the shortage eases.
 #
-# It waits on the re-run here rather than leaving attempt 2 to page on its own, because it
-# cannot: a re-run requested with GITHUB_TOKEN fires no `workflow_run` event when it
-# completes, so this listener would never hear about it. Measured on 2026-10-29: a
-# GITHUB_TOKEN re-run of a finished run produced no listener run.
+# It waits on the re-run here rather than leaving each attempt to page on its own. Whether a
+# re-run requested with GITHUB_TOKEN fires `workflow_run` when it completes has varied: none
+# did on 2026-10-29, and one did on 2026-11-17 (run 44137247444, attempt 2). So the listener
+# that re-ran a run owns its answer, and a listener for a later attempt the bot re-ran stays
+# quiet and leaves it to that owner.
 #
-# Once, and only from attempt 1. `gh run rerun --failed` re-runs every failed and cancelled
-# job, so a real failure sitting beside the lost one runs again and pages if it is real.
+# From attempt 1 only, and again for as long as every job that did not pass on the newest
+# attempt is a lost runner, up to MAX_RERUNS re-runs inside the WAIT_MINUTES budget. A shortage
+# outlasts one wait for a runner: on run 44137247444 it outlasted two. `gh run rerun --failed`
+# re-runs every failed and cancelled job, so a real failure sitting beside the lost one runs
+# once more and pages if it fails again; a run where any job ran and failed is never re-run a
+# second time. A shortage that outlasts the budget or the cap pages, saying so.
 #
 # Only while the run is still the newest of its workflow on main. A re-run joins the
-# workflow's concurrency group like a new run, so re-running an older commit would cancel
-# the newer commit's run (`ci.yml` cancels in progress), and a cancelled run never pages:
-# main's newest commit would be left with no CI answer and nobody told.
+# workflow's concurrency group like a new run, so re-running an older commit would cancel the
+# newer commit's run (`ci.yml` cancels in progress), and a cancelled run never pages: main's
+# newest commit would be left with no CI answer and nobody told.
 #
 # A superseded run waits for the newest run's answer instead, and the same wait covers a
 # re-run a newer push cancelled. A human has nothing to do while that answer is coming: a
-# failed newest run reaches this same listener, where a lost runner gets its one re-run and
+# failed newest run reaches this same listener, where a lost runner gets its re-runs and
 # anything else pages. So this stays quiet only once the newest run of the same trigger has
 # FINISHED, because a run still queued can yet be cancelled, and a cancelled run never pages.
 # It pages when that newest run:
@@ -56,8 +64,20 @@ WORKFLOW_ID="${WORKFLOW_ID:?WORKFLOW_ID must be set}"
 HEAD_SHA="${HEAD_SHA:?HEAD_SHA must be set}"
 RUN_EVENT="${RUN_EVENT:?RUN_EVENT must be set}"
 # Below the retry step's timeout-minutes, so a wait that never ends still pages. One budget
-# for the whole script, re-run and newer run together.
-WAIT_MINUTES="${WAIT_MINUTES:-100}"
+# for the whole script, every re-run and the newer run together. Room for two lost ~15-minute
+# waits and then `testflight.yml`'s whole 105-minute upload.
+WAIT_MINUTES="${WAIT_MINUTES:-170}"
+# At about 15 minutes per lost attempt the budget alone would allow ten or so; this is the
+# limit that applies, and it also stops a fast-failing loop from re-running without end.
+MAX_RERUNS="${MAX_RERUNS:-6}"
+# A later re-run is not started with less budget left than this: it could not finish, and
+# would page "had not finished" while a TestFlight build may still upload after the page.
+RERUN_RESERVE_MINUTES="${RERUN_RESERVE_MINUTES:-30}"
+# This listener's own run, so the owner check below does not count itself.
+SELF_RUN_ID="${GITHUB_RUN_ID:-0}"
+LISTENER_WORKFLOW="alert-ci-failure.yml"
+# Who a re-run requested with GITHUB_TOKEN is triggered by.
+RERUN_ACTOR="github-actions[bot]"
 POLL_SECONDS="${POLL_SECONDS:-60}"
 # Per API call: one stalled request is a transient error, not the whole wait.
 API_TIMEOUT="${API_TIMEOUT:-60}"
@@ -141,80 +161,142 @@ await_newest() {
 
 deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
 
+# Sort attempt $1's unfinished jobs into `unacquired` (no runner ever picked it up), `others`
+# (anything else that did not pass, bar the gate job) and `must_run` (every one of them).
+classify() {
+  local attempt="$1" unfinished id conclusion name messages
+  if ! unfinished="$(api --paginate "repos/${REPO}/actions/runs/${RUN_ID}/attempts/${attempt}/jobs" \
+      --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | "\(.id) \(.conclusion) \(.name)"')"; then
+    verdict true "Could not list attempt ${attempt}'s jobs to check for a lost runner."
+  fi
+  unacquired=""
+  others=""
+  must_run=""
+  while read -r id conclusion name; do
+    [ -n "$id" ] || continue
+    must_run="${must_run}${name}"$'\n'
+    if [ "$conclusion" != "cancelled" ]; then
+      [ "$name" = "$GATE_JOB" ] || others="${others}${others:+, }${name}"
+      continue
+    fi
+    if ! messages="$(api "repos/${REPO}/check-runs/${id}/annotations" --jq '.[].message')"; then
+      verdict true "Could not read job ${name}'s annotations to check for a lost runner."
+    fi
+    if grep -qF "$MARKER" <<<"$messages"; then
+      unacquired="${unacquired}${unacquired:+, }${name}"
+    else
+      others="${others}${others:+, }${name}"
+    fi
+  done <<<"$unfinished"
+}
+
 if [ "$RUN_ATTEMPT" != "1" ]; then
+  # A re-run requested with GITHUB_TOKEN can fire this listener when it completes (seen on
+  # run 44137247444, 2026-11-17), and the listener that requested it is still waiting on that
+  # same attempt and pages if it did not pass. Answering here too pages twice, or re-runs
+  # behind that listener's back. Any other re-run, such as a human's, has nobody waiting on
+  # it, so it pages here. So does an actor that cannot be read, and so does the bot's re-run
+  # when no other listener run is still in progress: the one that requested it has died
+  # (cancelled, or its own runner lost), and nobody else will answer.
+  actor="$(api "repos/${REPO}/actions/runs/${RUN_ID}/attempts/${RUN_ATTEMPT}" --jq '.triggering_actor.login')" || actor=""
+  if [ "$actor" = "$RERUN_ACTOR" ]; then
+    owners="$(api "repos/${REPO}/actions/workflows/${LISTENER_WORKFLOW}/runs?status=in_progress&per_page=100" \
+      --jq "[.workflow_runs[] | select(.id != ${SELF_RUN_ID})] | length")" || owners=0
+    if [ "$owners" -gt 0 ] 2>/dev/null; then
+      verdict false "Attempt ${RUN_ATTEMPT} is the listener's own re-run; the listener waiting on it answers for it."
+    fi
+    verdict true "Attempt ${RUN_ATTEMPT} is the listener's own re-run, but no listener is still waiting on it."
+  fi
   verdict true ""
 fi
 
-if ! unfinished="$(api --paginate "repos/${REPO}/actions/runs/${RUN_ID}/attempts/1/jobs" \
-    --jq '.jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | "\(.id) \(.conclusion) \(.name)"')"; then
-  verdict true "Could not list the run's jobs to check for a lost runner."
-fi
-
-unacquired=""
-others=""
-must_run=""
-while read -r id conclusion name; do
-  [ -n "$id" ] || continue
-  must_run="${must_run}${name}"$'\n'
-  if [ "$conclusion" != "cancelled" ]; then
-    [ "$name" = "$GATE_JOB" ] || others="${others}${others:+, }${name}"
-    continue
-  fi
-  if ! messages="$(api "repos/${REPO}/check-runs/${id}/annotations" --jq '.[].message')"; then
-    verdict true "Could not read job ${name}'s annotations to check for a lost runner."
-  fi
-  if grep -qF "$MARKER" <<<"$messages"; then
-    unacquired="${unacquired}${unacquired:+, }${name}"
-  else
-    others="${others}${others:+, }${name}"
-  fi
-done <<<"$unfinished"
-
+classify 1
 if [ -z "$unacquired" ]; then
   verdict true ""
 fi
+first_lost="$unacquired"
 
-if ! newest="$(read_newest)"; then
-  verdict true "GitHub gave no runner to ${unacquired}; could not check for a newer run, so not re-run."
-fi
-read -r newest_id _ <<<"$newest"
-if [ "$newest_id" != "$RUN_ID" ]; then
-  if [ -n "$others" ]; then
-    verdict true "GitHub gave no runner to ${unacquired}, and ${others} did not pass either; not re-run, because a newer commit's run would be cancelled by it."
+attempt=1
+reruns=0
+while :; do
+  if [ "$reruns" -eq 0 ]; then
+    lost="GitHub gave no runner to ${unacquired}"
+  else
+    lost="GitHub gave no runner to ${first_lost} on attempt 1, nor to ${unacquired} on attempt ${attempt}"
   fi
-  await_newest "GitHub gave no runner to ${unacquired}; not re-run, because a newer commit's run would be cancelled by it"
-fi
 
-if [ "${DRY_RUN:-}" = "1" ]; then
-  verdict false "DRY_RUN: would re-run and wait; GitHub gave no runner to: ${unacquired}."
-fi
-
-if ! timeout "$API_TIMEOUT" gh run rerun "$RUN_ID" --failed -R "$REPO"; then
-  verdict true "GitHub gave no runner to ${unacquired}, and re-running it failed."
-fi
-echo "GitHub gave no runner to ${unacquired}; re-ran the failed jobs, waiting up to ${WAIT_MINUTES} min."
-
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  sleep "$POLL_SECONDS"
-  # One transient API error must not page; keep polling until the deadline.
-  state="$(api "repos/${REPO}/actions/runs/${RUN_ID}" \
-    --jq '"\(.run_attempt) \(.status) \(.conclusion // "")"')" || continue
-  read -r attempt status conclusion <<<"$state"
-  echo "attempt ${attempt}: ${status} ${conclusion}"
-  if ! [ "$attempt" -ge 2 ] 2>/dev/null || [ "$status" != "completed" ]; then
-    continue
+  # A real failure gets the one re-run it shares with the lost runner, and pages if it fails
+  # again: a lost runner is a reason to try again, never a reason to excuse another job.
+  if [ "$reruns" -gt 0 ] && [ -n "$others" ]; then
+    verdict true "${lost}, and ${others} did not pass on the re-run either."
   fi
+
+  if ! newest="$(read_newest)"; then
+    verdict true "${lost}; could not check for a newer run, so not re-run."
+  fi
+  read -r newest_id _ <<<"$newest"
+  if [ "$newest_id" != "$RUN_ID" ]; then
+    if [ -n "$others" ]; then
+      verdict true "${lost}, and ${others} did not pass either; not re-run, because a newer commit's run would be cancelled by it."
+    fi
+    await_newest "${lost}; not re-run, because a newer commit's run would be cancelled by it"
+  fi
+
+  if [ "${DRY_RUN:-}" = "1" ]; then
+    verdict false "DRY_RUN: would re-run and wait; ${lost}."
+  fi
+
+  # A shortage of macOS arm64 capacity outlasts one ~15-minute wait for a runner: on run
+  # 44137247444 it outlasted two. So a run that lost nothing but runners is re-run again,
+  # until the budget or the re-run cap runs out, and only then pages.
+  if [ "$reruns" -ge "$MAX_RERUNS" ]; then
+    verdict true "${lost}; a GitHub hosted-runner shortage outlasted ${reruns} automatic re-runs, so it did not run."
+  fi
+  if [ "$reruns" -gt 0 ] && [ $(( $(date +%s) + RERUN_RESERVE_MINUTES * 60 )) -ge "$deadline" ]; then
+    verdict true "${lost}; a GitHub hosted-runner shortage outlasted the ${WAIT_MINUTES}-minute wait, so it did not run."
+  fi
+
+  if ! timeout "$API_TIMEOUT" gh run rerun "$RUN_ID" --failed -R "$REPO"; then
+    verdict true "${lost}, and re-running it failed."
+  fi
+  reruns=$((reruns + 1))
+  echo "${lost}; re-ran the failed jobs (re-run ${reruns} of at most ${MAX_RERUNS}), waiting until the ${WAIT_MINUTES}-minute budget runs out."
+
+  conclusion=""
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep "$POLL_SECONDS"
+    # One transient API error must not page; keep polling until the deadline.
+    state="$(api "repos/${REPO}/actions/runs/${RUN_ID}" \
+      --jq '"\(.run_attempt) \(.status) \(.conclusion // "")"')" || continue
+    read -r seen status concl <<<"$state"
+    echo "attempt ${seen}: ${status} ${concl}"
+    if ! [ "$seen" -gt "$attempt" ] 2>/dev/null || [ "$status" != "completed" ]; then
+      continue
+    fi
+    attempt="$seen"
+    conclusion="$concl"
+    break
+  done
+  if [ -z "$conclusion" ]; then
+    verdict true "${lost}; the automatic re-run had not finished after ${WAIT_MINUTES} min."
+  fi
+
   case "$conclusion" in
     success)
-      verdict false "GitHub gave no runner to ${unacquired}; the automatic re-run passed." ;;
+      verdict false "${lost}; automatic re-run ${reruns} passed." ;;
     cancelled | skipped)
       # A newer push cancelling it is the usual cause, and only that push's run can answer.
       if [ -n "$others" ]; then
-        verdict true "GitHub gave no runner to ${unacquired}, and ${others} did not pass either; the re-run was ${conclusion}."
+        verdict true "${lost}, and ${others} did not pass either; the re-run was ${conclusion}."
       fi
-      await_newest "GitHub gave no runner to ${unacquired}; the re-run was ${conclusion}" ;;
+      await_newest "${lost}; the re-run was ${conclusion}" ;;
+    failure)
+      # Lost runners again, and nothing else: go round. Anything else pages above.
+      classify "$attempt"
+      if [ -z "$unacquired" ]; then
+        verdict true "GitHub gave no runner to ${first_lost} on attempt 1; automatic re-run ${reruns} got one and then ${others:-the run} failed."
+      fi ;;
     *)
-      verdict true "GitHub gave no runner to ${unacquired} on attempt 1; the automatic re-run then concluded ${conclusion}." ;;
+      verdict true "${lost}; automatic re-run ${reruns} then concluded ${conclusion}." ;;
   esac
 done
-verdict true "GitHub gave no runner to ${unacquired}; the automatic re-run had not finished after ${WAIT_MINUTES} min."
