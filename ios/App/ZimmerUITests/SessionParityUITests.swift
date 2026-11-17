@@ -34,16 +34,14 @@ final class SessionParityUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(sweep), "a snoozed session leaves the board")
         XCTAssertFalse(row(app, 1029).exists, "the fixture's snoozed session is off the board too")
 
-        app.buttons["board.menu"].tap()
-        app.buttons["Snoozed & hidden"].firstMatch.tap()
+        chooseFromBoardMenu(app, "Snoozed & hidden")
         XCTAssertTrue(row(app, 1031).waitForExistence(timeout: timeout))
         XCTAssertTrue(row(app, 1029).exists)
         XCTAssertFalse(row(app, 1042).exists, "sessions on the board are not in Snoozed & hidden")
         attachScreenshot(app, named: "snoozed-and-hidden")
 
         // Restore from the trash with a swipe.
-        app.buttons["board.menu"].tap()
-        app.buttons["All"].firstMatch.tap()
+        chooseFromBoardMenu(app, "All")
         tapFilter(app, "archived")
         let trashed = row(app, 1019)
         XCTAssertTrue(trashed.waitForExistence(timeout: timeout))
@@ -179,8 +177,7 @@ final class BoardViewUITests: XCTestCase {
 
     func test_ranked_view_splits_priority_from_the_spot_queue_in_rank_order() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
-        app.buttons["board.menu"].tap()
-        app.buttons["Ranked"].firstMatch.tap()
+        chooseFromBoardMenu(app, "Ranked")
 
         XCTAssertTrue(app.descendants(matching: .any)["section.Priority"].waitForExistence(timeout: timeout))
         XCTAssertTrue(app.descendants(matching: .any)["section.Spot queue"].exists)
