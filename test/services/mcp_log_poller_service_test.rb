@@ -681,6 +681,30 @@ class McpLogPollerServiceTest < ActiveSupport::TestCase
       "the credential rejection the server printed is what makes this definitive"
   end
 
+  # The combined error is persisted into session metadata and rendered on the
+  # session page, and an MCP server's log can echo the credential it was
+  # launched with.
+  test "a failed server's persisted error has injected credentials redacted" do
+    server_dir = File.join(mcp_cache_dir, "mcp-logs-context7")
+    log_file = File.join(server_dir, "2025-12-09T10-00-00.jsonl")
+
+    @mock_file_system.mkdir_p(mcp_cache_dir)
+    @mock_file_system.mkdir_p(server_dir)
+    @mock_file_system.write(log_file, to_jsonl([
+      { "error" => %(HTTP 401 with headers {"X-API-Key":"fixture0mcp0log0key0abcdef"}), "timestamp" => "2025-12-09T10:00:00Z" },
+      { "error" => "Connection failed: MCP error -32000: Connection closed", "timestamp" => "2025-12-09T10:00:01Z" }
+    ]))
+
+    result = TranscriptRedactor.stub(:known_secrets, []) do
+      McpLogPollerService.new(@session, file_system: @mock_file_system).poll
+    end
+
+    error = result[:server_statuses]["context7"][:error]
+    assert_equal "failed", result[:server_statuses]["context7"][:status]
+    assert_includes error, "[REDACTED:MATCH:API_KEY_HEADER:"
+    refute_includes error, "fixture0mcp0log0key0abcdef"
+  end
+
   private
 
   def mcp_cache_dir

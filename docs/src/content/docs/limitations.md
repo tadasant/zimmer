@@ -1537,7 +1537,17 @@ gap is worth naming precisely:
 - **Any `${VAR}` the catalog declares is redacted by exact value, whether or not it is a secret.**
   Today every one of them is (`SLACK_BOT_TOKEN`, `STRAD_API_KEY`, `ZIMMER_PROD_API_KEY`). The first
   externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
-  out of every transcript that mentions it.
+  out of every transcript that mentions it. The same is true of every entry in the `.env` secret
+  bundle, and of any process environment variable whose name says "key", "token", "secret",
+  "password" or "credential" and whose value is 16+ characters mixing letters and digits (and is not
+  a path, a plain URL or a list of other variables' names). A multi-line value, such as the Parameter
+  Store service-account JSON, is not matched by value at all; its PEM key is caught by shape.
+- **The injected MCP config still holds plaintext credentials, and the agent still sees them.**
+  Redaction protects what Zimmer stores and renders. It does not reach the clone's own
+  `.mcp.json` / `.codex/config.toml` or `.env`, which carry resolved values, or the runtime's
+  on-disk transcript file. It also does not reach what the model has already read: an agent that
+  `cat`s its config has the value in its context. Writing `${VAR}` references that the runtime
+  resolves, instead of literal values, is the follow-up that would close this.
 - **A line the patterns cannot finish scanning is destroyed rather than redacted.** The rules carry
   their own 10-second timeout instead of Rails' global one-second cap. Both bound a single search, and
   the slowest single search any transcript here has produced is 2.2 s, so there is a factor of four in

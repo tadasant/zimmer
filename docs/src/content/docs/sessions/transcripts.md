@@ -248,14 +248,38 @@ structurally, so a new refresh path cannot quietly reintroduce the bypass.
 
 It works in two tiers:
 
-- **Known values.** Every `${VAR}` the AIR catalog's MCP servers reference, resolved through the
-  same `SecretProviders` chain that injects them into a session, plus the OAuth tokens Zimmer
-  holds in its own database. Exact string matches: no false positives, and they cover
-  Zimmer-specific credential formats no regex could know about.
+- **Known values.** Every secret value Zimmer can put in a session, matched exactly:
+  - every `${VAR}` the AIR catalog's MCP servers reference, resolved through the same
+    `SecretProviders` chain that injects them into a session;
+  - every value in the secret bundle a clone's `.env` is drawn from (`SecretsLoader.all`), which
+    covers a skill-mentioned `${VAR}` that no MCP server declares;
+  - Zimmer's own API keys: every `API_KEYS` entry, and the `ZIMMER_*_API_KEY` that
+    `SelfSessionInjector` writes into every session's `zimmer-self-session` entry;
+  - the Rails process's own credential-named environment variables (`SECRET_KEY_BASE`,
+    `RAILS_MASTER_KEY` and the like), which an agent's `env` prints because it inherits them. Only a
+    value of 16 or more characters that mixes letters and digits is taken, and never a path, a plain
+    URL, a list of other variables' names or a multi-line value;
+  - the OAuth tokens Zimmer holds in its own database.
+
+  Each value is also matched in its JSON-escaped form, one level deep. These are exact string
+  matches, so they never fire on text that is not the value, and they cover Zimmer-specific
+  credential formats no regex could know about.
 - **Shapes.** High-confidence patterns — `sk-ant-oat01…`, `ghp_…`, `xoxb-…`, JWTs, PEM blocks,
   `Authorization: Bearer …`, credentials embedded in a URL, and a value sitting immediately after
   a name that says "credential". Ported from the upstream reference redactor and extended with
   what this system actually handles.
+
+Every header and assignment shape also matches through JSON-escaped quotes
+(`\"X-API-Key\": \"…\"`), because that is how a `cat` of a JSON or TOML file sits inside a
+transcript line. A plain optional quote stops at the backslash, and a Zimmer API key with no `zmr_`
+shape and no catalog entry then passes both tiers. That is the likeliest route by which
+[session 28990](https://zimmer.tadasant.com/sessions/28990), printing its own injected MCP config,
+stored one.
+
+The same redactor runs on the other places an agent process's own output is stored or broadcast:
+session log rows written by `ProcessLifecycleManager#add_log` (the stderr tail and a Codex or Pi
+terminal turn error among them), the failure reason those put on the session, MCP server log
+lines broadcast to the timeline, and the MCP connection error kept in session metadata.
 
 Redaction preserves line count exactly (the regression and rotation guards below compare line
 counts) and leaves no reversible fragment of the original.

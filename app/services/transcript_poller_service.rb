@@ -923,7 +923,10 @@ class TranscriptPollerService
         "type" => "mcp_log",
         "server_name" => log[:server_name],
         "level" => log[:level],
-        "message" => log[:message],
+        # The raw log line, read straight off disk: redacted here, at the one
+        # point it leaves the process, because an MCP server's log can carry the
+        # credential it was launched with.
+        "message" => TranscriptRedactor.redact(log[:message]),
         "timestamp" => log[:timestamp]
       }
       @broadcast_service.timeline_message(@session, mcp_message)
