@@ -62,6 +62,20 @@ EXPORT_TRANSIENT_ERRORS = (
     "The network connection was lost.",
     "Could not connect to the server.",
 )
+# xcodebuild's `error:` line for a key it could not use, which is also what it prints when App
+# Store Connect's gateway answered with an HTML error page instead of the account's settings.
+# Only that second case is transient, so this line is retried only when the same output names
+# a gateway failure in Apple's "returned unexpected content" (error -19237) wording. Run
+# 44148961028 is the worked example: "Bad Gateway" from lookupGenericSettingsForSubmission,
+# 500s from /v1/apps minutes earlier. An expired or revoked key answers 401 with no
+# unexpected-content page and still fails on the first attempt.
+EXPORT_ACCOUNT_ERROR = "No Accounts with App Store Connect Access"
+EXPORT_UNEXPECTED_CONTENT = "returned unexpected content"
+EXPORT_GATEWAY_STATUSES = (
+    "Bad Gateway",
+    "Service Unavailable",
+    "Gateway Timeout",
+)
 # What the upload service answers, in an `error:` line, when the build number is already
 # there: the altool wording, then the App Store Connect API wording newer Xcodes print. After a
 # transient failure it can mean the failed attempt had in fact been accepted; on a first
@@ -314,6 +328,11 @@ def _transient(output: str) -> str | None:
         for marker in EXPORT_TRANSIENT_ERRORS:
             if marker in line:
                 return marker
+    if any(EXPORT_ACCOUNT_ERROR in line for line in _error_lines(output)):
+        if EXPORT_UNEXPECTED_CONTENT in output:
+            for status in EXPORT_GATEWAY_STATUSES:
+                if status in output:
+                    return f"{EXPORT_ACCOUNT_ERROR} ({status})"
     return None
 
 
@@ -351,7 +370,8 @@ def _run(command: list[str]) -> tuple[int, str]:
 def export(args: argparse.Namespace) -> None:
     """Exit 0 once the build is uploaded; otherwise exit with xcodebuild's own code.
 
-    Only an error in EXPORT_TRANSIENT_ERRORS is retried. Every other failure — a signing
+    Only an error in EXPORT_TRANSIENT_ERRORS, or EXPORT_ACCOUNT_ERROR caused by a gateway
+    error page, is retried. Every other failure — a signing
     error, a refused key, an agreement, a build-number collision — exits on its first
     attempt, so the run goes red and pages exactly as it did before there was a retry."""
     command = args.argv[1:] if args.argv[:1] == ["--"] else args.argv

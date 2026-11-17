@@ -290,7 +290,11 @@ whole credential. `ZIMMER_SIGNING=archive` (dispatch input `signing=archive`) is
 
 The export is retried, up to three attempts with backoff, only when xcodebuild fails with an error
 App Store Connect gives transiently — "Error Downloading App Information" and three network
-errors, listed in `EXPORT_TRANSIENT_ERRORS` in `tools/app_store_connect.py`. Before each retry
+errors, listed in `EXPORT_TRANSIENT_ERRORS` in `tools/app_store_connect.py` — plus "No Accounts with
+App Store Connect Access", but only when the same output shows App Store Connect answered with a
+gateway error page ("returned unexpected content" and "Bad Gateway", "Service Unavailable" or
+"Gateway Timeout"). A key App Store Connect refuses prints that `error:` line without the page and
+fails on the first attempt. Before each retry
 the helper asks App Store Connect for the build and stops if it is already there. On a retry,
 "Redundant Binary Upload" also means the earlier attempt landed, since App Store Connect lists a
 new build late. So one build number is never uploaded twice, and a listed build uploaded before
