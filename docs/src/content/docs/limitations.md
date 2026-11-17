@@ -3761,6 +3761,15 @@ name this browser cannot resolve, such as a tailnet address set for a different 
 is still sent and the session still runs, but the link does not open. Open the session from Zimmer
 itself, or set the base URL to the address people actually use.
 
+### An unpacked browser extension does not update itself
+
+The [browser extension](/extend/browser-extension/) is loaded unpacked, so nothing updates it.
+Pulling new files is not enough either: Chrome keeps running the service worker it cached at the
+last load, browser restarts included, until someone clicks reload on `chrome://extensions`. A copy
+that is behind fails in the ways the newer code fixed, with nothing on screen saying it is old,
+except a lower version number on that page. Publishing to the Chrome Web Store
+([#1203](https://github.com/tadasant/zimmer/issues/1203)) is the fix.
+
 ### The baseline orchestrator root can't spawn downstream sessions out of the box
 
 🔴 `zimmer-orchestrator` — the root behind every quick-router / chat-bubble submission — ships with **no**

@@ -17,9 +17,13 @@ Chrome, Manifest V3, no build step. The docs page is
 3. Open the extension's options (right-click the icon → Options), paste the Zimmer URL and the
    key, and save. Saving asks Chrome for permission to talk to that one origin; grant it.
 
+After pulling new files, click the extension's reload button on `chrome://extensions`. Chrome keeps
+running the service worker it cached at the last load, even across restarts, until you do.
+
 The browser has to be able to reach Zimmer. On a tailnet-scoped instance that means the browser
 is on the tailnet. Behind Cloudflare Access, the URL has to be a host whose Access app lets a
-signed-in browser reach `/api`, and this browser has to be signed in there. The extension sends the
+signed-in browser reach `/api`, and this browser has to be signed in there. When that sign-in
+has expired, the composer's error carries a **Sign in** link to `<URL>/api/v1/health`. The extension sends the
 browser's cookies. On Tadas's deployment that host is `https://zimmer-app.tadasant.com`: on
 `zimmer.tadasant.com`, `/api` admits a service token only. When Access refuses a message, the
 composer says why instead of blaming the key.
