@@ -737,21 +737,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # The hosted ubuntu image ships a Swift toolchain, and ci-swift uses whichever `swift`
-      # is on PATH. Installing one is the fallback for an image that stops shipping it.
-      - name: Find or install a Swift toolchain
-        id: swift
+      # The pinned toolchain from ios/bin/install-swift-toolchain, not whatever Swift the
+      # hosted image happens to ship: the image updates its tools without notice. About
+      # 1 GB, so it is kept in the Actions cache, keyed on the script that pins it.
+      - name: Restore the pinned Swift toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/swift
+          key: swift-${{ runner.os }}-${{ hashFiles('ios/bin/install-swift-toolchain') }}
+      - name: Install the pinned Swift toolchain
         run: |
           set -euo pipefail
-          if command -v swift >/dev/null 2>&1; then
-            swift --version
-          else
-            shim="$(ios/bin/install-swift-toolchain "${RUNNER_TEMP:?}/swift")"
-            echo "shim=${shim}/swift" >> "$GITHUB_OUTPUT"
-          fi
+          # Ahead of the image's own `swift` on PATH, which is the one ci-swift picks first.
+          ios/bin/install-swift-toolchain "${RUNNER_TEMP:?}/swift" >> "$GITHUB_PATH"
       - name: Build and test ZimmerKit
-        env:
-          ZIMMER_SWIFT_SHIM: ${{ steps.swift.outputs.shim }}
         run: ios/bin/ci-swift
 
   # Single aggregate gate for branch protection. Set THIS job's name — `all-checks-pass`

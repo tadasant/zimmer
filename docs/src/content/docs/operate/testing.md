@@ -46,7 +46,7 @@ stays quiet on `cancelled`.
 
 ## The browser suite runs
 
-`test-system` runs `test/system/*.rb` through Capybara + Selenium against headless Chromium. It is a
+`test-system` runs `test/system/*.rb` through Capybara + Selenium against headless Google Chrome. It is a
 separate job from `test-unit` because `bin/rails test` does not descend into `test/system`, and
 because it pins `PARALLEL_WORKERS=1` — the persistent per-worker `--user-data-dir` in
 `test/application_system_test_case.rb` does not tolerate concurrent Chrome instances. The browser

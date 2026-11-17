@@ -50,6 +50,17 @@ class GithubHostedRunnersTest < ActiveSupport::TestCase
     end
   end
 
+  # ruby/setup-ruby builds only the newest patch of each Ruby series for a newer image, so
+  # `ubuntu-latest` (ubuntu-26.04) has no Ruby 3.4.6 and every Ruby job dies in setup.
+  test "every job that sets up Ruby pins ubuntu-24.04" do
+    self.class.jobs.each do |where, job|
+      next unless (job["steps"] || []).any? { |s| s["uses"].to_s.start_with?("ruby/setup-ruby@") }
+
+      assert_equal "ubuntu-24.04", job["runs-on"],
+        "#{where}: sets up Ruby, so it pins ubuntu-24.04 — a newer image has no Ruby 3.4.6 build."
+    end
+  end
+
   test "no ruby/setup-ruby step asks for a self-hosted toolcache" do
     self.class.jobs.each do |where, job|
       (job["steps"] || []).each do |step|

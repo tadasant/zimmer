@@ -14,8 +14,8 @@
 #
 # Invoked as `docker run --rm -i -e EXPECTED_PINS=… -e EXPECTED_ENTRYPOINTS=… \
 #   --entrypoint bash IMAGE -s` with this file on stdin — deliberately not a bind
-# mount, because the self-hosted runner and the Docker daemon do not necessarily share
-# a filesystem.
+# mount, because the runner and the Docker daemon do not necessarily share a
+# filesystem.
 set -uo pipefail
 
 # Every place Dockerfile.base installs npm packages into. A pin resolved from none of

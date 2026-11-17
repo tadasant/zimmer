@@ -1593,8 +1593,9 @@ needs in-job:
   image ships, named through `CHROME_BIN`.
 - **Deploy jobs bring their own access.** SSH keys are written from secrets into `~/.ssh`
   in the job, Terraform comes from `hashicorp/setup-terraform`, Kamal is `gem install`ed at
-  the locked version, and the tailnet is joined with `tailscale/github-action` and an
-  ephemeral key.
+  the locked version, and the tailnet is joined with `tailscale/github-action` and the
+  `TS_CI_AUTHKEY` secret. A hosted runner joins fresh on every run, so that key must be
+  reusable; an expired one fails the join step.
 - **Image builds free disk first.** A hosted runner guarantees about 14 GB free, and a
   base-image build wants more, so the three image-building jobs delete the .NET, Android,
   GHC and CodeQL toolchains the image ships before the first layer lands.
@@ -1611,8 +1612,7 @@ needs in-job:
 A hosted runner is single-tenant, so on it this guard costs nothing. It exists for any
 runner host whose workers execute as the same OS user with no per-job `DOCKER_CONFIG`,
 which share one `~/.docker` — one `config.json` and one `buildx/current`. Both are then
-mutable state that any job can overwrite at any moment. That was the shared self-hosted
-pool these jobs ran on until 2026-11, and the failure below is what it produced.
+mutable state that any job can overwrite at any moment, which produces the failure below.
 
 `docker/setup-buildx-action` creates a builder with `docker buildx create --use`, and
 `--use` writes the *shared* current-builder file. `docker/build-push-action` reads that

@@ -82,8 +82,8 @@ else
 fi
 
 # Push over key-based SSH when a deploy key is provided (CERT_SSH_KEY) -- this works
-# on any runner and does not depend on the tailnet SSH policy (self-hosted CI runners
-# do not reliably satisfy the `tailscale ssh` identity check). Fall back to
+# on any runner and does not depend on the tailnet SSH policy (a CI node does not
+# reliably satisfy the `tailscale ssh` identity check). Fall back to
 # `tailscale ssh` when no key is set, for environments that rely on it.
 if [ -n "${CERT_KNOWN_HOSTS:-}" ]; then
   HOSTKEY_OPTS=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${CERT_KNOWN_HOSTS}")
