@@ -208,6 +208,7 @@ export default class extends Controller {
       audio: this.audio,
       onState: (state) => { if (mine === this.generation && this.state !== state) this.setState(state) },
       onError: (message) => { if (mine === this.generation) this.showError(message) },
+      onCue: (signal, arg) => { if (mine === this.generation) this.cues.perform(this.director[signal](arg)) },
       onEnded: ({ dropped }) => {
         if (mine !== this.generation) return
         this.gptLive = null

@@ -20,6 +20,13 @@ import { LiveUsageReporter } from "lib/live_usage_reporter"
 //                as `session.commentary.append`; a cap warning as quiet
 //                `session.thinking.append`; `end_call` hangs up once the
 //                goodbye has been said
+//   cues         the same signals a Realtime call gives lib/live_cues, read
+//                off GPT-Live's events, which have no speech boundaries: the
+//                person's transcript starting is personTalking, its going quiet
+//                for HEARD_IDLE_MS with no answer begun is heardPerson (and
+//                thinking), each delegation in flight is a running tool (the
+//                working loop, through any filler GPT-Live says over it), and a
+//                delegation Zimmer could not answer is actionFailed → onCue
 //   cost         the session's seconds, each turn's time to first audio, and
 //                the call's length → POST usage (lib/live_usage_reporter)
 //   end          `session.close`, then wait for `session.closed` (its usage)
@@ -33,6 +40,9 @@ const GOODBYE_GRACE_MS = 8000
 const CLOSE_GRACE_MS = 3000
 // Output fragments this far apart are one finished answer.
 const SPOKEN_IDLE_MS = 1200
+// The person's transcript quiet this long, with no answer begun: their line was
+// heard.
+const HEARD_IDLE_MS = 600
 // A long call's seconds are reported as it goes, so a tab that dies takes at
 // most this much unreported time with it.
 const SESSION_REPORT_MS = 60000
@@ -40,14 +50,17 @@ const SESSION_REPORT_MS = 60000
 export class GptLiveCall {
   // `call`: the dock's URLs for the conversation. `mic`: the open microphone
   // stream. `audio`: the element the answer plays through. Callbacks:
-  // onState(state), onError(message), onEnded({ dropped }).
-  constructor({ call, mic, audio, onState, onError, onEnded }) {
+  // onState(state), onError(message), onEnded({ dropped }), and onCue(signal,
+  // arg) with a LiveCueDirector method's name and its argument.
+  constructor({ call, mic, audio, onState, onError, onEnded, onCue = () => {} }) {
     this.call = call
     this.mic = mic
     this.audio = audio
     this.onState = onState
     this.onError = onError
     this.onEnded = onEnded
+    this.onCue = onCue
+    this.delegations = new Set()
     const base = `/live_conversations/${call.conversationId}`
     this.urls = { session: `${base}/gpt_live_session`, delegations: `${base}/delegations`, turns: call.turnsUrl || `${base}/turns` }
     this.usage = new LiveUsageReporter(`${base}/usage`, ENGINE)
@@ -97,6 +110,12 @@ export class GptLiveCall {
         this.userText += event.delta || ""
         this.userSpokeAt = performance.now()
         this.awaitingAnswer = true
+        if (!this.personTalking) {
+          this.personTalking = true
+          this.onCue("personTalking")
+        }
+        clearTimeout(this.heardTimer)
+        this.heardTimer = setTimeout(() => this.heard(), HEARD_IDLE_MS)
         this.onState("listening")
         break
       case "session.output_transcript.delta":
@@ -112,7 +131,10 @@ export class GptLiveCall {
           this.hangingUp = true
         }
         this.assistantText += event.delta || ""
+        this.saying = true
         this.onState("speaking")
+        // The answer has begun: the person's line needs no heard.
+        this.personDone()
         clearTimeout(this.spokenTimer)
         this.spokenTimer = setTimeout(() => this.spokeOut(), SPOKEN_IDLE_MS)
         break
@@ -125,6 +147,7 @@ export class GptLiveCall {
         break
       case "error":
         this.onError(event.error?.message || "GPT-Live reported an error.")
+        this.onCue("noAnswerComing")
         break
     }
   }
@@ -132,16 +155,22 @@ export class GptLiveCall {
   async delegate(delegationId) {
     const pending = this.userText
     this.flushUser()
+    this.personDone()
     this.delegatedThisTurn = true
+    this.delegations.add(delegationId)
+    // Running first, so the call goes straight to the working loop, not through thinking.
+    this.onCue("toolsRunning", this.delegations.size)
     this.onState("working")
     try {
       const response = await this.post(this.urls.delegations, { delegation_id: delegationId, pending_user_text: pending })
       const body = await response.json().catch(() => ({}))
       if (this.ended) return
       if (!response.ok) {
+        this.delegationDone(delegationId, { failed: true })
         this.commentary(delegationId, `I couldn't do that: ${body.error || `Zimmer answered ${response.status}`}.`)
         return
       }
+      this.delegationDone(delegationId, { failed: false })
       if (body.warning && !this.warned) {
         this.warned = true
         this.send({ type: "session.thinking.append", event_id: this.eventId(), delegation_id: null, content: `Budget note from Zimmer: ${body.warning}` })
@@ -149,8 +178,41 @@ export class GptLiveCall {
       ;(body.chunks || []).forEach((chunk) => this.commentary(delegationId, chunk))
       if (body.end_call) this.hangUpAfterGoodbye()
     } catch (_error) {
-      if (!this.ended) this.commentary(delegationId, "I couldn't reach Zimmer just now. Try again in a moment.")
+      if (this.ended) return
+      // Already counted done if the answer came and something after it threw.
+      this.delegationDone(delegationId, { failed: true })
+      this.commentary(delegationId, "I couldn't reach Zimmer just now. Try again in a moment.")
     }
+  }
+
+  // A delegation came back: one fewer running tool. Claude is done and GPT-Live
+  // has the answer to say, so thinking until it starts, unless it already is.
+  delegationDone(delegationId, { failed }) {
+    if (!this.delegations.delete(delegationId)) return
+    this.onCue("toolsRunning", this.delegations.size)
+    if (failed) this.onCue("actionFailed")
+    else if (this.delegations.size === 0 && !this.saying) this.onState("thinking")
+  }
+
+  // The person's transcript went quiet with no answer begun: their line was
+  // heard, and the call is thinking about it.
+  heard() {
+    this.heardTimer = null
+    if (this.ended) return
+    const answered = !this.awaitingAnswer
+    this.personDone()
+    if (answered) return
+    this.onState("thinking")
+    this.onCue("heardPerson")
+  }
+
+  // The person's run of transcript is over: they stopped talking.
+  personDone() {
+    clearTimeout(this.heardTimer)
+    this.heardTimer = null
+    if (!this.personTalking) return
+    this.personTalking = false
+    this.onCue("personStopped")
   }
 
   commentary(delegationId, content) {
@@ -168,6 +230,7 @@ export class GptLiveCall {
   }
 
   spokeOut() {
+    this.saying = false
     this.flushAssistant()
     if (this.hangingUp) this.end()
     else if (!this.ended) this.onState("listening")
@@ -209,6 +272,7 @@ export class GptLiveCall {
     if (this.ended) return
     this.ended = true
     clearTimeout(this.spokenTimer)
+    clearTimeout(this.heardTimer)
     clearTimeout(this.goodbyeTimer)
     clearTimeout(this.closeTimer)
     clearInterval(this.sessionTimer)

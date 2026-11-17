@@ -135,7 +135,8 @@ final class GptLiveConductorTests: XCTestCase {
 
     func testTranscriptFragmentsAreOneTurnPerSpeakerRunAndTheFirstAnswerIsTimed() {
         var conductor = started()
-        XCTAssertEqual(conductor.handle(event("session.input_transcript.delta", ["delta": .string("What's ")]), at: 1), [.state(.listening)])
+        XCTAssertEqual(conductor.handle(event("session.input_transcript.delta", ["delta": .string("What's ")]), at: 1),
+                       [.signal(.personTalking), .state(.listening)])
         _ = conductor.handle(event("session.input_transcript.delta", ["delta": .string("running?")]), at: 2)
 
         let answer = conductor.handle(event("session.output_transcript.delta", ["delta": .string("Two ")]), at: 2.9)
@@ -162,7 +163,8 @@ final class GptLiveConductorTests: XCTestCase {
         _ = conductor.handle(event("session.input_transcript.delta", ["delta": .string("Start a session")]), at: 1)
         let delegation = conductor.handle(event("session.delegation.created", ["delegation": .object([
             "id": .string("item_d1"), "type": .string("delegation"), "target": .string("client")])]), at: 1.5)
-        XCTAssertEqual(delegation, [.record(.user, "Start a session"), .delegate(id: "item_d1", pendingUserText: "Start a session"), .state(.working)])
+        XCTAssertEqual(delegation, [.record(.user, "Start a session"), .signal(.personStopped),
+                                    .delegate(id: "item_d1", pendingUserText: "Start a session"), .signal(.toolsRunning(1)), .state(.working)])
 
         let answered = conductor.delegated(id: "item_d1", answer: LiveDelegation(chunks: ["Started session 9.", "It's looking now."],
                                                                                  warning: "Past 80% of the cap."), failure: nil, at: 4)
@@ -251,8 +253,116 @@ final class GptLiveConductorTests: XCTestCase {
 
     func testAnErrorIsShownAndTheCallCarriesOn() {
         var conductor = started()
-        XCTAssertEqual(conductor.handle(event("error", ["error": .object(["message": .string("bad commentary")])]), at: 1), [.failure("bad commentary")])
+        XCTAssertEqual(conductor.handle(event("error", ["error": .object(["message": .string("bad commentary")])]), at: 1), [.failure("bad commentary"), .signal(.noAnswerComing)])
         XCTAssertFalse(conductor.ended)
+    }
+
+    // MARK: - Cues
+
+    /// What a driver hears: every state and signal the conductor gives, through the same
+    /// `LiveCueDirector` a Realtime call uses, as `LiveCall` performs them.
+    private struct Ear {
+        var director = LiveCueDirector()
+        var actions: [LiveCueDirector.Action] = []
+
+        mutating func hear(_ effects: [GptLiveConductor.Effect]) -> [LiveCueDirector.Action] {
+            var heard: [LiveCueDirector.Action] = []
+            for effect in effects {
+                switch effect {
+                case let .state(state): heard += director.transition(to: state)
+                case let .signal(signal): heard += director.receive(signal)
+                default: break
+                }
+            }
+            actions += heard
+            return heard
+        }
+    }
+
+    private func input(_ text: String) -> JSONValue { event("session.input_transcript.delta", ["delta": .string(text)]) }
+    private func output(_ text: String) -> JSONValue { event("session.output_transcript.delta", ["delta": .string(text)]) }
+    private func delegation(_ id: String) -> JSONValue {
+        event("session.delegation.created", ["delegation": .object(["id": .string(id), "target": .string("client")])])
+    }
+
+    func testTheCallUpSoundsConnected() {
+        var conductor = GptLiveConductor(callKey: "k")
+        var ear = Ear()
+        XCTAssertEqual(ear.hear(conductor.handle(event("session.started"), at: 0)), [.play(.connected)])
+    }
+
+    func testALineGoneQuietWithNoAnswerIsHeardThenThinking() {
+        var conductor = started()
+        var ear = Ear()
+        _ = ear.hear(conductor.handle(event("session.started"), at: 0))
+        XCTAssertEqual(ear.hear(conductor.handle(input("What's "), at: 1)), [.stopCues], "the person talking silences every cue")
+        XCTAssertEqual(ear.hear(conductor.handle(input("running?"), at: 1.4)), [])
+        XCTAssertEqual(ear.hear(conductor.tick(at: 1.9)), [], "a pause shorter than heardIdle is still the person talking")
+        let heard = conductor.tick(at: 1.4 + GptLiveConductor.heardIdle)
+        XCTAssertEqual(heard, [.signal(.personStopped), .state(.thinking), .signal(.heardPerson)])
+        XCTAssertEqual(ear.hear(heard), [.startLoop(.thinking), .play(.heard, after: LiveCue.heardLead)])
+        XCTAssertEqual(ear.hear(conductor.tick(at: 3)), [], "heard once")
+        XCTAssertEqual(ear.hear(conductor.handle(output("Two."), at: 3.2)), [.stopCues], "the answer starting stops the thinking loop")
+    }
+
+    func testAnAnswerBeforeHeardIdleGetsNoHeard() {
+        var conductor = started()
+        var ear = Ear()
+        _ = ear.hear(conductor.handle(event("session.started"), at: 0))
+        _ = ear.hear(conductor.handle(input("Hi"), at: 1))
+        let answer = conductor.handle(output("Hey."), at: 1.3)
+        XCTAssertEqual(Array(answer.suffix(2)), [.state(.speaking), .signal(.personStopped)])
+        _ = ear.hear(answer)
+        XCTAssertTrue(conductor.tick(at: 5).allSatisfy { if case .signal = $0 { return false } else { return true } })
+        XCTAssertFalse(ear.actions.contains(.play(.heard, after: LiveCue.heardLead)))
+    }
+
+    func testADelegationIsTheWorkingLoopThroughTheFillerUntilClaudeAnswers() {
+        var conductor = started()
+        var ear = Ear()
+        _ = ear.hear(conductor.handle(event("session.started"), at: 0))
+        _ = ear.hear(conductor.handle(input("Start a session"), at: 1))
+        XCTAssertEqual(ear.hear(conductor.handle(delegation("d1"), at: 1.3)), [.startLoop(.working)])
+
+        // GPT-Live says its filler over the wait, then goes quiet: the working loop comes back.
+        XCTAssertEqual(ear.hear(conductor.handle(output("One moment."), at: 1.5)), [.stopCues])
+        XCTAssertEqual(ear.hear(conductor.tick(at: 1.5 + GptLiveConductor.spokenIdle)), [.startLoop(.working)],
+                       "Claude is still working after the filler")
+
+        // Claude answers: thinking until GPT-Live starts saying it.
+        let answered = conductor.delegated(id: "d1", answer: LiveDelegation(chunks: ["Started session 9."]), failure: nil, at: 8)
+        XCTAssertTrue(answered.contains(.signal(.toolsRunning(0))))
+        XCTAssertEqual(ear.hear(answered), [.stopLoop, .startLoop(.thinking)])
+        XCTAssertEqual(ear.hear(conductor.handle(output("Started."), at: 9)), [.stopCues])
+    }
+
+    func testAnAnswerThatArrivesWhileGptLiveTalksStartsNoThinking() {
+        var conductor = started()
+        _ = conductor.handle(delegation("d1"), at: 1)
+        _ = conductor.handle(output("One moment."), at: 1.2)
+        let answered = conductor.delegated(id: "d1", answer: LiveDelegation(chunks: ["Done."]), failure: nil, at: 1.5)
+        XCTAssertFalse(answered.contains(.state(.thinking)))
+    }
+
+    func testAFailedDelegationSoundsFailed() {
+        var conductor = started()
+        var ear = Ear()
+        _ = ear.hear(conductor.handle(event("session.started"), at: 0))
+        _ = ear.hear(conductor.handle(delegation("d1"), at: 1))
+        let failed = conductor.delegated(id: "d1", answer: nil, failure: "Zimmer answered 503", at: 3)
+        XCTAssertEqual(Array(failed.prefix(2)), [.signal(.toolsRunning(0)), .signal(.actionFailed)])
+        // Thinking until GPT-Live says the failure, and the failed notes now.
+        XCTAssertEqual(ear.hear(failed), [.stopLoop, .startLoop(.thinking), .play(.failed)])
+    }
+
+    func testTwoDelegationsKeepWorkingUntilBothAreBack() {
+        var conductor = started()
+        _ = conductor.handle(delegation("d1"), at: 1)
+        XCTAssertTrue(conductor.handle(delegation("d2"), at: 2).contains(.signal(.toolsRunning(2))))
+        let first = conductor.delegated(id: "d1", answer: LiveDelegation(chunks: ["One."]), failure: nil, at: 3)
+        XCTAssertTrue(first.contains(.signal(.toolsRunning(1))))
+        XCTAssertFalse(first.contains(.state(.thinking)), "one still running")
+        XCTAssertTrue(conductor.delegated(id: "d2", answer: LiveDelegation(chunks: ["Two."]), failure: nil, at: 4).contains(.state(.thinking)))
     }
 
     func testBilledSecondsReadsEverySpelling() {

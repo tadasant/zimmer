@@ -814,7 +814,8 @@ takes a WebSocket only from a server holding the OpenAI key, so the app makes a 
 route; libwebrtc carries the microphone and GPT-Live's voice, with its own echo canceller, and the
 app's audio engine plays only the [cues](/extend/ios-app/#carplay). What to do with each event is
 `GptLiveConductor` in ZimmerKit, the dock's `GptLiveCall` rules tested on Linux. Everything else is
-the phone's call as on Realtime: the cues, hang-up by voice, the hand-over between phone and car, and
+the phone's call as on Realtime: the cues (read off GPT-Live's transcripts and delegations, since it
+reports no speech boundaries; the dock does the same in `lib/gpt_live_call.js`), hang-up by voice, the hand-over between phone and car, and
 following Live Mode to another conversation. A GPT-Live call that cannot start (OpenAI refusing the session, WebRTC
 failing before `session.started`) starts again on Realtime once, saying why, so the engine never
 leaves the phone or the car without a voice. The car does not [pre-warm](#carplay-pre-warm) a

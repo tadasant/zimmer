@@ -873,6 +873,16 @@ them as the phone's own output. While one sounds, the microphone is sent to Open
 for speech. Between sounds the microphone is open, so you can still talk over a slow answer. The
 first moment of a word spoken right on a cue can be lost to that silence.
 
+On the `gpt_live_claude` engine the same cues follow GPT-Live's events (`GptLiveConductor` gives the
+same signals `RealtimeConductor` does). GPT-Live reports no speech boundaries, so the call reads them
+off its transcripts: your transcript arriving is you talking, and its going quiet for 0.6 s
+(`heardIdle`) with no answer begun is Heard, then Thinking. Each delegation to Claude counts as a
+running tool, so Working sounds for as long as Claude works, and comes back after any "one moment"
+GPT-Live says over the wait. When Claude answers, Thinking runs until GPT-Live starts saying it. A
+delegation Zimmer could not answer plays Failed. On this engine the cues play from a second audio
+engine beside libwebrtc's, with no microphone gate and outside its echo canceller
+([limitations](/limitations/#gpt-live-on-the-phone-has-not-been-heard-on-a-device)).
+
 **A turn always ends.** OpenAI's turn detection measures silence in the audio it is sent, not in
 wall-clock time. A microphone that stops delivering mid-sentence (an interruption that never says
 it ended, a route the engine did not come back from) would leave the turn open forever, and the

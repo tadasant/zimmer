@@ -34,6 +34,9 @@ final class GptLiveCall {
         case failure(String)
         /// The connection went.
         case dropped(String)
+        /// What the cues need beyond the state: the person talking or heard, delegations running,
+        /// a failure (`LiveCueDirector.receive`).
+        case cue(LiveCueDirector.Signal)
     }
 
     /// Ledger rows wait this long to go in one request, at most `maxBatch` at a time.
@@ -160,6 +163,8 @@ final class GptLiveCall {
             case let .failure(message):
                 Self.log.error("gpt-live error: \(message, privacy: .public)")
                 signal?(.failure(message))
+            case let .signal(cue):
+                signal?(.cue(cue))
             }
         }
     }
