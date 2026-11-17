@@ -156,8 +156,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   makes them. A link opens on a tap. A link to one of this Zimmer's own pages, on either of the
   origins the app signed in to, opens the app's screen for it instead of the browser: a session
   (`/sessions/<id>`, or its slug, which the app looks up) is pushed over the page the link was on,
-  so Back returns to it, and the board, a new session, the inbox, triggers and a trigger, costs,
-  health, CLIs, settings, API keys and Live each open their tab or sheet. A page the app has no
+  so Back returns to it, and the board, a new session, the inbox, triggers and a trigger, token spend (`/token-spend`, or the older
+  `/costs?session_id=`), health, CLIs, settings, API keys and Live each open their tab or sheet. A page the app has no
   screen for [opens the browser](/limitations/#a-zimmer-page-the-ios-app-has-no-screen-for-opens-the-browser),
   as does every other site's link; *Open in browser* on a session or trigger still opens the web page. A long press on a paragraph or list item that holds
   links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
@@ -417,7 +417,7 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   form in the server's words, as the web form lists it, with nothing saved, and the form scrolls
   up to it. *Delete* on the page asks the web page's question first (`DELETE /api/v1/triggers/:id`). *Enqueue messages*
   and *Resuscitate archived* are shown, not switched: they stay on the trigger's web page
-  (#1318), which *Open in browser* gets you to. *More* holds *Costs*, *Health* and *CLIs*. *Costs* is the
+  (#1318), which *Open in browser* gets you to. *More* holds *Token Spend*, *Health* and *CLIs*. *Token Spend* is the
   web page, section for section, from the whole of `GET /api/v1/costs`: the ledger's coverage
   (backfilled, running with its progress, queued, or not yet, and what the ledger covers since),
   the total with the tokens, API calls and ad hoc share beside it, the unpriced-models warning,
@@ -591,7 +591,7 @@ Every session action above is a route on `/api/v1/sessions`. Merge is the one th
 where an API key cannot: only a person may give it (see the [REST API](/extend/rest-api/)). Prompts
 are the other exception: they are listed at `/api/v1/sessions/:id/elicitations` and answered at
 `/api/v1/elicitations/:id/respond`, both opened to the app's token for this (see the
-[REST API](/extend/rest-api/#elicitations)). The Health, Costs and CLIs actions are the routes
+[REST API](/extend/rest-api/#elicitations)). The Health, Token Spend and CLIs actions are the routes
 `accepts_native_app_tokens` opens for exactly them (`Api::V1::HealthController`,
 `CostsController#backfill`, `ClisController`): each is a button the web page offers any signed-in
 person, and the phone is that person's other screen.

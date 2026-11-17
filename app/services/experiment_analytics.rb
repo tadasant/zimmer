@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# The cohort comparison behind the Costs page's "Experimental settings" report:
+# The cohort comparison behind the Token Spend page's "Experimental settings" report:
 # for each experimental setting, what spend looked like on each side of it.
 #
 # WHAT THIS IS NOT

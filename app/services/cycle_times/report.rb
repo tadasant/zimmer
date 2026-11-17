@@ -14,7 +14,7 @@ module CycleTimes
 
     attr_reader :window, :agent_root
 
-    # @param window [CostWindow] the same window object the Costs page uses
+    # @param window [CostWindow] the same window object the Token Spend page uses
     # @param agent_root [String, nil] restrict to hierarchies whose root ran in it
     def initialize(window:, agent_root: nil)
       @window = window

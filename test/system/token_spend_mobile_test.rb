@@ -1,11 +1,11 @@
 require "application_system_test_case"
 
-# The Costs page is a dense stack of number tables — model ids, agent-root names,
+# The Token Spend page is a dense stack of number tables — model ids, agent-root names,
 # session titles, and a bar chart — which is precisely the shape that runs off the
 # right edge of a phone. Nothing fails when it does: the page renders, the tests
 # pass, and the browser quietly gives the document a horizontal scroll with the
 # figures past the edge.
-class CostsMobileTest < ApplicationSystemTestCase
+class TokenSpendMobileTest < ApplicationSystemTestCase
   MOBILE_WIDTH = 375
   MOBILE_HEIGHT = 812
 
@@ -121,16 +121,16 @@ class CostsMobileTest < ApplicationSystemTestCase
     end
   end
 
-  test "the costs page fits a phone, with data and without" do
+  test "the token spend page fits a phone, with data and without" do
     # Empty state first: it is the page a fresh deployment sees.
-    visit costs_path
+    visit token_spend_path
     assert_text "No usage recorded"
-    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "empty Costs page overflows the viewport"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "empty Token Spend page overflows the viewport"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page")
 
     seed_spend!
 
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "Where the money goes"
 
     # The by-runtime table is the split that tells subscription spend from a
@@ -145,8 +145,8 @@ class CostsMobileTest < ApplicationSystemTestCase
     assert_text "gpt-5.6-terra"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
-      "Costs page overflows the viewport at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+      "Token Spend page overflows the viewport at #{MOBILE_WIDTH}px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page"),
       "elements extend past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-375.png")
@@ -166,13 +166,13 @@ class CostsMobileTest < ApplicationSystemTestCase
                   "0f3c9d21-6b4e-4a77-9a11-5c2f7de91b40.jsonl"
     )
 
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "Backfilling history"
     assert_text "Sweep now"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "the coverage panel overflows the viewport at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page"),
       "the coverage panel pushes something past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-coverage-375.png")
@@ -182,11 +182,11 @@ class CostsMobileTest < ApplicationSystemTestCase
     # The picker is the control most likely to run off the edge: two date inputs
     # and a submit button in a row, at the width where a row of three stops fitting.
     seed_spend!
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
 
     assert_selector "#costs-from"
     assert_selector "#costs-to"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "form[action='#{costs_path}']")
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "form[action='#{token_spend_path}']")
 
     from = 3.days.ago.to_date
     to = Date.current
@@ -210,7 +210,7 @@ class CostsMobileTest < ApplicationSystemTestCase
     # the page *before* Apply, so it is satisfied by the outgoing document, and
     # `Capybara::Node::Document#text` resolves `/html` to read it, which is the very
     # node the swap detaches.
-    assert_current_path costs_path(from: from.iso8601, to: to.iso8601)
+    assert_current_path token_spend_path(from: from.iso8601, to: to.iso8601)
 
     # The picker is only "reachable and usable" if the days it submits are the days
     # it applies, so name the range rather than checking that some range came back.
@@ -224,7 +224,7 @@ class CostsMobileTest < ApplicationSystemTestCase
     # Hover is invisible on a phone. Both drilldowns have to work from a tap, so
     # both are asserted with a plain click at the phone width.
     seed_spend!
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "Daily spend"
 
     bars = all("[data-cost-chart-target='bar']")
@@ -245,7 +245,7 @@ class CostsMobileTest < ApplicationSystemTestCase
     assert_text "Estimated context-feature split"
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "an opened drilldown overflows at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page")
 
     page.save_screenshot("tmp/screenshots/costs-drilldown-375.png")
   end
@@ -265,7 +265,7 @@ class CostsMobileTest < ApplicationSystemTestCase
 
   test "the sessions index nav still fits a phone with Costs added to it" do
     visit root_path
-    assert_selector "a[href='#{costs_path}']", visible: :all
+    assert_selector "a[href='#{token_spend_path}']", visible: :all
 
     # Only the document-width probe here. This diff added two links to a nav it
     # does not otherwise own, so asserting that nothing on the whole sessions
@@ -280,11 +280,11 @@ class CostsMobileTest < ApplicationSystemTestCase
     seed_spend!
     page.driver.browser.manage.window.resize_to(320, 800)
 
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "Where the money goes"
 
-    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "Costs page overflows at 320px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+    assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "Token Spend page overflows at 320px"
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page")
   end
   # Cohort-tagged sessions on both sides of the setting, with a root that ran on
   # both so the paired drilldown has a row to open.
@@ -323,14 +323,14 @@ class CostsMobileTest < ApplicationSystemTestCase
     seed_spend!
     root = "tadasant-internal/artifacts-agent-roots-issue-work-gate"
 
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "By agent root"
 
-    link = first("a[href='#{costs_path(days: 30, agent_root: root)}']")
+    link = first("a[href='#{token_spend_path(days: 30, agent_root: root)}']")
     assert link, "the by-agent-root rows should offer a link that narrows the page"
     link.click
 
-    assert_current_path costs_path(days: 30, agent_root: root)
+    assert_current_path token_spend_path(days: 30, agent_root: root)
     assert_text "Agent root"
     assert_text root
     # The way back to the fleet. One argument only: Capybara's `assert_text` reads
@@ -341,14 +341,14 @@ class CostsMobileTest < ApplicationSystemTestCase
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "the narrowed Costs page overflows the viewport at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page"),
       "the scope banner pushes something past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-scoped-375.png")
 
     # A window change from a narrowed page must keep the narrowing.
     click_link "7 days"
-    assert_current_path costs_path(days: 7, agent_root: root)
+    assert_current_path token_spend_path(days: 7, agent_root: root)
     assert_text root
   end
 
@@ -356,13 +356,13 @@ class CostsMobileTest < ApplicationSystemTestCase
     seed_spend!
     session = Session.order(:id).last
 
-    visit costs_path(days: 30, session_id: session.id)
+    visit token_spend_path(days: 30, session_id: session.id)
 
     assert_text "Session ##{session.id}"
     assert_selector "a[href='#{session_path(session)}']"
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "the session-scoped Costs page overflows the viewport at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page"),
       "the session scope banner pushes something past the right edge at #{MOBILE_WIDTH}px"
   end
 
@@ -372,7 +372,7 @@ class CostsMobileTest < ApplicationSystemTestCase
     # signature 4 (an unbreakable string) in the same section.
     seed_cohorts!
 
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "Experimental settings"
     assert_text "MCP tool search"
 
@@ -381,7 +381,7 @@ class CostsMobileTest < ApplicationSystemTestCase
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "the experiment report overflows the viewport at #{MOBILE_WIDTH}px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page"),
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page"),
       "the experiment report pushes something past the right edge at #{MOBILE_WIDTH}px"
 
     page.save_screenshot("tmp/screenshots/costs-experiments-375.png")
@@ -389,9 +389,9 @@ class CostsMobileTest < ApplicationSystemTestCase
     # And at the narrowest phone still in use, where the cohort cards are the
     # first thing that would stop fitting.
     page.driver.browser.manage.window.resize_to(320, 800)
-    visit costs_path(days: 30)
+    visit token_spend_path(days: 30)
     assert_text "MCP tool search"
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW), "the experiment report overflows at 320px"
-    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#costs-page")
+    assert_equal [], page.evaluate_script(ELEMENTS_PAST_RIGHT_EDGE, "#token-spend-page")
   end
 end

@@ -377,6 +377,8 @@ class HealthMonitorService
       inbound_event_health: inbound_event_health,
       # Also absent — see #root_data_health.
       root_data_health: root_data_health,
+      # Also absent — see #operating_costs_health.
+      operating_costs_health: operating_costs_health,
       # Also absent — see #warm_clone_pool_health.
       warm_clone_pool_health: warm_clone_pool_health,
       # Also absent — see #warm_process_pool_health.
@@ -762,6 +764,29 @@ class HealthMonitorService
       max_records_per_collection: RootData::Limits::MAX_RECORDS_PER_COLLECTION,
       status: HealthStatus.new(status: :warning, message: "Root data status could not be read: #{e.message}")
     }
+  end
+
+  # Whether operating-cost collection is running: the newest run per collector,
+  # and the same stale reasons the Costs page shows in its banner.
+  #
+  # Not folded into `overall_status`: a late bill makes the Costs page less
+  # current, not the deployment less healthy.
+  def operating_costs_health
+    runs = OperatingCostCollectionRun.latest_by_collector.to_a
+    accounts = OperatingCostAccount.count
+    reasons = OperatingCosts::Report.new.stale_reasons
+    status =
+      if reasons.any?
+        HealthStatus.new(status: :warning, message: reasons.join(" "))
+      elsif accounts.zero?
+        HealthStatus.new(status: :healthy, message: "No operating costs recorded")
+      else
+        HealthStatus.new(status: :healthy, message: "#{accounts} account(s); collection current")
+      end
+    { accounts: accounts, runs: runs.map(&:as_api_json), status: status }
+  rescue StandardError => e
+    @logger.warn("Operating costs health could not be read", error: e.message)
+    { accounts: 0, runs: [], status: HealthStatus.new(status: :warning, message: "Operating costs status could not be read: #{e.message}") }
   end
 
   def root_data_status(usage, overdue, near_cap)

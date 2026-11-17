@@ -57,7 +57,7 @@ module TokenPricing
 
   # Unknown models price at zero rather than guessing. A wrong rate is worse than
   # a visibly missing one: it lands in a total that reads as authoritative. The
-  # Costs page surfaces unpriced models explicitly so a new model id shows up as
+  # Token Spend page surfaces unpriced models explicitly so a new model id shows up as
   # something to add here, not as silent under-counting.
   UNPRICED = Rate.new(input: 0.0, output: 0.0)
 

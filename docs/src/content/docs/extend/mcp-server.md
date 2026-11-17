@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 47 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 58 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -91,12 +91,13 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=external_apps` | [Zimmer plugins](/extend/zimmer-plugins/): register one, set the triggers it may invoke, mint and revoke its keys |
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
 | `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, go back to one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
+| `/mcp?tool_groups=operating_costs` | [Operating costs](/operate/operating-costs/): what running the deployment costs in real money, by functionality, vendor and root, and the one write that records bills, subscriptions and credits |
 | `/mcp?tool_groups=live_mode` | [The Live Mode assistant's surface](/sessions/live/#the-live_mode-surface): `quick_router` (prompt only), `get_user_view`, `quick_search_sessions` (no transcript scan), `get_session`, a four-action `action_session` and `send_push_notification` |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data` and `live_conversations` are **opt-in** groups, and `self_session` and `live_mode` are composites. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data`, `live_conversations` and `operating_costs` are **opt-in** groups, and `self_session` and `live_mode` are composites. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -218,7 +219,7 @@ production.
 
 ## The tool surface
 
-47 tools, eleven domains — 27 of them on the unscoped surface.
+58 tools, twelve domains — 27 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
@@ -233,6 +234,7 @@ production.
 | `external_apps` (opt-in) | `search_external_apps`, `action_external_app` — register [Zimmer plugins](/extend/zimmer-plugins/) and mint their keys |
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
 | `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation`, `get_live_settings`, `action_live_settings`, `get_live_costs` — [Live Mode](/sessions/live/) |
+| `operating_costs` (opt-in) | `get_operating_costs`, `search_operating_cost_records`, `action_operating_costs` — the [Costs](/operate/operating-costs/) page's figures and writes |
 
 `get_live_conversations` and `action_live_conversation` read and drive [Live Mode](/sessions/live/)
 conversations: whether Live Mode can start, the current conversation and whether voice is on, a
@@ -1045,7 +1047,7 @@ in exactly the shape `action_session` uses. Same tool name, same report body, on
 
 - With no arguments it reports the **calling session's** spend — the session named in the connection's
   `session_id` — never the fleet's. There is no argument that widens it.
-- `agent_root` is **refused**, with an error naming the `health` group and the Costs page as where
+- `agent_root` is **refused**, with an error naming the `health` group and the Token Spend page as where
   the fleet report lives. The narrowed schema does not advertise the argument, and the refusal is
   what makes that a contract rather than a hint: no schema here sets `additionalProperties: false`.
 - An explicit `session_id` naming a *different* session is refused too, wherever the connection
@@ -1065,6 +1067,21 @@ The usual caution applies to anything it returns: the dollar figures are list pr
 subscription-billed accounts, so they are a comparable unit across models rather than money owed,
 and a model with no configured rate contributes zero and is named explicitly rather than being
 folded silently into a total. See [Token spend](/operate/costs/).
+
+### `get_operating_costs`, `search_operating_cost_records`, `action_operating_costs`
+
+The opt-in `operating_costs` group is the [Costs](/operate/operating-costs/) page over MCP, one to
+one with its REST mirror (`/api/v1/operating_costs*`). `get_operating_costs` takes `view`
+(`summary`, `timeseries`, `projections`, `sources`), `group_by` (`functionality`, `vendor`,
+`account`, `agent_root`) and the page's filters; `search_operating_cost_records` exports one table
+a page at a time; `action_operating_costs` is the write contract — `record` for a batch, an
+`upsert_*` per kind, `end_subscription`, `delete_observation`, `delete_credit_snapshot` and
+`collect_now`. A write from a session connection stamps the session on every fact it writes.
+
+The group is opt-in and not in `health` beside `get_costs`: these carry vendor bills and the write
+that records them, which the collecting session needs and nothing else does.
+`operating_costs_readonly` carries the two reads. `zimmer-operating-costs` and
+`zimmer-operating-costs-readonly` in `mcp.json` name them; no root carries either by default.
 
 ## Payload budgets: what a tool result may cost
 

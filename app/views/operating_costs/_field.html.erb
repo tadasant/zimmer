@@ -1,0 +1,27 @@
+<%#
+  A labelled form input. locals: form, name, label; optional type, options, hint,
+  value, required, include_blank.
+
+  Every form upserts by key, so a field left alone must mean "leave it as it
+  is". A select therefore starts on a blank "(unchanged)" option unless told
+  otherwise, and a yes/no is a three-way select rather than a checkbox, which
+  would always submit one or the other. The controller drops blank fields.
+%>
+<% type = local_assigns.fetch(:type, :text) %>
+<% field_id = "#{form.object_name.presence || 'costs'}-#{local_assigns[:prefix]}-#{name}".parameterize %>
+<div class="min-w-0">
+  <label for="<%= field_id %>" class="block text-xs font-medium text-gray-700"><%= label %></label>
+  <% classes = "mt-1 block w-full min-w-0 rounded-md border-gray-300 shadow-sm text-sm focus:border-indigo-500 focus:ring-indigo-500" %>
+  <% case type %>
+  <% when :select %>
+    <%= select_tag "item[#{name}]", options_for_select(local_assigns[:options], local_assigns[:value]), id: field_id, class: classes, include_blank: local_assigns.fetch(:include_blank, "(unchanged)") %>
+  <% when :textarea %>
+    <%= text_area_tag "item[#{name}]", local_assigns[:value], id: field_id, rows: 2, class: classes %>
+  <% when :boolean %>
+    <%= select_tag "item[#{name}]", options_for_select([ [ "Yes", "1" ], [ "No", "0" ] ]), id: field_id, class: classes, include_blank: "(unchanged)" %>
+  <% else %>
+    <%= text_field_tag "item[#{name}]", local_assigns[:value], id: field_id, type: type, required: local_assigns[:required],
+          step: (type == :number ? "any" : nil), class: classes %>
+  <% end %>
+  <% if local_assigns[:hint] %><p class="mt-0.5 text-[11px] text-gray-400"><%= local_assigns[:hint] %></p><% end %>
+</div>

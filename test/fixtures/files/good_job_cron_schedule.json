@@ -265,6 +265,11 @@
       "class": "BurnRateRecomputeJob",
       "description": "Recompute the $/min burn rate of every harness+model combination from the token ledger"
     },
+    "operating_costs_collection": {
+      "cron": "10 9 * * *",
+      "class": "OperatingCostsCollectionJob",
+      "description": "Derive operating costs from Zimmer's own ledgers, rebuild the daily cost series and re-split the month"
+    },
     "quota_capacity_calibration": {
       "cron": "*/15 * * * *",
       "class": "QuotaCapacityCalibrationJob",
@@ -611,6 +616,11 @@
       "cron": "*/20 * * * *",
       "class": "BurnRateRecomputeJob",
       "description": "Recompute the $/min burn rate of every harness+model combination from the token ledger"
+    },
+    "operating_costs_collection": {
+      "cron": "10 9 * * *",
+      "class": "OperatingCostsCollectionJob",
+      "description": "Derive operating costs from Zimmer's own ledgers, rebuild the daily cost series and re-split the month"
     },
     "quota_capacity_calibration": {
       "cron": "*/15 * * * *",

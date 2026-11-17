@@ -407,7 +407,7 @@ struct MoreView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink { CostsView() } label: { row("Costs", "dollarsign.circle", "Coverage, spend by day, root, feature, model and session, burn rates") }
+                NavigationLink { CostsView() } label: { row("Token Spend", "dollarsign.circle", "Coverage, spend by day, root, feature, model and session, burn rates") }
                     .accessibilityIdentifier("more.costs")
                 NavigationLink { HealthView() } label: { row("Health", "heart.text.square", "Every section of the health page, and its operator actions") }
                     .accessibilityIdentifier("more.health")

@@ -19,7 +19,9 @@ module Mcp
         stored with its token volumes; dollars are computed on read at current list prices, so the
         same rows re-price themselves when rates change. `get_spot_policy` answers "how much
         headroom is left in the quota window" from Anthropic's rate-limit headers — a different
-        question from a different source. Neither substitutes for the other.
+        question from a different source. Neither substitutes for the other. These are list-price
+        figures, not a bill; what operating the deployment actually costs in real money (vendor bills,
+        subscriptions, credits) is `get_operating_costs`, on the opt-in `operating_costs` tool group.
 
         Two populations are tracked:
         - **session usage** — inference an agent session did. The bulk of spend.
@@ -131,7 +133,7 @@ module Mcp
       })
 
       def call(args)
-        # The same object the Costs page resolves its window with, so a preset and
+        # The same object the Token Spend page resolves its window with, so a preset and
         # a calendar range mean exactly the same thing on both surfaces.
         window = CostWindow.from_params(days: args["days"], from: args["from"], to: args["to"])
         analytics = window.analytics
@@ -147,7 +149,7 @@ module Mcp
 
       private
 
-      # Read from the same cached snapshot the Costs page and `GET /api/v1/costs`
+      # Read from the same cached snapshot the Token Spend page and `GET /api/v1/costs`
       # render, so the three surfaces pay for a window once between them, not once
       # each — and a long window costs this tool no more than it costs the page.
       def fleet_report(analytics, window)

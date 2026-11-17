@@ -33,7 +33,7 @@ class TokenUsageBackfillDashboard < Administrate::BaseDashboard
   # Read-only: a row is the record of a sweep that happened. Hand-setting
   # `finished_at` would assert coverage nothing read, and hand-clearing it would
   # collide with the partial unique index that keeps one run in flight. Ask for a
-  # re-scan from the Costs page instead — that is what the button is for.
+  # re-scan from the Token Spend page instead — that is what the button is for.
   FORM_ATTRIBUTES = %i[].freeze
 
   COLLECTION_FILTERS = {}.freeze

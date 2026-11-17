@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-class CostsControllerTest < ActionDispatch::IntegrationTest
+class TokenSpendControllerTest < ActionDispatch::IntegrationTest
   # Not `create_session`: ActionDispatch::Integration::Runner already defines a
   # method by that name, and it builds a Rack test session, not this one.
   def make_session(title)
@@ -33,7 +33,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "renders the empty state before anything has been ingested" do
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "No usage recorded", response.body
@@ -49,7 +49,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
       called_at: 1.hour.ago, input_tokens: 5, output_tokens: 10, cache_read_tokens: 20_000
     )
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "Where the money goes", response.body
@@ -64,18 +64,18 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     usage(agent_root: "zimmer-router")
     usage(agent_root: "issue-work-gate")
 
-    get costs_path(days: 7)
+    get token_spend_path(days: 7)
 
     assert_response :success
-    assert_select "a[href=?]", costs_path(days: 7, agent_root: "zimmer-router")
-    assert_select "a[href=?]", costs_path(days: 7, agent_root: "issue-work-gate")
+    assert_select "a[href=?]", token_spend_path(days: 7, agent_root: "zimmer-router")
+    assert_select "a[href=?]", token_spend_path(days: 7, agent_root: "issue-work-gate")
   end
 
   test "scoping to an agent root narrows every figure on the page" do
     usage(agent_root: "zimmer-router", output_tokens: 200)
     usage(agent_root: "issue-work-gate", output_tokens: 200)
 
-    get costs_path(agent_root: "zimmer-router")
+    get token_spend_path(agent_root: "zimmer-router")
 
     assert_response :success
     assert_match "zimmer-router", response.body
@@ -90,7 +90,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     usage(session_id: mine.id)
     usage(session_id: theirs.id, agent_root: "issue-work-gate")
 
-    get costs_path(session_id: mine.id)
+    get token_spend_path(session_id: mine.id)
 
     assert_response :success
     assert_match "A router run", response.body
@@ -104,21 +104,21 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "the scope round-trips through the window controls and the re-scan button" do
     usage(agent_root: "zimmer-router")
 
-    get costs_path(days: 7, agent_root: "zimmer-router")
+    get token_spend_path(days: 7, agent_root: "zimmer-router")
 
     assert_response :success
-    assert_select "a[href=?]", costs_path(days: 30, agent_root: "zimmer-router")
+    assert_select "a[href=?]", token_spend_path(days: 30, agent_root: "zimmer-router")
     assert_select "input[type=hidden][name=agent_root][value=?]", "zimmer-router"
-    assert_select "form[action=?]", costs_backfill_path(days: 7, agent_root: "zimmer-router")
+    assert_select "form[action=?]", token_spend_backfill_path(days: 7, agent_root: "zimmer-router")
     # The way back to the fleet.
-    assert_select "a[href=?]", costs_path(days: 7)
+    assert_select "a[href=?]", token_spend_path(days: 7)
   end
 
   test "the re-scan button keeps the scope as well as the window" do
-    post costs_backfill_path(days: 30, agent_root: "zimmer-router")
+    post token_spend_backfill_path(days: 30, agent_root: "zimmer-router")
 
     assert_response :redirect
-    assert_equal costs_path(days: 30, agent_root: "zimmer-router"), response.location.sub(%r{\Ahttps?://[^/]+}, "")
+    assert_equal token_spend_path(days: 30, agent_root: "zimmer-router"), response.location.sub(%r{\Ahttps?://[^/]+}, "")
   end
 
   # `"nope".to_i` is 0, a real id shape. A page silently narrowed to session 0
@@ -126,7 +126,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "an unparseable session_id falls back to the fleet rather than to session 0" do
     usage(agent_root: "zimmer-router")
 
-    get costs_path(session_id: "nope")
+    get token_spend_path(session_id: "nope")
 
     assert_response :success
     assert_predicate @controller.instance_variable_get(:@scope), :fleet?
@@ -144,12 +144,12 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
                                 usd_per_minute: 0.42, sample_session_count: 25,
                                 sample_minutes: 900, computed_at: Time.current)
 
-    get costs_path(days: 7)
+    get token_spend_path(days: 7)
     assert_response :success
     assert_match "Experimental settings", response.body
     assert_match "Burn rate by harness + model", response.body
 
-    get costs_path(days: 7, agent_root: "zimmer")
+    get token_spend_path(days: 7, agent_root: "zimmer")
     assert_response :success
     assert_no_match(/Experimental settings/, response.body)
     assert_no_match(/Burn rate by harness \+ model/, response.body)
@@ -163,7 +163,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     id = gone.id
     gone.destroy!
 
-    get costs_path(session_id: id)
+    get token_spend_path(session_id: id)
 
     assert_response :success
     assert_match "Session ##{id}", response.body
@@ -176,7 +176,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "a non-scalar agent_root is ignored rather than stringified into the page" do
     usage(agent_root: "zimmer-router")
 
-    get costs_path(days: 7, agent_root: [ "zimmer-router" ])
+    get token_spend_path(days: 7, agent_root: [ "zimmer-router" ])
 
     assert_response :success
     assert_predicate @controller.instance_variable_get(:@scope), :fleet?
@@ -189,7 +189,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
                             model: "claude-opus-5", called_at: 1.hour.ago,
                             input_tokens: 5, output_tokens: 10, cache_read_tokens: 20_000)
 
-    get costs_path(agent_root: "zimmer-router")
+    get token_spend_path(agent_root: "zimmer-router")
 
     assert_response :success
     assert_match "Ad hoc calls belong to no agent root", response.body
@@ -199,7 +199,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "a scoped window with no spend says which scope it found nothing for" do
     usage(agent_root: "zimmer-router")
 
-    get costs_path(agent_root: "not-a-root")
+    get token_spend_path(agent_root: "not-a-root")
 
     assert_response :success
     assert_match "No usage recorded for not-a-root", response.body
@@ -208,24 +208,24 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "the window is selectable and bounded" do
     usage(called_at: 40.days.ago)
 
-    get costs_path(days: 7)
+    get token_spend_path(days: 7)
     assert_response :success
     assert_match "No usage recorded", response.body, "a 40-day-old call is outside a 7-day window"
 
-    get costs_path(days: 90)
+    get token_spend_path(days: 90)
     assert_response :success
     assert_no_match "No usage recorded", response.body
   end
 
   test "an absurd window is clamped rather than handed to the database" do
-    get costs_path(days: 100_000)
+    get token_spend_path(days: 100_000)
 
     assert_response :success
     assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).preset_days
   end
 
   test "a non-numeric window falls back to the default" do
-    get costs_path(days: "banana")
+    get token_spend_path(days: "banana")
 
     assert_response :success
     assert_equal CostWindow::DEFAULT_DAYS, @controller.instance_variable_get(:@window).preset_days
@@ -234,7 +234,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "an explicit calendar range is honoured over the preset horizons" do
     usage(called_at: Time.zone.parse("2026-03-10 12:00"))
 
-    get costs_path(from: "2026-03-09", to: "2026-03-11")
+    get token_spend_path(from: "2026-03-09", to: "2026-03-11")
 
     assert_response :success
     window = @controller.instance_variable_get(:@window)
@@ -243,18 +243,18 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     assert_equal Date.new(2026, 3, 11), window.to_date
     assert_no_match "No usage recorded", response.body
 
-    get costs_path(from: "2026-03-01", to: "2026-03-05")
+    get token_spend_path(from: "2026-03-01", to: "2026-03-05")
     assert_response :success
     assert_match "No usage recorded", response.body, "a call outside the range must not be counted"
   end
 
   test "the calendar range survives a reversed or oversized span" do
-    get costs_path(from: "2026-03-11", to: "2026-03-09")
+    get token_spend_path(from: "2026-03-11", to: "2026-03-09")
     assert_response :success
     window = @controller.instance_variable_get(:@window)
     assert_equal Date.new(2026, 3, 9), window.from_date, "a reversed range is swapped, not rejected"
 
-    get costs_path(from: "2019-01-01", to: "2026-03-09")
+    get token_spend_path(from: "2019-01-01", to: "2026-03-09")
     assert_response :success
     assert_equal CostWindow::MAX_DAYS, @controller.instance_variable_get(:@window).days
   end
@@ -262,13 +262,13 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "the re-scan button comes back to the window it was pressed from" do
     # The button used to carry `days: @days`, which the CostWindow rewrite stopped
     # assigning — so every sweep silently dropped the viewer back to 7 days.
-    post costs_backfill_path(from: "2026-03-09", to: "2026-03-11")
+    post token_spend_backfill_path(from: "2026-03-09", to: "2026-03-11")
 
     assert_response :redirect
     assert_match "from=2026-03-09", response.location
     assert_match "to=2026-03-11", response.location
 
-    post costs_backfill_path(days: 90)
+    post token_spend_backfill_path(days: 90)
 
     assert_response :redirect
     assert_match "days=90", response.location
@@ -284,7 +284,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
       called_at: record.called_at, cache_read_tokens: 50_000
     )
 
-    get costs_path(days: 30)
+    get token_spend_path(days: 30)
 
     assert_response :success
     assert_match "Context features", response.body
@@ -296,7 +296,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "the feature card's empty state also keeps the rake task out of the page" do
     usage
 
-    get costs_path(days: 30)
+    get token_spend_path(days: 30)
 
     assert_response :success
     assert_match "No feature attribution stored", response.body
@@ -304,10 +304,10 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the picker renders both the presets and the calendar fields" do
-    get costs_path
+    get token_spend_path
 
     assert_response :success
-    assert_select "a[href=?]", costs_path(days: 30)
+    assert_select "a[href=?]", token_spend_path(days: 30)
     assert_select "input#costs-from[type=date]"
     assert_select "input#costs-to[type=date]"
   end
@@ -315,24 +315,24 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "warns about models it has no price for rather than counting them as free" do
     usage(model: "claude-something-unreleased")
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "Unpriced models", response.body
     assert_match "claude-something-unreleased", response.body
   end
 
-  test "Costs is reachable from the sessions nav" do
+  test "Token Spend is reachable from the sessions nav" do
     get root_path
 
     assert_response :success
-    assert_select "a[href=?]", costs_path
+    assert_select "a[href=?]", token_spend_path
   end
 
   test "says how complete the ledger is before any sweep has run" do
     usage
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "History not backfilled yet", response.body
@@ -344,7 +344,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     TokenUsageBackfill.create!(transcript_root: "/tmp/projects", started_at: 2.hours.ago,
                                finished_at: 1.hour.ago, files_scanned: 4_120)
 
-    get costs_path(days: 365)
+    get token_spend_path(days: 365)
 
     assert_response :success
     assert_match "History backfilled", response.body
@@ -358,7 +358,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     TokenUsageBackfill.create!(transcript_root: "/tmp/projects", trigger: "manual",
                                started_at: 1.minute.ago, directories_total: 100, directories_done: 40)
 
-    get costs_path(days: 365)
+    get token_spend_path(days: 365)
 
     assert_response :success
     assert_match "Re-scanning history", response.body
@@ -370,14 +370,14 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "the re-scan button queues a sweep, and asking twice does not start two" do
     assert_difference -> { TokenUsageBackfill.count }, 1 do
       assert_enqueued_with(job: TokenUsageBackfillJob) do
-        post costs_backfill_path
+        post token_spend_backfill_path
       end
     end
 
-    assert_redirected_to costs_path(days: 7)
+    assert_redirected_to token_spend_path(days: 7)
 
     assert_no_difference -> { TokenUsageBackfill.count } do
-      post costs_backfill_path
+      post token_spend_backfill_path
     end
 
     assert_equal "manual", TokenUsageBackfill.latest.trigger
@@ -395,7 +395,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     usage(session_id: off.id, input_tokens: 100_000)
     usage(session_id: on.id, input_tokens: 10)
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "Experimental settings", response.body
@@ -411,7 +411,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
                                     source: SessionExperimentalFlag::BACKFILLED)
     usage(session_id: session.id)
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "temporal, not randomized", response.body
@@ -420,7 +420,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
   test "a registered setting nothing is tagged with says so instead of showing empty cohorts" do
     usage
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "MCP tool search", response.body
@@ -433,7 +433,7 @@ class CostsControllerTest < ActionDispatch::IntegrationTest
     6.times { |i| tagged_usage("before-#{i}", cohort: false, model: "claude-not-a-real-model") }
     6.times { |i| tagged_usage("after-#{i}", cohort: true) }
 
-    get costs_path
+    get token_spend_path
 
     assert_response :success
     assert_match "No baseline to compare against", response.body

@@ -170,6 +170,24 @@
       "X-API-Key": "${ZIMMER_PROD_API_KEY}"
     }
   },
+  "zimmer-operating-costs": {
+    "title": "Zimmer Operating Costs",
+    "description": "Zimmer's native MCP server, scoped to the all-in operating-cost ledger behind the Costs page: get_operating_costs (totals, projections, credit run-out and sources, broken down by functionality, vendor, account or agent root), search_operating_cost_records (row export), and action_operating_costs, the one write contract for vendors, accounts, subscriptions, bills and credit balances. operating_costs is an opt-in tool group, so this is the only catalog entry that reaches the write. Attach it to the session that collects costs; prefer zimmer-operating-costs-readonly for analysis. Not get_costs, which is list-price token spend.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=operating_costs",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
+  "zimmer-operating-costs-readonly": {
+    "title": "Zimmer Operating Costs (read-only)",
+    "description": "Zimmer's native MCP server, scoped to reading the all-in operating-cost ledger behind the Costs page: get_operating_costs and search_operating_cost_records. Read-only by construction — action_operating_costs is excluded. For cost analysis sessions.",
+    "type": "streamable-http",
+    "url": "https://zimmer.example.com/mcp?tool_groups=operating_costs_readonly",
+    "headers": {
+      "X-API-Key": "${ZIMMER_PROD_API_KEY}"
+    }
+  },
   "figma": {
     "title": "Figma",
     "description": "Figma design MCP server (hosted, streamable-http). OAuth via browser flow.",

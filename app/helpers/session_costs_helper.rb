@@ -43,7 +43,7 @@ module SessionCostsHelper
       number_to_currency(cost, precision: cost < 1 ? 3 : 2),
       class: classes,
       title: "Estimated inference cost for this session at current list prices. " \
-             "Volumes are Zimmer's own ledger; see the Costs page."
+             "Volumes are Zimmer's own ledger; see the Token Spend page."
     )
   end
 end

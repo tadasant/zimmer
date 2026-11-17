@@ -24,7 +24,7 @@ class SettingsController < ApplicationController
     # The "Experimental" section is rendered entirely from
     # ExperimentalSettingsRegistry — the first-class AppSetting-backed toggles and
     # any registered experimental extension, in one list. That registry is also
-    # what tags every session with the setting's value and what the Costs page
+    # what tags every session with the setting's value and what the Token Spend page
     # compares cohorts by, so a setting cannot be togglable here and invisible
     # there.
     @experimental_settings = ExperimentalSettingsRegistry.all

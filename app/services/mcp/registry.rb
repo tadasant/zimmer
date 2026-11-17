@@ -19,6 +19,8 @@ module Mcp
   #                    store. OPT-IN
   #   live_conversations → read and drive Live Mode conversations.
   #                    OPT-IN
+  #   operating_costs → read and write the all-in operating-cost ledger behind
+  #                    the Costs page. OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -44,7 +46,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations operating_costs].freeze
 
     # A composite group is a curated cut across domain groups, never part of
     # "no groups". `live_mode` is the one a Live conversation's own `zimmer-live`
@@ -368,7 +370,19 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::ActionLiveConversation", group: "live_conversations", write: true),
       Definition.new(klass: "Mcp::Tools::GetLiveSettings", group: "live_conversations", write: false),
       Definition.new(klass: "Mcp::Tools::GetLiveCosts", group: "live_conversations", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionLiveSettings", group: "live_conversations", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionLiveSettings", group: "live_conversations", write: true),
+
+      # Operating costs — the all-in cost of running this deployment, behind the
+      # Costs page (OperatingCosts::Report, OperatingCosts::Actions).
+      #
+      # OPT-IN, AND NOT IN `health` BESIDE `get_costs`. `get_costs` is list-price
+      # token spend any session can read; these carry vendor bills and the write
+      # that records them, which the daily collection session needs and nothing
+      # else does. A connection names `operating_costs` for all three, or
+      # `operating_costs_readonly` for the two reads. Not in `self_session`.
+      Definition.new(klass: "Mcp::Tools::GetOperatingCosts", group: "operating_costs", write: false),
+      Definition.new(klass: "Mcp::Tools::SearchOperatingCostRecords", group: "operating_costs", write: false),
+      Definition.new(klass: "Mcp::Tools::ActionOperatingCosts", group: "operating_costs", write: true)
     ].freeze
 
     module_function

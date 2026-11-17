@@ -2094,7 +2094,7 @@ Zimmer's figure reproduces the cost Pi recorded beside the volumes to the cent.
 What does not work is the other half of Pi's model catalog. `openrouter/~openai/gpt-mini-latest`,
 the Gemini, Grok, Kimi and GLM aliases have no rate in `TokenPricing`, so a
 Pi session on one of them lands with correct tokens and **zero cost**, and appears in the
-Costs page's unpriced-models list. `TokenPricing` derives a model's three cache rates from its
+Token Spend page's unpriced-models list. `TokenPricing` derives a model's three cache rates from its
 input rate by a multiplier relationship that is uniform across Anthropic's line and simply
 false elsewhere — OpenAI charges nothing for a cache write, Gemini charges a storage rate — so
 pricing them means teaching `Rate` to carry explicit cache rates rather than adding two
@@ -2121,7 +2121,7 @@ land. It closed [#1077](https://github.com/tadasant/zimmer/issues/1077), where t
 absent from the ledger altogether.
 
 What does not land is money. `TokenPricing` carries **Anthropic rates only**, so every Codex model
-— whatever `sol`, `terra` or `luna` resolved to, such as `gpt-5.6-terra` — prices at **$0** and appears in the Costs page's
+— whatever `sol`, `terra` or `luna` resolved to, such as `gpt-5.6-terra` — prices at **$0** and appears in the Token Spend page's
 unpriced-models list. A Codex session therefore contributes tokens to every volume figure on the
 page and nothing to any dollar figure. This is the same gap Pi's non-Anthropic models sit in, with
 the same fix: `Rate` derives its three cache rates from the input rate by a multiplier relationship
@@ -3821,7 +3821,7 @@ old rows, so `CostAnalytics#by_agent_root` reports router spend under both names
 `/costs`, in `get_costs`, and in `GET /api/v1/costs`. The sessions index's agent-root filter is a
 datalist over `AgentRootsConfig.all`, so it offers both entries with the history split between them.
 
-Narrowing the Costs page inherits the split rather than revealing it: *Only this* on a router row
+Narrowing the Token Spend page inherits the split rather than revealing it: *Only this* on a router row
 carries one of the two names, and the resulting page is honest about what it filtered on and silent
 about the other half sitting under the sibling name. Compare both rows before reading a router
 figure as the router's total.
@@ -7985,7 +7985,7 @@ Two consequences worth knowing:
 
 - **`complete` means "one pass finished", not "the ledger is exhaustive".** A transcript that was
   unreadable when its chunk ran (a permission error, a file deleted mid-scan) is skipped, the chunk
-  still commits, and the run still finishes. `covers_since` on the Costs page is the oldest row
+  still commits, and the run still finishes. `covers_since` on the Token Spend page is the oldest row
   actually stored, which is the honest figure; nothing claims every call ever made is in there.
 - **A transcript root that gets emptied is invisible.** If `~/.claude/projects` is wiped, a re-scan
   completes instantly against nothing and the ledger keeps whatever it already had. The rows are
@@ -8043,7 +8043,7 @@ about this; the older part of the window simply shows a larger unattributed shar
 
 ## Experimental-setting cohorts are observational, and the first one is purely temporal
 
-The Costs page compares spend on each side of an experimental setting. Nothing about it is a
+The Token Spend page compares spend on each side of an experimental setting. Nothing about it is a
 controlled experiment, and three limits are worth stating rather than discovering:
 
 - **The settings are global.** A cohort is "every session that ran while the setting was on",
@@ -8065,7 +8065,7 @@ one, and a thin report saying "not enough data to compare" is the correct output
 
 ## The cost report rescans its window after every ingestion sweep
 
-The Costs page, `GET /api/v1/costs` and `get_costs` share one cached snapshot, but its key
+The Token Spend page, `GET /api/v1/costs` and `get_costs` share one cached snapshot, but its key
 includes the ledger's highest row id, and ingestion writes every ten minutes. The first request
 for a window after each sweep runs all five rollup scans again, and their time grows with the
 number of rows in the window: about 3.5s for 90 days on a ledger seeded at roughly four times
@@ -8154,7 +8154,7 @@ into uselessness. None of that makes an agent call it.
 The trade is deliberate. The blocks were re-injected on every turn of every session and billed again
 on each later turn they stayed in context, while most sessions never read an older human message.
 Whether the outcome cost exceeds the token saving is not something the current instrumentation can
-answer: the Costs page shows `session_hierarchy` and `human_messages` trending to zero and
+answer: the Token Spend page shows `session_hierarchy` and `human_messages` trending to zero and
 `provenance_tool` picking up, which measures the bytes, not the decisions.
 
 ## A restart from scratch can still page before its re-clone finishes
@@ -8972,8 +8972,36 @@ the web page in the browser, which scrolls to it.
 
 A link to one of this deployment's pages opens in the app only when the app has a screen for that
 page: the board, a session (by id or slug), a new session, the inbox, triggers and one trigger,
-costs, health, CLIs, settings, API keys, and Live. Any other page, such as `/outcomes`,
-`/connectors`, a trigger's edit form, or `/settings/models`, opens the web UI in the browser.
+token spend, health, CLIs, settings, API keys, and Live. Any other page, such as `/outcomes`,
+`/connectors`, a trigger's edit form, `/settings/models`, or the all-in [Costs](/operate/operating-costs/)
+page at `/costs`, opens the web UI in the browser.
+
+## Operating costs are only as current and as complete as what was written
+
+The [Costs](/operate/operating-costs/) page is honest about what it knows and no more:
+
+- **Zimmer never calls a vendor's billing API.** Everything beyond its own ledgers arrives through
+  `action_operating_costs`, from the daily collection session or by hand. A vendor nobody writes
+  about is not on the page, and a vendor whose figures stopped arriving shows a stale date under
+  *Sources and freshness*, not an error.
+- **The derived figures are estimates.** Live voice is priced from Zimmer's own price table and Pi
+  from list price; a real bill written to the same account replaces them, but until then they can
+  be off by whatever the vendor's real price differs by.
+- **No currency conversion.** A non-USD figure must carry its USD amount; Zimmer does not look up
+  rates.
+- **Attribution to agent roots is a model, not a measurement.** A connector's vendor (a scraping
+  plan, a proxy) sees one Zimmer key and no session, so its cost is split by how many sessions each
+  root ran with the server attached, not by what each one actually spent. A subscription is split by
+  each root's share of list-price token spend. Both are labelled with their method wherever they
+  appear.
+- **Months are frozen once split.** The daily job re-splits only the current and previous month;
+  an older month is re-split only when new figures for it arrive or a functionality's root claims
+  change, so a session deleted since does not quietly move money between roots.
+- **The forward rate is a run rate.** It is the trailing 28 days (the newest invoices, for an
+  account billed by invoice) times 30.44, or the active subscriptions for an account with no
+  metered usage. It does not know about a plan change before it is recorded.
+- **The iOS app has no screen for it.** `/costs` opens in the browser; the app's *Token Spend*
+  screen is the token ledger.
 
 ## The transcript archive's deadline cannot stop a run that is stuck
 

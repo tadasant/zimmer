@@ -5,7 +5,7 @@
 # `session_token_usages` and `adhoc_token_usages` hold the same measurements
 # about the same kind of event — one Anthropic API call — and differ only in what
 # they hang off (an agent session vs a piece of Zimmer's own machinery). Keeping
-# the columns and the arithmetic identical is what lets the Costs page add the
+# the columns and the arithmetic identical is what lets the Token Spend page add the
 # two together without special-casing either.
 module TokenAccounting
   extend ActiveSupport::Concern
@@ -39,7 +39,7 @@ module TokenAccounting
     scope :in_window, ->(from, to) { where(called_at: from..to) }
     scope :for_model, ->(model) { where(model: model) }
 
-    # Newest first is what every consumer wants: the Costs page, the API index,
+    # Newest first is what every consumer wants: the Token Spend page, the API index,
     # and the MCP tool all read "recent spend".
     scope :recent_first, -> { order(called_at: :desc) }
   end

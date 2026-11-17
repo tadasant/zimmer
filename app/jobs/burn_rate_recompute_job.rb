@@ -6,7 +6,7 @@
 # decide whether one more session fits inside the capacity left on the pacing
 # curve. Computing them on the scheduling path would put an aggregate over the
 # ledger in front of every spot session's start; this job puts it on a cron
-# instead, and HarnessModelBurnRate is what the gate, the Costs page and
+# instead, and HarnessModelBurnRate is what the gate, the Token Spend page and
 # `get_costs` read.
 #
 # Idempotent by construction: it recomputes every combination from scratch and

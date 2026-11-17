@@ -1,0 +1,70 @@
+<%#
+  One breakdown of the month: a row per group with the month projected, the
+  month so far, last month and the forward run rate, opening onto the accounts
+  behind it. Same <details> + hover-details idiom as Token Spend's tables, and
+  no chart library, so it holds at 375px.
+
+  locals: title, subtitle, rows (OperatingCosts::Report#breakdown rows),
+          report, filter (Symbol or nil — the page param a row narrows to),
+          empty (String)
+%>
+<% max = rows.map { |r| r[:month_projected_usd].to_f }.max.to_f %>
+<section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="<%= "costs-#{title.parameterize}" %>">
+  <div class="px-4 py-3 border-b border-gray-200">
+    <h2 class="text-sm font-semibold text-gray-900"><%= title %></h2>
+    <p class="text-xs text-gray-500 mt-0.5"><%= subtitle %></p>
+  </div>
+  <% if rows.empty? %>
+    <p class="px-4 py-6 text-sm text-gray-500"><%= empty %></p>
+  <% else %>
+    <ul class="divide-y divide-gray-100" data-controller="hover-details">
+      <% rows.each do |row| %>
+        <li>
+          <details class="group" data-action="mouseenter->hover-details#open mouseleave->hover-details#close">
+            <summary data-action="click->hover-details#pin"
+                     class="px-4 py-3 cursor-pointer list-none marker:content-none hover:bg-gray-50 focus:outline-none focus:bg-gray-50">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="text-sm text-gray-900 min-w-0 flex items-baseline gap-1.5">
+                  <svg class="h-3 w-3 shrink-0 self-center text-gray-300 transition-transform group-open:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
+                  </svg>
+                  <span class="truncate" title="<%= row[:label] %>"><%= row[:label] %></span>
+                </span>
+                <span class="flex items-baseline gap-2 whitespace-nowrap">
+                  <span class="text-sm font-medium text-gray-900 tabular-nums"><%= number_to_currency(row[:month_projected_usd], precision: 2) %></span>
+                  <% if filter && row[:key].present? && report.public_send(filter).nil? %>
+                    <%= link_to "Only this", operating_costs_path(report.to_params.merge(filter => row[:key])),
+                          class: "text-xs text-indigo-600 hover:text-indigo-800", data: { turbo: false } %>
+                  <% end %>
+                </span>
+              </div>
+              <div class="mt-1.5 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                <div class="h-full rounded-full bg-indigo-500" style="width: <%= max.positive? ? (row[:month_projected_usd].to_f / max * 100).round(1) : 0 %>%"></div>
+              </div>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 tabular-nums">
+                <span>so far <%= number_to_currency(row[:month_to_date_usd], precision: 2) %></span>
+                <span>last month <%= number_to_currency(row[:previous_month_usd], precision: 2) %></span>
+                <span>forward <%= number_to_currency(row[:forward_monthly_usd], precision: 2) %>/mo</span>
+              </div>
+            </summary>
+            <ul class="px-4 pb-3 divide-y divide-gray-50">
+              <% Array(row[:accounts]).each do |account| %>
+                <li class="py-1.5 text-xs">
+                  <div class="flex items-baseline justify-between gap-2">
+                    <span class="min-w-0 truncate text-gray-800" title="<%= account[:label] %>"><%= account[:label] %></span>
+                    <span class="shrink-0 tabular-nums text-gray-800"><%= number_to_currency(account[:month_projected_usd], precision: 2) %></span>
+                  </div>
+                  <div class="flex flex-wrap gap-x-3 text-gray-400 tabular-nums">
+                    <span class="min-w-0 truncate"><%= account[:vendor] %> · <%= account[:allocation_rule].to_s.humanize(capitalize: false) %></span>
+                    <span>last month <%= number_to_currency(account[:previous_month_usd], precision: 2) %></span>
+                    <span>forward <%= number_to_currency(account[:forward_monthly_usd], precision: 2) %>/mo</span>
+                  </div>
+                </li>
+              <% end %>
+            </ul>
+          </details>
+        </li>
+      <% end %>
+    </ul>
+  <% end %>
+</section>

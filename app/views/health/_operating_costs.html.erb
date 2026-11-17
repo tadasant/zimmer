@@ -1,0 +1,39 @@
+<%#
+  Operating-cost collection: the newest run per collector, and whether the Costs
+  page's figures are current. Same object as the REST health report and
+  `get_system_health`. Silent until anything has been recorded.
+%>
+<% costs = health_report[:operating_costs_health] %>
+<% if costs && (costs[:accounts].to_i.positive? || costs[:runs].any?) %>
+  <div class="mt-6 bg-white rounded-lg shadow" id="health-operating-costs">
+    <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div class="min-w-0">
+          <h3 class="text-lg font-medium text-gray-900">Operating Costs</h3>
+          <p class="mt-1 text-sm text-gray-500">
+            Collection behind the <%= link_to "Costs", operating_costs_path, class: "text-indigo-600 hover:text-indigo-800" %> page:
+            <code class="font-mono text-xs">OperatingCostsCollectionJob</code> each morning, and whatever writes through <code class="font-mono text-xs">action_operating_costs</code>.
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
+          <%= status_badge(costs[:status]) %>
+        </div>
+      </div>
+    </div>
+    <div class="px-4 py-5 sm:p-6">
+      <p class="text-sm text-gray-600 mb-4 break-words"><%= costs[:status].message %></p>
+      <% if costs[:runs].any? %>
+        <ul class="divide-y divide-gray-100">
+          <% costs[:runs].each do |run| %>
+            <li class="py-2 flex items-baseline justify-between gap-3 text-sm">
+              <span class="min-w-0 truncate text-gray-900"><%= run[:collector] %></span>
+              <span class="whitespace-nowrap text-xs <%= run[:status] == 'failed' ? 'text-red-700' : 'text-gray-500' %>">
+                <%= run[:status] %> <%= time_ago_in_words(run[:finished_at] || run[:started_at]) %> ago
+              </span>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+    </div>
+  </div>
+<% end %>

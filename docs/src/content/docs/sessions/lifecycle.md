@@ -3038,7 +3038,7 @@ Four rules follow, and all of them are pinned by tests:
   path all do the obvious thing — and it hands the drawer the frame's URL in
   `data-session-drawer-url` instead. `SessionsHelper#session_drawer_link_data` builds that pair.
 - **Nothing inside the drawer navigates the frame.** A plain same-origin link in there navigates
-  *the frame*, and every page it could land on — `/triggers`, `/costs`, the dashboard, the session's
+  *the frame*, and every page it could land on — `/triggers`, `/token-spend`, `/costs`, the dashboard, the session's
   own full page — has no `session_detail` frame, so the drawer shows `Content missing` again by a
   different door. Every link the drawer renders carries `data-turbo-frame="_top"`, including the
   ones that answer with a Turbo Stream and so never navigate anything: a rule with case-by-case

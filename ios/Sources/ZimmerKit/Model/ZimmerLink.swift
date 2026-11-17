@@ -21,7 +21,7 @@ public enum ZimmerLink: Hashable, Sendable {
     case triggers
     /// `/triggers/<id>`.
     case trigger(Int)
-    /// `/costs`, narrowed by `agent_root` or `session_id` as the web page is.
+    /// `/token-spend` (and `/costs?session_id=`), narrowed by `agent_root` or `session_id` as the web page is.
     case costs(CostScope)
     /// `/health`.
     case health
@@ -59,7 +59,7 @@ public enum ZimmerLink: Hashable, Sendable {
         case let ("triggers", segment?, 2):
             guard let id = Int(segment), id > 0 else { return nil }
             self = .trigger(id)
-        case ("costs", _, 1):
+        case ("token-spend", _, 1):
             if let root = query["agent_root"], !root.isEmpty {
                 self = .costs(.agentRoot(root))
             } else if let id = query["session_id"].flatMap(Int.init) {
@@ -67,6 +67,12 @@ public enum ZimmerLink: Hashable, Sendable {
             } else {
                 self = .costs(.fleet)
             }
+        // `/costs` is the web's all-in operating-cost page, which has no screen here.
+        // Only a session-scoped link still means token spend: the server redirects
+        // `/costs?session_id=` to `/token-spend`, and older links carry that shape.
+        case ("costs", _, 1):
+            guard let id = query["session_id"].flatMap(Int.init) else { return nil }
+            self = .costs(.session(id))
         case ("health", _, 1): self = .health
         case ("clis", _, 1): self = .clis
         case ("settings", _, 1): self = .settings

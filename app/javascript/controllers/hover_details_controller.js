@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 
 // Makes a <details> row open on hover, without taking away tap or keyboard.
 //
-// The breakdown rows on the Costs page are plain <details> elements: they open on
+// The breakdown rows on the Token Spend page are plain <details> elements: they open on
 // click, open on tap, open on Enter, and open with JavaScript off. That is the
 // whole mechanism. This controller adds the one thing <details> has no native
 // affordance for — opening on hover — and adds it ONLY on devices that have a

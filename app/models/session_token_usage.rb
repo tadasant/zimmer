@@ -54,7 +54,7 @@ class SessionTokenUsage < ApplicationRecord
   # running Claude fleet with. Feeding either a dollar Anthropic never counted
   # inflates the estimate and admits spot work the window cannot actually afford.
   #
-  # Cost surfaces are deliberately NOT scoped this way: the Costs page, the REST
+  # Cost surfaces are deliberately NOT scoped this way: the Token Spend page, the REST
   # index and `get_costs` are asked what Zimmer spent, and the answer includes
   # every runtime.
   scope :quota_bearing, -> { where(agent_runtime: ClaudeAuthProvider::RUNTIME) }
