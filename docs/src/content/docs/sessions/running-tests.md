@@ -98,7 +98,7 @@ diff touches, and let CI be the one that runs everything.
 Chrome is in the image. It cannot start its setuid sandbox in this container, and
 `test/application_system_test_case.rb` already carries the opt-in for exactly that case —
 `CHROME_NO_SANDBOX=true`, which is deliberately *not* spelled `CI=true` (that would also
-point the binary at a `chromium-browser` path only the CI image has).
+switch on eager loading).
 
 One extra step first: the layout links a compiled stylesheet, and a fresh clone has none,
 so every page render fails with `The asset 'tailwind.css' was not found in the load path.`

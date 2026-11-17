@@ -1,17 +1,11 @@
 name: CI
 
-# Standalone CI for the Zimmer Rails app. Runs on a shared self-hosted GitHub Actions
-# runner pool (label `self-hosted`) that this repo registers against to stay off the
-# GitHub-hosted Actions minute quota. Postgres + Redis come up as service containers on
-# *dynamic* host ports so concurrent jobs on the shared box never collide; gems install
-# into a per-runner path for the same reason. If you fork Zimmer, point these at your own
-# runners (or switch the jobs back to `ubuntu-latest`).
-#
-# ruby/setup-ruby runs with `self-hosted: true`: it selects the Ruby already staged in
-# each runner's own $RUNNER_TOOL_CACHE rather than trying to download+extract into the
-# hardcoded /opt/hostedtoolcache, which the runner user can't write. The CI runners were
-# registered with a Node toolcache but no Ruby one, so their Ruby 3.4.6 toolcache was
-# seeded out of band; that manual seed is not yet in IaC — see issue #118 to codify it.
+# Standalone CI for the Zimmer Rails app. Every job runs on a GitHub-hosted runner
+# (`ubuntu-latest`, or `macos-latest` for the iOS jobs), which is free and unmetered on a
+# public repository. `runs-on` is hard-coded, never switched by a variable: a fork PR must
+# never be able to reach a self-hosted runner. Postgres + Redis come up as service
+# containers on dynamic host ports, and ruby/setup-ruby installs Ruby and caches the bundle
+# (`bundler-cache: true`) — no job relies on anything left on a runner by an earlier run.
 on:
   pull_request:
     branches: [main]
@@ -25,7 +19,8 @@ concurrency:
 jobs:
   lint:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     # pull-requests: read is for the vs-main step, which lists the PR's files.
     permissions:
       contents: read
@@ -35,13 +30,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: false
-          self-hosted: true
-      - name: Install gems (per-runner path)
-        run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
-          bundle install --jobs 4 --retry 3
+          bundler-cache: true
       - name: Rubocop
         run: bin/rubocop -f github --parallel
       # The two-phase-drop guard is Rails-free by design, so it runs here as
@@ -88,48 +77,41 @@ jobs:
 
   security:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: false
-          self-hosted: true
-      - name: Install gems (per-runner path)
-        run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
-          bundle install --jobs 4 --retry 3
+          bundler-cache: true
       - name: Brakeman
         run: bin/brakeman --no-pager -q
 
   verify_lockfile:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
+          # No install: `bundle lock` only resolves, and a cached bundle restored from
+          # the very lockfile under test would prove nothing about it.
           bundler-cache: false
-          self-hosted: true
       - name: Ensure Gemfile.lock is up to date
         run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
           bundle lock
           git diff --exit-code Gemfile.lock
 
   # Unit + integration suite (system tests are excluded — `bin/rails test` does not
   # descend into test/system; the Chrome-driven suite runs in the separate `test-system`
-  # job below). The job KEY is `test-unit`, which the shared runner's heavy-test
-  # semaphore recognizes and gates; a bare `test` would go ungated. PARALLEL_WORKERS is
-  # pinned so a shard cannot fan out to :number_of_processors (32 on the box) and starve
-  # co-tenants.
+  # job below). PARALLEL_WORKERS matches the 4 vCPUs of a standard hosted Linux runner.
   test-unit:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -157,16 +139,15 @@ jobs:
 
     env:
       RAILS_ENV: test
-      # GitHub-hosted runners export CI=true automatically; this self-hosted runner
-      # does not, and config/environments/test.rb ties `config.eager_load` to
-      # ENV["CI"]. Without it, eager loading is off and lazy autoload trips over
-      # good_job's Zeitwerk layout (GoodJob::Job) at runtime. Set it explicitly, as
-      # the AO parent workflow does, so the suite loads the same way it does on hosted.
+      # config/environments/test.rb ties `config.eager_load` to ENV["CI"]. Without it,
+      # eager loading is off and lazy autoload trips over good_job's Zeitwerk layout
+      # (GoodJob::Job) at runtime. GitHub-hosted runners export CI=true already; it is
+      # stated here because the suite depends on it.
       CI: true
       DATABASE_HOST: localhost
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
-      PARALLEL_WORKERS: 8
+      PARALLEL_WORKERS: 4
 
     steps:
       - uses: actions/checkout@v4
@@ -177,13 +158,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: false
-          self-hosted: true
-      - name: Install gems (per-runner path)
-        run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
-          bundle install --jobs 4 --retry 3
+          bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
       - name: Run tests (unit + integration; system tests excluded)
@@ -191,17 +166,14 @@ jobs:
 
   # Chrome-driven system tests (test/system/*.rb), the browser suite `bin/rails test`
   # never descends into. Ported from the AO parent's `test-system` job. Kept a SEPARATE
-  # job (not folded into test-unit) for two reasons: the shared runner has a companion
-  # system-test semaphore keyed on the `test-system` job name that serializes Chrome-heavy
-  # jobs across co-tenant repos, and `PARALLEL_WORKERS` is pinned to 1 here — the persistent
-  # per-worker `--user-data-dir` in test/application_system_test_case.rb does not tolerate
-  # concurrent Chrome instances (higher worker counts fail with "Chrome instance exited").
+  # job (not folded into test-unit) because `PARALLEL_WORKERS` is pinned to 1 here — the
+  # persistent per-worker `--user-data-dir` in test/application_system_test_case.rb does not
+  # tolerate concurrent Chrome instances (higher worker counts fail with "Chrome instance
+  # exited") — and running beside test-unit costs no wall-clock.
   #
-  # Chrome/Chromium itself is assumed pre-provisioned on the runner (the same box AO ran
-  # its system suite on); the CI branch of application_system_test_case.rb points Selenium
-  # at /usr/bin/chromium-browser with --no-sandbox. Runner provisioning lives in the
-  # out-of-scope ci-runner IaC — if this job cannot find a browser, that is where the fix
-  # belongs, not here.
+  # The browser is the Google Chrome the hosted ubuntu image ships, named through CHROME_BIN
+  # (application_system_test_case.rb runs it with --no-sandbox under CI). Selenium Manager
+  # resolves the matching chromedriver.
   #
   # The JS Playwright scripts under test/e2e/*.js are NOT run here: AO never ran them in CI
   # either, they are self-described standalone runners, they need a Playwright browser
@@ -209,7 +181,8 @@ jobs:
   # Claude Code binary + a mock Anthropic server. Deferred — tracked in issue #162.
   test-system:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     services:
       postgres:
@@ -237,10 +210,10 @@ jobs:
 
     env:
       RAILS_ENV: test
-      # See the test-unit job: this self-hosted runner does not export CI=true, and
-      # config/environments/test.rb ties eager loading (and the system suite's Chrome
-      # binary/sandbox flags) to ENV["CI"]. Set it explicitly.
+      # See the test-unit job: config/environments/test.rb ties eager loading (and the
+      # system suite's Chrome sandbox flag) to ENV["CI"].
       CI: true
+      CHROME_BIN: /usr/bin/google-chrome
       DATABASE_HOST: localhost
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
@@ -257,13 +230,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: false
-          self-hosted: true
-      - name: Install gems (per-runner path)
-        run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
-          bundle install --jobs 4 --retry 3
+          bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
       # System tests render real pages, so Tailwind's stylesheet must be compiled into
@@ -304,7 +271,7 @@ jobs:
   # A separate job rather than a step in test-unit: it drops and recreates the
   # databases several times, which would destroy the suite's own. Its Postgres
   # service is therefore its own scratch container, on a dynamic host port like
-  # every other job on this shared runner. No Redis — the test environment does not
+  # every other job here. No Redis — the test environment does not
   # use it (config/environments/test.rb), and nothing here boots a cache store.
   #
   # Deliberately does NOT set CI=true, unlike test-unit and test-system. That
@@ -315,7 +282,8 @@ jobs:
   # See docs/operate/testing.md and lib/schema_verify_task.rb.
   schema_verify:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -343,7 +311,7 @@ jobs:
       # Asserted, not just written: config/database.yml defaults DATABASE_PORT to
       # 5432, and this is the only job in the file that runs an unconditional
       # `db:drop`. An empty expansion here would point it at whatever Postgres
-      # answers on the shared runner's localhost:5432.
+      # answers on the runner's localhost:5432.
       - name: Resolve dynamic service ports
         run: |
           port="${{ job.services.postgres.ports[5432] }}"
@@ -352,13 +320,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          bundler-cache: false
-          self-hosted: true
-      - name: Install gems (per-runner path)
-        run: |
-          RUNNER_NUM=$(echo "$RUNNER_NAME" | grep -oE '[0-9]+$' || echo "0")
-          bundle config set --local path "/home/runner/.bundles/zimmer-runner-${RUNNER_NUM}"
-          bundle install --jobs 4 --retry 3
+          bundler-cache: true
       - name: Round-trip db/schema.rb against db/migrate
         run: bin/rails db:schema:verify
 
@@ -368,7 +330,8 @@ jobs:
   # one Node-only job.
   docs_site:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -392,31 +355,16 @@ jobs:
   # runs the SAME script against /rails in its final stage, which is the direct assertion
   # against the published image and the one that stops a bad image from being pushed; PR
   # CI does not build the app image, so this job buys that signal before merge for a few
-  # megabytes instead of a multi-GB zimmer-base pull on a shared runner.
+  # megabytes instead of a multi-GB zimmer-base pull.
   #
   # See docs/operate/deploying.md, "The docs never ship in the image".
   image_excludes_docs:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      # The self-hosted host runs many runner workers as one OS user, so the default
-      # ~/.docker is shared mutable state: a concurrent job's `docker buildx create --use`
-      # records itself as the current builder there, and this build would then run on a
-      # builder that job tears down when it finishes. release-image.yml isolates its
-      # Docker client state for exactly this reason.
-      - name: Isolate Docker client state for this job
-        run: |
-          cfg="${RUNNER_TEMP}/docker-config"
-          rm -rf "$cfg"
-          mkdir -p "$cfg"
-          echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
       - name: Assert the docs site is absent from the image build context
-        # BUILDX_BUILDER beats the config file, so naming the builder explicitly is what
-        # release-image.yml does for the same reason the isolation above exists: a build
-        # must never be inferred onto a builder some other job owns and will tear down.
-        env:
-          BUILDX_BUILDER: default
         run: docker build --no-cache --file Dockerfile.docs-audit --tag zimmer-docs-audit:${{ github.run_id }} .
       - name: Remove the audit image
         if: always()
@@ -429,22 +377,11 @@ jobs:
   # regressed (tadasant/zimmer#91).
   image_includes_extensions:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      # Same reason as image_excludes_docs: the self-hosted host runs many runner workers
-      # as one OS user, so the default ~/.docker is shared mutable state and a concurrent
-      # job's `docker buildx create --use` would otherwise decide which builder this runs
-      # on.
-      - name: Isolate Docker client state for this job
-        run: |
-          cfg="${RUNNER_TEMP}/docker-config"
-          rm -rf "$cfg"
-          mkdir -p "$cfg"
-          echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
       - name: Assert the extension tree is present in the image build context
-        env:
-          BUILDX_BUILDER: default
         run: docker build --no-cache --file Dockerfile.extensions-audit --tag zimmer-extensions-audit:${{ github.run_id }} .
       - name: Remove the audit image
         if: always()
@@ -454,13 +391,13 @@ jobs:
   # boot required, so it runs fast and independently of the app suite.
   retention_logic:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          self-hosted: true
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb
 
@@ -479,15 +416,12 @@ jobs:
   # that reports success while ignoring the thing it was added to catch. The tree is in fact
   # clean at `--severity=style` as well, so tightening further is a one-word change.
   #
-  # The binary is a pinned, checksummed static release rather than an apt package or a
-  # marketplace action: the shared self-hosted runner has no shellcheck preinstalled and these
-  # jobs do not run as root, so `apt-get install` is not available to them. Baking it into the
-  # runner image would mean tadasant-internal's ci-runner/ tree, a different repository; the
-  # download keeps this self-contained here. Pinning the version keeps a new upstream release
-  # from failing unrelated PRs, and the checksum is what makes the download safe to trust.
-  # fetch-pinned-download.sh keeps the verified tarball on the runner and re-checks it on every
-  # run, so an upstream 5xx cannot fail this job once a runner has it. A cold runner retries for
-  # at most ten minutes and then fails: a sustained outage must not skip the check.
+  # The binary is a pinned, checksummed static release rather than the image's own
+  # shellcheck, an apt package or a marketplace action: a hosted image updates its tools
+  # without notice, and pinning the version keeps a new upstream release from failing
+  # unrelated PRs. The checksum is what makes the download safe to trust. Every hosted
+  # runner starts cold, so fetch-pinned-download.sh retries for at most ten minutes and
+  # then fails: a sustained outage must not skip the check.
   #
   # Scope is tracked *.sh, which is scripts/, .github/scripts/ and .agent-containers/ --
   # broader than scripts/ alone because .github/scripts/*.sh are deploy-path scripts too, and
@@ -498,7 +432,7 @@ jobs:
   # extracting them from the YAML first.
   shellcheck:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       SHELLCHECK_VERSION: "0.10.0"
@@ -650,10 +584,8 @@ jobs:
 
   # The iOS app, compiled by Xcode for the simulator. Mirrors tadasant/motet's `ios` job.
   #
-  # It does NOT run on the self-hosted pool: there is no Mac in it, and `xcodebuild` needs
-  # one. GitHub's hosted macOS runners are free on a
-  # public repo, which is what makes an unproven-until-now app buildable in CI with nobody
-  # having to own a Mac.
+  # `xcodebuild` needs a Mac, and GitHub's hosted macOS runners are free on a public repo,
+  # which is what makes the app buildable in CI with nobody having to own a Mac.
   #
   # NOTHING HERE SIGNS WITH AN IDENTITY, and that is the property to preserve. A simulator
   # build and an ad hoc signed device archive need no certificate, no provisioning profile
@@ -799,17 +731,22 @@ jobs:
   ios_swift_linux:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Install a Swift toolchain (once per runner)
+      # The hosted ubuntu image ships a Swift toolchain, and ci-swift uses whichever `swift`
+      # is on PATH. Installing one is the fallback for an image that stops shipping it.
+      - name: Find or install a Swift toolchain
         id: swift
         run: |
           set -euo pipefail
-          runner_num=$(echo "${RUNNER_NAME:-}" | grep -oE '[0-9]+$' || echo "0")
-          shim="$(ios/bin/install-swift-toolchain "$HOME/.zimmer-ios/runner-${runner_num}/swift")"
-          echo "shim=${shim}/swift" >> "$GITHUB_OUTPUT"
+          if command -v swift >/dev/null 2>&1; then
+            swift --version
+          else
+            shim="$(ios/bin/install-swift-toolchain "${RUNNER_TEMP:?}/swift")"
+            echo "shim=${shim}/swift" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and test ZimmerKit
         env:
           ZIMMER_SWIFT_SHIM: ${{ steps.swift.outputs.shim }}
@@ -843,7 +780,8 @@ jobs:
   #      (This job has no checkout step, so a fork PR never executes fork code here.)
   all-checks-pass:
     if: ${{ !cancelled() }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - lint
       - security

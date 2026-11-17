@@ -3,14 +3,16 @@
 require "test_helper"
 require "yaml"
 
-# Every image-building job on the shared self-hosted runner must isolate its Docker
-# client state. All runner workers on that box execute as one OS user, so the default
-# ~/.docker is shared mutable state: `docker buildx create --use` writes a single
-# current-builder file that build-push-action later reads to pick a builder, and a
-# `docker logout` — docker/login-action's post step, or an explicit step — empties a
-# single shared credential store. A job that leaves either at the default builds on a
-# co-tenant's buildkit container and dies mid-build when that co-tenant's post step
-# removes it ("graceful_stop" GOAWAY, then `no builder "<other-jobs-uuid>" found`).
+# Every image-building job keeps its Docker client state in a directory it owns. The
+# default ~/.docker is per-user mutable state: `docker buildx create --use` writes a
+# single current-builder file that build-push-action later reads to pick a builder, and
+# a `docker logout` — docker/login-action's post step, or an explicit step — empties a
+# single credential store. On a runner host whose workers share one OS user, a job that
+# leaves either at the default builds on a co-tenant's buildkit container and dies
+# mid-build when that co-tenant's post step removes it ("graceful_stop" GOAWAY, then
+# `no builder "<other-jobs-uuid>" found`). The GitHub-hosted runners these jobs use are
+# single-tenant, so the guard costs nothing there and keeps the job correct on any
+# runner it is pointed at.
 #
 # This asserts the two guards structurally, across every workflow, so a newly added
 # image build inherits them instead of rediscovering the flake.
@@ -41,9 +43,6 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
     self.class.image_build_jobs.each do |workflow, job_name, job|
       where = "#{workflow} job '#{job_name}'"
       steps = job["steps"] || []
-
-      assert_equal "self-hosted", job["runs-on"],
-        "#{where}: expected the shared self-hosted pool; revisit this guard if that changed"
 
       isolate = steps.index do |step|
         run = step["run"].to_s
@@ -221,8 +220,8 @@ class ImageBuildWorkflowsTest < ActiveSupport::TestCase
       "#{RELEASE_WORKFLOW}: once the login has spent its attempts it must fail the job — a " \
       "swallowed login failure produces an unauthenticated build that fails less legibly later"
 
-    # Credentials must land in this job's private DOCKER_CONFIG, not the shared ~/.docker
-    # that every co-tenant on the self-hosted box also writes to.
+    # Credentials must land in this job's private DOCKER_CONFIG, not the runner user's
+    # ~/.docker.
     isolate = steps.index { |s| s["run"].to_s.include?("DOCKER_CONFIG=") && s["run"].to_s.include?("RUNNER_TEMP") }
     assert_operator isolate, :<, steps.index(login),
       "#{RELEASE_WORKFLOW}: the login must run after the DOCKER_CONFIG isolation step"

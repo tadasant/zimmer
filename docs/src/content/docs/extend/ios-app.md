@@ -981,7 +981,7 @@ it, and `upload` fails afterwards if export's summary shows it was dropped. To u
 
 | Check | Where it runs | What it proves |
 | --- | --- | --- |
-| `ios/bin/ci-swift` | `ios_swift_linux` (self-hosted Linux) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
+| `ios/bin/ci-swift` | `ios_swift_linux` (GitHub-hosted `ubuntu-latest`) and `ios` (macOS) | The `ZimmerKit` logic: sign-in protocol, token refresh, edge-refusal handling, list ordering |
 | `ios/bin/build-app` | By hand; in `ios`, `ios/bin/ui-test` builds the same app (Staging is Debug plus its environment) for the simulator it runs on | The app compiles and links for the simulator |
 | `ios/bin/testflight check` | `ios` | An ad hoc signed Release archive is uploadable in shape (bundle keys, icon, privacy manifest, and a purpose string for every protected API any binary in the bundle references — ITMS-90683) and its signature carries the admitted entitlements (CarPlay) |
 | `ios/bin/ui-test --smoke` | `ios` (GitHub-hosted `macos-latest`), on every pull request | The app builds for the simulator, launches against its debug fixture, reports the server it was built with, and starts a session from a sentence in the Quick Router bar and opens it. Every class in a UI test file the pull request changed runs too, whole, so a pull request touching several can take most of the job's 75 minutes. A job [cut off there](/limitations/#a-job-cut-off-at-its-time-budget-is-never-alerted-on) fails `all-checks-pass` with no test failed |
@@ -1005,8 +1005,7 @@ from there. Outside the fixture nothing is kept.
 
 The iOS jobs run only when `ios/**` or one of the three workflows changes. The `ios-changes` job
 decides, and when it cannot tell it builds anyway. All three are in `all-checks-pass`. The macOS
-runner is GitHub-hosted, which costs nothing on a public repository. It is the one exception to the
-self-hosted pool, because nothing in the pool is a Mac.
+runner is GitHub-hosted, which costs nothing on a public repository.
 
 `testflight.yml` is fenced the way Motet's is. Its only triggers are a push to `main` and a dispatch;
 it refuses any other ref or repository; the App Store Connect key is a secret of the `testflight`

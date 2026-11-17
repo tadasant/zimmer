@@ -882,8 +882,8 @@ Both run `.github/scripts/migration-versions-vs-main.rb` (`check` and `sweep`), 
 with `MigrationVersionGuard.merge_collisions`. `sweep --dry-run` prints the verdicts without writing
 anything.
 
-One window is still open. The sweep runs on the shared self-hosted pool, so it can queue for a few
-minutes after the push, and a PR that merges in that time is not stopped. A merge that ignores the
+One window is still open. The sweep can queue for a runner for a few minutes after the push, and
+a PR that merges in that time is not stopped. A merge that ignores the
 red `all-checks-pass` or the missing label isn't stopped either. The setting that closes this
 completely is a repository one: turn on *Require branches to be up to date before merging* on the
 `main` ruleset (`strict_required_status_checks_policy`), or put a merge queue in front of `main`.
@@ -1313,7 +1313,7 @@ fails every attempt and still exits 2, saying how many it took.
 
 The second is a proxy for the first, and a tight one: `COPY` can only read from the build context, so
 docs absent from the context cannot reach the image. It exists because PR CI does not build the app
-image — pulling the multi-GB `zimmer-base` on a shared runner for a one-line assertion is not worth
+image — pulling the multi-GB `zimmer-base` for a one-line assertion is not worth
 it — and catching the regression after merge is worse than catching it for a few megabytes of
 busybox. The gap between them (an `ADD` from a URL, a `COPY --from` an outside image, a `RUN` that
 fetches the docs over the network) is what the `Dockerfile`-side assertion is there to close.
@@ -1475,23 +1475,15 @@ wedging the worker.
 
 ## The workflows
 
-Every workflow but one runs on **`runs-on: self-hosted`** — a shared self-hosted
-runner pool that this repo registers against, so its CI stays off the GitHub-hosted
-Actions minute quota. If you fork Zimmer you would point these at your own runners
-(or switch the jobs back to `ubuntu-latest`).
-See [Running on the shared self-hosted runner](#running-on-the-shared-self-hosted-runner)
-for what that requires of a Rails job.
-
-The exception is `alert-ci-failure.yml`, which runs on `ubuntu-latest` on purpose: an
-alert that needs a healthy self-hosted runner in order to tell you the self-hosted
-runners are unhealthy is no alert at all. That buys less than it sounds like — it covers
-a *degraded* pool, where jobs run and fail, but not a pool that is flat **offline**, in
-which case runs simply queue (see [CI failure alerts](#ci-failure-alerts)).
+Every job runs on a **GitHub-hosted runner**: `ubuntu-latest`, or `macos-latest` for the
+iOS jobs. Hosted runners are free and unmetered on a public repository, and nobody has to
+keep a runner box alive for CI to run. See [Where CI runs](#where-ci-runs) for what that
+means for a job.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · `schema_verify` (round-trips `db/schema.rb` against `db/migrate/` on its own scratch Postgres) · GHCR-retention logic · docs site build · `shellcheck` over every tracked `*.sh` · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `image_includes_extensions` (see [Extensions do ship in the image](#extensions-do-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code on the self-hosted runners. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
-| `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. Runs on GitHub-hosted `ubuntu-latest`, never the self-hosted pool. |
+| `ci.yml` | PR + push to main | rubocop · brakeman · `Gemfile.lock` freshness · `test-unit` (Postgres + Redis services) · `test-system` (Chrome browser suite) · `schema_verify` (round-trips `db/schema.rb` against `db/migrate/` on its own scratch Postgres) · GHCR-retention logic · docs site build · `shellcheck` over every tracked `*.sh` · `image_excludes_docs` (see [The docs never ship in the image](#the-docs-never-ship-in-the-image)) · `image_includes_extensions` (see [Extensions do ship in the image](#extensions-do-ship-in-the-image)) · `all-checks-pass` (the aggregate gate). Every job except the gate is guarded to run only on `push` and on same-repo PRs, so a fork PR never checks out or executes fork code with this repository's tokens and caches. The gate itself is unguarded — it must never skip, or it would block branch protection — but it has no checkout step and only reads the other jobs' results. |
+| `pr-auto-close.yml` | outside PR opened/reopened | Zimmer does not accept pull requests: this politely comments and closes PRs from forks and non-members (owner/member/collaborator PRs are left open), pointing them at the issue tracker. |
 | `alert-ci-failure.yml` | any other workflow completing + manual | posts to #alerts in Slack when a workflow **fails on `main`**. See [CI failure alerts](#ci-failure-alerts) |
 | `release-image.yml` | push to main (ignores `**/*.md`, `docs/**`) | rebuilds `zimmer-base:content-<key>` first when any of the five base inputs changed, then builds and pushes `zimmer:{version, latest, sha-…}`, [retrying up to three times](#the-release-build-retries-ghcr-on-the-way-in-and-on-the-way-out) at three of the four points it touches GHCR — the login, the base manifest read, and the app build's pull and push (the base build itself is still single-shot) |
 | `build-base-image.yml` | manual + monthly cron | refreshes the base image for changes that move no repo input — base-OS/apt patches, the unpinned installers. Builds uncached to a scratch tag, verifies the published image against `Dockerfile.base`'s declarations, then (from main only) promotes it onto `zimmer-base:{content-…, latest}`. See [Two paths rebuild the base image](#two-paths-rebuild-the-base-image) |
@@ -1555,8 +1547,8 @@ Four details worth knowing before you touch it:
   `timed_out` — never on "not success". `ci.yml` sets `cancel-in-progress`, so two
   pushes to `main` in quick succession cancel the first run, and a *cancelled* run must
   not page anyone. The corollary is that a run which never starts is never alerted on:
-  if the self-hosted pool is offline, main-branch runs **queue**, and GitHub cancels
-  them after ~24h as `cancelled`, which is indistinguishable from a deliberate cancel
+  if no runner ever picks a job up, the run **queues**, and GitHub cancels it after
+  ~24h as `cancelled`, which is indistinguishable from a deliberate cancel
   ([Limitations](/limitations/#a-queued-run-that-never-starts-is-never-alerted-on)).
 - `["*"]` matches the alert **itself**, and `workflow_run` chains several levels deep, so
   the job excludes itself by comparing against the literal name `'CI failure alert'`.
@@ -1571,43 +1563,35 @@ Four details worth knowing before you touch it:
   nothing. Keep the script's `WAIT_MINUTES` below the step limit, and the step limits below
   the job's.
 
-### Running on the shared self-hosted runner
+### Where CI runs
 
-The runner box is shared across several repos, so a job cannot assume it has the
-machine to itself. Five things follow. The first four are what every Rails job in
-`ci.yml` already does; the fifth is what every image-building job does:
+Every job's `runs-on` is a hosted label written out literally — never `self-hosted`, and
+never an expression a variable or input could point elsewhere. The repository is public,
+and a self-hosted runner executes whatever a pull request's workflow tells it to.
+`test/config/github_hosted_runners_test.rb` fails the build on any other `runs-on`, on a
+job with no `timeout-minutes` (GitHub's default is six hours), and on a `ruby/setup-ruby`
+step that asks for a self-hosted toolcache.
 
-- **`ruby/setup-ruby` gets `self-hosted: true` and `bundler-cache: false`.**
-  `self-hosted: true` selects the Ruby already staged in
-  each runner's own `$RUNNER_TOOL_CACHE` instead of downloading one — the action's
-  download path extracts into a hardcoded `/opt/hostedtoolcache` the runner user can't
-  write, so on this box the flag is mandatory, not optional. `bundler-cache: false`
-  turns off the action's automatic `bundle install`, because we do it ourselves into
-  an isolated path (below).
+A hosted runner starts empty every time, so a job installs or configures everything it
+needs in-job:
 
-  :::caution[Runner toolcache seeding]
-  The `tadasant-zimmer-ci-*` runners were registered with a Node toolcache but **no
-  Ruby one**, so their Ruby 3.4.6 toolcache had to be seeded out of band (`ruby-build
-  3.4.6` into `/opt/hostedtoolcache-runner-N/Ruby/3.4.6/x64`). That manual seed is not
-  yet captured in IaC and will be lost if the runners are rebuilt — codifying it is
-  part of the DigitalOcean migration ([zimmer#118](https://github.com/tadasant/zimmer/issues/118)).
-  :::
-- **Gems install into a per-runner path.** `bundle config set --local path
-  /home/runner/.bundles/zimmer-runner-${RUNNER_NUM}` (with `RUNNER_NUM` derived from
-  `$RUNNER_NAME`) keeps two concurrent jobs on the same box from fighting over one
-  `vendor/bundle`.
-- **Service containers publish dynamic ports.** Postgres and Redis declare
-  `- 5432/tcp` / `- 6379/tcp` (not `5432:5432`), and a step resolves the assigned
-  host port via `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` /
-  `REDIS_URL`. Fixed host ports would collide when two jobs land on the same runner.
-- **The heavy suites are the `test-unit` and `test-system` job keys and pin
-  `PARALLEL_WORKERS`.** The runner's file-based semaphore recognizes the job **keys**
-  `test-unit` and `test-system` and caps how many heavy test jobs run at once; a bare
-  `test` key would go ungated. Pinning `PARALLEL_WORKERS` stops a single job from
-  fanning out to `:number_of_processors` (32 on this box) and starving co-tenants —
-  `test-system` pins it to 1 because its persistent per-worker Chrome profile does not
-  tolerate concurrent browser instances. `test-system` runs the Chrome-driven system
-  suite (`bin/rails test:system`); the companion system-test semaphore gates it.
+- **Ruby and gems come from `ruby/setup-ruby` with `bundler-cache: true`.** It installs
+  Ruby 3.4.6 and restores the bundle from the Actions cache keyed on `Gemfile.lock`.
+  `verify_lockfile` alone sets `bundler-cache: false`, because it only runs `bundle lock`.
+- **Postgres and Redis are service containers on dynamic host ports.** They declare
+  `- 5432/tcp` / `- 6379/tcp`, and a step resolves the assigned port via
+  `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` / `REDIS_URL`.
+- **`test-unit` runs `PARALLEL_WORKERS=4`**, the vCPU count of a standard hosted Linux
+  runner. `test-system` pins it to 1, because its persistent per-worker Chrome profile does
+  not tolerate concurrent browser instances. Its browser is the Google Chrome the hosted
+  image ships, named through `CHROME_BIN`.
+- **Deploy jobs bring their own access.** SSH keys are written from secrets into `~/.ssh`
+  in the job, Terraform comes from `hashicorp/setup-terraform`, Kamal is `gem install`ed at
+  the locked version, and the tailnet is joined with `tailscale/github-action` and an
+  ephemeral key.
+- **Image builds free disk first.** A hosted runner guarantees about 14 GB free, and a
+  base-image build wants more, so the three image-building jobs delete the .NET, Android,
+  GHC and CodeQL toolchains the image ships before the first layer lands.
 - **Image builds get a private `DOCKER_CONFIG` and name their builder explicitly.**
   Every job that runs `docker/build-push-action` exports a fresh
   `DOCKER_CONFIG` under `$RUNNER_TEMP` before its first `docker/*` step, and passes
@@ -1618,9 +1602,11 @@ machine to itself. Five things follow. The first four are what every Rails job i
 
 ### Why image builds isolate their Docker config
 
-All ~14 runner workers on the box execute as the same OS user with no per-job
-`DOCKER_CONFIG`, so they share one `~/.docker` — one `config.json` and one
-`buildx/current`. Both are mutable state that any job can overwrite at any moment.
+A hosted runner is single-tenant, so on it this guard costs nothing. It exists for any
+runner host whose workers execute as the same OS user with no per-job `DOCKER_CONFIG`,
+which share one `~/.docker` — one `config.json` and one `buildx/current`. Both are then
+mutable state that any job can overwrite at any moment. That was the shared self-hosted
+pool these jobs ran on until 2026-11, and the failure below is what it produced.
 
 `docker/setup-buildx-action` creates a builder with `docker buildx create --use`, and
 `--use` writes the *shared* current-builder file. `docker/build-push-action` reads that
@@ -1663,13 +1649,6 @@ so `DOCKER_CONFIG: ${{ runner.temp }}/docker-config` there expands to the empty 
 and silently points every build at `/docker-config`. A step's `run:` always has
 `$RUNNER_TEMP`. `image_build_workflows_test.rb` asserts both the step form and that it
 precedes every `docker/*` step.
-
-:::note[The host could also fix this]
-Setting `DOCKER_CONFIG` per worker in the runner service definitions (in the private
-`tadasant-internal` repo's `ci-runner/`) would fix it for every repo on the box at once,
-instead of once per repo. The in-repo change here stands on its own and does not
-conflict with that.
-:::
 
 ### The release build retries GHCR, on the way in and on the way out
 

@@ -51,15 +51,15 @@ concurrency:
 
 jobs:
   drift:
-    # Fork PRs cannot be trusted to run repo code on the self-hosted pool; scheduled
+    # Fork PRs do not run here: the drift check is for this repo's own changes. Scheduled
     # and push events on main carry no pull_request payload and always run.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4.6"
-          self-hosted: true
       - name: Compare vendored snapshot against upstream
         run: ruby scripts/check_open_transcripts_drift.rb

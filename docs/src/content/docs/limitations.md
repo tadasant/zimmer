@@ -1120,12 +1120,12 @@ The `ios` job is the likely place for it, because its smoke run grows with every
 `timed_out`) rather than on "not `success`", because `ci.yml` sets `cancel-in-progress` and a
 *cancelled* run must not page anyone.
 
-That leaves one real hole. If the shared self-hosted runner pool goes **offline**, main-branch runs
-don't fail — they queue, and GitHub cancels them after ~24h with `conclusion: cancelled`, which is
-the same conclusion a deliberate cancel produces. So the alert is silent for exactly the outage it
-is most often imagined to cover. Running the alert job on `ubuntu-latest` protects against a
-*degraded* pool (jobs run, jobs fail, the alert goes out), not an absent one. Noticing that CI has
-gone quiet is still a human job.
+That leaves one real hole. If GitHub never gives a job a runner, the run doesn't fail — it
+queues, and GitHub cancels it after ~24h with `conclusion: cancelled`, which is the same
+conclusion a deliberate cancel produces. So the alert is silent for exactly the outage it is most
+often imagined to cover. A run given up sooner, with "The job was not acquired by Runner", does
+conclude `failure` and is handled (see below). Noticing that CI has gone quiet is still a human
+job.
 
 ### A hosted macOS runner shortage reddens `main` for up to two hours
 
