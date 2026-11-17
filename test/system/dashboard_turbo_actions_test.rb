@@ -157,7 +157,11 @@ class DashboardTurboActionsTest < ApplicationSystemTestCase
 
   test "the recovery banner no longer schedules a page refresh" do
     session = sessions(:running)
-    session.logs.create!(content: "Recovery job enqueued for session", level: "info")
+    # The banner shows only while the recovery log is under 5 seconds old
+    # (Session#recently_recovered?), and the first visit of a busy run can take
+    # longer than that to render. Dated ahead, the log is still recent when the
+    # page renders, however long the visit takes.
+    session.logs.create!(content: "Recovery job enqueued for session", level: "info", created_at: 1.minute.from_now)
 
     visit session_path(session)
 
