@@ -34,7 +34,23 @@ class GptLiveCallCuesTest < ActiveSupport::TestCase
   end
 
   test "a delegation Zimmer could not answer sounds failed" do
-    assert_includes heard("delegation_failed"), "play:failed"
-    assert_includes heard("delegation_refused"), "play:failed"
+    assert_equal %w[play:connected loop:working stopLoop loop:thinking play:failed], heard("delegation_failed")
+    assert_equal %w[play:connected loop:working stopLoop loop:thinking play:failed], heard("delegation_refused")
+  end
+
+  test "two delegations keep working until both are back" do
+    assert_equal %w[play:connected loop:working | stopLoop loop:thinking], heard("two_delegations")
+  end
+
+  test "a stray GPT-Live error while Claude works sounds nothing, and the delegation's failure still does" do
+    assert_equal %w[play:connected loop:working | stopLoop loop:thinking play:failed], heard("error_while_working")
+  end
+
+  test "thinking that GPT-Live never answers goes back to listening without failed" do
+    assert_equal %w[play:connected stopCues loop:thinking play:heard | stopLoop], heard("thinking_gives_up")
+  end
+
+  test "a closing call makes no more cues" do
+    assert_equal %w[play:connected], heard("closing")
   end
 end

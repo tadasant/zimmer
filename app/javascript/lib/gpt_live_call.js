@@ -43,6 +43,9 @@ const SPOKEN_IDLE_MS = 1200
 // The person's transcript quiet this long, with no answer begun: their line was
 // heard.
 const HEARD_IDLE_MS = 600
+// Thinking (after heard, or after Claude answered) with nothing said this long:
+// GPT-Live is not answering, so the call goes back to listening, quietly.
+const ANSWER_GRACE_MS = 8000
 // A long call's seconds are reported as it goes, so a tab that dies takes at
 // most this much unreported time with it.
 const SESSION_REPORT_MS = 60000
@@ -59,7 +62,8 @@ export class GptLiveCall {
     this.onState = onState
     this.onError = onError
     this.onEnded = onEnded
-    this.onCue = onCue
+    // No cue once the call is closing: the farewell is the dock's.
+    this.onCue = (signal, arg) => { if (!this.ended && !this.closing) onCue(signal, arg) }
     this.delegations = new Set()
     const base = `/live_conversations/${call.conversationId}`
     this.urls = { session: `${base}/gpt_live_session`, delegations: `${base}/delegations`, turns: call.turnsUrl || `${base}/turns` }
@@ -110,6 +114,7 @@ export class GptLiveCall {
         this.userText += event.delta || ""
         this.userSpokeAt = performance.now()
         this.awaitingAnswer = true
+        clearTimeout(this.thinkingTimer)
         if (!this.personTalking) {
           this.personTalking = true
           this.onCue("personTalking")
@@ -132,6 +137,7 @@ export class GptLiveCall {
         }
         this.assistantText += event.delta || ""
         this.saying = true
+        clearTimeout(this.thinkingTimer)
         this.onState("speaking")
         // The answer has begun: the person's line needs no heard.
         this.personDone()
@@ -147,7 +153,14 @@ export class GptLiveCall {
         break
       case "error":
         this.onError(event.error?.message || "GPT-Live reported an error.")
-        this.onCue("noAnswerComing")
+        // As on Realtime: with nothing running or sounding, no answer is coming,
+        // so back to listening. A stray error while Claude works or GPT-Live
+        // talks means nothing yet.
+        if (this.delegations.size === 0 && !this.saying) {
+          clearTimeout(this.thinkingTimer)
+          this.onCue("noAnswerComing")
+          this.onState("listening")
+        }
         break
     }
   }
@@ -157,6 +170,7 @@ export class GptLiveCall {
     this.flushUser()
     this.personDone()
     this.delegatedThisTurn = true
+    clearTimeout(this.thinkingTimer)
     this.delegations.add(delegationId)
     // Running first, so the call goes straight to the working loop, not through thinking.
     this.onCue("toolsRunning", this.delegations.size)
@@ -166,11 +180,11 @@ export class GptLiveCall {
       const body = await response.json().catch(() => ({}))
       if (this.ended) return
       if (!response.ok) {
-        this.delegationDone(delegationId, { failed: true })
+        this.delegationDone(delegationId, { failed: true, saying: true })
         this.commentary(delegationId, `I couldn't do that: ${body.error || `Zimmer answered ${response.status}`}.`)
         return
       }
-      this.delegationDone(delegationId, { failed: false })
+      this.delegationDone(delegationId, { failed: false, saying: (body.chunks || []).some(Boolean) })
       if (body.warning && !this.warned) {
         this.warned = true
         this.send({ type: "session.thinking.append", event_id: this.eventId(), delegation_id: null, content: `Budget note from Zimmer: ${body.warning}` })
@@ -180,29 +194,41 @@ export class GptLiveCall {
     } catch (_error) {
       if (this.ended) return
       // Already counted done if the answer came and something after it threw.
-      this.delegationDone(delegationId, { failed: true })
+      this.delegationDone(delegationId, { failed: true, saying: true })
       this.commentary(delegationId, "I couldn't reach Zimmer just now. Try again in a moment.")
     }
   }
 
-  // A delegation came back: one fewer running tool. Claude is done and GPT-Live
-  // has the answer to say, so thinking until it starts, unless it already is.
-  delegationDone(delegationId, { failed }) {
-    if (!this.delegations.delete(delegationId)) return
+  // A delegation came back: one fewer running tool. The last one back with
+  // GPT-Live quiet: thinking until it says what came back (the answer, or that
+  // it failed), or ANSWER_GRACE_MS passes. Nothing to say: listening.
+  delegationDone(delegationId, { failed, saying }) {
+    if (this.ended || this.closing || !this.delegations.delete(delegationId)) return
     this.onCue("toolsRunning", this.delegations.size)
+    if (this.delegations.size === 0 && !this.saying) {
+      if (saying) this.thinkUntilAnswered()
+      else this.onState("listening")
+    }
     if (failed) this.onCue("actionFailed")
-    else if (this.delegations.size === 0 && !this.saying) this.onState("thinking")
+  }
+
+  thinkUntilAnswered() {
+    this.onState("thinking")
+    clearTimeout(this.thinkingTimer)
+    this.thinkingTimer = setTimeout(() => {
+      if (!this.ended && !this.closing && this.delegations.size === 0) this.onState("listening")
+    }, ANSWER_GRACE_MS)
   }
 
   // The person's transcript went quiet with no answer begun: their line was
   // heard, and the call is thinking about it.
   heard() {
     this.heardTimer = null
-    if (this.ended) return
+    if (this.ended || this.closing) return
     const answered = !this.awaitingAnswer
     this.personDone()
     if (answered) return
-    this.onState("thinking")
+    this.thinkUntilAnswered()
     this.onCue("heardPerson")
   }
 
@@ -273,6 +299,7 @@ export class GptLiveCall {
     this.ended = true
     clearTimeout(this.spokenTimer)
     clearTimeout(this.heardTimer)
+    clearTimeout(this.thinkingTimer)
     clearTimeout(this.goodbyeTimer)
     clearTimeout(this.closeTimer)
     clearInterval(this.sessionTimer)

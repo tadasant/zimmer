@@ -879,7 +879,8 @@ off its transcripts: your transcript arriving is you talking, and its going quie
 (`heardIdle`) with no answer begun is Heard, then Thinking. Each delegation to Claude counts as a
 running tool, so Working sounds for as long as Claude works, and comes back after any "one moment"
 GPT-Live says over the wait. When Claude answers, Thinking runs until GPT-Live starts saying it. A
-delegation Zimmer could not answer plays Failed. On this engine the cues play from a second audio
+delegation Zimmer could not answer plays Failed. Thinking with nothing said for 8 s
+(`answerGrace`) goes back to listening without Failed: GPT-Live chose not to answer. On this engine the cues play from a second audio
 engine beside libwebrtc's, with no microphone gate and outside its echo canceller
 ([limitations](/limitations/#gpt-live-on-the-phone-has-not-been-heard-on-a-device)).
 

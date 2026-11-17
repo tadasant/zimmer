@@ -130,3 +130,62 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   await drain()
   report("delegation_refused", run)
 }
+
+// Two delegations: working until both are back, then thinking.
+{
+  const releases = {}
+  const run = call()
+  const post = run.gpt.post
+  run.gpt.post = (url, body) => url.endsWith("/delegations")
+    ? new Promise((resolve) => { releases[body.delegation_id] = () => resolve(post(url, body)) })
+    : post(url, body)
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(delegation("d1"))
+  run.gpt.handle(delegation("d2"))
+  releases.d1()
+  await drain()
+  run.heard.push("|")
+  releases.d2()
+  await drain()
+  report("two_delegations", run)
+}
+
+// A stray GPT-Live error while Claude works sounds nothing, so the delegation's
+// own failure still does.
+{
+  let release
+  const run = call({ d1: "unreachable" })
+  const post = run.gpt.post
+  run.gpt.post = (url, body) => url.endsWith("/delegations")
+    ? new Promise((resolve) => { release = () => resolve(post(url, body)) })
+    : post(url, body)
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(delegation("d1"))
+  run.gpt.handle({ type: "error", error: { message: "bad commentary" } })
+  run.heard.push("|")
+  release()
+  await drain()
+  report("error_while_working", run)
+}
+
+// Thinking after heard that GPT-Live never answers goes back to listening,
+// without failed.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Hm"))
+  advance(700)
+  run.heard.push("|")
+  advance(8000)
+  report("thinking_gives_up", run)
+}
+
+// A call closing after its goodbye makes no more cues.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.end()
+  run.gpt.handle(input("wait"))
+  advance(1000)
+  report("closing", run)
+}

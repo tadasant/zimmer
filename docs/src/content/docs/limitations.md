@@ -476,7 +476,14 @@ sound in the app that does not go through it, and libwebrtc does not relax that 
 from `LiveAudioEngine`, outside libwebrtc's unit, so on a call they are likely ducked under GPT-Live's
 voice. The fix is to give libwebrtc a custom audio device (`RTCAudioDevice`) built on
 `LiveAudioEngine`'s voice-processing graph, so the cues, the microphone gate and GPT-Live's voice
-share one engine as they do on Realtime. That has not been built. A CarPlay
+share one engine as they do on Realtime. That has not been built.
+
+On both the phone and the web dock, the GPT-Live cues guess where your turn ends. GPT-Live reports
+no speech boundaries, so a call counts you as talking when your transcript starts arriving and as
+heard when it has been quiet for 0.6 s with no answer begun. Whether GPT-Live streams the person's
+transcript while they speak, or only once they stop, has not been checked on a real call. If only
+afterwards, Heard comes late or not at all, and a pause mid-sentence longer than 0.6 s can sound
+Heard early. A CarPlay
 call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
 Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
 happens only with a connection warmed before the engine was switched, for at most its five minutes.
