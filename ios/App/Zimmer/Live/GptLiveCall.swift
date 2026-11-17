@@ -105,6 +105,7 @@ final class GptLiveCall {
         guard !ending else { return }
         ending = true
         keepAlive = self
+        if let run = inputTiming.finish() { signal?(.inputTiming(run)) }
         signal = nil
         perform(conductor.close(at: Self.now))
         // Started, or still starting: the tick ends it after `closeGrace` if nothing answers.
@@ -134,6 +135,7 @@ final class GptLiveCall {
 
     private func dropped(_ reason: String) {
         let signal = self.signal
+        if let run = inputTiming.finish() { signal?(.inputTiming(run)) }
         perform(conductor.finish(at: Self.now))
         signal?(.dropped(reason))
     }

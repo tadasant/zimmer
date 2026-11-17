@@ -143,6 +143,9 @@ public enum LiveVoicePull {
 /// they stopped, the fragments all arrive at once. No clock offset between the phone and OpenAI is
 /// needed for either.
 public struct GptLiveInputTiming: Sendable, Equatable {
+    /// Fragments further apart than this are two runs: the person spoke again with no answer
+    /// between.
+    public static let runGap: TimeInterval = 2
     /// One run of the person's transcript, measured when something else starts.
     public struct Run: Sendable, Equatable {
         public let fragments: Int
@@ -176,21 +179,29 @@ public struct GptLiveInputTiming: Sendable, Equatable {
     public init() {}
 
     /// Every server event, as it arrives. Returns the run of the person's transcript that just
-    /// ended, when GPT-Live starts answering or delegates.
+    /// ended: GPT-Live started answering or delegated, or the person spoke again after `runGap`.
     public mutating func observe(_ event: JSONValue, at now: TimeInterval) -> Run? {
         switch event["type"]?.string {
         case "session.input_transcript.delta":
+            var ended: Run?
+            if let lastArrival, now - lastArrival > Self.runGap { ended = finish() }
             fragments += 1
             if firstArrival == nil { firstArrival = now }
             lastArrival = now
-            if firstStartMs == nil, let start = event["start_ms"]?.number { firstStartMs = Int(start) }
-            if let end = event["end_ms"]?.number { lastEndMs = Int(end) }
-            return nil
+            if firstStartMs == nil { firstStartMs = Self.milliseconds(event["start_ms"]) }
+            if let end = Self.milliseconds(event["end_ms"]) { lastEndMs = end }
+            return ended
         case "session.output_transcript.delta", "session.delegation.created":
             return finish()
         default:
             return nil
         }
+    }
+
+    /// A timeline value as whole milliseconds; nil for anything that is not a sane number.
+    private static func milliseconds(_ value: JSONValue?) -> Int? {
+        guard case let .number(number)? = value, number.isFinite, number >= 0, number < 1e12 else { return nil }
+        return Int(number)
     }
 
     /// The run under way, if any: the call is ending.

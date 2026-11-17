@@ -118,13 +118,16 @@ final class LiveAudioEngine {
 
         func detach() { lock.withLock { device = nil } }
 
+        /// The engine is about to start on new audio threads (`LiveWebRTCAudioDevice.audioThreadsChanged`).
+        func threadsChanging() { lock.withLock { device }?.audioThreadsChanged() }
+
         /// On the render thread, which is the only one that touches `scratch`.
         func render(into output: UnsafeMutablePointer<Float>, frames: Int) -> Bool {
-            guard let device = lock.withLock({ device }) else {
+            guard let current = lock.withLock({ self.device }) else {
                 output.update(repeating: 0, count: frames)
                 return false
             }
-            return device.render(into: output, frames: frames, scratch: scratch)
+            return current.render(into: output, frames: frames, scratch: scratch)
         }
     }
 
@@ -143,9 +146,9 @@ final class LiveAudioEngine {
             let input = engine.inputNode
             // The echo canceller. Not fatal when refused: the mic still works, and headphones
             // sidestep echo entirely.
-            var voiceProcessing = true
+            var voiceProcessing = plan.voiceProcessing
             do {
-                try input.setVoiceProcessingEnabled(true)
+                try input.setVoiceProcessingEnabled(plan.voiceProcessing)
             } catch {
                 voiceProcessing = false
                 LiveAudioEngine.log.error("voice processing refused, so the reply may echo: \(error.localizedDescription, privacy: .public)")
@@ -168,6 +171,8 @@ final class LiveAudioEngine {
             if let voice {
                 if voice.node.engine == nil { engine.attach(voice.node) }
                 engine.connect(voice.node, to: engine.mainMixerNode, format: LiveAudioEngine.replyFormat)
+                // New tap and render threads: libwebrtc hears of them before they hand it audio.
+                voice.feed.threadsChanging()
             }
             engine.prepare()
             try engine.start()
@@ -270,8 +275,6 @@ final class LiveAudioEngine {
     private var plan = LiveAudioPlan.realtime
     /// GPT-Live's voice on the engine running now, when the plan is `.gptLive`.
     private var voice: (node: AVAudioSourceNode, feed: VoiceFeed)?
-    /// libwebrtc's device, told when the engine's audio threads change under it.
-    private var webRTC: LiveWebRTCAudioDevice?
 
     /// Open the microphone and the reply player. `frames` gets PCM16 at 24 kHz, about 21 ms at a
     /// time. Returns the token `stop(token:)` takes.
@@ -356,13 +359,12 @@ final class LiveAudioEngine {
         loopPlayer = graph.loopPlayer
         self.plan = plan
         self.voice = voice
-        webRTC = device
-        device?.audioThreadsChanged()
         return mine
     }
 
     /// Tear an engine down on `queue`. The audio session goes with it unless another call has it.
     private func retire(_ graph: Graph) {
+        graph.voice?.feed.detach()
         let deactivate = engine == nil && bringingUp == 0
         Self.queue.async { graph.tearDown(deactivate: deactivate) }
     }
@@ -491,8 +493,6 @@ final class LiveAudioEngine {
                 return
             }
             Self.log.notice("live audio engine restarted after a configuration change")
-            // New tap and render threads: libwebrtc hears of them before it is handed audio.
-            self.webRTC?.audioThreadsChanged()
             // Whatever is meant to be looping now: a stop while the engine was out cleared it.
             if let again = self.looping {
                 self.looping = nil
@@ -700,7 +700,6 @@ final class LiveAudioEngine {
         cuePlayer = nil
         loopPlayer = nil
         voice = nil
-        webRTC = nil
         plan = .realtime
         looping = nil
         cuesEnd = 0

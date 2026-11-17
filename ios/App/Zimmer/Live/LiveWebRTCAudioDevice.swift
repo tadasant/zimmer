@@ -6,9 +6,9 @@ import os
 
 /// libwebrtc's audio device on a GPT-Live call: the call's own `LiveAudioEngine`, not libwebrtc's.
 ///
-/// Left to itself libwebrtc runs its own voice-processing audio unit, and Apple's voice processing
-/// turns down every other sound in the app — the cues included, which played from a second engine
-/// beside it. Given this device instead (`GptLiveLink`'s factory), libwebrtc opens no audio unit:
+/// Apple's voice processing turns down every sound in the app that does not go through its own
+/// audio unit, so a call's cues have to come out of the same engine as its voice. Given this
+/// device (`GptLiveLink`'s factory), libwebrtc opens no audio unit of its own:
 /// the call's engine, with voice processing on its input node, hands it the microphone and pulls
 /// its playout, so the cues, the microphone and GPT-Live's voice share one voice-processing graph,
 /// as on Realtime (`LiveAudioPlan.gptLive`).
@@ -31,10 +31,17 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     private let lock = NSLock()
     private var state = LiveAudioDeviceState()
     private var delegate: (any RTCAudioDeviceDelegate)?
-    /// Recorded frames delivered, for the timestamps libwebrtc is handed.
-    private var recordedFrames: Double = 0
+    /// libwebrtc is being told the audio threads changed (`audioThreadsChanged`): nothing reaches
+    /// it from the new ones until it has been.
+    private var handingOver = false
+    /// One delivery at a time: the tap's, and the watchdog's silence while the tap is stalled.
+    private let delivering = NSLock()
 
     // MARK: - What libwebrtc reads: one 24 kHz mono channel each way
+
+    // The latencies and buffer durations follow the route, and libwebrtc is never told they
+    // changed (`notifyAudio*ParametersChange`): on iOS it runs no echo canceller of its own, the
+    // one thing that would use them, and the sample rates and channels never change.
 
     var deviceInputSampleRate: Double { RealtimeAudio.sampleRate }
     var deviceOutputSampleRate: Double { RealtimeAudio.sampleRate }
@@ -72,12 +79,7 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     func stopPlayout() -> Bool { change("playout_stopped") { $0.stopPlayout() } }
     func initializeRecording() -> Bool { lock.withLock { state.initializeRecording() } }
 
-    func startRecording() -> Bool {
-        change("recording_started") { state in
-            recordedFrames = 0
-            return state.startRecording()
-        }
-    }
+    func startRecording() -> Bool { change("recording_started") { $0.startRecording() } }
 
     func stopRecording() -> Bool { change("recording_stopped") { $0.stopRecording() } }
 
@@ -94,22 +96,18 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     // MARK: - The call's engine
 
     /// The microphone, from the engine's tap on the audio thread: 16-bit mono PCM at 24 kHz, the
-    /// frames a Realtime call sends up its socket.
+    /// frames a Realtime call sends up its socket. Also the call's silence while the tap is stalled
+    /// (`MicWatchdog`), so GPT-Live's turn still ends.
     func deliver(_ pcm16: Data) {
         let frames = pcm16.count / MemoryLayout<Int16>.size
         guard frames > 0 else { return }
-        let taken = lock.withLock { () -> ((any RTCAudioDeviceDelegate), Double)? in
-            guard state.recording, let current = self.delegate else { return nil }
-            defer { recordedFrames += Double(frames) }
-            return (current, recordedFrames)
-        }
-        guard let taken else { return }
-        let recorder = taken.0
-        let sampleTime = taken.1
+        delivering.lock()
+        defer { delivering.unlock() }
+        guard let recorder = lock.withLock({ state.recording && !handingOver ? self.delegate : nil }) else { return }
         var flags = AudioUnitRenderActionFlags()
         var timestamp = AudioTimeStamp()
-        timestamp.mSampleTime = sampleTime
-        timestamp.mFlags = .sampleTimeValid
+        timestamp.mHostTime = mach_absolute_time()
+        timestamp.mFlags = .hostTimeValid
         pcm16.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
             var list = AudioBufferList(mNumberBuffers: 1,
@@ -123,7 +121,7 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
     /// `output`, through `scratch` (`LiveVoicePull.chunk` samples). Silence while libwebrtc is not
     /// playing; says whether it was.
     func render(into output: UnsafeMutablePointer<Float>, frames: Int, scratch: UnsafeMutablePointer<Int16>) -> Bool {
-        guard let player = lock.withLock({ state.playing ? self.delegate : nil }) else {
+        guard let player = lock.withLock({ state.playing && !handingOver ? self.delegate : nil }) else {
             output.update(repeating: 0, count: frames)
             return false
         }
@@ -138,13 +136,19 @@ final class LiveWebRTCAudioDevice: NSObject, RTCAudioDevice, @unchecked Sendable
         return true
     }
 
-    /// The engine restarted, or a new call's engine took over: its tap and render threads are new
-    /// ones, which libwebrtc is told before it is handed audio from them.
+    /// A call's engine is about to start, or restart: its tap and render threads are new ones.
+    /// Nothing passes either way until libwebrtc has been told, on its own thread as it asks.
     func audioThreadsChanged() {
-        guard let module = lock.withLock({ self.delegate }) else { return }
-        module.dispatchAsync {
+        guard let module = lock.withLock({ () -> (any RTCAudioDeviceDelegate)? in
+            guard let current = self.delegate else { return nil }
+            handingOver = true
+            return current
+        }) else { return }
+        module.dispatchAsync { [weak self] in
             module.notifyAudioInputInterrupted()
             module.notifyAudioOutputInterrupted()
+            guard let self else { return }
+            self.lock.withLock { self.handingOver = false }
         }
     }
 }

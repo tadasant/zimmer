@@ -470,11 +470,10 @@ but no call has run on a phone or in a car.
 
 libwebrtc does not run its own audio unit. It is given a custom audio device
 (`LiveWebRTCAudioDevice`) built on the call's `LiveAudioEngine`. That engine's voice-processing input
-supplies the microphone, and a source node plays GPT-Live's voice on the same mixer as the cues. This
-is how a Realtime call already shares one engine. Apple's voice processing turns down every sound
-outside its own unit, so the cues are no longer on a second engine to be turned down. The
-cues are probably loud enough now, but nobody has heard them yet. What is still unchecked on a phone
-and in a car:
+supplies the microphone, and a source node plays GPT-Live's voice on the same mixer as the cues, as
+on a Realtime call. Apple's voice processing turns down every sound outside its own unit, and the
+cues are inside it. That should make them audible over GPT-Live's voice, but nobody has heard them
+yet. What is still unchecked on a phone and in a car:
 
 - whether the cues can be heard at normal volume over GPT-Live's voice, on the speaker and over CarPlay;
 - whether libwebrtc's voice comes through the device clean, with no crackle, drift or growing delay.
@@ -484,8 +483,8 @@ and in a car:
   on this engine, because it would cut words;
 - that an offer posted before ICE gathering finishes connects, as it does in the browser.
 
-libwebrtc's own software echo canceller still runs on the microphone it is handed, after Apple's.
-The doubled processing is expected to be harmless. It has not been measured.
+Only Apple's voice processing cancels echo: libwebrtc turns its own echo canceller, gain control and
+noise suppression off on iOS whatever the audio device.
 
 On both the phone and the web dock, the GPT-Live cues guess where your turn ends. GPT-Live reports
 no speech boundaries, so a call counts you as talking when your transcript starts arriving and as

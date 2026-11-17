@@ -18,8 +18,8 @@ import os
 /// `LiveAudioEngine` (`start(webRTC:)`) hands it the microphone from its voice-processing input
 /// and plays GPT-Live's voice on the same graph as the cues, under one `.playAndRecord`,
 /// `.voiceChat` session with Bluetooth and the speaker, exactly as a Realtime call's. Apple's
-/// voice processing turns down every sound outside its own unit, so the cues on a second engine
-/// were ducked under GPT-Live's voice; on one engine they are not.
+/// voice processing turns down every sound outside its own unit, and on one engine the cues are
+/// inside it.
 ///
 /// Every callback libwebrtc makes arrives on its own signalling thread; each is handed to the main
 /// actor, where `LiveCall` lives.

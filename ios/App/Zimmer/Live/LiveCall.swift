@@ -388,6 +388,7 @@ final class LiveCall: ObservableObject {
             failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
         )
         guard mine == generation else { audio.stop(token: audioToken); return }
+        watchdog.arm(at: Self.now)
         let call = try GptLiveCall(conversation: conversation, surface: surface, muted: muted) { [weak self] signal in
             self?.handleGptLive(signal, generation: mine)
         }
@@ -942,7 +943,14 @@ final class LiveCall: ObservableObject {
                     self.telemetry.track(.micStalled(afterMs: after))
                     self.audio.recoverIfStopped()
                 }
-                if silence > 0, !self.holdingMicrophone { self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence))) }
+                if silence > 0, !self.holdingMicrophone {
+                    // GPT-Live's microphone is libwebrtc's, fed by the same engine (`LiveWebRTCAudioDevice`).
+                    if self.gptLive != nil {
+                        LiveWebRTCAudioDevice.shared.deliver(MicWatchdog.silence(silence))
+                    } else {
+                        self.send(RealtimeConductor.appendAudio(MicWatchdog.silence(silence)))
+                    }
+                }
                 // Nothing else asks again: a restart that came back to a stopped engine, a second
                 // route change, would otherwise sit out the microphone's deadline.
                 if self.watchdog.stalledSince != nil { self.audio.recoverIfStopped() }

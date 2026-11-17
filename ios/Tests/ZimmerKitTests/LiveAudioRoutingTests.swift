@@ -165,6 +165,24 @@ final class LiveAudioRoutingTests: XCTestCase {
         XCTAssertNil(timing.finish())
     }
 
+    func testSpeakingAgainWithNoAnswerBetweenIsANewRun() {
+        var timing = GptLiveInputTiming()
+        _ = timing.observe(input("Hello ", start: 0, end: 400), at: 1)
+        _ = timing.observe(input("there", start: 400, end: 900), at: 1.5)
+        let first = timing.observe(input("Are you there?", start: 6_000, end: 7_000), at: 1.5 + GptLiveInputTiming.runGap + 0.1)
+        XCTAssertEqual(first, GptLiveInputTiming.Run(fragments: 2, spokenMs: 900, arrivedOverMs: 500))
+        let second = timing.finish()
+        XCTAssertEqual(second?.fragments, 1, "the new fragment starts the next run")
+        XCTAssertEqual(second?.spokenMs, 1_000)
+    }
+
+    func testIntervalsThatAreNotSaneNumbersAreIgnored() {
+        var timing = GptLiveInputTiming()
+        _ = timing.observe(.object(["type": .string("session.input_transcript.delta"), "start_ms": .number(.nan), "end_ms": .number(1e30)]), at: 1)
+        _ = timing.observe(.object(["type": .string("session.input_transcript.delta"), "start_ms": .string("12"), "end_ms": .number(-5)]), at: 2)
+        XCTAssertNil(timing.finish()?.spokenMs)
+    }
+
     func testTheRunIsLoggedWithItsVerdict() {
         let run = GptLiveInputTiming.Run(fragments: 3, spokenMs: 2_000, arrivedOverMs: 1_600)
         let event = LiveEvent.gptLiveInputTiming(run)
