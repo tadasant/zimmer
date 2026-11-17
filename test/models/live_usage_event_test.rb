@@ -55,13 +55,17 @@ class LiveUsageEventTest < ActiveSupport::TestCase
     assert_raises(ActiveRecord::RecordInvalid) { LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "nope") }
   end
 
-  test "a Claude row is subscription unless the writer says metered (Claude on the API key), and that is kept" do
+  test "the writer says whether a row is covered by a subscription; a row nobody vouched for is metered, Claude's included" do
     attrs = { engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-sonnet-5-5", input_tokens: 1_000_000 }
 
-    assert_equal "subscription", LiveUsageEvent.record!(**attrs).billing_basis
+    subscription = LiveUsageEvent.record!(**attrs, billing_basis: "subscription")
+    assert_equal "subscription", subscription.billing_basis
+    assert_equal 0, subscription.billed_cost_usd
+    assert_operator subscription.cost_usd, :>, 0, "the list price is still recorded"
     metered = LiveUsageEvent.record!(**attrs, billing_basis: "metered")
     assert_equal "metered", metered.billing_basis
     assert_operator metered.billed_cost_usd, :>, 0
+    assert_equal "metered", LiveUsageEvent.record!(**attrs).billing_basis, "no hidden vendor default: unvouched Claude money counts"
     assert_equal "metered", LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "tool_call", vendor: "zimmer", model: "x").billing_basis
   end
 end

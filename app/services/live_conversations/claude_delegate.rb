@@ -48,7 +48,8 @@ module LiveConversations
     RUNNING_LOCK = Mutex.new
 
     # `cost_usd` is the list price of what this delegation used; `billed_usd`
-    # the part of it that was billed (nothing, for Claude on a subscription).
+    # the part of it that was billed (nothing, for Claude on a subscription;
+    # all of it, for Claude on an API key).
     Result = Data.define(:text, :chunks, :end_call, :hung_up, :warning, :rounds, :cost_usd, :billed_usd) do
       def as_api_json = { text: text, chunks: chunks, end_call: end_call, hung_up: hung_up, warning: warning, rounds: rounds,
                           cost_usd: cost_usd.round(6), billed_usd: billed_usd.round(6) }.compact
@@ -138,7 +139,7 @@ module LiveConversations
     # row would never count toward a cap.
     def record_answer(answer, latency_ms)
       usage = answer.usage
-      record(operation: "delegation", vendor: "anthropic", model: model,
+      record(operation: "delegation", vendor: "anthropic", model: model, billing_basis: client.billing_basis,
              input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
              cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
              count: 1, latency_ms: latency_ms,
@@ -149,7 +150,8 @@ module LiveConversations
       Rails.logger.warn("[live.claude] delegation failed kind=#{error.kind} exit=#{error.status.inspect} model=#{model} " \
                         "conversation=#{@conversation.id} delegation=#{@delegation_id} message=#{error.message.squish.truncate(200).inspect}")
       usage = error.usage || {}
-      record(operation: "delegation", vendor: "anthropic", model: model, error: error.message.truncate(250), latency_ms: latency_ms,
+      record(operation: "delegation", vendor: "anthropic", model: model, billing_basis: client.billing_basis,
+             error: error.message.truncate(250), latency_ms: latency_ms,
              input_tokens: usage["input_tokens"].to_i, output_tokens: usage["output_tokens"].to_i,
              cache_read_tokens: usage["cache_read_input_tokens"].to_i, cache_write_tokens: usage["cache_creation_input_tokens"].to_i,
              details: { delegation_id: @delegation_id, kind: error.kind.to_s, exit: error.status, via: "claude_code" }.compact)

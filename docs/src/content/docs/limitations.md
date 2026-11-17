@@ -434,8 +434,10 @@ The `gpt_live_claude` engine runs Claude on Zimmer's current Claude Code account
 delegation draws on the same 5-hour and weekly windows as the agent sessions. Nothing in the
 quota pacing (`SpotGateService`, the burn-rate sampler) sees a delegation until its transcript is
 swept into the token ledger, like any other headless `claude -p` call. A window the fleet has used up fails a delegation mid-call, which is spoken as a
-failure. The spend caps, counted at list price, are the only bound on it. It runs through Claude Code
-itself, the way the rest of the fleet does.
+failure. The spend caps do not bound it: they count billed money, and subscription use bills
+nothing. What bounds a delegation is its own limits (8 turns, 90 seconds) and the account's quota
+windows; a call that keeps delegating to Opus keeps drawing on the fleet's quota until the call
+ends. It runs through Claude Code itself, the way the rest of the fleet does.
 
 ### `live_settings.voice_claude_billing` is still on the table, ignored
 

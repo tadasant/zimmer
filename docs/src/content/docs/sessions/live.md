@@ -895,9 +895,13 @@ loud: Zimmer's reason is put to the Realtime model as its first line, unrecorded
 call that moved conversations opens with. So choosing an engine never leaves Live Mode
 without a voice. Each fallback is a ledger row, so [Live costs](#live-costs) counts them.
 
-**Spend caps.** Two settings bound what each experimental engine may spend, at list price: **Per-conversation cap**
+**Spend caps.** Two settings bound what each experimental engine may spend in billed money: **Per-conversation cap**
 ($2.00 by default) and **Daily cap per engine** ($10.00 a day by default, in the deployment's time
-zone). At 80% of either cap the call carries on with a warning, shown on the dock and passed to
+zone). Only `metered` ledger rows count: GPT-Live's seconds, Realtime's tokens and transcription, and
+Claude when it is billed per token on an API key. Claude on Zimmer's Claude Code subscription is
+recorded at list price but not counted, because a flat plan costs nothing at the margin. The cap
+reason, the warning and the caps panel on [Live costs](#live-costs) all show that metered figure.
+At 80% of either cap the call carries on with a warning, shown on the dock and passed to
 GPT-Live as quiet context. At the cap a call does not start on that engine, and a call already on it
 ends: the next delegation is answered with the cap instead of calling Claude, the dock hangs up
 after the goodbye, and the next call starts on `openai_realtime`. The live model cannot change the
@@ -929,11 +933,14 @@ under it. The one exception is Claude's own rows, which name the Claude model th
 setting applies from the next delegation, so a change mid-call shows up as a second mode.
 
 **Billed and list.** Every row records the raw usage and its list price. Its **billing basis** says
-whether that money was charged: `metered` for OpenAI, `subscription` for Claude. Claude's rows are
-recorded at list price but billed at $0, because Claude runs on Zimmer's flat Claude Code
-subscription. Every figure on the page is shown as billed and list, so the subscription's value
-stays visible. The caps count list price, Claude included: its tokens cost nothing at the margin,
-but they use the quota windows the agent sessions share, and list price is the measure of how much.
+whether that money was charged: `metered` or `subscription`. The writer that knows how the call was
+paid for sets it. A Claude delegation takes its basis from the credential its Claude Code run was
+given (`ClaudeClient#billing_basis`): the subscription's OAuth token is `subscription`, recorded at
+list price but billed at $0; an Anthropic API key in reach of the run (`ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`, which Claude Code prefers over the OAuth token) is `metered`. A row whose
+writer says nothing is `metered`, so money nobody vouched for is counted. Every figure on the page is
+shown as billed and list, so the subscription's value stays visible. The caps count billed money
+only.
 
 
 A client reports volumes, never money. Zimmer picks the vendor and model from what it knows about

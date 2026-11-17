@@ -192,4 +192,29 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     assert split.all? { |chunk| chunk.length <= LiveConversations::ClaudeDelegate::CHUNK_CHARS }
     assert_equal run_on.squish, split.join(" "), "nothing of a long sentence is dropped"
   end
+
+  test "a delegation's billing basis is the client's: Claude on an API key is metered, billed, and counted by the cap" do
+    LiveSetting.editable.update!(voice_engine_conversation_cap_usd: 0.1)
+    answer = LiveConversationHelpers::FakeClaude.text("Done.", input: 100_000)
+    on_key = LiveConversationHelpers::FakeClaude.new(responses: [ answer ], billing_basis: "metered")
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d1", client: on_key)
+
+    row = LiveUsageEvent.find_by!(operation: "delegation")
+    assert_equal "metered", row.billing_basis
+    assert_in_delta row.cost_usd.to_f, result.billed_usd, 0.000001
+    assert LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: @conversation).blocked?
+  end
+
+  test "the same delegation on the subscription bills nothing and leaves the cap alone" do
+    LiveSetting.editable.update!(voice_engine_conversation_cap_usd: 0.1)
+    answer = LiveConversationHelpers::FakeClaude.text("Done.", input: 100_000)
+    on_plan = LiveConversationHelpers::FakeClaude.new(responses: [ answer ])
+
+    result = LiveConversations::ClaudeDelegate.call(@conversation, delegation_id: "d1", client: on_plan)
+
+    assert_equal "subscription", LiveUsageEvent.find_by!(operation: "delegation").billing_basis
+    assert_equal 0, result.billed_usd
+    assert_not LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: @conversation).blocked?
+  end
 end

@@ -22,13 +22,14 @@
 # like for like, not just engine with engine (VoiceEngine.mode_for).
 #
 # `cost_usd` is always the list price. `billing_basis` says whether that money
-# was billed (`metered`) or covered by a flat plan (`subscription`): Claude's
-# rows are subscription, because Claude runs on Zimmer's own Claude Code
-# subscription (ClaudeClient), unless the writer says otherwise; every other
-# vendor is metered.
-# The "billed" figures count only metered money, and the list price is kept
-# beside it so a subscription's value stays visible. The caps count list price:
-# see SpendGuard.
+# was billed (`metered`) or covered by a flat plan (`subscription`). The writer
+# that knows how the call was paid for says so: ClaudeDelegate passes the basis
+# ClaudeClient derives from the credential the run was given (a subscription
+# OAuth token, or an API key billed per token). A row whose writer says nothing
+# is `metered`, so money nobody vouched for is counted rather than hidden.
+# The "billed" figures — and the spend caps (SpendGuard) — count only metered
+# money; the list price is kept beside it so a subscription's value stays
+# visible.
 #
 # Rows written from a client report carry volumes, never dollars: the price is
 # applied here, from LiveVoicePricing, with the table version that applied it.
@@ -49,9 +50,7 @@ class LiveUsageEvent < ApplicationRecord
   validates :idempotency_key, uniqueness: true, allow_nil: true
   validates :billing_basis, inclusion: { in: BILLING_BASES }
 
-  # No default in Ruby, so a writer's explicit `metered` is told apart from
-  # the column default (`metered`) that Claude's rows must not inherit.
-  attribute :billing_basis, :string, default: nil
+  attribute :billing_basis, :string, default: "metered"
 
   before_validation :apply_price, :apply_basis_and_mode, on: :create
 
@@ -85,11 +84,10 @@ class LiveUsageEvent < ApplicationRecord
 
   private
 
-  # What the writer did not say: Claude's rows are subscription-billed
-  # (everything else is metered), and a mode is the engine's under the
-  # current settings.
+  # What the writer did not say: a mode is the engine's under the current
+  # settings, and money is metered.
   def apply_basis_and_mode
-    self.billing_basis ||= vendor.to_s == "anthropic" ? "subscription" : "metered"
+    self.billing_basis ||= "metered"
     return if engine.blank?
 
     self.mode ||= LiveConversations::VoiceEngine.mode_for(engine)
