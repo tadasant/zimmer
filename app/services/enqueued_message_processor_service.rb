@@ -268,7 +268,8 @@ class EnqueuedMessageProcessorService
         # through the one queue writer every removal shares. Its bulk renumber
         # runs no per-row validations, so a row behind this one that no longer
         # passes them (an origin since dropped from ORIGINS, content over a
-        # since-lowered limit) cannot roll the delivery back and wedge the queue.
+        # since-lowered limit) cannot roll this delivery back. (The claim and
+        # mark_as_sent! still validate the delivered row itself.)
         # The claim's row lock is held, so the row is still here and `sent`; a
         # nil means that invariant broke, and raising rolls the claim back so the
         # message stays `pending` rather than being delivered with its row left.

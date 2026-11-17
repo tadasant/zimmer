@@ -97,7 +97,9 @@ message under the session's row lock, marks it `sent`, and removes it through
 `Sessions::RemoveQueuedMessage.remove_delivered`: the same gap-closing renumber, with no log row of
 its own, since the processor logs the delivery ("Processing enqueued message at position N"). The
 renumber is one bulk update, so a row further back that no longer passes the model's validations
-(an origin dropped from `EnqueuedMessage::ORIGINS`, say) cannot fail the delivery ahead of it. If the
+(an origin dropped from `EnqueuedMessage::ORIGINS`, say) cannot fail the delivery ahead of it. The
+claim itself still writes the delivered row's status through `update!`, so such a row fails its own
+delivery when it reaches the head, and the messages behind it wait on it. If the
 removal finds no `sent` row, the claim rolls back and the message stays `pending`. Every path that
 removes a queued row goes through `Sessions::RemoveQueuedMessage`. A row that stays in the
 queue for good (archive, the stale-notice sweep) is retired `undelivered` instead.

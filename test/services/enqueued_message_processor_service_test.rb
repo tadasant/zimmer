@@ -447,6 +447,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
   test "process_next_message removes the delivered row through Sessions::RemoveQueuedMessage" do
     message = @session.enqueued_messages.create!(content: "First", position: 1)
+    # Proves the call only: the stub skips the real removal, so the row stays.
     Sessions::RemoveQueuedMessage.expects(:remove_delivered)
                                  .with { |m| m.id == message.id && m.status == "sent" }
                                  .once.returns(1)
@@ -478,6 +479,8 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
 
     assert_equal "pending", message.reload.status
     assert_equal "needs_input", @session.reload.status
+    assert_match(/Failed to process enqueued message: enqueued message #{message.id} was not removed/,
+                 @session.logs.order(:id).last.content)
   end
 
   test "process_next_message uses log_buffer when provided" do

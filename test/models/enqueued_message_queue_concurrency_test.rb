@@ -3,8 +3,8 @@
 require "test_helper"
 
 # EnqueuedMessage#reorder_to and Sessions::RemoveQueuedMessage (its entry
-# points, and the processor's delivery that goes through one) run against another writer holding the same queue open on a second
-# connection.
+# points, including the processor's delivery) run against another writer
+# holding the same queue open on a second connection.
 #
 # The reorder renumbers its neighbours from positions it reads. Read without
 # the queue lock, those positions can belong to a queue another transaction is
@@ -97,7 +97,8 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     withdrawn = nil
     contender_blocked = race(
       holding: -> {
-        EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message
+        delivered = EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message
+        raise "the delivery failed" unless delivered
       }
     ) { withdrawn = Sessions::RemoveQueuedMessage.withdraw_pending(stale) }
 
@@ -132,7 +133,10 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     stale = EnqueuedMessage.find(@c.id)
     removed = nil
     contender_blocked = race(
-      holding: -> { EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message }
+      holding: -> {
+        delivered = EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message
+        raise "the delivery failed" unless delivered
+      }
     ) { removed = Sessions::RemoveQueuedMessage.call(stale) }
 
     assert contender_blocked, "the delete must wait while a delivery holds the queue"
