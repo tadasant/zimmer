@@ -48,7 +48,8 @@ POLL_SECONDS = 30
 PREFLIGHT_ATTEMPTS = 4
 PREFLIGHT_BACKOFF_SECONDS = 15
 # `xcodebuild -exportArchive` is run at most this many times, sleeping EXPORT_BACKOFF_SECONDS,
-# then twice that, between attempts, and only after an error in EXPORT_TRANSIENT_ERRORS.
+# then twice that, between attempts, and only after an error in EXPORT_TRANSIENT_ERRORS or
+# EXPORT_ACCOUNT_ERROR behind a gateway error page.
 EXPORT_ATTEMPTS = 3
 EXPORT_BACKOFF_SECONDS = 30
 # Matched against xcodebuild's `error:` lines only. Each is App Store Connect or the network failing
@@ -64,17 +65,18 @@ EXPORT_TRANSIENT_ERRORS = (
 )
 # xcodebuild's `error:` line for a key it could not use, which is also what it prints when App
 # Store Connect's gateway answered with an HTML error page instead of the account's settings.
-# Only that second case is transient, so this line is retried only when the same output names
-# a gateway failure in Apple's "returned unexpected content" (error -19237) wording. Run
-# 44148961028 is the worked example: "Bad Gateway" from lookupGenericSettingsForSubmission,
-# 500s from /v1/apps minutes earlier. An expired or revoked key answers 401 with no
-# unexpected-content page and still fails on the first attempt.
+# Only that second case is transient, so this line is retried only when a gateway status
+# follows Apple's "returned unexpected content" (error -19237) wording. Run 44148961028 is the
+# worked example: "Bad Gateway" from lookupGenericSettingsForSubmission, 500s from /v1/apps
+# minutes earlier. A refused key's answer carries no gateway status, so it still fails on the
+# first attempt. A 500 is left out on purpose: it is not a gateway's answer.
 EXPORT_ACCOUNT_ERROR = "No Accounts with App Store Connect Access"
 EXPORT_UNEXPECTED_CONTENT = "returned unexpected content"
 EXPORT_GATEWAY_STATUSES = (
     "Bad Gateway",
     "Service Unavailable",
     "Gateway Timeout",
+    "Gateway Time-out",
 )
 # What the upload service answers, in an `error:` line, when the build number is already
 # there: the altool wording, then the App Store Connect API wording newer Xcodes print. After a
@@ -329,9 +331,11 @@ def _transient(output: str) -> str | None:
             if marker in line:
                 return marker
     if any(EXPORT_ACCOUNT_ERROR in line for line in _error_lines(output)):
-        if EXPORT_UNEXPECTED_CONTENT in output:
+        start = output.find(EXPORT_UNEXPECTED_CONTENT)
+        if start >= 0:
+            page = output[start:]
             for status in EXPORT_GATEWAY_STATUSES:
-                if status in output:
+                if status in page:
                     return f"{EXPORT_ACCOUNT_ERROR} ({status})"
     return None
 

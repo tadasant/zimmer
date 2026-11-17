@@ -511,9 +511,10 @@ A `.sheet` attached to a view inside a `List` row can get a new identity in plac
 
 `ios/bin/testflight upload` retries `xcodebuild -exportArchive` up to three times, but only when an
 `error:` line contains one of the strings in `EXPORT_TRANSIENT_ERRORS` in
-`ios/tools/app_store_connect.py`, or says "No Accounts with App Store Connect Access" in output that
-also carries an App Store Connect gateway error page ("Bad Gateway", "Service Unavailable", "Gateway
-Timeout") (see [the iOS app](/extend/ios-app/)). It is the opposite trade to
+`ios/tools/app_store_connect.py`, or says "No Accounts with App Store Connect Access" after App Store
+Connect "returned unexpected content" that was a gateway error page ("Bad Gateway", "Service
+Unavailable", "Gateway Timeout") (see [the iOS app](/extend/ios-app/)). A refused key that happens to
+coincide with such a page pages about ten minutes later than it would have. It is the opposite trade to
 the release build's blind retry. A transient App Store Connect failure in a wording not on the list
 still fails the run and pages, and has to be re-run by hand. A persistent cause that happens to use a
 listed wording, for example an agreement surfacing as "Error Downloading App Information", goes red
