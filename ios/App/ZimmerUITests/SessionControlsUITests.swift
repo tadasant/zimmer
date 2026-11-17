@@ -30,14 +30,12 @@ final class SessionControlsUITests: XCTestCase {
         save.tap()
         XCTAssertTrue(waitForDisappearance(sweep), "a snoozed session leaves the board")
 
-        app.buttons["board.menu"].tap()
-        app.buttons["Snoozed & hidden"].firstMatch.tap()
+        chooseFromBoardMenu(app, "Snoozed & hidden")
         XCTAssertTrue(row(app, 1031).waitForExistence(timeout: timeout))
         XCTAssertTrue(waitForLabelContaining(row(app, 1031), "Snoozed until"))
 
         // The session page's menu offers the same.
-        app.buttons["board.menu"].tap()
-        app.buttons["On board"].firstMatch.tap()
+        chooseFromBoardMenu(app, "On board")
         let merge = row(app, 1038)
         XCTAssertTrue(merge.waitForExistence(timeout: timeout))
         merge.tap()
