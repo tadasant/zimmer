@@ -445,6 +445,44 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_equal 2, third.position
   end
 
+  test "process_next_message removes the delivered row through Sessions::RemoveQueuedMessage" do
+    message = @session.enqueued_messages.create!(content: "First", position: 1)
+    # Proves the call only: the stub skips the real removal, so the row stays.
+    Sessions::RemoveQueuedMessage.expects(:remove_delivered)
+                                 .with { |m| m.id == message.id && m.status == "sent" }
+                                 .once.returns(1)
+
+    assert EnqueuedMessageProcessorService.new(@session).process_next_message
+  end
+
+  test "a row behind the delivered one that fails current validations does not block the delivery" do
+    @session.enqueued_messages.create!(content: "First", position: 1)
+    behind = @session.enqueued_messages.create!(content: "Second", position: 2)
+    # An origin since dropped from EnqueuedMessage::ORIGINS: the row is valid
+    # data, but a per-row `update!` of its position would fail validation.
+    behind.update_column(:origin, "an_origin_no_longer_listed")
+
+    assert_enqueued_with(job: AgentSessionJob) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal [ [ "Second", 1 ] ], @session.enqueued_messages.order(:position).pluck(:content, :position)
+  end
+
+  test "a delivered row the removal does not find rolls the claim back" do
+    message = @session.enqueued_messages.create!(content: "First", position: 1)
+    Sessions::RemoveQueuedMessage.stubs(:remove_delivered).returns(nil)
+
+    assert_no_enqueued_jobs(only: AgentSessionJob) do
+      assert_not EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal "pending", message.reload.status
+    assert_equal "needs_input", @session.reload.status
+    assert_match(/Failed to process enqueued message: enqueued message #{message.id} was not removed/,
+                 @session.logs.order(:id).last.content)
+  end
+
   test "process_next_message uses log_buffer when provided" do
     message = @session.enqueued_messages.create!(
       content: "Follow up prompt",

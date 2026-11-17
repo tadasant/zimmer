@@ -24,8 +24,9 @@ module Sessions
   #
   # `EnqueuedMessage#reorder_to` and `Sessions::RemoveQueuedMessage` renumber
   # existing rows under the same lock (`QueueTail.lock!`), so a move, a request
-  # to delete a queued message, and Sessions::InterruptWithFollowUp withdrawing
-  # one it staged take turns with appends and with each other rather than
+  # to delete a queued message, Sessions::InterruptWithFollowUp withdrawing
+  # one it staged, and EnqueuedMessageProcessorService removing the one it
+  # delivered take turns with appends and with each other rather than
   # computing positions from rows another is rewriting.
   module QueueTail
     # @param session [Session]

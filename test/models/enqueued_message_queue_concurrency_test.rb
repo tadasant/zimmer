@@ -2,9 +2,9 @@
 
 require "test_helper"
 
-# EnqueuedMessage#reorder_to and Sessions::RemoveQueuedMessage (both entry
-# points) run against another writer holding the same queue open on a second
-# connection.
+# EnqueuedMessage#reorder_to and Sessions::RemoveQueuedMessage (its entry
+# points, including the processor's delivery) run against another writer
+# holding the same queue open on a second connection.
 #
 # The reorder renumbers its neighbours from positions it reads. Read without
 # the queue lock, those positions can belong to a queue another transaction is
@@ -97,13 +97,8 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     withdrawn = nil
     contender_blocked = race(
       holding: -> {
-        # The locking of EnqueuedMessageProcessorService#process_next_message.
-        session = Session.find(@session.id)
-        session.lock!
-        claimed = session.process_next_enqueued_message!
-        position = claimed.position
-        claimed.destroy!
-        session.enqueued_messages.where("position > ?", position).update_all("position = position - 1")
+        delivered = EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message
+        raise "the delivery failed" unless delivered
       }
     ) { withdrawn = Sessions::RemoveQueuedMessage.withdraw_pending(stale) }
 
@@ -128,6 +123,26 @@ class EnqueuedMessageQueueConcurrencyTest < ActiveSupport::TestCase
     assert_nil withdrawn
     assert_equal [ [ "A", 1, "undelivered" ], [ "B", 2, "pending" ], [ "C", 3, "pending" ], [ "D", 4, "pending" ] ],
                  @session.enqueued_messages.order(:position).pluck(:content, :position, :status)
+  end
+
+  test "a delete waits for an open delivery and closes the gap where the delivery left the row" do
+    # The processor delivers A, removes it and closes the gap behind it, and
+    # holds its transaction open: B1 C2 D3, uncommitted. C, loaded at 3 before
+    # that, is deleted meanwhile. Read from the stale 3, the gap would close
+    # behind the wrong row.
+    stale = EnqueuedMessage.find(@c.id)
+    removed = nil
+    contender_blocked = race(
+      holding: -> {
+        delivered = EnqueuedMessageProcessorService.new(Session.find(@session.id), revalidate: false).process_next_message
+        raise "the delivery failed" unless delivered
+      }
+    ) { removed = Sessions::RemoveQueuedMessage.call(stale) }
+
+    assert contender_blocked, "the delete must wait while a delivery holds the queue"
+    assert_equal 2, removed
+    assert_equal %w[B D], queue_contents
+    assert_equal [ 1, 2 ], @session.enqueued_messages.order(:position).pluck(:position)
   end
 
   private
