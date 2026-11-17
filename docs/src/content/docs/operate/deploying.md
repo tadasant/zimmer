@@ -1530,11 +1530,13 @@ a runner and fails, never finishes or could not be started, or if the shortage o
   requested with `GITHUB_TOKEN` fires a `workflow_run` event when it completes has varied: none
   did on 2026-10-29, and one did on 2026-11-17, which paged `#alerts` twice for one run. So the
   listener that re-ran a run owns its answer. A listener woken by a later attempt that
-  `github-actions[bot]` triggered stays quiet; a later attempt anyone else re-ran pages.
+  `github-actions[bot]` triggered stays quiet, but only while another `CI failure alert` run is
+  still in progress to answer for it; a later attempt anyone else re-ran pages. A later re-run is
+  not started with under 30 minutes of the budget left, because it could not finish in time.
 - It re-runs only a run that is still the newest of its workflow on `main`. A re-run joins the
   workflow's concurrency group, so re-running an older commit would cancel the newer commit's
   run, and a cancelled run never pages.
-- A superseded run waits for the newest run of the same trigger to finish, inside the same 100
+- A superseded run waits for the newest run of the same trigger to finish, inside the same 170
   minutes, and so does a re-run that was cancelled. Nothing needs a human while that answer is
   coming: a failed newest run reaches this same listener, where a lost runner gets its re-runs
   and anything else pages. It stays quiet once that run has finished with `success` or a failure
@@ -1568,7 +1570,7 @@ Four details worth knowing before you touch it:
   so editing it on a PR branch changes nothing until it merges. To prove Slack delivery
   works, run the workflow's `workflow_dispatch` trigger by hand — it posts a smoke-test
   message instead of an alert.
-- The re-run step has a 110-minute `timeout-minutes`, the Slack step 5, and the job 125.
+- The re-run step has a 180-minute `timeout-minutes`, the Slack step 5, and the job 195.
   A step timeout fails that step and the alert still posts; a job timeout would post
   nothing. Keep the script's `WAIT_MINUTES` below the step limit, and the step limits below
   the job's.

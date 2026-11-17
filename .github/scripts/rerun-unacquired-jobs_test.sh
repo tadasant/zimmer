@@ -28,6 +28,10 @@ jobs_json() {
 }
 
 case "$*" in
+  *alert-ci-failure.yml/runs*)
+    # Other listener runs in progress; this listener is run 99 and must not count itself.
+    [ "${STUB_OWNERS:-}" = fail ] && exit 1
+    serve "$(jq -n --argjson n "${STUB_OWNERS:-1}" '{workflow_runs: ([{id: 99}] + [range($n) | {id: (100 + .)}])}')" ;;
   *attempts/1/jobs*)
     [ "${STUB_JOBS_FAIL:-}" = 1 ] && exit 1
     serve "$(jobs_json "${STUB_UNFINISHED:-}")" ;;
@@ -105,7 +109,7 @@ expect() {
   rm -f "$tmp/log" "$tmp/log.polls" "$tmp/log.latest" "$tmp/out"
   touch "$tmp/log"
   env PATH="$tmp/bin:$PATH" STUB_LOG="$tmp/log" GITHUB_OUTPUT="$tmp/out" THIS_RUN="$this_run" \
-    REPO=o/r RUN_ID=7 RUN_ATTEMPT=1 WORKFLOW_ID=9 HEAD_SHA=abc RUN_EVENT=push POLL_SECONDS=0 \
+    GITHUB_RUN_ID=99 RERUN_RESERVE_MINUTES=0 REPO=o/r RUN_ID=7 RUN_ATTEMPT=1 WORKFLOW_ID=9 HEAD_SHA=abc RUN_EVENT=push POLL_SECONDS=0 \
     WAIT_MINUTES=1 "$@" \
     bash "$here/rerun-unacquired-jobs.sh" > /dev/null 2>&1
   local page reruns note
@@ -129,6 +133,12 @@ passed="20 def completed success push"
 expect "a human's attempt 2 pages"         true  0 RUN_ATTEMPT=2
 expect "the listener's own attempt 2 is quiet" false 0 RUN_ATTEMPT=2 STUB_ACTOR="github-actions[bot]"
 expect "an unreadable attempt 2 actor pages" true 0 RUN_ATTEMPT=2 STUB_ACTOR=fail
+expect "the listener's own attempt 2 with no listener left pages" true 0 RUN_ATTEMPT=2 \
+  STUB_ACTOR="github-actions[bot]" STUB_OWNERS=0
+expect "the listener's own attempt 2, listeners unreadable, pages" true 0 RUN_ATTEMPT=2 \
+  STUB_ACTOR="github-actions[bot]" STUB_OWNERS=fail
+expect "a re-run too late to finish is not started" true 1 "$ios" "$ann" RERUN_RESERVE_MINUTES=5 \
+  STUB_FINAL=failure STUB_RERUN_JOBS="11 cancelled ios"
 expect "unlistable jobs page"              true  0 STUB_JOBS_FAIL=1
 expect "no cancelled job pages"            true  0
 expect "an ordinary cancel pages"          true  0 "$ios" STUB_ANN="The operation was canceled."
