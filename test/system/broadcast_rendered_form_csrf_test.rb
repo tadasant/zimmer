@@ -51,6 +51,11 @@ class BroadcastRenderedFormCsrfSystemTest < ApplicationSystemTestCase
     visit root_path
     find("a[href='#{session_path(@session)}'][data-action*='session-drawer#open']").click
     assert_selector "#{header} form[action$='update_carplay_fit'] input[name='authenticity_token']", visible: :all
+    # When the dashboard's background prefetch landed before the click, the drawer
+    # is that cached copy, and its session-activation request re-renders the live
+    # regions — header actions, token and all — from the server. Delivered before
+    # that answer, the broadcast below would be overwritten by it.
+    assert_no_selector "[data-current-session-id='#{@session.id}'][data-session-activation='pending']"
 
     broadcast_header_actions
     choose_laptop_only

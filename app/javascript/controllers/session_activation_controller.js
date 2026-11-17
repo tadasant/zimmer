@@ -26,6 +26,12 @@ import { backfillLiveRegions } from "lib/live_region_backfill"
 //
 // The marker removes itself as it starts, so a Turbo snapshot taken while the
 // request is out cannot carry it into a later restore and count the view twice.
+//
+// While the request is out the detail root carries
+// `data-session-activation="pending"`, and `"settled"` once it is over, whatever
+// its outcome. The backfill can rewrite any live region in the body, so anything
+// that needs the body to hold still — a system test delivering its own stream —
+// waits for the pending state to clear first.
 export default class extends Controller {
   static values = {
     url: String,
@@ -39,6 +45,7 @@ export default class extends Controller {
     const detailRoot = this.element.closest("[data-current-session-id]")
     const request = { url: this.urlValue, frame: this.frameValue, timeout: this.fetchTimeoutValue }
     this.element.remove()
+    if (detailRoot) detailRoot.dataset.sessionActivation = "pending"
     activate(request, detailRoot)
   }
 }
@@ -77,5 +84,7 @@ async function activate({ url, frame, timeout }, detailRoot) {
     // The body on screen is still a real, recent render with live
     // subscriptions; a failed catch-up is not worth more than a note.
     console.warn("[session-activation] could not refresh a prefetched session page", error)
+  } finally {
+    if (detailRoot) detailRoot.dataset.sessionActivation = "settled"
   }
 }
