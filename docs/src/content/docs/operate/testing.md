@@ -46,13 +46,12 @@ stays quiet on `cancelled`.
 
 ## The browser suite runs
 
-`test-system` runs `test/system/*.rb` through Capybara + Selenium against headless Chromium. It is a
-separate job from `test-unit` because `bin/rails test` does not descend into `test/system`, because
-the shared runner has a companion system-test semaphore keyed on the `test-system` job name, and
+`test-system` runs `test/system/*.rb` through Capybara + Selenium against headless Google Chrome. It is a
+separate job from `test-unit` because `bin/rails test` does not descend into `test/system`, and
 because it pins `PARALLEL_WORKERS=1` — the persistent per-worker `--user-data-dir` in
-`test/application_system_test_case.rb` does not tolerate concurrent Chrome instances. Chrome is
-assumed pre-provisioned on the runner; the CI branch of that file points Selenium at
-`/usr/bin/chromium-browser` with `--no-sandbox`. This closes
+`test/application_system_test_case.rb` does not tolerate concurrent Chrome instances. The browser
+is the Google Chrome the hosted ubuntu runner image ships: the job sets `CHROME_BIN` to it, and
+under `CI` that file adds `--no-sandbox`. This closes
 [#87](https://github.com/tadasant/zimmer/issues/87).
 
 ## Shell scripts are linted, not just parsed
@@ -72,9 +71,9 @@ check, not a warning. A script whose whole body is `d=$1; rm -rf $d/foo` draws z
 that ignored the defect class it was added for. The tree is clean at `--severity=style` too, so
 tightening further is a one-word change.
 
-The job downloads a pinned, checksummed shellcheck release into `$RUNNER_TEMP`. The shared
-self-hosted runner has no shellcheck on it and CI jobs there do not run as root, so `apt-get
-install` is not an option; putting it in the runner image would mean a different repository.
+The job downloads a pinned, checksummed shellcheck release into `$RUNNER_TEMP` rather than using
+the one the hosted runner image ships, because the image updates its tools without notice and a
+new shellcheck release must not fail unrelated pull requests.
 
 A failed download must not turn `main` red when nothing is wrong in the repo, and it must not skip
 the check either. `.github/scripts/fetch-pinned-download.sh` keeps the verified tarball in
@@ -83,7 +82,8 @@ run, so a runner that has it makes no request. A cached copy that fails the chec
 fetched again. A cold runner retries with doubling backoff, then fails the job after ten minutes
 at most. A download that does not match the pin always fails the job. A runner that already has
 the tarball still passes during an outage, with a verified binary and the check run in full.
-`fetch-pinned-download_test.sh` runs in the same job and exercises each of those against a local
+Every hosted runner starts cold, so in CI each run downloads it; the cache matters on a machine
+that keeps its home directory. `fetch-pinned-download_test.sh` runs in the same job and exercises each of those against a local
 server that answers 504, drops the connection, or sends a long `Retry-After`.
 
 Three guards keep the job from passing while checking nothing. It fails on an empty file list; it

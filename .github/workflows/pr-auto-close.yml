@@ -9,7 +9,7 @@ name: Close outside pull requests
 # token that can comment and close — a plain `pull_request` from a fork gets a
 # read-only token and could not. This is safe because the job never checks out or
 # runs any code from the PR branch; it only calls the issues/PR API via github-script.
-# It runs on GitHub-hosted `ubuntu-latest`, never the self-hosted runners.
+# It runs on GitHub-hosted `ubuntu-latest`.
 
 on:
   pull_request_target:
@@ -25,6 +25,7 @@ concurrency:
 jobs:
   close:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Skip PRs from the owner / org members / collaborators — only outside PRs are closed.
     if: >-
       github.event.pull_request.author_association != 'OWNER' &&

@@ -3,10 +3,10 @@
 # Install a Swift toolchain into a directory the caller owns, and print the `bin` path to
 # put on PATH. Idempotent: an existing, working install is reused.
 #
-# WHY THIS EXISTS. The `ios_swift_linux` CI job runs ZimmerKit's test suite, and the shared
-# self-hosted runners have no Swift. A toolchain is ~1 GB, so it is installed **once per
-# runner** into a per-runner path — the same shape `ci.yml` uses for gems — and every later
-# run reuses it. Nothing here touches a shared tool cache.
+# WHY THIS EXISTS. The `ios_swift_linux` CI job runs ZimmerKit's test suite against this
+# pinned toolchain rather than whatever Swift the hosted runner image ships. A toolchain is
+# ~1 GB, so the job keeps the install directory in the Actions cache and a warm run reuses
+# it. Nothing here touches a shared tool cache.
 #
 # On a Mac this script is never needed: `swift` comes with Xcode, and `ci-swift` finds it.
 #

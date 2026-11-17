@@ -37,7 +37,7 @@ jobs:
   sweep:
     # A dispatch from another branch would sweep against that branch's tree.
     if: github.ref == 'refs/heads/main'
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,6 @@ jobs:
         with:
           ruby-version: "3.4.6"
           bundler-cache: false
-          self-hosted: true
       - name: Check open PRs against main
         env:
           GH_TOKEN: ${{ github.token }}

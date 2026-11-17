@@ -33,12 +33,22 @@ permissions:
 
 jobs:
   build-base:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # The self-hosted host runs many runner workers as one OS user, so the
-      # default ~/.docker is shared mutable state across concurrently-running
-      # jobs (see the "Set up Buildx" comment below). Give this job its own.
+      # Hosted runners have far less free disk than a multi-GB image build
+      # wants: about 14 GB is guaranteed, and the image ships SDKs (.NET, Android,
+      # GHC, CodeQL) this job never uses. Delete them before the first layer lands.
+      - name: Free disk space for the image build
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      # Docker client state (the current-builder file and the GHCR login) lives in
+      # a directory this job owns rather than the runner user's ~/.docker, so no
+      # other process can redirect the build onto a builder it tears down (see the
+      # "Set up Buildx" comment below), and a logout empties only this job's store.
       # Exported via $GITHUB_ENV rather than job-level `env:` because the
       # `runner` context is not available there and would expand to "".
       - name: Isolate Docker client state for this job

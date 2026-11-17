@@ -17,9 +17,8 @@ name: CI failure alert
 #     on a feature branch change nothing until they merge, and `workflow_dispatch`
 #     below only appears in the Actions UI once this is on main. Post-merge, dispatch
 #     it manually to smoke-test Slack delivery end to end.
-#   - The alert runs on ubuntu-latest, NOT the self-hosted runners the rest of this
-#     repo uses. Deliberate: a degraded runner pool is itself a failure worth alerting
-#     on, and an alert that runs on the broken thing cannot report it.
+#   - The alert runs on GitHub-hosted ubuntu-latest and installs nothing, so it does not
+#     share the failure modes of the jobs it reports on (the Ruby jobs pin ubuntu-24.04).
 #
 # Requires two repo secrets (Settings -> Secrets and variables -> Actions):
 #   SLACK_BOT_TOKEN         xoxb-... for the Tadasant workspace, with chat:write.
@@ -39,8 +38,7 @@ permissions: {}
 
 jobs:
   alert:
-    # See the header: ubuntu-latest on purpose, so the alert still fires when the
-    # self-hosted runners are what broke.
+    # See the header.
     runs-on: ubuntu-latest
 
     # Room for the runner-loss re-run below (its step stops at 110 minutes) and then the
