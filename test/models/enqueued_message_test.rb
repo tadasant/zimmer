@@ -229,19 +229,6 @@ class EnqueuedMessageTest < ActiveSupport::TestCase
     assert_equal [ msg1, msg2, msg3 ], ordered_messages.to_a
   end
 
-  # Test mark_as_sent! method
-  test "mark_as_sent! should update status to sent" do
-    session = sessions(:running)
-    message = session.enqueued_messages.create!(
-      content: "Test message",
-      position: 1,
-      status: "processing"
-    )
-
-    message.mark_as_sent!
-    assert_equal "sent", message.status
-  end
-
   # Test reorder_to method
   test "reorder_to should move message down and adjust other positions" do
     session = sessions(:running)

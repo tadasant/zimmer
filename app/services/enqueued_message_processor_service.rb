@@ -264,16 +264,16 @@ class EnqueuedMessageProcessorService
           level: "info"
         )
 
-        # Mark the message sent, then remove it and close the gap behind it
-        # through the one queue writer every removal shares. Its bulk renumber
-        # runs no per-row validations, so a row behind this one that no longer
-        # passes them (an origin since dropped from ORIGINS, content over a
-        # since-lowered limit) cannot roll this delivery back. (The claim and
-        # mark_as_sent! still validate the delivered row itself.)
-        # The claim's row lock is held, so the row is still here and `sent`; a
-        # nil means that invariant broke, and raising rolls the claim back so the
-        # message stays `pending` rather than being delivered with its row left.
-        message.mark_as_sent!
+        # Remove the claimed message and close the gap behind it through the one
+        # queue writer every removal shares. Nothing on the way validates a queued
+        # row: the claim writes its status alone, and the bulk renumber writes
+        # positions alone, so a row that no longer passes the model's validations
+        # (an origin since dropped from ORIGINS, content over a since-lowered
+        # limit) cannot roll this delivery back, at the head or behind it.
+        # The claim's row lock is held, so the row is still here and
+        # `processing`; a nil means that invariant broke, and raising rolls the
+        # claim back so the message stays `pending` rather than being delivered
+        # with its row left.
         if Sessions::RemoveQueuedMessage.remove_delivered(message).nil?
           raise "enqueued message #{message.id} was not removed after it was claimed"
         end

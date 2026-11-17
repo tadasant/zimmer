@@ -1,13 +1,14 @@
 class EnqueuedMessage < ApplicationRecord
   # The statuses a queued message can hold.
   #
-  # `pending` -> `processing` -> `sent` is the delivery path, and the row is
-  # destroyed immediately after `sent` — so `sent` is a moment, not a resting
-  # place. `undelivered` is the one terminal resting state, and two things put a
-  # row there: the session was archived while this message was still queued,
-  # which ends every path by which it could have been delivered; or #stale? found
-  # the state the message reports had moved on before anybody read it, which
-  # leaves nothing worth delivering.
+  # `pending` -> `processing` is the delivery path, and the processor destroys
+  # the row in the same transaction that claims it, so a delivered message
+  # leaves no row behind. Nothing writes `sent`; it stays a valid value so a
+  # row that holds it still loads and saves. `undelivered` is the one terminal
+  # resting state, and two things put a row there: the session was archived
+  # while this message was still queued, which ends every path by which it could
+  # have been delivered; or #stale? found the state the message reports had
+  # moved on before anybody read it, which leaves nothing worth delivering.
   STATUSES = %w[pending processing sent undelivered].freeze
 
   # Who wrote the message.
@@ -208,11 +209,6 @@ class EnqueuedMessage < ApplicationRecord
   # @return [Array<String>]
   def self.contents_matching(prompt)
     [ prompt, TurnSource.extract(prompt).first ].uniq
-  end
-
-  # Mark message as sent
-  def mark_as_sent!
-    update!(status: "sent")
   end
 
   # Retire a message that will never be delivered.

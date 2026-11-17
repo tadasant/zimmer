@@ -47,10 +47,10 @@ module Mcp
     # Scoped to `pending` — the same scope every other reader of "still going to
     # be sent" uses (Trigger's stall checks, the archive guard,
     # Session#process_next_enqueued_message!). Each other status is excluded for
-    # its own reason: a `sent` row is destroyed on delivery, an `undelivered` one
-    # is terminal, and a `processing` one has already been handed to
-    # Sessions::InterruptService, so none of the three is something a caller can
-    # still get ahead of. Reporting any of them as pending would recreate exactly
+    # its own reason: nothing writes `sent` (a delivered row is destroyed), an
+    # `undelivered` one is terminal, and a `processing` one has already been
+    # handed to Sessions::InterruptService, so none of the three is something a
+    # caller can still get ahead of. Reporting any of them as pending would recreate exactly
     # the confusion this section removes.
     #
     # Two queries, both bounded: one COUNT and one LIMITed select, over

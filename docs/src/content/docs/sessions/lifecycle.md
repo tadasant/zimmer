@@ -93,14 +93,16 @@ nothing and logs nothing: REST answers `404`, MCP a not-found error, and the web
 removed.
 
 Delivering a queued message removes it the same way. `EnqueuedMessageProcessorService` claims the
-message under the session's row lock, marks it `sent`, and removes it through
+message (`processing`) under the session's row lock and removes it through
 `Sessions::RemoveQueuedMessage.remove_delivered`: the same gap-closing renumber, with no log row of
-its own, since the processor logs the delivery ("Processing enqueued message at position N"). The
-renumber is one bulk update, so a row further back that no longer passes the model's validations
-(an origin dropped from `EnqueuedMessage::ORIGINS`, say) cannot fail the delivery ahead of it. The
-claim itself still writes the delivered row's status through `update!`, so such a row fails its own
-delivery when it reaches the head, and the messages behind it wait on it. If the
-removal finds no `sent` row, the claim rolls back and the message stays `pending`. Every path that
+its own, since the processor logs the delivery ("Processing enqueued message at position N").
+Delivery never re-validates a queued row. The claim writes the status alone and the renumber is one
+bulk update, so a row that no longer passes the model's validations (an origin dropped from
+`EnqueuedMessage::ORIGINS`, say, or content over a since-lowered limit) is delivered when it
+reaches the head, and the rows behind it follow. A queued goal the session would refuse (an id the
+catalog no longer knows, or one over a since-lowered `Session::GOAL_MAX_LENGTH`) is not applied:
+the prompt is delivered without it, and the session log says why. If the removal finds no `processing` row, the
+claim rolls back and the message stays `pending`. Every path that
 removes a queued row goes through `Sessions::RemoveQueuedMessage`. A row that stays in the
 queue for good (archive, the stale-notice sweep) is retired `undelivered` instead.
 

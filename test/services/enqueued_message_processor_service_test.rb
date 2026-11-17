@@ -449,7 +449,7 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     message = @session.enqueued_messages.create!(content: "First", position: 1)
     # Proves the call only: the stub skips the real removal, so the row stays.
     Sessions::RemoveQueuedMessage.expects(:remove_delivered)
-                                 .with { |m| m.id == message.id && m.status == "sent" }
+                                 .with { |m| m.id == message.id && m.status == "processing" }
                                  .once.returns(1)
 
     assert EnqueuedMessageProcessorService.new(@session).process_next_message
@@ -467,6 +467,51 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     end
 
     assert_equal [ [ "Second", 1 ] ], @session.enqueued_messages.order(:position).pluck(:content, :position)
+  end
+
+  test "a head row that fails current validations is delivered and the rows behind it follow" do
+    head = @session.enqueued_messages.create!(content: "First", position: 1)
+    @session.enqueued_messages.create!(content: "Second", position: 2)
+    # Valid data written under an older rule: an origin since dropped from
+    # EnqueuedMessage::ORIGINS. A validating write of the claim would fail on it
+    # every time the row reached the head.
+    head.update_column(:origin, "an_origin_no_longer_listed")
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id, "First" ]) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+    assert_not EnqueuedMessage.exists?(head.id)
+    assert_equal [ [ "Second", 1 ] ], @session.enqueued_messages.order(:position).pluck(:content, :position)
+
+    # The next drain takes the row that was waiting behind it.
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id, "Second" ]) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+    assert_empty @session.enqueued_messages.reload
+  end
+
+  test "a head row whose content is over the current limit is still delivered" do
+    head = @session.enqueued_messages.create!(content: "First", position: 1)
+    long_content = "x" * (Session::PROMPT_MAX_LENGTH + 1)
+    head.update_column(:content, long_content)
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id, long_content ]) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+    assert_not EnqueuedMessage.exists?(head.id)
+  end
+
+  test "a head row whose goal is over the current limit is delivered without the goal" do
+    @session.update_columns(goal: nil)
+    head = @session.enqueued_messages.create!(content: "First", position: 1)
+    head.update_column(:goal, "g" * (Session::GOAL_MAX_LENGTH + 1))
+
+    assert_enqueued_with(job: AgentSessionJob, args: [ @session.id, "First" ]) do
+      assert EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+    assert_not EnqueuedMessage.exists?(head.id)
+    assert_nil @session.reload.goal
+    assert @session.logs.exists?([ "content LIKE ?", "Goal % not applied from enqueued message: it is longer than%" ])
   end
 
   test "a delivered row the removal does not find rolls the claim back" do

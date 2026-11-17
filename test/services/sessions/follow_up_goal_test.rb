@@ -218,6 +218,29 @@ class Sessions::FollowUpGoalTest < ActiveSupport::TestCase
     assert_equal "the old goal", session.reload.goal
   end
 
+  # The same for a goal over a since-lowered limit: a queued message carrying one
+  # would otherwise fail its delivery every time it reached the head.
+  test "a goal over the length limit is not written, and the other attributes still are" do
+    session = make_session(goal: "the old goal")
+    captured = []
+    long_goal = "g" * (Session::GOAL_MAX_LENGTH + 1)
+
+    changed = Sessions::FollowUpGoal.apply!(
+      session: session,
+      goal: long_goal,
+      source: :enqueued_message,
+      also_update: { prompt: "next prompt" },
+      log_with: ->(content) { captured << content }
+    )
+
+    assert_not changed
+    session.reload
+    assert_equal "the old goal", session.goal
+    assert_equal "next prompt", session.prompt
+    assert_equal 1, captured.size
+    assert_match(/\AGoal "g{77}"\.\.\. not applied from enqueued message: it is longer than the [\d,]+ characters a goal may have\z/, captured.first)
+  end
+
   test "log_with is not called when nothing changed" do
     session = make_session(goal: "the same goal")
     captured = []
