@@ -176,6 +176,11 @@ jobs:
           bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
+      # `bin/rails test` with explicit files skips `test:prepare`, and tailwindcss-rails
+      # builds the stylesheet every rendered page links as part of it. Run it here, so a
+      # shard prepares exactly what an unsharded `bin/rails test` would.
+      - name: Prepare test assets (test:prepare)
+        run: bin/rails test:prepare
       - name: Run this shard's tests (unit + integration; system tests excluded)
         run: |
           set -euo pipefail
