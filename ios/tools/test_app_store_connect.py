@@ -33,6 +33,23 @@ REDUNDANT = (
     "a build with build number '71.1' for version number '0.1.0'.\"\n** EXPORT FAILED **"
 )
 
+# What run 44148961028 printed, trimmed: App Store Connect's gateway sent an HTML error page
+# where xcodebuild expected the account's settings.
+GATEWAY_PAGE = (
+    "IDEDistribution: App Store Connect request for store configuration failed for account "
+    "API Key (Unable to authenticate with App Store Connect (Error Domain="
+    "ITunesConnectFoundationErrorDomain Code=-19237 \"The web service "
+    "(lookupGenericSettingsForSubmission) returned unexpected content:\n<!DOCTYPE html>\n"
+    "<h3>Bad Gateway</h3>\n\" UserInfo={}))\n"
+    "error: exportArchive No Accounts with App Store Connect Access\n** EXPORT FAILED **"
+)
+# Synthetic, not captured: a key App Store Connect refuses — the same `error:` line, no gateway page.
+REFUSED_KEY = (
+    "IDEDistribution: App Store Connect request failed (Error Domain=ITunesConnectFoundation"
+    "ErrorDomain Code=-19241 \"Authentication credentials are missing or invalid.\")\n"
+    "error: exportArchive No Accounts with App Store Connect Access\n** EXPORT FAILED **"
+)
+
 
 class ExportTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -179,6 +196,54 @@ class ExportTest(unittest.TestCase):
     def test_a_transient_phrase_outside_an_error_line_is_not_retried(self) -> None:
         output = "note: The request timed out. once, then recovered\n** EXPORT FAILED **"
         code, _ = self.run_export(self.fake_xcodebuild((70, output)))
+        self.assertEqual((code, self.attempts()), (70, 1))
+
+    def test_the_run_44148961028_gateway_page_is_retried_and_then_succeeds(self) -> None:
+        code, out = self.run_export(
+            self.fake_xcodebuild((70, GATEWAY_PAGE), (0, "** EXPORT SUCCEEDED **"))
+        )
+        self.assertEqual((code, self.attempts(), self.lookups), (0, 2, 1))
+        self.assertIn("failed with 'No Accounts with App Store Connect Access (Bad Gateway)'", out)
+
+    def test_a_gateway_page_that_persists_fails_after_the_bound(self) -> None:
+        code, out = self.run_export(self.fake_xcodebuild((70, GATEWAY_PAGE)))
+        self.assertEqual((code, self.attempts()), (70, asc.EXPORT_ATTEMPTS))
+        self.assertIn("::error title=TestFlight export failed 3 times::", out)
+
+    def test_a_refused_key_fails_on_the_first_attempt(self) -> None:
+        code, out = self.run_export(self.fake_xcodebuild((70, REFUSED_KEY), (0, "")))
+        self.assertEqual((code, self.attempts(), self.lookups), (70, 1, 0))
+        self.assertNotIn("retried", out)
+
+    def test_a_gateway_word_without_the_account_error_is_not_retried(self) -> None:
+        output = GATEWAY_PAGE.replace("No Accounts with App Store Connect Access", "Bogus")
+        code, _ = self.run_export(self.fake_xcodebuild((70, output)))
+        self.assertEqual((code, self.attempts()), (70, 1))
+
+    def test_every_gateway_status_is_retried(self) -> None:
+        for status in asc.EXPORT_GATEWAY_STATUSES:
+            with self.subTest(status=status):
+                if os.path.exists(self.counter):
+                    os.remove(self.counter)
+                output = GATEWAY_PAGE.replace("Bad Gateway", status)
+                code, _ = self.run_export(self.fake_xcodebuild((70, output), (0, "")))
+                self.assertEqual((code, self.attempts()), (0, 2))
+
+    def test_an_unexpected_page_that_is_not_a_gateway_error_is_not_retried(self) -> None:
+        output = GATEWAY_PAGE.replace("Bad Gateway", "Unauthorized")
+        code, _ = self.run_export(self.fake_xcodebuild((70, output), (0, "")))
+        self.assertEqual((code, self.attempts()), (70, 1))
+
+    def test_a_gateway_word_before_the_unexpected_content_is_not_retried(self) -> None:
+        output = "note: Service Unavailable earlier\n" + GATEWAY_PAGE.replace(
+            "Bad Gateway", "Unauthorized"
+        )
+        code, _ = self.run_export(self.fake_xcodebuild((70, output), (0, "")))
+        self.assertEqual((code, self.attempts()), (70, 1))
+
+    def test_a_gateway_word_without_unexpected_content_is_not_retried(self) -> None:
+        output = GATEWAY_PAGE.replace("returned unexpected content", "failed")
+        code, _ = self.run_export(self.fake_xcodebuild((70, output), (0, "")))
         self.assertEqual((code, self.attempts()), (70, 1))
 
     def test_the_export_path_is_cleared_before_each_attempt(self) -> None:
