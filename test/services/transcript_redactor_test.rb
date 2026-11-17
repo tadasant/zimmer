@@ -732,19 +732,29 @@ token=#{'Zz9' * 12}
   test "known secrets include credential-named process environment, but not configuration that only looks like it" do
     env = {
       "FIXTURE_DEPLOY_SECRET_KEY" => "fixture0deploy0secret0key0value",
-      "FIXTURE_EXTRA_KEYS" => "STRAD_API_KEY,OTHER_API_KEY",
+      "FIXTURE_BASE32_TOKEN" => "JBSWY3DPEHPK3PXPJBSWY3DP",
+      "FIXTURE_SLASHED_SECRET" => "/a9Bc8De7Fg6Hi5Jk4Lm3",
+      "FIXTURE_QUERY_TOKEN_URL" => "https://hooks.example.test/x?token=abc123def456ghi7",
+      "FIXTURE_EXTRA_KEYS" => "FIXTURE_DEPLOY_SECRET_KEY,FIXTURE_PLAIN",
       "FIXTURE_KEY_PATH" => "/home/rails/.ssh/fixture_ed25519",
       "FIXTURE_TOKEN_URL" => "https://oauth.example.test/token",
+      "FIXTURE_SECRETS_STORE" => "zimmer-prod-secrets",
       "FIXTURE_PLAIN" => "fixture0not0credential0named"
     }
     with_injected_secret_sources do
       ENV.stubs(:each).multiple_yields(*env.to_a)
+      ENV.stubs(:key?).returns(false)
+      env.each_key { |name| ENV.stubs(:key?).with(name).returns(true) }
       known = TranscriptRedactor.known_secrets.to_h
 
       assert_equal "ENV:FIXTURE_DEPLOY_SECRET_KEY", known["fixture0deploy0secret0key0value"]
-      refute known.key?("STRAD_API_KEY,OTHER_API_KEY"), "a list of variable names is not a credential"
+      assert_equal "ENV:FIXTURE_BASE32_TOKEN", known["JBSWY3DPEHPK3PXPJBSWY3DP"], "an all-caps value is not a name list unless every item is a variable"
+      assert_equal "ENV:FIXTURE_SLASHED_SECRET", known["/a9Bc8De7Fg6Hi5Jk4Lm3"], "a leading slash does not make a value a path"
+      assert_equal "ENV:FIXTURE_QUERY_TOKEN_URL", known["https://hooks.example.test/x?token=abc123def456ghi7"]
+      refute known.key?("FIXTURE_DEPLOY_SECRET_KEY,FIXTURE_PLAIN"), "a list of variable names is not a credential"
       refute known.key?("/home/rails/.ssh/fixture_ed25519"), "a path is not a credential"
       refute known.key?("https://oauth.example.test/token"), "a URL without userinfo is not a credential"
+      refute known.key?("zimmer-prod-secrets"), "a store name with no digits is not a credential"
       refute known.key?("fixture0not0credential0named"), "the name has to say credential"
     end
   end
@@ -760,6 +770,22 @@ token=#{'Zz9' * 12}
 
       refute_includes redacted, value.to_json[1..-2]
       assert_includes redacted, "[REDACTED:ENV:QUOTED:"
+    end
+  end
+
+  test "the escaped form matches what a runtime writes, and an unencodable value cannot fail the table" do
+    values = { %(fixture"a&b<c>secret0value) => "ENV:AMP", "fixture\xFF0bad0encoding0value".b.force_encoding("UTF-8") => "ENV:BAD" }
+    TranscriptRedactor.send(:add_escaped_forms, values)
+
+    assert_equal "ENV:AMP", values[%(fixture\\"a&b<c>secret0value)], "`&`, `<`, `>` stay literal, as Node writes them"
+    assert_equal 3, values.size
+  end
+
+  test "ordinary JSONL fields are not mistaken for an escaped assignment" do
+    TranscriptRedactor.stub(:known_secrets, []) do
+      text = %(\\"token_type\\": \\"Bearer\\", \\"input_tokens\\": 123456789012345678)
+
+      assert_equal text, TranscriptRedactor.redact(text)
     end
   end
 

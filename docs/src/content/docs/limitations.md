@@ -1539,7 +1539,9 @@ gap is worth naming precisely:
   externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
   out of every transcript that mentions it. The same is true of every entry in the `.env` secret
   bundle, and of any process environment variable whose name says "key", "token", "secret",
-  "password" or "credential" and whose value is not a list of names, a path or a plain URL.
+  "password" or "credential" and whose value is 16+ characters mixing letters and digits (and is not
+  a path, a plain URL or a list of other variables' names). A multi-line value, such as the Parameter
+  Store service-account JSON, is not matched by value at all; its PEM key is caught by shape.
 - **The injected MCP config still holds plaintext credentials, and the agent still sees them.**
   Redaction protects what Zimmer stores and renders. It does not reach the clone's own
   `.mcp.json` / `.codex/config.toml` or `.env`, which carry resolved values, or the runtime's

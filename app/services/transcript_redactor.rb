@@ -114,13 +114,20 @@ module TranscriptRedactor
   # A session's agent process inherits most of the Rails process's environment
   # (CliSpawnEnv strips only a few names), so `env` or `printenv` in a session
   # prints its credential-named variables — SECRET_KEY_BASE, RAILS_MASTER_KEY,
-  # the Parameter Store service-account key, the deploy's API keys. Those are
-  # filtered by name (SENSITIVE_KEY, as AirCatalogService#redactable_secrets
-  # does) and then by value, through this: a credential-named variable whose
-  # value is a list of other variables' names, a filesystem path or a URL with
-  # no userinfo is configuration, and exact-matching it would redact those
-  # names and paths out of every transcript.
-  NON_SECRET_ENV_VALUE = %r{\A(?:[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*|~?/(?:[\w.\-]+/)*[\w.\-]*|[a-z][a-z0-9+.\-]*://[^@]*)\z}
+  # the deploy's API keys. Those are filtered by name (SENSITIVE_KEY, as
+  # AirCatalogService#redactable_secrets does) and then by value, because a
+  # credential-named variable often holds configuration rather than a
+  # credential, and exact-matching that would cut an ordinary word out of
+  # every transcript. A value is taken only if it is at least this long and
+  # mixes letters with digits, which a store name (`zimmer-prod-secrets`) does
+  # not; and not if it is a filesystem path, a URL with no userinfo or query,
+  # or a list of names every one of which is itself an environment variable.
+  # A multi-line value (a service-account JSON key) is never taken: redaction
+  # cannot match across lines.
+  MIN_PROCESS_ENV_SECRET_LENGTH = 16
+  CONFIG_PATH_VALUE = %r{\A~?(?:/[\w.\-]+){2,}/?\z}
+  CONFIG_URL_VALUE = %r{\A[a-z][a-z0-9+.\-]*://[^@?\s]*\z}
+  NAME_LIST_VALUE = /\A[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*\z/
 
   # Guards the memoized known-credential set. A constant rather than `@mutex
   # ||= Mutex.new`, which can hand two racing threads two different mutexes.
@@ -920,12 +927,11 @@ module TranscriptRedactor
     end
 
     # The Rails process's own credential-named environment. See
-    # NON_SECRET_ENV_VALUE.
+    # MIN_PROCESS_ENV_SECRET_LENGTH.
     def collect_sensitive_process_env(values)
       ENV.each do |name, value|
         next unless name.match?(SENSITIVE_KEY)
-        next unless redactable?(value)
-        next if value.match?(NON_SECRET_ENV_VALUE)
+        next unless process_env_secret?(value)
 
         values[value] ||= "ENV:#{name}"
       end
@@ -933,14 +939,35 @@ module TranscriptRedactor
       warn_degraded("process environment", e)
     end
 
+    def process_env_secret?(value)
+      return false unless redactable?(value) && value.valid_encoding?
+      return false if value.length < MIN_PROCESS_ENV_SECRET_LENGTH
+      return false unless value.match?(/[0-9]/) && value.match?(/[A-Za-z]/)
+      return false if value.match?(CONFIG_PATH_VALUE) || value.match?(CONFIG_URL_VALUE)
+      return false if value.match?(NAME_LIST_VALUE) && value.split(",").all? { |name| ENV.key?(name) }
+
+      true
+    end
+
     # A transcript is JSONL, so a value that holds a `"` or `\` appears in it
     # JSON-escaped, and an exact match on the raw value would miss it. Covers one
     # level of escaping, which is how a tool result sits in a transcript line.
+    #
+    # `JSON.generate`, not `#to_json`: ActiveSupport's encoder also escapes `&`,
+    # `<` and `>`, which the runtimes' own JSON writers do not, so its form would
+    # never match. A value that cannot be encoded is skipped rather than allowed
+    # to fail the whole table.
     def add_escaped_forms(values)
       values.to_a.each do |value, label|
-        escaped = value.to_json[1..-2]
+        next unless value.valid_encoding?
+
+        escaped = JSON.generate(value)[1..-2]
         values[escaped] ||= label unless escaped == value
+      rescue JSON::GeneratorError, EncodingError
+        next
       end
+    rescue StandardError => e
+      warn_degraded("JSON-escaped forms", e)
     end
 
     # Every `${VAR}` the catalog's MCP servers reference, resolved through the

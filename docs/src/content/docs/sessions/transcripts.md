@@ -256,12 +256,14 @@ It works in two tiers:
   - Zimmer's own API keys: every `API_KEYS` entry, and the `ZIMMER_*_API_KEY` that
     `SelfSessionInjector` writes into every session's `zimmer-self-session` entry;
   - the Rails process's own credential-named environment variables (`SECRET_KEY_BASE`,
-    `RAILS_MASTER_KEY` and the like), which an agent's `env` prints because it inherits them. A value
-    that is a list of variable names, a path or a URL with no userinfo is skipped;
+    `RAILS_MASTER_KEY` and the like), which an agent's `env` prints because it inherits them. Only a
+    value of 16 or more characters that mixes letters and digits is taken, and never a path, a plain
+    URL, a list of other variables' names or a multi-line value;
   - the OAuth tokens Zimmer holds in its own database.
 
-  Each value is also matched in its JSON-escaped form. These are exact string matches: no false
-  positives, and they cover Zimmer-specific credential formats no regex could know about.
+  Each value is also matched in its JSON-escaped form, one level deep. These are exact string
+  matches, so they never fire on text that is not the value, and they cover Zimmer-specific
+  credential formats no regex could know about.
 - **Shapes.** High-confidence patterns — `sk-ant-oat01…`, `ghp_…`, `xoxb-…`, JWTs, PEM blocks,
   `Authorization: Bearer …`, credentials embedded in a URL, and a value sitting immediately after
   a name that says "credential". Ported from the upstream reference redactor and extended with

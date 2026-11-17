@@ -2286,6 +2286,14 @@ class ProcessLifecycleManager
     end
   end
 
+  # Fails closed: a log line the redactor could not process is replaced rather
+  # than written raw, and never raises into the lifecycle step that logged it.
+  def redact_for_log(content)
+    TranscriptRedactor.redact(content)
+  rescue StandardError
+    "[REDACTED:REDACTION_FAILED]"
+  end
+
   # Add log entry
   #
   # Redacted on the way in: a session log row is persisted, broadcast to the
@@ -2293,7 +2301,7 @@ class ProcessLifecycleManager
   # texts that land here are the agent process's own output rather than
   # Zimmer's wording — its stderr tail, the runtime's terminal turn error.
   def add_log(content, level: "info")
-    content = TranscriptRedactor.redact(content)
+    content = redact_for_log(content)
     if @log_buffer
       @log_buffer.add(content, level: level)
     elsif @session
