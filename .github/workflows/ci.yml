@@ -110,10 +110,21 @@ jobs:
   # Unit + integration suite (system tests are excluded — `bin/rails test` does not
   # descend into test/system; the Chrome-driven suite runs in the separate `test-system`
   # job below). PARALLEL_WORKERS matches the 4 vCPUs of a standard hosted Linux runner.
+  #
+  # Split across a matrix, which costs nothing on a public repo: on one 4-vCPU runner the
+  # suite takes about ten minutes, twice what it did on the old 32-core box. Each shard runs
+  # every SHARD_TOTAL-th file of the list `bin/rails test` would load by default (same glob,
+  # same exclusions), so the shards cover the suite exactly once between them. `all-checks-pass`
+  # needs `test-unit`, which means every shard.
   test-unit:
     if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    strategy:
+      # One shard failing must not cancel the other: its own failures are the ones you need next.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
 
     services:
       postgres:
@@ -150,6 +161,8 @@ jobs:
       DATABASE_USERNAME: postgres
       DATABASE_PASSWORD: postgres
       PARALLEL_WORKERS: 4
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_TOTAL: 2
 
     steps:
       - uses: actions/checkout@v4
@@ -163,8 +176,23 @@ jobs:
           bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
-      - name: Run tests (unit + integration; system tests excluded)
-        run: bin/rails test
+      - name: Run this shard's tests (unit + integration; system tests excluded)
+        run: |
+          set -euo pipefail
+          # The default glob and exclusions of Rails::TestUnit::Runner, sorted, then every
+          # SHARD_TOTAL-th file starting at this shard's offset.
+          mapfile -t files < <(ruby -rrake -e '
+            files = Rake::FileList["test/**/*_test.rb"].exclude("test/{system,dummy,fixtures}/**/*_test.rb").to_a.sort
+            index, total = Integer(ENV.fetch("SHARD_INDEX")), Integer(ENV.fetch("SHARD_TOTAL"))
+            puts files.select.with_index { |_, i| i % total == index - 1 }')
+          # An empty shard would run `bin/rails test` with no arguments, which is the WHOLE suite
+          # — or, if that ever changed, nothing at all and a green job.
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::Shard ${SHARD_INDEX}/${SHARD_TOTAL} selected no test files."
+            exit 1
+          fi
+          echo "Shard ${SHARD_INDEX}/${SHARD_TOTAL}: ${#files[@]} test files"
+          bin/rails test "${files[@]}"
 
   # Chrome-driven system tests (test/system/*.rb), the browser suite `bin/rails test`
   # never descends into. Ported from the AO parent's `test-system` job. Kept a SEPARATE

@@ -1587,8 +1587,10 @@ needs in-job:
 - **Postgres and Redis are service containers on dynamic host ports.** They declare
   `- 5432/tcp` / `- 6379/tcp`, and a step resolves the assigned port via
   `${{ job.services.postgres.ports[5432] }}` into `DATABASE_PORT` / `REDIS_URL`.
-- **`test-unit` runs `PARALLEL_WORKERS=4`**, the vCPU count of a standard hosted Linux
-  runner. `test-system` pins it to 1, because its persistent per-worker Chrome profile does
+- **`test-unit` is two matrix shards, each `PARALLEL_WORKERS=4`**, the vCPU count of a
+  standard hosted Linux runner. On one such runner the suite takes about ten minutes; each
+  shard runs every second file of the list `bin/rails test` would load by default, so the
+  two cover it exactly once. `test-system` pins it to 1, because its persistent per-worker Chrome profile does
   not tolerate concurrent browser instances. Its browser is the Google Chrome the hosted
   image ships, named through `CHROME_BIN`.
 - **Deploy jobs bring their own access.** SSH keys are written from secrets into `~/.ssh`
