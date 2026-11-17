@@ -31,6 +31,18 @@ case "$*" in
   *attempts/1/jobs*)
     [ "${STUB_JOBS_FAIL:-}" = 1 ] && exit 1
     serve "$(jobs_json "${STUB_UNFINISHED:-}")" ;;
+  *attempts/*/jobs*)
+    # Attempt N's jobs are the (N-1)th of STUB_RERUN_JOBS's `|`-separated answers, the last
+    # one repeating: a real failure unless a case says otherwise.
+    [ "${STUB_RERUN_JOBS:-}" = fail ] && exit 1
+    n="$*"; n="${n#*attempts/}"; n="${n%%/*}"
+    IFS='|' read -r -d '' -a rerun_jobs <<<"${STUB_RERUN_JOBS:-11 failure ios}"
+    rerun_jobs[-1]="${rerun_jobs[-1]%$'\n'}"
+    serve "$(jobs_json "${rerun_jobs[$(( n - 1 <= ${#rerun_jobs[@]} ? n - 2 : ${#rerun_jobs[@]} - 1 ))]}")" ;;
+  *actions/runs/*/attempts/*)
+    # Who triggered a later attempt: a human unless STUB_ACTOR says otherwise.
+    [ "${STUB_ACTOR:-}" = fail ] && exit 1
+    serve "$(jq -n --arg a "${STUB_ACTOR:-a-human}" '{triggering_actor: {login: $a}}')" ;;
   *check-runs/*/annotations*)
     [ "${STUB_ANN_FAIL:-}" = 1 ] && exit 1
     # STUB_ANN_PLAIN names the job ids that were cancelled some other way.
@@ -63,15 +75,21 @@ case "$*" in
         conclusion: (if $conclusion == "-" then null else $conclusion end)}]}')" ;;
   "run rerun"*)
     echo rerun >> "$STUB_LOG"
+    rm -f "$STUB_LOG.polls"
     [ "${STUB_RERUN_FAIL:-}" = 1 ] && exit 1
     exit 0 ;;
   *actions/runs/*/jobs*)
     [ "${STUB_NEWEST_JOBS:-}" = fail ] && exit 1
     serve "$(jobs_json "${STUB_NEWEST_JOBS:-5 success ios}")" ;;
   *actions/runs/*)
+    # Re-run N is attempt N+1: queued on its first poll, then completed with the Nth of
+    # STUB_FINAL's `|`-separated conclusions, the last one repeating.
+    reruns=$(grep -c rerun "$STUB_LOG")
     polls=$(( $(cat "$STUB_LOG.polls" 2>/dev/null || echo 0) + 1 ))
     echo "$polls" > "$STUB_LOG.polls"
-    if [ "$polls" -lt 2 ]; then echo "2 queued "; else echo "2 completed ${STUB_FINAL:-}"; fi ;;
+    IFS='|' read -r -a finals <<<"${STUB_FINAL:-}"
+    final="${finals[$(( reruns <= ${#finals[@]} ? reruns - 1 : ${#finals[@]} - 1 ))]:-}"
+    if [ "$polls" -lt 2 ]; then echo "$((reruns + 1)) queued "; else echo "$((reruns + 1)) completed ${final}"; fi ;;
 esac
 STUB
 chmod +x "$tmp/bin/gh"
@@ -108,7 +126,9 @@ queued="20 def queued - push"
 running="20 def in_progress - push"
 passed="20 def completed success push"
 
-expect "attempt 2 always pages"            true  0 RUN_ATTEMPT=2
+expect "a human's attempt 2 pages"         true  0 RUN_ATTEMPT=2
+expect "the listener's own attempt 2 is quiet" false 0 RUN_ATTEMPT=2 STUB_ACTOR="github-actions[bot]"
+expect "an unreadable attempt 2 actor pages" true 0 RUN_ATTEMPT=2 STUB_ACTOR=fail
 expect "unlistable jobs page"              true  0 STUB_JOBS_FAIL=1
 expect "no cancelled job pages"            true  0
 expect "an ordinary cancel pages"          true  0 "$ios" STUB_ANN="The operation was canceled."
@@ -116,6 +136,19 @@ expect "unreadable annotations page"       true  0 "$ios" STUB_ANN_FAIL=1
 expect "a failed re-run request pages"     true  1 "$ios" "$ann" STUB_RERUN_FAIL=1
 expect "a re-run that passes is quiet"     false 1 "$ios" "$ann" STUB_FINAL=success
 expect "a re-run that fails pages"         true  1 "$ios" "$ann" STUB_FINAL=failure
+expect "a re-run that loses its runner again goes round" false 2 "$ios" "$ann" \
+  STUB_FINAL="failure|success" STUB_RERUN_JOBS="11 cancelled ios"
+expect "a shortage longer than the cap pages" true 3 "$ios" "$ann" MAX_RERUNS=3 \
+  STUB_FINAL=failure STUB_RERUN_JOBS="11 cancelled ios"
+expect "a lost runner, then a real failure, pages" true 2 "$ios" "$ann" \
+  STUB_FINAL="failure|failure" STUB_RERUN_JOBS="11 cancelled ios|11 failure ios"
+expect "a real failure beside the lost runner gets one re-run" true 1 "$ann" STUB_FINAL=failure \
+  STUB_UNFINISHED="$(printf '11 cancelled ios\n12 failure lint')" \
+  STUB_RERUN_JOBS="$(printf '11 cancelled ios\n12 failure lint')"
+expect "a gate job beside the lost runner goes round" false 2 "$ann" STUB_FINAL="failure|success" \
+  STUB_UNFINISHED="$(printf '11 cancelled ios\n12 failure all-checks-pass')" \
+  STUB_RERUN_JOBS="$(printf '11 cancelled ios\n12 failure all-checks-pass')"
+expect "an unlistable re-run pages"        true  1 "$ios" "$ann" STUB_FINAL=failure STUB_RERUN_JOBS=fail
 expect "a re-run that never ends pages"    true  1 "$ios" "$ann" STUB_FINAL=x WAIT_MINUTES=0
 expect "a dry run decides without acting"  false 0 "$ios" "$ann" DRY_RUN=1
 

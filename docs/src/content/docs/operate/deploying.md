@@ -1512,23 +1512,31 @@ them it logs a warning and exits 0: a missing alert secret must not turn into a 
 red X on `main`. With them, a Slack rejection *does* fail the job, because a rejected
 alert is a silently broken alert and this is the only place it can surface.
 
-**A job GitHub never gave a runner is re-run once before anyone is paged.** A hosted job
-that waits too long for a runner ends with the annotation "The job was not acquired by Runner
-of type hosted even after multiple attempts". A shortage of macOS arm64 runners does this to
-the iOS jobs in `ci.yml` and the shards of `ios-ui-tests.yml`. It applies to any workflow, though.
-When a failed attempt-1 run has such a job, `.github/scripts/rerun-unacquired-jobs.sh` re-runs
-its failed jobs and waits up to 100 minutes for the result. It stays quiet if the re-run passes.
-It pages, with a *Note:* line saying what happened, if the re-run fails, never finishes, or could
-not be started.
+**A job GitHub never gave a runner is re-run before anyone is paged.** A hosted job
+that waits about 15 minutes without a runner ends with the annotation "The job was not acquired
+by Runner of type hosted even after multiple attempts". GitHub gives it up, not this repo, and no
+setting here changes that. A shortage of macOS arm64 runners does this to the iOS jobs in
+`ci.yml`, the shards of `ios-ui-tests.yml` and the `upload` job in `testflight.yml`; GitHub marks
+such a job "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer
+queue times". It applies to any workflow, though. When a failed attempt-1 run has such a job,
+`.github/scripts/rerun-unacquired-jobs.sh` re-runs its failed jobs and waits for the result. If the
+re-run loses its runner again, and nothing else failed, it re-runs again, up to six re-runs inside
+170 minutes. A shortage outlasted two 15-minute waits on
+[run 44137247444](https://github.com/tadasant/zimmer/actions/runs/44137247444) on 2026-11-17. It
+stays quiet if a re-run passes. It pages, with a *Note:* line saying what happened, if a re-run gets
+a runner and fails, never finishes or could not be started, or if the shortage outlasts the budget.
 
-- It waits in the same job rather than letting attempt 2 report for itself, because a re-run
-  requested with `GITHUB_TOKEN` fires no `workflow_run` event when it completes.
+- It waits in the same job rather than letting each attempt report for itself. Whether a re-run
+  requested with `GITHUB_TOKEN` fires a `workflow_run` event when it completes has varied: none
+  did on 2026-10-29, and one did on 2026-11-17, which paged `#alerts` twice for one run. So the
+  listener that re-ran a run owns its answer. A listener woken by a later attempt that
+  `github-actions[bot]` triggered stays quiet; a later attempt anyone else re-ran pages.
 - It re-runs only a run that is still the newest of its workflow on `main`. A re-run joins the
   workflow's concurrency group, so re-running an older commit would cancel the newer commit's
   run, and a cancelled run never pages.
 - A superseded run waits for the newest run of the same trigger to finish, inside the same 100
   minutes, and so does a re-run that was cancelled. Nothing needs a human while that answer is
-  coming: a failed newest run reaches this same listener, where a lost runner gets its one re-run
+  coming: a failed newest run reaches this same listener, where a lost runner gets its re-runs
   and anything else pages. It stays quiet once that run has finished with `success` or a failure
   the listener hears, having not skipped any job the older run left unfinished. It pages if that
   run ends any other way (`cancelled` with nothing newer is the usual one), does not contain the
@@ -1536,9 +1544,10 @@ not be started.
   one can page for a run that goes on to pass, which is the safe way round.
 - A dispatched run always pages on this path, because its inputs are its own and no other run
   answers for them.
-- A job that really failed beside the lost one pages at once on this path. `all-checks-pass` does
-  not count: it fails because the lost job did not pass.
-- Attempt 2 is never re-run again, and any answer the script cannot reach pages.
+- A job that really failed beside the lost one pages at once on the superseded path, and gets the
+  one re-run it shares with the lost runner otherwise, paging if it fails again. `all-checks-pass`
+  does not count: it fails because the lost job did not pass.
+- Any answer the script cannot reach pages.
 - `rerun-unacquired-jobs_test.sh`, in `ci.yml`'s `shellcheck` job, drives every verdict
   against a stub `gh` and prints each one's `page=` and `note=`.
 
