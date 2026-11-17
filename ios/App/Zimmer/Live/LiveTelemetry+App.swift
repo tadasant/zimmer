@@ -61,9 +61,13 @@ extension LiveEvent {
         }
     }
 
-    static func audioEngineStarted(inputRate: Double, inputChannels: Int, voiceProcessing: Bool, restart: Bool) -> LiveEvent {
+    /// `plan`: what the engine carries besides the cues: a GPT-Live call's says its microphone and
+    /// voice are libwebrtc's, on this same voice-processing graph.
+    static func audioEngineStarted(inputRate: Double, inputChannels: Int, voiceProcessing: Bool, plan: LiveAudioPlan, restart: Bool) -> LiveEvent {
         LiveEvent(.info, restart ? "audio.engine_restarted" : "audio.engine_started") {
-            ["input_rate": .number(inputRate), "input_channels": .int(inputChannels), "voice_processing": .bool(voiceProcessing)]
+            ["input_rate": .number(inputRate), "input_channels": .int(inputChannels), "voice_processing": .bool(voiceProcessing),
+             "microphone": .string(plan.microphone.rawValue), "voice": .string(plan.voice.rawValue),
+             "gates_microphone": .bool(plan.gatesMicrophone)]
         }
     }
 

@@ -37,6 +37,9 @@ final class GptLiveCall {
         /// What the cues need beyond the state: the person talking or heard, delegations running,
         /// a failure (`LiveCueDirector.receive`).
         case cue(LiveCueDirector.Signal)
+        /// A run of the person's transcript ended: whether it streamed while they spoke, which the
+        /// *heard* cue depends on (`GptLiveInputTiming`).
+        case inputTiming(GptLiveInputTiming.Run)
     }
 
     /// Ledger rows wait this long to go in one request, at most `maxBatch` at a time.
@@ -50,6 +53,7 @@ final class GptLiveCall {
     let conversation: Int
     private let link: GptLiveLink
     private var conductor = GptLiveConductor()
+    private var inputTiming = GptLiveInputTiming()
     /// Nil once `LiveCall` let go of this call: nothing more reaches it.
     private var signal: ((Signal) -> Void)?
     private var usage: [LiveUsageEvent] = []
@@ -124,6 +128,7 @@ final class GptLiveCall {
     private func received(_ text: String) {
         guard let event = JSONValue.parse(text) else { return }
         signal?(.heard)
+        if let run = inputTiming.observe(event, at: Self.now) { signal?(.inputTiming(run)) }
         perform(conductor.handle(event, at: Self.now))
     }
 

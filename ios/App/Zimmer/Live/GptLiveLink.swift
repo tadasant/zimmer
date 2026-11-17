@@ -1,4 +1,3 @@
-@preconcurrency import AVFoundation
 import Foundation
 @preconcurrency import WebRTC
 import ZimmerKit
@@ -14,12 +13,13 @@ import os
 /// phone. What to do with each event is `GptLiveConductor`'s (ZimmerKit, tested on Linux); this
 /// only carries them.
 ///
-/// **The audio is WebRTC's.** libwebrtc runs its own voice-processing audio unit — Apple's echo
-/// canceller, with GPT-Live's voice as its reference — on the shared `AVAudioSession`, configured
-/// here the way `LiveAudioEngine` configures a Realtime call: `.playAndRecord`, `.voiceChat`,
-/// with Bluetooth and the speaker, so the car or AirPods are the microphone and the speaker as
-/// they are on Realtime. `LiveAudioEngine` plays only the cues alongside (`startCues`), and opens
-/// no microphone of its own.
+/// **The audio is the call's engine's.** The factory gives libwebrtc `LiveWebRTCAudioDevice`
+/// instead of its own voice-processing audio unit, so it opens no audio of its own: the call's
+/// `LiveAudioEngine` (`start(webRTC:)`) hands it the microphone from its voice-processing input
+/// and plays GPT-Live's voice on the same graph as the cues, under one `.playAndRecord`,
+/// `.voiceChat` session with Bluetooth and the speaker, exactly as a Realtime call's. Apple's
+/// voice processing turns down every sound outside its own unit, so the cues on a second engine
+/// were ducked under GPT-Live's voice; on one engine they are not.
 ///
 /// Every callback libwebrtc makes arrives on its own signalling thread; each is handed to the main
 /// actor, where `LiveCall` lives.
@@ -49,11 +49,11 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
 
     private static let log = Logger(subsystem: "com.tadasant.zimmer", category: "gpt-live")
     /// One for the app's life, as libwebrtc expects, built on first use (`LiveCall` makes every
-    /// link on the main actor).
+    /// link on the main actor). Its audio device is the call's engine (`LiveWebRTCAudioDevice`).
     nonisolated(unsafe) private static let factory: RTCPeerConnectionFactory = {
         RTCInitializeSSL()
-        configureAudioSession()
-        return RTCPeerConnectionFactory()
+        return RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(), decoderFactory: RTCDefaultVideoDecoderFactory(),
+                                        audioDevice: LiveWebRTCAudioDevice.shared)
     }()
 
     private let peer: RTCPeerConnection
@@ -86,28 +86,6 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
         super.init()
         peer.delegate = self
         channel.delegate = self
-    }
-
-    /// libwebrtc's audio session, set before anything opens it: the same category, mode and
-    /// routes as a Realtime call (`LiveAudioEngine.activateSession`).
-    private static func configureAudioSession() {
-        let configuration = RTCAudioSessionConfiguration.webRTC()
-        configuration.category = AVAudioSession.Category.playAndRecord.rawValue
-        configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
-        configuration.categoryOptions = [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
-        RTCAudioSessionConfiguration.setWebRTC(configuration)
-        // libwebrtc deactivates the shared session when its audio stops, on its last unbalanced
-        // activation. A link closes up to `closeGrace` after its call ended, by when the next call's
-        // engine or the goodbye cue may be using the session. One activation held for the app's
-        // life means libwebrtc never takes the session down: `LiveAudioEngine` does, as on Realtime.
-        let session = RTCAudioSession.sharedInstance()
-        session.lockForConfiguration()
-        do {
-            try session.setActive(true)
-        } catch {
-            log.error("could not hold the audio session for WebRTC: \(error.localizedDescription, privacy: .public)")
-        }
-        session.unlockForConfiguration()
     }
 
     /// The offer to send Zimmer: the microphone track and the event channel. Like the browser's,

@@ -53,9 +53,9 @@ import os
 /// **A call runs on the voice engine Zimmer picks** (`LiveCallGrant`). The app says on every mint
 /// that it can run `gpt_live_claude`; when the Live settings choose it and it can run, the call is
 /// GPT-Live as the voice over WebRTC with Claude behind it (`GptLiveCall`), and everything else
-/// here — the state, the cues, the health, hang-up, the car — is the same call. GPT-Live has its
-/// own microphone and voice in libwebrtc, so the audio engine plays only the cues
-/// (`LiveAudioEngine.startCues`); it does its own turn-taking, so Listening and Send now do
+/// here — the state, the cues, the health, hang-up, the car — is the same call. libwebrtc carries
+/// GPT-Live's microphone and voice on the call's own audio engine, beside the cues
+/// (`LiveAudioEngine.start(webRTC:)`); it does its own turn-taking, so Listening and Send now do
 /// nothing on it; its instructions are fixed when it starts, so a settings change or a hand-over
 /// reaches it from the next call; and a call that follows Live Mode to another conversation
 /// reconnects without speaking first. When the chosen engine cannot run, the call is Realtime and
@@ -376,14 +376,15 @@ final class LiveCall: ObservableObject {
         }
     }
 
-    /// A call on GPT-Live (`GptLiveCall`): the cues on an engine with no microphone, GPT-Live's
-    /// microphone and voice in libwebrtc, and the session Zimmer starts from the offer. The call is
-    /// up at `session.started`.
+    /// A call on GPT-Live (`GptLiveCall`): one voice-processing engine for the cues and libwebrtc's
+    /// microphone and voice (`LiveWebRTCAudioDevice`), and the session Zimmer starts from the
+    /// offer. The call is up at `session.started`.
     private func startGptLive(_ conversation: Int, generation mine: Int) async throws {
         health.stage = .microphone
         microphoneGeneration = mine
         watchdog = MicWatchdog()
-        let audioToken = try await audio.startCues(
+        let audioToken = try await audio.start(
+            webRTC: LiveWebRTCAudioDevice.shared,
             failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
         )
         guard mine == generation else { audio.stop(token: audioToken); return }
@@ -430,6 +431,8 @@ final class LiveCall: ObservableObject {
             fail("The call dropped: \(reason)", generation: mine)
         case let .cue(cue):
             for action in cues.receive(cue) { perform(action) }
+        case let .inputTiming(run):
+            telemetry.track(.gptLiveInputTiming(run))
         }
     }
 

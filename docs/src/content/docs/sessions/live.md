@@ -818,8 +818,9 @@ Claude reads the thread and the request as text; no audio goes to Anthropic.
 **On the phone and in the car** the call is the same, with the iOS app in the dock's place. GPT-Live
 takes a WebSocket only from a server holding the OpenAI key, so the app makes a WebRTC offer too
 (Google's libwebrtc, the `stasel/WebRTC` package) and posts it to the same `gpt_live_session`
-route; libwebrtc carries the microphone and GPT-Live's voice, with its own echo canceller, and the
-app's audio engine plays only the [cues](/extend/ios-app/#carplay). What to do with each event is
+route. libwebrtc carries GPT-Live's microphone and voice, but runs them on the app's own
+voice-processing audio engine (`LiveWebRTCAudioDevice`), the one the [cues](/extend/ios-app/#carplay)
+play on, so the cues are not turned down under the voice. What to do with each event is
 `GptLiveConductor` in ZimmerKit, the dock's `GptLiveCall` rules tested on Linux. Everything else is
 the phone's call as on Realtime: the cues (read off GPT-Live's transcripts and delegations,
 since it reports no speech boundaries), hang-up by voice, the hand-over between phone and car, and
