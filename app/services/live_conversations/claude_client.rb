@@ -100,10 +100,11 @@ module LiveConversations
 
     def self.unavailable_reason = credential.last
 
-    # Environment variables that make Claude Code bill per token through the
-    # Anthropic API. Claude Code prefers either over CLAUDE_CODE_OAUTH_TOKEN
-    # when both are set, so their presence decides the basis.
-    API_KEY_VARS = %w[ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN].freeze
+    # Environment variables that make Claude Code bill per token: an Anthropic
+    # API key or bearer token, or routing through Bedrock or Vertex. Claude Code
+    # prefers any of them over CLAUDE_CODE_OAUTH_TOKEN, so their presence
+    # decides the basis.
+    API_KEY_VARS = %w[ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX].freeze
 
     # How a run with this credential environment is paid for, as a
     # LiveUsageEvent billing basis: `subscription` when it authenticates with

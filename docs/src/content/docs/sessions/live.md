@@ -851,8 +851,8 @@ run at once per process, which is one with the default three. A delegation over 
 "still working on the last request" rather than starving the tool calls the other one is waiting
 on. A delegation costs a Claude Code start, about two seconds measured against a
 stand-in API, on top of Claude's own time. The token is read for every delegation, so an account
-rotation or a token refresh reaches Live Mode without a restart. Claude's use is subscription-billed
-and draws on the same 5-hour and weekly quota windows as the fleet. With no current account, or one
+rotation or a token refresh reaches Live Mode without a restart. On the subscription's token, Claude's
+use is billed at $0 (see [Live costs](#live-costs) for how each delegation's basis is decided) and draws on the same 5-hour and weekly quota windows as the fleet. With no current account, or one
 without credentials, the engine falls back to Realtime and says so. So does a current account that is
 out of quota, waiting to be re-authenticated, or refused by Anthropic: the same test the session spawn
 path applies (`ClaudeAccount#usable_as_current?`). Live Mode does not rotate accounts itself; the next
@@ -937,7 +937,7 @@ whether that money was charged: `metered` or `subscription`. The writer that kno
 paid for sets it. A Claude delegation takes its basis from the credential its Claude Code run was
 given (`ClaudeClient#billing_basis`): the subscription's OAuth token is `subscription`, recorded at
 list price but billed at $0; an Anthropic API key in reach of the run (`ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN`, which Claude Code prefers over the OAuth token) is `metered`. A row whose
+`ANTHROPIC_AUTH_TOKEN`), or Bedrock or Vertex routing (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`), any of which Claude Code prefers over the OAuth token, is `metered`. A row whose
 writer says nothing is `metered`, so money nobody vouched for is counted. Every figure on the page is
 shown as billed and list, so the subscription's value stays visible. The caps count billed money
 only.

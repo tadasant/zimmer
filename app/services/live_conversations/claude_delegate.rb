@@ -120,7 +120,9 @@ module LiveConversations
     def busy_result
       Rails.logger.warn("[live.claude] delegation refused: #{MAX_CONCURRENT} already running in this process " \
                         "(conversation=#{@conversation.id} delegation=#{@delegation_id})")
-      record(operation: "delegation", vendor: "anthropic", model: model, error: "busy: #{MAX_CONCURRENT} delegations already running",
+      # Nothing ran, so nothing was billed; metered is the honest basis for $0.
+      record(operation: "delegation", vendor: "anthropic", model: model, billing_basis: "metered",
+             error: "busy: #{MAX_CONCURRENT} delegations already running",
              details: { delegation_id: @delegation_id, kind: "busy", via: "claude_code" })
       result("I'm still working on the last request. Ask me again in a moment.", end_call: false, warning: nil, rounds: 0)
     end
