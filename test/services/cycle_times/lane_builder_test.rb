@@ -38,7 +38,7 @@ class CycleTimes::LaneBuilderTest < ActiveSupport::TestCase
     assert_tiles(segments, 100)
     assert_equal [
       [ 0, 10, "wait_worker_queue" ], [ 10, 15, "turn_startup" ], [ 15, 30, "inference" ], [ 30, 60, "local_io" ],
-      [ 60, 80, "inference" ], [ 80, 90, "unattributed" ], [ 90, 100, "unattributed" ]
+      [ 60, 80, "inference" ], [ 80, 90, "unattributed" ], [ 90, 100, "wait_human" ]
     ], summary(segments)
   end
 
@@ -175,5 +175,94 @@ class CycleTimes::LaneBuilderTest < ActiveSupport::TestCase
     assert_operator shown.size, :<=, CycleTimes::LaneBuilder::MAX_SEGMENTS
     assert_tiles(shown, 3_100)
     assert_match "short segments", shown.find { |s| s.detail.include?("short") }.detail
+  end
+
+  LATER = "mcp__zimmer-self-session__wake_me_up_later"
+
+  # The shape of session #11878: a gate session armed a one-hour wake to re-check
+  # its PR's CI, the wake never fired, and it slept for 75 days until a restart
+  # resumed it. Its prompt is about CI; the 75 days were not.
+  test "a sleep long past its scheduled wake is unattributed from the due time, not charged to the wake" do
+    day = 86_400
+    wake = { "wake_at" => (T + 3_600).utc.iso8601.delete_suffix("Z"), "timezone" => "UTC",
+             "prompt" => "Resume the gate session. The ledger PR was waiting on CI. Next: run gh pr checks; if green, merge." }
+    builder = CycleTimes::LaneBuilder.new(
+      span_start: T, span_end: T + 75 * day + 200,
+      changes: [ change(1, :running), change(400, :needs_input), change(401, :sleeping),
+                 change(75 * day, :queued), change(75 * day + 100, :running) ],
+      events: [ ev(2, Types::USER_MESSAGE), call(390, "w", LATER, wake), result(391, "w") ]
+    )
+
+    segments = builder.build
+
+    assert_tiles(segments, 75 * day + 200)
+    assert_includes summary(segments), [ 401, 3_600, "wait_ci" ]
+    assert_includes summary(segments), [ 3_600, 75 * day, "unattributed" ]
+    assert_match "past its scheduled wake", segments.find { |s| s.start == T + 3_600 }.detail
+    assert_equal [ [ T + 3_600, T + 75 * day ] ], builder.missed_wakes.map { |m| [ m.due, m.resumed ] }
+  end
+
+  test "a wake that fires a little late keeps the whole sleep" do
+    wake = { "wake_at" => (T + 600).utc.iso8601, "prompt" => "CI wake 1 on https://github.com/a/b/pull/1" }
+    builder = CycleTimes::LaneBuilder.new(
+      span_start: T, span_end: T + 2_000,
+      changes: [ change(1, :running), change(20, :needs_input), change(21, :sleeping), change(1_200, :queued), change(1_210, :running) ],
+      events: [ ev(2, Types::USER_MESSAGE), call(10, "w", LATER, wake), result(11, "w") ]
+    )
+
+    segments = builder.build
+
+    assert_includes summary(segments), [ 21, 1_200, "wait_ci" ]
+    assert_empty builder.missed_wakes
+  end
+
+  test "a child watch's backstop says when the watch was due to end" do
+    builder = CycleTimes::LaneBuilder.new(
+      span_start: T, span_end: T + 50_000,
+      changes: [ change(1, :running), change(20, :needs_input), change(21, :sleeping), change(40_000, :queued), change(40_010, :running) ],
+      events: [
+        ev(2, Types::USER_MESSAGE),
+        call(5, "a", "mcp__zimmer__wake_me_up_when_session_changes_state", { "session_ids" => [ 9 ] }), result(6, "a"),
+        call(7, "b", LATER, { "prompt" => "Backstop", "wake_at" => (T + 1_800).utc.iso8601 }), result(8, "b")
+      ]
+    )
+
+    segments = builder.build
+
+    assert_includes summary(segments), [ 21, 1_800, "wait_child" ]
+    assert_includes summary(segments), [ 1_800, 40_000, "unattributed" ]
+    assert_equal 1, builder.missed_wakes.size
+  end
+
+  test "needs_input that runs to the archive is a wait on a human; one something resumed is unexplained" do
+    segments = build(
+      span_end: 1_000,
+      changes: [ change(1, :running), change(10, :needs_input), change(300, :queued), change(310, :running), change(400, :needs_input) ]
+    )
+
+    assert_includes summary(segments), [ 10, 300, "unattributed" ]
+    assert_includes summary(segments), [ 400, 1_000, "wait_human" ]
+  end
+
+  test "a child parked until its router archives it is not a wait on a human" do
+    segments = build(span_end: 1_000, changes: [ change(1, :running), change(400, :needs_input) ], root: false)
+
+    assert_equal [ 400, 1_000, "unattributed" ], summary(segments).last
+  end
+
+  test "a wake already due when the sleep began is overdue from the start of the sleep" do
+    wake = { "wake_at" => (T + 5).utc.iso8601, "prompt" => "CI wake 1 on https://github.com/a/b/pull/1" }
+    builder = CycleTimes::LaneBuilder.new(
+      span_start: T, span_end: T + 10_000,
+      changes: [ change(1, :running), change(20, :needs_input), change(21, :sleeping), change(9_000, :queued), change(9_010, :running) ],
+      events: [ ev(2, Types::USER_MESSAGE), call(10, "w", LATER, wake), result(11, "w") ]
+    )
+
+    segments = builder.build
+
+    assert_tiles(segments, 10_000)
+    assert_includes summary(segments), [ 21, 9_000, "unattributed" ]
+    assert_match((T + 21).utc.iso8601, segments.find { |s| s.start == T + 21 }.detail)
+    assert_equal [ [ T + 21, T + 9_000 ] ], builder.missed_wakes.map { |m| [ m.due, m.resumed ] }
   end
 end

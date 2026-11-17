@@ -11,7 +11,7 @@ module CycleTimes
   class Analyzer
     # Bump when the classification or the rollup changes meaning; the sweep
     # recomputes every row written under an older version.
-    VERSION = 1
+    VERSION = 2
 
     TOP_SEGMENTS = 15
 
@@ -44,7 +44,15 @@ module CycleTimes
       eligibility = Eligibility.new(hierarchy, changes_by_session: changes, human_messages: human_messages).call
 
       attributes = base_attributes(hierarchy, eligibility)
-      attributes.merge!(breakdown(hierarchy, changes, attributes[:started_at], attributes[:finished_at])) if eligibility.eligible
+      if eligibility.eligible
+        lanes = build_lanes(hierarchy, changes)
+        reason, detail = Eligibility.missed_wake(hierarchy.sessions.map(&:id).zip(lanes.map(&:missed_wakes)).to_h)
+        if reason
+          attributes.merge!(eligible: false, ineligible_reason: reason, ineligible_detail: detail.truncate(500))
+        else
+          attributes.merge!(breakdown(hierarchy, changes, lanes.map(&:segments), attributes[:started_at], attributes[:finished_at]))
+        end
+      end
 
       CycleTimeAnalysis.upsert(attributes, unique_by: :root_session_id, record_timestamps: true)
       CycleTimeAnalysis.find_by(root_session_id: @root.id)
@@ -79,21 +87,30 @@ module CycleTimes
       }
     end
 
-    def breakdown(hierarchy, changes, started_at, finished_at)
+    BuiltLane = Data.define(:segments, :missed_wakes)
+
+    # One LaneBuilder per session, in hierarchy order.
+    def build_lanes(hierarchy, changes)
       sessions = hierarchy.sessions
       children = sessions.group_by(&:parent_session_id)
 
-      built = sessions.map do |session|
+      sessions.map do |session|
         child_windows = Array(children[session.id]).map { |child| [ child.created_at, archived_time(child) ] }
-        LaneBuilder.new(
+        builder = LaneBuilder.new(
           span_start: session.created_at,
           span_end: archived_time(session),
           changes: Array(changes[session.id]),
           events: TranscriptEvents.for(session),
           child_windows: child_windows,
-          holds_pr: Array(session.custom_metadata&.dig("github_pull_request_urls")).any?
-        ).build
+          holds_pr: Array(session.custom_metadata&.dig("github_pull_request_urls")).any?,
+          root: session.id == hierarchy.root.id
+        )
+        BuiltLane.new(builder.build, builder.missed_wakes)
       end
+    end
+
+    def breakdown(hierarchy, changes, built, started_at, finished_at)
+      sessions = hierarchy.sessions
 
       rollup = Rollup.new(built, start: started_at, finish: finished_at).call
       totals = round_totals(rollup.totals)

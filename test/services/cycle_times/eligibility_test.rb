@@ -6,7 +6,7 @@ class CycleTimes::EligibilityTest < ActiveSupport::TestCase
   include CycleTimeFixtures
 
   T0 = Time.utc(2026, 11, 10, 8)
-  AGENT = "session #1 via the self-session MCP server"
+  AGENT = "session #SELF via the self-session MCP server"
 
   setup do
     @user = User.first || User.create!(key: "tester", display_name: "Tester", email: nil)
@@ -109,5 +109,29 @@ class CycleTimes::EligibilityTest < ActiveSupport::TestCase
 
     assert_equal root.id, CycleTimes::Hierarchy.root_for(grandchild).id
     assert_equal 2, CycleTimes::Hierarchy.new(root).depths[grandchild.id]
+  end
+
+  test "an archive by a session outside the hierarchy disqualifies it; one by its own router does not" do
+    root, child = root_and_child(child_actor: "session #ROOT via the MCP API")
+    # The fixture only knows its own id, so point the child's archive at its router after the fact.
+    Log.where(session_id: child.id).where("content LIKE ?", "%ROOT%")
+       .update_all([ "content = REPLACE(content, '#ROOT', ?)", "##{root.id}" ])
+    assert evaluate(root).eligible
+
+    other, = root_and_child(root_actor: "session #8657 via the MCP API")
+    result = evaluate(other)
+    refute result.eligible
+    assert_equal "outside_archive", result.reason
+    assert_match "#8657", result.detail
+  end
+
+  test "a missed wake longer than the limit disqualifies; a shorter one does not" do
+    missed = ->(seconds) { CycleTimes::LaneBuilder::MissedWake.new(T0, T0 + seconds) }
+
+    assert_nil CycleTimes::Eligibility.missed_wake({ 1 => [ missed.call(20.minutes) ], 2 => [] })
+
+    reason, detail = CycleTimes::Eligibility.missed_wake({ 1 => [], 7 => [ missed.call(75.days) ] })
+    assert_equal "missed_wake", reason
+    assert_match "session #7", detail
   end
 end

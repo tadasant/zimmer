@@ -8,10 +8,12 @@ module CycleTimes
   #   1. Every session in it is archived (otherwise it is in flight, and no row
   #      is written at all).
   #   2. Every archive of every session was performed by an agent — the session
-  #      itself or another session, over MCP or the fleet's REST API — as
-  #      recorded on the timeline by ArchiveActor. A web-UI Trash, a Live Mode
-  #      archive, one of Zimmer's sweeps, or an archive with no recorded actor
-  #      disqualifies it.
+  #      itself or another session IN THE SAME HIERARCHY, over MCP, or the
+  #      fleet's REST API — as recorded on the timeline by ArchiveActor. A
+  #      web-UI Trash, a Live Mode archive, one of Zimmer's sweeps, an archive
+  #      with no recorded actor, or an archive by a session outside the
+  #      hierarchy (a fleet-cleanup agent closing a parked session is a sweep
+  #      by another name: the task did not archive itself) disqualifies it.
   #   3. The human-messages record (HumanMessage, written only at an
   #      authenticated input boundary) holds no message on any session in the
   #      hierarchy except the initiating prompt: a message on the ROOT recorded
@@ -20,6 +22,12 @@ module CycleTimes
   #   4. No session in it was restored from the trash. A reopened session's span
   #      contains its time in the trash, and the work after it is a second task.
   #   5. It has at most Hierarchy::MAX_SESSIONS sessions.
+  #   6. No session slept more than MISSED_WAKE_LIMIT past a scheduled wake that
+  #      did not fire (LaneBuilder#missed_wakes). That task stalled: something
+  #      outside it — a restart, a recovery sweep, a person — had to wake it, so
+  #      it did not finish on its own, and its wall-clock measures the missed
+  #      trigger rather than the work. This needs the built lanes, so the
+  #      Analyzer applies it through .missed_wake after the rest of the rule.
   #
   # The initiator is recorded either way: `human` when the root carries an
   # initiating human message, `trigger` when a Zimmer trigger created the root,
@@ -29,14 +37,32 @@ module CycleTimes
 
     INITIATION_GRACE = 2.minutes
 
+    MISSED_WAKE_LIMIT = 1.hour
+
     REASONS = {
       "human_archive" => "A human archived a session",
       "system_archive" => "One of Zimmer's sweeps archived a session",
       "unrecorded_archive" => "A session's archive has no recorded actor",
       "human_follow_up" => "A human sent a message after the initiating prompt",
       "reopened" => "A session was restored from the trash",
-      "too_large" => "More sessions than the analysis handles"
+      "too_large" => "More sessions than the analysis handles",
+      "outside_archive" => "A session outside the task archived one of its sessions",
+      "missed_wake" => "A session slept long past a wake that never fired"
     }.freeze
+
+    # Rule 6. The disqualifying [reason, detail], or nil.
+    #
+    # @param missed_by_session [Hash{Integer => Array<LaneBuilder::MissedWake>}]
+    def self.missed_wake(missed_by_session)
+      session_id, missed = missed_by_session
+                           .flat_map { |id, list| list.map { |m| [ id, m ] } }
+                           .max_by { |_, m| m.seconds }
+      return nil if missed.nil? || missed.seconds <= MISSED_WAKE_LIMIT
+
+      [ "missed_wake",
+        "session ##{session_id}'s wake was due #{missed.due.utc.iso8601} and it slept until " \
+        "#{missed.resumed.utc.iso8601} (#{ActiveSupport::Duration.build(missed.seconds.round).inspect} late)" ]
+    end
 
     # @param hierarchy [Hierarchy]
     # @param changes_by_session [Hash{Integer => Array<StateLog::Change>}]
@@ -81,6 +107,11 @@ module CycleTimes
           when :human then return [ "human_archive", "session ##{session.id} archived by #{phrase}" ]
           when :system then return [ "system_archive", "session ##{session.id} archived by #{phrase}" ]
           when :unrecorded then return [ "unrecorded_archive", "session ##{session.id} archived by #{phrase.presence || 'an unrecorded caller'}" ]
+          when :agent
+            archiver = ArchiveActor.session_id(phrase)
+            if archiver && !hierarchy_ids.include?(archiver)
+              return [ "outside_archive", "session ##{session.id} archived by #{phrase}, which is not part of this task" ]
+            end
           end
         end
       end
@@ -91,6 +122,10 @@ module CycleTimes
       end
 
       nil
+    end
+
+    def hierarchy_ids
+      @hierarchy_ids ||= @hierarchy.sessions.map(&:id).to_set
     end
 
     def initiator_fields

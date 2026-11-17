@@ -29,9 +29,14 @@ module CycleTimes
   #   - queued for a worker                                 wait_worker_queue
   #   - after a spot-hold / quota-park line, until the next turn   wait_spot_hold / wait_quota_park
   #   - asleep                                              the wake it armed (WaitClassifier),
-  #                                                         wait_sleep if none is found
+  #                                                         wait_sleep if none is found —
+  #                                                         but only until that wake was due:
+  #                                                         asleep OVERDUE_GRACE past it is
+  #                                                         unattributed from the due time on
   #   - needs_input, while a child is alive                 wait_child
   #   - needs_input, otherwise, holding a recorded PR       wait_merge_gate
+  #   - needs_input, otherwise, until the archive, ROOT     wait_human (parked on the action
+  #                                                         queue until something closed it)
   #   - needs_input, otherwise                              unattributed
   #   - an MCP elicitation                                  wait_human
   #   - failed (and later revived)                          unattributed
@@ -53,24 +58,44 @@ module CycleTimes
     # session does not make a 4 MB row. Totals are computed before this cut.
     MAX_SEGMENTS = 1_500
 
+    # How late a wake may fire and still be the wake the session slept on. A
+    # trigger fires within a minute or two of its time; a deploy can hold it a
+    # few more. Past this, the session is asleep on a wake that did not fire,
+    # and that is not what the wake's prompt was waiting for.
+    OVERDUE_GRACE = 15.minutes
+
+    # A sleep that outlived its scheduled wake by more than OVERDUE_GRACE: due
+    # when the wake should have fired, resumed when something else woke it.
+    MissedWake = Data.define(:due, :resumed) do
+      def seconds = resumed - due
+    end
+
+    # @return [Array<MissedWake>] filled in by #build
+    attr_reader :missed_wakes
+
     # @param span_start [Time] the session's created_at
     # @param span_end [Time] when it was archived
     # @param changes [Array<StateLog::Change>]
     # @param events [Array<TranscriptEvents::Event>]
     # @param child_windows [Array<Array(Time, Time)>] when each child was alive
     # @param holds_pr [Boolean] whether the session recorded a PR it opened
-    def initialize(span_start:, span_end:, changes:, events:, child_windows: [], holds_pr: false)
+    # @param root [Boolean] whether this is the hierarchy's root. Only a root
+    #   parked until its archive is on the human action queue; a child parked
+    #   until its archive is waiting on the router that will close it.
+    def initialize(span_start:, span_end:, changes:, events:, child_windows: [], holds_pr: false, root: true)
       @span_start = span_start
       @span_end = [ span_end, span_start ].max
       @changes = changes.select { |c| c.at > span_start && c.at < @span_end }.sort_by(&:at)
       @events = events.sort_by(&:at)
       @child_windows = child_windows
       @holds_pr = holds_pr
+      @root = root
     end
 
     # @return [Array<Segment>]
     def build
       @segments = []
+      @missed_wakes = []
       @event_index = 0
       @last_wake = nil
       @pending = {}
@@ -218,17 +243,37 @@ module CycleTimes
 
     def add_sleep(from, to)
       wake = @last_wake
-      if wake
-        add(from, to, wake.category, wake.detail)
-      else
+      unless wake
         add(from, to, "wait_sleep", "asleep; no wake call found in the transcript")
+        return
       end
+
+      due = wake.due && [ wake.due, from ].max
+      if due.nil? || to - due <= OVERDUE_GRACE
+        add(from, to, wake.category, wake.detail)
+        return
+      end
+
+      # The wake's purpose explains the sleep up to the time it was due. After
+      # that the session was asleep on a wake that never fired, until a restart,
+      # a sweep or a message reached it — no recorded event says what it was
+      # waiting on, so the time is shown as such rather than charged to CI.
+      @missed_wakes << MissedWake.new(due, to)
+      add(from, due, wake.category, wake.detail)
+      add(due, to, "unattributed", "asleep past its scheduled wake (due #{due.utc.iso8601}); the wake did not fire")
     end
 
     # The part of a needs_input interval covered by a live child is a wait on
-    # that child; the rest is holding a PR or unexplained.
+    # that child; the rest is holding a PR, or — when nothing ever resumed a
+    # root and it sat parked until its archive — on the human action queue,
+    # which is what needs_input means. A stretch something later resumed is
+    # unexplained: the resume could have come from an agent or a trigger.
     def add_needs_input(from, to)
-      rest = @holds_pr ? [ "wait_merge_gate", "needs_input holding an open PR" ] : [ "unattributed", "needs_input until an agent or trigger resumed it" ]
+      rest =
+        if @holds_pr then [ "wait_merge_gate", "needs_input holding an open PR" ]
+        elsif @root && to >= @span_end then [ "wait_human", "needs_input until it was archived (parked on the action queue)" ]
+        else [ "unattributed", "needs_input until an agent or trigger resumed it" ]
+        end
       cursor = from
       child_cover(from, to).each do |cover_from, cover_to|
         add(cursor, cover_from, *rest)
@@ -271,7 +316,12 @@ module CycleTimes
     def note_wake(event)
       wake = WaitClassifier.classify_wake(event.tool_name, event.arguments)
       return if wake.nil?
-      return if @last_wake&.category == "wait_child" && wake.category == "wait_sleep"
+
+      # The backstop still says when the watcher's wait was due to end.
+      if @last_wake&.category == "wait_child" && wake.category == "wait_sleep"
+        @last_wake = @last_wake.with(due: wake.due) if @last_wake.due.nil?
+        return
+      end
 
       @last_wake = wake
     end
