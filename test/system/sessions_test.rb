@@ -934,11 +934,13 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    # Create a recent recovery log (within 5 second window)
+    # The banner shows only while the recovery log is under 5 seconds old
+    # (Session#recently_recovered?). Dated ahead, the log is still recent when
+    # the page renders, however long the visit takes.
     session.logs.create!(
       level: "info",
       content: "Recovery job enqueued (ActiveJob ID: test123) - monitoring will resume in 5 seconds",
-      created_at: 2.seconds.ago
+      created_at: 1.minute.from_now
     )
 
     visit session_path(session)
@@ -978,15 +980,18 @@ class SessionsTest < ApplicationSystemTestCase
       status: :running
     )
 
-    # Create a recent recovery log (within 5 second window)
+    # The banner shows only while the recovery log is under 5 seconds old
+    # (Session#recently_recovered?). Dated ahead, the log is still recent when
+    # the page renders, however long the visit takes.
     session.logs.create!(
       level: "info",
       content: "Recovery job enqueued (ActiveJob ID: test123) - monitoring will resume in 5 seconds",
-      created_at: 2.seconds.ago
+      created_at: 1.minute.from_now
     )
 
     visit session_path(session)
 
+    assert_text "Session connection recovered. Live updates have been restored."
     assert_no_selector "meta[http-equiv='refresh']", visible: false
     assert_selector "[data-controller~='cable-reconnect']", visible: false
   end
