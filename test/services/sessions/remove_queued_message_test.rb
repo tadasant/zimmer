@@ -10,6 +10,8 @@ require "mocha/minitest"
 # caller's copy), leaves a vanished row's neighbours alone, and writes one log
 # row with the position it really removed from. `withdraw_pending` does the
 # same, only while the row is still `pending`, and writes no log row.
+# `remove_delivered` does the same for a row the processor claimed and marked
+# `sent`, also with no log row.
 class Sessions::RemoveQueuedMessageTest < ActiveSupport::TestCase
   setup do
     @session = sessions(:running)
@@ -93,6 +95,29 @@ class Sessions::RemoveQueuedMessageTest < ActiveSupport::TestCase
     assert_nil Sessions::RemoveQueuedMessage.withdraw_pending(stale)
 
     assert_equal [ [ "A", 1 ], [ "C", 3 ], [ "D", 4 ] ], queue
+  end
+
+  test "remove_delivered removes a sent message and closes the gap without a log row" do
+    @b.mark_as_sent!
+
+    assert_no_difference -> { @session.logs.count } do
+      assert_equal 2, Sessions::RemoveQueuedMessage.remove_delivered(@b)
+    end
+
+    assert_equal [ [ "A", 1 ], [ "C", 2 ], [ "D", 3 ] ], queue
+  end
+
+  test "remove_delivered takes the session's queue lock" do
+    @b.mark_as_sent!
+    Sessions::QueueTail.expects(:lock!).with(@session.id).once
+
+    Sessions::RemoveQueuedMessage.remove_delivered(@b)
+  end
+
+  test "remove_delivered leaves a message that was not marked sent" do
+    assert_nil Sessions::RemoveQueuedMessage.remove_delivered(@b)
+
+    assert_equal [ [ "A", 1 ], [ "B", 2 ], [ "C", 3 ], [ "D", 4 ] ], queue
   end
 
   private

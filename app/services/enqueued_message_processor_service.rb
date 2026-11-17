@@ -13,6 +13,8 @@
 # - Uses FOR UPDATE SKIP LOCKED in session.process_next_enqueued_message! to atomically claim messages
 # - Session row is locked to prevent concurrent state transitions
 # - Message content is captured before deletion to ensure job enqueuing succeeds
+# - The delivered row is removed through Sessions::RemoveQueuedMessage.remove_delivered,
+#   the queue writer every removal shares
 #
 # Usage:
 #   service = EnqueuedMessageProcessorService.new(session, log_buffer: log_buffer)
@@ -262,17 +264,18 @@ class EnqueuedMessageProcessorService
           level: "info"
         )
 
-        # Mark message as sent and delete it
+        # Mark the message sent, then remove it and close the gap behind it
+        # through the one queue writer every removal shares. Its bulk renumber
+        # runs no per-row validations, so a row behind this one that no longer
+        # passes them (an origin since dropped from ORIGINS, content over a
+        # since-lowered limit) cannot roll the delivery back and wedge the queue.
+        # The claim's row lock is held, so the row is still here and `sent`; a
+        # nil means that invariant broke, and raising rolls the claim back so the
+        # message stays `pending` rather than being delivered with its row left.
         message.mark_as_sent!
-        message.destroy!
-
-        # Re-number remaining messages with higher positions
-        # Update in order from lowest to highest position to avoid unique constraint violations
-        # (e.g., position 2 -> 1 must happen before position 3 -> 2)
-        session.enqueued_messages
-               .where("position > ?", message_position)
-               .order(position: :asc)
-               .each { |m| m.update!(position: m.position - 1) }
+        if Sessions::RemoveQueuedMessage.remove_delivered(message).nil?
+          raise "enqueued message #{message.id} was not removed after it was claimed"
+        end
 
         # A prompt the session is STILL HOLDING must not swallow the one we just
         # claimed. `AgentSessionJob`'s follow-up arm resolves this turn's prompt as
