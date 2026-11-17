@@ -1354,14 +1354,16 @@ class SpotSessionHold
     # The job fallback covers that transaction and nothing after it. Once the row
     # has committed it IS the delivery, so a failure writing the timeline line
     # about it must not also give the prompt a job: the drain would deliver the
-    # row and the job would deliver the prompt a second time.
+    # row and the job would deliver the prompt a second time. An exception out
+    # of `transaction` is not proof that nothing committed, either — an
+    # after_commit callback raises after the COMMIT — so the row itself decides.
     def queue_behind_scheduled_turn(session, prompt, scheduled_at, images:, files:, log_buffer:)
-      position = begin
+      queued = nil
+      begin
         ActiveRecord::Base.transaction do
-          tail = Sessions::QueueTail.next_position!(session)
-          session.enqueued_messages.create!(
+          queued = session.enqueued_messages.create!(
             **EnqueuedMessage.attributes_for_prompt(prompt),
-            position: tail,
+            position: Sessions::QueueTail.next_position!(session),
             # A jsonb column, so the record shape — the same round trip the hold
             # record takes, and the one EnqueuedMessageProcessorService reads back.
             images: Array(Sessions::AttachmentDescriptors.for_the_record(
@@ -1372,24 +1374,38 @@ class SpotSessionHold
             )),
             origin: EnqueuedMessage.origin_for_prompt(prompt)
           )
-          tail
         end
       rescue StandardError => e
-        # Never lose the prompt to a queue failure: fall back to a job of its own.
-        # That job may be refused by the concurrency guard — which parks the prompt
-        # back in this same queue (Sessions::RequeueSkippedPrompt) rather than
-        # dropping it, so the fallback ends where the write was trying to go.
-        Rails.logger.warn(
-          "[SpotSessionHold] Could not queue a deferred prompt for session #{session.id}: #{e.class}: #{e.message}"
-        )
-        AgentSessionJob.enqueue_with_prompt(
-          session.id, prompt, images: images, files: files,
-          delay: SpotGateService::RETRY_DELAY
-        )
-        return
+        if queued_row_committed?(queued)
+          Rails.logger.warn(
+            "[SpotSessionHold] Deferred prompt for session #{session.id} is queued, but a step after its " \
+            "commit raised (#{e.class}: #{e.message}); not giving it a job as well"
+          )
+        else
+          # Never lose the prompt to a queue failure: fall back to a job of its own.
+          # That job may be refused by the concurrency guard — which parks the prompt
+          # back in this same queue (Sessions::RequeueSkippedPrompt) rather than
+          # dropping it, so the fallback ends where the write was trying to go.
+          Rails.logger.warn(
+            "[SpotSessionHold] Could not queue a deferred prompt for session #{session.id}: #{e.class}: #{e.message}"
+          )
+          AgentSessionJob.enqueue_with_prompt(
+            session.id, prompt, images: images, files: files,
+            delay: SpotGateService::RETRY_DELAY
+          )
+          return
+        end
       end
 
-      note_queued_behind_scheduled_turn(session, scheduled_at, position, log_buffer)
+      note_queued_behind_scheduled_turn(session, scheduled_at, queued.position, log_buffer)
+    end
+
+    # Whether the queue write landed. When that cannot be read either, the answer
+    # is no: a prompt delivered twice is recoverable, a prompt lost is not.
+    def queued_row_committed?(queued)
+      queued&.id.present? && EnqueuedMessage.exists?(queued.id)
+    rescue StandardError
+      false
     end
 
     # The queued prompt, said in the session's own timeline. Never raises: the
