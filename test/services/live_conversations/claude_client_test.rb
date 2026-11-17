@@ -140,4 +140,29 @@ class LiveConversations::ClaudeClientTest < ActiveSupport::TestCase
   test "the tools are reached at Zimmer's own address" do
     assert_equal "#{AppUrl.base_url}/live/delegation_mcp", LiveConversations::ClaudeClient.mcp_url
   end
+
+  test "the billing basis follows the credential: the subscription's OAuth token is covered, an API key is metered" do
+    basis = ->(env) { LiveConversations::ClaudeClient.billing_basis_for(env) }
+
+    assert_equal "subscription", basis.({ "CLAUDE_CODE_OAUTH_TOKEN" => "oauth" })
+    assert_equal "metered", basis.({ "ANTHROPIC_API_KEY" => "sk-ant" })
+    assert_equal "metered", basis.({ "CLAUDE_CODE_OAUTH_TOKEN" => "oauth", "ANTHROPIC_API_KEY" => "sk-ant" }),
+                 "Claude Code prefers the API key when both are set"
+    assert_equal "metered", basis.({ "CLAUDE_CODE_OAUTH_TOKEN" => "oauth", "ANTHROPIC_AUTH_TOKEN" => "bearer" })
+    assert_equal "metered", basis.({ "CLAUDE_CODE_OAUTH_TOKEN" => "oauth", "CLAUDE_CODE_USE_BEDROCK" => "1" })
+    assert_equal "metered", basis.({}), "a run nothing vouches for is counted"
+  end
+
+  test "a client on the subscription's token is subscription-billed, unless the worker's own environment holds an API key" do
+    previous = ENV.fetch("ANTHROPIC_API_KEY", nil)
+    ENV.delete("ANTHROPIC_API_KEY")
+    assert_equal "subscription", client("claude").billing_basis
+
+    ENV["ANTHROPIC_API_KEY"] = "sk-ant-inherited"
+    assert_equal "metered", client("claude").billing_basis, "spawn inherits the worker's environment"
+    unset = client("claude", env: { "CLAUDE_CODE_OAUTH_TOKEN" => "oauth", "ANTHROPIC_API_KEY" => nil })
+    assert_equal "subscription", unset.billing_basis, "an overlay nil unsets the inherited key, as Process.spawn does"
+  ensure
+    previous.nil? ? ENV.delete("ANTHROPIC_API_KEY") : ENV["ANTHROPIC_API_KEY"] = previous
+  end
 end

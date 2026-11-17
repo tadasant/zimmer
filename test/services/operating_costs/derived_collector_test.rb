@@ -17,7 +17,7 @@ class OperatingCosts::DerivedCollectorTest < ActiveSupport::TestCase
     LiveUsageEvent.record!(engine: "openai_realtime", operation: "voice_session", vendor: "openai", model: "gpt-realtime", seconds: 60,
                            occurred_at: day.in_time_zone.change(hour: 10))
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-opus-5",
-                           input_tokens: 1_000_000, occurred_at: day.in_time_zone.change(hour: 11))
+                           input_tokens: 1_000_000, occurred_at: day.in_time_zone.change(hour: 11), billing_basis: "subscription")
     metered = LiveUsageEvent.where(billing_basis: "metered").sum(:cost_usd)
 
     observed = items(@voice).sole

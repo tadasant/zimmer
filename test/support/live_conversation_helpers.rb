@@ -117,11 +117,14 @@ ActiveSupport::TestCase.teardown { LiveConversationHelpers.root_overrides = nil 
 # LiveConversations::ClaudeClient, one Claude Code run per scripted answer.
 module LiveConversationHelpers
   class FakeClaude
-    attr_reader :requests
+    attr_reader :requests, :billing_basis
 
-    def initialize(responses: [])
+    # `billing_basis` is what ClaudeClient#billing_basis would derive from the
+    # run's credential: `subscription` for the OAuth token, `metered` for an API key.
+    def initialize(responses: [], billing_basis: "subscription")
       @responses = responses.dup
       @requests = []
+      @billing_basis = billing_basis
     end
 
     def run(**params)

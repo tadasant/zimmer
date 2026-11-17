@@ -4,11 +4,12 @@ module LiveConversations
   # The spend caps on the experimental voice engines (LiveSetting
   # `voice_engine_conversation_cap_usd` and `voice_engine_daily_cap_usd`).
   #
-  # Spend is the LiveUsageEvent ledger's list price for one engine, Claude
-  # included although it runs on Zimmer's subscription and bills nothing per
-  # token: the subscription's quota windows are finite and shared with the agent
-  # fleet, and list price is the measure of how much of them a call has used.
-  # That is: what it has cost this
+  # Spend is the LiveUsageEvent ledger's billed money for one engine: the rows
+  # whose `billing_basis` is `metered` (LiveUsageEvent::BILLED_COST_SQL). A row
+  # covered by a flat plan — Claude on Zimmer's Claude Code subscription — is
+  # still priced at list on the ledger, and /live/costs shows it, but it costs
+  # nothing at the margin and does not count here. Claude billed per token (an
+  # API key) is `metered` and does. That is: what it has cost this
   # conversation, and what it has cost today in the deployment's time zone,
   # across every conversation. At WARN_SHARE of either cap a call is warned
   # (the warning goes to the front end as quiet context and onto the page);
@@ -69,11 +70,15 @@ module LiveConversations
       scope = LiveUsageEvent.for_engine(@engine)
       Check.new(
         engine: @engine,
-        conversation_spend: @conversation&.id ? scope.where(live_conversation_id: @conversation.id).sum(:cost_usd).to_f : 0.0,
-        daily_spend: scope.where(occurred_at: @now.beginning_of_day..).sum(:cost_usd).to_f,
+        conversation_spend: @conversation&.id ? billed(scope.where(live_conversation_id: @conversation.id)) : 0.0,
+        daily_spend: billed(scope.where(occurred_at: @now.beginning_of_day..)),
         conversation_cap: @setting.effective(:voice_engine_conversation_cap_usd).to_f,
         daily_cap: @setting.effective(:voice_engine_daily_cap_usd).to_f
       )
     end
+
+    private
+
+    def billed(scope) = scope.pick(Arel.sql(LiveUsageEvent::BILLED_COST_SQL)).to_f
   end
 end

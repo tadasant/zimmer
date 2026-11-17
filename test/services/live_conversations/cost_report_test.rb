@@ -9,7 +9,7 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     rt = create_live_conversation(mode: "voice", title: "Realtime call")
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_session", vendor: "openai_live", model: "gpt-live-1", seconds: 120, live_conversation: gpt)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-sonnet-5-5",
-                           input_tokens: 10_000, output_tokens: 1_000, latency_ms: 1_800, live_conversation: gpt)
+                           input_tokens: 10_000, output_tokens: 1_000, latency_ms: 1_800, live_conversation: gpt, billing_basis: "subscription")
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "turn_latency", vendor: "zimmer", first_audio_ms: 900, live_conversation: gpt)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "turn_latency", vendor: "zimmer", first_audio_ms: 1_500, live_conversation: gpt)
     LiveUsageEvent.record!(engine: "openai_realtime", operation: "voice_tokens", vendor: "openai_realtime", model: "gpt-realtime-2.1-mini",
@@ -86,11 +86,11 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_nil modes.fetch("gpt-realtime-2.1-mini")[:billed_per_minute_usd], "no call timed, no per-minute figure"
   end
 
-  test "Claude runs on Zimmer's subscription: recorded at list price, billed at nothing, and still counted by the caps" do
+  test "Claude on Zimmer's subscription: recorded at list price, billed at nothing, and not counted by the caps" do
     conversation = create_live_conversation(mode: "voice")
     LiveSetting.editable.update!(voice_engine_conversation_cap_usd: 1.0)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-sonnet-5-5",
-                           input_tokens: 1_000_000, live_conversation: conversation)
+                           input_tokens: 1_000_000, live_conversation: conversation, billing_basis: "subscription")
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_session", vendor: "openai_live", model: "gpt-live-1",
                            seconds: 60, live_conversation: conversation)
 
@@ -100,8 +100,11 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     totals = LiveConversations::CostReport.new(days: 1).totals
     assert_in_delta 2.05, totals[:list_usd], 0.000001
     assert_in_delta 0.05, totals[:billed_usd], 0.000001
-    assert LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation).blocked?,
-           "the subscription's quota is shared and finite, so list price still counts toward the cap"
+    check = LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation)
+    assert_not check.blocked?, "a flat subscription costs nothing at the margin, so its list price is not spend"
+    assert_in_delta 0.05, check.conversation_spend, 0.000001
+    cap = LiveConversations::CostReport.new(days: 1).as_api_json[:caps].find { |row| row[:engine] == "gpt_live_claude" }
+    assert_in_delta 0.05, cap[:daily_spend_usd], 0.000001, "the caps panel shows metered spend, not list"
   end
 
   test "refuses an engine that does not exist" do

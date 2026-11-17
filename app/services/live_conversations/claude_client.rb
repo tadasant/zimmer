@@ -100,6 +100,24 @@ module LiveConversations
 
     def self.unavailable_reason = credential.last
 
+    # Environment variables that make Claude Code bill per token: an Anthropic
+    # API key or bearer token, or routing through Bedrock or Vertex. Claude Code
+    # prefers any of them over CLAUDE_CODE_OAUTH_TOKEN, so their presence
+    # decides the basis.
+    API_KEY_VARS = %w[ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX].freeze
+
+    # How a run with this credential environment is paid for, as a
+    # LiveUsageEvent billing basis: `subscription` when it authenticates with
+    # the subscription's OAuth token, `metered` when an API key is in reach (or
+    # nothing says it is covered). `env` is what the process sees: the worker's
+    # own environment with the overlay on top, because spawn inherits it.
+    def self.billing_basis_for(env)
+      return "metered" if API_KEY_VARS.any? { |name| env[name].present? }
+      return "subscription" if env["CLAUDE_CODE_OAUTH_TOKEN"].present?
+
+      "metered"
+    end
+
     def self.configured? = unavailable_reason.nil?
 
     # Where the CLI reaches this conversation's tools: Zimmer's own address, the
@@ -122,6 +140,9 @@ module LiveConversations
       @timeout = timeout
       @logger = logger
     end
+
+    # How this client's runs are paid for: see billing_basis_for.
+    def billing_basis = self.class.billing_basis_for(ENV.to_h.merge(@env))
 
     # One Claude Code run.
     #

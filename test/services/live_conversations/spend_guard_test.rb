@@ -35,4 +35,42 @@ class LiveConversations::SpendGuardTest < ActiveSupport::TestCase
     assert check.blocked?
     assert_match(/daily cap \(\$1\.00 of \$1\.00 today\)/, check.reason)
   end
+
+  def claude(basis, conversation:, input_tokens: 1_000_000)
+    LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-opus-5-5",
+                           input_tokens: input_tokens, live_conversation: conversation, billing_basis: basis)
+  end
+
+  test "Claude on the subscription does not trip a cap, however much its list price is" do
+    conversation = create_live_conversation
+    claude("subscription", conversation: conversation) # $4.00 at Opus list price
+
+    check = LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation)
+    assert_not check.blocked?
+    assert_not check.warn?
+    assert_equal 0.0, check.conversation_spend
+    assert_equal 0.0, check.daily_spend
+    assert_operator LiveUsageEvent.sole.cost_usd.to_f, :>, 2.0, "the list price is still on the ledger"
+  end
+
+  test "metered OpenAI spend trips the per-conversation cap, and the reason names the metered figure" do
+    conversation = create_live_conversation
+    claude("subscription", conversation: conversation)
+    spend("gpt_live_claude", 60 * 42, conversation: conversation) # $2.10 of GPT-Live seconds
+
+    check = LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation)
+    assert check.blocked?
+    assert_in_delta 2.10, check.conversation_spend, 0.0001
+    assert_match(/per-conversation cap \(\$2\.10 of \$2\.00\)/, check.reason)
+  end
+
+  test "Claude billed per token on an API key counts toward the caps" do
+    conversation = create_live_conversation
+    row = claude("metered", conversation: conversation) # $4.00 at Opus list price, billed
+
+    check = LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation)
+    assert check.blocked?
+    assert_operator row.cost_usd.to_f, :>, 2.0
+    assert_in_delta row.cost_usd.to_f, check.conversation_spend, 0.0001
+  end
 end

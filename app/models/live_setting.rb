@@ -44,9 +44,10 @@
 class LiveSetting < ApplicationRecord
   # Phase 1 of a two-phase drop (AGENTS.md "Dropping a column takes two
   # deploys"): `voice_claude_billing` chose how Claude's tokens were counted
-  # when Claude ran on an API key. Claude runs on Zimmer's own subscription
-  # credential now, so its use is always subscription-billed and the setting is
-  # gone. A later PR drops the column.
+  # when Claude ran on an API key. Claude runs on Zimmer's own Claude Code
+  # credential, and each delegation's basis is derived from that credential
+  # (ClaudeClient#billing_basis), so there is nothing to choose. A later PR
+  # drops the column.
   self.ignored_columns += [ "voice_claude_billing" ]
 
   Field = Data.define(:key, :path, :type, :label, :help, :options, :min, :max) do
@@ -223,10 +224,10 @@ class LiveSetting < ApplicationRecord
               help: "The model the experimental engines reason and run tools with, through Claude Code on Zimmer's own Claude Code subscription — the account agent sessions run on, so its use counts against the same quota windows. No Anthropic key is needed. Takes effect on the next delegation.",
               options: CLAUDE_MODELS, min: nil, max: nil),
     Field.new(key: :voice_engine_conversation_cap_usd, path: :engine, type: :float, label: "Per-conversation cap (USD)",
-              help: "The most an experimental engine may spend on one conversation. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",
+              help: "The most an experimental engine may spend on one conversation, counting billed (metered) money only — Claude on Zimmer's Claude Code subscription is not counted. At 80% the call is warned; at the cap it ends and the next call runs on OpenAI Realtime.",
               options: nil, min: 0.1, max: 100.0),
     Field.new(key: :voice_engine_daily_cap_usd, path: :engine, type: :float, label: "Daily cap per engine (USD)",
-              help: "The most each experimental engine may spend in a day (deployment time zone), across conversations. Same warning and fallback as the per-conversation cap.",
+              help: "The most each experimental engine may spend in a day (deployment time zone), across conversations, counting billed (metered) money only. Same warning and fallback as the per-conversation cap.",
               options: nil, min: 0.5, max: 500.0),
     Field.new(key: :direct_servers_enabled, path: :tools, type: :enum, label: "Attach MCP servers",
               help: "Whether the assistant can list the MCP server catalog, attach a server to the conversation and call its tools directly. Off, it has only the Zimmer tools its own catalog entry names, and hands anything else to a background session. The assistant cannot change this, and neither can an agent over MCP. Takes effect on the next call or typed turn.",

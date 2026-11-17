@@ -121,6 +121,11 @@ class LiveVoiceEnginesControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-live-costs-engine=gpt_live_claude]", text: /\$0\.10/
     assert_select "[data-live-costs-conversations] a[href=?]", live_conversation_path(@conversation)
     assert_select "[data-live-costs-caps]", text: /gpt_live_claude/
+    assert_select "[data-live-costs-caps]", text: /billed \(metered\) money only/
+    LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-opus-5-5",
+                           input_tokens: 1_000_000, live_conversation: @conversation, billing_basis: "subscription")
+    get live_costs_path
+    assert_select "[data-live-costs-caps]", text: /\$0\.10 of \$10\.00 today/, message: "the caps panel shows metered spend, not list"
 
     get live_costs_path(format: :csv, days: 1)
     assert_response :success
