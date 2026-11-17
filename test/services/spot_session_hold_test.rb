@@ -668,6 +668,112 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
                  "queueing behind a scheduled turn is not another rung on the backoff ladder"
   end
 
+  # The queued row IS the delivery. Once its insert has committed, a failure
+  # writing the timeline line about it must not also give the prompt a job of
+  # its own: the drain delivers the row and the job delivers the prompt again.
+  test "a turn queued behind a deferred one is delivered once when its timeline line fails" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      failed_writes = 0
+      failing_create = lambda do |*args, **kwargs|
+        content = kwargs[:content] || args.first&.[](:content)
+        if content.to_s.include?("queued behind it")
+          failed_writes += 1
+          raise ActiveRecord::StatementInvalid, "log write failed"
+        end
+
+        Log.create!(*args, **kwargs, session: session)
+      end
+
+      assert_no_enqueued_jobs only: AgentSessionJob do
+        session.reload.logs.stub(:create!, failing_create) do
+          SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Second wake")
+        end
+      end
+      assert_equal 1, failed_writes, "the timeline write this test breaks must actually be reached"
+    end
+
+    assert_equal [ "Second wake" ], session.enqueued_messages.pending.pluck(:content),
+                 "the prompt is in the queue exactly once"
+    refute session.reload.metadata.key?("pending_follow_up_prompt")
+  end
+
+  # The same line through the carrier production uses: AgentSessionJob hands the
+  # gate a LogBuffer, so the timeline write is `log_buffer.add`.
+  test "a turn queued behind a deferred one is delivered once when its buffered timeline line fails" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+    buffer = LogBuffer.new(session)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake", log_buffer: buffer)
+      session.reload.update!(status: :running)
+
+      failed_adds = 0
+      buffer.stub(:add, lambda { |message, **|
+        failed_adds += 1 if message.include?("queued behind it")
+        raise StandardError, "buffer full"
+      }) do
+        assert_no_enqueued_jobs only: AgentSessionJob do
+          SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake", log_buffer: buffer)
+        end
+      end
+      assert_equal 1, failed_adds
+    end
+
+    assert_equal [ "Second wake" ], session.enqueued_messages.pending.pluck(:content)
+  end
+
+  # `transaction` raising does not mean the insert rolled back: an after_commit
+  # callback raises after the COMMIT, with the row already in the queue.
+  test "a turn queued behind a deferred one is delivered once when an after-commit step raises" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      EnqueuedMessage.define_method(:raise_after_commit_for_test) { raise StandardError, "after commit" }
+      EnqueuedMessage.after_create_commit :raise_after_commit_for_test
+      begin
+        assert_no_enqueued_jobs only: AgentSessionJob do
+          SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake")
+        end
+      ensure
+        EnqueuedMessage.skip_callback(:commit, :after, :raise_after_commit_for_test)
+        EnqueuedMessage.remove_method(:raise_after_commit_for_test)
+      end
+    end
+
+    assert_equal [ "Second wake" ], session.enqueued_messages.pending.pluck(:content)
+  end
+
+  # The other half of the same line: a queue write that never committed still
+  # falls back to a job, so the prompt is not lost either.
+  test "a turn that cannot be queued behind a deferred one gets a job of its own" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      Sessions::QueueTail.stub(:next_position!, ->(*) { raise ActiveRecord::StatementInvalid, "queue down" }) do
+        assert_enqueued_jobs 1, only: AgentSessionJob do
+          SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake")
+        end
+      end
+    end
+
+    assert_empty session.enqueued_messages.pending
+  end
+
   test "a turn queued behind a deferred one reads the tail under the session row lock" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     session.update!(status: :running)

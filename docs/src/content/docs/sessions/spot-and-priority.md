@@ -1002,7 +1002,10 @@ last the best part of an hour — a second child waking its orchestrator, say:
   concurrency guard drops whichever loses, so the later prompt goes into `enqueued_messages` — the
   durable queue Zimmer already drains at a session's next turn boundary — and is delivered after the
   turn ahead of it. The hold record is left alone in that case: the re-check it names is the one
-  that will actually fire, and a queued prompt is not another rung on the backoff ladder.
+  that will actually fire, and a queued prompt is not another rung on the backoff ladder. If the
+  queue write fails, the prompt gets a job of its own instead. That fallback stops once the row has
+  committed: a failure writing the timeline line about it after that is only logged, because a job
+  on top of a committed row would deliver the prompt twice.
 
 The session detail page shows a **Held for quota headroom** banner — **Next turn held for quota
 headroom** when it was a resume — naming the reason, the next check time, and how to run it now.
