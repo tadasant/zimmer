@@ -40,12 +40,12 @@ module Sessions
   # caused the withdrawal is reported by the caller.
   #
   # The other variant, `remove_delivered`, is for EnqueuedMessageProcessorService
-  # removing the message it has just claimed and marked `sent`, inside the
+  # removing the message it has just claimed (`processing`), inside the
   # transaction that holds the session's row lock (`FOR UPDATE`) and the claim's
   # row lock. Taking the queue lock and the row lock again waits on nothing,
   # since a transaction never waits on a lock it already holds. It removes the
-  # row only while it is `sent`, and writes no Log row: the processor logs the
-  # delivery itself ("Processing enqueued message at position N").
+  # row only while it is `processing`, and writes no Log row: the processor logs
+  # the delivery itself ("Processing enqueued message at position N").
   #
   # With it, every path that removes a queued row goes through here. A row left
   # in place for good (archive, the stale sweep) is retired `undelivered`
@@ -70,11 +70,12 @@ module Sessions
       remove(message, only_status: "pending")
     end
 
-    # @param message [EnqueuedMessage] a claimed message, already marked `sent`
+    # @param message [EnqueuedMessage] a message the processor has claimed
+    #   (`processing`)
     # @return [Integer, nil] the position the message was removed from, or nil
-    #   when the row no longer exists or is not `sent`
+    #   when the row no longer exists or is not `processing`
     def self.remove_delivered(message)
-      remove(message, only_status: "sent")
+      remove(message, only_status: "processing")
     end
 
     # The transaction behind the three entry points. Yields the removed position

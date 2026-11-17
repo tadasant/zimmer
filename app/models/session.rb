@@ -2993,6 +2993,14 @@ class Session < ApplicationRecord
   # This method must be called within a transaction for proper locking behavior.
   # If called outside a transaction, the lock is released immediately after the query.
   #
+  # The claim writes the status alone (`update_columns`) and runs no model
+  # validations. A queued row is checked when it is written; one written under
+  # an older rule (an origin since dropped from EnqueuedMessage::ORIGINS, content
+  # over a since-lowered limit) is still a message somebody was promised, and a
+  # validating write would fail its claim every time it reached the head, with
+  # every message behind it waiting on it. The `FOR UPDATE SKIP LOCKED` row lock
+  # already makes the claim exclusive, so the write has nothing to check.
+  #
   # @return [EnqueuedMessage, nil] the message being processed or nil if none exist
   def process_next_enqueued_message!
     # Use FOR UPDATE SKIP LOCKED to atomically claim a message
@@ -3006,7 +3014,7 @@ class Session < ApplicationRecord
 
     return nil unless message
 
-    message.update!(status: "processing")
+    message.update_columns(status: "processing", updated_at: Time.current)
     message
   end
 

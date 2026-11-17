@@ -2640,6 +2640,28 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
+  test "process_next_enqueued_message! claims a row that fails current validations" do
+    session = Session.create!(
+      prompt: "Test",
+      agent_runtime: "claude_code",
+      git_root: "https://github.com/test/repo.git",
+      branch: "main",
+      status: :needs_input
+    )
+    head = session.enqueued_messages.create!(content: "First message", position: 1)
+    head.update_columns(origin: "an_origin_no_longer_listed", updated_at: 1.hour.ago)
+
+    ActiveRecord::Base.transaction do
+      message = session.process_next_enqueued_message!
+
+      assert_equal head.id, message.id
+      assert_equal "processing", message.status
+      status, updated_at = EnqueuedMessage.where(id: head.id).pick(:status, :updated_at)
+      assert_equal "processing", status
+      assert_operator updated_at, :>, 1.minute.ago
+    end
+  end
+
   test "process_next_enqueued_message! claims messages in position order" do
     session = Session.create!(
       prompt: "Test",

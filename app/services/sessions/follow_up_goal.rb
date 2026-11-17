@@ -97,15 +97,23 @@ module Sessions
         phrase = LOG_PHRASES.fetch(source)
         log = log_with || ->(content) { session.logs.create!(content: content, level: "info") }
 
-        # An id the catalog does not know is never written. Every surface a person
-        # types a goal into refuses one before it gets here, so what can still
-        # arrive is a message queued before that check existed, or one whose id was
-        # retired while it waited. Session would refuse the write, and failing the
-        # delivery over its goal is worse than delivering the prompt without it.
-        unknown = goal.present? && goal != session.goal && GoalsConfig.unknown_id?(goal)
-        log.call("Goal #{goal.inspect} not applied #{phrase}: it is not a known goal id") if unknown
+        # A goal Session would refuse is never written: an id the catalog does not
+        # know, or one over Session::GOAL_MAX_LENGTH. Every surface a person types a
+        # goal into refuses both before it gets here, so what can still arrive is a
+        # message queued before that check existed, or one whose id was retired or
+        # whose length limit was lowered while it waited. Failing the delivery over
+        # its goal is worse than delivering the prompt without it, and a queued
+        # message that failed would fail again every time it reached the head.
+        refused = if goal.blank? || goal == session.goal
+          nil
+        elsif too_long?(goal)
+          "it is longer than the #{Session::GOAL_MAX_LENGTH.to_fs(:delimited)} characters a goal may have"
+        elsif GoalsConfig.unknown_id?(goal)
+          "it is not a known goal id"
+        end
+        log.call("Goal #{refused_goal_label(goal)} not applied #{phrase}: #{refused}") if refused
 
-        changed = if unknown
+        changed = if refused
           false
         elsif clear_when_blank
           goal != session.goal
@@ -120,6 +128,14 @@ module Sessions
         log.call("Goal #{goal.present? ? 'updated' : 'removed'} #{phrase}") if changed
 
         changed
+      end
+
+      private
+
+      # The goal as a refusal log line names it: in full when it is short, cut
+      # down when it is the length that was refused.
+      def refused_goal_label(goal)
+        goal.length > 80 ? "#{goal[0, 77].inspect}..." : goal.inspect
       end
     end
   end
