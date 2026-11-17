@@ -9,7 +9,8 @@
 #   [:user, t, "prompt text"]                   a user transcript line
 #   [:say, t, "assistant text"]                 an assistant text line
 #   [:tool, t_call, t_result, "Bash", { ... }]  a tool_use and its tool_result
-#   [:archive, t, "session #1 via the self-session MCP server"]
+#   [:archive, t, "session #SELF via the self-session MCP server"]
+#                                               (#SELF is the session's own id: a self-archive)
 #
 # Timeline rows are bulk-inserted so their `created_at` is the scripted time
 # and no broadcast fires.
@@ -36,7 +37,7 @@ module CycleTimeFixtures
       when :warn then logs << log_row(session, step[1], step[2], level: "warning")
       when :archive
         archived_at = step[1]
-        logs << log_row(session, step[1], "[State Machine] Session moved to trash by #{step[2]}")
+        logs << log_row(session, step[1], "[State Machine] Session moved to trash by #{step[2].gsub('#SELF', "##{session.id}")}")
       when :user then lines << { "type" => "user", "timestamp" => step[1].utc.iso8601(3), "uuid" => "u#{i}", "message" => { "role" => "user", "content" => step[2] } }
       when :say then lines << assistant_line(step[1], i, [ { "type" => "text", "text" => step[2] } ])
       when :tool

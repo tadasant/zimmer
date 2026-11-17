@@ -13,8 +13,16 @@ module CycleTimes
   #
   # `wake_me_up_when_session_changes_state` needs no reading: it is a wait on
   # another session by construction.
+  #
+  # A `wake_me_up_later` also records WHEN the session meant to come back
+  # (`wake_at`, in `timezone`), carried as `due`. The prompt says what the sleep
+  # was for only until then: a session still asleep long after its wake was due
+  # was not waiting on CI or a PR any more, it was waiting on a wake that did
+  # not fire (see LaneBuilder#add_sleep).
   module WaitClassifier
-    Result = Data.define(:category, :detail)
+    Result = Data.define(:category, :detail, :due) do
+      def initialize(category:, detail:, due: nil) = super
+    end
 
     # The prompt shapes the vendored skills tell an agent to write, matched
     # first because they are exact: open-pr's "Self-wake N of 3" / "post-merge
@@ -54,7 +62,19 @@ module CycleTimes
       end
       return nil unless name.match?(LATER_TOOL)
 
-      classify_text(args["prompt"].to_s, fallback: "wait_sleep", prefix: "wake: ")
+      classify_text(args["prompt"].to_s, fallback: "wait_sleep", prefix: "wake: ").with(due: due_time(args))
+    end
+
+    # When a `wake_me_up_later` was scheduled to fire, or nil when its arguments
+    # do not name a time this can read.
+    def due_time(args)
+      wake_at = args["wake_at"].to_s
+      return nil if wake_at.blank?
+
+      zone = ActiveSupport::TimeZone[args["timezone"].presence || "UTC"] || ActiveSupport::TimeZone["UTC"]
+      zone.parse(wake_at)&.utc
+    rescue ArgumentError
+      nil
     end
 
     # Classify free text (a wake prompt, a sleeping shell loop's command).

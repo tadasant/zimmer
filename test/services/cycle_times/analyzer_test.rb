@@ -44,7 +44,7 @@ class CycleTimes::AnalyzerTest < ActiveSupport::TestCase
         [ :state, T0 + 1560, "Turn started on a worker" ],
         [ :user, T0 + 1565, "CI wake 1" ],
         [ :say, T0 + 1600, "Green." ],
-        [ :archive, T0 + 1700, "session #9001 via the self-session MCP server" ]
+        [ :archive, T0 + 1700, "session #SELF via the self-session MCP server" ]
       ]
     )
 
@@ -55,7 +55,7 @@ class CycleTimes::AnalyzerTest < ActiveSupport::TestCase
         [ :user, T0 + 101, "Look it up" ],
         [ :tool, T0 + 110, T0 + 500, "WebFetch", { "url" => "https://example.com" } ],
         [ :say, T0 + 520, "Found it." ],
-        [ :archive, T0 + 530, "session #9002 via the self-session MCP server" ]
+        [ :archive, T0 + 530, "session #SELF via the self-session MCP server" ]
       ]
     )
 
@@ -148,5 +148,37 @@ class CycleTimes::AnalyzerTest < ActiveSupport::TestCase
     CycleTimes::Analyzer.call(root)
 
     assert_equal 1, CycleTimeAnalysis.where(root_session_id: root.id).count
+  end
+
+  # Session #11878's shape, end to end: a trigger-started gate session that
+  # armed a one-hour wake on its PR's CI, slept 75 days because the wake never
+  # fired, was restarted and archived itself. Before, the 75 days were a
+  # `wait_ci` row in the 7-day window it finished in.
+  test "a hierarchy that slept long past a wake that never fired is not an autonomous row" do
+    wake = { "wake_at" => (T0 + 3_600).utc.iso8601, "timezone" => "UTC",
+             "prompt" => "Resume the gate session. The ledger PR was waiting on CI; merge it when green." }
+    root = build_cycle_time_session(
+      created_at: T0, title: "Gate",
+      script: [
+        [ :state, T0 + 20, "Session started" ],
+        [ :user, T0 + 25, "Gate the issue" ],
+        [ :tool, T0 + 400, T0 + 401, "mcp__zimmer-self-session__wake_me_up_later", wake ],
+        [ :state, T0 + 430, "Session paused, waiting for input" ],
+        [ :state, T0 + 431, "Session sleeping, waiting for scheduled wake-up" ],
+        [ :state, T0 + 75.days, "Session resumed — its turn is queued for a worker" ],
+        [ :state, T0 + 75.days + 100, "Turn started on a worker" ],
+        [ :user, T0 + 75.days + 110, "This session may have been interrupted" ],
+        [ :tool, T0 + 75.days + 150, T0 + 75.days + 151, "mcp__zimmer-self-session__action_session", { "action" => "archive" } ],
+        [ :archive, T0 + 75.days + 152, "session #SELF via the self-session MCP server" ]
+      ]
+    )
+
+    analysis = CycleTimes::Analyzer.call(root)
+
+    refute analysis.eligible
+    assert_equal "missed_wake", analysis.ineligible_reason
+    assert_match "slept until", analysis.ineligible_detail
+    assert_empty analysis.category_seconds
+    assert_empty analysis.lanes
   end
 end

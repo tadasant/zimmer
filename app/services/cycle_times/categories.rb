@@ -44,7 +44,8 @@ module CycleTimes
       Category.new("subagent", "In-process subagent", "inference", 70, "#2a78d6", "hatch",
         "A Task/Agent subagent the session started and blocked on. Its own inference and tools are inside it."),
       Category.new("wait_human", "Waiting on a human", "waiting", 60, "#e34948", nil,
-        "Blocked on an MCP elicitation or AskUserQuestion. About zero on an eligible row by construction."),
+        "Blocked on an MCP elicitation or AskUserQuestion, or parked in needs_input with nothing armed until " \
+        "its archive: on the human action queue."),
       Category.new("wait_ci", "Waiting on CI", "waiting", 55, "#eda100", nil,
         "A self-wake or shell wait whose purpose was GitHub checks: wait-for-ci, gh pr checks --watch, gh run watch."),
       Category.new("wait_merge_gate", "Merge gate / PR holding", "waiting", 50, "#6250d6", nil,

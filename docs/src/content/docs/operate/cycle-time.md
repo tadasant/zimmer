@@ -25,7 +25,11 @@ spawned, transitively. Membership follows spawn edges only:
 - **Status-summary forks are excluded.** They're Zimmer's own bookkeeping, not part of anyone's task.
 
 A row belongs to the window its hierarchy **finished** in (its last archive), so "yesterday's runs"
-means the tasks that completed yesterday.
+means the tasks that completed yesterday. A row is counted whole, not clipped to the window: cycle
+time is a property of a finished task, dated by its completion, so a task that took three days shows
+three days in the 24-hour view of the day it finished. What keeps that honest is eligibility, not
+clipping. A task that stalled for weeks because Zimmer failed to wake it is not an autonomous run, so
+it gets no eligible row (rule 6 below) and can't take over a window's shares.
 
 ## Which hierarchies count as autonomous
 
@@ -33,12 +37,14 @@ A hierarchy gets an eligible row when all of these hold:
 
 1. **Every session in it is archived.** A hierarchy with any session still in flight gets no row at
    all, and loses one it had if a session is restored.
-2. **Every archive of every session was done by an agent**: the session itself or another session,
-   over the MCP API, the self-session server, or the REST API. Zimmer reads this from the archive line
-   on each session's timeline (`Session moved to trash by …`), which the archiving surface writes. The
-   web UI's Trash (single or bulk), a Live Mode archive, one of Zimmer's sweeps (stale-session,
-   status-summary), or an archive with no recorded actor disqualifies the hierarchy. So does a single
-   human-archived leaf.
+2. **Every archive of every session was done by the task itself**: the session or another session
+   in the same hierarchy, over the MCP API or the self-session server, or the REST API. Zimmer reads
+   this from the archive line on each session's timeline (`Session moved to trash by …`), which the
+   archiving surface writes. The web UI's Trash (single or bulk), a Live Mode archive, one of Zimmer's
+   sweeps (stale-session, status-summary), an archive with no recorded actor, or an archive by a
+   session **outside** the hierarchy disqualifies it. That last one covers the nightly fleet cleanup
+   closing a session that sat parked in `needs_input`: that's a sweep run by an agent, and the task
+   didn't archive itself. A single such leaf is enough.
 3. **No human spoke after the initiating prompt.** Zimmer reads the
    [human-messages record](/sessions/hierarchy-and-human-messages/) (`HumanMessage`, written only at an authenticated
    input boundary), not message text. The one allowed message is the initiating prompt: a message on
@@ -47,9 +53,15 @@ A hierarchy gets an eligible row when all of these hold:
 4. **No session was restored from the trash.** A reopened session's span includes its time in the
    trash, and the work after the restore is a second task.
 5. **It has at most 300 sessions.** A bigger hierarchy is a runaway, not a task.
+6. **No session slept more than an hour past a wake that didn't fire.** A `wake_me_up_later` records
+   when it was due. A session still asleep long after that was resumed by something outside the task
+   (a restart, a recovery sweep, a person), so the task stalled rather than finished on its own. Its
+   wall-clock measures the missed trigger, not the work. The first such row was a gate session that
+   armed a one-hour wake on its PR's CI on 2 September, never woke, and was restarted 75 days later.
+   It had been counted as 75 days of `Waiting on CI` and made up 75% of the 7-day view.
 
 An ineligible hierarchy still gets a row, carrying the reason (`human_archive`, `system_archive`,
-`unrecorded_archive`, `human_follow_up`, `reopened`, `too_large`). That's what the page's "Not shown"
+`unrecorded_archive`, `outside_archive`, `human_follow_up`, `reopened`, `too_large`, `missed_wake`). That's what the page's "Not shown"
 line and the `ineligible_hierarchies` count report, so "how many tasks were autonomous" has a
 denominator.
 
@@ -115,10 +127,12 @@ Between turns, the lane is cut by why the session wasn't running:
 | queued for a worker (created, or resumed) | `wait_worker_queue` |
 | after a `Spot session held` line, until the next turn | `wait_spot_hold` |
 | after a quota-park line (`Quota exceeded across all …`, `No usable … login`, `Provider quota wall`), until the next turn | `wait_quota_park` |
-| asleep | the wake its last turn armed, read by `CycleTimes::WaitClassifier` (below); `wait_sleep` if none |
+| asleep, until the wake its last turn armed was due | that wake, read by `CycleTimes::WaitClassifier` (below); `wait_sleep` if none |
+| asleep more than 15 minutes past that wake's due time | `unattributed` from the due time on ("asleep past its scheduled wake") |
 | `needs_input` while one of its children was alive | `wait_child` |
 | `needs_input` otherwise, holding a PR it recorded | `wait_merge_gate` |
-| `needs_input` otherwise | `unattributed` |
+| `needs_input` otherwise, and nothing resumed it before its archive | `wait_human`: parked on the action queue until something closed it |
+| `needs_input` otherwise, later resumed | `unattributed`: an agent, a trigger or a person could have resumed it |
 | blocked on an MCP elicitation | `wait_human` |
 | failed, then revived | `unattributed` |
 
@@ -128,6 +142,12 @@ for its future self. The vendored skills' exact shapes match first: wait-for-ci'
 `Blocker wake N` are `wait_ci`, open-pr's `Self-wake N of 3` is `wait_merge_gate`, and its
 `post-merge wake N of 10` is `wait_deploy`. After that come free-text patterns for deploys, CI and PR
 state, in that order.
+
+The prompt says what a sleep was for only until the wake was due (`wake_at`, in its `timezone`; a
+watcher takes its backstop's). Wakes fire within a minute or two, so up to 15 minutes late still
+counts as the wake's own wait. Beyond that the session was asleep on a wake that didn't fire, and the
+time from the due moment on is `unattributed`. More than an hour of it disqualifies the hierarchy
+(rule 6).
 
 ### The categories, and why these
 
@@ -145,7 +165,7 @@ state, in that order.
 | Worker queue | waiting | A turn ready to run that no worker thread had picked up |
 | Spot-gate hold | waiting | Quota pacing: a spot session held until the window has room |
 | Quota park | waiting | Every account out of quota, or the provider refusing |
-| Waiting on a human | waiting | Elicitations. About zero on an eligible row by construction |
+| Waiting on a human | waiting | Elicitations, and a session parked in `needs_input` with nothing armed until its archive. Typically a one-turn answer to a human, left open for them to read |
 | Turn startup | overhead | Process spawn, MCP servers booting, the CLI resuming its conversation. It recurs on every turn |
 | Unattributed | overhead | Time no recorded event explains. Shown, never spread across the others |
 
@@ -194,6 +214,11 @@ evenly, between 60 and 1,500 per lane. Every total is computed before that cut.
   older timelines have lost the state and archive lines this reads.
 - **The REST API's archive counts as an agent's.** It's reached with the fleet's shared API key, but
   the iOS app reaches it too, with no actor recorded that tells the two apart.
+- **Only the last turn's wakes are read.** A sleep is explained by the wake its last turn armed. A
+  `wake_me_up_later` armed in an earlier turn and still pending isn't seen, so that sleep is a generic
+  `Timed sleep` with no due time.
+- **A parked `needs_input` that something later resumed stays `Unattributed`.** The timeline doesn't
+  record who resumed it, so it could have been an agent, a trigger or a person.
 - **A wake's purpose comes from its prompt text.** A prompt that doesn't follow the skills' shapes
   and doesn't mention CI, a PR or a deploy is a generic `Timed sleep`.
 - **Transcript and timeline clocks are written by different processes.** A small skew moves a few

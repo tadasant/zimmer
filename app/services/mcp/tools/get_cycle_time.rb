@@ -16,8 +16,9 @@ module Mcp
 
         A **task** is one session hierarchy: a root session and every session it spawned (spawn edges
         only). It counts only if it ran end to end autonomously: every session was archived by an agent
-        (itself or another session), never by a human or a Zimmer sweep, and the human-messages record
-        holds no human message after the initiating prompt. A task belongs to the window it FINISHED in.
+        in the task (itself or another session in the hierarchy), never by a human, a Zimmer sweep or an
+        outside session; the human-messages record holds no human message after the initiating prompt;
+        and no session slept over an hour past a wake that never fired. A task belongs to the window it FINISHED in, counted whole.
 
         Each task's wall-clock — first session created to last session archived — is split into
         categories that sum to it exactly:
@@ -29,8 +30,9 @@ module Mcp
           merge gate), **wait_deploy** (post-merge runs, deploys), **wait_child** (watching a spawned
           session), **wait_sleep** (other timed self-wakes / shell sleeps), **wait_worker_queue** (turn
           queued for a worker), **wait_spot_hold** (spot gate), **wait_quota_park** (quota parks),
-          **wait_human** (MCP elicitation)
-        - **turn_startup** (worker start → first transcript event) and **unattributed** (wind-down and gaps)
+          **wait_human** (MCP elicitation, or parked in needs_input until archived)
+        - **turn_startup** (worker start → first transcript event) and **unattributed** (wind-down, gaps, and
+          sleep past a scheduled wake that did not fire)
 
         When sessions overlap, each instant is charged once, to the highest-priority thing any session
         was doing: work beats waiting, and a parent waiting on a child is charged to what the child was

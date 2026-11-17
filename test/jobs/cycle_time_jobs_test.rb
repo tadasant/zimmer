@@ -5,7 +5,7 @@ require "test_helper"
 class CycleTimeJobsTest < ActiveJob::TestCase
   include CycleTimeFixtures
 
-  AGENT = "session #1 via the self-session MCP server"
+  AGENT = "session #SELF via the self-session MCP server"
 
   def settled_root(at: 2.days.ago)
     root = build_cycle_time_session(created_at: at, title: "Root", script: simple_turn(at + 5) + [ [ :archive, at + 120, AGENT ] ])

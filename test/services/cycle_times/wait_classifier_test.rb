@@ -31,4 +31,16 @@ class CycleTimes::WaitClassifierTest < ActiveSupport::TestCase
   test "other tools are not wakes" do
     assert_nil CycleTimes::WaitClassifier.classify_wake("Bash", { "command" => "sleep 5" })
   end
+
+  test "a timed wake carries when it was due, read in its timezone" do
+    utc = CycleTimes::WaitClassifier.classify_wake(LATER, { "prompt" => "CI wake 1", "wake_at" => "2026-09-02T02:12:00" })
+    assert_equal Time.utc(2026, 9, 2, 2, 12), utc.due
+
+    eastern = CycleTimes::WaitClassifier.classify_wake(LATER, { "prompt" => "x", "wake_at" => "2026-09-02T09:00:00",
+                                                                "timezone" => "America/New_York" })
+    assert_equal Time.utc(2026, 9, 2, 13), eastern.due
+
+    assert_nil CycleTimes::WaitClassifier.classify_wake(LATER, { "prompt" => "x" }).due
+    assert_nil CycleTimes::WaitClassifier.classify_wake(LATER, { "prompt" => "x", "wake_at" => "not a time" }).due
+  end
 end

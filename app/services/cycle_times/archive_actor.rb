@@ -27,5 +27,10 @@ module CycleTimes
 
       :unrecorded
     end
+
+    # The archiving session's id, when the phrase names one ("session #12 via …").
+    def session_id(phrase)
+      phrase.to_s[/\Asession #(\d+) via\b/, 1]&.to_i
+    end
   end
 end
