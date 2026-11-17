@@ -2492,7 +2492,7 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       @log_buffer.flush
     end
 
-    content = @session.logs.order(:created_at).last.content
+    content = @session.logs.order(:created_at, :id).last.content
     assert_includes content, "Process stderr:"
     assert_includes content, "[REDACTED:ENV:FIXTURE_SECRET:"
     refute_includes content, secret
