@@ -668,6 +668,56 @@ class SpotSessionHoldTest < ActiveSupport::TestCase
                  "queueing behind a scheduled turn is not another rung on the backoff ladder"
   end
 
+  # The queued row IS the delivery. Once its insert has committed, a failure
+  # writing the timeline line about it must not also give the prompt a job of
+  # its own: the drain delivers the row and the job delivers the prompt again.
+  test "a turn queued behind a deferred one is delivered once when its timeline line fails" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      failing_create = lambda do |*args, **kwargs|
+        content = kwargs[:content] || args.first&.[](:content)
+        raise ActiveRecord::StatementInvalid, "log write failed" if content.to_s.include?("queued behind it")
+
+        Log.create!(*args, **kwargs, session: session)
+      end
+
+      assert_no_enqueued_jobs only: AgentSessionJob do
+        session.reload.logs.stub(:create!, failing_create) do
+          SpotSessionHold.hold_if_needed(session, follow_up_prompt: "Second wake")
+        end
+      end
+    end
+
+    assert_equal [ "Second wake" ], session.enqueued_messages.pending.pluck(:content),
+                 "the prompt is in the queue exactly once"
+    refute session.reload.metadata.key?("pending_follow_up_prompt")
+  end
+
+  # The other half of the same line: a queue write that never committed still
+  # falls back to a job, so the prompt is not lost either.
+  test "a turn that cannot be queued behind a deferred one gets a job of its own" do
+    session = build_session(SessionGenesis::GITHUB_ISSUE)
+    session.update!(status: :running)
+
+    SpotGateService.stub(:evaluate, held_decision) do
+      SpotSessionHold.hold_if_needed(session, follow_up_prompt: "First wake")
+      session.reload.update!(status: :running)
+
+      Sessions::QueueTail.stub(:next_position!, ->(*) { raise ActiveRecord::StatementInvalid, "queue down" }) do
+        assert_enqueued_jobs 1, only: AgentSessionJob do
+          SpotSessionHold.hold_if_needed(session.reload, follow_up_prompt: "Second wake")
+        end
+      end
+    end
+
+    assert_empty session.enqueued_messages.pending
+  end
+
   test "a turn queued behind a deferred one reads the tail under the session row lock" do
     session = build_session(SessionGenesis::GITHUB_ISSUE)
     session.update!(status: :running)
