@@ -50,15 +50,19 @@ itself refused it:
   in there or its sign-in has expired (Access sign-ins last a set time, so this comes back
   periodically). The error carries a **Sign in** link to `<URL>/api/v1/health`: Access runs the
   login and the tab ends on Zimmer's short "Invalid or missing API key" reply, which means the
-  browser is through. Then send again; the composer keeps the text. The link never points at the
-  bare URL, because an API-only host answers everything outside `/api` with a 404 by design, and
-  on Tadas's deployment that includes `https://zimmer-app.tadasant.com/` and
-  `https://zimmer-app.tadasant.com/settings/api_keys`. The settings page is on the web UI,
-  `https://zimmer.tadasant.com/settings/api_keys`.
+  browser is through. Then send again; the composer keeps the text.
 - **An Access 401** comes from an Access app that admits service tokens only, and signing in will not
   get past it. Change the URL in the options to one whose Access app admits a browser sign-in.
 - **An Access 403** means the browser is signed in with an account the policy does not admit. Sign in
-  with the right account, through the same **Sign in** link.
+  with the right account. Access would reuse the refused session, so the error says to sign out at
+  `<URL>/cdn-cgi/access/logout` first, then sign in at `<URL>/api/v1/health`.
+
+Neither link points at the bare URL. An API-only host answers everything outside `/api` with a 404
+by design: on Tadas's deployment that includes `https://zimmer-app.tadasant.com/` and
+`https://zimmer-app.tadasant.com/settings/api_keys`. The settings page is on the web UI,
+`https://zimmer.tadasant.com/settings/api_keys`. The options page's **Settings → API keys** link
+goes there once one message has been sent, because the extension remembers the web UI origin from
+the session URL Zimmer reports. Before the first send, the link uses the send URL.
 
 The toast links to the session on the web UI URL Zimmer reports (`ZIMMER_PROD_BASE_URL`), not on
 the URL the extension sends to, because that can be a host that serves the API only. When Zimmer

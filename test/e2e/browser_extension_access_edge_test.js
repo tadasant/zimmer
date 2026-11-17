@@ -159,6 +159,14 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     assert(received[0]?.body?.prompt === 'after signing in', 'and the message as the prompt');
     await host.locator('.toast button').click();
 
+    console.log('Step 2a: the options page links to API keys on the web UI Zimmer reported, not the send URL...');
+    const options = await context.newPage();
+    await options.goto(new URL('options.html', worker.url()).href);
+    await options.waitForFunction(() => document.getElementById('keysLink').getAttribute('href') !== '#');
+    const keysHref = await options.locator('#keysLink').getAttribute('href');
+    assert(keysHref === 'https://zimmer-web.example/settings/api_keys', `the API keys link is on the web UI (${keysHref})`);
+    await options.close();
+
     console.log('Step 2b: without a usable session_url, the link falls back to the URL the browser reached...');
     for (const [reported, label] of [[undefined, 'missing'], ['javascript:alert(1)', 'not http(s)']]) {
       reportedSessionUrl = reported;
@@ -198,10 +206,9 @@ const FIXTURE = '<!doctype html><html><head><title>Fixture</title></head><body><
     await host.locator('.error').waitFor({ timeout: 30000 });
     const forbidden = await host.locator('.error').innerText();
     assert(forbidden.includes('refused the account') && !forbidden.includes('Quick Router key'), `the 403 names the account (${forbidden})`);
-    // A path Zimmer answers, never the bare URL: an API-only host 404s on `/`.
-    const signInLink = await host.locator('.error a').getAttribute('href');
-    assert(signInLink === `${BASE_URL}/api/v1/health`, `the 403 links to a sign-in on a path Zimmer answers (${signInLink})`);
-    assert(!forbidden.includes(`${BASE_URL} in a tab`), 'it does not send the human to the bare URL');
+    // Signing in again would reuse the refused account, so the way out is a sign-out first.
+    assert(forbidden.includes(`${BASE_URL}/cdn-cgi/access/logout`) && forbidden.includes(`${BASE_URL}/api/v1/health`), `the 403 says to sign out, then sign in on a path Zimmer answers (${forbidden})`);
+    assert((await host.locator('.error a').count()) === 0, 'the 403 offers no one-click sign-in, which would reuse the refused account');
     await page.keyboard.press('Escape');
 
     console.log('Step 6: a URL that answers 200 but is not Zimmer is not a sent message...');

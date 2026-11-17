@@ -108,6 +108,7 @@ async function submit(payload) {
     return { ok: false, error: `${baseUrl} answered, but not as Zimmer: no session came back. Is the URL right?` };
   }
 
+  await Settings.saveWebUiUrl(baseUrl, body.session_url).catch(() => {});
   return { ok: true, sessionId: body.session_id, sessionUrl: sessionLink(body, baseUrl) };
 }
 
@@ -136,7 +137,7 @@ function signInUrlFor(baseUrl) {
 }
 
 // What to tell the human when something in front of Zimmer answered instead of
-// Zimmer — `{ error, signInUrl? }`, with `signInUrl` when signing in is the fix
+// Zimmer — `{ error, signInUrl? }`, with `signInUrl` when signing in is all it takes
 // — or null when Zimmer answered. Cloudflare Access marks its own refusals with
 // `cf-access-domain`. An Access app that takes a browser login answers a request
 // without a valid sign-in by redirecting it to the login page (`redirect:
@@ -162,12 +163,10 @@ function accessProxyRefusal(response, baseUrl) {
   if (response.status === 401) {
     return { error: `The access proxy in front of Zimmer stopped it before Zimmer saw it. It most likely admits service tokens only on Zimmer's API, so signing in will not help. Set the URL in the extension's options to a host whose access proxy admits a browser sign-in on /api.` };
   }
+  // No sign-in link: Access would reuse the refused account's session. Signing
+  // out of Access first is what lets a different account in.
   if (response.status === 403) {
-    const signInUrl = signInUrlFor(baseUrl);
-    return {
-      error: `The access proxy in front of Zimmer refused the account this browser is signed in with. Sign in at ${signInUrl} with the account the deployment admits, then send again.`,
-      signInUrl
-    };
+    return { error: `The access proxy in front of Zimmer refused the account this browser is signed in with. Sign out at ${baseUrl}/cdn-cgi/access/logout, sign in at ${signInUrlFor(baseUrl)} with the account the deployment admits, then send again.` };
   }
   return null;
 }
