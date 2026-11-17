@@ -1743,7 +1743,7 @@ control that combines with the others, and each persists exactly as pressing **A
 | Read the windows, the concurrency limit, and the current decision | Spot gate card on the Claude Code tab of `/inference` | `get_spot_policy` |
 | Read each window's estimated capacity, dollars remaining, dollars reserved, and spot budget left | Account Pool section and spot gate card on `/inference` | `get_spot_policy` |
 | Read the fleet's burn rate and the sustainable rate the curve allows | Spot gate card on `/inference` | `get_spot_policy` |
-| Read the $/min of each harness + model combination | Burn rate table on `/costs` | `get_costs` |
+| Read the $/min of each harness + model combination | Burn rate table on `/token-spend` | `get_costs` |
 | Read which of the three ceilings is holding spot work, and what lifts it | Spot gate card on `/inference` | `get_spot_policy` |
 | Read how many spot sessions are asleep in the spot queue | Spot gate card on `/inference` | `get_spot_policy` |
 | Read when the account pool regains capacity, and the soonest 7-day rollover behind it | Account Pool section on `/inference` | `get_spot_policy` |

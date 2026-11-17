@@ -1572,11 +1572,15 @@ OpenRouter key's write and delete, which stay on the page.
 
 ## Costs
 
+This section is the **token-spend** ledger behind the Token Spend page (`/token-spend`). The path
+kept its name when the page was renamed, because installed iOS builds call it. What operating the
+deployment costs in real money is [Operating costs](#operating-costs) below.
+
 `GET /api/v1/costs` → rollups over a window: `totals`, `cost_breakdown` (by kind of token),
 `by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`, and
 `unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
 
-On the whole fleet the response also carries `burn_rates`: the Costs page's
+On the whole fleet the response also carries `burn_rates`: the Token Spend page's
 [burn rate card](/operate/costs/#burn-rate-by-harness--model) as
 `[{harness, model, usd_per_minute, usd_per_hour, sample_session_count, sample_minutes, computed_at}]`,
 dearest first, fresh rates only, `[]` before any have been computed. They are the scheduler's current
@@ -1585,7 +1589,7 @@ fleet rates, so a request narrowed by `agent_root` or `session_id` omits the key
 the card.
 
 Narrow every rollup with `agent_root` or `session_id` — the same two arguments `get_costs` takes and
-the Costs page's *Only this* links carry, so all three surfaces answer the same question. `session_id`
+the Token Spend page's *Only this* links carry, so all three surfaces answer the same question. `session_id`
 wins when both are given, and the response echoes what it applied under `scope`. An agent-root scope
 excludes ad hoc spend, which belongs to no root; a session scope keeps the ad hoc calls made *about*
 that session. See [Narrowing the whole page](/operate/costs/#narrowing-the-whole-page).
@@ -1620,6 +1624,34 @@ without its rate table is not reproducible — see [Token spend](/operate/costs/
 Dollar amounts are **list price, not a bill**. These accounts are subscription-billed; the figures
 are a comparable unit across models. A model with no configured rate contributes zero and is named
 in `unpriced_models` rather than being silently folded into the total.
+
+## Operating costs
+
+The [Costs](/operate/operating-costs/) page (`/costs`) over REST, one to one with the
+`operating_costs` MCP tool group. API key or the app's sign-in; the iOS app's token is not accepted,
+because the app has no screen for it.
+
+`GET /api/v1/operating_costs` → the report for one `month` (YYYY-MM, default the current one),
+through yesterday. `view` is `summary` (default: `totals` and one row per group with its accounts,
+plus `paid_by_others`), `timeseries` (`granularity` `month` or `day`, over `from`/`to`),
+`projections` (the monthly strip, credits with burn and run-out, subscriptions, renewals) or
+`sources` (per-account freshness and the latest run per collector). `group_by` is `functionality`
+(default), `vendor`, `account` or `agent_root`. Filters: `functionality` (a key, or
+`unattributed`), `vendor`, `agent_root`, `include_external`. Every response carries `as_of`,
+`stale` and `stale_reasons`. A bad argument is a 400.
+
+`GET /api/v1/operating_costs/records` → one table's rows, newest first: `kind` is `observations`
+(default), `credit_snapshots`, `subscriptions`, `daily_entries`, `allocations`, `accounts`,
+`vendors`, `functionalities` or `runs`; narrow with `account`, `from`, `to`; page with `page` and
+`per_page` (25, max 100).
+
+`POST /api/v1/operating_costs/actions` → every write, by name in the body's `action`: `record`
+(a `payload` batch, optionally named as a run with `collector`), `upsert_functionality`,
+`upsert_vendor`, `upsert_account`, `upsert_subscription`, `upsert_observation`,
+`upsert_credit_snapshot` (one `item` each), `end_subscription`, `delete_observation`,
+`delete_credit_snapshot`, `collect_now`. Pass `session_id` to stamp the writing session. The payload
+shapes are listed in [the write contract](/operate/operating-costs/#the-write-contract). An invalid
+write is a 422 naming the bad item, and nothing in its batch is kept.
 
 ## Elicitations
 

@@ -1115,7 +1115,7 @@ whatever the setting says. Pi keeps its own MCP context cost down a different wa
 exposes one `mcp` proxy tool instead of registering every server's tools individually.
 
 Every session is tagged with what this setting was when it started and when it last ran, and the
-Costs page compares the two cohorts. See
+Token Spend page compares the two cohorts. See
 [Experimental settings](/operate/costs/#experimental-settings).
 
 The setting is a plain column rather than a [Zimmer Extension](/extend/extensions/) on purpose. It

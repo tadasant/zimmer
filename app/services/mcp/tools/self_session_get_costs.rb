@@ -115,7 +115,7 @@ module Mcp
         raise ToolError, "This `get_costs` is scoped to the session making the call and cannot report on " \
                          "agent root `#{root}` — or on the fleet. Spend across an agent root is the " \
                          "deployment's posture rather than one session's business, and it is read through " \
-                         "the fleet-wide `get_costs` on the `health` tool group, or the Costs page at " \
+                         "the fleet-wide `get_costs` on the `health` tool group, or the Token Spend page at " \
                          "#{costs_url}. Drop `agent_root` to get your own session's spend."
       end
 
@@ -135,7 +135,7 @@ module Mcp
                          "fleet-wide `get_costs` on the `health` tool group."
       end
 
-      def costs_url = "#{context.base_url.to_s.chomp("/")}/costs"
+      def costs_url = "#{context.base_url.to_s.chomp("/")}/token-spend"
     end
   end
 end

@@ -337,7 +337,7 @@ class PiTokenUsageIngestionService
 
   # `<provider>/<model>`, which is the id ModelCatalog offers and the session
   # config stores ("openrouter/anthropic/claude-opus-4.6"). Storing the qualified
-  # form rather than the bare model keeps the Costs page's by-model rollup honest
+  # form rather than the bare model keeps the Token Spend page's by-model rollup honest
   # about which provider served the call — and TokenPricing's longest-family
   # match reads through it unchanged, so an `anthropic/claude-*` model prices at
   # the rate OpenRouter publishes for it.

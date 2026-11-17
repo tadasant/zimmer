@@ -26,7 +26,7 @@ class SessionExperimentalFlagDashboard < Administrate::BaseDashboard
   SHOW_PAGE_ATTRIBUTES = ATTRIBUTE_TYPES.keys.freeze
 
   # Read-only. These are observations — what a setting was when a session ran —
-  # and the Costs page's cohort comparison is only worth anything if they stay
+  # and the Token Spend page's cohort comparison is only worth anything if they stay
   # that way. Editing one by hand would move a session between cohorts with no
   # record that anything was changed, which is indistinguishable from the data
   # having said so all along.

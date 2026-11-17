@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_16_203000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_140000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -833,6 +833,160 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_203000) do
     t.index ["token_digest"], name: "index_oauth_server_tokens_on_token_digest", unique: true
   end
 
+  create_table "operating_cost_accounts", force: :cascade do |t|
+    t.boolean "active", default: true, null: false
+    t.jsonb "allocation_config", default: {}, null: false
+    t.string "allocation_rule", default: "unallocated", null: false
+    t.datetime "created_at", null: false
+    t.string "derived_source"
+    t.string "environment"
+    t.string "external_ref"
+    t.bigint "functionality_id"
+    t.string "key", null: false
+    t.string "label", null: false
+    t.text "notes"
+    t.string "paid_by", default: "self", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "vendor_id", null: false
+    t.decimal "zimmer_share", precision: 5, scale: 4, default: "1.0", null: false
+    t.index ["derived_source"], name: "index_operating_cost_accounts_on_derived_source", unique: true
+    t.index ["functionality_id"], name: "index_operating_cost_accounts_on_functionality_id"
+    t.index ["key"], name: "index_operating_cost_accounts_on_key", unique: true
+    t.index ["vendor_id"], name: "index_operating_cost_accounts_on_vendor_id"
+  end
+
+  create_table "operating_cost_collection_runs", force: :cascade do |t|
+    t.string "collector", null: false
+    t.datetime "created_at", null: false
+    t.jsonb "details", default: {}, null: false
+    t.text "error"
+    t.datetime "finished_at"
+    t.integer "rows_written", default: 0, null: false
+    t.bigint "session_id"
+    t.datetime "started_at", null: false
+    t.string "status", null: false
+    t.datetime "updated_at", null: false
+    t.index ["collector", "started_at"], name: "idx_on_collector_started_at_a0cb9b6981"
+  end
+
+  create_table "operating_cost_credit_snapshots", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.date "as_of_date", null: false
+    t.decimal "balance", precision: 14, scale: 4, null: false
+    t.decimal "balance_usd", precision: 14, scale: 4, null: false
+    t.datetime "created_at", null: false
+    t.string "currency", default: "USD", null: false
+    t.text "evidence"
+    t.date "expires_on"
+    t.decimal "granted_total", precision: 14, scale: 4
+    t.string "kind", default: "prepaid", null: false
+    t.bigint "recorded_by_session_id"
+    t.string "source", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "as_of_date", "source"], name: "index_operating_cost_credit_snapshots_identity", unique: true
+    t.index ["account_id"], name: "index_operating_cost_credit_snapshots_on_account_id"
+  end
+
+  create_table "operating_cost_daily_entries", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.decimal "amount_usd", precision: 14, scale: 4, null: false
+    t.string "basis", null: false
+    t.string "confidence", null: false
+    t.datetime "created_at", null: false
+    t.date "date", null: false
+    t.string "source", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "date"], name: "index_operating_cost_daily_entries_on_account_id_and_date", unique: true
+    t.index ["account_id"], name: "index_operating_cost_daily_entries_on_account_id"
+    t.index ["date"], name: "index_operating_cost_daily_entries_on_date"
+  end
+
+  create_table "operating_cost_functionalities", force: :cascade do |t|
+    t.boolean "active", default: true, null: false
+    t.jsonb "agent_roots", default: [], null: false
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.string "key", null: false
+    t.jsonb "mcp_servers", default: [], null: false
+    t.string "name", null: false
+    t.integer "position", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.index ["key"], name: "index_operating_cost_functionalities_on_key", unique: true
+  end
+
+  create_table "operating_cost_monthly_allocations", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "agent_root"
+    t.string "allocation_method", null: false
+    t.decimal "amount_usd", precision: 14, scale: 4, null: false
+    t.jsonb "basis_detail", default: {}, null: false
+    t.datetime "computed_at", null: false
+    t.datetime "created_at", null: false
+    t.bigint "functionality_id"
+    t.date "month", null: false
+    t.decimal "share", precision: 7, scale: 6, null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_operating_cost_monthly_allocations_on_account_id"
+    t.index ["functionality_id"], name: "index_operating_cost_monthly_allocations_on_functionality_id"
+    t.index ["month", "account_id"], name: "idx_on_month_account_id_f3771c3738"
+  end
+
+  create_table "operating_cost_observations", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.decimal "amount", precision: 14, scale: 4, null: false
+    t.decimal "amount_usd", precision: 14, scale: 4, null: false
+    t.date "as_of_date", null: false
+    t.string "collector"
+    t.string "confidence", null: false
+    t.datetime "created_at", null: false
+    t.string "currency", default: "USD", null: false
+    t.text "evidence"
+    t.string "metric", null: false
+    t.date "period_end", null: false
+    t.date "period_start", null: false
+    t.jsonb "raw_payload", default: {}, null: false
+    t.bigint "recorded_by_session_id"
+    t.string "source", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "metric", "as_of_date", "period_start", "source"], name: "index_operating_cost_observations_identity", unique: true
+    t.index ["account_id"], name: "index_operating_cost_observations_on_account_id"
+    t.index ["as_of_date"], name: "index_operating_cost_observations_on_as_of_date"
+  end
+
+  create_table "operating_cost_subscriptions", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.decimal "amount", precision: 14, scale: 4, null: false
+    t.decimal "amount_usd", precision: 14, scale: 4, null: false
+    t.boolean "auto_renew", default: true, null: false
+    t.datetime "created_at", null: false
+    t.string "currency", default: "USD", null: false
+    t.date "ended_on"
+    t.decimal "included_usage_usd", precision: 14, scale: 4
+    t.string "interval", default: "month", null: false
+    t.text "notes"
+    t.string "plan_name", null: false
+    t.integer "quantity", default: 1, null: false
+    t.date "renews_on"
+    t.date "started_on", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "plan_name", "started_on"], name: "index_operating_cost_subscriptions_identity", unique: true
+    t.index ["account_id"], name: "index_operating_cost_subscriptions_on_account_id"
+  end
+
+  create_table "operating_cost_vendors", force: :cascade do |t|
+    t.boolean "active", default: true, null: false
+    t.string "billing_url"
+    t.string "category", default: "other", null: false
+    t.datetime "created_at", null: false
+    t.string "ingest_method", default: "manual", null: false
+    t.string "key", null: false
+    t.string "name", null: false
+    t.text "notes"
+    t.string "pricing_model", default: "usage", null: false
+    t.datetime "updated_at", null: false
+    t.index ["key"], name: "index_operating_cost_vendors_on_key", unique: true
+  end
+
   create_table "outcome_analyses", force: :cascade do |t|
     t.string "agent_root"
     t.string "agent_runtime", null: false
@@ -1469,6 +1623,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_203000) do
   add_foreign_key "oauth_server_authorization_codes", "oauth_server_clients", on_delete: :cascade
   add_foreign_key "oauth_server_grants", "oauth_server_clients", on_delete: :cascade
   add_foreign_key "oauth_server_tokens", "oauth_server_grants", on_delete: :cascade
+  add_foreign_key "operating_cost_accounts", "operating_cost_functionalities", column: "functionality_id", on_delete: :nullify
+  add_foreign_key "operating_cost_accounts", "operating_cost_vendors", column: "vendor_id"
+  add_foreign_key "operating_cost_credit_snapshots", "operating_cost_accounts", column: "account_id", on_delete: :cascade
+  add_foreign_key "operating_cost_daily_entries", "operating_cost_accounts", column: "account_id", on_delete: :cascade
+  add_foreign_key "operating_cost_monthly_allocations", "operating_cost_accounts", column: "account_id", on_delete: :cascade
+  add_foreign_key "operating_cost_monthly_allocations", "operating_cost_functionalities", column: "functionality_id", on_delete: :nullify
+  add_foreign_key "operating_cost_observations", "operating_cost_accounts", column: "account_id", on_delete: :cascade
+  add_foreign_key "operating_cost_subscriptions", "operating_cost_accounts", column: "account_id", on_delete: :cascade
   add_foreign_key "outcome_analyses", "sessions", column: "analyzer_session_id", on_delete: :nullify
   add_foreign_key "outcome_analyses", "sessions", on_delete: :cascade
   add_foreign_key "outcome_analysis_batch_items", "outcome_analysis_batches", on_delete: :cascade

@@ -75,7 +75,7 @@ require "zstd-ruby"
 # COST, HONESTLY
 #
 # Volumes land; money currently does not. `TokenPricing` carries Anthropic rates
-# only, so a `gpt-5.6-terra` row prices at $0 and appears in the Costs page's
+# only, so a `gpt-5.6-terra` row prices at $0 and appears in the Token Spend page's
 # unpriced-models list. That is the existing, deliberate behaviour for a model
 # with no rate — visibly unpriced beats silently mis-priced — and it is a strict
 # improvement on the runtime being absent from the ledger altogether. See
@@ -378,7 +378,7 @@ class CodexTokenUsageIngestionService
   #      sanitized directory name.
   #
   # A rollout that matches neither is still ingested with a null session — spend
-  # that happened is still spend, and the Costs page shows it as unattributed
+  # that happened is still spend, and the Token Spend page shows it as unattributed
   # rather than losing it.
   def attribute(uuid, cwd)
     by_uuid = session_by_uuid(uuid)

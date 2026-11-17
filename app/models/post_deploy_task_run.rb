@@ -86,7 +86,7 @@ class PostDeployTaskRun < ApplicationRecord
     # Everything the health panel, the REST API, the MCP tool and the Supervisor
     # dashboard say about post-deploy tasks. One object, so the four surfaces
     # cannot drift into claiming different things — the same discipline
-    # `TokenUsageBackfill.coverage` applies to the Costs page.
+    # `TokenUsageBackfill.coverage` applies to the Token Spend page.
     def summary(registered: PostDeployTask::Registry.all)
       runs = in_version_order.to_a
       known_versions = runs.map(&:version).to_set

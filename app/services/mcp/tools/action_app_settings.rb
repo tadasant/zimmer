@@ -46,7 +46,7 @@ module Mcp
           `setting` and `enabled`). `setting` is the key `get_app_settings` lists: `mcp_tool_search`,
           `warm_clone_pool_active_roots`, `warm_router_process`, or `extension.<id>` for a registered experimental Zimmer Extension. An unknown key, or an
           extension that is not registered, is refused. Every
-          session is tagged with each toggle's value as it runs, and the Costs page compares those
+          session is tagged with each toggle's value as it runs, and the Token Spend page compares those
           cohorts — so switching a setting back and forth is how its cohorts come to interleave in
           time rather than split at one date.
 
@@ -165,7 +165,7 @@ module Mcp
 
         "#{experimental.title} (`#{experimental.key}`) is now **#{on_off(enabled)}** (was #{on_off(before)}; " \
           "shipped default #{on_off(default)}). Sessions spawned from now on run with it #{on_off(enabled)}, " \
-          "and are tagged that way for the Costs page."
+          "and are tagged that way for the Token Spend page."
       end
 
       def session_defaults_phrase(setting)

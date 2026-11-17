@@ -6,7 +6,7 @@
 # TokenUsageIngestionJob only looks at files modified in the last two hours, so
 # everything older than the day ingestion shipped has to be swept once. That
 # sweep was a rake task, which made a deploy insufficient: the numbers on the
-# Costs page stayed wrong until a human SSH'd in. This job is the fix. On the
+# Token Spend page stayed wrong until a human SSH'd in. This job is the fix. On the
 # first tick after a deploy it starts a TokenUsageBackfill run, works it two
 # minutes at a time, and — once the corpus is covered — costs one indexed lookup
 # per tick forever after.
@@ -70,7 +70,7 @@ class TokenUsageBackfillJob < ApplicationJob
   # and are terminal by design, and the recurring job only ever looks two hours back — so
   # without this, any gap longer than that window (a worker outage, an ingestor
   # bug found a day later) would lose that spend permanently, with no surface to
-  # ask for it back. Now the Costs page button, `POST /api/v1/costs/backfill` and
+  # ask for it back. Now the Token Spend page button, `POST /api/v1/costs/backfill` and
   # `action_health`'s `backfill_token_usage` all recover it.
   #
   # `modified_since: nil` is the whole point: the corpus, not a window.

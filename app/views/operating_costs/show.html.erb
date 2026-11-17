@@ -1,0 +1,245 @@
+<% totals = @report.totals %>
+<% strip = @report.monthly_strip %>
+<% strip_max = strip.map { |m| [ m[:actual_usd].to_f, m[:projected_usd].to_f ].max }.max.to_f %>
+<div id="operating-costs-page" class="min-h-screen bg-gray-50">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-6">
+      <div class="flex items-center mb-4">
+        <%= link_to root_path, class: "text-gray-500 hover:text-gray-700 mr-4" do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Costs</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        What running this deployment costs in real money: bills, subscriptions and credits, by functionality.
+        <span class="text-gray-500">Figures run through <span class="font-medium" id="costs-as-of"><%= l(@report.as_of, format: :long) %></span>.
+        Zimmer derives what its own ledgers show each morning; everything else is written by the daily collection session or by hand below.
+        List-price token volumes are on <%= link_to "Token Spend", token_spend_path, class: "text-indigo-600 hover:text-indigo-800" %>, and are not counted here.</span>
+      </p>
+    </div>
+
+    <% if flash[:alert] %>
+      <div class="mb-4 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 break-words"><%= flash[:alert] %></div>
+    <% end %>
+    <% if flash[:notice] %>
+      <div class="mb-4 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 break-words"><%= flash[:notice] %></div>
+    <% end %>
+
+    <% if @report.stale_reasons.any? %>
+      <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3" id="costs-stale">
+        <p class="text-sm font-medium text-amber-900">These figures may be out of date.</p>
+        <ul class="mt-1 text-sm text-amber-800 list-disc pl-5 break-words">
+          <% @report.stale_reasons.each do |reason| %><li><%= reason %></li><% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <%# Month navigation and the filters in force. %>
+    <div class="mb-6 flex flex-wrap items-center gap-2">
+      <%= link_to "←", operating_costs_path(@report.to_params.merge(month: (@report.month << 1).strftime("%Y-%m"))),
+            class: "px-2.5 py-1.5 border border-gray-300 rounded-md bg-white text-sm text-gray-700 hover:bg-gray-50", title: "Previous month", data: { turbo: false } %>
+      <span class="px-3 py-1.5 text-sm font-medium text-gray-900 bg-white border border-gray-300 rounded-md" id="costs-month"><%= @report.month.strftime("%B %Y") %></span>
+      <% unless @report.current_month? %>
+        <%= link_to "→", operating_costs_path(@report.to_params.merge(month: (@report.month >> 1).strftime("%Y-%m"))),
+              class: "px-2.5 py-1.5 border border-gray-300 rounded-md bg-white text-sm text-gray-700 hover:bg-gray-50", title: "Next month", data: { turbo: false } %>
+      <% end %>
+      <% { functionality: "functionality", vendor: "vendor", agent_root: "root" }.each do |param, noun| %>
+        <% if (value = @report.public_send(param)) %>
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 border border-indigo-200 text-xs text-indigo-800 max-w-full min-w-0">
+            <span class="truncate"><%= noun %>: <%= value %></span>
+            <%= link_to "×", operating_costs_path(@report.to_params.except(param)), class: "text-indigo-500 hover:text-indigo-800", title: "Clear", data: { turbo: false } %>
+          </span>
+        <% end %>
+      <% end %>
+      <%= link_to (@report.include_external ? "Hide costs paid by others" : "Include costs paid by others"),
+            operating_costs_path(@report.include_external ? @report.to_params.except(:include_external) : @report.to_params.merge(include_external: "1")),
+            class: "text-xs text-indigo-600 hover:text-indigo-800 ml-auto", data: { turbo: false } %>
+    </div>
+
+    <% if @accounts.empty? %>
+      <div class="bg-white shadow rounded-lg px-4 py-6 mb-6" id="costs-empty">
+        <h2 class="text-sm font-semibold text-gray-900">No costs recorded yet</h2>
+        <p class="mt-1 text-sm text-gray-600">
+          Costs start with vendors and the accounts they bill. The daily collection session creates them through
+          <code class="font-mono text-xs">action_operating_costs</code>, or add them under <span class="font-medium">Manage</span> below.
+          Mark an account with a <em>derived source</em> and <code class="font-mono text-xs">OperatingCostsCollectionJob</code> fills it in from Zimmer's own ledgers every morning.
+        </p>
+      </div>
+    <% end %>
+
+    <%# Tiles %>
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6" id="costs-tiles">
+      <% [
+           [ @report.current_month? ? "This month so far" : @report.month.strftime("%B"), totals[:month_to_date_usd], nil ],
+           [ "Projected", totals[:month_projected_usd], "this month" ],
+           [ "Last month", totals[:previous_month_usd], totals[:billed_share] ? "#{(totals[:billed_share] * 100).round}% from bills" : nil ],
+           [ "Going forward", totals[:forward_monthly_usd], "per month · 7-day trend #{number_to_currency(totals[:forward_monthly_trend_usd], precision: 0)}" ]
+         ].each do |label, amount, note| %>
+        <div class="bg-white shadow rounded-lg px-4 py-3 min-w-0">
+          <p class="text-xs text-gray-500 truncate"><%= label %></p>
+          <p class="mt-1 text-xl sm:text-2xl font-semibold text-gray-900 tabular-nums truncate"><%= number_to_currency(amount, precision: 2) %></p>
+          <% if note %><p class="text-xs text-gray-400 mt-0.5 truncate" title="<%= note %>"><%= note %></p><% end %>
+        </div>
+      <% end %>
+    </div>
+
+    <%# Monthly strip: closed months solid, the month in progress with its projected rest lighter, months ahead outlined. %>
+    <section class="bg-white shadow rounded-lg mb-6 px-4 py-3" id="costs-monthly">
+      <h2 class="text-sm font-semibold text-gray-900">Month by month</h2>
+      <p class="text-xs text-gray-500 mt-0.5">Six closed months, this month (projected in the lighter part), and three months ahead at the forward rate, including any promotional credit running out.</p>
+      <div class="mt-3 flex items-end gap-1 sm:gap-2 h-32">
+        <% strip.each do |m| %>
+          <% actual = m[:actual_usd].to_f %>
+          <% projected = m[:projected_usd].to_f %>
+          <% top = [ actual, projected ].max %>
+          <div class="flex-1 min-w-0 h-full flex flex-col justify-end items-stretch" title="<%= m[:month] %>: <%= number_to_currency(top, precision: 2) %><%= ' projected' if m[:kind] != 'closed' %>">
+            <% if m[:kind] == "forward" %>
+              <div class="border-2 border-dashed border-indigo-300 rounded-t" style="height: <%= strip_max.positive? ? (projected / strip_max * 100).round(1) : 0 %>%"></div>
+            <% elsif m[:kind] == "current" %>
+              <div class="bg-indigo-200 rounded-t" style="height: <%= strip_max.positive? ? ([ projected - actual, 0 ].max / strip_max * 100).round(1) : 0 %>%"></div>
+              <div class="bg-indigo-500" style="height: <%= strip_max.positive? ? (actual / strip_max * 100).round(1) : 0 %>%"></div>
+            <% else %>
+              <div class="bg-indigo-500 rounded-t" style="height: <%= strip_max.positive? ? (actual / strip_max * 100).round(1) : 0 %>%"></div>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+      <div class="mt-1 flex gap-1 sm:gap-2">
+        <% strip.each do |m| %>
+          <div class="flex-1 min-w-0 text-center text-[10px] sm:text-xs text-gray-500 truncate"><%= Date.strptime(m[:month], "%Y-%m").strftime("%b") %></div>
+        <% end %>
+      </div>
+    </section>
+
+    <%= render "breakdown", title: "By functionality", report: @report, filter: :functionality,
+          subtitle: "What each capability costs. A root's share of a split cost lands in the functionality that claims the root; anything unclaimed is unattributed.",
+          rows: @report.breakdown("functionality"), empty: "No costs this month." %>
+
+    <% others = @report.paid_by_others %>
+    <% if others.any? %>
+      <section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="costs-paid-by-others">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Paid by others</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Accounts someone else pays for. Shown so they are not forgotten; <%= @report.include_external ? "included in the totals above because you asked." : "not in any total above." %></p>
+        </div>
+        <ul class="divide-y divide-gray-100">
+          <% others.each do |payer| %>
+            <% payer[:accounts].each do |account| %>
+              <li class="px-4 py-2 flex items-baseline justify-between gap-3">
+                <span class="min-w-0 text-sm text-gray-900"><span class="block truncate"><%= account[:label] %></span><span class="block text-xs text-gray-500 truncate">paid by <%= payer[:paid_by] %> · <%= account[:vendor] %></span></span>
+                <span class="text-sm tabular-nums text-gray-700 whitespace-nowrap"><%= number_to_currency(account[:forward_monthly_usd], precision: 2) %>/mo</span>
+              </li>
+            <% end %>
+          <% end %>
+        </ul>
+      </section>
+    <% end %>
+
+    <% credits = @report.credits %>
+    <% if credits.any? %>
+      <section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="costs-credits">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Credits and run-out</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Burn is the drop in balance over the last <%= OperatingCosts::Report::TRAILING_DAYS %> days; top-ups are not counted as spend.</p>
+        </div>
+        <ul class="divide-y divide-gray-100">
+          <% credits.each do |credit| %>
+            <li class="px-4 py-3">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="min-w-0 text-sm text-gray-900 truncate"><%= credit[:label] %></span>
+                <span class="text-sm font-medium tabular-nums whitespace-nowrap"><%= number_to_currency(credit[:balance_usd], precision: 2) %> left</span>
+              </div>
+              <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 tabular-nums">
+                <span><%= credit[:kind].humanize %></span>
+                <span>burn <%= number_to_currency(credit[:burn_per_day_usd], precision: 2) %>/day</span>
+                <span class="<%= credit[:run_out_on] && credit[:run_out_on] < Date.current + 30 ? 'text-amber-700 font-medium' : '' %>">
+                  <%= credit[:run_out_on] ? "runs out #{l(credit[:run_out_on], format: :long)}" : "no burn measured" %>
+                </span>
+                <% if credit[:expires_on] %><span>expires <%= l(credit[:expires_on], format: :long) %></span><% end %>
+                <% if credit[:utilization] %><span><%= (credit[:utilization] * 100).round %>% used</span><% end %>
+                <span>as of <%= credit[:as_of_date] %></span>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      </section>
+    <% end %>
+
+    <% subscriptions = @report.subscriptions %>
+    <% if subscriptions.any? %>
+      <section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="costs-subscriptions">
+        <div class="px-4 py-3 border-b border-gray-200">
+          <h2 class="text-sm font-semibold text-gray-900">Subscriptions</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Active fixed charges at their monthly equivalent<%= ", #{@report.upcoming_renewals.size} renewing in the next #{OperatingCosts::Report::RENEWAL_HORIZON} days" if @report.upcoming_renewals.any? %>.</p>
+        </div>
+        <ul class="divide-y divide-gray-100">
+          <% subscriptions.each do |subscription| %>
+            <li class="px-4 py-2">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="min-w-0 text-sm text-gray-900 truncate"><%= subscription.account.label %> — <%= subscription.plan_name %><%= " × #{subscription.quantity}" if subscription.quantity > 1 %></span>
+                <span class="text-sm tabular-nums whitespace-nowrap"><%= number_to_currency(subscription.monthly_usd, precision: 2) %>/mo</span>
+              </div>
+              <div class="mt-0.5 flex flex-wrap gap-x-3 text-xs text-gray-500">
+                <span><%= number_to_currency(subscription.amount_usd, precision: 2) %> per <%= subscription.interval %></span>
+                <% if subscription.renews_on %><span>renews <%= l(subscription.renews_on, format: :long) %></span><% end %>
+                <% if subscription.included_usage_usd %><span>includes <%= number_to_currency(subscription.included_usage_usd, precision: 0) %> usage</span><% end %>
+                <% if subscription.account.externally_paid? %><span>paid by <%= subscription.account.paid_by %></span><% end %>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      </section>
+    <% end %>
+
+    <%= render "breakdown", title: "By vendor", report: @report, filter: :vendor,
+          subtitle: "The same money, by who sends the bill.", rows: @report.breakdown("vendor"), empty: "No costs this month." %>
+
+    <%= render "breakdown", title: "By agent root", report: @report, filter: :agent_root,
+          subtitle: "Split by each account's allocation rule: token-spend share, sessions that used a connector, or a fixed root. Unsplit costs are shared.",
+          rows: @report.breakdown("agent_root"), empty: "No costs this month." %>
+
+    <section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="costs-sources">
+      <div class="px-4 py-3 border-b border-gray-200">
+        <h2 class="text-sm font-semibold text-gray-900">Sources and freshness</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Where each account's figures come from and when they last arrived.</p>
+      </div>
+      <% if @report.collection_runs.any? %>
+        <ul class="divide-y divide-gray-100 border-b border-gray-200">
+          <% @report.collection_runs.each do |run| %>
+            <li class="px-4 py-2 flex items-baseline justify-between gap-3 text-sm">
+              <span class="min-w-0 truncate text-gray-900"><%= run.collector %></span>
+              <span class="whitespace-nowrap text-xs <%= run.status == 'failed' ? 'text-red-700' : 'text-gray-500' %>">
+                <%= run.status %> <%= time_ago_in_words(run.finished_at || run.started_at) %> ago
+              </span>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+      <% if @report.sources.empty? %>
+        <p class="px-4 py-6 text-sm text-gray-500">No accounts yet.</p>
+      <% else %>
+        <ul class="divide-y divide-gray-100">
+          <% @report.sources.each do |source| %>
+            <li class="px-4 py-2">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="min-w-0 text-sm text-gray-900 truncate"><%= source[:label] %></span>
+                <span class="whitespace-nowrap text-xs <%= source[:stale] ? 'text-amber-700 font-medium' : 'text-gray-500' %>">
+                  <%= source[:last_observation_on] ? "last figure #{source[:last_observation_on]}" : "no figures yet" %>
+                </span>
+              </div>
+              <div class="mt-0.5 flex flex-wrap gap-x-3 text-xs text-gray-500">
+                <span><%= source[:vendor] %></span>
+                <span><%= source[:derived_source] ? "derived: #{source[:derived_source].humanize(capitalize: false)}" : source[:ingest_method] %></span>
+                <% if source[:confidence] %><span><%= source[:confidence] %></span><% end %>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+    </section>
+
+    <%= render "manage" %>
+  </div>
+</div>

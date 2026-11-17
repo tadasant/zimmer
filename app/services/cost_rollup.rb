@@ -86,7 +86,7 @@ class CostRollup
   def models = rows.map(&:model).uniq
 
   # What one row cost, split by kind of token — the decomposition behind the
-  # Costs page's "where the money goes".
+  # Token Spend page's "where the money goes".
   def components(row) = components_for(row.model, row.sums)
 
   def self.blank = TOTAL_KEYS.index_with { |k| k == :cost_usd ? 0.0 : 0 }

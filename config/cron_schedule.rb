@@ -469,6 +469,12 @@ module CronSchedule
       description: "Recompute the $/min burn rate of every harness+model combination from the token ledger",
       environments: %i[production staging]
     },
+    operating_costs_collection: {
+      cron: "10 9 * * *", # Daily; figures run through yesterday, so once a day is the resolution
+      class: "OperatingCostsCollectionJob",
+      description: "Derive operating costs from Zimmer's own ledgers, rebuild the daily cost series and re-split the month",
+      environments: %i[production staging]
+    },
     quota_capacity_calibration: {
       cron: "*/15 * * * *", # Every 15 minutes, matching the cadence quota snapshots land at
       class: "QuotaCapacityCalibrationJob",

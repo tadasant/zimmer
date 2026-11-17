@@ -26,6 +26,11 @@ final class ZimmerLinkTests: XCTestCase {
         XCTAssertNil(link("https://zimmer.example.com/sessions/0"), "digits alone are an id, and no session is 0")
     }
 
+    func testTheAllInCostsPageHasNoScreenHere() {
+        XCTAssertNil(link("https://zimmer.example.com/costs"))
+        XCTAssertNil(link("https://zimmer.example.com/costs?agent_root=zimmer"))
+    }
+
     func testEveryPageWithAScreenHereIsRecognised() {
         XCTAssertEqual(link("https://zimmer.example.com"), .board)
         XCTAssertEqual(link("https://zimmer.example.com/"), .board)
@@ -34,9 +39,10 @@ final class ZimmerLinkTests: XCTestCase {
         XCTAssertEqual(link("https://zimmer.example.com/notifications"), .inbox)
         XCTAssertEqual(link("https://zimmer.example.com/triggers"), .triggers)
         XCTAssertEqual(link("https://zimmer.example.com/triggers/12"), .trigger(12))
-        XCTAssertEqual(link("https://zimmer.example.com/costs"), .costs(.fleet))
-        XCTAssertEqual(link("https://zimmer.example.com/costs?agent_root=zimmer"), .costs(.agentRoot("zimmer")))
-        XCTAssertEqual(link("https://zimmer.example.com/costs?session_id=9"), .costs(.session(9)))
+        XCTAssertEqual(link("https://zimmer.example.com/token-spend"), .costs(.fleet))
+        XCTAssertEqual(link("https://zimmer.example.com/token-spend?agent_root=zimmer"), .costs(.agentRoot("zimmer")))
+        XCTAssertEqual(link("https://zimmer.example.com/token-spend?session_id=9"), .costs(.session(9)))
+        XCTAssertEqual(link("https://zimmer.example.com/costs?session_id=9"), .costs(.session(9)), "the server redirects this to Token Spend")
         XCTAssertEqual(link("https://zimmer.example.com/health"), .health)
         XCTAssertEqual(link("https://zimmer.example.com/clis"), .clis)
         XCTAssertEqual(link("https://zimmer.example.com/settings"), .settings)

@@ -79,7 +79,7 @@ struct CostsView: View {
             }
         }
         .refreshable { await load() }
-        .navigationTitle("Costs")
+        .navigationTitle("Token Spend")
     }
 
     private var sweepInFlight: Bool {

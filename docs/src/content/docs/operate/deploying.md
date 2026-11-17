@@ -465,7 +465,7 @@ Three delivery mechanisms, in order of preference:
    sweeps, cleanups. Idempotence is what makes an unattended cron safe to leave running. A
    *recurring* need is a cron entry, not a post-deploy task.
 3. **The app's own surfaces** — a button in the web UI, a REST endpoint, an MCP action. This is
-   where operator-*triggered* actions belong. The Costs page's re-scan button,
+   where operator-*triggered* actions belong. The Token Spend page's re-scan button,
    `POST /api/v1/costs/backfill` and `action_health`'s `backfill_token_usage` are the same request
    through the three surfaces Zimmer already exposes.
 

@@ -4,7 +4,7 @@
 #
 # Two shapes, because the two questions are different:
 #
-#   GET /api/v1/costs          — rollups. What the Costs page renders, as JSON.
+#   GET /api/v1/costs          — rollups. What the Token Spend page renders, as JSON.
 #   GET /api/v1/costs/records  — the rows themselves, paginated. The export path
 #                                for analysis that this app should not be doing,
 #                                including the cost-vs-performance work these
@@ -15,7 +15,7 @@
 #
 # All endpoints require API key authentication via X-API-Key header.
 class Api::V1::CostsController < Api::BaseController
-  # Zimmer's iOS app: the reads, and `backfill`, which the Costs page offers any
+  # Zimmer's iOS app: the reads, and `backfill`, which the Token Spend page offers any
   # signed-in person as its "Sweep now" button; the phone gets the same.
   accepts_native_app_tokens
 
@@ -28,7 +28,7 @@ class Api::V1::CostsController < Api::BaseController
   #   - days: window size (default 7, max 365). Ignored when from/to are given.
   #   - from, to: explicit ISO-8601 bounds
   #   - agent_root, session_id: narrow every rollup to one slice, the same two
-  #     arguments `get_costs` takes and the Costs page links on. `session_id`
+  #     arguments `get_costs` takes and the Token Spend page links on. `session_id`
   #     wins when both are given.
   def index
     scope = CostScope.from_params(params)
@@ -81,7 +81,7 @@ class Api::V1::CostsController < Api::BaseController
 
   private
 
-  # The scheduler's current $/min per harness + model, as the Costs page's burn
+  # The scheduler's current $/min per harness + model, as the Token Spend page's burn
   # rate card shows them: fresh rows only, dearest first. Not a rollup of the
   # window — they turn over on their own cron, over a fixed sample of recent
   # sessions — and fleet rates, so the key is omitted on a narrowed scope, where

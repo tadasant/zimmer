@@ -45,7 +45,7 @@ class TokenUsageBackfillService
     # A root that exists but holds no transcript directories is the same class of
     # misconfiguration as one that is missing — an unmounted volume, a wrong HOME
     # — and not a finished sweep. Finishing here would set the completion marker
-    # permanently on a run that read nothing, and the Costs page would report
+    # permanently on a run that read nothing, and the Token Spend page would report
     # full coverage it does not have. Record it and leave the run open for the
     # next tick. A run that HAS swept directories is a different case: the corpus
     # going away afterwards does not undo the work already committed.
@@ -114,7 +114,7 @@ class TokenUsageBackfillService
     )
     true
   rescue StandardError => e
-    # Recorded and surfaced on the Costs page rather than raised. A chunk that
+    # Recorded and surfaced on the Token Spend page rather than raised. A chunk that
     # fails for a durable reason — one unreadable directory — fails again on
     # every tick, and an unhandled job error every five minutes forever is an
     # ERROR line per tick, which this deployment escalates to a page. The stored

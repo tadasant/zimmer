@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Rollups behind the Costs page, the REST endpoints, and the MCP tool.
+# Rollups behind the Token Spend page, the REST endpoints, and the MCP tool.
 #
 # Token volumes are summed in SQL over a time window; nothing loads usage rows
 # into Ruby to add them up — the usage tables grow by thousands of rows a day,
@@ -50,7 +50,7 @@ class CostAnalytics
     @scope = scope
   end
 
-  # Everything the Costs page and the REST rollup endpoint render, in one
+  # Everything the Token Spend page and the REST rollup endpoint render, in one
   # memoizable bundle.
   #
   # Five grouped scans of the window, each of which reads every row in it. At a

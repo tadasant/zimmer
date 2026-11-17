@@ -70,6 +70,17 @@ Rails.application.routes.draw do
     resources :live_scratchpad_entries, only: [ :index, :show ]
     # Read-only: the voice-engine cost ledger, written by the engines and priced on the way in.
     resources :live_usage_events, only: [ :index, :show ]
+    # Operating costs (the Costs page). Read-only: writes go through
+    # OperatingCosts::Actions so the derived tables are rebuilt after them.
+    resources :operating_cost_functionalities, only: [ :index, :show ]
+    resources :operating_cost_vendors, only: [ :index, :show ]
+    resources :operating_cost_accounts, only: [ :index, :show ]
+    resources :operating_cost_subscriptions, only: [ :index, :show ]
+    resources :operating_cost_observations, only: [ :index, :show ]
+    resources :operating_cost_credit_snapshots, only: [ :index, :show ]
+    resources :operating_cost_daily_entries, only: [ :index, :show ]
+    resources :operating_cost_monthly_allocations, only: [ :index, :show ]
+    resources :operating_cost_collection_runs, only: [ :index, :show ]
     # Read-only too: the Live settings are written through SettingsUpdate, which
     # validates and records every change, on /live/settings, REST and MCP.
     resources :live_settings, only: [ :index, :show ]
@@ -301,12 +312,19 @@ Rails.application.routes.draw do
       resources :hooks, only: [ :index ]
       resources :plugins, only: [ :index ]
 
-      # Token-spend ledger. `index` is the rollups the Costs page renders;
+      # Token-spend ledger. `index` is the rollups the Token Spend page renders;
       # `records` is the row-level export the cost-vs-performance analysis needs.
       get "costs", to: "costs#index"
       get "costs/records", to: "costs#records"
       # Ops action, not a shell: sweep every transcript into the ledger.
       post "costs/backfill", to: "costs#backfill"
+
+      # The all-in operating-cost ledger behind the Costs page (/costs). Mirrors
+      # the `operating_costs` MCP tool group: the report, a row export, and every
+      # write by name.
+      get "operating_costs", to: "operating_costs#show"
+      get "operating_costs/records", to: "operating_costs#records"
+      post "operating_costs/actions", to: "operating_costs#perform"
 
       # The auth boundary, for the iOS app (Api::V1::AccountController and the two
       # beside it): who the caller is, the OAuth connections and API keys the
@@ -576,13 +594,24 @@ Rails.application.routes.draw do
   end
 
   # Inference page (per-runtime via ?runtime=claude_code|codex|pi)
-  # Costs sits beside Inference: same posture question, different source.
-  # Inference reads Anthropic's rate-limit headers; Costs reads our own token
-  # ledger.
-  get "costs", to: "costs#show", as: :costs
+  # Token Spend sits beside Inference: same posture question, different source.
+  # Inference reads Anthropic's rate-limit headers; Token Spend reads our own
+  # token ledger.
+  get "token-spend", to: "token_spend#show", as: :token_spend
   # Re-scan every transcript into the ledger. An ops action with a button rather
   # than a rake task, because nobody is meant to need a shell on the box.
-  post "costs/backfill", to: "costs#backfill", as: :costs_backfill
+  post "token-spend/backfill", to: "token_spend#backfill", as: :token_spend_backfill
+  # Costs is the all-in operating-cost dashboard: what running Zimmer costs in
+  # real money, by functionality, vendor and agent root. `/costs` was the token
+  # page's address, and links to it carrying `session_id` (the session badge,
+  # older iOS deep links) only mean anything there, so those keep landing on
+  # Token Spend with every param intact.
+  get "costs", to: redirect { |_params, request|
+    "/token-spend?#{request.query_string}"
+  }, constraints: ->(request) { request.query_parameters["session_id"].present? }
+  get "costs", to: "operating_costs#show", as: :operating_costs
+  # Every form on the Costs page, one OperatingCosts::Actions action each.
+  post "costs/actions", to: "operating_costs#perform", as: :operating_costs_actions
   get "inference", to: "inference#show", as: :inference
   # The surface was called Quotas until it grew a Pi tab that has no quota in
   # it. The old address is kept — permanently, not as a deprecation window —

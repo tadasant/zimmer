@@ -26,7 +26,7 @@ module Mcp
           its runtime's own default instead. Lists the valid runtimes and each runtime's models.
         - **Experimental settings** — every toggle under Settings → Experimental, by key: MCP tool
           search today, plus any registered experimental Zimmer Extension (`extension.<id>`). Each
-          is also recorded on every session as it runs, which is what the Costs page compares
+          is also recorded on every session as it runs, which is what the Token Spend page compares
           cohorts by.
 
         Not here either: the MCP Apps master switch and its per-server allowlist, on the same page

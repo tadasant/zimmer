@@ -10,7 +10,7 @@
 # deploy is therefore all it takes to get history into the ledger, and every
 # deploy after that costs one indexed lookup per tick.
 #
-# The row is also the honest answer to "how complete is the Costs page" — which
+# The row is also the honest answer to "how complete is the Token Spend page" — which
 # is why `coverage` lives here and is rendered on the page, returned by the REST
 # API, and reported by the `get_costs` MCP tool rather than being knowable only
 # from a shell.
@@ -52,7 +52,7 @@ class TokenUsageBackfill < ApplicationRecord
       pending || raise
     end
 
-    # What the Costs page, the REST API and the MCP tool all say about how
+    # What the Token Spend page, the REST API and the MCP tool all say about how
     # complete the ledger is. One place, so the three surfaces cannot drift into
     # claiming different things.
     #

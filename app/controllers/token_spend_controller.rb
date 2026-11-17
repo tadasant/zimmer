@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
-# The Costs page: what Zimmer's inference actually costs, from stored volumes
+# The Token Spend page: what Zimmer's inference actually costs, from stored volumes
 # priced at current list rates.
 #
 # Sits alongside Inference deliberately. Inference answers "how much headroom is left
-# in the window" from Anthropic's rate-limit headers; Costs answers "what did we
-# spend it on" from our own ledger. They are different questions with different
+# in the window" from Anthropic's rate-limit headers; Token Spend answers "what
+# did we spend it on" from our own ledger. They are different questions with different
 # sources, and neither substitutes for the other.
-class CostsController < ApplicationController
+class TokenSpendController < ApplicationController
   def show
     # One object carries the window whether it came from a one-click preset or the
     # calendar, so every link on the page can round-trip it with `to_params`.
@@ -51,7 +51,7 @@ class CostsController < ApplicationController
     @burn_rates = HarnessModelBurnRate.fresh.by_rate.to_a
   end
 
-  # POST /costs/backfill
+  # POST /token-spend/backfill
   #
   # The re-scan button. There is no shell on the production box to run a rake
   # task from — deliberately — so asking for a fresh sweep of the whole corpus
@@ -69,7 +69,7 @@ class CostsController < ApplicationController
     # alike — a sweep is not a reason to change what the viewer was looking at.
     # The scope rides back with the window for the same reason: a sweep is not a
     # reason to widen the page from one agent root to the whole fleet either.
-    redirect_to costs_path(CostWindow.from_params(params).to_params.merge(CostScope.from_params(params).to_params)),
+    redirect_to token_spend_path(CostWindow.from_params(params).to_params.merge(CostScope.from_params(params).to_params)),
       notice: "History sweep #{run.status} — progress appears here as it runs."
   end
 end

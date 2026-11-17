@@ -6,10 +6,16 @@ sidebar:
 ---
 
 Zimmer records every Anthropic API call its agents make, and prices them at current list
-rates on the **Costs** page. This is Zimmer's own accounting. It is a different thing from
+rates on the **Token Spend** page (`/token-spend`). This is Zimmer's own accounting. It is a different thing from
 [Inference](/sessions/spot-and-priority/), which reads Anthropic's rate-limit headers to answer
-"how much headroom is left in the window". Costs answers "what did we spend it on". Neither
+"how much headroom is left in the window". Token Spend answers "what did we spend it on". Neither
 substitutes for the other, and they can disagree without either being wrong.
+
+These dollars are list price, not a bill: Claude Code and Codex run on subscriptions. What
+running the deployment costs in real money — bills, subscriptions, credits — is the
+[Costs](/operate/operating-costs/) page at `/costs`. The page was called Costs until that one
+arrived, and `/costs?session_id=…` still redirects here. The REST path (`/api/v1/costs`) and the
+`get_costs` MCP tool kept their names, because installed iOS builds and catalog prose call them.
 
 ## The tables
 
@@ -136,7 +142,7 @@ rather than starting a competing one.
 Getting history into the ledger used to mean somebody SSH'ing into production and running
 `rake token_usage:backfill`. That is an operational step this deployment is not supposed to have:
 [deploy is the delivery mechanism for ops actions](/operate/deploying/#ops-actions-ship-with-the-deploy),
-and the Costs page was quietly wrong until a human found the time.
+and the Token Spend page was quietly wrong until a human found the time.
 
 :::note[Do not copy this apparatus for the next one]
 The table, the cursor, the completion marker, the partial unique index and the three read surfaces
@@ -164,7 +170,7 @@ disagree:
 
 | Surface | Shows |
 | --- | --- |
-| The Costs page | A panel: backfilled or not, progress while sweeping, the date the ledger starts, and a **Re-scan history** button |
+| The Token Spend page | A panel: backfilled or not, progress while sweeping, the date the ledger starts, and a **Re-scan history** button |
 | `GET /api/v1/costs` | A `ledger_coverage` object alongside every rollup |
 | `get_costs` (MCP) | A **Partial history** warning while sweeping; the covered window once finished |
 | Supervisor | `token_usage_backfills` — every sweep, its cursor, counters and last error, read-only |
@@ -242,7 +248,7 @@ production Pi sessions that existed when this shipped: $0.582929 either way.
 derives its cache rates from a multiplier relationship that holds across the Anthropic line
 and does not hold for those — OpenAI bills nothing for a cache write, Gemini bills a
 storage rate. So a Pi session on one of them lands with its **tokens** correct and its **cost
-at zero**, and shows up in the Costs page's unpriced-models list. That is the existing honest
+at zero**, and shows up in the Token Spend page's unpriced-models list. That is the existing honest
 behaviour for a model with no rate, not a Pi-specific bug; pricing them needs `Rate` to carry
 explicit cache rates, which is a separate change.
 :::
@@ -254,7 +260,7 @@ ingestor shipped — in id order, 25 at a time, resumable from its cursor. That 
 by design, so **`TokenUsageBackfillJob` also sweeps Pi's whole corpus at the head of every run
 it works**: without that, any gap wider than the recurring job's two-hour lookback — a worker
 outage, an ingestor bug found a day later — would lose that spend permanently with no surface
-to ask for it back. So *Re-scan history* on the Costs page, `POST /api/v1/costs/backfill` and
+to ask for it back. So *Re-scan history* on the Token Spend page, `POST /api/v1/costs/backfill` and
 `action_health`'s `backfill_token_usage` all recover Pi spend, exactly as they do Claude Code's.
 
 Both are no-ops on a second run for the same reason every ingestion run is: rows are keyed on
@@ -302,7 +308,7 @@ spend — and shows as unattributed rather than disappearing.
 
 :::caution[Codex spend is tokens without dollars]
 `TokenPricing` carries Anthropic rates only, so a `gpt-5.6-terra` row prices at **$0** and the model
-appears in the Costs page's unpriced-models list. Codex volume is therefore in every token figure on
+appears in the Token Spend page's unpriced-models list. Codex volume is therefore in every token figure on
 the page and in no dollar figure. That is the existing honest behaviour for a model with no rate —
 visibly unpriced beats silently mis-priced — and it is a strict improvement on the runtime being
 absent from the ledger altogether, which is what [#1077](https://github.com/tadasant/zimmer/issues/1077)
@@ -317,7 +323,7 @@ at the head of every run it works, so *Re-scan history* recovers Codex spend too
 
 ## Picking a window
 
-The Costs page carries both a set of one-click horizons — 24 hours, 7 days, 30 days,
+The Token Spend page carries both a set of one-click horizons — 24 hours, 7 days, 30 days,
 90 days, 1 year — and an explicit from/to calendar range. Both resolve through `CostWindow`,
 which is also what every drilldown link on the page carries, so clicking into a breakdown
 never silently changes the window under you.
@@ -348,7 +354,7 @@ bars themselves, not one query per bar.
 
 ## How a long window stays fast
 
-The Costs page, `GET /api/v1/costs` and the fleet report from `get_costs` all render one
+The Token Spend page, `GET /api/v1/costs` and the fleet report from `get_costs` all render one
 `CostAnalytics#snapshot`, so the three surfaces share one cached computation per window and scope.
 The snapshot is **five grouped scans** of the ledger whatever the window's length. Each
 `CostRollup` (`app/services/cost_rollup.rb`) sums plain token columns per group **and per model**,
@@ -437,7 +443,7 @@ means its transcript has not been swept yet, and a zero would assert it was free
 
 ## Burn rate by harness + model
 
-The Costs page answers "what did we spend"; the scheduler needs "what does a minute of this cost".
+The Token Spend page answers "what did we spend"; the scheduler needs "what does a minute of this cost".
 `BurnRateRecomputeJob` derives the second from the first every 20 minutes and writes it to
 `harness_model_burn_rates`, one row per (harness, model).
 
@@ -462,11 +468,11 @@ config reads `opus` — but both would still land in the cost-weighted fleet ave
 combination nobody has sampled, and a Codex row would drag it toward zero because its model is
 unpriced. `QuotaCapacityCalibrator` carries the same filter for the same reason, and there it
 matters more: it divides spend by Anthropic's reported utilization, so a dollar Anthropic never
-counted inflates the capacity estimate *in proportion*. The Costs page, the REST index and
+counted inflates the capacity estimate *in proportion*. The Token Spend page, the REST index and
 `get_costs` are deliberately not filtered — they are asked what Zimmer spent, and the answer is
 every runtime.
 
-The prices are `TokenPricing`'s, applied through `cost_sum_sql`. The Costs page applies the same
+The prices are `TokenPricing`'s, applied through `cost_sum_sql`. The Token Spend page applies the same
 rates in Ruby over per-model sums (`CostRollup`, see
 [How a long window stays fast](#how-a-long-window-stays-fast)), and
 `test/services/cost_rollup_test.rb` holds the two to the same figure. A rate priced differently
@@ -609,7 +615,7 @@ bin/rails token_usage:calibrate_chars_per_token
 An **experimental setting** is a global switch that changes how Zimmer drives its agents —
 MCP tool search is the first, `Settings → Experimental` is where they live, and
 `ExperimentalSettingsRegistry` is the catalogue. Every session is tagged with what each one
-was **when it started** and **when it last ran**, and the Costs page compares the cohorts
+was **when it started** and **when it last ran**, and the Token Spend page compares the cohorts
 that tagging produces.
 
 The registry is the single edit point. One entry there gives a setting its toggle on the
@@ -708,7 +714,7 @@ flagged experimental needs nothing at all — it is picked up from
 
 ## Reading it back
 
-- **Web:** the Costs page, alongside Inference.
+- **Web:** the Token Spend page, alongside Inference.
 - **REST:** `GET /api/v1/costs` for rollups, `GET /api/v1/costs/records` for the rows
   themselves, paginated and filterable by session, agent root, model, or source. See
   [the REST API](/extend/rest-api/).

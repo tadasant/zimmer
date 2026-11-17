@@ -33,6 +33,7 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert report.key?(:log_retention_health)
     assert report.key?(:inbound_event_health)
     assert report.key?(:root_data_health)
+    assert report.key?(:operating_costs_health)
     assert report.key?(:warm_clone_pool_health)
     assert report.key?(:cron_health)
     assert report.key?(:overall_status)
@@ -129,6 +130,20 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
   end
 
   # === Root data ===
+
+  test "operating_costs_health warns when collection is stale or failed, and stays out of overall_status" do
+    assert_equal :healthy, @service.full_health_report[:operating_costs_health][:status].status
+
+    vendor = OperatingCostVendor.create!(key: "examplecloud", name: "ExampleCloud")
+    OperatingCostAccount.create!(key: "box", label: "Box", vendor: vendor)
+    OperatingCostCollectionRun.create!(collector: "agent:daily", status: "failed", started_at: 1.hour.ago, error: "vendor said no")
+
+    costs = @service.full_health_report[:operating_costs_health]
+    assert_equal :warning, costs[:status].status
+    assert_match "never run", costs[:status].message
+    assert_match "vendor said no", costs[:status].message
+    assert_equal [ "agent:daily" ], costs[:runs].map { |run| run[:collector] }
+  end
 
   test "root_data_health reports per-namespace usage from the counters" do
     AgentRootRecordCounter.create!(namespace: "zimmer", collection: "notes", records_count: 3, data_bytes: 300,

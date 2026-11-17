@@ -1,0 +1,167 @@
+<%#
+  Manage: one form per OperatingCosts::Actions action. Each upserts by key, so
+  typing an existing key edits that row. The MCP tool `action_operating_costs`
+  and POST /api/v1/operating_costs/actions take the same actions and fields.
+%>
+<% functionality_options = [ [ "Unattributed", "unattributed" ] ] + @functionalities.map { |f| [ f.name, f.key ] } %>
+<% vendor_options = @vendors.map { |v| [ v.name, v.key ] } %>
+<% account_options = @accounts.map { |a| [ "#{a.label} (#{a.vendor.name})", a.key ] } %>
+<% return_to = @report.to_params %>
+<section class="bg-white shadow rounded-lg overflow-hidden mb-6" id="costs-manage">
+  <div class="px-4 py-3 border-b border-gray-200 flex flex-wrap items-start justify-between gap-3">
+    <div class="min-w-0">
+      <h2 class="text-sm font-semibold text-gray-900">Manage</h2>
+      <p class="text-xs text-gray-500 mt-0.5">Everything here upserts by key: entering an existing key edits it, and a field left blank or "(unchanged)" keeps its value. The daily collection session writes the same records through <code class="font-mono">action_operating_costs</code>.</p>
+    </div>
+    <%= form_with url: operating_costs_actions_path, method: :post, data: { turbo: false }, class: "shrink-0" do %>
+      <%= hidden_field_tag :operation, "collect_now" %>
+      <% return_to.each { |k, v| %><%= hidden_field_tag "return_to[#{k}]", v, id: nil %><% } %>
+      <%= submit_tag "Collect now", class: "px-3 py-1.5 border border-indigo-300 text-xs font-medium rounded-md text-indigo-700 bg-white hover:bg-indigo-50 cursor-pointer" %>
+    <% end %>
+  </div>
+  <div class="divide-y divide-gray-100">
+    <% forms = [
+         [ "upsert_functionality", "Functionality", "A capability you would keep or cut. List the agent roots it claims, one per line.", [
+             { name: "key", label: "Key", required: true, hint: "lowercase, e.g. listing-search" },
+             { name: "name", label: "Name" },
+             { name: "agent_roots", label: "Agent roots it claims", type: :textarea, hint: "One per line; \"none\" clears" },
+             { name: "mcp_servers", label: "MCP servers", type: :textarea, hint: "Connectors whose vendors belong here; \"none\" clears" },
+             { name: "position", label: "Position", type: :number },
+             { name: "description", label: "Description", type: :textarea },
+             { name: "active", label: "Active", type: :boolean }
+           ] ],
+         [ "upsert_vendor", "Vendor", "A company that bills for something this deployment uses.", [
+             { name: "key", label: "Key", required: true },
+             { name: "name", label: "Name" },
+             { name: "category", label: "Category", type: :select, options: OperatingCostVendor::CATEGORIES },
+             { name: "pricing_model", label: "Pricing model", type: :select, options: OperatingCostVendor::PRICING_MODELS },
+             { name: "ingest_method", label: "How figures arrive", type: :select, options: OperatingCostVendor::INGEST_METHODS },
+             { name: "billing_url", label: "Billing page URL", type: :url },
+             { name: "notes", label: "Notes", type: :textarea },
+             { name: "active", label: "Active", type: :boolean }
+           ] ],
+         [ "upsert_account", "Account", "One billable thing: a seat, a server, a project, a credit pool.", [
+             { name: "key", label: "Key", required: true },
+             { name: "label", label: "Label" },
+             { name: "vendor", label: "Vendor", type: :select, options: vendor_options },
+             { name: "functionality", label: "Functionality", type: :select, options: functionality_options },
+             { name: "paid_by", label: "Paid by", hint: "self, or who pays it" },
+             { name: "zimmer_share", label: "Share that is Zimmer's (0–1)", type: :number },
+             { name: "allocation_rule", label: "Split across roots by", type: :select, options: OperatingCostAccount::ALLOCATION_RULES },
+             { name: "allocation_config", label: "Allocation config (JSON)", type: :textarea, hint: '{"agent_roots": [...]}, {"runtime": "claude_code"} or {"mcp_servers": [...]}' },
+             { name: "derived_source", label: "Derived source", type: :select, options: [ [ "None", "none" ] ] + OperatingCostAccount::DERIVED_SOURCES },
+             { name: "environment", label: "Environment" },
+             { name: "external_ref", label: "External reference", hint: "The vendor's id for it, if useful" },
+             { name: "notes", label: "Notes", type: :textarea },
+             { name: "active", label: "Active", type: :boolean }
+           ] ],
+         [ "upsert_subscription", "Subscription", "A fixed charge. Identified by account, plan and start date.", [
+             { name: "account", label: "Account", type: :select, options: account_options },
+             { name: "plan_name", label: "Plan", required: true },
+             { name: "amount", label: "Amount", type: :number, required: true },
+             { name: "currency", label: "Currency", hint: "USD when blank" },
+             { name: "amount_usd", label: "Amount in USD", type: :number, hint: "Only if the currency is not USD" },
+             { name: "interval", label: "Per", type: :select, options: OperatingCostSubscription::INTERVALS },
+             { name: "quantity", label: "Seats", type: :number, hint: "1 when new" },
+             { name: "included_usage_usd", label: "Usage included (USD)", type: :number },
+             { name: "started_on", label: "Started", type: :date, required: true },
+             { name: "renews_on", label: "Renews", type: :date },
+             { name: "ended_on", label: "Ended", type: :date },
+             { name: "auto_renew", label: "Auto-renews", type: :boolean },
+             { name: "notes", label: "Notes", type: :textarea }
+           ] ],
+         [ "upsert_observation", "Bill or usage figure", "A daily cost, a running period-to-date total, or a closed invoice.", [
+             { name: "account", label: "Account", type: :select, options: account_options },
+             { name: "metric", label: "Kind", type: :select, options: OperatingCostObservation::METRICS },
+             { name: "as_of_date", label: "As of", type: :date },
+             { name: "period_start", label: "Period start", type: :date },
+             { name: "period_end", label: "Period end", type: :date },
+             { name: "amount", label: "Amount", type: :number, required: true },
+             { name: "currency", label: "Currency", hint: "USD when blank" },
+             { name: "amount_usd", label: "Amount in USD", type: :number },
+             { name: "source", label: "Source", type: :select, options: OperatingCostObservation::SOURCES - [ "derived" ], value: "manual", include_blank: false },
+             { name: "confidence", label: "Confidence", type: :select, options: OperatingCostObservation::CONFIDENCES },
+             { name: "evidence", label: "Evidence", type: :textarea, hint: "Where the figure came from" }
+           ] ],
+         [ "upsert_credit_snapshot", "Credit balance", "What is left on a credit pool on a date.", [
+             { name: "account", label: "Account", type: :select, options: account_options },
+             { name: "as_of_date", label: "As of", type: :date, required: true },
+             { name: "balance", label: "Balance", type: :number, required: true },
+             { name: "currency", label: "Currency", hint: "USD when blank" },
+             { name: "balance_usd", label: "Balance in USD", type: :number, hint: "Only if the currency is not USD" },
+             { name: "kind", label: "Kind", type: :select, options: OperatingCostCreditSnapshot::KINDS },
+             { name: "granted_total", label: "Granted total", type: :number },
+             { name: "expires_on", label: "Expires", type: :date },
+             { name: "source", label: "Source", type: :select, options: OperatingCostObservation::SOURCES - [ "derived" ], value: "manual", include_blank: false },
+             { name: "evidence", label: "Evidence", type: :textarea, hint: "Where the figure came from" }
+           ] ]
+       ] %>
+    <% forms.each do |operation, title, blurb, fields| %>
+      <details class="group" id="costs-form-<%= operation.dasherize %>">
+        <summary class="px-4 py-3 cursor-pointer list-none marker:content-none hover:bg-gray-50 flex items-baseline gap-1.5 text-sm text-gray-900">
+          <svg class="h-3 w-3 shrink-0 self-center text-gray-300 transition-transform group-open:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
+          <span class="font-medium"><%= title %></span>
+          <span class="text-xs text-gray-500 truncate min-w-0"><%= blurb %></span>
+        </summary>
+        <%= form_with url: operating_costs_actions_path, method: :post, data: { turbo: false }, class: "px-4 pb-4" do |form| %>
+          <%= hidden_field_tag :operation, operation, id: nil %>
+          <% return_to.each { |k, v| %><%= hidden_field_tag "return_to[#{k}]", v, id: nil %><% } %>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <% fields.each do |field| %>
+              <%= render "field", form: form, prefix: operation, **field %>
+            <% end %>
+          </div>
+          <%= submit_tag "Save #{title.downcase}", class: "mt-3 px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+        <% end %>
+      </details>
+    <% end %>
+
+    <details class="group" id="costs-form-end-subscription">
+      <summary class="px-4 py-3 cursor-pointer list-none marker:content-none hover:bg-gray-50 flex items-baseline gap-1.5 text-sm text-gray-900">
+        <svg class="h-3 w-3 shrink-0 self-center text-gray-300 transition-transform group-open:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
+        <span class="font-medium">End a subscription</span>
+        <span class="text-xs text-gray-500 truncate min-w-0">It stops accruing after this date.</span>
+      </summary>
+      <%= form_with url: operating_costs_actions_path, method: :post, data: { turbo: false }, class: "px-4 pb-4" do %>
+        <%= hidden_field_tag :operation, "end_subscription", id: nil %>
+        <% return_to.each { |k, v| %><%= hidden_field_tag "return_to[#{k}]", v, id: nil %><% } %>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="min-w-0"><label class="block text-xs font-medium text-gray-700" for="end-account">Account</label><%= select_tag :account, options_for_select(account_options), id: "end-account", class: "mt-1 block w-full min-w-0 rounded-md border-gray-300 text-sm" %></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-gray-700" for="end-plan">Plan</label><%= text_field_tag :plan_name, nil, id: "end-plan", required: true, class: "mt-1 block w-full min-w-0 rounded-md border-gray-300 text-sm" %></div>
+          <div class="min-w-0"><label class="block text-xs font-medium text-gray-700" for="end-on">Ended on</label><%= date_field_tag :ended_on, nil, id: "end-on", required: true, class: "mt-1 block w-full min-w-0 rounded-md border-gray-300 text-sm" %></div>
+        </div>
+        <%= submit_tag "End subscription", class: "mt-3 px-3 py-1.5 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 cursor-pointer" %>
+      <% end %>
+    </details>
+
+    <details class="group" id="costs-recent">
+      <summary class="px-4 py-3 cursor-pointer list-none marker:content-none hover:bg-gray-50 flex items-baseline gap-1.5 text-sm text-gray-900">
+        <svg class="h-3 w-3 shrink-0 self-center text-gray-300 transition-transform group-open:rotate-90" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
+        <span class="font-medium">Recent figures</span>
+        <span class="text-xs text-gray-500 truncate min-w-0">The latest bills, usage figures and balances, to correct or delete.</span>
+      </summary>
+      <ul class="divide-y divide-gray-50 px-4 pb-3">
+        <% if @recent_observations.empty? && @recent_snapshots.empty? %>
+          <li class="py-2 text-sm text-gray-500">Nothing recorded yet.</li>
+        <% end %>
+        <% (@recent_observations.map { |o| [ :observation, o ] } + @recent_snapshots.map { |s| [ :credit_snapshot, s ] }).each do |kind, record| %>
+          <li class="py-2 flex items-center justify-between gap-3 text-xs">
+            <span class="min-w-0">
+              <span class="block truncate text-gray-800"><%= record.account.label %> · <%= kind == :observation ? record.metric.humanize(capitalize: false) : "#{record.kind} balance" %></span>
+              <span class="block truncate text-gray-500 tabular-nums">
+                <%= kind == :observation ? number_to_currency(record.amount_usd, precision: 2) : number_to_currency(record.balance_usd, precision: 2) %>
+                · <%= record.as_of_date %> · <%= record.source %>
+              </span>
+            </span>
+            <%= form_with url: operating_costs_actions_path, method: :post, data: { turbo: false }, class: "shrink-0", onsubmit: "return confirm('Delete this figure?')" do %>
+              <%= hidden_field_tag :operation, "delete_#{kind}", id: nil %>
+              <%= hidden_field_tag :id, record.id, id: nil %>
+              <% return_to.each { |k, v| %><%= hidden_field_tag "return_to[#{k}]", v, id: nil %><% } %>
+              <%= submit_tag "Delete", class: "text-red-600 hover:text-red-800 bg-transparent cursor-pointer" %>
+            <% end %>
+          </li>
+        <% end %>
+      </ul>
+    </details>
+  </div>
+</section>

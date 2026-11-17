@@ -6,7 +6,7 @@
 # The costing path is the Costs tab's, not a second one: the dollars come from
 # `SessionTokenUsage.cost_sum_sql`, which is `TokenPricing.cost_sql` — the same
 # expression CostAnalytics groups by agent root and model. A rate that priced
-# tokens differently from the Costs page would make "this session burns $0.40 a
+# tokens differently from the Token Spend page would make "this session burns $0.40 a
 # minute" and "this root spent $6,116 this week" two numbers nobody could
 # reconcile.
 #

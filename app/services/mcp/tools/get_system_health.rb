@@ -52,6 +52,7 @@ module Mcp
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
           *root_data_lines(report),
+          *operating_costs_lines(report),
           *warm_clone_pool_lines(report),
           *warm_process_pool_lines(report),
           "",
@@ -227,6 +228,22 @@ module Mcp
           *Array(root_data[:namespaces]).map do |row|
             "  - `#{row[:namespace]}`: #{row[:records]} record(s) in #{row[:collections]} collection(s), " \
               "#{ActiveSupport::NumberHelper.number_to_human_size(row[:data_bytes])}"
+          end
+        ]
+      end
+
+      # Operating-cost collection: the newest run per collector. Silent until
+      # anything has been recorded.
+      def operating_costs_lines(report)
+        costs = report[:operating_costs_health] || {}
+        status = costs[:status]
+        return [] if status.nil? || (costs[:accounts].to_i.zero? && Array(costs[:runs]).empty? && status.status == :healthy)
+
+        [
+          "- **Operating costs:** #{status.message}",
+          *Array(costs[:runs]).map do |run|
+            "  - `#{run[:collector]}`: #{run[:status]} #{(run[:finished_at] || run[:started_at])&.iso8601}" \
+              "#{" — #{run[:error].to_s.truncate(120)}" if run[:error].present?}"
           end
         ]
       end
