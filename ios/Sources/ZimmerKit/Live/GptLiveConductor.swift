@@ -16,6 +16,12 @@ import Foundation
 ///   delegation   `session.delegation.created` → `.delegate` → `delegated(…)`: each chunk as
 ///                commentary, a cap warning once as quiet `session.thinking.append`, and
 ///                `end_call` hangs up once the goodbye has been said
+///   cues         the same `LiveCueDirector.Signal`s a Realtime call gives (`.signal`), read off
+///                GPT-Live's events, which have no speech boundaries: the person's transcript
+///                starting is *talking*, its going quiet for `heardIdle` with no answer begun is
+///                *heard* (and thinking), each delegation in flight is a running tool (the
+///                *working* loop, through any filler GPT-Live says over it), and a delegation
+///                Zimmer could not answer is a failure
 ///   cost         the session's billed seconds every `sessionReportEvery` and at the end, each
 ///                turn's time to first audio, and the call's length → `.report` for the ledger
 ///   end          `session.close`, then `session.closed` (its usage) or `closeGrace`, whichever
@@ -28,6 +34,11 @@ public struct GptLiveConductor: Sendable {
     public static let closeGrace: TimeInterval = 3
     /// Output fragments this far apart are one finished answer.
     public static let spokenIdle: TimeInterval = 1.2
+    /// The person's transcript quiet this long, with no answer begun: their line was heard.
+    public static let heardIdle: TimeInterval = 0.6
+    /// Thinking (after *heard*, or after Claude answered) with nothing said this long: GPT-Live
+    /// is not answering, so the call goes back to listening, quietly.
+    public static let answerGrace: TimeInterval = 8
     /// A long call's seconds are reported as it goes, so an app that dies takes at most this much
     /// unreported time with it.
     public static let sessionReportEvery: TimeInterval = 60
@@ -52,6 +63,8 @@ public struct GptLiveConductor: Sendable {
         case closed
         /// An error GPT-Live reported; the call carries on.
         case failure(String)
+        /// What the call's cues need beyond its state, as `RealtimeConductor.Effect.signal`.
+        case signal(LiveCueDirector.Signal)
     }
 
     public private(set) var sessionID: String?
@@ -68,6 +81,14 @@ public struct GptLiveConductor: Sendable {
     private var assistantText = ""
     private var userSpokeAt: TimeInterval?
     private var awaitingAnswer = false
+    /// The person's transcript is arriving: they are talking.
+    private var personTalking = false
+    /// When the person's line counts as heard, if no answer starts first.
+    private var heardDeadline: TimeInterval?
+    /// Delegations posted to Zimmer and not yet answered: the call's running tools.
+    private var delegations: Set<String> = []
+    /// When thinking with nothing said gives up and goes back to listening.
+    private var thinkingDeadline: TimeInterval?
     private var delegatedThisTurn = false
     private var heardAnswer = false
     private var lastOutput: TimeInterval?
@@ -113,6 +134,12 @@ public struct GptLiveConductor: Sendable {
             userText += event["delta"]?.string ?? ""
             userSpokeAt = now
             awaitingAnswer = true
+            thinkingDeadline = nil
+            heardDeadline = now + Self.heardIdle
+            if !personTalking {
+                personTalking = true
+                effects.append(.signal(.personTalking))
+            }
             effects.append(.state(.listening))
             return effects
         case "session.output_transcript.delta":
@@ -136,21 +163,33 @@ public struct GptLiveConductor: Sendable {
             }
             assistantText += event["delta"]?.string ?? ""
             lastOutput = now
+            thinkingDeadline = nil
             effects.append(.state(.speaking))
+            // The answer has begun: the person's line needs no *heard*.
+            effects += personDone()
             return effects
         case "session.delegation.created":
             guard event["delegation"]?["target"]?.string == "client", let id = event["delegation"]?["id"]?.string else { return [] }
             let pending = userText
-            var effects = flushUser()
+            var effects = flushUser() + personDone()
             delegatedThisTurn = true
+            thinkingDeadline = nil
+            delegations.insert(id)
             effects.append(.delegate(id: id, pendingUserText: pending))
+            // Running first, so the call goes straight to the working loop, not through thinking.
+            effects.append(.signal(.toolsRunning(delegations.count)))
             effects.append(.state(.working))
             return effects
         case "session.closed":
             closedUsage = event["usage"]
             return finish(at: now)
         case "error":
+            // As on Realtime: with nothing running or sounding, no answer is coming, so back to
+            // listening. A stray error while Claude works or GPT-Live talks means nothing yet.
+            let idle = delegations.isEmpty && lastOutput == nil
+            if idle { thinkingDeadline = nil }
             return [.failure(event["error"]?["message"]?.string ?? "GPT-Live reported an error.")]
+                + (idle ? [.signal(.noAnswerComing), .state(.listening)] : [])
         default:
             return []
         }
@@ -159,10 +198,23 @@ public struct GptLiveConductor: Sendable {
     /// Zimmer answered a delegation (`answer`), or could not be reached (`failure`).
     public mutating func delegated(id: String, answer: LiveDelegation?, failure: String?, at now: TimeInterval) -> [Effect] {
         guard !ended else { return [] }
-        guard let answer else {
-            return [commentary(id, failure.map { "I couldn't do that: \($0)." } ?? "I couldn't reach Zimmer just now. Try again in a moment.")]
+        let wasRunning = delegations.remove(id) != nil
+        var effects: [Effect] = wasRunning ? [.signal(.toolsRunning(delegations.count))] : []
+        // The last delegation is back and GPT-Live is quiet: thinking until it says what came back
+        // (the answer, or that it failed), or `answerGrace` passes. Nothing to say: listening.
+        let saying = answer.map { !$0.chunks.allSatisfy(\.isEmpty) } ?? true
+        if wasRunning, delegations.isEmpty, lastOutput == nil {
+            if saying {
+                thinkingDeadline = now + Self.answerGrace
+                effects.append(.state(.thinking))
+            } else {
+                effects.append(.state(.listening))
+            }
         }
-        var effects: [Effect] = []
+        guard let answer else {
+            if wasRunning { effects.append(.signal(.actionFailed)) }
+            return effects + [commentary(id, failure.map { "I couldn't do that: \($0)." } ?? "I couldn't reach Zimmer just now. Try again in a moment.")]
+        }
         if let warning = answer.warning, !warning.isEmpty, !warned {
             warned = true
             effects.append(.send(.object(["type": .string("session.thinking.append"), "event_id": .string(eventID()),
@@ -182,6 +234,19 @@ public struct GptLiveConductor: Sendable {
         var effects: [Effect] = []
         if let closeDeadline, now >= closeDeadline { return finish(at: now) }
         if closing { return [] }
+        if let heardDeadline, now >= heardDeadline {
+            self.heardDeadline = nil
+            let answered = !awaitingAnswer
+            effects += personDone()
+            if !answered {
+                thinkingDeadline = now + Self.answerGrace
+                effects += [.state(.thinking), .signal(.heardPerson)]
+            }
+        }
+        if let thinkingDeadline, now >= thinkingDeadline {
+            self.thinkingDeadline = nil
+            if delegations.isEmpty { effects.append(.state(.listening)) }
+        }
         if let lastOutput, now - lastOutput >= Self.spokenIdle {
             self.lastOutput = nil
             effects += flushAssistant()
@@ -226,6 +291,14 @@ public struct GptLiveConductor: Sendable {
     }
 
     // MARK: - Internals
+
+    /// The person's run of transcript is over: they stopped talking.
+    private mutating func personDone() -> [Effect] {
+        heardDeadline = nil
+        guard personTalking else { return [] }
+        personTalking = false
+        return [.signal(.personStopped)]
+    }
 
     private mutating func commentary(_ id: String, _ content: String) -> Effect {
         .send(.object(["type": .string("session.commentary.append"), "event_id": .string(eventID()),

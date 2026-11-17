@@ -470,7 +470,22 @@ but no call has run on a phone or in a car. Three things wait on the first real 
 libwebrtc's voice-processing audio unit and the cue engine (`LiveAudioEngine.startCues`) share the
 `.playAndRecord` session without one cutting the other off, which matters most on a CarPlay route;
 that the cues, which libwebrtc's echo canceller does not hear, do not reach GPT-Live as speech; and
-that an offer posted before ICE gathering finishes connects, as it does in the browser. A CarPlay
+that an offer posted before ICE gathering finishes connects, as it does in the browser.
+
+The cues on this engine may also be too quiet to hear. Apple's voice processing turns down every
+sound in the app that does not go through it, and libwebrtc does not relax that (iOS 17's
+`kAUVoiceIOProperty_OtherAudioDuckingConfiguration` is never set on its audio unit). The cues play
+from `LiveAudioEngine`, outside libwebrtc's unit, so on a call they are likely ducked under GPT-Live's
+voice. The fix is to give libwebrtc a custom audio device (`RTCAudioDevice`) built on
+`LiveAudioEngine`'s voice-processing graph, so the cues, the microphone gate and GPT-Live's voice
+share one engine as they do on Realtime. That has not been built.
+
+On both the phone and the web dock, the GPT-Live cues guess where your turn ends. GPT-Live reports
+no speech boundaries, so a call counts you as talking when your transcript starts arriving and as
+heard when it has been quiet for 0.6 s with no answer begun. Whether GPT-Live streams the person's
+transcript while they speak, or only once they stop, has not been checked on a real call. If only
+afterwards, Heard comes late or not at all, and a pause mid-sentence longer than 0.6 s can sound
+Heard early. A CarPlay
 call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
 Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
 happens only with a connection warmed before the engine was switched, for at most its five minutes.

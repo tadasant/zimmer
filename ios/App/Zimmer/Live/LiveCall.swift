@@ -428,6 +428,8 @@ final class LiveCall: ObservableObject {
         case let .dropped(reason):
             telemetry.track(.socketClosed(reason))
             fail("The call dropped: \(reason)", generation: mine)
+        case let .cue(cue):
+            for action in cues.receive(cue) { perform(action) }
         }
     }
 

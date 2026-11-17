@@ -208,6 +208,7 @@ export default class extends Controller {
       audio: this.audio,
       onState: (state) => { if (mine === this.generation && this.state !== state) this.setState(state) },
       onError: (message) => { if (mine === this.generation) this.showError(message) },
+      onCue: (signal, arg) => { if (mine === this.generation) this.cues.perform(this.director[signal](arg)) },
       onEnded: ({ dropped }) => {
         if (mine !== this.generation) return
         this.gptLive = null
@@ -604,10 +605,13 @@ export default class extends Controller {
     this.muteTarget.setAttribute("aria-pressed", this.muted ? "true" : "false")
   }
 
-  // A disabled track sends silence: when the person muted, and while a cue sounds.
+  // A disabled track sends silence: when the person muted, and while a cue
+  // sounds. Not for cues on GPT-Live: with no speech events, the call learns the
+  // person is talking only from their transcript, so a gate would cut words out
+  // of what GPT-Live hears before the cues know to stop.
   applyMic() {
     const track = this.mic?.getAudioTracks()[0]
-    if (track) track.enabled = !this.muted && !this.cueSounding
+    if (track) track.enabled = !this.muted && !(this.cueSounding && !this.gptLive)
   }
 
   hangUp({ keepError = false, dropped = false, quiet = false } = {}) {

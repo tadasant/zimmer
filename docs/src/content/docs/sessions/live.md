@@ -468,6 +468,13 @@ older set than the phone's, quieter and brighter. While a cue sounds the
 microphone track is disabled, which sends silence. A browser that blocks audio has a call with no
 cues, and the call still works.
 
+On the `gpt_live_claude` engine the dock reads the same cues off GPT-Live's events
+(`lib/gpt_live_call.js`), as the phone does ([the mapping](/extend/ios-app/#carplay)): heard when
+your transcript goes quiet, working while Claude answers a delegation, failed when Zimmer could not.
+It does not silence the microphone for them. GPT-Live reports no speech boundaries, so the call
+learns you are talking only when your transcript arrives, and a gate would cut your first words out
+of what GPT-Live hears.
+
 **Type instead** hangs up and switches back. Hanging up from the dock leaves voice on, and the
 conversation page offers **Talk** to reconnect or **Type instead**. When another device switches the
 mode, the header changes over Turbo Streams and the page re-renders its composer or call controls,
@@ -814,7 +821,8 @@ takes a WebSocket only from a server holding the OpenAI key, so the app makes a 
 route; libwebrtc carries the microphone and GPT-Live's voice, with its own echo canceller, and the
 app's audio engine plays only the [cues](/extend/ios-app/#carplay). What to do with each event is
 `GptLiveConductor` in ZimmerKit, the dock's `GptLiveCall` rules tested on Linux. Everything else is
-the phone's call as on Realtime: the cues, hang-up by voice, the hand-over between phone and car, and
+the phone's call as on Realtime: the cues (read off GPT-Live's transcripts and delegations,
+since it reports no speech boundaries), hang-up by voice, the hand-over between phone and car, and
 following Live Mode to another conversation. A GPT-Live call that cannot start (OpenAI refusing the session, WebRTC
 failing before `session.started`) starts again on Realtime once, saying why, so the engine never
 leaves the phone or the car without a voice. The car does not [pre-warm](#carplay-pre-warm) a
