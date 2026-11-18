@@ -14,9 +14,13 @@
 class LiveConversationPrepareJob < ApplicationJob
   queue_as :default
 
-  def perform(conversation_id, refresh: false)
+  # `adding`: default servers the conversation started without — a new one
+  # LiveConversations::Start began from an earlier conversation's tool lists,
+  # which had none for these. The refresh lists them too, and enables each one
+  # that answers.
+  def perform(conversation_id, refresh: false, adding: [])
     conversation = LiveConversation.find_by(id: conversation_id)
-    return refresh(conversation) if refresh
+    return refresh(conversation, Array(adding).map(&:to_s)) if refresh
     return unless conversation&.preparing?
 
     root = AgentRootsConfig.find(conversation.agent_root)
@@ -66,22 +70,29 @@ class LiveConversationPrepareJob < ApplicationJob
     conversation&.with_lock { conversation.fail!(message) if conversation.preparing? }
   end
 
-  def refresh(conversation)
+  def refresh(conversation, adding = [])
     return unless conversation&.active?
 
     root = AgentRootsConfig.find(conversation.agent_root)
     return if root.nil?
 
-    instructions = LiveConversations::RootInstructions.fetch(root)
+    adding -= conversation.enabled_mcp_servers
+    # The servers first: a root that cannot be read this time keeps the
+    # instructions the conversation has, but still gains the servers that answer.
     _servers, cache, _dropped = list_tools(conversation.enabled_mcp_servers)
+    added, added_cache, _dropped = list_tools(adding)
+    instructions = begin
+      LiveConversations::RootInstructions.fetch(root)
+    rescue LiveConversations::RootInstructions::Error => e
+      ErrorReporter.report_exception(e, context: { source: "LiveConversationPrepareJob#refresh", live_conversation_id: conversation.id })
+      nil
+    end
     # Under the lock and re-read: a call can enable a server meanwhile.
     conversation.with_lock do
-      conversation.update!(
-        instructions: instructions.text,
-        instructions_source: instructions.source,
-        mode_instructions: instructions.modes,
-        mcp_tool_cache: conversation.mcp_tool_cache.merge(cache).slice(*conversation.enabled_mcp_servers)
-      )
+      servers = conversation.enabled_mcp_servers | added
+      changes = { mcp_servers: servers, mcp_tool_cache: conversation.mcp_tool_cache.merge(cache).merge(added_cache).slice(*servers) }
+      changes.merge!(instructions: instructions.text, instructions_source: instructions.source, mode_instructions: instructions.modes) if instructions
+      conversation.update!(changes)
     end
   rescue StandardError => e
     ErrorReporter.report_exception(e, context: { source: "LiveConversationPrepareJob#refresh", live_conversation_id: conversation&.id })

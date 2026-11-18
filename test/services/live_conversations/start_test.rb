@@ -42,6 +42,45 @@ class LiveConversations::StartTest < ActiveSupport::TestCase
     assert_equal fresh, LiveConversation.current
   end
 
+  test "after a prepared conversation, a new one starts active on its instructions and tool lists, and is read again in the background" do
+    stub_live_root(root: live_root(LiveConversations::AGENT_ROOT, default_mcp_servers: [ "zimmer", CLOCK_SERVER, "offline-mac" ]))
+    stub_live_key
+    stub_clock_server
+    ServersConfig.stubs(:find).with("offline-mac").returns(ServersConfig::Server.new("offline-mac", { "type" => "stdio", "command" => "/nonexistent" }))
+    clock_tools = [ { "name" => "current_time" } ]
+    old = create_live_conversation(mode: "voice", mcp_servers: [ "zimmer", CLOCK_SERVER, "enabled-mid-call" ],
+                                   instructions_source: "example/live@abc", mode_instructions: { "voice" => "Short." },
+                                   mcp_tool_cache: { CLOCK_SERVER => clock_tools, "enabled-mid-call" => [ { "name" => "x" } ] })
+
+    conversation = nil
+    assert_enqueued_with(job: LiveConversationPrepareJob, args: ->(args) { args.last == { refresh: true, adding: [ "offline-mac" ] } }) do
+      conversation = LiveConversations::Start.call("voice")
+    end
+
+    assert old.reload.ended?
+    assert conversation.active?, "a call can mint at once"
+    assert_not_equal old, conversation
+    assert_equal old.instructions, conversation.instructions
+    assert_equal "example/live@abc", conversation.instructions_source
+    assert_equal({ "voice" => "Short." }, conversation.mode_instructions)
+    assert_equal [ "zimmer", CLOCK_SERVER ], conversation.mcp_servers, "the root's defaults the old one had tools for, nothing it enabled itself"
+    assert_equal({ CLOCK_SERVER => clock_tools }, conversation.mcp_tool_cache)
+    assert_empty conversation.turns
+  end
+
+  test "a failed or never-prepared conversation is not one to start from" do
+    stub_live_root
+    stub_live_key
+    create_live_conversation(status: LiveConversation::FAILED, instructions: "# Broken")
+    create_live_conversation(status: LiveConversation::ENDED, instructions: nil)
+
+    conversation = nil
+    assert_enqueued_with(job: LiveConversationPrepareJob, args: ->(args) { args.size == 1 }) { conversation = LiveConversations::Start.call("voice") }
+
+    assert conversation.preparing?
+    assert_nil conversation.instructions
+  end
+
   test "the database refuses a second open conversation, typed or spoken" do
     create_live_conversation(mode: "text")
 

@@ -120,6 +120,23 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/live-mode/, response.parsed_body["message"])
   end
 
+  test "the car's New after an earlier conversation: the call mints its secret straight away, with no wait on the root" do
+    old = create_live_conversation(mode: "voice")
+    LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_new" })
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.4.2")
+
+    post "/api/v1/live_conversations", params: { mode: "voice" }, headers: car
+    assert_response :created
+    id = response.parsed_body["id"]
+    assert_not_equal old.id, id
+    assert_equal "active", response.parsed_body["status"]
+
+    post "/api/v1/live_conversations/#{id}/client_secret", headers: car
+    assert_response :success, "no 409 'still reading its instructions'"
+    assert_equal "ek_new", response.parsed_body["client_secret"]
+    assert old.reload.ended?
+  end
+
   test "switching mode mid-conversation: voice on, then the secret; voice off, then typing" do
     conversation = create_live_conversation(mode: "text")
     LiveConversations::RealtimeSession.stubs(:mint).returns({ client_secret: "ek_switch" })

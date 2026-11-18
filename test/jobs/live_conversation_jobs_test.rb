@@ -157,6 +157,35 @@ class LiveConversationJobsTest < ActiveJob::TestCase
     assert_equal "# Live\nBe brief.", conversation.instructions
   end
 
+  test "a refresh adds the default servers a seeded conversation started without, when they answer" do
+    stub_live_root
+    stub_clock_server
+    ServersConfig.stubs(:find).with("offline-mac").returns(ServersConfig::Server.new("offline-mac", { "type" => "stdio", "command" => "/nonexistent" }))
+    conversation = create_live_conversation(mcp_servers: [ "zimmer" ])
+    LiveConversations::RootInstructions.stubs(:fetch).returns(LiveConversations::RootInstructions::Result.new(text: "# New", source: "new", modes: {}))
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true, adding: [ CLOCK_SERVER, "offline-mac" ])
+
+    conversation.reload
+    assert_equal [ "zimmer", CLOCK_SERVER ], conversation.mcp_servers, "one that still cannot start stays off"
+    assert_equal %w[current_time env_names], conversation.mcp_tool_cache[CLOCK_SERVER].map { |t| t["name"] }
+    assert_equal "# New", conversation.instructions
+  end
+
+  test "a refresh that cannot read the root still adds the servers that answer" do
+    stub_live_root
+    stub_clock_server
+    conversation = create_live_conversation(mcp_servers: [ "zimmer" ])
+    LiveConversations::RootInstructions.stubs(:fetch).raises(LiveConversations::RootInstructions::Error, "unreachable")
+    ErrorReporter.expects(:report_exception).once
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true, adding: [ CLOCK_SERVER ])
+
+    conversation.reload
+    assert_equal [ "zimmer", CLOCK_SERVER ], conversation.mcp_servers
+    assert_equal "# Live\nBe brief.", conversation.instructions
+  end
+
   test "a refresh of a conversation no longer active does nothing" do
     conversation = create_live_conversation(status: LiveConversation::ENDED)
     LiveConversations::RootInstructions.expects(:fetch).never

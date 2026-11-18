@@ -312,6 +312,16 @@ rise in `call.failed`, and no idle-session cost on the OpenAI usage page.
 - **Wait for a warming connection.** A tap during warming currently starts cold. It could
   instead await the mint already in flight.
 - **Pre-read for New.** Warm the network and Zimmer's side for a new conversation without
-  creating it.
+  creating it. Zimmer's side is partly done: a new conversation starts `active` on the last
+  prepared one's instructions and tool lists (`LiveConversations::Start`), so New no longer waits
+  seconds on `preparing`. The first car measurement of New (12.5 s tap to ready, on GPT-Live) spent
+  about 4 s there.
+- **Reuse the warm socket for New.** A warm Realtime session is not bound to its conversation:
+  the tap's `session.update` replaces the instructions and tools. New could create the
+  conversation, then claim the socket warmed for the old one. Not done: it needs the claim to
+  cross conversations, and it helps only Realtime.
+- **Pre-warm GPT-Live.** Zimmer refuses a prewarm while the engine is GPT-Live, so a car on
+  GPT-Live never holds a warm connection, for Continue or New. Its WebRTC start took about 3.5 s
+  of that 12.5 s.
 - **Settings-aware replacement.** Replace a warm connection as soon as the Live settings change,
   instead of within 5 minutes. This needs a settings version on the refresh.
