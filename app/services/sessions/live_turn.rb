@@ -45,7 +45,7 @@ module Sessions
   # follow-up routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`,
   # `Sessions::MessageParent`, `Session#claim_system_recovery_turn!` and the
   # follow-up composer. The status gate below is correspondingly
-  # `running? || waiting?` on every predicate here.
+  # Session#in_turn_state? (`running` or `waiting`) on every predicate here.
   module LiveTurn
     module_function
 
@@ -155,20 +155,16 @@ module Sessions
     UNDERWAY_STATUSES = %i[running queued abandoned].freeze
 
     # The cheap status gate every predicate here takes before touching
-    # `good_jobs`.
-    #
-    # `running` and `waiting` are the two states a session with a turn can be in
-    # since #1040: `running` once a worker has spawned its process, `waiting`
-    # while the turn sits in the `agents` queue. `needs_input`, `failed` and
-    # `archived` are rest states — a job row against one of those is a corpse or
-    # a race the callers here deliberately do not act on.
+    # `good_jobs`: Session#in_turn_state?, `running` or `waiting`. A job row
+    # against a session in any other state is a corpse or a race the callers
+    # here deliberately do not act on.
     #
     # @param session [Session, nil]
     # @return [Boolean]
     def session_may_hold_a_turn?(session)
       return false if session.nil?
 
-      session.running? || session.waiting?
+      session.in_turn_state?
     end
 
     # This session's unfinished AgentSessionJob rows.

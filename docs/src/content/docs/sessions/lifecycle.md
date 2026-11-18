@@ -73,6 +73,17 @@ refusal differently. The web follow-up form is the exception.
 It queues for a live turn first, then delivers only to `waiting` or `needs_input`, so it refuses a
 `running` session with no live turn.
 
+**Whether a session is in a state a turn can be in is a narrower question, also with one answer:
+`Session#in_turn_state?`** — `running` or `waiting`. It is a status read and nothing else: a
+`waiting` session may be resting with no turn at all, so it answers "a turn may be underway", and
+`Sessions::LiveTurn` reads the job rows for whether one is. `LiveTurn` takes it as its cheap gate.
+`Sessions::ParkUndeliveredTurn` and `AuthOutageParkService` ask it before parking a turn whose setup
+failed, `AuthOutageParkService` again before stamping `running_job_id` on the turn it resumed,
+`AgentSessionJob` before taking the turn it was handed, and `GoalCheck` to call a verdict provisional
+until the session comes to rest. `test/contracts/in_turn_state_contract_test.rb` fails on a new
+`running? || waiting?` chain under `app/` or `lib/`. A chain that also tests other states is a different
+question and passes, and so do status arrays such as `Trigger::PENDING_INTENT_STATUSES`, which feed SQL.
+
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
 at consecutive positions rather than colliding on the queue's unique position. It also writes the one timeline row all three leave

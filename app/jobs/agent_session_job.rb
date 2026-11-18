@@ -857,7 +857,7 @@ class AgentSessionJob < ApplicationJob
         # detected no active process and paused it to `needs_input`, or it failed
         # — so hand the turn back over before spawning, or stand down if even that
         # is refused.
-        unless session.running? || session.waiting?
+        unless session.in_turn_state?
           if session.may_resume?
             log_buffer.add(
               "Follow-up job re-resuming session (status was #{session.status})",

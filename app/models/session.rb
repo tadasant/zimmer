@@ -1950,6 +1950,35 @@ class Session < ApplicationRecord
     running? || waiting? || needs_input?
   end
 
+  # Is this session in a state a turn can be in?
+  #
+  # `running` once a worker has spawned the turn's process, `waiting` while the
+  # turn sits in the `agents` queue — the two states a session with a turn can be
+  # in since #1040. `needs_input`, `failed` and `archived` are rest states.
+  #
+  # A status read and nothing else. `waiting` is also where a session rests with
+  # no turn at all (asleep at the spot gate, parked on an auth outage, never
+  # started), so true here means "a turn may be underway", not that one is.
+  # Whether one actually is is a question for the job rows: Sessions::LiveTurn,
+  # whose predicates take this as their cheap gate.
+  #
+  # The other callers ask it for the same reason — has the session come to rest,
+  # or moved somewhere no turn can be, since they last looked:
+  # Sessions::ParkUndeliveredTurn and AuthOutageParkService before parking a turn
+  # whose setup failed, AuthOutageParkService again before stamping
+  # `running_job_id` on the turn it resumed, AgentSessionJob before taking the
+  # turn it was handed, and GoalCheck, which calls a verdict provisional until the
+  # session has come to rest. `test/contracts/in_turn_state_contract_test.rb`
+  # fails on a new `running? || waiting?` chain in Ruby under app/ or lib/.
+  #
+  # Narrower than #accepts_follow_up?, which adds `needs_input`: a session at rest
+  # takes a follow-up, but holds no turn.
+  #
+  # @return [Boolean]
+  def in_turn_state?
+    running? || waiting?
+  end
+
   # Why this session refuses a follow-up, or nil when it takes one.
   #
   # The one wording of that refusal. Each surface frames it in its own error
