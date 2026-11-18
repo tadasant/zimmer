@@ -152,7 +152,8 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertEqual(app.buttons["detail.hooks.edit"].label, "Add hooks")
         attachScreenshot(app, named: "mcp-none")
         let playwright = app.buttons["catalog.item.playwright-custom"]
-        tapUntilItOpens(add, playwright, "the MCP server checklist")
+        tapUntilItOpens(add, app.buttons["catalog.save"], "the MCP server checklist")
+        XCTAssertTrue(playwright.waitForExistence(timeout: timeout), "the checklist lists the catalog")
         playwright.tap()
         app.buttons["catalog.item.slack"].tap()
         attachScreenshot(app, named: "mcp-checklist")
@@ -174,7 +175,8 @@ final class SessionDetailPanelsUITests: XCTestCase {
         // And taken off again: the list is replaced, not merged.
         scrollUntilHittable(app, add)
         let slack = app.buttons["catalog.item.slack"]
-        tapUntilItOpens(add, slack, "the MCP server checklist")
+        tapUntilItOpens(add, app.buttons["catalog.save"], "the MCP server checklist")
+        XCTAssertTrue(slack.waitForExistence(timeout: timeout), "the checklist lists the catalog")
         slack.tap()
         app.buttons["catalog.save"].tap()
         XCTAssertTrue(waitForDisappearance(labelled(app, "slack: Pending connection")), "the unticked server is gone")
@@ -245,13 +247,14 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertTrue(inView(), "\(element) comes into view")
     }
 
-    /// Taps `button`, a row's Edit or Add, until `opened`, something on the sheet it presents,
-    /// is there. Under load the tap on one of these small links can be lost: on main's run
-    /// 44237033089 (session-page shard) XCUITest synthesised the tap on the MCP servers' Edit,
-    /// in view and uncovered, and the page stayed as it was for the whole 20-second wait, with no
-    /// sheet in the hierarchy. A person taps again; so does this, but only while the link is
-    /// still on screen to take it. Once the sheet is presenting it covers the link, so a slow
-    /// sheet is waited for rather than tapped at twice. The last try waits the full timeout.
+    /// Taps `button`, a row's Edit or Add, until `opened`, something the sheet it presents draws
+    /// with the sheet itself (not a row it loads after), is there. Under load the tap on one of
+    /// these small links can be lost: on main's run 44237033089 (session-page shard) XCUITest
+    /// synthesised the tap on the MCP servers' Edit, in view and uncovered, and the page stayed as
+    /// it was for the whole 20-second wait, with no sheet in the hierarchy. A person taps again; so
+    /// does this, but only while the sheet's own element is absent and the link still reads as on
+    /// screen, so a sheet that is up is not tapped again. The last try waits the full timeout, so
+    /// the worst case is 30 seconds.
     private func tapUntilItOpens(_ button: XCUIElement, _ opened: XCUIElement, _ what: String) {
         let attempts = 3
         for attempt in 1...attempts {
