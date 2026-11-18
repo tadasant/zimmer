@@ -615,34 +615,47 @@ voice. It is the only Live Mode route to a merge, and it ends in the same
 `Sessions::AuthorizeMerge` the dashboard and the iOS app call, so the session holding the PR gets
 the same `[HUMAN-AUTHORIZED MERGE]` message and the sign-off is recorded `here`, in that session.
 
-A tap carries its referent, and a spoken "yes" does not, so the voice version has two calls and
-Zimmer decides what is being agreed to:
+A tap carries its referent, and a spoken "yes" does not, so the voice version has two calls, Zimmer
+names the PR, and you answer **one** short question about it:
 
 1. `authorize_merge(session_id)` reads the session's PR off Zimmer's own record, refuses anything
-   the button would refuse, and answers with a **read-back Zimmer composed**: the repository, the
-   number, the session's title and, when the merge gate's newest rating of that PR is a hold, the
-   start of its reason. The model says it and asks for a yes.
-2. `authorize_merge(session_id, confirm: true)` merges only if the newest read-back in the
-   conversation was for this session and is under three minutes old, the person's newest words pass
-   every rule above, the assistant line just before them (what the person heard, with nothing they
-   said in between) came after the read-back and names the PR by repository and number, and the words
-   are a plain yes: short, starting with "yes", "yeah", "go ahead", "merge it" or the like, with no
-   question and nothing qualifying it ("not", "wait", "but", "after", "first"…). So a yes to some
-   later question never counts. Anything else merges nothing and the model is told why. The message
-   the merging session gets carries Zimmer's read-back and the person's answer, never the model's
-   words.
+   the button would refuse, and answers with a **confirmation Zimmer composed**: the repository, the
+   number, a few words of the session's title and, when the merge gate's newest rating of that PR is
+   a hold, "The merge gate held it for you." The model asks it once, in its own words if it likes,
+   and asks for a yes. The gate's reason comes with it, for the model to give only if you ask.
+2. `authorize_merge(session_id, confirm: true)` merges only if all of this holds:
+   - the newest question in the conversation was for this session and is under three minutes old
+     (asking about the same PR again does not restart the clock or throw away a yes already given);
+   - your newest words pass every rule above: fresh, one signed-in person's, from a conversation
+     nothing unvouched-for has written into;
+   - after Zimmer composed the question, the assistant said a line that asks to merge this PR:
+     "merge", the number (in digits, or spoken: "thirty six hundred", "one four nine oh"), and
+     "pull request", "PR" or the repository's name. A paraphrase is fine;
+   - everything you said after the newest such line is a plain yes: short, starting with "yes",
+     "yeah", "yep", "do it", "merge it" or the like, with no question and nothing qualifying it
+     ("not", "wait", "but", "after", "first"…);
+   - the assistant asked you nothing else in between. A yes after "Also, want me to restart
+     session 7?" answers that, not the merge.
+
+   Anything else merges nothing and the model is told why. The message the merging session gets
+   carries Zimmer's question and your answer, never the model's words.
+
+Your words are counted from the line that asked, not from the line just before them, because a voice
+call records lines in the order transcription finished, not the order they were spoken. A "yes" said
+as the model starts repeating itself lands after "Okay." or after half a sentence that names nothing,
+and still answers the question you heard.
 
 The record's content is the person's words ("Yes."), and its provenance adds `confirmed_pr_url`,
-`read_back` (Zimmer's sentence) and `replying_to` (what the model actually said):
+`read_back` (Zimmer's question) and `replying_to` (the line the model actually asked it with):
 
 ```
 - **[here]** Tadas (`tadasant`) via Live Mode (CarPlay, spoken, as transcribed; delivered by the Live Mode assistant), in this session (#27637), at 2026-11-13T06:40:00Z
   ```
   Yes.
   ```
-  They were answering Zimmer's read-back of https://github.com/tadasant/zimmer/pull/1490 (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, the title from the session, any hold reason from the merge gate):
+  They were answering Zimmer's read-back of https://github.com/tadasant/zimmer/pull/1490 (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):
   ```
-  Merge tadasant/zimmer pull request 1490, from the session "Stop …"? The merge gate held it: Differential: …
+  Merge zimmer pull request 1490, "Stop stranded paging"? The merge gate held it for you.
   ```
   The content above is what the person said. The Live Mode assistant delivered this into the session on the strength of it:
   ```

@@ -16,7 +16,7 @@ module Mcp
       ACCEPTED_ARGUMENTS = %w[prompt].freeze
 
       REFUSED_MERGE = "Nothing was started: a router session cannot carry a merge authorization. To merge a PR the " \
-                      "person approved, use `authorize_merge`, which reads it back and needs their yes."
+                      "person approved, use `authorize_merge`, which names the PR once and needs their yes."
 
       description <<~DESC
         Hand new work to a background agent in plain words (never a merge; that is authorize_merge); Zimmer picks the agent, tools and repo.

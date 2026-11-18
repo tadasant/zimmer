@@ -211,13 +211,14 @@ class HumanMessageCapture
       nil
     end
 
-    # Record the person's spoken or typed "yes" to Zimmer's read-back of a pull
-    # request, as the sign-off LiveConversations::AuthorizeMerge delivered on the
+    # Record the person's spoken or typed "yes" to Zimmer's one-question
+    # confirmation of a pull request, as the sign-off LiveConversations::AuthorizeMerge delivered on the
     # strength of it. The voice counterpart of the app's Merge button, and recorded
     # in the session holding the PR, the way the button's click is.
     #
-    # The caller has already established `words` (live_mode_words, answering the
-    # read-back) and checked they say yes. This only writes the record, with
+    # The caller has already established `words` (the person's answers since the
+    # assistant asked about the PR, `replying_to` that asking line) and checked
+    # they say yes. This only writes the record, with
     # what makes a short reply's referent checkable: the PR Zimmer named, the
     # read-back Zimmer composed, and the line the assistant actually said.
     #
