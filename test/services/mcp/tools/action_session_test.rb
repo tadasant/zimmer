@@ -426,6 +426,21 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal "Keep going", session.prompt
   end
 
+  # Parity with the web form, which clears Session::STALE_RETRY_METADATA_KEYS
+  # before it delivers: a turn started over MCP gets a fresh SIGTERM budget.
+  test "follow_up to an idle session drops the last turn's retry state" do
+    session = sessions(:needs_input)
+    session.merge_metadata!("sigterm_retry_count" => 3, "failure_reason" => "sigterm_retries_exhausted",
+                            "api_error_last_checked_line" => 7)
+
+    @tool.call("action" => "follow_up", "session_id" => session.id, "prompt" => "Carry on")
+
+    metadata = session.reload.metadata
+    assert_nil metadata["sigterm_retry_count"]
+    assert_nil metadata["failure_reason"]
+    assert_equal 7, metadata["api_error_last_checked_line"]
+  end
+
   test "follow_up queues the prompt for a running session" do
     session = sessions(:running)
 
