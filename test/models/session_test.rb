@@ -3798,6 +3798,7 @@ class SessionTest < ActiveSupport::TestCase
     }.each do |name, keys|
       malformed = keys.grep_v(/\A[a-z][a-z0-9_]*\z/)
       assert_empty malformed, "#{name} holds entries that are not metadata keys: #{malformed.inspect}"
+      assert_equal keys.uniq, keys, "#{name} lists a key twice"
     end
   end
 

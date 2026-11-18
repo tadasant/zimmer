@@ -310,10 +310,13 @@ recovery paths look for it, enqueues `AgentSessionJob`, and records `running_job
 is never "running with no job."
 
 Which stale metadata it clears is the caller's choice. The follow-up doors — the web form, the REST
-and MCP `follow_up`, and an MCP App widget's send — clear the default set,
+and MCP `follow_up`, and an MCP App widget's send — clear the default set (so do
+`Sessions::RestartUnstartedTurn` and `Sessions::RecoverLostClone`),
 `Session::STALE_RETRY_METADATA_KEYS`, so a turn somebody starts by hand gets a fresh retry budget
 and none of the last turn's failure reason or dormancy records, whichever door it came through.
-Triggers, the pollers and `message_parent` clear only the SIGTERM counters, and this sweep clears none.
+Triggers, the pollers, `message_parent` and `McpOauthResumeService` clear only the SIGTERM
+counters, and this sweep clears none. The parked-prompt edge of the default set is on
+[the limitations page](/limitations/#a-hand-sent-follow-up-drops-a-parked-prompt).
 
 `Sessions::DeliverFollowUp` is the REST and MCP doors' wrapper: one transaction around the goal (and
 the `prompt` column), whatever the surface must record before the job starts — the uncle edge, and
