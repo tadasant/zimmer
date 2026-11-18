@@ -22,7 +22,7 @@ final class TranscriptParityUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1035"])
         let copy = app.buttons["code.copy"].firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout))
-        scrollUntilHittable(app, copy)
+        scrollSessionPageUntilHittable(app, copy)
         XCTAssertEqual(copy.label, "Copy code")
         attachScreenshot(app, named: "code-block")
         // The button reads "Copied" for two seconds, as the web's does, which is less than a
@@ -65,7 +65,7 @@ final class TranscriptParityUITests: XCTestCase {
         let paragraph = app.descendants(matching: .any)["markdown.links"].firstMatch
         XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "a paragraph with links carries the link menu")
         XCTAssertTrue(paragraph.label.contains(url), "a bare URL is kept whole")
-        scrollUntilHittable(app, paragraph)
+        scrollSessionPageUntilHittable(app, paragraph)
         XCTAssertTrue(pressForMenuInPlace(app, paragraph, offering: "Open Link", timeout: timeout).exists, "the menu opens the link")
         XCTAssertTrue(app.buttons["Share…"].firstMatch.exists, "and shares it")
         let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
@@ -102,7 +102,7 @@ final class TranscriptParityUITests: XCTestCase {
             XCTAssertFalse(paragraph.label.contains(marks), "no \"\(marks)\" left as typed: \(paragraph.label)")
         }
         // The page opens at the newest message; the summary is at the top.
-        scrollUntilHittable(app, paragraph)
+        scrollSessionPageUntilHittable(app, paragraph)
         attachScreenshot(app, named: "status-summary")
         XCTAssertTrue(pressForMenuInPlace(app, paragraph, offering: "Open Link", timeout: timeout).exists, "the menu opens the link")
         let copy = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Copy Link")).firstMatch
@@ -186,29 +186,6 @@ final class TranscriptParityUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture"] + arguments
         app.launch()
         return app
-    }
-
-    /// The page opens at its newest message; swipe toward `element` until it can be tapped.
-    private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        // Below the navigation bar and the section strip pinned under it too: isHittable says
-        // yes under them, where a tap lands on them.
-        func inView() -> Bool {
-            guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
-            let bar = app.navigationBars.firstMatch
-            let strip = app.descendants(matching: .any)["detail.sections"]
-            // And above the composer and its quick replies, which isHittable can also miss.
-            let field = app.descendants(matching: .any)["followup.field"]
-            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
-            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
-                && element.frame.maxY <= bottom
-        }
-        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view,
-        // and each ask is several queries, which cost the failing run of 43330313836 forty seconds.
-        for _ in 0..<8 {
-            if inView() { break }
-            if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
-        }
-        XCTAssertTrue(inView(), "scrolled into view")
     }
 
     /// The edit menu's Paste: a menu item on current iOS, a button on some runtimes.

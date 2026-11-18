@@ -32,7 +32,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
 
         // The row's Edit opens it too: your own words, which name no catalog goal.
         let edit = app.buttons["detail.goal.edit"]
-        scrollUntilHittable(app, edit)
+        scrollSessionPageUntilHittable(app, edit)
         let field = app.descendants(matching: .any)["goal.custom.field"]
         tapUntilItOpens(edit, field, "the goal editor")
         field.tap()
@@ -49,7 +49,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1038"])
         let words = app.staticTexts["Unmerged PR is open and CI is green."]
         XCTAssertTrue(words.waitForExistence(timeout: timeout))
-        scrollUntilHittable(app, words)
+        scrollSessionPageUntilHittable(app, words)
         words.press(forDuration: 1.2)
         let copy = app.buttons["Copy"].firstMatch
         XCTAssertTrue(copy.waitForExistence(timeout: timeout), "the long press offers Copy")
@@ -75,7 +75,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let delegate = app.descendants(matching: .any)["goalcheck.delegate.1044"]
         XCTAssertTrue(delegate.waitForExistence(timeout: timeout))
         attachScreenshot(app, named: "goal-check-delegated")
-        scrollUntilHittable(app, delegate)
+        scrollSessionPageUntilHittable(app, delegate)
         delegate.tap()
         XCTAssertTrue(app.navigationBars["#1044"].waitForExistence(timeout: timeout), "the spawned session opens")
     }
@@ -98,7 +98,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         attachScreenshot(app, named: "panels")
         let saidIn = app.descendants(matching: .any)["humanmessage.saidin.1040"]
         XCTAssertTrue(saidIn.waitForExistence(timeout: timeout))
-        scrollUntilHittable(app, saidIn)
+        scrollSessionPageUntilHittable(app, saidIn)
         saidIn.tap()
         XCTAssertTrue(app.navigationBars["#1040"].waitForExistence(timeout: timeout), "the session it was said in opens")
     }
@@ -110,7 +110,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertTrue(summary.waitForExistence(timeout: timeout))
         let here = app.descendants(matching: .any)["humanmessage.here"]
         XCTAssertFalse(here.exists, "folded until opened")
-        scrollUntilHittable(app, summary)
+        scrollSessionPageUntilHittable(app, summary)
         summary.tap()
         XCTAssertTrue(here.waitForExistence(timeout: timeout))
     }
@@ -124,7 +124,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertTrue(labelled(app, "zimmer-self-session: Pending connection, added by Zimmer").exists)
 
         // A failed server's error, a tap away.
-        scrollUntilHittable(app, linear)
+        scrollSessionPageUntilHittable(app, linear)
         linear.tap()
         let error = app.staticTexts["mcp.error.linear"]
         XCTAssertTrue(error.waitForExistence(timeout: timeout))
@@ -133,7 +133,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
 
         // Edit opens the MCP server checklist.
         let edit = app.buttons["detail.mcp.edit"]
-        scrollUntilHittable(app, edit)
+        scrollSessionPageUntilHittable(app, edit)
         tapUntilItOpens(edit, app.buttons["catalog.save"], "the MCP server checklist")
     }
 
@@ -145,7 +145,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let none = app.descendants(matching: .any)["detail.mcp.none"]
         XCTAssertTrue(none.waitForExistence(timeout: timeout), "an empty list says so")
         let add = app.buttons["detail.mcp.edit"]
-        scrollUntilHittable(app, add)
+        scrollSessionPageUntilHittable(app, add)
         XCTAssertEqual(add.label, "Add MCP servers")
         // Skills, hooks and plugins have their rows too: 1035 has skills, and no hooks.
         XCTAssertEqual(app.buttons["detail.skills.edit"].label, "Edit skills")
@@ -173,7 +173,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         attachScreenshot(app, named: "mcp-added")
 
         // And taken off again: the list is replaced, not merged.
-        scrollUntilHittable(app, add)
+        scrollSessionPageUntilHittable(app, add)
         let slack = app.buttons["catalog.item.slack"]
         tapUntilItOpens(add, app.buttons["catalog.save"], "the MCP server checklist")
         XCTAssertTrue(slack.waitForExistence(timeout: timeout), "the checklist lists the catalog")
@@ -215,36 +215,6 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let button = app.buttons[item].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: timeout), "the session menu offers \(item)")
         button.tap()
-    }
-
-    /// The page opens at its newest message, so what is asked for may be above or below.
-    private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        // Ask for hittability only of an element on the page with a frame: asking it of one the
-        // lazy list has not laid out throws rather than answering no.
-        // And below the navigation bar and the section strip pinned under it: isHittable says
-        // yes for an element still under them, where a tap lands on them.
-        func inView() -> Bool {
-            guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
-            let bar = app.navigationBars.firstMatch
-            let strip = app.descendants(matching: .any)["detail.sections"]
-            // And above the composer and its quick replies, which isHittable can also miss.
-            let field = app.descendants(matching: .any)["followup.field"]
-            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
-            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
-                && element.frame.maxY <= bottom
-        }
-        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view,
-        // and each ask is several queries, which cost the failing run of 44237033089 23 seconds.
-        for _ in 0..<8 {
-            if inView() { break }
-            // Not laid out yet means above: the page opens at its newest message, under the panels.
-            if !element.exists || element.frame.isEmpty || element.frame.midY < app.frame.midY {
-                app.swipeDown(velocity: .slow)
-            } else {
-                app.swipeUp(velocity: .slow)
-            }
-        }
-        XCTAssertTrue(inView(), "\(element) comes into view")
     }
 
     /// Taps `button`, a row's Edit or Add, until `opened`, something the sheet it presents draws

@@ -19,7 +19,7 @@ final class InAppLinksUITests: XCTestCase {
             .matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "markdown.links", "/sessions/1044"))
             .firstMatch
         XCTAssertTrue(paragraph.waitForExistence(timeout: timeout), "the router's report links the session it spawned")
-        scrollUntilHittable(app, paragraph)
+        scrollSessionPageUntilHittable(app, paragraph)
         attachScreenshot(app, named: "in-app-link-before")
 
         // Through the paragraph's long-press menu, whose Open Link goes through the same handler
@@ -43,25 +43,6 @@ final class InAppLinksUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture"] + arguments
         app.launch()
         return app
-    }
-
-    /// The page opens at its newest message; swipe toward `element` until it can be tapped,
-    /// below the navigation bar and the section strip pinned under it.
-    private func scrollUntilHittable(_ app: XCUIApplication, _ element: XCUIElement) {
-        func inView() -> Bool {
-            guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
-            let bar = app.navigationBars.firstMatch
-            let strip = app.descendants(matching: .any)["detail.sections"]
-            let field = app.descendants(matching: .any)["followup.field"]
-            let bottom = field.exists ? field.frame.minY - 50 : app.frame.maxY
-            return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
-                && element.frame.maxY <= bottom
-        }
-        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view.
-        for _ in 0..<8 {
-            if inView() { break }
-            if element.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
-        }
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
