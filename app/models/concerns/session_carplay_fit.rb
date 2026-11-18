@@ -157,9 +157,9 @@ module SessionCarplayFit
     # written under whoever made it.
     validates :carplay_fit, inclusion: { in: [ CARPLAY_OK ], message: "must be carplay_ok when its source is carplay" },
                             if: -> { carplay_fit_source == SOURCE_CARPLAY }
-    # A long read is talked through by voice, so it is never laptop-only. Checked
-    # only when the mark itself is written: a row stored before the rule (until
-    # the post-deploy task flips it) must not fail an unrelated save.
+    # A long read is talked through by voice, so it is never laptop-only.
+    # Checked only when the mark itself changes, so an unrelated save never
+    # fails on a stored mark.
     validates :carplay_fit_reason, exclusion: { in: [ REASON_LONG_READ ], message: "long_read is a carplay_ok reason, never laptop_only" },
                                    if: -> { carplay_fit == LAPTOP_ONLY && (will_save_change_to_carplay_fit? || will_save_change_to_carplay_fit_reason?) }
 

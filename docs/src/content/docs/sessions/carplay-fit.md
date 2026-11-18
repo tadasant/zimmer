@@ -42,15 +42,19 @@ The rule is enforced in code, not only in the prompts. `SessionCarplayFit.normal
 `laptop_only` + `long_read` into `carplay_ok` + `long_read`, and both the summary trailer's parser and
 `Sessions::SetCarplayFit` run it, so every writer follows the rule: the fork, the backfill
 classifier, an assistant or a session over MCP, the REST endpoint and the web UI. The write still
-lands, and its result message says it was read as CarPlay-ok. The model refuses to save the pair as
+lands, and its result message (and the web UI's notice) says it was read as CarPlay-ok. On a session
+holding the sticky CarPlay-engagement mark, a `laptop_only` + `long_read` from any writer keeps that
+mark rather than replacing it. The model refuses to save the pair as
 well, but only when the mark itself changes, so a row stored before the rule never fails an
 unrelated save.
 
 Marks stored under the old rule were flipped once by the `FlipLongReadCarplayMarksToCarplayOk`
-[post-deploy task](/operate/deploying/#one-time-post-deploy-tasks). It changes the fit alone,
-whoever wrote the mark, and keeps the reason, source and transcript position, so a current mark stays
-current and a stale one stays stale. It leaves `laptop_only` marks with any other reason alone. The
-ids it flipped are in `post_deploy_task_runs` on `/health`.
+[post-deploy task](/operate/deploying/#one-time-post-deploy-tasks), whoever wrote the mark. It
+changes the fit and keeps the reason and transcript position, so a current mark stays current and a
+stale one stays stale. An `auto` mark on a CarPlay-engaged session becomes the sticky `carplay` mark,
+as the summary fork would write it. A `human`, `assistant` or `session` mark keeps its source and gets
+one line on the session's timeline saying it was re-read and why. It leaves `laptop_only` marks with
+any other reason alone. The count and ids it flipped are in `post_deploy_task_runs` on `/health`.
 
 An older iOS build still lists "A long read" under Laptop only in its menu. Picking it writes a
 CarPlay-ok mark: the build's notice still says "Marked Laptop only (a long read)", but the session

@@ -63,6 +63,19 @@ class Sessions::SetCarplayFitTest < ActiveSupport::TestCase
     end
   end
 
+  test "a laptop-only long read on a sticky CarPlay session keeps the sticky mark, whoever writes it" do
+    session = make_session
+    Sessions::SetCarplayFit.call(session: session, fit: "carplay_ok", reason: "decision", source: "carplay")
+
+    result = Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", reason: "long_read", source: "assistant")
+
+    assert_not result.applied?
+    assert result.read_as_carplay_ok?
+    assert_includes result.message, "a long read is talked through by voice"
+    assert session.reload.carplay_fit_sticky?
+    assert_equal "long_read", session.carplay_fit_reason
+  end
+
   test "every other laptop-only reason is written as asked" do
     session = make_session
 

@@ -58,6 +58,17 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     assert_equal 3, session.carplay_fit_line_count
   end
 
+  test "the HTML form marks a laptop-only long read CarPlay-ok and the notice says why" do
+    session = make_session
+
+    patch update_carplay_fit_session_path(session), params: { carplay_fit: "laptop_only", carplay_fit_reason: "long_read" },
+      headers: { "Referer" => session_path(session) }
+
+    assert_redirected_to session_path(session)
+    assert_match(/marked CarPlay-ok: a long read is talked through by voice/, flash[:notice])
+    assert_equal [ "carplay_ok", "long_read", "human" ], session.reload.then { [ it.carplay_fit, it.carplay_fit_reason, it.carplay_fit_source ] }
+  end
+
   test "the HTML form redirects back with a notice, and clear removes the mark" do
     session = make_session(carplay_fit: "carplay_ok", carplay_fit_source: "auto", carplay_fit_line_count: 3)
 

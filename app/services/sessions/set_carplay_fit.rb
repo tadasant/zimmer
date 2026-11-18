@@ -18,8 +18,11 @@ module Sessions
   class SetCarplayFit
     class Error < StandardError; end
 
-    Result = Struct.new(:applied, :message, :session, keyword_init: true) do
+    # `read_as_carplay_ok` is true when the caller asked for `laptop_only` +
+    # `long_read` and the write was read as `carplay_ok` (SessionCarplayFit.normalize_mark).
+    Result = Struct.new(:applied, :message, :session, :read_as_carplay_ok, keyword_init: true) do
       def applied? = applied
+      def read_as_carplay_ok? = !!read_as_carplay_ok
     end
 
     # @param session [Session]
@@ -75,7 +78,7 @@ module Sessions
       )
       note_on_timeline
 
-      Result.new(applied: true, session: session, message: applied_message)
+      Result.new(applied: true, session: session, message: applied_message, read_as_carplay_ok: @read_as_carplay_ok)
     end
 
     private
@@ -136,16 +139,21 @@ module Sessions
     # the mark and log a timeline line on every rest for no change, so the
     # standing mark is kept — gaining the judgement's reason when it had none
     # or a different one.
+    #
+    # A `laptop_only` + `long_read` from any writer is the same agreement: the
+    # writer meant to demote, and the only reason it gave is one a driver can
+    # handle, so the session stays in the driver's view.
     def reconfirms_the_sticky_default?
       session.carplay_fit_sticky? &&
         fit == SessionCarplayFit::CARPLAY_OK &&
-        [ SessionCarplayFit::SOURCE_AUTO, SessionCarplayFit::SOURCE_CARPLAY ].include?(source)
+        (@read_as_carplay_ok || [ SessionCarplayFit::SOURCE_AUTO, SessionCarplayFit::SOURCE_CARPLAY ].include?(source))
     end
 
     def keep_the_sticky_default
       session.update!(carplay_fit_reason: reason) if reason && reason != session.carplay_fit_reason
-      Result.new(applied: false, session: session,
-                 message: "Kept the standing CarPlay-engagement mark (#{session.carplay_fit_summary}): it already says carplay_ok.")
+      Result.new(applied: false, session: session, read_as_carplay_ok: @read_as_carplay_ok,
+                 message: "Kept the standing CarPlay-engagement mark (#{session.carplay_fit_summary}): it already says carplay_ok" \
+                          "#{@read_as_carplay_ok ? ', and a long read is talked through by voice, so it is never laptop_only' : ''}.")
     end
 
     # One line on the session's own timeline for every write a person or an

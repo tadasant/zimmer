@@ -11,6 +11,7 @@ class FlipLongReadCarplayMarksToCarplayOkTest < ActiveSupport::TestCase
     Session.any_instance.stubs(:broadcast_status_change)
     Session.any_instance.stubs(:broadcast_update_to_sessions_index)
     Session.any_instance.stubs(:broadcast_create_to_sessions_index)
+    Log.any_instance.stubs(:broadcast_append_to_timeline)
 
     @entry = PostDeployTask::Registry.find("20261118155842")
     assert @entry, "the task file must ship in db/post_deploy"
@@ -49,6 +50,23 @@ class FlipLongReadCarplayMarksToCarplayOkTest < ActiveSupport::TestCase
     assert_equal [ "laptop_only", nil ], no_reason.reload.then { [ it.carplay_fit, it.carplay_fit_reason ] }
     assert_equal [ "carplay_ok", "decision" ], already_ok.reload.then { [ it.carplay_fit, it.carplay_fit_reason ] }
     assert_nil untagged.reload.carplay_fit
+  end
+
+  test "an engaged session's auto mark becomes the sticky carplay mark, and a person's or agent's mark is noted on the timeline" do
+    engaged = stored_mark("laptop_only", "long_read", source: "auto")
+    engaged.update_columns(carplay_engaged_at: 1.hour.ago)
+    engaged_human = stored_mark("laptop_only", "long_read", source: "human")
+    engaged_human.update_columns(carplay_engaged_at: 1.hour.ago)
+    plain_auto = stored_mark("laptop_only", "long_read", source: "auto")
+
+    run_task
+
+    assert_equal [ "carplay_ok", "carplay" ], engaged.reload.then { [ it.carplay_fit, it.carplay_fit_source ] }
+    assert engaged.carplay_fit_sticky?
+    assert_equal [ "carplay_ok", "human" ], engaged_human.reload.then { [ it.carplay_fit, it.carplay_fit_source ] }
+    assert_equal 1, engaged_human.logs.where("content LIKE ?", "CarPlay fit re-read as CarPlay-ok%").count
+    assert_includes engaged_human.logs.last.content, "The human mark said Laptop only (a long read)."
+    assert_equal 0, engaged.logs.count + plain_auto.logs.count, "an automatic mark is not logged"
   end
 
   test "a second run flips nothing" do
