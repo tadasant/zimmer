@@ -40,6 +40,16 @@ class ElicitationBannerAcceptTest < ApplicationSystemTestCase
     page.driver.browser.manage.window.resize_to(1400, 900)
   end
 
+  # The banner leaves the page at the click and the PATCH goes out after it
+  # (#1435), so its absence says nothing about the server. A row read right
+  # behind `assert_no_selector` can land before the answer is written and see
+  # it still pending. Poll the row instead: only the server's write ends it.
+  def assert_answered(elicitation, status)
+    assert_eventually("elicitation #{elicitation.id} answered #{status}") do
+      elicitation.reload.status == status
+    end
+  end
+
   def create_elicitation(schema)
     Elicitation.create!(
       session: @session,
@@ -67,8 +77,7 @@ class ElicitationBannerAcceptTest < ApplicationSystemTestCase
     end
 
     assert_no_selector "#elicitation_#{elicitation.id}"
-    elicitation.reload
-    assert_equal "accept", elicitation.status
+    assert_answered elicitation, "accept"
     assert_equal({ "confirm" => true }, elicitation.response_content)
   end
 
@@ -92,7 +101,7 @@ class ElicitationBannerAcceptTest < ApplicationSystemTestCase
     within("#elicitation_#{elicitation.id}") { click_button "Decline" }
 
     assert_no_selector "#elicitation_#{elicitation.id}"
-    assert_equal "decline", elicitation.reload.status
+    assert_answered elicitation, "decline"
   end
 
   test "an optional yes/no does not hold Accept back" do
@@ -109,8 +118,7 @@ class ElicitationBannerAcceptTest < ApplicationSystemTestCase
     end
 
     assert_no_selector "#elicitation_#{elicitation.id}"
-    elicitation.reload
-    assert_equal "accept", elicitation.status
+    assert_answered elicitation, "accept"
     assert_equal({ "notify" => false }, elicitation.response_content)
   end
 end
