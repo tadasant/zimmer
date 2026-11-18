@@ -3,6 +3,10 @@
 require "test_helper"
 
 class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
+  # Far longer than a delivered SIGTERM takes to land, far shorter than the stray's
+  # `sleep 30` — so timing out means nobody signalled it, not that the runner was slow.
+  EXIT_DEADLINE = 10
+
   setup do
     @account = ClaudeAccount.create!(
       email: "cleanup-login-attempts@example.com", runtime: "codex",
@@ -57,7 +61,14 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     assert_equal "failed", attempt.status
     assert_match(/stopped responding/, attempt.error_message)
     assert_nil attempt.pasted_code
-    assert_not process_alive?(stray), "the orphaned login CLI must be killed too"
+    # The job's SIGTERM is delivered asynchronously: the child can still be running the
+    # instant perform_now returns, so asking "is it alive?" right away is a race the test
+    # loses on a busy runner. Wait for it to exit instead, and require that it died OF
+    # that signal — a job that never signalled leaves it sleeping until the deadline.
+    status = exit_status_within(stray, EXIT_DEADLINE)
+    stray = nil if status # reaped: its PID is free for reuse, so the ensure must not signal it
+    assert status&.signaled? && status.termsig == Signal.list.fetch("TERM"),
+      "the orphaned login CLI must be killed too (exit status: #{status.inspect})"
   ensure
     kill_and_reap(stray)
   end
@@ -85,6 +96,13 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     true
   rescue Errno::ESRCH, Errno::EPERM, Errno::ECHILD
     false
+  end
+
+  # The child's Process::Status once it has exited (reaping it), or nil if it is still
+  # running at the deadline.
+  def exit_status_within(pid, seconds)
+    waiter = Process.detach(pid)
+    waiter.join(seconds) ? waiter.value : nil
   end
 
   def kill_and_reap(pid)

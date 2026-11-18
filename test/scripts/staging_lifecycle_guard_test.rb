@@ -39,6 +39,13 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
     File.write(File.join(dir, "terraform"), <<~SH)
       #!/bin/sh
       echo "$*" >> "$TF_CALLS"
+      # TF_PAD_LINES more lines after the real answer -- generated here, because one
+      # environment variable cannot carry more than 128KiB.
+      pad() {
+        if [ "${TF_PAD_LINES:-0}" -gt 0 ]; then
+          seq 1 "$TF_PAD_LINES" | sed 's/^/digitalocean_record.filler_/'
+        fi
+      }
       case "$2" in
         init)
           if [ "$TF_INIT_FAIL" = "1" ]; then
@@ -50,10 +57,11 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
           ;;
         state)
           if [ -n "$TF_STATE_ERR" ]; then
-            echo "$TF_STATE_ERR" >&2
+            { echo "$TF_STATE_ERR"; pad; } >&2
             exit 1
           fi
           if [ -n "$TF_STATE_LIST" ]; then echo "$TF_STATE_LIST"; fi
+          pad
           exit 0
           ;;
       esac
@@ -80,7 +88,7 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
   end
 
   # Returns [exit status, combined output, parsed $GITHUB_OUTPUT hash, curl urls].
-  def run_guard(mode, state: LIVE_STATE, state_err: "", init_fail: false,
+  def run_guard(mode, state: LIVE_STATE, state_err: "", pad_lines: 0, init_fail: false,
                 hours: "18", body: nil, code: "200", credentials: true, configured: false,
                 output_path: :tmp)
     Dir.mktmpdir do |dir|
@@ -91,6 +99,7 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
         "CURL_LOG" => File.join(dir, "curl.log"),
         "TF_STATE_LIST" => state,
         "TF_STATE_ERR" => state_err,
+        "TF_PAD_LINES" => pad_lines.to_s,
         "TF_INIT_FAIL" => init_fail ? "1" : "0",
         "STUB_BODY" => body || JSON.dump({ "workflow_runs" => [] }),
         "STUB_CODE" => code,
@@ -179,6 +188,36 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
     assert tf.any? { |c| c.include?("-backend-config=backend.staging.hcl") },
       "it must open the STAGING remote state, not whatever backend is configured by default"
     assert tf.any? { |c| c.include?("-chdir=infra/terraform state list") }
+  end
+
+  # Under `set -o pipefail`, `printf "$state" | grep -q` is a race: grep -q exits on its
+  # first match, and a printf still writing into the closed pipe dies of SIGPIPE, which
+  # fails the whole pipeline -- so a droplet listed FIRST reads as absent. On a short
+  # state that happens only occasionally; about a megabyte after the match leaves the
+  # writer far more to send than one read by grep takes, so a pipeline-fed check fails
+  # these tests every time rather than sometimes.
+  PIPE_OUTRUNNING_LINES = 35_000
+
+  test "a droplet listed first is found however much state follows it" do
+    [ "teardown", "cert" ].each do |mode|
+      code, _out, outputs = run_guard(mode, state: DROPLET, pad_lines: PIPE_OUTRUNNING_LINES,
+                                            body: deploy_history(40))
+
+      assert_equal EXIT_ANSWERED, code, mode
+      assert_equal "present", outputs["droplet"], "#{mode}: the droplet is in state, so it must be found"
+      assert_equal "true", outputs["proceed"], mode
+    end
+  end
+
+  test "a never-applied state is recognised however much terraform says after it" do
+    # The same race on the stderr check: the first line matches, and the rest of a long
+    # message must not turn "no state yet" into "the backend is broken" and a page.
+    code, _out, outputs = run_guard("teardown", state: TORN_DOWN_STATE,
+                                                state_err: "Error: No state file was found!",
+                                                pad_lines: PIPE_OUTRUNNING_LINES)
+
+    assert_equal EXIT_ANSWERED, code
+    assert_equal "absent", outputs["droplet"]
   end
 
   # --- The recent-deploy window ------------------------------------------------------
