@@ -261,10 +261,8 @@ final class BoardViewUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "1038"])
         let child = app.descendants(matching: .any)["hierarchy.node.1042"]
         XCTAssertTrue(child.waitForExistence(timeout: timeout))
-        // The page opens at its newest message, so the hierarchy may be above: swipe toward it.
-        for _ in 0..<6 where !child.isHittable {
-            if child.frame.midY < app.frame.midY { app.swipeDown(velocity: .slow) } else { app.swipeUp(velocity: .slow) }
-        }
+        // The page opens at its newest message, so the hierarchy may be above.
+        scrollSessionPageUntilHittable(app, child)
         child.tap()
         XCTAssertTrue(app.navigationBars["#1042"].waitForExistence(timeout: timeout), "the spawned session opens")
     }

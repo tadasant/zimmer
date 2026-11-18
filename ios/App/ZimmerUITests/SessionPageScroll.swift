@@ -4,16 +4,19 @@ extension XCTestCase {
     /// Scroll the session page until `element` sits where a tap reaches it: hittable, below the
     /// navigation bar and the section strip pinned under it (isHittable says yes under them, where
     /// a tap lands on them), and above the composer and its quick replies (which isHittable can
-    /// also miss). Every session-page UI test scrolls through here.
+    /// also miss). The session-page tests in `SessionDetailPanelsUITests`,
+    /// `TranscriptParityUITests`, `InAppLinksUITests` and `SessionParityUITests` scroll through
+    /// here.
     ///
-    /// Each step is a third of the screen, held at the end so there is no fling, the way
-    /// `SettingsUITests` and `AccountUITests` scroll. A swipe (`swipeUp(velocity: .slow)`) is
-    /// not: it flings, and moves the page further than the window between the strip and the
-    /// composer. On main's run 44248595370 (session-page shard) that made the "said in #1040" row
-    /// a two-step cycle: one swipe up left it just under the section strip, the swipe down that
-    /// followed took it off the bottom of the screen, the next swipe up put it back under the
-    /// strip, and eight swipes later it had never been in view. A third of a screen is well under
-    /// that window, so a step cannot carry an element from one side of it to the other.
+    /// Each step is a drag, held at its end so the page does not fling on, that moves the
+    /// element's middle toward the window's middle by at most 30% of the screen. A swipe
+    /// (`swipeUp(velocity: .slow)`) is not: it flings, and moves the page further than the window
+    /// between the strip and the composer. On main's run 44248595370 (session-page shard) that
+    /// made the "said in #1040" row a two-step cycle: one swipe up left it just under the section
+    /// strip, the swipe down that followed took it off the bottom of the screen, the next swipe up
+    /// put it back under the strip, and eight swipes later it had never been in view. A step
+    /// aimed at the window's middle and no longer than the distance to it cannot carry an element
+    /// past the window, whatever the element's height.
     @MainActor
     func scrollSessionPageUntilHittable(
         _ app: XCUIApplication, _ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line
@@ -28,27 +31,29 @@ extension XCTestCase {
         }
         // Ask for hittability only of an element on the page with a frame: asking it of one the
         // lazy list has not laid out throws rather than answering no.
-        func inView() -> Bool {
+        func inView(_ top: CGFloat, _ bottom: CGFloat) -> Bool {
             guard element.exists, !element.frame.isEmpty, element.isHittable else { return false }
-            let (top, bottom) = window()
             return element.frame.minY >= top && element.frame.maxY <= bottom
         }
-        // `break`, not `where !inView()`: a `where` asks every time even once it is in view, and
-        // each ask is several queries. Sixteen thirds of a screen is about the travel of the
-        // eight swipes this replaced.
+        // Sixteen steps of up to 30% of the screen is about the travel of eight slow swipes.
         for _ in 0..<16 {
-            if inView() { break }
-            let frame = element.exists ? element.frame : .zero
-            // Not laid out yet means above: the page opens at its newest message, under the panels.
             let (top, bottom) = window()
-            let towardTop = frame.isEmpty || frame.midY < (top + bottom) / 2
-            // The finger moves down to bring what is above into view, up for what is below. It
-            // starts and ends in the middle of the page, clear of the strip, the composer and
-            // the Quick Router button at the bottom right.
-            let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardTop ? 0.45 : 0.75))
-            let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardTop ? 0.75 : 0.45))
-            from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
+            if inView(top, bottom) { break }
+            let frame = element.exists ? element.frame : .zero
+            let most = app.frame.height * 0.3
+            // Positive moves the page down, bringing what is above into view. Not laid out yet
+            // means above: the page opens at its newest message, under the panels.
+            var shift = frame.isEmpty ? most : max(-most, min(most, (top + bottom) / 2 - frame.midY))
+            // Under the touch slop a drag lands as a tap, on whatever is under its start.
+            if abs(shift) < 40 { shift = shift < 0 ? -40 : 40 }
+            // Centred on the screen, so the drag stays clear of the strip, the composer and the
+            // Quick Router button at the bottom right.
+            let from = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: app.frame.midX, dy: app.frame.midY - shift / 2))
+            from.press(forDuration: 0.1, thenDragTo: from.withOffset(CGVector(dx: 0, dy: shift)),
+                       withVelocity: .default, thenHoldForDuration: 0.3)
         }
-        XCTAssertTrue(inView(), "\(element) comes into view", file: file, line: line)
+        let (top, bottom) = window()
+        XCTAssertTrue(inView(top, bottom), "\(element) comes into view", file: file, line: line)
     }
 }
