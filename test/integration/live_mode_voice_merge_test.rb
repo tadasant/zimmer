@@ -362,6 +362,35 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
+  test "a no, then a fresh question, then a yes merges" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "Wait.")
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_not result["error"], result["output"]
+    assert_equal "Yes.", holding_session.reload.human_messages.sole.content
+  end
+
+  test "a yes after an either-or the model added merges nothing" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "assistant", "Or should I wait.")
+    say(conversation, phone, "user", "Yes.")
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_match(/you asked something else/, result["output"])
+
+    say(conversation, phone, "assistant", "Restart session seven too.")
+    say(conversation, phone, "user", "Yes.")
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_match(/you asked something else/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
   test "a no said before the question is asked merges nothing" do
     conversation = create_live_conversation(mode: "voice")
     phone = bearer(app_token)
@@ -427,7 +456,11 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     [ "Session 3600 is green. Restart it?", "Merge pull request thirty six?", "Pull request 3600 is green.",
       "Okay.", "Merge pull request thirty six hundred and one?", "Okay, I won't merge tadasant-internal pull request 3600.",
       "Tadasant-internal PR 3600 is not merged yet. Want me to restart session 9.",
-      "Merge 3600 in two minutes?" ].each { |line| assert_not asks.call(line), line }
+      "Merge 3600 in two minutes?", "Session 7 merged its branch. Tadasant-internal PR 3600 is green, want me to restart session 7",
+      "Tadasant-internal PR 3600 was merged by the gate, I think. Okay",
+      "Want me to restart session 7? It is blocking the merge of tadasant-internal PR 3600." ].each { |line| assert_not asks.call(line), line }
+    assert asks.call("Merge tadasant-internal pull request 3600, \"Don't print secrets\"? The merge gate held it for you."),
+           "a quoted title may negate"
 
     assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge zimmer pull requests 12 and 34?", "https://github.com/tadasant/zimmer/pull/1234")
     assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge the PR now? I'll do it in two minutes", "https://github.com/tadasant/zimmer/pull/2")

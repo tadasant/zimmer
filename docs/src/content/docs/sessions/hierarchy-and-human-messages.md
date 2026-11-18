@@ -629,19 +629,23 @@ names the PR, and you answer **one** short question about it:
      keeps a yes already given;
    - your newest words pass every rule above: fresh, one signed-in person's, from a conversation
      nothing unvouched-for has written into;
-   - after Zimmer composed the question, the assistant said a line that asks to merge this PR:
-     "merge", and the number (in digits, or spoken: "thirty six hundred", "one four nine oh") right
-     after "pull request", "PR" or the repository's name, with nothing negating it ("I won't merge
-     pull request 1490" is not asking). A paraphrase is fine;
+   - after Zimmer composed the question, the assistant said a line that asks to merge this PR: a
+     sentence with "merge" as a request and the number (in digits, or spoken: "thirty six
+     hundred", "one four nine oh") right after "pull request", "PR" or the repository's name, with
+     nothing negating it outside a quoted title, in a line that asks nothing else. "I won't merge
+     pull request 1490", "PR 1490 was merged" and "it's blocking the merge of PR 1490" are not
+     asking. A paraphrase is fine;
    - nothing you said between the question being composed and it being asked was a refusal ("no",
      "wait", "hold on");
    - everything you said after the first line that asked is a plain yes: at most six words, all
      from a closed list ("yes", "yeah", "yep", "do it", "merge it", "okay", "please"…), with at
      least one real yes and no question. "Please say that again" and "merge 3601" are not yes. A
-     "no" followed by a "yes" is not either: the model starts over with a fresh question;
-   - the assistant said nothing in between but filler ("Okay.", "Here's the full read-back.") or
-     the same question again. A yes after "Also, should I restart session 7" answers that, not the
-     merge, with or without the question mark.
+     "no" followed by a "yes" is not either: the model starts over with a fresh `authorize_merge`
+     call, and anything but a yes before that new question no longer counts;
+   - the assistant said nothing in between but filler (a line made only of words like "okay",
+     "sure", "merging", "here's the full read-back") or the same question again. A yes after "Also,
+     should I restart session 7", "Or should I wait." or "Restart session seven too." answers that,
+     not the merge.
 
    Anything else merges nothing and the model is told why. The message the merging session gets
    carries Zimmer's question and your answer, never the model's words.

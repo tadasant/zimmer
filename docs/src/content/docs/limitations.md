@@ -5164,9 +5164,10 @@ records nothing either: only the web page and the iOS app stamp an author on a L
 ### A voice Merge trusts a transcript and a word list
 
 The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
-(`authorize_merge`) checks that, after Zimmer composed the question, an assistant line says "merge"
-and the PR's number right after "pull request", "PR" or the repository, with nothing negating it,
-and that everything the person said after it is a plain yes. That line is the call's transcript of what the model said. Zimmer cannot
+(`authorize_merge`) checks that, after Zimmer composed the question, an assistant sentence says
+"merge" as a request and the PR's number right after "pull request", "PR" or the repository, with
+nothing negating it outside a quoted title, and that everything the person said after it is a plain
+yes. That line is the call's transcript of what the model said. Zimmer cannot
 check the audio itself: a transcript that names the PR while the speech said something else would
 pass. The number is matched in digits and in the ways a transcript spells it out ("thirty six
 hundred", "three thousand six hundred", "three six zero zero", "fourteen oh five"); a spelling it does
@@ -5176,12 +5177,13 @@ hears only the number and title words; Zimmer still merges only the PR it named 
 
 The model chooses the words of the question. A model steered by text it read mid-call could ask "Merge
 pull request 1490?" and then fold an unrelated request into the same line; a yes to that line counts.
-A *separate* line after it ends the confirmation, and so does any answer that is not a plain yes. A
-separate line is told from filler by heuristics: a "?", a question opener ("should", "want", "do
-you"…), merging another pull request, or more than eight words. A short follow-up question whose
-transcript has neither the "?" nor one of those openers ("Restart session 7 too.") is filler to it.
-Negation is a word list too ("not", "won't", "already"…), so a question phrased as a negative ("Why
-not merge pull request 1490?") is not counted as asking.
+A *separate* line after it ends the confirmation, and so does any answer that is not a plain yes.
+Filler is a closed word list ("okay", "sure", "merging", "here's the full read-back"), so any other
+line ends it, which fails closed. Negation is a word list too ("not", "won't", "already"…), so a
+question phrased as a negative ("Why not merge pull request 1490?") is not counted as asking, and a
+paraphrased title that negates something ("…so it doesn't page twice") has to be quoted or left out.
+And all of it reads words, not meaning: a line that says "merge pull request 1490" as a request and
+asks nothing else counts, whatever the model meant by it.
 
 Whether the person said yes is a closed word list: at most six words, every one of them from "yes",
 "yeah", "okay", "do it", "merge it", "please", "great" and the like, at least one a real yes, and

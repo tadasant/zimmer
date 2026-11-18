@@ -25,13 +25,15 @@ module LiveConversations
   #      CONFIRM_WINDOW old, and its PR is still the session's PR. Prepares
   #      repeated back to back for the same PR, each under CONFIRM_WINDOW old,
   #      count from the earliest, so asking again keeps a yes already given;
+  #      after anything but a yes, the newer prepare starts over;
   #    * the person's newest words are fresh, one signed-in person's, and from a
   #      conversation nothing unvouched-for has written into
   #      (HumanMessageCapture.live_mode_words, the `live_mode` rule);
-  #    * after the prepare, the assistant asked to merge this PR: a line that
-  #      says "merge", negates nothing in the clause naming the PR, and says
-  #      the number (in digits or spoken, "thirty six hundred") right after
-  #      "pull request", "PR" or the repository. That is the transcript of what
+  #    * after the prepare, the assistant asked to merge this PR: a sentence
+  #      that says "merge" as a request (not "merged", not "the merge of"),
+  #      negates nothing outside a quoted title, and says the number (in digits
+  #      or spoken, "thirty six hundred") right after "pull request", "PR" or
+  #      the repository, in a line that asks nothing else. That is the transcript of what
   #      the person heard, or the text they read;
   #    * nothing the person said between the prepare and that first asking
   #      line was a refusal ("no", "wait", "hold on"…);
@@ -40,10 +42,9 @@ module LiveConversations
   #      it", "merge it", "okay", "please"…) with at least one real yes among
   #      them, and no question. Crude on purpose, and it fails closed: an answer
   #      it cannot read as a yes merges nothing;
-  #    * the assistant said nothing in between but filler ("Okay.", "Here's
-  #      the full read-back.") or the same question again. A question about
-  #      anything else, with or without its "?", a line about merging another
-  #      pull request, or anything longer, ends the confirmation.
+  #    * the assistant said nothing in between but filler, a line made only of
+  #      words like "okay", "sure", "here's the full read-back", or the same
+  #      question again. Anything else ends the confirmation.
   #
   # The person's words are counted from the asking line, not from the line just
   # before them, because a voice call records lines in the order transcription
@@ -84,10 +85,14 @@ module LiveConversations
     REFUSAL = /\b(no|nope|nah|not|don't|do not|stop|wait|cancel|hold|abort|never ?mind)\b/i
     NEGATION = /\b(not|never|no longer|already|won't|wont|don't|dont|didn't|isn't|wasn't|can't|cannot|couldn't|shouldn't)\b|n't\b/i
     # How a model's question starts when the transcript drops the "?".
-    QUESTION_OPENER = /(?:\A|[.!,]\s*)(?:also,?\s+)?(should|shall|want|wanna|do you|can i|could i|would you|did you|are you|is it|any|anything|how about|what about)\b/i
-    # An assistant line this short, that asks nothing, does not move the
-    # conversation on: "Okay.", "Here's the full read-back."
-    FILLER_LINE_MAX_WORDS = 8
+    QUESTION_OPENER = /(?:\A|[.!?,;]\s*)(?:(?:also|or|and|so|then|but),?\s+)?(should|shall|want|wanna|do you|can i|could i|would you|did you|are you|is it|any|anything|how about|what about)\b/i
+    # An assistant line made only of these words does not move the
+    # conversation on: "Okay.", "Here's the full read-back.", "Sure, merging it."
+    FILLER_WORDS = %w[okay ok sure alright all right got it one sec second moment just a here's heres here is the full
+                      read back readback merging now on so um uh great thanks thank you yes yeah yep let me say that
+                      again].to_set.freeze
+    # Words before "merge" that make it a noun ("the merge of …"), not a request.
+    MERGE_NOUN_BEFORE = %w[the a this that its his her their gate's].freeze
 
     # Words of the session's title said beside the PR: enough to recognise it.
     TITLE_WORDS = 8
@@ -183,10 +188,25 @@ module LiveConversations
       repo = AutomatedPrompts.repo_slug_from_pr_url(pr_url).to_s.split("/").last
       number = pr_number(pr_url)
       return false if repo.blank? || number.blank?
-      return false unless normalize(text).match?(/\bmerg/)
 
       anchors = %w[request pr r pull number] + normalize(repo).split.last(1)
-      number_clauses(text, number, anchors: anchors).any? { |clause| !clause.tr("\u2018\u2019\u02BC", "'").match?(NEGATION) }
+      sentences = text.to_s.gsub(/(\d),(\d)/, '\1\2').split(/(?<=[.?!;])\s+/)
+      asking, others = sentences.partition { |sentence| merge_verb?(sentence) && number_clauses(sentence, number, anchors: anchors).any? }
+      return false if asking.empty?
+      # A quoted title is Zimmer's text, not the model's, so it can say "Don't".
+      return false if asking.any? { |sentence| sentence.gsub(/["\u201C][^"\u201D]*["\u201D]/, " ").tr("\u2018\u2019\u02BC", "'").match?(NEGATION) }
+
+      # A line that also asks something else is not this question.
+      others.none? { |sentence| sentence.include?("?") || sentence.match?(QUESTION_OPENER) }
+    end
+
+    # Whether the sentence says "merge" as a request: "merge pull request 12",
+    # "shall I merge PR 12", not "merged", "merging" or "the merge of PR 12".
+    def self.merge_verb?(sentence)
+      words = normalize(sentence).split
+      words.each_index.any? do |i|
+        words[i] == "merge" && words[i + 1] != "of" && (i.zero? || !MERGE_NOUN_BEFORE.include?(words[i - 1]))
+      end
     end
 
     # Whether the text says the number, in digits ("3600", "3,600") or as
@@ -366,7 +386,7 @@ module LiveConversations
       end
       if (other = answers.find { |t| !self.class.plain_yes?(t.content) })
         raise Refused, "Not merging: \"#{other.content.to_s.squish.truncate(120)}\" is not a plain yes. If it was a no, " \
-                       "leave it. If you are not sure, ask once more whether to merge pull request #{number}."
+                       "leave it. If you are not sure, call #{NAME} again without confirm and ask once more."
       end
 
       answer = answers.map(&:content).join(" ").squish
@@ -400,9 +420,7 @@ module LiveConversations
       return false if self.class.asks_to_merge?(text, pr_url)
 
       text = text.to_s
-      words = " #{self.class.normalize(text)} "
-      text.include?("?") || text.match?(QUESTION_OPENER) || text.split.size > FILLER_LINE_MAX_WORDS ||
-        (words.match?(/ merg/) && words.match?(/ (pull request|pull|pr|p r) /))
+      text.include?("?") || text.match?(QUESTION_OPENER) || !text.downcase.gsub(/[^a-z' ]+/, " ").split.all? { |w| FILLER_WORDS.include?(w) }
     end
 
     def find_session!(value)
@@ -425,7 +443,13 @@ module LiveConversations
       run = []
       prepares.each do |turn|
         break unless prepared_session_id(turn) == session.id && turn.tool_output.to_s.include?("PR: #{pr_url}\n")
-        break if run.any? && turn.created_at < @now - CONFIRM_WINDOW
+        if run.any?
+          break if turn.created_at < @now - CONFIRM_WINDOW
+          # The model asked again because the person did not just say yes: the
+          # new question starts over, and what they said before it is behind it.
+          said = @conversation.turns.where(role: "user").where(id: (turn.id + 1)...run.first.id).pluck(:content)
+          break unless said.all? { |content| self.class.plain_yes?(content) }
+        end
 
         run.unshift(turn)
       end
