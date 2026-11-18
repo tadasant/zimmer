@@ -33,9 +33,8 @@ final class SessionDetailPanelsUITests: XCTestCase {
         // The row's Edit opens it too: your own words, which name no catalog goal.
         let edit = app.buttons["detail.goal.edit"]
         scrollUntilHittable(app, edit)
-        edit.tap()
         let field = app.descendants(matching: .any)["goal.custom.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: timeout))
+        tapUntilItOpens(edit, field, "the goal editor")
         field.tap()
         field.typeText("Merge once the reviewer signs off.")
         app.buttons["goal.custom.save"].tap()
@@ -135,8 +134,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         // Edit opens the MCP server checklist.
         let edit = app.buttons["detail.mcp.edit"]
         scrollUntilHittable(app, edit)
-        edit.tap()
-        XCTAssertTrue(app.buttons["catalog.save"].waitForExistence(timeout: timeout))
+        tapUntilItOpens(edit, app.buttons["catalog.save"], "the MCP server checklist")
     }
 
     /// From the session page, with no menu: a session with no MCP servers says None and offers
@@ -153,10 +151,8 @@ final class SessionDetailPanelsUITests: XCTestCase {
         XCTAssertEqual(app.buttons["detail.skills.edit"].label, "Edit skills")
         XCTAssertEqual(app.buttons["detail.hooks.edit"].label, "Add hooks")
         attachScreenshot(app, named: "mcp-none")
-        add.tap()
-
         let playwright = app.buttons["catalog.item.playwright-custom"]
-        XCTAssertTrue(playwright.waitForExistence(timeout: timeout))
+        tapUntilItOpens(add, playwright, "the MCP server checklist")
         playwright.tap()
         app.buttons["catalog.item.slack"].tap()
         attachScreenshot(app, named: "mcp-checklist")
@@ -177,9 +173,8 @@ final class SessionDetailPanelsUITests: XCTestCase {
 
         // And taken off again: the list is replaced, not merged.
         scrollUntilHittable(app, add)
-        add.tap()
         let slack = app.buttons["catalog.item.slack"]
-        XCTAssertTrue(slack.waitForExistence(timeout: timeout))
+        tapUntilItOpens(add, slack, "the MCP server checklist")
         slack.tap()
         app.buttons["catalog.save"].tap()
         XCTAssertTrue(waitForDisappearance(labelled(app, "slack: Pending connection")), "the unticked server is gone")
@@ -236,7 +231,10 @@ final class SessionDetailPanelsUITests: XCTestCase {
             return element.frame.minY >= max(bar.exists ? bar.frame.maxY : 0, strip.exists ? strip.frame.maxY : 0)
                 && element.frame.maxY <= bottom
         }
-        for _ in 0..<8 where !inView() {
+        // `break`, not `where !inView()`: a `where` asks all eight times even once it is in view,
+        // and each ask is several queries, which cost the failing run of 44237033089 23 seconds.
+        for _ in 0..<8 {
+            if inView() { break }
             // Not laid out yet means above: the page opens at its newest message, under the panels.
             if !element.exists || element.frame.isEmpty || element.frame.midY < app.frame.midY {
                 app.swipeDown(velocity: .slow)
@@ -245,6 +243,22 @@ final class SessionDetailPanelsUITests: XCTestCase {
             }
         }
         XCTAssertTrue(inView(), "\(element) comes into view")
+    }
+
+    /// Taps `button`, a row's Edit or Add, until `opened`, something on the sheet it presents,
+    /// is there. Under load the tap on one of these small links can be lost: on main's run
+    /// 44237033089 (session-page shard) XCUITest synthesised the tap on the MCP servers' Edit,
+    /// in view and uncovered, and the page stayed as it was for the whole 20-second wait, with no
+    /// sheet in the hierarchy. A person taps again; so does this, but only while the link is
+    /// still on screen to take it. Once the sheet is presenting it covers the link, so a slow
+    /// sheet is waited for rather than tapped at twice. The last try waits the full timeout.
+    private func tapUntilItOpens(_ button: XCUIElement, _ opened: XCUIElement, _ what: String) {
+        let attempts = 3
+        for attempt in 1...attempts {
+            if attempt == 1 || (button.exists && button.isHittable) { button.tap() }
+            if opened.waitForExistence(timeout: attempt == attempts ? timeout : 5) { return }
+        }
+        XCTFail("\(what) did not open after \(attempts) tries at \(button)")
     }
 
     /// The edit menu's Paste: a menu item on current iOS, a button on some runtimes.
