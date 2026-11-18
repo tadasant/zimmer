@@ -99,7 +99,10 @@ module StatusSummaryAnswer
 
     reason = match[:reason]&.downcase
     reason = nil unless SessionCarplayFit::REASONS.include?(reason)
-    { fit: match[:fit].downcase, reason: reason }
+    # Read here, before the caller picks a source from the fit, so a CarPlay-
+    # engaged session's long read restores the sticky `carplay` mark.
+    fit, reason = SessionCarplayFit.normalize_mark(match[:fit].downcase, reason)
+    { fit: fit, reason: reason }
   end
 
   # Writes the answer's CarPlay-fit judgement onto the session as an `auto` mark

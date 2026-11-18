@@ -82,12 +82,13 @@ class CarplayFitClassifier
       carplay-fit: <carplay_ok|laptop_only>; reason: <#{SessionCarplayFit::REASONS.join('|')}>
 
       carplay_ok when the action is a yes or no, a merge decision the sentence
-      already frames, a short reply, or nothing at all (reason decision,
-      short_answer or nothing_needed). laptop_only when it needs a screen or a
-      keyboard: a credential to paste or mint (credential), a console or
-      checklist to click through (manual_steps), something to run on their own
-      machine or phone (local_device), or a long document or diff to read
-      (long_read).
+      already frames, a short reply, a long document or diff to review
+      (however long: the reader talks it through by voice with an assistant),
+      or nothing at all (reason decision, short_answer, long_read or
+      nothing_needed). laptop_only ONLY when it needs a screen or a keyboard: a
+      credential to paste or mint (credential), a console or checklist to click
+      through (manual_steps), or something to run on their own machine or phone
+      (local_device). Length alone is never a reason for laptop_only.
       #{carplay_engaged_bias}
       Status panel:
       #{blurb}

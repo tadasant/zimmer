@@ -222,17 +222,17 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
   # counted AND described, for every caller, not just Live Mode.
   test "the carplay_fit filter says how many rows it dropped and what kind they were" do
     2.times { |i| make_session(title: "cred #{i}").update!(carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0) }
-    make_session(title: "read").update!(carplay_fit: "laptop_only", carplay_fit_reason: "long_read", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+    make_session(title: "console").update!(carplay_fit: "laptop_only", carplay_fit_reason: "manual_steps", carplay_fit_source: "auto", carplay_fit_line_count: 0)
     make_session(title: "no reason").update!(carplay_fit: "laptop_only", carplay_fit_source: "auto", carplay_fit_line_count: 0)
     make_session(title: "say yes").update!(carplay_fit: "carplay_ok", carplay_fit_reason: "decision", carplay_fit_source: "auto", carplay_fit_line_count: 0)
     make_session(title: "nobody judged")
 
     driving = @read.call({ "carplay_fit" => "not_laptop_only" })
     assert_includes driving, "The carplay_fit filter (not_laptop_only) left out 4 row(s) that match the other filters: " \
-                             "4 laptop-only (2 a credential, 1 a long read, 1 no reason given). This is not the whole board"
+                             "4 laptop-only (2 a credential, 1 manual steps, 1 no reason given). This is not the whole board"
 
     ok_only = @read.call({ "carplay_fit" => "carplay_ok" })
-    assert_includes ok_only, "left out 5 row(s) that match the other filters: 4 laptop-only (2 a credential, 1 a long read, 1 no reason given), 1 untagged."
+    assert_includes ok_only, "left out 5 row(s) that match the other filters: 4 laptop-only (2 a credential, 1 manual steps, 1 no reason given), 1 untagged."
   end
 
   test "a filter that drops every row says so, and never that the board is empty" do

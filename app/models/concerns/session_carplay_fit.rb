@@ -5,9 +5,10 @@
 #
 # This is the axis a driver triages on. About half the sessions parked in
 # `needs_input` on a typical board want a credential pasted into a console, a
-# test run on a Mac, or a long document read; the rest want a yes or no, a merge
-# decision, or a short reply. Without this mark the two halves look alike from a
-# car, and every drive re-triages the same laptop-only rows from scratch.
+# console clicked through, or a test run on a Mac; the rest want a yes or no, a
+# merge decision, a short reply, or a long document or diff talked through.
+# Without this mark the two halves look alike from a car, and every drive
+# re-triages the same laptop-only rows from scratch.
 #
 # **It is a judgement with provenance, not a tag.** Five columns travel together:
 #
@@ -27,11 +28,20 @@
 # **Staleness is counted in transcript lines, not in time** — the same model
 # SessionStatusSummary uses. A mark is CURRENT while the session has not written
 # a line past `carplay_fit_line_count`, and STALE once it has: a session that
-# became laptop-only after opening a PR that needs a diff read has moved, and
-# the mark written before that move is about an earlier state. Every filter
-# here treats a stale mark as untagged, and every summary names it as stale.
-# When the session next comes to rest, the status-summary fork writes a fresh
-# `auto` mark (SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE).
+# became laptop-only after asking for a credential has moved, and the mark
+# written before that move is about an earlier state. Every filter here treats
+# a stale mark as untagged, and every summary names it as stale. When the
+# session next comes to rest, the status-summary fork writes a fresh `auto` mark
+# (SessionStatusSummaryGenerator::CARPLAY_FIT_TRAILER_RULE).
+#
+# **A long read is CarPlay-ok.** A long document or a long diff is reviewed by
+# talking it through with Live Mode by voice, which a driver can do; its length
+# is not a reason to need a screen. So `long_read` is a `carplay_ok` reason, and
+# `laptop_only` is kept for what really needs a screen or a keyboard: a
+# credential, a console or checklist, the person's own device. A writer that
+# still says `laptop_only` + `long_read` is read as `carplay_ok` + `long_read`
+# (SessionCarplayFit.normalize_mark, applied by Sessions::SetCarplayFit and by
+# the summary trailer's parser), and the pair cannot be saved.
 #
 # **CarPlay engagement makes `carplay_ok` the sticky default.** A session a
 # person starts, follows up or acts on from CarPlay — directly, or through a
@@ -64,8 +74,9 @@ module SessionCarplayFit
   FITS = [ CARPLAY_OK, LAPTOP_ONLY ].freeze
 
   # What the session is waiting on a human for. The `carplay_ok` reasons come
-  # first, then the `laptop_only` ones; `nothing_needed` is the honest answer for
-  # a session that came to rest needing nobody.
+  # first (`long_read` among them: a long document or diff is talked through by
+  # voice), then the `laptop_only` ones; `nothing_needed` is the honest answer
+  # for a session that came to rest needing nobody.
   REASON_DECISION = "decision"
   REASON_SHORT_ANSWER = "short_answer"
   REASON_LONG_READ = "long_read"
@@ -146,6 +157,11 @@ module SessionCarplayFit
     # written under whoever made it.
     validates :carplay_fit, inclusion: { in: [ CARPLAY_OK ], message: "must be carplay_ok when its source is carplay" },
                             if: -> { carplay_fit_source == SOURCE_CARPLAY }
+    # A long read is talked through by voice, so it is never laptop-only.
+    # Checked only when the mark itself changes, so an unrelated save never
+    # fails on a stored mark.
+    validates :carplay_fit_reason, exclusion: { in: [ REASON_LONG_READ ], message: "long_read is a carplay_ok reason, never laptop_only" },
+                                   if: -> { carplay_fit == LAPTOP_ONLY && (will_save_change_to_carplay_fit? || will_save_change_to_carplay_fit_reason?) }
 
     # Sessions whose mark is current, whatever it says.
     scope :carplay_fit_current, -> { where(CURRENT_SQL) }
@@ -165,6 +181,19 @@ module SessionCarplayFit
       else all
       end
     }
+  end
+
+  # The mark a writer meant, under the rule that a long read is CarPlay-ok:
+  # `laptop_only` + `long_read` becomes `carplay_ok` + `long_read`; every other
+  # pair is returned as given. Every write path runs through it, so an older
+  # prompt, an assistant or a client offering the retired pairing cannot store
+  # it.
+  #
+  # @return [Array(String, String)] [fit, reason]
+  def self.normalize_mark(fit, reason)
+    return [ CARPLAY_OK, reason ] if fit.to_s == LAPTOP_ONLY && reason.to_s == REASON_LONG_READ
+
+    [ fit, reason ]
   end
 
   # The row-level counterpart of `carplay_fit_current`; keep the two answering

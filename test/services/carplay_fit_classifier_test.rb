@@ -54,6 +54,25 @@ class CarplayFitClassifierTest < ActiveSupport::TestCase
       @session.status_summary.reload.summary, "the blurb is left exactly as it was"
   end
 
+  test "a long read is carplay_ok, and the prompt says length is never a reason for laptop_only" do
+    summary!("Read the 40-page design doc and say whether the approach holds.")
+    inference = FakeInference.new("carplay-fit: laptop_only; reason: long_read")
+
+    assert CarplayFitClassifier.call(@session, inference_service: inference).applied?
+
+    assert_equal [ "carplay_ok", "long_read", "auto" ], [ @session.reload.carplay_fit, @session.carplay_fit_reason, @session.carplay_fit_source ]
+    assert_includes inference.prompts.sole, "Length alone is never a reason for laptop_only."
+  end
+
+  test "a CarPlay-engaged session's long read restores the sticky carplay mark" do
+    @session.update!(carplay_engaged_at: 1.hour.ago)
+    summary!("Review the diff on PR #12.")
+
+    CarplayFitClassifier.call(@session, inference_service: FakeInference.new("carplay-fit: laptop_only; reason: long_read"))
+
+    assert_equal [ "carplay_ok", "carplay" ], [ @session.reload.carplay_fit, @session.carplay_fit_source ]
+  end
+
   test "a session with no blurb is skipped, and an answer without the line writes nothing" do
     assert_equal :skipped, CarplayFitClassifier.call(@session, inference_service: FakeInference.new("x")).outcome
 

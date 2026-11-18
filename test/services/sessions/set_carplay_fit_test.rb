@@ -48,6 +48,43 @@ class Sessions::SetCarplayFitTest < ActiveSupport::TestCase
     assert_equal 7, session.precedence
   end
 
+  test "laptop_only + long_read is written as carplay_ok, whoever asks for it" do
+    %w[human assistant session auto].each do |source|
+      session = make_session
+
+      result = Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", reason: "long_read", source: source)
+
+      assert result.applied?, source
+      assert_includes result.message, "a long read is talked through by voice"
+      session.reload
+      assert_equal "carplay_ok", session.carplay_fit, source
+      assert_equal "long_read", session.carplay_fit_reason
+      assert_equal source, session.carplay_fit_source
+    end
+  end
+
+  test "a laptop-only long read on a sticky CarPlay session keeps the sticky mark, whoever writes it" do
+    session = make_session
+    Sessions::SetCarplayFit.call(session: session, fit: "carplay_ok", reason: "decision", source: "carplay")
+
+    result = Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", reason: "long_read", source: "assistant")
+
+    assert_not result.applied?
+    assert result.read_as_carplay_ok?
+    assert_includes result.message, "a long read is talked through by voice"
+    assert session.reload.carplay_fit_sticky?
+    assert_equal "long_read", session.carplay_fit_reason
+  end
+
+  test "every other laptop-only reason is written as asked" do
+    session = make_session
+
+    result = Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", reason: "manual_steps", source: "assistant")
+
+    assert_equal "CarPlay fit set to laptop_only.", result.message
+    assert_equal [ "laptop_only", "manual_steps" ], [ session.reload.carplay_fit, session.carplay_fit_reason ]
+  end
+
   test "stamps the line count the caller judged against, not the session's current one" do
     session = make_session
 

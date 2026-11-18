@@ -37,6 +37,26 @@ class SessionCarplayFitTest < ActiveSupport::TestCase
     n.times.map { |i| JSON.generate({ "type" => "user", "message" => { "role" => "user", "content" => "m#{i}" } }) }.join("\n") + "\n"
   end
 
+  test "a long read is never laptop-only, but a row stored before the rule still saves" do
+    assert make_session(carplay_fit: "carplay_ok", carplay_fit_reason: "long_read", carplay_fit_source: "auto").valid?
+    refused = make_session.tap { |s| s.assign_attributes(carplay_fit: "laptop_only", carplay_fit_reason: "long_read", carplay_fit_source: "assistant") }
+    assert_not refused.valid?
+    assert_includes refused.errors[:carplay_fit_reason].join, "long_read is a carplay_ok reason"
+
+    legacy = make_session
+    legacy.update_columns(carplay_fit: "laptop_only", carplay_fit_reason: "long_read", carplay_fit_source: "auto", carplay_fit_line_count: 0)
+    legacy.reload.title = "renamed"
+    assert legacy.valid?, "an unrelated save must not fail on a mark the post-deploy task has not flipped yet"
+  end
+
+  test "normalize_mark reads laptop_only + long_read as carplay_ok and leaves every other pair alone" do
+    assert_equal [ "carplay_ok", "long_read" ], SessionCarplayFit.normalize_mark("laptop_only", "long_read")
+    assert_equal [ "laptop_only", "credential" ], SessionCarplayFit.normalize_mark("laptop_only", "credential")
+    assert_equal [ "laptop_only", nil ], SessionCarplayFit.normalize_mark("laptop_only", nil)
+    assert_equal [ "carplay_ok", "long_read" ], SessionCarplayFit.normalize_mark("carplay_ok", "long_read")
+    assert_equal [ nil, nil ], SessionCarplayFit.normalize_mark(nil, nil)
+  end
+
   test "values off the lists are refused, and nil is allowed everywhere" do
     assert make_session.valid?
     assert_not make_session.tap { |s| s.carplay_fit = "driveable" }.valid?

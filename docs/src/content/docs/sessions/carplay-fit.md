@@ -6,8 +6,9 @@ sidebar:
 ---
 
 Triage a board from a car and you hit the same wall every drive. About half the sessions parked in
-`needs_input` want a credential pasted into a console, a test run on your Mac, or a long document
-read. The other half want a yes or no, a merge call, or a short reply. From the driver's seat the two
+`needs_input` want a credential pasted into a console, a checklist clicked through, or a test run on
+your Mac. The other half want a yes or no, a merge call, a short reply, or a long document or diff
+talked through. From the driver's seat the two
 halves look the same, so every drive re-triages the laptop-only rows from scratch.
 
 **CarPlay fit** is the mark that tells them apart. It is a judgement about the session's next human
@@ -19,7 +20,7 @@ about when a session runs.
 | Column | Values | Means |
 | --- | --- | --- |
 | `carplay_fit` | `carplay_ok`, `laptop_only`, or none | The decision: can the next human action be taken by voice from a car? |
-| `carplay_fit_reason` | `decision`, `short_answer`, `long_read`, `manual_steps`, `credential`, `local_device`, `nothing_needed` | What kind of action the session is waiting on. |
+| `carplay_fit_reason` | `decision`, `short_answer`, `long_read`, `nothing_needed` (with `carplay_ok`); `manual_steps`, `credential`, `local_device` (with `laptop_only`) | What kind of action the session is waiting on. |
 | `carplay_fit_source` | `auto`, `human`, `assistant`, `session`, `carplay` | Who wrote the mark. `carplay` is the CarPlay-engagement default, and is only ever `carplay_ok`. |
 | `carplay_fit_set_at` | a time | When. |
 | `carplay_fit_line_count` | an integer | The session's transcript line count when the mark was written. |
@@ -28,6 +29,37 @@ The five travel together through one writer, `Sessions::SetCarplayFit`, which ev
 the status-summary harvest, the web UI, the REST endpoint, the `set_carplay_fit` MCP action and
 CarPlay engagement. A sixth column, `carplay_engaged_at`, records when a person last touched the
 session from CarPlay.
+
+## A long read is CarPlay-ok
+
+A long document or a long diff is not a reason to need a laptop. You review it by talking it through
+with [Live Mode](/sessions/live/), and that works from the car; the length does not change that. So
+`long_read` is a `carplay_ok` reason. `laptop_only` is for what really needs a screen or a keyboard:
+a credential to paste or mint, a console or checklist to click through, something to run on your own
+machine or phone.
+
+The rule is enforced in code, not only in the prompts. `SessionCarplayFit.normalize_mark` turns
+`laptop_only` + `long_read` into `carplay_ok` + `long_read`, and both the summary trailer's parser and
+`Sessions::SetCarplayFit` run it, so every writer follows the rule: the fork, the backfill
+classifier, an assistant or a session over MCP, the REST endpoint and the web UI. The write still
+lands, and its result message (and the web UI's notice) says it was read as CarPlay-ok. On a session
+holding the sticky CarPlay-engagement mark, a `laptop_only` + `long_read` from any writer keeps that
+mark rather than replacing it. The model refuses to save the pair as
+well, but only when the mark itself changes, so a row stored before the rule never fails an
+unrelated save.
+
+Marks stored under the old rule were flipped once by the `FlipLongReadCarplayMarksToCarplayOk`
+[post-deploy task](/operate/deploying/#one-time-post-deploy-tasks), whoever wrote the mark. It
+changes the fit and keeps the reason and transcript position, so a current mark stays current and a
+stale one stays stale. An `auto` mark on a CarPlay-engaged session becomes the sticky `carplay` mark,
+as the summary fork would write it. A `human`, `assistant` or `session` mark keeps its source and gets
+one line on the session's timeline saying it was re-read and why. It leaves `laptop_only` marks with
+any other reason alone. The count and ids it flipped are in `post_deploy_task_runs` on `/health`.
+
+An older iOS build still lists "A long read" under Laptop only in its menu. Picking it writes a
+CarPlay-ok mark: the build's notice still says "Marked Laptop only (a long read)", but the session
+it shows next is the server's, marked CarPlay-ok. A reason the app does not know reads as no reason,
+so a retired or new reason never breaks a row.
 
 ## It decides nothing
 
@@ -106,8 +138,8 @@ something new, so the session stays in the driver's `not_laptop_only` view howev
 
 **Demotion needs clear evidence.** When an engaged session comes to rest, the status-summary fork is
 told it was engaged from CarPlay and to answer `laptop_only` only when the next step clearly needs a
-screen or a keyboard: a credential, a console or checklist, the person's own device, a long read.
-When it is ambiguous it answers `carplay_ok`. A `laptop_only` answer, written against a later
+screen or a keyboard: a credential, a console or checklist, the person's own device. A long read is
+not one. When it is ambiguous it answers `carplay_ok`. A `laptop_only` answer, written against a later
 transcript position than the engagement, replaces the sticky mark as an ordinary `auto` mark, and
 the session's timeline records the demotion. So does a `laptop_only` from the session itself, an
 assistant, or you. A `human` mark still outranks everything at the same position, and a `carplay_ok`
@@ -127,7 +159,7 @@ re-judges it with the engagement in mind. A **stale** `laptop_only` is promoted 
 
 A mark is **current** while the session has not written a line past `carplay_fit_line_count`, and
 **stale** once it has. That is the status summary's own freshness model, reused on purpose: a session
-that became laptop-only after opening a PR that needs a diff read has *moved*, and the mark written
+that became laptop-only after asking for a credential has *moved*, and the mark written
 before that move was about an earlier state. Every filter treats a stale mark as untagged; every
 summary line names it as stale, with how many messages have landed since. When the session next comes
 to rest, the fork writes a fresh `auto` mark, and a mark written against a later position always wins

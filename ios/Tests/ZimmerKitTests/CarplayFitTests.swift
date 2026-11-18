@@ -85,7 +85,8 @@ final class CarplayFitTests: XCTestCase {
         let sides = CarplayFit.allCases.flatMap(\.reasons)
         XCTAssertEqual(Set(sides), Set(CarplayFitReason.allCases))
         XCTAssertEqual(sides.count, CarplayFitReason.allCases.count)
-        XCTAssertEqual(CarplayFitChange.mark(.laptopOnly, reason: .longRead).done, "Marked Laptop only (a long read)")
+        XCTAssertEqual(CarplayFitChange.mark(.carplayOk, reason: .longRead).done, "Marked CarPlay-ok (a long read)")
+        XCTAssertTrue(CarplayFit.carplayOk.reasons.contains(.longRead), "a long read is talked through by voice")
         XCTAssertEqual(CarplayFitChange.clear.done, "CarPlay fit cleared")
     }
 
@@ -133,7 +134,7 @@ final class CarplayFitTests: XCTestCase {
     func testTheFixtureMarksNarrowsAndTakesAHumanMark() async throws {
         let fake = FakeZimmerAPI()
         let driving = try await fake.sessions(BoardFilters(statuses: [.needsInput], carplayFit: .notLaptopOnly), board: .all).sessions.map(\.id)
-        XCTAssertEqual(Set(driving), [1038, 1035], "the parity audit is a long read for the laptop")
+        XCTAssertEqual(Set(driving), [1038, 1035], "the parity audit needs a run on the phone")
 
         let result = try await fake.setCarplayFit(1035, .mark(.laptopOnly, reason: .manualSteps))
         XCTAssertTrue(result.applied)

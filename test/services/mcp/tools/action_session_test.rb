@@ -2777,6 +2777,17 @@ class Mcp::Tools::ActionSessionTest < ActiveSupport::TestCase
     assert_equal 4, session.carplay_fit_line_count
   end
 
+  test "set_carplay_fit writes an assistant's laptop-only long read as carplay_ok" do
+    session = carplay_fit_session
+
+    result = @tool.call({ "session_id" => session.id, "action" => "set_carplay_fit",
+                          "carplay_fit" => "laptop_only", "carplay_fit_reason" => "long_read" })
+
+    assert_includes result, "## CarPlay Fit Set"
+    assert_includes result, "CarPlay-ok (a long read) · assistant · current"
+    assert_equal [ "carplay_ok", "long_read" ], [ session.reload.carplay_fit, session.carplay_fit_reason ]
+  end
+
   test "set_carplay_fit keeps a standing human mark and says so" do
     session = carplay_fit_session
     Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", source: "human")

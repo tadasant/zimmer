@@ -234,7 +234,7 @@ module Mcp
         filtered_scope(args.except("carplay_fit")).unscope(:includes).where.not(id: kept).reorder(nil)
       end
 
-      # "7 laptop-only (4 a credential, 2 a long read, 1 no reason given), 2 untagged"
+      # "7 laptop-only (4 a credential, 2 manual steps, 1 no reason given), 2 untagged"
       def dropped_kinds(sessions)
         sessions.group_by(&:effective_carplay_fit).sort_by { |fit, group| [ -group.size, fit.to_s ] }.map do |fit, group|
           label = fit.nil? ? "untagged" : SessionCarplayFit::LABELS.fetch(fit, fit).downcase.tr(" ", "-")

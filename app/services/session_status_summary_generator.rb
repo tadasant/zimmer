@@ -157,13 +157,15 @@ class SessionStatusSummaryGenerator
       `carplay-fit: <carplay_ok|laptop_only>; reason: <#{SessionCarplayFit::REASONS.join('|')}>`
       It says whether the reader can act on your first sentence BY VOICE, FROM A
       CAR. `carplay_ok` when the action is a yes or no, a merge decision your
-      sentence already frames, a short reply, or nothing at all (reason
-      `decision`, `short_answer` or `nothing_needed`). `laptop_only` when it
-      needs a screen or a keyboard: a credential to paste or mint
-      (`credential`), a console or checklist to click through (`manual_steps`),
-      something to run on their own machine or phone (`local_device`), or a
-      long document or diff to read (`long_read`). This line is parsed and
-      removed; nobody reads it.
+      sentence already frames, a short reply, a long document or diff to
+      review (however long: the reader talks it through by voice with an
+      assistant), or nothing at all (reason `decision`, `short_answer`,
+      `long_read` or `nothing_needed`). `laptop_only` ONLY when it needs a
+      screen or a keyboard: a credential to paste or mint (`credential`), a
+      console or checklist to click through (`manual_steps`), or something to
+      run on their own machine or phone (`local_device`). Length alone is never
+      a reason for `laptop_only`. This line is parsed and removed; nobody reads
+      it.
   RULE
 
   # Appended under the trailer rule when the session was started or engaged from
@@ -174,8 +176,8 @@ class SessionStatusSummaryGenerator
     - This session was started or engaged from CarPlay, so its reader is
       probably driving and wants to keep it in their view. Answer
       `laptop_only` ONLY when the next step clearly needs a screen or a
-      keyboard (a credential, a console or checklist, their own device, a long
-      read). When it is ambiguous, answer `carplay_ok`.
+      keyboard (a credential, a console or checklist, their own device). When
+      it is ambiguous, answer `carplay_ok`.
   RULE
 
   # The trailer rule for this session: the bias rule rides along for a

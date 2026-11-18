@@ -324,7 +324,8 @@ can be done by voice from a car. Five fields travel together on every serialized
   written past `carplay_fit_line_count`, except for a `carplay` mark, which does not go stale. A
   board filtering for a driver reads this one.
 - `carplay_fit_reason` — `decision`, `short_answer`, `long_read`, `manual_steps`, `credential`,
-  `local_device`, `nothing_needed`, or `null`.
+  `local_device`, `nothing_needed`, or `null`. `long_read` goes with `carplay_ok`: a long document
+  or diff is talked through by voice. A client should treat a reason it does not know as no reason.
 - `carplay_fit_source` — `auto` (the status-summary fork at rest), `human`, `assistant`, `session`,
   or `carplay` (the session was started, followed up or acted on from CarPlay; always `carplay_ok`).
 - `carplay_fit_set_at`, `carplay_fit_line_count` — when, and the transcript position it was judged
@@ -348,6 +349,8 @@ other API-key call an `assistant` one — self-declared and unverified, as `acti
 everywhere in this API, and the two share a rank. At the same or a later transcript position `human`
 outranks the other two, which outrank `auto`; a refused write answers 200 with
 `carplay_fit_result.applied: false` and the reason, because the standing mark is the right answer.
+`laptop_only` with reason `long_read` is written as `carplay_ok` + `long_read`, and
+`carplay_fit_result.message` says so.
 
 ```bash
 curl -X PATCH "$ZIMMER/api/v1/sessions/4242/carplay_fit" \

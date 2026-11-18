@@ -2059,7 +2059,7 @@ class SessionsController < ApplicationController
     respond_to do |format|
       format.json { render json: carplay_fit_payload(@session.reload, result) }
       format.html do
-        redirect_back fallback_location: session_path(@session), notice: carplay_fit_notice(@session.reload)
+        redirect_back fallback_location: session_path(@session), notice: carplay_fit_notice(@session.reload, result)
       end
     end
   rescue Sessions::SetCarplayFit::Error, ActiveRecord::RecordInvalid => e
@@ -3529,8 +3529,9 @@ class SessionsController < ApplicationController
     }
   end
 
-  def carplay_fit_notice(session)
+  def carplay_fit_notice(session, result)
     return "Session #{session.id}'s CarPlay fit cleared." if session.carplay_fit.blank?
+    return "Session #{session.id} marked #{session.carplay_fit_label}: a long read is talked through by voice, so it is never laptop-only." if result.read_as_carplay_ok?
 
     "Session #{session.id} marked #{session.carplay_fit_label}."
   end

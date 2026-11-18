@@ -176,7 +176,8 @@ module LiveConversations
         "sets it with `set_carplay_fit`. Leave `carplay_fit` off a search for a particular session: a session " \
         "marked `laptop_only` still exists, and the person may only want to hear how it went. A session you " \
         "start, follow up or act on from here is marked `carplay_ok` for you and stays in that view; mark it " \
-        "`laptop_only` only when it clearly needs a screen or a keyboard."
+        "`laptop_only` only when it clearly needs a screen or a keyboard. A long document or diff does not: " \
+        "offer to talk it through, and mark it `carplay_ok` with reason `long_read`."
     end
 
     # Spoken only: a typed reply has no call to end, and no `hang_up` function.

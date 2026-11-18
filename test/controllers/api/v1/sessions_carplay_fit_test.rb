@@ -75,6 +75,21 @@ class Api::V1::SessionsCarplayFitTest < ActionDispatch::IntegrationTest
     assert_equal "assistant", body["session"]["carplay_fit_source"]
   end
 
+  test "PATCH laptop_only with reason long_read writes carplay_ok and says why" do
+    session = make_session
+
+    patch "/api/v1/sessions/#{session.id}/carplay_fit",
+      params: { carplay_fit: "laptop_only", carplay_fit_reason: "long_read" }.to_json,
+      headers: @headers.merge("Content-Type" => "application/json")
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert body["carplay_fit_result"]["applied"]
+    assert_includes body["carplay_fit_result"]["message"], "a long read is talked through by voice"
+    assert_equal "carplay_ok", body["session"]["carplay_fit"]
+    assert_equal "long_read", body["session"]["carplay_fit_reason"]
+  end
+
   test "PATCH naming acting_session_id writes a session mark, and a standing human mark is kept" do
     session = make_session
     Sessions::SetCarplayFit.call(session: session, fit: "laptop_only", source: "human")

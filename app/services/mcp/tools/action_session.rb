@@ -61,9 +61,9 @@ module Mcp
 
       TIMEZONE_DESC = 'Optional for "set_visibility": the IANA timezone name (e.g. "America/New_York") that "snoozed_until" is expressed in. Defaults to "UTC". Send the wall-clock time the human means plus their zone, rather than converting to UTC yourself.'
 
-      CARPLAY_FIT_DESC = 'Required for "set_carplay_fit". "carplay_ok" when what the session needs next from the human can be done by voice from a car — a yes or no, a merge decision the status summary already frames, a short reply, or nothing at all. "laptop_only" when it needs a screen or a keyboard — a credential to paste, a console to click through, something to run on their own machine, a long document or diff to read. "clear" removes the mark. Presentation and triage only: it changes which rows a driver asks for, never when anything runs.'
+      CARPLAY_FIT_DESC = 'Required for "set_carplay_fit". "carplay_ok" when what the session needs next from the human can be done by voice from a car — a yes or no, a merge decision the status summary already frames, a short reply, a long document or diff to review by talking it through, or nothing at all. "laptop_only" only when it needs a screen or a keyboard — a credential to paste, a console to click through, something to run on their own machine. A long read is never laptop_only, however long: "laptop_only" with reason "long_read" is written as "carplay_ok". "clear" removes the mark. Presentation and triage only: it changes which rows a driver asks for, never when anything runs.'
 
-      CARPLAY_FIT_REASON_DESC = 'Optional for "set_carplay_fit": what kind of human action the session is waiting on. One of "decision", "short_answer", "long_read", "manual_steps", "credential", "local_device", "nothing_needed".'
+      CARPLAY_FIT_REASON_DESC = 'Optional for "set_carplay_fit": what kind of human action the session is waiting on. One of "decision", "short_answer", "long_read", "manual_steps", "credential", "local_device", "nothing_needed". "decision", "short_answer", "long_read" and "nothing_needed" go with carplay_ok; "manual_steps", "credential" and "local_device" with laptop_only.'
 
       PRECEDENCE_DESC = PrecedenceDocs::ACTION_SESSION
 

@@ -338,7 +338,7 @@ session, because a session marked `laptop_only` still exists.
 model to call `get_user_view` with `order: "last_touched"` and `carplay_fit: "not_laptop_only"`:
 the sessions the person touched most recently first, without the rows that need a screen or a
 keyboard. The answer says how many rows the filter left out and what kind they were, for example
-"9 laptop-only (4 a credential, 3 a long read, 2 no reason given)", and tells the model to say both.
+"9 laptop-only (4 a credential, 3 manual steps, 2 no reason given)", and tells the model to say both.
 A filter that drops every row says the board is not empty, rather than that it is. This is on
 `get_user_view` for every caller, not only Live Mode. On the `live_mode` surface `last_touched` is
 the tool's own default. The person does not have to name either knob. The model drops one only when they ask for the board's own order or for everything.
