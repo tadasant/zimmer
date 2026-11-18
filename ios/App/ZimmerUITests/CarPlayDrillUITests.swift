@@ -35,8 +35,10 @@ final class CarPlayDrillUITests: XCTestCase {
     /// limitations.md, "CarPlay's host can stop answering in the drill".
     private static let hostStall: TimeInterval = 45
     /// How long a Live tile may stay up after its tap before the drill counts the tap as lost.
-    /// A tap the app takes redraws the tiles within a fraction of a second.
-    private static let lostTap: TimeInterval = 10
+    /// The app redraws the tiles within a fraction of a second of a tap it takes, though the host
+    /// can stall longer before it draws them (`hostStall`). Shorter than the 20 seconds or more
+    /// before a New the app took comes back, once its retries are spent.
+    private static let lostTap: TimeInterval = 15
     private var zimmer: XCUIApplication!
     private let dashboard = XCUIApplication(bundleIdentifier: "com.apple.CarPlayApp")
     private let car = XCUIApplication(bundleIdentifier: "com.apple.CarPlayTemplateUIHost")
@@ -350,9 +352,10 @@ final class CarPlayDrillUITests: XCTestCase {
         let gone = NSPredicate(format: "exists == false")
         for tap in 1...3 {
             if tap > 1 {
-                record("the \(label) tile still up \(Int(Self.lostTap)) seconds after tap \(tap - 1)", car.debugDescription)
-                // The last tap can be taken just as the wait runs out: a tile gone by now was.
+                // The last tap can be taken just as the wait runs out: a tile gone by now was. On a
+                // host that has stalled, this look waits the stall out, as every query there does.
                 guard tile.exists else { return }
+                record("the \(label) tile still up \(Int(Self.lostTap)) seconds after tap \(tap - 1)", car.debugDescription)
                 tile.tap()
             }
             let left = XCTNSPredicateExpectation(predicate: gone, object: tile)
