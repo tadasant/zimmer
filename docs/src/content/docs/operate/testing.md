@@ -724,6 +724,32 @@ whatever the shuffle chose. `SessionsTranscriptTest#test_opening_the_transcript_
 pins the case at the window from that run, and asserts the panel really does start off screen before
 opening it — so the test cannot quietly stop covering the thing it is named for.
 
+### The page from two minutes ago: the HTTP cache outlives a test
+
+[Run 44240583158](https://github.com/tadasant/zimmer/actions/runs/44240583158) failed
+`DashboardTurboActionsTest#test_the_recovery_banner_no_longer_schedules_a_page_refresh` and nothing
+else. The test writes a `Recovery job enqueued` log for `sessions(:running)` and visits the session
+page. The page it was shown had no banner. [#1551](https://github.com/tadasant/zimmer/pull/1551) had
+already read the same failure as the banner's 5-second window expiring and dated the log a minute
+ahead. The failure came back anyway, so the window was not the cause.
+
+The page was never rendered for that test. Capybara's reset between tests clears cookies and
+storage. It does not clear the HTTP cache, and the browser lives for the whole run. The app makes
+some pages cacheable on purpose: below the `sm` breakpoint the dashboard prefetches the full detail
+page of each row near the screen (`session_prefetch_controller.js`), and the server answers a
+prefetch with `Cache-Control: private, max-age=120` (`SessionsController#allow_prefetch_reuse`). A
+phone-width dashboard test that had `sessions(:running)` near the screen left
+`/sessions/790727023` in the cache. A later test that visited the same URL within two minutes was
+shown that copy, rendered before its log existed. A visit to a session the test created itself
+cannot hit this, because its URL is new. A fixture session's URL is the same in every test.
+
+`ApplicationSystemTestCase` sends `Network.clearBrowserCache` at the start of every test. That
+runs at setup, not teardown, so `SessionListPrefetchTest` still has the cache for the length of
+each of its own tests.
+
+The rule: **a test is not isolated until the browser's caches are, too.** A response the app tells
+the browser it may keep is state that one test hands to the next, unless something clears it.
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]
