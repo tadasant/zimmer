@@ -25,12 +25,14 @@ public enum CarplayFit: String, Hashable, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    /// The reasons that go with this side, in the server's order: the classifier maps
-    /// `long_read` to laptop-only, and `nothing_needed` is a session that needs nobody.
+    /// The reasons that go with this side, in the server's order: a long read is talked
+    /// through by voice, so `long_read` is CarPlay-ok (the server writes a laptop-only long
+    /// read as CarPlay-ok), and `nothing_needed` is a session that needs nobody. A reason this
+    /// build does not know decodes to no reason (`SessionSummary.currentCarplayFitReason`).
     public var reasons: [CarplayFitReason] {
         switch self {
-        case .carplayOk: return [.decision, .shortAnswer, .nothingNeeded]
-        case .laptopOnly: return [.longRead, .manualSteps, .credential, .localDevice]
+        case .carplayOk: return [.decision, .shortAnswer, .longRead, .nothingNeeded]
+        case .laptopOnly: return [.manualSteps, .credential, .localDevice]
         }
     }
 }

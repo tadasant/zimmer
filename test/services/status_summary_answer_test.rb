@@ -72,6 +72,13 @@ class StatusSummaryAnswerTest < ActiveSupport::TestCase
     assert_equal({ fit: "carplay_ok", reason: "decision" }, StatusSummaryAnswer.carplay_fit(text))
   end
 
+  test "a laptop-only long read is read as carplay_ok: a long read is talked through by voice" do
+    assert_equal({ fit: "carplay_ok", reason: "long_read" },
+      StatusSummaryAnswer.carplay_fit("Review the design doc.\ncarplay-fit: laptop_only; reason: long_read"))
+    assert_equal({ fit: "carplay_ok", reason: "long_read" },
+      StatusSummaryAnswer.carplay_fit("Review the design doc.\ncarplay-fit: carplay_ok; reason: long_read"))
+  end
+
   test "the trailer is matched leniently: backticks, a full stop, odd spacing, inside a fence" do
     assert_equal({ fit: "laptop_only", reason: "credential" },
       StatusSummaryAnswer.carplay_fit("Paste the key.\n`carplay-fit: laptop_only ; reason: credential`."))

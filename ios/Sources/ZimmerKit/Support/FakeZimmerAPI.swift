@@ -451,14 +451,14 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// Every sample but the sweep (1031, held at the starting line) has had its agent launch,
     /// so a restart from Needs input continues its conversation rather than starting over.
     /// The CarPlay-fit marks the summary fork would have written at rest: the merge is a yes
-    /// or no from the car, the parity audit is a long read for the laptop, and the Postgres
+    /// or no from the car, the parity audit needs a run on the phone, and the Postgres
     /// question is not judged yet.
     private static func carplayMarked(_ now: Date, _ sessions: [SessionSummary]) -> [SessionSummary] {
         sessions.map { session in
             var session = session
             switch session.id {
             case 1038: (session.carplayFit, session.carplayFitReason) = ("carplay_ok", "decision")
-            case 1044: (session.carplayFit, session.carplayFitReason) = ("laptop_only", "long_read")
+            case 1044: (session.carplayFit, session.carplayFitReason) = ("laptop_only", "local_device")
             default: return session
             }
             session.effectiveCarplayFit = session.carplayFit

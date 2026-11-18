@@ -39,7 +39,7 @@ final class CarplayFitUITests: XCTestCase {
         attachScreenshot(app, named: "carplay-fit-filter")
         app.buttons["filters.apply"].tap()
 
-        XCTAssertTrue(waitForDisappearance(row(app, 1044)), "a long read waits for the laptop")
+        XCTAssertTrue(waitForDisappearance(row(app, 1044)), "a run on the phone waits for the laptop")
         XCTAssertTrue(row(app, 1038).exists, "a merge decision can be made from the car")
         XCTAssertTrue(row(app, 1035).exists, "a session not judged yet stays")
         XCTAssertTrue(waitForLabelContaining(app.descendants(matching: .any)["filter.summary"], "Not laptop-only"))

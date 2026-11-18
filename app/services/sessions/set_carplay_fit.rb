@@ -45,9 +45,13 @@ module Sessions
     def initialize(session:, fit:, source:, reason: nil, line_count: nil, automatic: false)
       @session = session
       @automatic = automatic
-      @fit = normalize_fit(fit)
       @source = source.to_s.strip
-      @reason = reason.to_s.strip.presence
+      # A long read is talked through by voice: `laptop_only` + `long_read` is
+      # written as `carplay_ok` + `long_read`, whoever asked for it.
+      asked_fit = normalize_fit(fit)
+      asked_reason = reason.to_s.strip.presence
+      @fit, @reason = SessionCarplayFit.normalize_mark(asked_fit, asked_reason)
+      @read_as_carplay_ok = @fit != asked_fit
       @line_count = line_count.nil? ? session.transcript_line_count.to_i : line_count.to_i
     end
 
@@ -71,10 +75,17 @@ module Sessions
       )
       note_on_timeline
 
-      Result.new(applied: true, session: session, message: fit.nil? ? "CarPlay fit cleared." : "CarPlay fit set to #{fit}.")
+      Result.new(applied: true, session: session, message: applied_message)
     end
 
     private
+
+    def applied_message
+      return "CarPlay fit cleared." if fit.nil?
+      return "CarPlay fit set to #{fit}: a long read is talked through by voice, so it is never laptop_only." if @read_as_carplay_ok
+
+      "CarPlay fit set to #{fit}."
+    end
 
     def normalize_fit(value)
       text = value.to_s.strip
