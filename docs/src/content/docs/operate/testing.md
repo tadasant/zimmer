@@ -743,7 +743,7 @@ phone-width dashboard test that had `sessions(:running)` near the screen left
 shown that copy, rendered before its log existed. A visit to a session the test created itself
 cannot hit this, because its URL is new. A fixture session's URL is the same in every test.
 
-`ApplicationSystemTestCase` now sends `Network.clearBrowserCache` at the start of every test. That
+`ApplicationSystemTestCase` sends `Network.clearBrowserCache` at the start of every test. That
 runs at setup, not teardown, so `SessionListPrefetchTest` still has the cache for the length of
 each of its own tests.
 

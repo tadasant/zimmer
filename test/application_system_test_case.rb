@@ -164,9 +164,9 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   #
   # Capybara's reset between tests clears cookies and storage, not the HTTP
   # cache, and the browser — like its `--user-data-dir` — lives for the whole
-  # run. The app deliberately makes some pages cacheable: the dashboard prefetches
-  # each on-screen row's detail page (session_prefetch_controller.js) and the
-  # server answers that prefetch `Cache-Control: private, max-age=120`
+  # run. The app deliberately makes some pages cacheable: below the `sm`
+  # breakpoint the dashboard prefetches each on-screen row's full detail page
+  # (session_prefetch_controller.js) and the server answers that prefetch `Cache-Control: private, max-age=120`
   # (SessionsController#allow_prefetch_reuse). So a test that rendered the
   # dashboard at a phone width left `/sessions/<fixture id>` in the cache, and a
   # later test that set up new state and then visited that page within two
