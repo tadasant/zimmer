@@ -192,11 +192,10 @@ class StagingLifecycleGuardTest < ActiveSupport::TestCase
 
   # Under `set -o pipefail`, `printf "$state" | grep -q` is a race: grep -q exits on its
   # first match, and a printf still writing into the closed pipe dies of SIGPIPE, which
-  # fails the whole pipeline -- so a droplet listed FIRST read as absent. On a three-line
-  # state that lost only now and then (it flaked "an API that will not answer" above,
-  # which then took the "nothing to destroy" branch). About a megabyte after the match
-  # leaves the writer far more to send than one read by grep takes, so the old pipeline
-  # loses every time instead of sometimes.
+  # fails the whole pipeline -- so a droplet listed FIRST reads as absent. On a short
+  # state that happens only occasionally; about a megabyte after the match leaves the
+  # writer far more to send than one read by grep takes, so a pipeline-fed check fails
+  # these tests every time rather than sometimes.
   PIPE_OUTRUNNING_LINES = 35_000
 
   test "a droplet listed first is found however much state follows it" do

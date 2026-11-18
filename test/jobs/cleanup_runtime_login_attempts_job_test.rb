@@ -3,6 +3,10 @@
 require "test_helper"
 
 class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
+  # Far longer than a delivered SIGTERM takes to land, far shorter than the stray's
+  # `sleep 30` — so timing out means nobody signalled it, not that the runner was slow.
+  EXIT_DEADLINE = 10
+
   setup do
     @account = ClaudeAccount.create!(
       email: "cleanup-login-attempts@example.com", runtime: "codex",
@@ -62,6 +66,7 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     # loses on a busy runner. Wait for it to exit instead, and require that it died OF
     # that signal — a job that never signalled leaves it sleeping until the deadline.
     status = exit_status_within(stray, EXIT_DEADLINE)
+    stray = nil if status # reaped: its PID is free for reuse, so the ensure must not signal it
     assert status&.signaled? && status.termsig == Signal.list.fetch("TERM"),
       "the orphaned login CLI must be killed too (exit status: #{status.inspect})"
   ensure
@@ -93,12 +98,8 @@ class CleanupRuntimeLoginAttemptsJobTest < ActiveJob::TestCase
     false
   end
 
-  # Far longer than a delivered SIGTERM takes to land, far shorter than the stray's
-  # `sleep 30` — so timing out means nobody signalled it, not that the runner was slow.
-  EXIT_DEADLINE = 10
-
-  # The child's Process::Status once it has exited, or nil if it is still running at the
-  # deadline. Reaps it, so a later kill_and_reap finds nothing to do.
+  # The child's Process::Status once it has exited (reaping it), or nil if it is still
+  # running at the deadline.
   def exit_status_within(pid, seconds)
     waiter = Process.detach(pid)
     waiter.join(seconds) ? waiter.value : nil

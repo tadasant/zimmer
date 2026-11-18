@@ -162,8 +162,9 @@ fi
 
 # A here-string, never `printf | grep -q`: grep -q exits on its first match, and under
 # pipefail the printf still writing into the closed pipe takes SIGPIPE and fails the whole
-# test -- a droplet listed first would read as "absent", and the stderr check above would
-# turn "never applied" into a page. Feeding grep from a here-string leaves no writer to kill.
+# pipeline, so the `if` takes its else branch -- a droplet listed first would read as
+# "absent", and the stderr check above would turn "never applied" into a page. Feeding grep
+# from a here-string leaves no writer to kill.
 if grep -qxF "$DROPLET_ADDRESS" <<<"$state_log"; then
   droplet=present
 else
