@@ -1217,8 +1217,10 @@ with each mode's model. Typing and voice share the prerequisites, so every `mode
 `GET /live_conversations` → `{live_conversations: [...], current_id, current: {<mode>: id}}`, the
 newest 20 and the open conversation's id (or null). `current` is the same conversation keyed by the
 mode it is in right now, empty when there is none ·
-`POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, a `preparing` conversation
-that ends the open one; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
+`POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, the new conversation, which
+ends the open one. It is `active` at once when an earlier conversation on the root was prepared
+(it starts on that one's instructions and tool lists, read again in the background), and
+`preparing` otherwise; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
 `GET /live_conversations/:id/sessions` → `{sessions: [...], board_rows: {<id>: {agent_root,
 status_summary}}}`, the sessions the conversation's tool calls have named — started, checked on,

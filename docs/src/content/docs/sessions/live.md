@@ -51,6 +51,15 @@ then `ended`. It goes to `failed` when the instructions cannot be read, and the 
 the page. `ended` is not final: going back reopens the same row, so its id, its thread and the
 sessions it touched are all still there. `failed` is final.
 
+A new conversation skips `preparing` when an earlier one on the same root was prepared. It starts
+`active` on that one's instructions and on the tool lists it holds for the root's default servers,
+and `LiveConversationPrepareJob` reads both again in the background (`refresh: true`). A default
+server the earlier conversation had no tools for is tried there too, and enabled if it answers. A
+call can mint its secret at once rather than wait on the read. Preparing lists every default
+server's tools, and a server on a machine that is offline takes its whole 5 s connect timeout to say
+so. A default server that still cannot start is named on the page, as preparing names it. Only a
+conversation with no earlier one on its root that read its instructions goes through `preparing`.
+
 ### Going back to a conversation
 
 Say "go back to my last conversation" on a call, or press **Go back to this conversation** on an
@@ -754,7 +763,8 @@ three seconds a cold call takes before the *connected* notes. The design and its
 - **Bounded.** One connection at most. It is pinged every 20 s and replaced after 5 minutes.
   After a failure it waits 5 s, then 15, 60 and 120. It stops after 15 mints per car connection.
   Nothing is warmed on Low Power Mode, a serious thermal state, Low Data Mode or no network.
-- **Everything else is the cold path, unchanged.** New, a tap while a connection is still
+- **Everything else is the cold path, unchanged.** New (which skips `preparing`, see
+  [One conversation](#one-conversation)), a tap while a connection is still
   warming, and a connection not heard from for 45 s all start cold. So does the call that comes
   back from the gear, which must be minted from the row the panel wrote. A warm start whose
   voice-on or `session.update` fails falls back to a cold mint on the same microphone, with no
