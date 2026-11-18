@@ -43,7 +43,6 @@ class ElicitationsController < ApplicationController
 
     content = parse_response_content
 
-    sleep 1 if Rails.env.test? # REPRO ONLY — reverted in the next commit
     @elicitation.resolve!(action: action_type, content: content)
 
     # Broadcast removal of the elicitation banner
