@@ -292,7 +292,7 @@ class AuthOutageParkService
     session.reload
     # Archived or failed while the clone was being set up: nothing to park, and
     # nothing to page about on its behalf.
-    return false unless session.waiting? || session.running?
+    return false unless session.in_turn_state?
 
     runtime = session.agent_runtime
     reason = reason_for_unusable_pool(runtime)
@@ -908,7 +908,7 @@ class AuthOutageParkService
     job_id = job.try(:job_id)
     if job_id.blank?
       logger.warn("Resumed parked session but no job id was returned", session_id: session.id)
-    elsif (session.reload.waiting? || session.running?) && session.running_job_id.blank?
+    elsif session.reload.in_turn_state? && session.running_job_id.blank?
       # Re-read under the same condition the write assumes. GoodJob can pick the job up,
       # deliver the turn and pause the session before this line runs, and stamping a job id
       # onto a session that has come to rest would hand orphan detection a job that has

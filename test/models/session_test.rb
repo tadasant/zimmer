@@ -2258,6 +2258,13 @@ class SessionTest < ActiveSupport::TestCase
     end
   end
 
+  # --- in_turn_state? ---
+
+  test "only running and waiting sessions are in a state a turn can be in" do
+    %i[running waiting].each { |name| assert sessions(name).in_turn_state?, "#{name} should be in a turn state" }
+    %i[needs_input failed archived].each { |name| assert_not sessions(name).in_turn_state?, "#{name} is a rest state" }
+  end
+
   # --- live_clone_paths: the GC "never reap a live session's clone" set ---
 
   test "live_clone_paths includes clones for running, waiting, and needs_input sessions" do

@@ -244,7 +244,7 @@ class GoalCheck
       verdict: verdict_for(criteria),
       criteria: criteria,
       observed_at: parse_time(@polled_at),
-      provisional: @session.running? || @session.waiting?,
+      provisional: @session.in_turn_state?,
       delegated_session_ids: @delegated_by_url.values.uniq
     )
   end

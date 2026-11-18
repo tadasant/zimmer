@@ -146,7 +146,7 @@ module Sessions
       # end of runs for minutes, and the session object the job has carried since
       # before the clone is not evidence of what the row says now.
       session.reload
-      return false unless session.running? || session.waiting?
+      return false unless session.in_turn_state?
       return false if session.status_summary_fork?
 
       # merge_metadata!, not a whole-column write: `pending_follow_up_prompt` is one

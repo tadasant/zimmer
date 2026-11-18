@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
-# Prism is a Ruby 3.4 default gem — the same dependency the mocha and ostruct
-# contracts lean on.
-require "prism"
+require_relative "status_disjunction_finder"
 
 # "Can this session take a turn?" has one answer, Session#accepts_follow_up?.
 #
@@ -16,75 +14,20 @@ require "prism"
 # differently from its siblings with nothing to say so.
 #
 # So no file in app/ or lib/ spells the three-state disjunction out except the
-# predicate itself. The source is parsed rather than grepped: the question is
-# whether code *tests* the three states, in any order and on any receiver, and a
-# mention in a comment or a string is not that.
+# predicate itself. StatusDisjunctionFinder parses the source, so a mention in a
+# comment or a string does not count.
 class AcceptsFollowUpContractTest < ActiveSupport::TestCase
-  TURN_TAKING_STATES = %i[running? waiting? needs_input?].to_set.freeze
-
-  # The predicate's own body: `running? || waiting? || needs_input?` with an
-  # implicit receiver, inside `def accepts_follow_up?` in session.rb. Nothing
-  # else in that file is exempt.
+  TURN_TAKING_STATES = %i[running? waiting? needs_input?].freeze
   PREDICATE_HOME = "app/models/session.rb"
   PREDICATE_NAME = :accepts_follow_up?
 
-  class DisjunctionFinder < Prism::Visitor
-    attr_reader :hits
-
-    def initialize
-      @hits = []
-      @current_def = nil
-      super
-    end
-
-    def visit_def_node(node)
-      outer, @current_def = @current_def, node.name
-      super
-    ensure
-      @current_def = outer
-    end
-
-    # Ruby groups `||` from the left, so a chain that only *contains* the three
-    # states (`failed? || running? || waiting? || needs_input?`) has no sub-chain
-    # of exactly three and is not flagged. That is a superset, a different
-    # question, so it is not this rule's business.
-    def visit_or_node(node)
-      leaves = flatten(node)
-      if leaves.all? { |leaf| state_check?(leaf) } &&
-         leaves.map(&:name).to_set == TURN_TAKING_STATES
-        in_predicate = @current_def == PREDICATE_NAME && leaves.all? { |leaf| leaf.receiver.nil? }
-        @hits << [ node.location.start_line, in_predicate ]
-        return # the nested OrNodes are this same chain, and a leaf's receiver holds no chain
-      end
-      super
-    end
-
-    private
-
-    def flatten(node)
-      node = node.body.body.first while node.is_a?(Prism::ParenthesesNode) && node.body&.body&.size == 1
-      return [ node ] unless node.is_a?(Prism::OrNode)
-
-      flatten(node.left) + flatten(node.right)
-    end
-
-    def state_check?(node)
-      node.is_a?(Prism::CallNode) && node.arguments.nil? && TURN_TAKING_STATES.include?(node.name)
-    end
-  end
-
   def spelled_out_copies(path, source)
-    finder = DisjunctionFinder.new
-    Prism.parse(source).value.accept(finder)
-    finder.hits.reject { |_line, in_predicate| path == PREDICATE_HOME && in_predicate }.map { |line, _| "#{path}:#{line}" }
+    StatusDisjunctionFinder.offenders(path, source, states: TURN_TAKING_STATES,
+                                                    predicate_name: PREDICATE_NAME, predicate_home: PREDICATE_HOME)
   end
 
   test "nothing outside Session#accepts_follow_up? spells out running? || waiting? || needs_input?" do
-    root = Rails.root
-    offenders = Dir[root.join("{app,lib}/**/*.rb")].sort.flat_map do |file|
-      path = Pathname(file).relative_path_from(root).to_s
-      spelled_out_copies(path, File.read(file))
-    end
+    offenders = StatusDisjunctionFinder.app_sources.flat_map { |path, source| spelled_out_copies(path, source) }
 
     assert_empty offenders,
                  "These spell out the turn-taking states instead of calling Session#accepts_follow_up?:\n" \
@@ -102,6 +45,8 @@ class AcceptsFollowUpContractTest < ActiveSupport::TestCase
     ignored = <<~RUBY
       a if s.running? || s.waiting?
       b if s.needs_input? || s.waiting? || s.failed?
+      d if s.failed? || s.running? || s.waiting? || s.needs_input?
+      f if s.running? || s.waiting? || s.needs_input? || s.failed?
       # s.running? || s.waiting? || s.needs_input?
       c = "s.running? || s.waiting? || s.needs_input?"
     RUBY
