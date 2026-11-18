@@ -80,7 +80,7 @@ class LiveConversationPrepareJob < ApplicationJob
     # The servers first: a root that cannot be read this time keeps the
     # instructions the conversation has, but still gains the servers that answer.
     _servers, cache, _dropped = list_tools(conversation.enabled_mcp_servers)
-    added, added_cache, _dropped = list_tools(adding)
+    added, added_cache, dropped = list_tools(adding)
     instructions = begin
       LiveConversations::RootInstructions.fetch(root)
     rescue LiveConversations::RootInstructions::Error => e
@@ -88,10 +88,15 @@ class LiveConversationPrepareJob < ApplicationJob
       nil
     end
     # Under the lock and re-read: a call can enable a server meanwhile.
+    # Left meanwhile (a second New, a switch): what it ended with stays.
     conversation.with_lock do
+      next unless conversation.active?
+
       servers = conversation.enabled_mcp_servers | added
       changes = { mcp_servers: servers, mcp_tool_cache: conversation.mcp_tool_cache.merge(cache).merge(added_cache).slice(*servers) }
       changes.merge!(instructions: instructions.text, instructions_source: instructions.source, mode_instructions: instructions.modes) if instructions
+      # A default that still cannot start is said on the page, as preparing says it.
+      changes[:error_message] = "Could not enable #{dropped.join('; ')}" if dropped.any? && conversation.error_message.blank?
       conversation.update!(changes)
     end
   rescue StandardError => e

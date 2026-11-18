@@ -51,8 +51,10 @@ module LiveConversations
           **(seeded&.attributes || {})
         )
       end
-      if seeded
+      if seeded&.missing&.any?
         LiveConversationPrepareJob.perform_later(conversation.id, refresh: true, adding: seeded.missing)
+      elsif seeded
+        LiveConversationPrepareJob.perform_later(conversation.id, refresh: true)
       else
         LiveConversationPrepareJob.perform_later(conversation.id)
       end

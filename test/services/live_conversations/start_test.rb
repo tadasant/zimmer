@@ -36,7 +36,8 @@ class LiveConversations::StartTest < ActiveSupport::TestCase
     stub_live_key
     old = create_live_conversation(mode: "voice")
 
-    fresh = LiveConversations::Start.call("text")
+    fresh = nil
+    assert_enqueued_with(job: LiveConversationPrepareJob, args: ->(args) { args.last == { refresh: true } }) { fresh = LiveConversations::Start.call("text") }
 
     assert old.reload.ended?
     assert_equal fresh, LiveConversation.current

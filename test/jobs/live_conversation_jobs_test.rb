@@ -170,6 +170,24 @@ class LiveConversationJobsTest < ActiveJob::TestCase
     assert_equal [ "zimmer", CLOCK_SERVER ], conversation.mcp_servers, "one that still cannot start stays off"
     assert_equal %w[current_time env_names], conversation.mcp_tool_cache[CLOCK_SERVER].map { |t| t["name"] }
     assert_equal "# New", conversation.instructions
+    assert_match(/Could not enable offline-mac:/, conversation.error_message)
+  end
+
+  test "a refresh of a conversation left while it ran writes nothing to it" do
+    stub_live_root
+    stub_clock_server
+    conversation = create_live_conversation(mcp_servers: [ "zimmer" ])
+    LiveConversations::RootInstructions.stubs(:fetch).with do
+      LiveConversation.where(id: conversation.id).update_all(status: LiveConversation::ENDED, ended_at: Time.current)
+      true
+    end.returns(LiveConversations::RootInstructions::Result.new(text: "# New", source: "new", modes: {}))
+
+    LiveConversationPrepareJob.perform_now(conversation.id, refresh: true, adding: [ CLOCK_SERVER ])
+
+    conversation.reload
+    assert conversation.ended?
+    assert_equal [ "zimmer" ], conversation.mcp_servers
+    assert_equal "# Live\nBe brief.", conversation.instructions
   end
 
   test "a refresh that cannot read the root still adds the servers that answer" do

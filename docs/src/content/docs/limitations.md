@@ -5070,8 +5070,8 @@ The warm session's model, voice and reasoning effort are fixed when it is minted
 call. A change to them reaches a warm connection only when it is replaced, within 5 minutes.
 The call coming back from the car's gear never takes a warm connection, for that reason.
 Only **Continue** is warmed. **New** starts a fresh conversation, which cannot exist before the tap.
-It no longer waits on `preparing` (it starts on the last prepared conversation's instructions and
-tool lists), but the create, the mint and the connect still run after the tap. GPT-Live, the
+New does not wait on `preparing` (it starts on the last prepared conversation's instructions and
+tool lists), but the create, the mint and the connect all run after the tap. GPT-Live, the
 engine the car ran on when this was measured, has no pre-warm at all.
 
 ### A new conversation starts on the last one's tool lists
@@ -5081,7 +5081,7 @@ conversation on its root, and the background read brings them up to date seconds
 that minted its secret in those seconds runs on the older ones until its next `session.update`. So
 does a default server the last conversation had no tools for (one on a machine that was offline):
 the background read enables it if it answers, but the call already up does not get its tools. The
-live model can still enable it by name mid-call.
+next call does.
 
 ---
 

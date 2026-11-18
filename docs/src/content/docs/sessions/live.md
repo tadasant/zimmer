@@ -57,8 +57,8 @@ and `LiveConversationPrepareJob` reads both again in the background (`refresh: t
 server the earlier conversation had no tools for is tried there too, and enabled if it answers. A
 call can mint its secret at once rather than wait on the read. Preparing lists every default
 server's tools, and a server on a machine that is offline takes its whole 5 s connect timeout to say
-so. Only the very first conversation on a root, or one after only failed ones, goes through
-`preparing`.
+so. A default server that still cannot start is named on the page, as preparing names it. Only a
+conversation with no earlier one on its root that read its instructions goes through `preparing`.
 
 ### Going back to a conversation
 
@@ -763,7 +763,7 @@ three seconds a cold call takes before the *connected* notes. The design and its
 - **Bounded.** One connection at most. It is pinged every 20 s and replaced after 5 minutes.
   After a failure it waits 5 s, then 15, 60 and 120. It stops after 15 mints per car connection.
   Nothing is warmed on Low Power Mode, a serious thermal state, Low Data Mode or no network.
-- **Everything else is the cold path, unchanged.** New (which still skips `preparing`, see
+- **Everything else is the cold path, unchanged.** New (which skips `preparing`, see
   [One conversation](#one-conversation)), a tap while a connection is still
   warming, and a connection not heard from for 45 s all start cold. So does the call that comes
   back from the gear, which must be minted from the row the panel wrote. A warm start whose
