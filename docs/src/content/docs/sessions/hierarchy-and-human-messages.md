@@ -624,18 +624,24 @@ names the PR, and you answer **one** short question about it:
    a hold, "The merge gate held it for you." The model asks it once, in its own words if it likes,
    and asks for a yes. The gate's reason comes with it, for the model to give only if you ask.
 2. `authorize_merge(session_id, confirm: true)` merges only if all of this holds:
-   - the newest question in the conversation was for this session and is under three minutes old
-     (asking about the same PR again does not restart the clock or throw away a yes already given);
+   - the newest question in the conversation was for this session and is under three minutes old.
+     Asking about the same PR again, while the earlier question is still under three minutes old,
+     keeps a yes already given;
    - your newest words pass every rule above: fresh, one signed-in person's, from a conversation
      nothing unvouched-for has written into;
    - after Zimmer composed the question, the assistant said a line that asks to merge this PR:
-     "merge", the number (in digits, or spoken: "thirty six hundred", "one four nine oh"), and
-     "pull request", "PR" or the repository's name. A paraphrase is fine;
-   - everything you said after the newest such line is a plain yes: short, starting with "yes",
-     "yeah", "yep", "do it", "merge it" or the like, with no question and nothing qualifying it
-     ("not", "wait", "but", "after", "first"…);
-   - the assistant asked you nothing else in between. A yes after "Also, want me to restart
-     session 7?" answers that, not the merge.
+     "merge", and the number (in digits, or spoken: "thirty six hundred", "one four nine oh") right
+     after "pull request", "PR" or the repository's name, with nothing negating it ("I won't merge
+     pull request 1490" is not asking). A paraphrase is fine;
+   - nothing you said between the question being composed and it being asked was a refusal ("no",
+     "wait", "hold on");
+   - everything you said after the first line that asked is a plain yes: at most six words, all
+     from a closed list ("yes", "yeah", "yep", "do it", "merge it", "okay", "please"…), with at
+     least one real yes and no question. "Please say that again" and "merge 3601" are not yes. A
+     "no" followed by a "yes" is not either: the model starts over with a fresh question;
+   - the assistant said nothing in between but filler ("Okay.", "Here's the full read-back.") or
+     the same question again. A yes after "Also, should I restart session 7" answers that, not the
+     merge, with or without the question mark.
 
    Anything else merges nothing and the model is told why. The message the merging session gets
    carries Zimmer's question and your answer, never the model's words.

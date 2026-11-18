@@ -195,7 +195,9 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     [ "Yes.", "Yes", "Yeah, merge it.", "Go ahead", "yep", "Merge it.", "Do it.", "Uh, yes.", "Okay, merge it" ].each { |answer| assert yes.call(answer), answer }
     [ "Make sure CI is green first", "Can you confirm the checks?", "Go ahead and check the logs first",
       "merge it after the deploy", "yes, don\u2019t merge it yet", "Yes, why not", "sure but later", "No.",
-      "yes yes yes yes yes yes yes", "What's the weather like?", "Hmm", "Nope, leave it" ].each { |answer| assert_not yes.call(answer), answer }
+      "yes yes yes yes yes yes yes", "What's the weather like?", "Hmm", "Nope, leave it", "Please say that again",
+      "Please merge the docs PR", "Merge 3601", "Merge thirty six oh one", "Okay, one sec.", "Ok so the tests failed",
+      "Sure, tell me more", "ya know" ].each { |answer| assert_not yes.call(answer), answer }
   end
 
   test "the merge message carries Zimmer's read-back and the person's answer, never the model's words" do
@@ -245,7 +247,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert_not result["error"], result["output"]
     assert Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
     message = holding_session.human_messages.sole
-    assert_equal "Yes", message.content, "the answer to the newest line that asked"
+    assert_equal "Yes\nYes", message.content, "every answer since the first line that asked"
     assert_equal "Here's the full read back. Merge pull request fourteen ninety in zimmer,", message.replying_to
     assert_equal "live_mode.authorize_merge", message.entry_point
   end
@@ -321,6 +323,86 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
+  test "a yes after a question the transcript wrote without its question mark merges nothing" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "assistant", "Also, session 7 is stuck. Should I restart it.")
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_match(/you asked something else/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
+  test "a no, then the model saying it will not merge, then an okay, merges nothing" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "No.")
+    say(conversation, phone, "assistant", "Okay, I won't merge zimmer pull request 1490.")
+    say(conversation, phone, "user", "Okay.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert result["error"]
+    assert_match(/\ANot merging: after you asked about pull request 1490 you asked something else/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
+  test "a no and then a yes to the same question asked again merges nothing; a fresh prepare starts over" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "No, wait.")
+    say(conversation, phone, "assistant", "Merge zimmer pull request 1490?")
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_match(/"No, wait\." is not a plain yes/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
+  test "a no said before the question is asked merges nothing" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id })
+    say(conversation, phone, "user", "Actually no, hold on.")
+    say(conversation, phone, "assistant", "Merge zimmer pull request 1490?")
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_match(/before you asked/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
+  test "a yes from before another session's question does not carry over when the first is asked again" do
+    other = Session.create!(agent_runtime: "claude_code", prompt: "other", title: "Other", git_root: "https://github.com/test/repo.git",
+                            branch: "main", status: :needs_input, custom_metadata: green_pr("https://github.com/tadasant/zimmer/pull/1491"))
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "Yes.")
+    call_function(conversation, phone, "authorize_merge", { session_id: other.id })
+    call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id })
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert result["error"]
+    assert_match(/has not answered since/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
+  test "a title that starts with a number word still reads as the question" do
+    holding_session.update!(title: "Two phase drop guard")
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    read_back = prepare_and_say(conversation, phone)
+    assert_equal "Merge zimmer pull request 1490, \"Two phase drop guard\"?", read_back
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert_not result["error"], result["output"]
+  end
+
   test "a yes an agent typed into the conversation is not the person's yes" do
     conversation = create_live_conversation(mode: "voice")
     phone = bearer(app_token)
@@ -343,7 +425,13 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
       "Merge tadasant-internal PR 3,600?", "Merge tadasant internal three thousand six hundred?",
       "Shall I merge P R three six zero zero?" ].each { |line| assert asks.call(line), line }
     [ "Session 3600 is green. Restart it?", "Merge pull request thirty six?", "Pull request 3600 is green.",
-      "Okay.", "Merge pull request thirty six hundred and one?" ].each { |line| assert_not asks.call(line), line }
+      "Okay.", "Merge pull request thirty six hundred and one?", "Okay, I won't merge tadasant-internal pull request 3600.",
+      "Tadasant-internal PR 3600 is not merged yet. Want me to restart session 9.",
+      "Merge 3600 in two minutes?" ].each { |line| assert_not asks.call(line), line }
+
+    assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge zimmer pull requests 12 and 34?", "https://github.com/tadasant/zimmer/pull/1234")
+    assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge the PR now? I'll do it in two minutes", "https://github.com/tadasant/zimmer/pull/2")
+    assert LiveConversations::AuthorizeMerge.asks_to_merge?("Merge zimmer pull request one thousand four hundred and five?", "https://github.com/tadasant/zimmer/pull/1405")
   end
 
   # --- Capture, around it -----------------------------------------------------

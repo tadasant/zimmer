@@ -22,28 +22,34 @@ module LiveConversations
   # 2. **Confirm** — `authorize_merge(session_id, confirm: true)`. Zimmer checks
   #    the conversation itself, not the model's account of it:
   #    * the newest prepare in this conversation is for this session, under
-  #      CONFIRM_WINDOW old, and its PR is still the session's PR (a prepare
-  #      repeated for the same PR keeps the earliest one's window open);
+  #      CONFIRM_WINDOW old, and its PR is still the session's PR. Prepares
+  #      repeated back to back for the same PR, each under CONFIRM_WINDOW old,
+  #      count from the earliest, so asking again keeps a yes already given;
   #    * the person's newest words are fresh, one signed-in person's, and from a
   #      conversation nothing unvouched-for has written into
   #      (HumanMessageCapture.live_mode_words, the `live_mode` rule);
   #    * after the prepare, the assistant asked to merge this PR: a line that
-  #      says "merge", the number (in digits or spoken, "thirty six hundred"),
-  #      and "pull request"/"PR" or the repository. That is the transcript of
-  #      what the person heard, or the text they read;
-  #    * everything the person said after the newest such line, before they
-  #      were asked about anything else, is a plain yes: short, starting with
-  #      "yes", "yeah", "do it", "merge it" or the like, with no question and
-  #      nothing qualifying it ("not", "wait", "but", "after", "first"…). This
-  #      test is deliberately crude and fails closed: an answer it cannot read
-  #      as a yes merges nothing.
+  #      says "merge", negates nothing in the clause naming the PR, and says
+  #      the number (in digits or spoken, "thirty six hundred") right after
+  #      "pull request", "PR" or the repository. That is the transcript of what
+  #      the person heard, or the text they read;
+  #    * nothing the person said between the prepare and that first asking
+  #      line was a refusal ("no", "wait", "hold on"…);
+  #    * everything the person said after the first asking line is a plain
+  #      yes: at most six words, all from a closed list ("yes", "yeah", "do
+  #      it", "merge it", "okay", "please"…) with at least one real yes among
+  #      them, and no question. Crude on purpose, and it fails closed: an answer
+  #      it cannot read as a yes merges nothing;
+  #    * the assistant said nothing in between but filler ("Okay.", "Here's
+  #      the full read-back.") or the same question again. A question about
+  #      anything else, with or without its "?", a line about merging another
+  #      pull request, or anything longer, ends the confirmation.
   #
   # The person's words are counted from the asking line, not from the line just
   # before them, because a voice call records lines in the order transcription
   # finished, not the order they were spoken: a "yes" said as the model starts
   # repeating itself lands after "Okay." or after half a sentence that names
-  # nothing. A question the model asks about something else after the asking
-  # line ends the confirmation: a yes after it answers that question, not this.
+  # nothing.
   #
   # Only then does it send the merge authorization to the session holding the
   # PR, and record the person's words there as a `live_mode` HumanMessage
@@ -63,14 +69,25 @@ module LiveConversations
     # How long a confirmation stays answerable.
     CONFIRM_WINDOW = 3.minutes
 
-    # A plain yes: it starts with one of these, is short, asks nothing, and
-    # qualifies nothing. Crude on purpose, and closed: whatever it cannot read
-    # as a yes merges nothing.
-    AFFIRMATIVE_START = /\A(yes|yeah|yea|yep|yup|ya|okay|ok|correct|confirmed?|affirmative|sure|absolutely|definitely|do it|go ahead|go for it|ship it|merge it|merge that|merge|please do|please)\b/i
-    NOT_PLAIN = /\?|\b(no|nope|nah|not|don't|do not|stop|wait|cancel|hold|abort|never ?mind|but|after|first|once|if|later|until|unless|before|instead|other|different)\b/i
-    # Spoken noise a transcript keeps in front of an answer: "Uh, yes."
-    FILLER = /\A(?:(?:uh|um|umm|er|erm|hmm|mm|oh)\b[\s,.!]*)+/i
+    # A plain yes is made of these phrases and nothing else, at least one of
+    # them a YES, and is short. A closed list on purpose: "please say that
+    # again", "okay, one sec" and "merge 3601" are not on it, so they merge
+    # nothing. Spoken noise ("uh", "um") is dropped first.
+    YES = [ "yes", "yeah", "yea", "yep", "yup", "correct", "confirmed", "confirm", "affirmative", "sure", "absolutely",
+            "definitely", "ok", "okay", "do it", "go ahead", "go for it", "ship it", "merge it", "merge that",
+            "please do", "yes please", "that's right", "thats right" ].freeze
+    YES_EXTRAS = [ "please", "great", "perfect", "cool", "alright", "all right", "thanks", "thank you", "uh", "um", "umm",
+                   "er", "erm", "hmm", "mm", "oh", "so" ].freeze
     PLAIN_YES_MAX_WORDS = 6
+    # A word that turns an answer before the question into a refusal, and an
+    # assistant line naming the PR into something other than asking to merge it.
+    REFUSAL = /\b(no|nope|nah|not|don't|do not|stop|wait|cancel|hold|abort|never ?mind)\b/i
+    NEGATION = /\b(not|never|no longer|already|won't|wont|don't|dont|didn't|isn't|wasn't|can't|cannot|couldn't|shouldn't)\b|n't\b/i
+    # How a model's question starts when the transcript drops the "?".
+    QUESTION_OPENER = /(?:\A|[.!,]\s*)(?:also,?\s+)?(should|shall|want|wanna|do you|can i|could i|would you|did you|are you|is it|any|anything|how about|what about)\b/i
+    # An assistant line this short, that asks nothing, does not move the
+    # conversation on: "Okay.", "Here's the full read-back."
+    FILLER_LINE_MAX_WORDS = 8
 
     # Words of the session's title said beside the PR: enough to recognise it.
     TITLE_WORDS = 8
@@ -157,33 +174,44 @@ module LiveConversations
 
     def self.pr_number(pr_url) = pr_url.to_s[%r{/pull/(\d+)}, 1]
 
-    # Whether a line asks to merge this PR: it says "merge", the number (in
-    # digits or spoken), and "pull request"/"PR" or the repository's name.
-    # Punctuation and case do not matter, so a transcript's "tadasant internal"
-    # matches "tadasant-internal" and "thirty six hundred" matches 3600.
+    # Whether a line asks to merge this PR: it says "merge", says nothing
+    # negating it ("I won't merge…", "…is not merged"), and says the number (in
+    # digits or spoken) right after "pull request", "PR" or the repository's
+    # name. Case does not matter, so a transcript's "tadasant internal" matches
+    # "tadasant-internal" and "thirty six hundred" matches 3600.
     def self.asks_to_merge?(text, pr_url)
       repo = AutomatedPrompts.repo_slug_from_pr_url(pr_url).to_s.split("/").last
       number = pr_number(pr_url)
       return false if repo.blank? || number.blank?
+      return false unless normalize(text).match?(/\bmerg/)
 
-      words = " #{normalize(text)} "
-      return false unless words.match?(/ merg/)
-      return false unless says_number?(text, number)
-
-      words.include?(" #{normalize(repo)} ") || words.match?(/ (pull request|pull|pr|p r) /)
+      anchors = %w[request pr r pull number] + normalize(repo).split.last(1)
+      number_clauses(text, number, anchors: anchors).any? { |clause| !clause.tr("\u2018\u2019\u02BC", "'").match?(NEGATION) }
     end
 
     # Whether the text says the number, in digits ("3600", "3,600") or as
-    # speech is transcribed ("thirty six hundred", "three thousand six
-    # hundred", "three six zero zero", "fourteen oh five").
-    # The match has to be the whole number said, so "thirty six" in "thirty
-    # six hundred" is not 36.
-    def self.says_number?(text, number)
-      words = normalize(text.to_s.gsub(/(\d),(\d)/, '\1\2')).split.reject { |w| w == "and" }
-      spoken_forms(number).map(&:split).any? do |form|
-        (0..(words.size - form.size)).any? do |i|
-          before = i.zero? ? nil : words[i - 1]
-          words[i, form.size] == form && !number_word?(before) && !number_word?(words[i + form.size])
+    # speech is transcribed ("thirty six hundred", "three thousand six hundred
+    # and five", "three six zero zero", "fourteen oh five"). The match is the
+    # whole number said, within one clause (punctuation ends a number, so a
+    # quoted title starting "Two…" does not run on from it), so "thirty six" in
+    # "thirty six hundred" is not 36.
+    def self.says_number?(text, number) = number_clauses(text, number).any?
+
+    # The clauses of the text that say the number. With `anchors`, one of those
+    # words has to come at most four words before it.
+    def self.number_clauses(text, number, anchors: nil)
+      forms = spoken_forms(number).map(&:split)
+      clauses = text.to_s.gsub(/(\d),(\d)/, '\1\2').split(/[,.;:!?"\u201C\u201D()\[\]]+/)
+      clauses.select do |clause|
+        words = normalize(clause).split
+        words = words.reject.with_index { |w, i| w == "and" && %w[hundred thousand].include?(words[i - 1]) && i.positive? }
+        forms.any? do |form|
+          (0..(words.size - form.size)).any? do |i|
+            before = i.zero? ? nil : words[i - 1]
+            next false unless words[i, form.size] == form && !number_word?(before) && !number_word?(words[i + form.size])
+
+            anchors.nil? || words[[ i - 4, 0 ].max...i].intersect?(anchors)
+          end
         end
       end
     end
@@ -222,14 +250,16 @@ module LiveConversations
       end
     end
 
+    # Spoken only: digits count as the whole number in one token, so "12 and
+    # 34" is not 1234.
     def self.chunk_forms(chunk)
       value = chunk.to_i
       if chunk.length == 1
-        [ chunk, ONES[value], (value.zero? ? "oh" : nil) ].compact
+        [ ONES[value], (value.zero? ? "oh" : nil) ].compact
       elsif chunk.start_with?("0")
-        [ chunk, "oh #{ONES[value]}", "zero #{ONES[value]}" ]
+        [ "oh #{ONES[value]}", "zero #{ONES[value]}" ]
       else
-        [ chunk, cardinal(value) ]
+        [ cardinal(value) ]
       end
     end
 
@@ -244,8 +274,22 @@ module LiveConversations
     end
 
     def self.plain_yes?(answer)
-      text = answer.to_s.tr("‘’ʼ", "'").squish.sub(FILLER, "")
-      text.match?(AFFIRMATIVE_START) && !text.match?(NOT_PLAIN) && text.split.size <= PLAIN_YES_MAX_WORDS
+      text = answer.to_s.tr("\u2018\u2019\u02BC", "'")
+      return false if text.include?("?")
+
+      words = text.downcase.gsub(/[^a-z' ]+/, " ").split
+      return false if words.empty? || words.size > PLAIN_YES_MAX_WORDS
+
+      phrases = (YES + YES_EXTRAS).map(&:split).sort_by { |phrase| -phrase.size }
+      said_yes = false
+      until words.empty?
+        phrase = phrases.find { |candidate| words.first(candidate.size) == candidate }
+        return false unless phrase
+
+        said_yes ||= YES.include?(phrase.join(" "))
+        words = words.drop(phrase.size)
+      end
+      said_yes
     end
 
     def self.normalize(text) = text.to_s.downcase.gsub(/[^a-z0-9]+/, " ").squish
@@ -293,14 +337,20 @@ module LiveConversations
       number = self.class.pr_number(pr_url)
       lines = @conversation.turns.where(role: %w[user assistant]).where("id > ?", start.id).reorder(:id).to_a
       last_answer = lines.reverse.find(&:user?)
-      asked = lines.reverse.find { |t| !t.user? && t.id < last_answer.id && self.class.asks_to_merge?(t.content, pr_url) }
-      unless asked
+      asking = lines.select { |t| !t.user? && t.id < last_answer.id && self.class.asks_to_merge?(t.content, pr_url) }
+      unless (first_asked = asking.first)
         raise Refused, "Not merging: since Zimmer gave you the question, nothing you said asked the person to merge pull " \
                        "request #{number} by number. Ask once: say \"merge\", the repository and the number, then call " \
                        "with confirm true after their yes."
       end
 
-      after = lines.select { |t| t.id > asked.id && t.id <= last_answer.id }
+      # What they said before the question is the request, or noise; it only
+      # matters when it is a refusal. Everything after it has to be a yes.
+      if (refusal = lines.find { |t| t.user? && t.id < first_asked.id && t.content.to_s.match?(REFUSAL) })
+        raise Refused, "Not merging: the person said \"#{refusal.content.to_s.squish.truncate(120)}\" before you asked. " \
+                       "Leave it unless they ask to merge again."
+      end
+      after = lines.select { |t| t.id > first_asked.id && t.id <= last_answer.id }
       if (question = after.find { |t| !t.user? && something_else?(t.content, pr_url) })
         raise Refused, "Not merging: after you asked about pull request #{number} you asked something else " \
                        "(\"#{question.content.to_s.squish.truncate(80)}\"), so their yes answers that. If they still want " \
@@ -308,6 +358,7 @@ module LiveConversations
       end
 
       answers = after.select(&:user?)
+      asked = asking.last
       speaker = words.turns.last.author
       # Every answer is after the prepare run's start, so under CONFIRM_WINDOW old.
       if answers.any? { |t| t.author != speaker }
@@ -321,7 +372,7 @@ module LiveConversations
       answer = answers.map(&:content).join(" ").squish
       surface = HumanMessage::LIVE_MODE_SURFACES[answers.last.author_provenance.to_h["surface"]]
       where = [ "Zimmer Live Mode", surface ].compact.join(" on ")
-      read_back = start.tool_output.to_s[/\AREAD-BACK: (.*)$/, 1].to_s
+      read_back = latest.tool_output.to_s[/\AREAD-BACK: (.*)$/, 1].to_s
       # Only Zimmer's sentence and the person's answer go into the authorization.
       # What the model said stays in the HumanMessage, labelled as the model's.
       result = Sessions::AuthorizeMerge.call(
@@ -341,15 +392,17 @@ module LiveConversations
       "#{result.message} Tell the person, in one short sentence."
     end
 
-    # An assistant line after the asking line that moves the conversation on: a
-    # question (the asking line is the newest one that asks about this PR, so
-    # any later question is about something else), or a line about merging some
-    # other pull request. "Okay." and a restart that names nothing are neither.
+    # An assistant line after the first asking line that moves the
+    # conversation on: anything but asking about this PR again or short filler
+    # ("Okay.", "Here's the full read-back."). A question, with or without its
+    # "?", or a line about merging some other pull request, always does.
     def something_else?(text, pr_url)
-      return true if text.to_s.include?("?")
+      return false if self.class.asks_to_merge?(text, pr_url)
 
+      text = text.to_s
       words = " #{self.class.normalize(text)} "
-      words.match?(/ merg/) && words.match?(/ (pull request|pull|pr|p r) /) && !self.class.asks_to_merge?(text, pr_url)
+      text.include?("?") || text.match?(QUESTION_OPENER) || text.split.size > FILLER_LINE_MAX_WORDS ||
+        (words.match?(/ merg/) && words.match?(/ (pull request|pull|pr|p r) /))
     end
 
     def find_session!(value)

@@ -277,7 +277,7 @@ had a typed line before this was recorded stays barred, so start a new one; old 
 bar it. When a delivery is not recorded as yours, the live model is told why and says so.
 
 To merge, the live model uses `authorize_merge`, the Merge button by voice: the model asks you once,
-naming the PR by repository and number, and only your yes to that question sends the merge. See
+naming the PR by its number, and only your yes to that question sends the merge. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 
 ### Telling a session something
