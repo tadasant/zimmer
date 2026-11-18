@@ -588,7 +588,10 @@ rm -f "$artifacts/.started"
 # two in time order. A row tap is `Sending UIEvent` lines and `Selected index path` in the host,
 # then `voice settings row handler` and `voice settings drawn` in the app, then
 # `Received update for list template` in the host. Where that stops says how far the tap got. A
-# row with no choices is drawn no differently, and the host also takes updates no tap caused.
+# row with no choices is drawn no differently, and the host also takes updates no tap caused. A
+# home tile tap is `Sending UIEvent` lines, then `button selected with UUID` in the host, then
+# `Received update for grid template` as the app redraws the tiles. With no `button selected`,
+# the host dropped the tap before Zimmer heard it.
 if [ -n "$carplay" ]; then
   xcrun simctl spawn "$udid" log show --last 30m --info --predicate 'subsystem == "com.tadasant.zimmer"' \
     >"$artifacts/app-log.txt" 2>/dev/null || true
