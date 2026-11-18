@@ -23,23 +23,38 @@ class AcceptsFollowUpContractTest < ActiveSupport::TestCase
   TURN_TAKING_STATES = %i[running? waiting? needs_input?].to_set.freeze
 
   # The predicate's own body: `running? || waiting? || needs_input?` with an
-  # implicit receiver, in session.rb.
+  # implicit receiver, inside `def accepts_follow_up?` in session.rb. Nothing
+  # else in that file is exempt.
   PREDICATE_HOME = "app/models/session.rb"
+  PREDICATE_NAME = :accepts_follow_up?
 
   class DisjunctionFinder < Prism::Visitor
     attr_reader :hits
 
     def initialize
       @hits = []
+      @current_def = nil
       super
     end
 
+    def visit_def_node(node)
+      outer, @current_def = @current_def, node.name
+      super
+    ensure
+      @current_def = outer
+    end
+
+    # Ruby groups `||` from the left, so a chain that only *contains* the three
+    # states (`failed? || running? || waiting? || needs_input?`) has no sub-chain
+    # of exactly three and is not flagged. That is a superset, a different
+    # question, so it is not this rule's business.
     def visit_or_node(node)
       leaves = flatten(node)
       if leaves.all? { |leaf| state_check?(leaf) } &&
          leaves.map(&:name).to_set == TURN_TAKING_STATES
-        @hits << [ node.location.start_line, leaves.first.receiver.nil? ]
-        return # the nested OrNodes are this same chain
+        in_predicate = @current_def == PREDICATE_NAME && leaves.all? { |leaf| leaf.receiver.nil? }
+        @hits << [ node.location.start_line, in_predicate ]
+        return # the nested OrNodes are this same chain, and a leaf's receiver holds no chain
       end
       super
     end
@@ -61,7 +76,7 @@ class AcceptsFollowUpContractTest < ActiveSupport::TestCase
   def spelled_out_copies(path, source)
     finder = DisjunctionFinder.new
     Prism.parse(source).value.accept(finder)
-    finder.hits.reject { |_line, implicit_self| path == PREDICATE_HOME && implicit_self }.map { |line, _| "#{path}:#{line}" }
+    finder.hits.reject { |_line, in_predicate| path == PREDICATE_HOME && in_predicate }.map { |line, _| "#{path}:#{line}" }
   end
 
   test "nothing outside Session#accepts_follow_up? spells out running? || waiting? || needs_input?" do
@@ -94,5 +109,9 @@ class AcceptsFollowUpContractTest < ActiveSupport::TestCase
 
     assert_empty spelled_out_copies(PREDICATE_HOME, "def accepts_follow_up?\n  running? || waiting? || needs_input?\nend\n")
     assert_equal [ "#{PREDICATE_HOME}:1" ], spelled_out_copies(PREDICATE_HOME, "x if s.running? || s.waiting? || s.needs_input?\n")
+    assert_equal [ "#{PREDICATE_HOME}:2" ],
+                 spelled_out_copies(PREDICATE_HOME, "def other?\n  running? || waiting? || needs_input?\nend\n")
+    assert_equal [ "#{PREDICATE_HOME}:2" ],
+                 spelled_out_copies(PREDICATE_HOME, "def accepts_follow_up?\n  running? || s.waiting? || s.needs_input?\nend\n")
   end
 end

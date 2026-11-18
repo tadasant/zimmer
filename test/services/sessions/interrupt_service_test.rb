@@ -276,6 +276,7 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
   test "asks Session#accepts_follow_up? before taking the lock" do
     message = @session.enqueued_messages.create!(content: "Interrupt now", position: 1)
     @session.stubs(:accepts_follow_up?).returns(false)
+    Session.expects(:with_session_lock).never
 
     result = Sessions::InterruptService.new(session: @session, enqueued_message: message, actor: "test").call
 

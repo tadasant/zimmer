@@ -63,10 +63,13 @@ against a session that already has one queued.
 `Session#accepts_follow_up?`.** `running`, `waiting` and `needs_input` take one; `failed` and
 `archived` do not. The REST and MCP follow-up doors ask it, and so do `Sessions::InterruptService`
 (before and under its lock), `Sessions::MessageParent`'s interrupt, `EnqueuedMessageProcessorService`'s
-claim and staleness sweep, a trigger's reuse check and its user-pause clear, and `AgentSessionJob`'s
-lost-clone rebuild. Each still writes its own refusal. A contract test
-(`test/contracts/accepts_follow_up_contract_test.rb`) fails on any new spelled-out
-`running? || waiting? || needs_input?` in `app/` or `lib/`. The web follow-up form is the exception.
+claim and staleness sweep, a trigger's reuse check and its user-pause clear, `AgentSessionJob`'s
+lost-clone rebuild, and `SlackEventJob`'s fold into a burst's session. Each still writes its own
+refusal. A contract test (`test/contracts/accepts_follow_up_contract_test.rb`) fails on a new
+`running? || waiting? || needs_input?` chain in any Ruby file under `app/` or `lib/`. It reads only
+that spelling: the complement (`archived? || failed?`), a status array and an `.erb` view get past it.
+`Sessions::MessageParent` still asks `archived?` and `failed?` one at a time, because it words each
+refusal differently. The web follow-up form is the exception.
 It queues for a live turn first, then delivers only to `waiting` or `needs_input`, so it refuses a
 `running` session with no live turn.
 
