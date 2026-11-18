@@ -160,7 +160,24 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   # subclass runs after this one, and a resize in the test body is later still.
   DESKTOP_WINDOW_SIZE = [ 1400, 900 ].freeze
 
+  # Every test starts with an empty HTTP cache.
+  #
+  # Capybara's reset between tests clears cookies and storage, not the HTTP
+  # cache, and the browser — like its `--user-data-dir` — lives for the whole
+  # run. The app deliberately makes some pages cacheable: the dashboard prefetches
+  # each on-screen row's detail page (session_prefetch_controller.js) and the
+  # server answers that prefetch `Cache-Control: private, max-age=120`
+  # (SessionsController#allow_prefetch_reuse). So a test that rendered the
+  # dashboard at a phone width left `/sessions/<fixture id>` in the cache, and a
+  # later test that set up new state and then visited that page within two
+  # minutes was shown the earlier test's copy instead of a fresh render.
+  # DashboardTurboActionsTest's recovery-banner test failed that way in run
+  # 44240583158: its banner was never in the page it was shown.
+  #
+  # Cleared at setup rather than teardown so a test that exercises the prefetch
+  # cache still has it for its own duration.
   setup do
+    page.driver.browser.execute_cdp("Network.clearBrowserCache")
     page.driver.browser.manage.window.resize_to(*DESKTOP_WINDOW_SIZE)
   end
 
