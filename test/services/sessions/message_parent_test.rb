@@ -168,6 +168,22 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
     assert_empty parent.reload.enqueued_messages
   end
 
+  # The interrupt's status gate is Session#accepts_follow_up?, the rule every
+  # turn-taking door shares, rather than its own list of states.
+  test "force_immediate asks Session#accepts_follow_up? before staging anything" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+    Session.any_instance.stubs(:accepts_follow_up?).returns(false)
+    Sessions::InterruptWithFollowUp.expects(:call).never
+
+    result = report(child, force_immediate: true)
+
+    refute result.success?
+    assert_equal :conflict, result.error_code
+    assert_match(/cannot be interrupted/, result.error)
+    assert_empty parent.reload.enqueued_messages
+  end
+
   # --- Unreachable parents ---------------------------------------------------
 
   test "an archived parent is refused by default, naming the override" do

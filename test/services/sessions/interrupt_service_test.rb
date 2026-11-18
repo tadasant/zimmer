@@ -270,6 +270,34 @@ class Sessions::InterruptServiceTest < ActiveJob::TestCase
     assert_equal :unprocessable_entity, result.error_code
   end
 
+  # Which states take a turn is Session#accepts_follow_up?'s answer, not a copy
+  # of it here. Both checks ask it: the cheap one before the lock, and the one
+  # under the lock that sees a concurrent transition.
+  test "asks Session#accepts_follow_up? before taking the lock" do
+    message = @session.enqueued_messages.create!(content: "Interrupt now", position: 1)
+    @session.stubs(:accepts_follow_up?).returns(false)
+    Session.expects(:with_session_lock).never
+
+    result = Sessions::InterruptService.new(session: @session, enqueued_message: message, actor: "test").call
+
+    refute result.success?
+    assert_equal :unprocessable_entity, result.error_code
+    assert EnqueuedMessage.exists?(message.id), "a refused interrupt must leave the message queued"
+    assert_no_enqueued_jobs only: AgentSessionJob
+  end
+
+  test "asks Session#accepts_follow_up? again under the lock" do
+    message = @session.enqueued_messages.create!(content: "Interrupt now", position: 1)
+    @session.stubs(:accepts_follow_up?).returns(true).then.returns(false)
+
+    result = Sessions::InterruptService.new(session: @session, enqueued_message: message, actor: "test").call
+
+    refute result.success?
+    assert_equal :unprocessable_entity, result.error_code
+    assert_match(/Cannot interrupt when session is needs_input/, result.error)
+    assert EnqueuedMessage.exists?(message.id), "a refused interrupt must leave the message queued"
+  end
+
   test "rejects interrupt when message is already being delivered" do
     message = @session.enqueued_messages.create!(content: "Already going", position: 1, status: :processing)
 

@@ -288,6 +288,14 @@ class SlackEventJobTest < ActiveJob::TestCase
     assert_equal 1, fires(slack_event(ts: "1756500000.600100", user: "U_ALERTS"))
   end
 
+  # Whether the burst's session can still take the message is Session#accepts_follow_up?'s answer.
+  test "a burst folds only into a session that accepts a follow-up" do
+    run_event(slack_event(ts: "1756500000.000100", user: "U_ALERTS"))
+    Session.any_instance.stubs(:accepts_follow_up?).returns(false)
+
+    assert_equal 1, fires(slack_event(ts: "1756500000.600100", user: "U_ALERTS"))
+  end
+
   test "a burst's folded message is queued for the session and recorded against it" do
     users(:tadasant).update!(slack_user_ids: [ "U_ALERTS" ])
 

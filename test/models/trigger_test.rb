@@ -2991,6 +2991,28 @@ class TriggerTest < ActiveSupport::TestCase
     assert_equal "user", target.reload.metadata["paused_by"]
   end
 
+  # Both status gates — whether a session can be reused for a fire, and whether a
+  # user-pause marker is what stands between a wake and delivery — are
+  # Session#accepts_follow_up?, the one rule for which states take a turn.
+  test "reusable_session? asks Session#accepts_follow_up?" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :waiting)
+    assert @trigger.send(:reusable_session?, target)
+
+    target.stubs(:accepts_follow_up?).returns(false)
+    assert_not @trigger.send(:reusable_session?, target)
+  end
+
+  test "clearing a stale user-pause marker asks Session#accepts_follow_up?" do
+    target = Session.create!(git_root: "https://github.com/test/repo", agent_runtime: "claude_code",
+      branch: "main", status: :needs_input, metadata: { "paused_by" => "user" })
+    target.stubs(:accepts_follow_up?).returns(false)
+
+    @trigger.send(:clear_stale_user_pause!, target)
+
+    assert_equal "user", target.reload.metadata["paused_by"]
+  end
+
   # Only "user" goes. `recovery` and `spot_quota` name sweeps that are still
   # responsible for the session, and a wake does not relieve them of it.
   test "after_create leaves a recovery pause marker alone" do

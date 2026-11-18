@@ -59,6 +59,20 @@ routes, `Trigger#follow_up_session!`, `EnqueuedMessageDrainJob`, `Sessions::Mess
 `Session#claim_system_recovery_turn!`, which is what stops a recovery sweep enqueuing a second turn
 against a session that already has one queued.
 
+**Which states can take a turn at all is a separate question with one answer:
+`Session#accepts_follow_up?`.** `running`, `waiting` and `needs_input` take one; `failed` and
+`archived` do not. The REST and MCP follow-up doors ask it, and so do `Sessions::InterruptService`
+(before and under its lock), `Sessions::MessageParent`'s interrupt, `EnqueuedMessageProcessorService`'s
+claim and staleness sweep, a trigger's reuse check and its user-pause clear, `AgentSessionJob`'s
+lost-clone rebuild, and `SlackEventJob`'s fold into a burst's session. Each still writes its own
+refusal. A contract test (`test/contracts/accepts_follow_up_contract_test.rb`) fails on a new
+`running? || waiting? || needs_input?` chain in any Ruby file under `app/` or `lib/`. It reads only
+that spelling: the complement (`archived? || failed?`), a status array and an `.erb` view get past it.
+`Sessions::MessageParent` still asks `archived?` and `failed?` one at a time, because it words each
+refusal differently. The web follow-up form is the exception.
+It queues for a live turn first, then delivers only to `waiting` or `needs_input`, so it refuses a
+`running` session with no live turn.
+
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
 at consecutive positions rather than colliding on the queue's unique position. It also writes the one timeline row all three leave

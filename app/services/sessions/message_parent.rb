@@ -349,7 +349,7 @@ module Sessions
     # every "send this now" door shares. All-or-nothing — a failed interrupt
     # drops the staged row rather than leaving it to arrive later as a surprise.
     def interrupt_parent
-      unless parent.running? || parent.waiting? || parent.needs_input?
+      unless parent.accepts_follow_up?
         return failure(
           "Parent session ##{parent.id} is #{parent.status}, so it cannot be interrupted.",
           error_code: :conflict

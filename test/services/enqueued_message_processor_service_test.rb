@@ -43,6 +43,20 @@ class EnqueuedMessageProcessorServiceTest < ActiveJob::TestCase
     assert_equal "needs_input", @session.status
   end
 
+  # The claim's state gate is Session#accepts_follow_up?, the one rule for which
+  # states take a turn, rather than a list of states kept here.
+  test "process_next_message asks Session#accepts_follow_up? before claiming" do
+    message = @session.enqueued_messages.create!(content: "Follow up prompt", position: 1)
+    @session.stubs(:accepts_follow_up?).returns(false)
+
+    assert_no_enqueued_jobs only: AgentSessionJob do
+      assert_not EnqueuedMessageProcessorService.new(@session).process_next_message
+    end
+
+    assert_equal "needs_input", @session.reload.status
+    assert EnqueuedMessage.exists?(message.id), "an unclaimable message must stay queued"
+  end
+
   test "process_next_message processes pending message when session is already running (handoff path)" do
     # Pre-pause handoff: AgentSessionJob calls into the service BEFORE pausing to
     # avoid a running → needs_input → running flap. The session must already be

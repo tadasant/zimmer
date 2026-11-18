@@ -4407,7 +4407,7 @@ class AgentSessionJob < ApplicationJob
   # @return [Boolean] true when this job has handled the missing clone and must stand
   #   down — a turn is queued, or the session has been brought to rest saying why not
   def handled_lost_clone?(session, clone_path, working_directory, log_buffer)
-    unless session.running? || session.needs_input? || session.waiting?
+    unless session.accepts_follow_up?
       log_buffer.add(
         "Not rebuilding the missing clone: the session is #{session.status}, which is not a state a " \
         "rebuilt clone can be resumed into.",

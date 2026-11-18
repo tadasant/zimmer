@@ -90,7 +90,7 @@ class EnqueuedMessageProcessorService
         # ordinary rest state of a session whose turn is queued). `may_resume?` is
         # true for `needs_input` and `waiting`; the `running` case is the handoff
         # branch below, which returns the session to `waiting` itself.
-        return false unless session.needs_input? || session.running? || session.waiting?
+        return false unless session.accepts_follow_up?
 
         # Track whether we're entering via the handoff path (running already).
         # If so, no pause! → resume! cycle happens, so the cleanup_running_job
@@ -428,7 +428,7 @@ class EnqueuedMessageProcessorService
     # state cannot be handed a message however the sweep goes, so paying for a
     # `gh` round trip — and retiring a notice that was never going to be claimed
     # — would be work done for nothing.
-    return unless session.needs_input? || session.running? || session.waiting?
+    return unless session.accepts_follow_up?
 
     candidates = session.enqueued_messages.pending.staleness_checked.ordered.to_a
     return if candidates.empty?

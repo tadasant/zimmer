@@ -238,10 +238,10 @@ class SlackEventJob < ApplicationJob
     end
   end
 
-  # A session that has ended cannot take the message, so the message opens a group of its own
-  # instead of vanishing into a queue nothing will drain.
+  # A session that cannot take a follow-up cannot take the message, so the message opens a group of
+  # its own instead of vanishing into a queue nothing will drain.
   def foldable?(session)
-    !session.archived? && !session.failed?
+    session.accepts_follow_up?
   end
 
   # Queue +message+ into +session+ as a note naming it, the way the poller names a folded message
