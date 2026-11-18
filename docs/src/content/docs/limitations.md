@@ -6124,6 +6124,20 @@ trade, but it is a trade, and minting a key on `/settings/api_keys` adds a bucke
 Fixed in [#99](https://github.com/tadasant/zimmer/issues/99). The two consequences above are the trade
 that fix made, not a defect left behind it.
 
+### A hand-sent follow-up drops a parked prompt
+
+A follow-up delivered straight to an idle session clears `Session::STALE_RETRY_METADATA_KEYS`
+first. That is true of the web form, the REST and MCP `follow_up`, and an MCP App widget's send.
+The set includes two keys that hold a prompt rather than a counter: `spot_queue_prompt`, the resume
+prompt left by a deliberate park into the spot queue, and `auth_outage_undelivered_prompt`, the
+prompt an auth-outage park was holding. If a follow-up reaches a session parked with one of them,
+the follow-up runs and the parked prompt is gone. It is not re-queued and no log line names it.
+
+It is cleared rather than kept because leaving the park record behind is worse: it keeps the session
+matching `SpotSessionPause.paused?` or `AuthOutageParkService.parked_sessions` after it has been
+resumed, so a sweep would resume it again later with the stale prompt. Re-queueing the parked prompt
+as an `EnqueuedMessage` behind the follow-up would be the fix.
+
 ### A follow-up `goal` can set but never clear
 
 `POST /api/v1/sessions/:id/follow_up` and the MCP `action_session` `follow_up` action apply a

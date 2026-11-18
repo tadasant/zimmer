@@ -1595,6 +1595,22 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
       "a reader who sees the marker must be guaranteed to also see running"
   end
 
+  # Parity with the web form, which clears Session::STALE_RETRY_METADATA_KEYS
+  # before it delivers: a turn started over REST gets a fresh SIGTERM budget.
+  test "a follow-up sent straight to an idle session drops the last turn's retry state" do
+    session = sessions(:needs_input)
+    session.merge_metadata!("sigterm_retry_count" => 3, "failure_reason" => "sigterm_retries_exhausted",
+                            "api_error_last_checked_line" => 7)
+
+    post follow_up_api_v1_session_path(session.id), params: { prompt: "Carry on" }, headers: @headers
+
+    assert_response :success
+    metadata = session.reload.metadata
+    assert_nil metadata["sigterm_retry_count"]
+    assert_nil metadata["failure_reason"]
+    assert_equal 7, metadata["api_error_last_checked_line"]
+  end
+
   test "should reject follow-up to failed session" do
     session = sessions(:failed)
     post follow_up_api_v1_session_path(session.id), params: {

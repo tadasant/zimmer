@@ -565,13 +565,16 @@ class Session < ApplicationRecord
   # record outlives the park — and the next ordinary wake-up scheduled on that
   # session would land in `waiting` still matching SpotSessionPause.paused?, so
   # the ceiling sweep would resume it long before the time it was set for.
+  #
+  # `required_mcp_servers_lost` is AgentSessionJob::REQUIRED_MCP_SERVERS_LOST_KEY,
+  # spelled out rather than referenced because naming the constant in this class
+  # body would autoload AgentSessionJob while Session is still loading. A test pins
+  # the two together. Keep comments out of the `%w[]` below: inside it, every word
+  # of a comment is a key.
   STALE_RETRY_METADATA_KEYS = (SIGTERM_RETRY_METADATA_KEYS + %w[
     failure_reason
     exit_status
     mcp_failed_servers
-    # AgentSessionJob::REQUIRED_MCP_SERVERS_LOST_KEY — spelled here rather than
-    # referenced, because naming the constant in this class body would autoload
-    # AgentSessionJob while Session is still loading. A test pins the two together.
     required_mcp_servers_lost
     paused_by
     compact_retry_count

@@ -880,7 +880,7 @@ declared next to each other on `Session` so the differences read in one place
 
 | Constant | What it is | Who uses it |
 | --- | --- | --- |
-| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart, `Sessions::RestartWithPrompt` among them |
+| `STALE_RETRY_METADATA_KEYS` | the default | every ordinary resume and restart, `Sessions::RestartWithPrompt` among them, and the follow-up doors: the web form, the REST and MCP `follow_up` (`Sessions::DeliverFollowUp`), an MCP App widget's send |
 | `RESTART_FROM_SCRATCH_KEYS` | the default **plus** `SETUP_ARTIFACT_KEYS` and the spot-hold ladder | `Sessions::RestartFromScratch` |
 | `PRE_PROMPT_RESTART_KEYS` | the default **plus** `runtime_started` | `Sessions::RestartWithPrompt`, for a session that failed before its initial prompt |
 | `RECOVERY_CONTINUE_KEYS` | the default **minus** `paused_by` | `SessionContinuation`, when it delivers a queued message |

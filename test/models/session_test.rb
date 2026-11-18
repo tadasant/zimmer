@@ -3784,6 +3784,24 @@ class SessionTest < ActiveSupport::TestCase
 
   # === STALE_RETRY_METADATA_KEYS inclusion tests ===
 
+  # A comment inside a `%w[]` literal is not a comment: each of its words becomes
+  # a key. One sat inside STALE_RETRY_METADATA_KEYS and added "#", "—", "spelled"
+  # and dozens more to every reset set built from it. A comment's lowercase words
+  # look like keys, but its "#" never does, so a shape check catches the next one.
+  test "every reset policy names only metadata keys" do
+    {
+      "SIGTERM_RETRY_METADATA_KEYS" => Session::SIGTERM_RETRY_METADATA_KEYS,
+      "STALE_RETRY_METADATA_KEYS" => Session::STALE_RETRY_METADATA_KEYS,
+      "RESTART_FROM_SCRATCH_KEYS" => Session::RESTART_FROM_SCRATCH_KEYS,
+      "PRE_PROMPT_RESTART_KEYS" => Session::PRE_PROMPT_RESTART_KEYS,
+      "RECOVERY_CONTINUE_KEYS" => Session::RECOVERY_CONTINUE_KEYS
+    }.each do |name, keys|
+      malformed = keys.grep_v(/\A[a-z][a-z0-9_]*\z/)
+      assert_empty malformed, "#{name} holds entries that are not metadata keys: #{malformed.inspect}"
+      assert_equal keys.uniq, keys, "#{name} lists a key twice"
+    end
+  end
+
   test "exit_status is in STALE_RETRY_METADATA_KEYS so it gets cleared on resume" do
     assert_includes Session::STALE_RETRY_METADATA_KEYS, "exit_status",
       "exit_status must be cleared on resume/restart to prevent stale quota error messages from persisting"

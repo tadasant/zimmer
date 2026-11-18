@@ -10,8 +10,12 @@ module Sessions
   # form, triggers, pollers and `message_parent` use: resume for a follow-up (so
   # the session's own pending wake-ups survive it, #898), stamp the tagged prompt
   # as `pending_follow_up_prompt` after the resume (#1023), enqueue the job and
-  # record its id. What this service adds is the part the two API doors share and
-  # the web form does not: the goal and the `prompt` column, written by
+  # record its id. It drops the same stale per-turn metadata the web form drops —
+  # Session::STALE_RETRY_METADATA_KEYS, the default reset policy for an ordinary
+  # resume — so a turn a caller starts over REST or MCP gets a fresh retry budget
+  # and no leftover failure reason, spot-pause or auth-outage park record, exactly
+  # as one typed into the form does. What this service adds is the part the two
+  # API doors share and the web form does not: the goal and the `prompt` column, written by
   # Sessions::FollowUpGoal in the one UPDATE they have always shared, and the
   # transaction around the whole sequence.
   #
@@ -42,7 +46,13 @@ module Sessions
           also_update: { prompt: prompt }
         )
         before_enqueue&.call
-        session.deliver_follow_up!(prompt, images: images, files: files, source: source)
+        session.deliver_follow_up!(
+          prompt,
+          clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
+          images: images,
+          files: files,
+          source: source
+        )
       end
     end
   end

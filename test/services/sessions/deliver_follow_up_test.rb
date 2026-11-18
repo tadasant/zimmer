@@ -32,7 +32,8 @@ class Sessions::DeliverFollowUpTest < ActiveSupport::TestCase
     source = TurnSource.new(surface: "api")
     job = stub(job_id: "job-1")
     session.expects(:deliver_follow_up!)
-      .with("Do the thing", images: [ "/a.png" ], files: [ "/b.txt" ], source: source)
+      .with("Do the thing", clear_metadata_keys: Session::STALE_RETRY_METADATA_KEYS,
+            images: [ "/a.png" ], files: [ "/b.txt" ], source: source)
       .returns(job)
 
     result = Sessions::DeliverFollowUp.call(
@@ -60,6 +61,37 @@ class Sessions::DeliverFollowUpTest < ActiveSupport::TestCase
     assert session.waiting?, "expected the turn queued for a worker, was #{session.status}"
     assert_match(/\ADo the thing/, session.metadata["pending_follow_up_prompt"])
     assert_equal "api", session.metadata.dig(Session::LAST_TURN_SOURCE_KEY, "surface")
+  end
+
+  # The web form clears Session::STALE_RETRY_METADATA_KEYS before it delivers.
+  # A turn started over REST or MCP is the same event, so it starts from the
+  # same clean slate: a fresh SIGTERM budget, no leftover failure reason, and no
+  # dormancy record that would keep matching a sweep once the turn is over.
+  test "drops the stale per-turn metadata the web form drops, and keeps the rest" do
+    session = make_session(metadata: {
+      "sigterm_retry_count" => 3,
+      "last_sigterm_at" => 1.minute.ago.iso8601,
+      "failure_reason" => "sigterm_retries_exhausted",
+      "compact_retry_count" => 2,
+      SpotSessionPause::PAUSED_REASON => "ceiling",
+      "auth_outage_reason" => "pool_exhausted",
+      Session::DELIBERATE_SLEEP_KEY => 1.hour.ago.iso8601,
+      "api_error_last_checked_line" => 42
+    })
+    AgentSessionJob.stubs(:enqueue_with_prompt).returns(stub(job_id: "job-stale"))
+
+    Sessions::DeliverFollowUp.call(session: session, prompt: "Pick it back up", goal: nil,
+                                   source: TurnSource.new(surface: "api"))
+
+    metadata = session.reload.metadata
+    %w[sigterm_retry_count last_sigterm_at failure_reason compact_retry_count auth_outage_reason].each do |key|
+      assert_nil metadata[key], "expected #{key} cleared, was #{metadata[key].inspect}"
+    end
+    assert_nil metadata[SpotSessionPause::PAUSED_REASON]
+    assert_nil metadata[Session::DELIBERATE_SLEEP_KEY]
+    assert_equal 42, metadata["api_error_last_checked_line"],
+      "the transcript scan position is not retry state and must survive"
+    assert metadata["pending_follow_up_prompt"].present?
   end
 
   test "a blank goal leaves the session's goal alone" do
