@@ -43,8 +43,10 @@ class InTurnStateContractTest < ActiveSupport::TestCase
       a unless s.running? || s.waiting?
       b if (s.reload.waiting? || s.running?) && s.running_job_id.blank?
       c = foo(s.waiting? || s.running?)
+      d = x || foo(s.running? || s.waiting?)
+      e = x || list.any? { |s| s.running? || s.waiting? }
     RUBY
-    assert_equal %w[x.rb:1 x.rb:2 x.rb:3], spelled_out_copies("x.rb", flagged)
+    assert_equal %w[x.rb:1 x.rb:2 x.rb:3 x.rb:4 x.rb:5], spelled_out_copies("x.rb", flagged)
 
     ignored = <<~RUBY
       a if s.running? || s.waiting? || s.needs_input?

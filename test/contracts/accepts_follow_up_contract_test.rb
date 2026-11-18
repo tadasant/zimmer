@@ -46,6 +46,7 @@ class AcceptsFollowUpContractTest < ActiveSupport::TestCase
       a if s.running? || s.waiting?
       b if s.needs_input? || s.waiting? || s.failed?
       d if s.failed? || s.running? || s.waiting? || s.needs_input?
+      f if s.running? || s.waiting? || s.needs_input? || s.failed?
       # s.running? || s.waiting? || s.needs_input?
       c = "s.running? || s.waiting? || s.needs_input?"
     RUBY
