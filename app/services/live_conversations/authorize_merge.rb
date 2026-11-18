@@ -301,7 +301,7 @@ module LiveConversations
       end
 
       after = lines.select { |t| t.id > asked.id && t.id <= last_answer.id }
-      if (question = after.find { |t| !t.user? && t.content.to_s.include?("?") && !t.content.to_s.match?(/merg/i) })
+      if (question = after.find { |t| !t.user? && something_else?(t.content, pr_url) })
         raise Refused, "Not merging: after you asked about pull request #{number} you asked something else " \
                        "(\"#{question.content.to_s.squish.truncate(80)}\"), so their yes answers that. If they still want " \
                        "it merged, ask once more about pull request #{number}."
@@ -339,6 +339,17 @@ module LiveConversations
         )
       end
       "#{result.message} Tell the person, in one short sentence."
+    end
+
+    # An assistant line after the asking line that moves the conversation on: a
+    # question (the asking line is the newest one that asks about this PR, so
+    # any later question is about something else), or a line about merging some
+    # other pull request. "Okay." and a restart that names nothing are neither.
+    def something_else?(text, pr_url)
+      return true if text.to_s.include?("?")
+
+      words = " #{self.class.normalize(text)} "
+      words.match?(/ merg/) && words.match?(/ (pull request|pull|pr|p r) /) && !self.class.asks_to_merge?(text, pr_url)
     end
 
     def find_session!(value)

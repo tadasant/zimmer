@@ -308,6 +308,19 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
+  test "a yes after the model asks about another pull request merges nothing" do
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "assistant", "And merge pull request 1491 as well. Say yes.")
+    say(conversation, phone, "user", "Yes.")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
+    assert result["error"]
+    assert_match(/you asked something else/, result["output"])
+    assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
+  end
+
   test "a yes an agent typed into the conversation is not the person's yes" do
     conversation = create_live_conversation(mode: "voice")
     phone = bearer(app_token)
