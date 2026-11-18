@@ -151,7 +151,7 @@ if ! state_log=$(terraform -chdir="$TF_DIR" state list 2>&1); then
   # An environment that has never been applied has no state object at all. That is the
   # ordinary "staging is down" case, not an error -- but Terraform reports it on stderr
   # with a non-zero status, so it has to be told apart from a broken backend here.
-  if printf '%s' "$state_log" | grep -qi 'no state file was found'; then
+  if grep -qi 'no state file was found' <<<"$state_log"; then
     state_log=""
   else
     echo "$state_log"
@@ -160,7 +160,11 @@ if ! state_log=$(terraform -chdir="$TF_DIR" state list 2>&1); then
   fi
 fi
 
-if printf '%s\n' "$state_log" | grep -qxF "$DROPLET_ADDRESS"; then
+# A here-string, never `printf | grep -q`: grep -q exits on its first match, and under
+# pipefail the printf still writing into the closed pipe takes SIGPIPE and fails the whole
+# test -- a droplet listed first would read as "absent", and the stderr check above would
+# turn "never applied" into a page. Feeding grep from a here-string leaves no writer to kill.
+if grep -qxF "$DROPLET_ADDRESS" <<<"$state_log"; then
   droplet=present
 else
   droplet=absent
