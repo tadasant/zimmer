@@ -75,7 +75,7 @@ module Sessions
       end
 
       @session.reload
-      unless @session.running? || @session.waiting? || @session.needs_input?
+      unless @session.accepts_follow_up?
         return Result.new(
           success: false,
           error: "Cannot interrupt when session is #{@session.status}. Session must be running, waiting, or needs_input.",
@@ -106,7 +106,7 @@ module Sessions
           )
         end
 
-        unless @session.running? || @session.waiting? || @session.needs_input?
+        unless @session.accepts_follow_up?
           return Result.new(
             success: false,
             error: "Cannot interrupt when session is #{@session.status}. Session must be running, waiting, or needs_input.",

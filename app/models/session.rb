@@ -1932,6 +1932,14 @@ class Session < ApplicationRecord
   # and `archived` take none. Whether a running turn is
   # underway — queue or deliver — is a separate question, Sessions::LiveTurn's.
   #
+  # The same three states gate every other path that hands a session a turn, and
+  # they ask this predicate rather than spelling the states out:
+  # Sessions::InterruptService (before and under the lock), Sessions::MessageParent's
+  # interrupt, EnqueuedMessageProcessorService's claim and its staleness sweep,
+  # Trigger's reuse check and its user-pause clear, and AgentSessionJob's
+  # lost-clone rebuild. Each keeps its own refusal wording; only the rule is shared.
+  # `test/contracts/accepts_follow_up_contract_test.rb` fails on a new spelled-out copy.
+  #
   # The web follow-up form is not one of these callers: it refuses in its own
   # words, from the form.
   #

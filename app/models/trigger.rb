@@ -1916,7 +1916,7 @@ class Trigger < ApplicationRecord
     # `failed` or `archived` session the wake is undeliverable for a reason this
     # marker has nothing to do with, and clearing it would only lose the record of
     # who stopped the session.
-    return unless session.needs_input? || session.running? || session.waiting?
+    return unless session.accepts_follow_up?
 
     session.remove_metadata!("paused_by")
     session.logs.create!(
@@ -1966,7 +1966,7 @@ class Trigger < ApplicationRecord
   end
 
   def reusable_session?(session)
-    return false unless session.needs_input? || session.running? || session.waiting?
+    return false unless session.accepts_follow_up?
 
     # Don't reuse sessions that a user has manually paused/taken control of
     return false if session.metadata&.dig("paused_by") == "user"
