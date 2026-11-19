@@ -248,6 +248,24 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     assert_includes prompt, "It is not an escape hatch for \"I wasn't sure.\""
   end
 
+  # A session rested in needs_input saying "nothing else is left to wait on" while
+  # four sessions its child had spawned were still working toward PRs. Reason 3
+  # holds only once the answer exists; in-flight descendants are a machine wait,
+  # and the "both" case keeps its watcher armed.
+  test "in-flight descendants are a machine wait, not a reason to rest in needs_input" do
+    prompt = OrchestratorSystemPromptBuilder.build(session: @session)
+    reason_three = prompt[/^3\. \*\*A human invoked this session.*?$/]
+    machine_wait = prompt[/^- \*\*Waiting on a machine\.\*\*.*?$/]
+
+    assert reason_three.present?, "could not isolate reason 3 from the lifecycle section"
+    assert machine_wait.present?, "could not isolate the machine-wait bullet"
+    assert_includes reason_three, "it starts only once the answer exists"
+    assert_includes reason_three, "leave your wake on that session armed (no `cancel_wakes`)"
+    assert_includes machine_wait, "a peer or child session finishing — including sessions your children spawned"
+    assert_includes machine_wait, "If nothing is actionable for a human until that session finishes, do not park"
+    assert_includes machine_wait, "reports with `message_parent` when it finishes"
+  end
+
   # Reason 1 used to offer two exits — do it yourself, or report to a parent — and
   # presented missing scope as terminal. A session that could have spawned the root
   # owning the fix parked instead, four times, while an alert kept firing (#859).
