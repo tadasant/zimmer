@@ -20,6 +20,12 @@ import { LiveUsageReporter } from "lib/live_usage_reporter"
 //                as `session.commentary.append`; a cap warning as quiet
 //                `session.thinking.append`; `end_call` hangs up once the
 //                goodbye has been said
+//   hang-up      GPT-Live can say goodbye without delegating, and a goodbye
+//                ends nothing. So when the person's line asked to hang up,
+//                GPT-Live answered it itself (no delegation) and that answer
+//                is a goodbye, the call ends once it has been said
+//                (endsTheCall), as if the backend had asked. A delegated line
+//                is the backend's to end, with `end_call`
 //   cues         the same signals a Realtime call gives lib/live_cues, read
 //                off GPT-Live's events, which have no speech boundaries: the
 //                person's transcript starting is personTalking, its going quiet
@@ -49,6 +55,19 @@ const ANSWER_GRACE_MS = 8000
 // A long call's seconds are reported as it goes, so a tab that dies takes at
 // most this much unreported time with it.
 const SESSION_REPORT_MS = 60000
+// The person asking to hang up, and the voice saying goodbye. Kept in step
+// with GptLiveConductor.endsTheCall in ios/Sources/ZimmerKit/Live.
+const ASKED_TO_HANG_UP = /\b(hang (it )?up|end (the|this) call|stop listening|pause|good ?bye|bye)\b/
+const NOT_ASKING = /\b(don'?t|do not|not yet|never|how)\b/
+const SAID_GOODBYE = /\b(hanging up|ending (the|this) call|good ?bye|bye)\b/
+
+// The person's line asked to hang up and the answer to it said goodbye: the
+// call is over, whether or not GPT-Live delegated the hang-up.
+export function endsTheCall(asked, said) {
+  const plain = (text) => (text || "").toLowerCase().replace(/[\u2018\u2019]/g, "'")
+  const line = plain(asked)
+  return ASKED_TO_HANG_UP.test(line) && !NOT_ASKING.test(line) && SAID_GOODBYE.test(plain(said))
+}
 
 export class GptLiveCall {
   // `call`: the dock's URLs for the conversation. `mic`: the open microphone
@@ -168,6 +187,7 @@ export class GptLiveCall {
   async delegate(delegationId) {
     const pending = this.userText
     this.flushUser()
+    this.lineDelegated = true
     this.personDone()
     this.delegatedThisTurn = true
     clearTimeout(this.thinkingTimer)
@@ -257,15 +277,23 @@ export class GptLiveCall {
 
   spokeOut() {
     this.saying = false
+    const said = this.assistantText
     this.flushAssistant()
-    if (this.hangingUp) this.end()
+    // Only the first answer to a line GPT-Live did not delegate is checked:
+    // the line is spent once answered.
+    const asked = this.lineDelegated ? "" : this.lastUserLine
+    this.lastUserLine = ""
+    if (this.hangingUp || (this.delegations.size === 0 && endsTheCall(asked, said))) this.end()
     else if (!this.ended) this.onState("listening")
   }
 
   flushUser() {
     const text = this.userText.trim()
     this.userText = ""
-    if (text) this.recordTurn("user", text)
+    if (!text) return
+    this.lastUserLine = text
+    this.lineDelegated = false
+    this.recordTurn("user", text)
   }
 
   flushAssistant() {

@@ -517,6 +517,18 @@ loses nothing, and calling again is one tap.
   an event did not come. A move to another conversation is not followed while a hang-up is pending,
   and a `switch_live_conversation` in the same reply is answered but not acted on: the hang-up wins. A client that does not say `hangs_up`, an iOS build from before it for instance, gets
   `hang_up` refused, and the model tells the person to tap End.
+- **On GPT-Live** (`gpt_live_claude`) the voice model has no tools, so it hangs up by delegating:
+  Claude calls `hang_up`, the delegation answers `end_call`, and the client ends the call once the
+  goodbye after it has been said. GPT-Live is told that a goodbye of its own ends nothing and that a
+  hang-up is always delegated, but it can still answer one itself ("Okay, hanging up. Bye!"). So
+  both clients (`GptLiveCall` on the web, `GptLiveConductor` on the phone and in the car) also end
+  the call when the person's line asked to hang up ("hang up", "end the call", "stop listening",
+  "pause", "bye"), GPT-Live answered it itself rather than delegating it, and its first answer
+  says goodbye ("hanging up", "ending the call", "bye"). The line must not say "don't", "not yet",
+  "never" or "how", so "don't hang up yet" and "how do I hang up?" keep the call. Either side alone
+  is not enough: "what's running?" answered "two sessions, bye!" keeps it. A line GPT-Live
+  delegated is ended only by Claude's `hang_up`, so "send Sam a goodbye" keeps the call whatever
+  the answer says.
 - **In the car** a voice hang-up counts as the driver's End: nothing is retried, the call screen
   comes down with the hung-up cue, and the tiles come back with **Continue**.
 - **Why no pause.** A pause that kept the call open would keep the microphone open, which is what

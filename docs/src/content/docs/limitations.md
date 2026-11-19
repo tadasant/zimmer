@@ -407,6 +407,16 @@ the seconds it saw itself), whether GPT-Live takes the Live settings' voice (Zim
 one when it is refused), and how GPT-Live speaks commentary that arrives while the person is
 talking. It is off unless somebody picks it, and falls back to Realtime when it cannot run.
 
+### GPT-Live's hang-up fallback reads words, not intent
+
+On `gpt_live_claude`, a call also ends when the person's line asked to hang up and GPT-Live answered
+it itself with a goodbye, because GPT-Live can say goodbye without delegating the hang-up
+([Hanging up by voice](/sessions/live/#hanging-up-by-voice)). The check is a word match in English on
+both lines. A hang-up phrased some other way ("we're done here") still needs GPT-Live to delegate it,
+and a line that both asks and hedges in words the check does not know ("hang up after this one") can
+end the call a turn early. So can a line GPT-Live answers itself that says "bye" to someone else
+("tell Sam bye", answered "bye to Sam"). Calling again carries on in the same conversation.
+
 ### The LiveKit voice engine is a setting with nothing behind it
 
 `livekit_claude` can be chosen, and always falls back to Realtime with "not built yet". It needs a

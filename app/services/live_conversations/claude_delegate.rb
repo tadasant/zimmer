@@ -205,7 +205,8 @@ module LiveConversations
         "MCP server's tools. Do what the request needs with them, then answer in two or three short spoken sentences: the " \
         "voice model will say your answer aloud. No markdown, no lists, no URLs, no ids unless the person needs one. " \
         "Anything that takes more than a few seconds goes to a background session, as above. If the person asked to hang " \
-        "up, call `#{ToolBridge::HANG_UP}` and say goodbye."
+        "up, call `#{ToolBridge::HANG_UP}` first, then say goodbye: only the call ends it, and a goodbye without it " \
+        "leaves the microphone open."
     end
 
     def request_text

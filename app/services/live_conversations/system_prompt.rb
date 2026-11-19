@@ -67,9 +67,18 @@ module LiveConversations
         "- Where the instructions above name functions or tools, they are the backend's: delegate instead of calling them.",
         "- The backend's answer reaches you as commentary to say aloud. Say it in your own words, briefly. Never invent a " \
         "result, a session number or a status the backend did not give you.",
+        front_end_hang_up_line,
         "- If the backend says the call is ending (a hang-up, or a spend cap), say goodbye in one short sentence.",
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ].join("\n")
+    end
+
+    # GPT-Live answers a goodbye on its own unless told it cannot end the call:
+    # "Okay, hanging up. Bye!" with the microphone still open (Live conversation 38).
+    def front_end_hang_up_line
+      "- You cannot end this call yourself, and saying goodbye does not end it: the microphone stays open. When the " \
+        "person asks to hang up, end the call, stop listening or pause, delegate it at once, every time, even if you " \
+        "already said goodbye. Do not say goodbye until the backend says the call is ending."
     end
 
     def mechanics
