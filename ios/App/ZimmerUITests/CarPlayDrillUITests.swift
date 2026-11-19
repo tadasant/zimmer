@@ -126,12 +126,26 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
 
         // The car goes away with the call up, by the Simulator's own menu: the scene really
-        // disconnects, and the phone goes to the call.
+        // disconnects, and the phone goes to the call. The click can be made and the car stay
+        // connected ([run 44560053511, attempt 1](https://github.com/tadasant/zimmer/actions/runs/44560053511/attempts/1):
+        // no `carplay scene disconnected`, and the host silent from before the click until after
+        // the test ended), whether the Simulator ignored it or the host stalled. So a phone still
+        // off the call after `timeout` gets the click again and the host's stall to act on it. The
+        // host itself is not asked: a query there can hang XCUITest (limitations.md, "CarPlay's
+        // host can stop answering in the drill").
+        let callOnThePhone = zimmer.descendants(matching: .any)["live.call.state"].firstMatch
         plug("Disabled")
-        let landed = zimmer.descendants(matching: .any)["live.call.state"].firstMatch.waitForExistence(timeout: timeout)
+        var landed = callOnThePhone.waitForExistence(timeout: timeout)
+        var unplugs = 1
+        if !landed {
+            unplugs = 2
+            record("the phone before the second unplug", zimmer.debugDescription)
+            plug("Disabled")
+            landed = callOnThePhone.waitForExistence(timeout: Self.hostStall)
+        }
         photographThePhone("carplay-phone-after-the-car-left")
         record("the phone after the car left", zimmer.debugDescription)
-        XCTAssertTrue(landed, "the phone goes to the call; it showed:\n\(zimmer.debugDescription)")
+        XCTAssertTrue(landed, "the phone goes to the call (unplugged \(unplugs)x); it showed:\n\(zimmer.debugDescription)")
         assertAlive("with the car gone and the call on the phone")
 
         // The car comes back: the call goes up on it again, and the phone stays as it is.
