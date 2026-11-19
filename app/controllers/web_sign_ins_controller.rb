@@ -36,8 +36,14 @@ class WebSignInsController < ApplicationController
   # GET /auth/google/callback
   def callback
     flow = session.delete(OAUTH_KEY)
-    return render_login_error("Google did not sign you in (#{params[:error].to_s.truncate(80)}).") if params[:error].present?
-    return render_login_error("That sign-in did not start in this browser, or took too long. Start again.") unless valid_flow?(flow)
+    if params[:error].present?
+      SecurityTelemetry.record_auth_failure(:web_sign_in, :provider_error)
+      return render_login_error("Google did not sign you in (#{params[:error].to_s.truncate(80)}).")
+    end
+    unless valid_flow?(flow)
+      SecurityTelemetry.record_auth_failure(:web_sign_in, :flow_mismatch)
+      return render_login_error("That sign-in did not start in this browser, or took too long. Start again.")
+    end
 
     google_identity = WebAuth::GoogleOauth.new(web_auth_configuration).complete(code: params[:code].to_s, code_verifier: flow["verifier"])
     identity = WebIdentity.sign_in_from_google!(google_identity)
@@ -52,9 +58,11 @@ class WebSignInsController < ApplicationController
     end
   rescue WebAuth::GoogleOauth::Rejected => e
     Rails.logger.warn("[web_auth] refused Google sign-in from #{request.remote_ip}: #{e.message}")
+    SecurityTelemetry.record_auth_failure(:web_sign_in, :rejected)
     render_login_error(e.message, status: :forbidden)
   rescue WebAuth::GoogleOauth::ExchangeFailed => e
     Rails.logger.warn("[web_auth] Google sign-in failed: #{e.message}")
+    SecurityTelemetry.record_auth_failure(:web_sign_in, :exchange_failed)
     render_login_error("Google sign-in did not complete. Try again.", status: :bad_gateway)
   end
 

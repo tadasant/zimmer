@@ -9,6 +9,7 @@ require "mocha/minitest"
 # (WebAuthTestHelpers#stub_google_id_token); every claim check runs for real.
 class WebSignInTest < ActionDispatch::IntegrationTest
   include WebAuthTestHelpers
+  include SecurityTelemetryTestHelpers
 
   API_KEY = "web-sign-in-test-api-key"
 
@@ -482,5 +483,33 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     get second_factor_setup_path
 
     assert_equal "no-store", response.headers["Cache-Control"]
+  end
+
+  # --- security telemetry ----------------------------------------------------
+
+  test "refused sign-ins and keys are counted for the monitoring plane, without labels from the request" do
+    enable_web_auth
+    sign_in_and_enroll
+    reset!
+
+    report = with_security_telemetry do
+      sign_in_with_google
+      2.times { post second_factor_path, params: { code: "000000" } }
+
+      post google_sign_in_path
+      get google_sign_in_callback_path, params: { code: "c", state: "forged" }
+
+      get api_v1_sessions_path
+      get api_v1_sessions_path, headers: { "X-API-Key" => "not-a-key" }
+      get "/api/v1/no-such-thing", headers: { "X-API-Key" => API_KEY }
+    end
+
+    assert_equal 2, report[:auth_failures_by_kind_and_reason]["web_second_factor"]["wrong_code"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["web_sign_in"]["flow_mismatch"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["api_key"]["missing"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["api_key"]["unknown"]
+    assert_equal 2, report[:client_errors_by_surface_and_status]["api"]["401"]
+    assert_equal 1, report[:client_errors_by_surface_and_status]["api"]["404"], "an unrouted probe lands on the surface it aimed at"
+    assert_equal 3, report[:client_errors_by_surface_and_status]["web"]["422"], "two wrong codes and the forged callback"
   end
 end

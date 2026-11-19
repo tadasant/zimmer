@@ -22,7 +22,10 @@ module Webhooks
         timestamp: request.headers["X-Slack-Request-Timestamp"],
         signature: request.headers["X-Slack-Signature"]
       )
-      return reject(:unauthorized, source, verification.reason) unless verification.valid?
+      unless verification.valid?
+        SecurityTelemetry.record_auth_failure(:webhook_slack, :bad_signature)
+        return reject(:unauthorized, source, verification.reason)
+      end
 
       payload = parse_payload
       return reject(:bad_request, source, "body is not a JSON object") unless payload.is_a?(Hash)

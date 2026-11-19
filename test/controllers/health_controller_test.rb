@@ -658,6 +658,23 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert json.key?("ruby_version")
   end
 
+  test "export_diagnostics carries the security section the monitoring plane scrapes" do
+    Session.create!(prompt: "x", agent_runtime: "claude_code", status: :waiting, genesis: "web_ui",
+      git_root: "https://github.com/test/repo.git", branch: "main")
+
+    get export_diagnostics_health_url(format: :json)
+
+    security = JSON.parse(response.body).dig("health_report", "security_health")
+    assert_equal 3600, security["window_seconds"]
+    assert_equal SecurityTelemetry::AUTH_FAILURE_KINDS.sort, security["auth_failures_by_kind"].keys.sort
+    assert_equal SessionGenesis::KEYS.sort, security["sessions_created_by_genesis"].keys.sort
+    assert_operator security["sessions_created_by_genesis"]["web_ui"], :>=, 1
+    %w[responses_by_surface_and_status_class client_errors_by_surface_and_status oauth_grants_issued
+       oauth_clients_registered api_keys_created auth_failures_by_kind_and_reason].each do |key|
+      assert security.key?(key), "missing #{key}"
+    end
+  end
+
   test "export_diagnostics includes full health report" do
     get export_diagnostics_health_url(format: :json)
 

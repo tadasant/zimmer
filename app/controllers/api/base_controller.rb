@@ -116,6 +116,7 @@ class Api::BaseController < ActionController::API
       Rails.logger.info("[api_key] #{request.request_method} #{request.path} authenticated as #{api_key_label(authentication.api_key)}")
     else
       log_api_key_refusal(authentication)
+      SecurityTelemetry.record_auth_failure(:api_key, authentication.refusal)
       render_api_error("Unauthorized", "Invalid or missing API key", status: :unauthorized)
     end
   end
@@ -174,6 +175,7 @@ class Api::BaseController < ActionController::API
       Rails.logger.info("[native_app] #{request.request_method} #{request.path} authenticated as grant #{@native_app_grant.id} (#{@native_app_grant.user_email})")
     else
       Rails.logger.info("[native_app] #{request.request_method} #{request.path} refused from #{request.remote_ip}: access token #{refusal}")
+      SecurityTelemetry.record_auth_failure(:oauth_access_token, refusal)
       render_api_error("Unauthorized", "Invalid or expired access token", status: :unauthorized)
     end
   end

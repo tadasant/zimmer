@@ -141,6 +141,13 @@ module OauthServer
       raise OauthServer::Error.new("invalid_target", "resource must be #{bound}")
     end
 
+    # Every refusal here is a code or refresh token that did not work, except
+    # `temporarily_unavailable`, which is this deployment failing, not the caller.
+    def render_oauth_error(error, status:)
+      SecurityTelemetry.record_auth_failure(:oauth_token, error.code) unless error.code == "temporarily_unavailable"
+      super
+    end
+
     def invalid_grant(description)
       OauthServer::Error.new("invalid_grant", description)
     end

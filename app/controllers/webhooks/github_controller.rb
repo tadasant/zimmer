@@ -40,7 +40,10 @@ module Webhooks
         body: raw_body,
         signature: request.headers["X-Hub-Signature-256"]
       )
-      return reject(:unauthorized, source, verification.reason) unless verification.valid?
+      unless verification.valid?
+        SecurityTelemetry.record_auth_failure(:webhook_github, :bad_signature)
+        return reject(:unauthorized, source, verification.reason)
+      end
 
       delivery_id = request.headers["X-GitHub-Delivery"].to_s
       event = request.headers["X-GitHub-Event"].to_s

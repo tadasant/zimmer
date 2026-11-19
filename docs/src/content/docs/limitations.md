@@ -1445,6 +1445,19 @@ interface, so a tailnet peer that connects there directly, skipping Caddy, contr
 already names. Closing it means the deploy handing the collector a credential and the collector
 reading an API-key route.
 
+### Security counts undercount rather than block
+
+🟡 The [security counts](/operate/observability/#security-counts-on-the-health-surface) live in
+Redis. A Redis outage, or a flush, loses them: the report reads zeros for the buckets it lost, and
+an alert on a rise in failures stays quiet for that stretch. That is the trade for never letting a
+monitoring write slow or fail a refusal.
+
+They also see only what reaches a controller. A request refused by middleware first (host
+authorization, a request Rack cannot parse) is not in `responses_by_surface_and_status_class`, and
+neither is anything Caddy, kamal-proxy or the edge refuses before Rails. The window is bucketed, so
+"the last hour" is 55 to 60 minutes depending on where in the current five-minute bucket the
+report is read.
+
 ### Web sign-in trades re-checks for long sessions
 
 🟡 [Web sign-in](/auth/web-sign-in/) is tuned so its owner rarely sees the login page, and that has

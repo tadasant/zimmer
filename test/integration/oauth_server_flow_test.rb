@@ -9,6 +9,7 @@ require "mocha/minitest"
 # token → /mcp → refresh → revoke. The static API key path runs beside it.
 class OauthServerFlowTest < ActionDispatch::IntegrationTest
   include WebAuthTestHelpers
+  include SecurityTelemetryTestHelpers
 
   ISSUER = "http://www.example.com"
   RESOURCE = "#{ISSUER}/mcp".freeze
@@ -995,5 +996,25 @@ class OauthServerFlowTest < ActionDispatch::IntegrationTest
     post "/settings/api_keys/oauth_grants/#{grant.id}/privilege", params: { privilege: "act_as_human" }
     assert_redirected_to "/settings/api_keys#oauth-connections"
     assert_equal "mcp", grant.reload.scope
+  end
+
+  test "failed code exchanges, refused bearer tokens and issued grants reach the security report" do
+    client_id = register["client_id"]
+
+    report = with_security_telemetry do
+      code, verifier = approve(client_id)
+      assert_equal "invalid_grant", exchange(client_id, code, "x" * 43)["error"]
+      refresh("not-a-client", "nope")
+      rpc("tools/list", token: "#{OauthServer::ACCESS_TOKEN_PREFIX}forged")
+      connect(client_id)
+    end
+
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["oauth_token"]["invalid_grant"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["oauth_token"]["invalid_client"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["oauth_access_token"]["unknown"]
+    assert_equal 1, report[:client_errors_by_surface_and_status]["mcp"]["401"]
+    assert_operator report[:client_errors_by_surface_and_status]["oauth"]["400"], :>=, 1
+
+    assert_equal 1, HealthMonitorService.new.security_health[:oauth_grants_issued]
   end
 end

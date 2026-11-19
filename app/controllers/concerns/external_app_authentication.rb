@@ -31,9 +31,11 @@ module ExternalAppAuthentication
     external_app = @authenticated_api_key&.external_app
 
     if external_app.nil?
+      SecurityTelemetry.record_auth_failure(:external_app, :no_external_app)
       render_api_error("Unauthorized", "Invalid or missing API key", status: :unauthorized)
     elsif !external_app.enabled?
       Rails.logger.warn("[external_app] #{request.request_method} #{request.path} refused: #{external_app.name.inspect} (external_app_id=#{external_app.id}) is disabled")
+      SecurityTelemetry.record_auth_failure(:external_app, :disabled)
       render_api_error("Forbidden", "This Zimmer plugin is disabled", status: :forbidden)
     else
       @current_external_app = external_app

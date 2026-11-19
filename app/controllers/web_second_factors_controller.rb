@@ -35,10 +35,12 @@ class WebSecondFactorsController < ApplicationController
       redirect_to return_to, notice: "Signed in with a recovery code. #{remaining} left. " \
         "If you lost your authenticator, set up a new one in Settings."
     when :locked
+      SecurityTelemetry.record_auth_failure(:web_second_factor, :locked)
       minutes = ((@identity.second_factor_locked_until - Time.current) / 60.0).ceil
       @error = "Too many wrong codes. Try again in #{helpers.pluralize(minutes, "minute")}."
       render :new, status: :too_many_requests
     else
+      SecurityTelemetry.record_auth_failure(:web_second_factor, :wrong_code)
       @error = "That code did not match. Check the time on your phone, or use a recovery code."
       render :new, status: :unprocessable_entity
     end
@@ -53,6 +55,7 @@ class WebSecondFactorsController < ApplicationController
   def confirm_setup
     @recovery_codes = @identity.confirm_totp_enrollment!(params[:code])
     if @recovery_codes.nil?
+      SecurityTelemetry.record_auth_failure(:web_second_factor, :enrollment_wrong_code)
       @secret = @identity.pending_totp_secret!
       @error = "That code did not match. Make sure you added the key shown here, then enter the code it shows now."
       return render :setup, status: :unprocessable_entity
