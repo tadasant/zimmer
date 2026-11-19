@@ -144,6 +144,34 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
     assert_match /turbo-stream/, response.body
   end
 
+  # The page queued the message at the click and the composer has been the user's
+  # since, so the answer redraws the queue and clears the error slot — never the
+  # form — and names the new row so the page can swap its placeholder for it.
+  test "a turbo stream create redraws only the queue and names the new message" do
+    post session_enqueued_messages_url(@session), params: {
+      follow_up_prompt: "Test message"
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :success
+    message = @session.enqueued_messages.last
+    assert_equal message.id.to_s, response.headers[EnqueuedMessagesController::ENQUEUED_MESSAGE_ID_HEADER]
+    assert_includes response.body, %(target="session_#{@session.id}_enqueued_messages")
+    assert_includes response.body, %(target="enqueued_messages_form_errors")
+    assert_not_includes response.body, %(target="session_#{@session.id}_follow_up_form")
+  end
+
+  test "a refused turbo stream create answers 422 with the reason and leaves the form alone" do
+    post session_enqueued_messages_url(@session), params: {
+      follow_up_prompt: "   "
+    }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
+
+    assert_response :unprocessable_entity
+    assert_nil response.headers[EnqueuedMessagesController::ENQUEUED_MESSAGE_ID_HEADER]
+    assert_includes response.body, %(target="enqueued_messages_form_errors")
+    assert_includes response.body, "Message content cannot be empty"
+    assert_not_includes response.body, %(target="session_#{@session.id}_follow_up_form")
+  end
+
   test "should redirect with html format on successful create" do
     post session_enqueued_messages_url(@session), params: {
       content: "Test message"
@@ -161,7 +189,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
       }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match /Message content cannot be empty/, response.body
   end
 
@@ -172,7 +200,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
       }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match /Message content cannot be empty/, response.body
   end
 
@@ -185,7 +213,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
       }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match /Message is too long/, response.body
   end
 
@@ -212,7 +240,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
       }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match /Goal is too long/, response.body
   end
 
@@ -239,7 +267,7 @@ class EnqueuedMessagesControllerTest < ActionDispatch::IntegrationTest
       }, headers: { "Accept" => "text/vnd.turbo-stream.html" }
     end
 
-    assert_response :success
+    assert_response :unprocessable_entity
     assert_match(/is not a known goal id/, response.body)
   end
 

@@ -31,6 +31,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     # Wait for Turbo Stream response
     # UI should reset: button should be re-enabled with correct text, textarea should be cleared
     assert_button "Queue Message", wait: 3
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     # Note: assert_selector with text: "" doesn't check textarea value attribute, only text content
     # We must use find().value to properly check the textarea was cleared
     textarea = find("textarea[name='follow_up_prompt']")
@@ -64,6 +66,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Wait for form to reset
     assert_button "Queue Message", wait: 3
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "1"
 
     # Queue second message
@@ -72,6 +76,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Wait for form to reset
     assert_button "Queue Message", wait: 3
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "2"
 
     # Queue third message
@@ -80,6 +86,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Wait for form to reset and verify final state
     assert_button "Queue Message", wait: 3
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "3"
 
     # Verify message order is preserved
@@ -114,6 +122,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Button should be re-enabled within reasonable time (Turbo Stream response)
     assert_button "Queue Message", disabled: false, wait: 5
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
 
     # Verify message was queued in database
     session.reload
@@ -333,6 +343,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
 
     # Wait for button to return to Queue Message state (form was replaced)
     assert_button "Queue Message", disabled: false, wait: 5
+    # The button never disables now; the placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
 
     # CRITICAL: Verify textarea value is actually cleared
     # The textarea has data-turbo-permanent attribute which preserves it across Turbo Stream

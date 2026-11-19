@@ -67,6 +67,14 @@
     <%# Enqueued messages list - shown above the form %>
     <%= render "enqueued_messages/enqueued_messages_list", agent_session: agent_session %>
 
+    <%# Messages queued from this page that the server has not confirmed yet, and
+        any it refused: lib/optimistic_queue.js draws them here at the click. A
+        sibling of the list rather than inside it, because the server's answer
+        replaces the list and must not take the other placeholders with it. %>
+    <div id="session_<%= agent_session.id %>_pending_enqueued"
+         class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-2 empty:hidden"
+         aria-live="polite"></div>
+
     <%# Running indicator - shown above the form when session is running %>
     <% if agent_session.running? %>
       <div id="session_<%= agent_session.id %>_running_indicator" class="bg-green-50 border-b border-green-200 px-4 py-2">

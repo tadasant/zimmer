@@ -1,6 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 import { followUpDraftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDraftsOnce } from "lib/draft_storage"
 import { takeComposerHandoff } from "lib/composer_handoff"
+import { queueMessage, redrawPendingQueue } from "lib/optimistic_queue"
 
 // How long to wait after the last keystroke before writing the draft. Long
 // enough that a fast typist isn't writing to localStorage on every character,
@@ -67,6 +68,10 @@ export default class extends Controller {
 
     // Initialize mode based on session status
     this.updateMode()
+
+    // Messages queued from this page and still on their way, drawn again into a
+    // composer a broadcast has just replaced.
+    redrawPendingQueue(this.sessionIdValue)
 
     // Listen for Turbo Stream replacements that target our form
     this.boundSaveInput = this.saveBeforeStreamRender.bind(this)
@@ -634,6 +639,11 @@ export default class extends Controller {
       this.textareaTarget.value = this.textareaMobileTarget.value
     }
 
+    if (this.queuesOnSubmit()) {
+      this.queueOptimistically(activeTextarea)
+      return
+    }
+
     // Disable all submit buttons to prevent double-submission
     if (this.hasSubmitButtonTarget) {
       this.submitButtonTarget.disabled = true
@@ -682,6 +692,55 @@ export default class extends Controller {
     // use Ctrl+Z/Cmd+Z to restore their message from the undo buffer.
     this.clearSubmittedTextareas()
     this.updateDraftIndicator()
+  }
+
+  // --- queueing without waiting ---
+
+  // Whether this submit adds to the queue rather than starting a turn: the
+  // form's own action, which updateMode keeps in step with the turn.
+  queuesOnSubmit() {
+    const action = this.formTarget.getAttribute("action") || ""
+    return new URL(action, document.baseURI).pathname.endsWith("/enqueued_messages")
+  }
+
+  // The message goes into the queue as a placeholder and the composer is empty
+  // and usable in the same click — no disabled button, no wait for the server.
+  // lib/optimistic_queue.js owns the request, the placeholder and the failure.
+  queueOptimistically(activeTextarea) {
+    const text = activeTextarea.value
+    const formData = new FormData(this.formTarget)
+    const imageAttachments = this.composerController("image-attachment")
+    const fileAttachments = this.composerController("file-attachment")
+    const hasAttachments = (imageAttachments?.getImages()?.length || 0) + (fileAttachments?.getFiles()?.length || 0) > 0
+
+    this.saveToUndoBuffer(text)
+    queueMessage({ sessionId: this.sessionIdValue, url: this.formTarget.action, formData, text, hasAttachments })
+
+    // The attachments went with this message; the next one starts without them.
+    imageAttachments?.clearImages()
+    fileAttachments?.clearFiles()
+
+    this.submittedValue = text
+    this.clearSubmittedTextareas()
+    this.submittedValue = null
+    this.updateDraftIndicator()
+    this.composerController("character-counter")?.update()
+    // The stored draft is left alone until the server has the message, as on the
+    // send path: if the OS discards the page mid-request, the words are still on
+    // disk. A pending save would only write the text that was just queued.
+    // lib/optimistic_queue.js clears the draft once the message is queued.
+    if (this.draftDebounceTimer) {
+      clearTimeout(this.draftDebounceTimer)
+      this.draftDebounceTimer = null
+    }
+
+    // The click on Queue Message took focus; give it back so the next message
+    // can be typed straight away.
+    activeTextarea.focus()
+  }
+
+  composerController(identifier) {
+    return this.application.getControllerForElementAndIdentifier(this.element, identifier)
   }
 
   // --- the pending bubble ---
