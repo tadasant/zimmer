@@ -768,12 +768,20 @@ token=#{'Zz9' * 12}
   end
 
   test "the base URL is allowlisted when it comes from the catalog's variables too" do
-    server = ServersConfig::Server.new("fake", { "type" => "http", "url" => "${ZIMMER_STAGING_BASE_URL}/mcp" })
+    server = ServersConfig::Server.new("fake", {
+      "type" => "http",
+      "url" => "${ZIMMER_STAGING_BASE_URL}/mcp",
+      "headers" => { "X-Hook" => "${FIXTURE_HOOK_URL}" }
+    })
     with_bundle({}) do
       ServersConfig.stubs(:all).returns([ server ])
       SecretProviders.chain.stubs(:get).with("ZIMMER_STAGING_BASE_URL").returns(ALLOWLIST_BASE_URL)
+      SecretProviders.chain.stubs(:get).with("FIXTURE_HOOK_URL").returns(ALLOWLIST_WEBHOOK)
       TranscriptRedactor.reset_known_secrets!
+      known = TranscriptRedactor.known_secrets.to_h
 
+      assert_equal "ENV:FIXTURE_HOOK_URL", known[ALLOWLIST_WEBHOOK], "the catalog collector ran"
+      refute known.key?(ALLOWLIST_BASE_URL)
       assert_equal "#{ALLOWLIST_BASE_URL}/sessions/1", TranscriptRedactor.redact("#{ALLOWLIST_BASE_URL}/sessions/1")
     end
   end

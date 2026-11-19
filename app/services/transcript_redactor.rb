@@ -135,7 +135,7 @@ module TranscriptRedactor
   # Tier 1 matches every value of every variable it can see, and some of those
   # variables hold public configuration. The base URL is the one that hurts: it
   # is in every session's system prompt and in every session link an agent
-  # writes, and redacting it turned each of those links into
+  # writes, and redacting it turns each of those links into
   # `[REDACTED:ENV:ZIMMER_PROD_BASE_URL:27ch]/sessions/N`.
   #
   # Entries are keyed by variable NAME first, because a name survives a change
@@ -159,7 +159,7 @@ module TranscriptRedactor
   # Two things can never be allowlisted, by name or by value: a variable whose
   # name says it is a credential (SENSITIVE_KEY), and anything collected as one
   # of Zimmer's own API keys or stored OAuth tokens.
-  DEFAULT_ALLOWLISTED_VARIABLES = %w[ZIMMER_PROD_BASE_URL ZIMMER_STAGING_BASE_URL ZIMMER_LOCAL_BASE_URL].freeze
+  DEFAULT_ALLOWLISTED_VARIABLES = (AppUrl::BASE_URL_KEYS.values + [ AppUrl::LOCAL_BASE_URL_KEY ]).freeze
   ALLOWLIST_VARIABLES_ENV = "TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES"
   ALLOWLIST_VALUES_ENV = "TRANSCRIPT_REDACTION_ALLOWLIST_VALUES"
 
