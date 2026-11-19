@@ -389,6 +389,11 @@ export default class extends Controller {
     return this.files
   }
 
+  // Whether an upload is in flight, so a submit can wait for it.
+  isUploading() {
+    return (this.uploadTotal || 0) > 0
+  }
+
   formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`

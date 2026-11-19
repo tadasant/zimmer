@@ -406,8 +406,9 @@
    and Turbo marks the submitting form `aria-busy` alongside it, which is what
    tells the two apart. A submission redraws a part of the drawer, not the whole
    of it, and each shows its own feedback (a disabled Send button, a "Sending…"
-   bubble, lib/optimistic_actions.js); dimming the transcript and swallowing every
-   click until the server answers stopped the reader from doing anything else. */
+   bubble, lib/optimistic_actions.js), and the transcript and its links stay live
+   for the reader in the meantime. A log-level re-fetch that starts while such a
+   submission is in flight goes undimmed too; it is rare, and harmless. */
 turbo-frame#session_detail[busy]:not(:has(> [data-drawer-skeleton])):not(:has(form[aria-busy="true"])) {
   opacity: 0.6;
   pointer-events: none;

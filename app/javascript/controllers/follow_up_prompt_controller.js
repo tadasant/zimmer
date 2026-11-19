@@ -1,7 +1,8 @@
 import { Controller } from "@hotwired/stimulus"
 import { followUpDraftKey, saveDraft, loadDraft, clearDraft, pruneExpiredDraftsOnce } from "lib/draft_storage"
 import { takeComposerHandoff } from "lib/composer_handoff"
-import { queueMessage, redrawPendingQueue } from "lib/optimistic_queue"
+import { queueMessage, queueInFlight, redrawPendingQueue } from "lib/optimistic_queue"
+import { showAlert } from "lib/toast"
 
 // How long to wait after the last keystroke before writing the draft. Long
 // enough that a fast typist isn't writing to localStorage on every character,
@@ -215,6 +216,9 @@ export default class extends Controller {
     // resurrect it on the next load. Anything the user types *while* the submit
     // is in flight is a new draft and is still worth keeping.
     if (this.justSubmitted && value === this.submittedValue) return
+    // An empty composer with a queued message still on its way: the stored draft
+    // holds that message until the server confirms it (lib/optimistic_queue.js).
+    if (value.trim() === "" && queueInFlight(this.sessionIdValue)) return
 
     saveDraft(this.draftStorageKey, value)
     this.updateDraftIndicator()
@@ -308,8 +312,8 @@ export default class extends Controller {
     const sessionId = this.sessionIdValue
     if (!sessionId) return
 
-    const isOurForm = formAction.includes(`/sessions/${sessionId}/enqueued_messages`) ||
-                      formAction.includes(`/sessions/${sessionId}/follow_up`)
+    // Only the send path goes through Turbo; queueing is a fetch of its own.
+    const isOurForm = formAction.includes(`/sessions/${sessionId}/follow_up`)
     if (!isOurForm) return
 
     // Only clear on successful submissions
@@ -711,6 +715,12 @@ export default class extends Controller {
     const formData = new FormData(this.formTarget)
     const imageAttachments = this.composerController("image-attachment")
     const fileAttachments = this.composerController("file-attachment")
+    // An attachment still uploading would land after the composer was cleared
+    // for the next message, and go out with that one instead.
+    if (imageAttachments?.isUploading() || fileAttachments?.isUploading()) {
+      showAlert("Wait for the attachments to finish uploading, then queue the message.")
+      return
+    }
     const hasAttachments = (imageAttachments?.getImages()?.length || 0) + (fileAttachments?.getFiles()?.length || 0) > 0
 
     this.saveToUndoBuffer(text)

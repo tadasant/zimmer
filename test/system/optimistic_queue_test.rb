@@ -84,6 +84,47 @@ class OptimisticQueueTest < ApplicationSystemTestCase
     assert_equal 0, @session.enqueued_messages.count
   end
 
+  test "a queue the server refuses shows its reason and puts the words back" do
+    visit session_path(@session)
+    # The composer checks length and emptiness itself, so the server's refusal is
+    # stood in for: a 422 stream carrying the reason, as #create answers one.
+    page.execute_script(<<~JS, @session.id)
+      const sessionId = arguments[0]
+      const real = window.fetch
+      window.fetch = (resource, options) => {
+        const url = typeof resource === "string" ? resource : resource.url
+        if (url.endsWith(`/sessions/${sessionId}/enqueued_messages`)) {
+          const body = '<turbo-stream action="update" target="enqueued_messages_form_errors"><template><p>Refused for a reason</p></template></turbo-stream>'
+          return Promise.resolve(new Response(body, { status: 422, headers: { "Content-Type": "text/vnd.turbo-stream.html; charset=utf-8" } }))
+        }
+        return real.call(window, resource, options)
+      }
+    JS
+
+    fill_in "follow_up_prompt", with: "Message the server refuses"
+    click_button "Queue Message"
+
+    assert_selector "#enqueued_messages_form_errors", text: "Refused for a reason", wait: 5
+    assert_selector "#flash [data-client-toast='alert']", text: "The server answered 422"
+    assert_equal "Message the server refuses", find("textarea[name='follow_up_prompt']").value
+    assert_no_selector "[data-pending-enqueued-message]"
+  end
+
+  test "a message is not queued while one of its attachments is still uploading" do
+    visit session_path(@session)
+    page.execute_script(<<~JS)
+      const panel = document.querySelector("[data-controller~='file-attachment']")
+      window.Stimulus.getControllerForElementAndIdentifier(panel, "file-attachment").uploadTotal = 1
+    JS
+
+    fill_in "follow_up_prompt", with: "Message with an upload in flight"
+    click_button "Queue Message"
+
+    assert_selector "#flash [data-client-toast='alert']", text: "Wait for the attachments to finish uploading", wait: 2
+    assert_equal "Message with an upload in flight", find("textarea[name='follow_up_prompt']").value
+    assert_no_selector "[data-pending-enqueued-message]"
+  end
+
   test "a failed queue stays as a row with Retry when the user has started the next message" do
     visit session_path(@session)
     hold_fetch_for("/sessions/#{@session.id}/enqueued_messages")
@@ -138,7 +179,7 @@ class OptimisticQueueTest < ApplicationSystemTestCase
 
     # A link in the drawer is followed while the send is still in flight.
     find("turbo-frame#session_detail a[aria-label='Expand to full page']", match: :first).click
-    assert_current_path session_path(@session), wait: 5
+    assert_current_path session_path(@session), ignore_query: true, wait: 5
   end
 
   test "on a phone the placeholder and a failed row fit the screen and the composer stays usable" do

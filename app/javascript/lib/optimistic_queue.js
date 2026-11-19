@@ -49,6 +49,13 @@ export function queueMessage({ sessionId, url, formData, text, hasAttachments = 
   return entry
 }
 
+// Whether a message for the session is on its way to the server. While one is,
+// an empty composer must not delete the stored draft: the draft is the only copy
+// on disk if the OS discards the page before the server answers.
+export function queueInFlight(sessionId) {
+  return (queues.get(sessionId)?.entries || []).some((entry) => entry.state === "queueing")
+}
+
 // Draw the session's placeholders into its composer. Called when the composer
 // (re)connects, since a replaced composer starts with an empty container.
 export function redrawPendingQueue(sessionId) {
@@ -98,19 +105,26 @@ async function send(entry) {
     return
   }
 
+  // Queued: the row reads "Queued" (no Send Now on a placeholder the server's row
+  // is about to replace) until that row is on the page. The next message's
+  // request does not wait for that.
+  entry.state = "settling"
+  draw(entry.sessionId)
   forgetDraft(entry.sessionId)
   renderStream(body)
-  await settle(entry, id)
+  settle(entry, id)
 }
 
 // The placeholder's Send Now, carried out once the message exists. The queue's
 // own row never shows: the interrupt's answer redraws the queue without it.
 async function sendNow(entry, id, createBody) {
+  entry.state = "settling"
+  draw(entry.sessionId)
   forgetDraft(entry.sessionId)
   showNotice("Sending now — the current turn ends.")
   let response
   try {
-    response = await fetch(`/sessions/${entry.sessionId}/enqueued_messages/${id}/interrupt`, {
+    response = await fetch(`${entry.url.replace(/\/$/, "")}/${id}/interrupt`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "Accept": STREAM_ACCEPT, "X-CSRF-Token": csrfToken() }
@@ -134,18 +148,23 @@ async function sendNow(entry, id, createBody) {
   } else {
     showAlert(`Your message was queued but could not be sent now. ${response ? `The server answered ${response.status}.` : "The server could not be reached."}`)
   }
-  await settle(entry, id)
+  settle(entry, id)
 }
 
 // Take the placeholder down once the server's row for it is on the page, so the
 // queue never shows the message twice or not at all. A stream renders on the next
-// frame, not synchronously; give it a moment, then stand down regardless.
-async function settle(entry, id) {
+// frame, not synchronously; give it a moment, then stand down regardless. A
+// timer rather than requestAnimationFrame, which a hidden tab never fires.
+function settle(entry, id) {
   const deadline = Date.now() + 2000
-  while (!document.getElementById(`enqueued_message_${id}`) && Date.now() < deadline) {
-    await new Promise((resolve) => requestAnimationFrame(resolve))
+  const check = () => {
+    if (document.getElementById(`enqueued_message_${id}`) || Date.now() >= deadline) {
+      remove(entry)
+    } else {
+      setTimeout(check, 50)
+    }
   }
-  remove(entry)
+  check()
 }
 
 function fail(entry, reason) {
@@ -225,6 +244,7 @@ function draw(sessionId) {
 
 function row(entry) {
   const failed = entry.state === "failed"
+  const settling = entry.state === "settling"
   const element = document.createElement("div")
   element.dataset.pendingEnqueuedMessage = entry.state
   element.className = `flex items-start gap-3 p-3 mb-2 rounded-md border ${failed ? "border-red-200 bg-red-50" : "border-dashed border-indigo-200 bg-indigo-50/50"}`
@@ -234,7 +254,7 @@ function row(entry) {
   const status = document.createElement("p")
   status.className = `text-xs font-medium ${failed ? "text-red-700" : "text-indigo-600"}`
   status.dataset.pendingEnqueuedStatus = ""
-  status.textContent = failed ? `Not queued. ${entry.error}` : entry.sendNow ? "Queueing — sends as soon as it is queued…" : "Queueing…"
+  status.textContent = failed ? `Not queued. ${entry.error}` : settling ? (entry.sendNow ? "Sending now…" : "Queued") : entry.sendNow ? "Queueing — sends as soon as it is queued…" : "Queueing…"
   const text = document.createElement("p")
   text.className = "text-sm text-gray-700 truncate"
   text.textContent = entry.text.length > 200 ? `${entry.text.slice(0, 200)}…` : entry.text
@@ -247,7 +267,7 @@ function row(entry) {
       button("Retry", "border-transparent text-white bg-indigo-600 hover:bg-indigo-700", () => retry(entry)),
       button("Discard", "border-gray-300 text-gray-700 bg-white hover:bg-gray-100", () => remove(entry))
     )
-  } else {
+  } else if (!settling) {
     const sendNow = button("Send Now", "border-transparent text-white bg-indigo-600 hover:bg-indigo-700", () => {
       entry.sendNow = true
       draw(entry.sessionId)
