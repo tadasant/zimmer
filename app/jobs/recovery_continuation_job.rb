@@ -66,7 +66,7 @@ class RecoveryContinuationJob < ApplicationJob
     # continued, resumed by a human or archived in the delay window, and in each of
     # those cases the right move is to do nothing at all.
     return unless session.metadata&.dig("paused_by") == "recovery"
-    return unless session.needs_input? || session.waiting?
+    return unless session.idle?
 
     continue_recovered_session(session)
   rescue => e

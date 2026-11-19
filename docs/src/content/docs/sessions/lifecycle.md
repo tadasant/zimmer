@@ -84,6 +84,17 @@ until the session comes to rest. `test/contracts/in_turn_state_contract_test.rb`
 `running? || waiting?` chain under `app/` or `lib/`. A chain that also tests other states is a different
 question and passes, and so do status arrays such as `Trigger::PENDING_INTENT_STATUSES`, which feed SQL.
 
+**Whether a session is at rest somewhere a prompt can be handed to it has one answer too:
+`Session#idle?`** — `needs_input` or `waiting`. The queue's schedulers and `EnqueuedMessageDrainJob`
+ask it (see [A session does not idle on its own queue](#a-session-does-not-idle-on-its-own-queue) below), and
+so do the doors that deliver straight to an idle session: the web follow-up form, a trigger's direct
+delivery, an MCP App widget's send-now, `RecoveryContinuationJob`, and `AgentSessionJob`'s immediate
+auto-continue after an interrupt. Each keeps its own refusal. It overlaps `in_turn_state?` on
+`waiting`, which is where a queued turn sits and also where a session rests with none; neither reads
+the job rows. `test/contracts/idle_contract_test.rb` fails on a new `needs_input? || waiting?` chain
+under `app/` or `lib/`. Wider chains pass, such as `DeploymentRecoveryJob`'s
+`needs_input? || waiting? || failed?`.
+
 The three follow-up routes share one queue writer, `Sessions::QueueFollowUp`. It reads the tail of
 the queue under a row lock on the session, so two follow-ups sent at once through these routes land
 at consecutive positions rather than colliding on the queue's unique position. It also writes the one timeline row all three leave
@@ -509,7 +520,7 @@ caller delivery *"when the session becomes idle"*, and a session resting in `wai
 an `open-pr` self-wake, slept by `action_session sleep`, resting after a park — already is. Nothing
 was scheduled to come back for those rows at all: a `Github::PrStatusEvaluator` merged-PR notice
 was queued onto session 6377 at `22:56Z`, and was still `pending` when `Sessions::ArchiveGuard`
-named it five hours and nine minutes later. `Session#idle_for_queued_delivery?` is the one predicate
+named it five hours and nine minutes later. `Session#idle?` is the one predicate
 both schedulers read, and it is `needs_input? || waiting?`.
 
 Most of that already happened before this transition. `AgentSessionJob` drains the queue at each

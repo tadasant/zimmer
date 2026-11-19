@@ -4244,7 +4244,7 @@ class AgentSessionJob < ApplicationJob
     # cron, which is exactly the dead air this immediate continue exists to close.
     # `claim_system_recovery_turn!` below is the authoritative check either way,
     # and it refuses a `waiting` session that already has a turn queued.
-    unless session.needs_input? || session.waiting?
+    unless session.idle?
       Rails.logger.warn "[AgentSessionJob] Cannot auto-continue session #{session.id}: " \
                         "not at rest in needs_input or waiting (#{session.status})"
       return

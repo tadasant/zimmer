@@ -150,7 +150,7 @@ class QueuedTurnNotDoubleStartedTest < ActiveJob::TestCase
 
   # === the queued-message drain ==============================================
   #
-  # The drain reads `waiting` as "idle" (Session#idle_for_queued_delivery?) and
+  # The drain reads `waiting` as "idle" (Session#idle?) and
   # stood down on `running_job_id` alone, which is BLANK for a queued turn: the
   # three paths that resume through a claim all write `running_job_id: nil` and
   # then enqueue without recording one. So a queued turn was invisible to it.

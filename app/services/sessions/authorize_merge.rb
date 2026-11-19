@@ -53,7 +53,7 @@ module Sessions
   #     explicit about, because "queued" would otherwise mean "whenever it happens
   #     to wake". It does not: EnqueuedMessage's after_create_commit schedules
   #     EnqueuedMessageDrainJob for any session already idle by
-  #     Session#idle_for_queued_delivery?, which covers BOTH resting states. The
+  #     Session#idle?, which covers BOTH resting states. The
   #     message wakes it.
   #
   # The origin stays `caller`, the default, rather than a new automated_* one.

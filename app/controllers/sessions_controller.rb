@@ -1453,7 +1453,7 @@ class SessionsController < ApplicationController
     end
 
     # Validate session is in the correct status (waiting or needs_input after potential pause)
-    unless @session.waiting? || @session.needs_input?
+    unless @session.idle?
       respond_to_follow_up_error("Cannot send follow-up prompts when session is #{@session.status}. Session must be waiting or needs input.")
       return
     end

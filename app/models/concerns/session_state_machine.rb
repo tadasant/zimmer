@@ -1317,8 +1317,8 @@ module SessionStateMachine
     needs_input?
   end
 
-  # Whether this session is resting somewhere a queued message could be handed to
-  # it, rather than mid-turn or gone.
+  # Whether this session is at rest somewhere a prompt could be handed to it,
+  # rather than mid-turn or gone: `needs_input` or `waiting`.
   #
   # BOTH resting states answer true, and that is the whole point. Zimmer's queue
   # surfaces — the web form, `POST /api/v1/sessions/:id/enqueued_messages`, MCP
@@ -1332,9 +1332,23 @@ module SessionStateMachine
   # else. Whether a PARTICULAR `waiting` session should be handed a message right
   # now — asleep at the spot gate, parked on an auth outage, never started — is
   # EnqueuedMessageDrainJob#skip_reason's question, asked once, under the job's
-  # own re-read. Two callers ask this one (the after-create hook and the pause
-  # callback) and both of them only decide whether to SCHEDULE that job.
-  def idle_for_queued_delivery?
+  # own re-read. The queue's after-create hook and the pause callback ask it only
+  # to decide whether to SCHEDULE that job, and the drain asks it again under that
+  # re-read.
+  #
+  # The doors that hand an idle session a prompt directly ask it too, rather than
+  # spelling the states out: the web follow-up form, Trigger#follow_up_session!'s
+  # direct delivery, McpApps::WidgetMessage's send-now, and the two recovery
+  # continues (RecoveryContinuationJob and AgentSessionJob's immediate
+  # auto-continue). Each keeps its own refusal; only the rule is shared.
+  # `test/contracts/idle_contract_test.rb` fails on a new `needs_input? || waiting?`
+  # chain in Ruby under app/ or lib/.
+  #
+  # Overlaps #in_turn_state? on `waiting`, which is both where a queued turn sits
+  # and where a session rests with none; the two read the state, not the job rows.
+  #
+  # @return [Boolean]
+  def idle?
     needs_input? || waiting?
   end
 
@@ -1798,7 +1812,7 @@ module SessionStateMachine
   # SKIP LOCKED` claim, and the job's DELAY is what keeps it out of
   # Sessions::InterruptService's way.)
   def drain_enqueued_messages_after_pause
-    return unless idle_for_queued_delivery?
+    return unless idle?
     return unless enqueued_messages.pending.exists?
 
     # Enqueued after commit, not inline. The job re-reads the session, so it
