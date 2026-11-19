@@ -242,15 +242,20 @@ for the Anthropic models on OpenRouter those rates *are* the published ones, so 
 reproduces the cost Pi recorded beside the volumes to the cent. Measured across the three
 production Pi sessions that existed when this shipped: $0.582929 either way.
 
-:::caution[Pi's non-Anthropic models are unpriced]
+:::note[Pi's non-Anthropic models are priced by alias]
 `ModelCatalog` also offers Pi OpenRouter's GPT-mini, Gemini, Grok, Kimi and GLM aliases
-(`openrouter/~openai/gpt-mini-latest` and so on). `TokenPricing` carries Anthropic rates only, and it
-derives its cache rates from a multiplier relationship that holds across the Anthropic line
-and does not hold for those — OpenAI bills nothing for a cache write, Gemini bills a
-storage rate. So a Pi session on one of them lands with its **tokens** correct and its **cost
-at zero**, and shows up in the Token Spend page's unpriced-models list. That is the existing honest
-behaviour for a model with no rate, not a Pi-specific bug; pricing them needs `Rate` to carry
-explicit cache rates, which is a separate change.
+(`openrouter/~openai/gpt-mini-latest` and so on). `TokenPricing::RATES` carries a row per alias at
+the price OpenRouter publishes for it in `GET /api/v1/models`, with that vendor's own cache-read and
+cache-write rates rather than Anthropic's multipliers (a vendor with no listed write price is
+charged its input rate for a written token). The rows are keyed by the alias, never a bare vendor
+word, so Codex's plan-billed `gpt-*` models stay unpriced. An alias floats, so its row needs a
+re-check when OpenRouter moves it; a pinned id added through `manage_models`
+(`openrouter/google/gemini-3.5-pro`) matches no row and stays unpriced until one is added.
+`test/services/token_pricing_test.rb` fails when a model `ModelCatalog` offers Pi has no rate.
+
+An unpriced model is reported in two kinds, on this page and in `get_costs`: **metered and
+unpriced** (a Pi model — money owed, amount unknown) and **plan-billed** (Codex — volume with no
+per-token money). The [Costs page](/operate/operating-costs/) raises a stale reason for the first.
 :::
 
 History is covered twice over, and it needs both. A one-time

@@ -133,7 +133,7 @@ Two paths, and Zimmer itself never calls a vendor's billing API.
 1. Derives what Zimmer's own ledgers show onto the account carrying the matching `derived_source`:
    `live_voice_metered` (metered Live voice events — Claude delegations are subscription-billed and
    not money) and `pi_token_spend` (the Pi runtime's token rows at list price). Days are the app
-   time zone's.
+   time zone's. Any derived figure in the 35-day window for a day it no longer derives is removed.
 2. Rebuilds every account's daily series over the trailing 400 days, so a subscription keeps
    accruing on days nothing was reported.
 3. Re-splits the current and previous month.
@@ -141,6 +141,20 @@ Two paths, and Zimmer itself never calls a vendor's billing API.
 
 It is idempotent: a second run the same day writes nothing new. *Collect now* on the page, `collect_now`
 over REST or MCP, runs it immediately.
+
+**Unpriced usage is never a figure.** Pi is metered by OpenRouter, so a Pi call on a model
+`TokenPricing` has no rate for is money owed at an unknown amount. A day whose only Pi usage is
+unpriced gets no observation at all, rather than a $0 that reads as "nothing owed". A day with some
+priced usage records the priced part as a floor, and its evidence names the models it left out.
+Either way the page and every `get_operating_costs` view carry a `stale_reasons` entry naming the
+account and the unpriced models, until a rate is added in `TokenPricing::RATES` or the usage ages
+out of the 35-day window. A day with no usage stays quiet.
+
+**A derived account goes stale when its source outruns it.** The `derived` ingest method is exempt
+from the "no observation in two days" rule, because a quiet source writes nothing. Instead, a
+derived account reads as stale when its source had priced usage on a day before yesterday that is
+newer than the account's latest observation, or when it has unpriced usage in the window. The
+reason says which day is missing.
 
 **The write contract** — everything else: vendor invoices, card charges, credit balances,
 subscriptions. A daily agent session (a Trigger row) or a person writes through one action set,

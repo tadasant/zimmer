@@ -29,7 +29,7 @@
 
     <% if @report.stale_reasons.any? %>
       <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3" id="costs-stale">
-        <p class="text-sm font-medium text-amber-900">These figures may be out of date.</p>
+        <p class="text-sm font-medium text-amber-900">These figures may be incomplete or out of date.</p>
         <ul class="mt-1 text-sm text-amber-800 list-disc pl-5 break-words">
           <% @report.stale_reasons.each do |reason| %><li><%= reason %></li><% end %>
         </ul>

@@ -34,6 +34,34 @@ class TokenPricingTest < ActiveSupport::TestCase
     assert_nil TokenPricing.family_for(nil)
   end
 
+  # OpenRouter's published price for each floating alias ModelCatalog offers Pi
+  # (GET https://openrouter.ai/api/v1/models, 2026-11-19), per MTok.
+  test "the non-Anthropic models offered to Pi carry OpenRouter's published rates, cache rates included" do
+    expected = {
+      "openrouter/~openai/gpt-mini-latest" => [ 0.75, 4.5, 0.075, 0.75 ],
+      "openrouter/~google/gemini-pro-latest" => [ 2.0, 10.0, 0.1, 0.1875 ],
+      "openrouter/~google/gemini-flash-latest" => [ 1.5, 7.5, 0.075, 0.083333 ],
+      "openrouter/~x-ai/grok-latest" => [ 2.0, 6.0, 0.5, 0.0 ],
+      "openrouter/~moonshotai/kimi-latest" => [ 0.1824, 11.0055, 0.18, 0.1824 ],
+      "openrouter/~z-ai/glm-latest" => [ 0.0699, 1.4, 0.0689, 0.0699 ]
+    }
+    expected.each do |model, (input, output, read, write)|
+      rate = TokenPricing.rate_for(model)
+      assert_equal [ input, output, read, write, write ],
+        [ rate.input, rate.output, rate.cache_read, rate.cache_write_5m, rate.cache_write_1h ], model
+    end
+  end
+
+  test "every model ModelCatalog offers Pi has a rate, so a newly offered one without one is caught here" do
+    ModelCatalog::MODELS.fetch("pi").each { |entry| assert TokenPricing.priced?(entry[:id]), "#{entry[:id]} has no rate" }
+  end
+
+  test "the OpenRouter rows do not price Codex's plan-billed models or a pinned OpenRouter id" do
+    %w[gpt-5.6-sol gpt-5.5-mini openrouter/google/gemini-3.5-pro openrouter/z-ai/glm-5.3].each do |model|
+      assert_not TokenPricing.priced?(model), model
+    end
+  end
+
   test "an unknown model prices at zero rather than guessing a rate" do
     # A wrong rate is worse than a visibly missing one: it lands inside a total
     # that reads as authoritative. CostAnalytics#unpriced_models surfaces these.

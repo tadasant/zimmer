@@ -17,16 +17,23 @@
 # Sonnet and Haiku alike. Deriving them means a new model needs two numbers
 # instead of five, and makes the "cache write costs double a fresh input token"
 # relationship legible rather than something you have to spot across a table.
+# The OpenRouter-served non-Anthropic models are the exception: their vendors
+# price caching differently, so their rows carry the published cache figures.
 module TokenPricing
   # Per million tokens, USD.
-  Rate = Struct.new(:input, :output, keyword_init: true) do
+  #
+  # `cache_read_rate` / `cache_write_rate` are for a vendor whose cache pricing
+  # does not follow Anthropic's multipliers: when given, they are the published
+  # per-MTok figures and replace the derived ones (one write rate for both TTLs,
+  # since only Anthropic distinguishes them).
+  Rate = Struct.new(:input, :output, :cache_read_rate, :cache_write_rate, keyword_init: true) do
     # Rounded because the derived rates are money, and binary floats are not:
     # 3.0 * 0.1 is 0.30000000000000004, which would otherwise reach the API's
     # published rate table and the generated SQL looking like a mistake. Six
     # places is far finer than any real per-MTok rate.
-    def cache_read = derive(CACHE_READ_MULTIPLIER)
-    def cache_write_5m = derive(CACHE_WRITE_5M_MULTIPLIER)
-    def cache_write_1h = derive(CACHE_WRITE_1H_MULTIPLIER)
+    def cache_read = cache_read_rate || derive(CACHE_READ_MULTIPLIER)
+    def cache_write_5m = cache_write_rate || derive(CACHE_WRITE_5M_MULTIPLIER)
+    def cache_write_1h = cache_write_rate || derive(CACHE_WRITE_1H_MULTIPLIER)
 
     private
 
@@ -52,7 +59,26 @@ module TokenPricing
     "mythos" => Rate.new(input: 10.0, output: 50.0),
     "opus" => Rate.new(input: 5.0, output: 25.0),
     "sonnet" => Rate.new(input: 3.0, output: 15.0),
-    "haiku" => Rate.new(input: 1.0, output: 5.0)
+    "haiku" => Rate.new(input: 1.0, output: 5.0),
+    # The non-Anthropic models ModelCatalog offers the Pi runtime, keyed by the
+    # OpenRouter floating alias (`openrouter/~google/gemini-pro-latest`), at the
+    # price OpenRouter publishes for that alias in GET /api/v1/models — checked
+    # 2026-11-19. Pi is metered, so these are money owed, not a comparable unit.
+    #
+    # The key is the alias, never a bare vendor word: `gpt` would also price
+    # every Codex model, which is plan-billed. An alias floats, so re-check its
+    # row when OpenRouter moves it to a new model. A pinned id
+    # (`openrouter/google/gemini-3.5-pro`) matches none of these and stays
+    # unpriced on purpose, which the Costs page reports as unknown money owed.
+    # Prompts above a vendor's long-context threshold bill higher; these are the
+    # base tier. Where OpenRouter lists no cache-write price, a written token is
+    # charged as a fresh input token.
+    "gpt-mini-latest" => Rate.new(input: 0.75, output: 4.5, cache_read_rate: 0.075, cache_write_rate: 0.75),
+    "gemini-pro-latest" => Rate.new(input: 2.0, output: 10.0, cache_read_rate: 0.1, cache_write_rate: 0.1875),
+    "gemini-flash-latest" => Rate.new(input: 1.5, output: 7.5, cache_read_rate: 0.075, cache_write_rate: 0.083333),
+    "grok-latest" => Rate.new(input: 2.0, output: 6.0, cache_read_rate: 0.5, cache_write_rate: 0.0),
+    "kimi-latest" => Rate.new(input: 0.1824, output: 11.0055, cache_read_rate: 0.18, cache_write_rate: 0.1824),
+    "glm-latest" => Rate.new(input: 0.0699, output: 1.4, cache_read_rate: 0.0689, cache_write_rate: 0.0699)
   }.freeze
 
   # Unknown models price at zero rather than guessing. A wrong rate is worse than

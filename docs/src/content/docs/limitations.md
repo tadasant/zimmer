@@ -2034,7 +2034,7 @@ every server `pending` for that turn, correctly: nothing connected, because noth
 | Skills | ✅ works | `air prepare pi` installs them into `.pi/skills/` — the one artifact `adapter-pi` handles natively |
 | AIR hooks | ✅ works | Live `pi 0.84.4` + `@tadasant/pi-hooks@0.2.0`: the reminder hook rewrote a `bash` tool result the model then read, and so did a hook speaking only Claude Code's dialect (below) |
 | AIR plugins | ✅ works | `screenshots-videos` activated; its two bundled MCP servers reached the session |
-| Token-usage / cost ingestion | ⚠️ tokens work, cost works on the Anthropic models | `PiTokenUsageIngestionService` reads `sessions.transcript`; 12 calls / $0.582929 across the three sessions above, matching Pi's own figure exactly. Pi's OpenAI and Google models are unpriced (below) |
+| Token-usage / cost ingestion | ✅ tokens and cost work on every offered model | `PiTokenUsageIngestionService` reads `sessions.transcript`; 12 calls / $0.582929 across the three sessions above, matching Pi's own figure exactly. Pi's other models are priced by OpenRouter alias (below) |
 | Status summary by forking the session | ❌ does not work | `PiAuthProvider` pools no accounts (below) |
 | Retrying a failed model call | ❌ does not work | Pi reports the failure but exposes no retry (below) |
 
@@ -2146,16 +2146,13 @@ and timestamps all land, and for the Anthropic models on OpenRouter the money la
 list rates `TokenPricing` already carries *are* the rates OpenRouter publishes for them, so
 Zimmer's figure reproduces the cost Pi recorded beside the volumes to the cent.
 
-What does not work is the other half of Pi's model catalog. `openrouter/~openai/gpt-mini-latest`,
-the Gemini, Grok, Kimi and GLM aliases have no rate in `TokenPricing`, so a
-Pi session on one of them lands with correct tokens and **zero cost**, and appears in the
-Token Spend page's unpriced-models list. `TokenPricing` derives a model's three cache rates from its
-input rate by a multiplier relationship that is uniform across Anthropic's line and simply
-false elsewhere — OpenAI charges nothing for a cache write, Gemini charges a storage rate — so
-pricing them means teaching `Rate` to carry explicit cache rates rather than adding two
-numbers. The deployment's default Pi model is `openrouter/~anthropic/claude-opus-latest`, so this
-is the tail rather than the common case, and an unpriced model is *visibly* unpriced rather
-than silently under-counted.
+The rest of Pi's model catalog — `openrouter/~openai/gpt-mini-latest` and the Gemini, Grok,
+Kimi and GLM aliases — is priced at OpenRouter's published price for each alias, with explicit
+cache rates. Two edges remain. An alias floats, so when OpenRouter moves it to a new model the
+row is wrong until someone re-checks it. And prompts above a vendor's long-context threshold bill
+higher than the base-tier rate stored. A pinned OpenRouter id added through `manage_models` has no
+rate until one is added; its usage is reported as metered and unpriced, and the Costs page carries
+a stale reason for it rather than a $0.
 
 ### `sol` runs as the CLI's default on a ChatGPT plan that does not offer Sol
 

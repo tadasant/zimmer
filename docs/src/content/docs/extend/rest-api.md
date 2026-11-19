@@ -1582,8 +1582,9 @@ kept its name when the page was renamed, because installed iOS builds call it. W
 deployment costs in real money is [Operating costs](#operating-costs) below.
 
 `GET /api/v1/costs` → rollups over a window: `totals`, `cost_breakdown` (by kind of token),
-`by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`, and
-`unpriced_models`. Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
+`by_day`, `by_agent_root`, `by_model`, `by_thread_kind`, `by_adhoc_source`, `top_sessions`,
+`unpriced_models`, and `unpriced_metered_models` (the subset the Pi runtime called — metered money
+owed at an unknown amount, where the rest are plan-billed volume). Window is `days` (default 7, clamped 1–365) or explicit `from`/`to`.
 
 On the whole fleet the response also carries `burn_rates`: the Token Spend page's
 [burn rate card](/operate/costs/#burn-rate-by-harness--model) as

@@ -95,6 +95,16 @@ class Mcp::Tools::GetCostsTest < ActiveSupport::TestCase
     assert_match "claude-unreleased-9", output
   end
 
+  test "tells metered-and-unpriced Pi models apart from plan-billed Codex ones" do
+    usage(model: "openrouter/example/unpriced-model", agent_runtime: "pi")
+    usage(model: "gpt-5.6-sol", agent_runtime: "codex")
+
+    output = @tool.call({})
+
+    assert_match "**Metered and unpriced** (Pi via OpenRouter: money owed, amount unknown): `openrouter/example/unpriced-model`", output
+    assert_match "**Plan-billed** (no per-token money, volume only): `gpt-5.6-sol`", output
+  end
+
   test "clamps an out-of-range window rather than scanning everything" do
     usage(called_at: 2.hours.ago)
 
