@@ -191,9 +191,29 @@ class ApplicationHelperTest < ActionView::TestCase
     assert_includes result, "</del>"
   end
 
-  test "markdown renders superscript" do
-    result = markdown("2^10^")
-    assert_includes result, "<sup>"
+  test "markdown leaves carets and double equals in prose alone" do
+    result = markdown("O(n^2) vs O(n^3), and a==b && c==d")
+    assert_not_includes result, "<sup>"
+    assert_not_includes result, "<mark>"
+    assert_includes result, "O(n^2) vs O(n^3), and a==b &amp;&amp; c==d"
+  end
+
+  test "markdown keeps a code span in image alt text as plain text" do
+    img = Nokogiri::HTML5.fragment(markdown("![a `<b>` c](https://example.com/u.png)")).at_css("img")
+    assert_equal "a <b> c", img["alt"]
+  end
+
+  test "markdown drops an image with an unsafe source to its alt text" do
+    fragment = Nokogiri::HTML5.fragment(markdown("![pic](javascript:alert(1))"))
+    assert_empty fragment.css("img")
+    assert_includes fragment.text, "pic"
+  end
+
+  test "markdown keeps a code block that ends a footnote well formed" do
+    html = markdown("x[^1]\n\n[^1]: note\n\n    ```\n    code\n    ```\n")
+    fragment = Nokogiri::HTML5.fragment(html)
+    assert fragment.at_css("section.footnotes pre.highlight")
+    assert_equal html.scan("<p>").size, html.scan("</p>").size
   end
 
   test "markdown renders headings" do

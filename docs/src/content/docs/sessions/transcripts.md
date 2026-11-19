@@ -236,8 +236,10 @@ the dialect agents write. A message renders the way GitHub would render it:
   blank line between.
 - Tables render inside list items and blockquotes as well as at the top level. Each is wrapped in
   a `.table-wrapper` that scrolls sideways on a phone rather than widening the page.
-- Strikethrough, footnotes, `2^10^` superscript, `==highlight==` and bare URLs made into links
-  are on. A line ends in a line break, as a chat message does.
+- Strikethrough, footnotes, task-list checkboxes, emoji shortcodes such as `:+1:`, and bare URLs
+  made into links are on, as on GitHub. Superscript and `==highlight==` are off: neither is GFM,
+  and both would pair up the `^` in `O(n^2)` and the `==` in `a==b` that agents write in prose. A
+  line ends in a line break, as a chat message does.
 
 Two things are Zimmer's own. A code block is highlighted by Rouge, and a code span gets the
 `inline-code` class. Both are swapped for a random per-render token before comrak renders the

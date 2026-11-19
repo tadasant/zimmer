@@ -42,9 +42,13 @@ module ApplicationHelper
         strikethrough: true,
         table: true,
         autolink: true,
-        superscript: true,
+        tasklist: true,
         footnotes: true,
-        highlight: true,
+        shortcodes: true,
+        # Off, though comrak has them: neither is GFM, and both pair up characters
+        # agents write in prose — `O(n^2) vs O(n^3)` and `a==b && c==d`.
+        superscript: false,
+        highlight: false,
         header_ids: nil
       }
     }.freeze
@@ -57,7 +61,16 @@ module ApplicationHelper
       code = swap_code_for_tokens(document, nonce)
 
       html = decorate(document.to_html(options: OPTIONS, plugins: { syntax_highlighter: nil }))
-      html.gsub(%r{(?:<p>)?zmdblock#{nonce}n(\d+)z(?:</p>)?|zmdspan#{nonce}n(\d+)z}) { code.fetch(($1 || $2).to_i) }
+      html.gsub(%r{(<p>)?zmdblock#{nonce}n(\d+)z(</p>)?|zmdspan#{nonce}n(\d+)z}) do
+        if $2
+          # The token's paragraph is normally `<p>TOKEN</p>`, or bare in a tight
+          # list. A footnote's back-reference can land inside it, after the token;
+          # then the paragraph reopens for what follows.
+          code.fetch($2.to_i) + ($1 && !$3 ? "<p>" : "")
+        else
+          code.fetch($4.to_i)
+        end
+      end
     end
 
     # Rouge-highlighted code block.
@@ -87,7 +100,11 @@ module ApplicationHelper
       document.walk { |node| nodes << node if node.type == :code_block || node.type == :code }
 
       nodes.each_with_index.map do |node, index|
-        if node.type == :code_block
+        if node.type == :code && inside_image?(node)
+          # An image's alt text is an attribute value, where HTML cannot go.
+          node.replace(Commonmarker::Node.new(:text, content: node.string_content))
+          nil
+        elsif node.type == :code_block
           paragraph = Commonmarker::Node.new(:paragraph)
           paragraph.append_child(Commonmarker::Node.new(:text, content: "zmdblock#{nonce}n#{index}z"))
           node.replace(paragraph)
@@ -100,14 +117,22 @@ module ApplicationHelper
       end
     end
 
+    def inside_image?(node)
+      while (node = node.parent)
+        return true if node.type == :image
+      end
+      false
+    end
+
     # Classes and attributes the stylesheet and the link behaviour key on. Every
     # tag matched here was written by comrak: raw HTML in the source has already
     # been escaped, and the Rouge output is substituted only afterwards. A link
-    # comrak emptied because its scheme was unsafe keeps its text and loses the
-    # anchor, so nothing clickable is left behind.
+    # or image comrak emptied because its scheme was unsafe is left as its text,
+    # so nothing clickable or fetchable is left behind.
     def decorate(html)
       html
         .gsub(%r{<a href=""(?: title="[^"]*")?>(.*?)</a>}m, '\\1')
+        .gsub(%r{<img src="" alt="([^"]*)"(?: title="[^"]*")? />}, '\\1')
         .gsub("<table>", %(<div class="table-wrapper"><table class="markdown-table">))
         .gsub("</table>", "</table></div>")
         .gsub("<blockquote>", %(<blockquote class="markdown-blockquote">))
@@ -115,8 +140,8 @@ module ApplicationHelper
     end
   end
 
-  # Render markdown text as HTML with syntax highlighting
-  # Uses filter_html: true to prevent XSS attacks
+  # Render markdown text as HTML with syntax highlighting (see MarkdownRenderer
+  # for how raw HTML and unsafe links are kept out).
   # Rescues rendering errors so a single bad message never crashes the whole page
   def markdown(text)
     return "" if text.blank?
