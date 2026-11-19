@@ -44,7 +44,8 @@ class Mcp::Tools::CompareTriggerFiresTest < ActiveSupport::TestCase
       name: "Zimmer inbox", status: "enabled", agent_root_name: "zimmer", prompt_template: "{{message_id}} {{text|untrusted}}",
       trigger_conditions_attributes: [ { condition_type: "email", configuration: { "query" => "in:inbox" } } ]
     )
-    # One email fire covers a thread's two new messages; the MCP shadow fires once per message.
+    # One email fire covers a thread's two new messages; the MCP shadow fires once per message. The
+    # server segment of the shadow's key is stripped whatever it names, so the fixture's slug serves.
     claim(email, "gmail:18c0a1", at: 1.hour.ago, via: "email_record")
     claim(email, "gmail:18c0a2", at: 1.hour.ago, via: "email_record")
     claim(@shadow, "mcp:slack-zimmer:gmail:18c0a1", at: 1.hour.ago + 30.seconds, via: "mcp_event")

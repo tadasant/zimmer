@@ -753,8 +753,9 @@ A fire that spawned a session, or delivered a follow-up into a reused one, also 
 it carried as a `gmail:<message id>` claim (`email_record`) with that session on it, in the same
 transaction. The key is the Gmail id `{{message_id}}` renders. The seen-set, not the claim, decides
 what fires; the claim is what [`compare_trigger_fires`](#parity-comparing-two-triggers-fires) lines
-up against a shadow trigger's fires. A held, burst-suppressed or skipped message records nothing,
-and neither does the mail that opens a burst, since only the burst notice was spawned for it.
+up against a shadow trigger's fires. A burst-suppressed or skipped message records nothing, and
+neither does the mail that opens a burst, since only the burst notice was spawned for it. A held
+message records nothing until the tick that fires it.
 
 The search filters on nothing the classifier in step 2 decides. A message the search leaves out is
 one the poller never sees, so nothing can log it
@@ -996,8 +997,8 @@ and a Gmail event whose eventId is `gmail:<message id>` meets an `email` conditi
 same mail. One email fire covers a thread's new messages, so each of them is claimed against the
 same session, where a per-message event source fires a session each. An `email` condition drops
 mail that burst control stopped, and skips automated mail unless `include_automated`; an
-`mcp_event` condition retries a held event and filters only on `payload_filters`. Either shows up as
-`only_b` by design, so read the sessions before calling one a miss. It
+`mcp_event` condition retries a held event and filters only on `payload_filters`. Either shows up on
+the shadow's side only (`only_b` when the email trigger is A) by design, so read the sessions before calling one a miss. It
 reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
 sessions. It decides nothing; a parity session reads it and judges. Claims are kept 30 days, so that
 is the furthest back it can see.

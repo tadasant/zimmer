@@ -404,7 +404,7 @@ class EmailTriggerPollerJob < ApplicationJob
   # and a per-message event source fires on each. A burst notice is not a fire for the mail that
   # opened the burst, so it records nothing.
   def record_fire!(condition, messages, session)
-    return if session.metadata.to_h["burst_notice"]
+    return if session.metadata["burst_notice"]
 
     keys = messages.map { |message| TriggerEventClaim.email_event_key(message.id) }
     TriggerEventClaim.claim!(condition, keys, via: "email_record", session_id: session.id)

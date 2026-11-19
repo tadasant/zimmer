@@ -117,7 +117,7 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "gmail:m2", TriggerEventClaim.natural_key(TriggerEventClaim.mcp_event_key("gmail-zimmer", "gmail:m2"))
   end
 
-  test "a held fire records nothing until it fires; a fire that raises leaves no record" do
+  test "a held fire records nothing until it fires; a fire rolled back after recording leaves no record" do
     @trigger.update!(skip_if_pending_session: true)
     baseline!
     @server.deliver(id: "p1", thread_id: "p1", received_at: @now)
@@ -127,12 +127,16 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal %w[gmail:p1], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
 
     spawned_sessions.first.update_columns(status: "archived")
-    Trigger.any_instance.stubs(:create_session!).raises(RuntimeError, "boom")
+    # The fire spawns and records, then the seen-set write after it raises: the claim and the
+    # session roll back together.
+    TriggerCondition.any_instance.stubs(:update!).raises(RuntimeError, "boom")
     ErrorReporter.stubs(:report_exception)
-    EmailTriggerPollerJob.perform_now
+    assert_no_difference -> { spawned_sessions.count } do
+      EmailTriggerPollerJob.perform_now
+    end
     assert_equal %w[gmail:p1], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
 
-    Trigger.any_instance.unstub(:create_session!)
+    TriggerCondition.any_instance.unstub(:update!)
     EmailTriggerPollerJob.perform_now
     p2 = spawned_sessions.find { |session| session.metadata["email_message_id"] == "p2" }
     assert_equal p2.id, TriggerEventClaim.find_by(trigger_condition: @condition, event_key: "gmail:p2").session_id
