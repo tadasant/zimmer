@@ -72,7 +72,8 @@
     <%# Tiles %>
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6" id="costs-tiles">
       <% [
-           [ @report.current_month? ? "This month so far" : @report.month.strftime("%B"), totals[:month_to_date_usd], nil ],
+           [ @report.current_month? ? "This month so far" : @report.month.strftime("%B"), totals[:month_to_date_usd],
+             totals[:month_to_date_estimated_usd].positive? ? "incl. #{number_to_currency(totals[:month_to_date_estimated_usd], precision: 2)} estimated" : nil ],
            [ "Projected", totals[:month_projected_usd], "this month" ],
            [ "Last month", totals[:previous_month_usd], totals[:billed_share] ? "#{(totals[:billed_share] * 100).round}% from bills" : nil ],
            [ "Going forward", totals[:forward_monthly_usd], "per month · 7-day trend #{number_to_currency(totals[:forward_monthly_trend_usd], precision: 0)}" ]

@@ -27,7 +27,7 @@ today is never half-counted.
 | Credits and run-out | Balance, burn per day, run-out date, expiry, how much of a granted credit is used |
 | Subscriptions | Active fixed charges at their monthly equivalent, with renewal dates |
 | By vendor, By agent root | The same money by who bills it and by which root it is attributed to |
-| Sources and freshness | Per account, how its figures arrive and when the last one did; the latest run of each collector |
+| Sources and freshness | Per account, how its figures arrive and when the last one did; the latest run of each collector. The last figure's date is the newest date a figure speaks for, never later than the day it was recorded, so an invoice for a cycle running into next month counts as fresh the day it arrived, not on its period end. An account is stale after two days without a figure, or 40 for an account billed by invoice |
 | Manage | A form per write, and *Collect now* |
 
 *Only this* on a row narrows the whole page to that functionality, vendor or root. `month=YYYY-MM`
@@ -74,10 +74,14 @@ The two derived tables are rebuilt from those and never written anywhere else:
 
 - **Daily entries** (`OperatingCosts::Ledger`) — one row per account per day. For each day the
   highest-precedence fact wins: an invoice spread over its period (billed); a daily cost, or a
-  running total minus its latest earlier report in the same period, from anything but Zimmer
-  (metered) — a day the total was not reported carries nothing and the next report carries what
-  accrued since, so a missed day moves money rather than losing it; Zimmer's own
-  derived estimate (estimated); active subscriptions prorated. A plan with included usage charges
+  running total's increase, from anything but Zimmer (metered); Zimmer's own derived estimate
+  (estimated); active subscriptions prorated. A running total is spread, not differenced day by
+  day: each report's increase over the previous report in the same period is divided evenly over
+  the days since that report, and the first report of a period over the period up to it. A report
+  that arrives after missed days, or a vendor figure that lags, therefore puts each day's share on
+  that day instead of piling the gap onto one day, and the period's days still sum to its latest
+  total. A total that goes down (a credit or a correction) spreads its drop the same way, as
+  negative days. Days after the latest report carry nothing until the next one. A plan with included usage charges
   its fee plus only the usage past the allowance. Within a rank, `billing_api` beats
   `card_statement`, `agent` and `manual`. Every amount is multiplied by `zimmer_share`.
 - **Monthly allocations** (`OperatingCosts::Allocator`) — each account-month split by agent root
@@ -101,11 +105,16 @@ root, counts as `zimmer-internal`.
 
 - **Forward monthly**: for an account with metered usage, the trailing 28 days' average daily cost ×
   30.44; for an account billed by invoice, the newest invoices' daily rate; for an account with only
-  subscriptions, the active subscriptions at their monthly equivalent. The trend uses the trailing
+  subscriptions, the active subscriptions at their monthly equivalent. An invoice that restates the
+  active subscriptions' charge for its period (within a cent or half a percent) is a fixed seat, not
+  usage, and projects at the subscriptions' monthly equivalent exactly. The trend uses the trailing
   7 days.
-- **This month projected**: month to date, plus the forward rate over the days still to come — and,
-  for an account billed by invoice, over the days its next invoice will cover, since an empty month
-  before the invoice arrives is not a free one.
+- **Month to date**: what the daily entries hold, plus, for an account billed by invoice after the
+  period closes, its forward rate over this month's days through yesterday that no invoice covers
+  yet. An empty month before the invoice arrives is not a free one. That part is an estimate: it is
+  reported apart as `month_to_date_estimated_usd`, the page marks it *estimated, not yet billed*,
+  and it is never a daily entry, so it reaches neither the daily series nor the share from bills.
+- **This month projected**: month to date plus the forward rate over the days after yesterday.
 - **Credits**: burn is the drop in balance over the trailing 28 days; a rise is a top-up and adds
   nothing. Run-out is balance ÷ burn, capped by the expiry date. A **promotional** credit costs
   nothing until it runs out; from then on its burn is added to each forward month.

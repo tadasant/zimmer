@@ -8,8 +8,8 @@ module OperatingCosts
   # anything likes. For each day the highest-precedence fact wins:
   #
   #   1. an `invoice` covering the day, spread evenly over its period (billed)
-  #   2. a `daily_cost`, or the day-over-day difference of a `period_to_date`,
-  #      from anything but `derived` (metered)
+  #   2. a `daily_cost`, or a `period_to_date` running total's increase spread
+  #      evenly over the days it accrued on, from anything but `derived` (metered)
   #   3. a `derived` estimate from Zimmer's own ledgers (estimated)
   #   4. active subscriptions, prorated (monthly × 12 ÷ 365, yearly ÷ 365)
   #
@@ -111,30 +111,52 @@ module OperatingCosts
         return { amount: daily.amount_usd.to_d, basis: "observed", confidence: daily.confidence, source: daily.source }
       end
 
-      differenced(candidates, date, external)
+      spread_running_totals(external)[date]
     end
 
-    def running_totals
-      @running_totals ||= observations.select { |o| o.metric == "period_to_date" }
-    end
-
-    # A running total: the day's cost is today's figure minus the latest earlier
-    # figure in the same period. Days the total was not reported on carry
-    # nothing, and the next report carries everything accrued since, so a missed
-    # day moves money rather than losing it. The first report of a period counts
-    # everything the period accrued before it.
-    def differenced(candidates, date, external)
-      today = pick(candidates.select { |o| o.metric == "period_to_date" })
-      return unless today
-
-      earlier = running_totals.select do |o|
-        o.period_start == today.period_start && o.as_of_date < date && (o.source == "derived") != external
+    # A running total, turned into days. Each report's increase over the
+    # previous report in the same period is spread evenly over the days since
+    # that report; the first report of a period spreads over the period up to
+    # it. So a collector that catches up after missing days, or a vendor whose
+    # figure lags, puts each day's share on that day instead of piling the whole
+    # gap onto the day the figure arrived. The period's days always sum to its
+    # latest total: a total that goes down (a credit or a correction) spreads its
+    # drop over the same days as negative amounts rather than being dropped.
+    # Days after the latest report carry nothing until the next one arrives.
+    #
+    # @return [Hash{Date => Hash}] the day's entry, keyed by date
+    def spread_running_totals(external)
+      @spread ||= {}
+      @spread[external] ||= begin
+        by_day = {}
+        readings = observations.select { |o| o.metric == "period_to_date" && (o.source == "derived") != external }
+        readings.group_by(&:period_start).each do |period_start, in_period|
+          covered_through = nil
+          previous_amount = 0.to_d
+          in_period.group_by(&:as_of_date).sort.each do |as_of, same_day|
+            reading = pick(same_day)
+            last_day = [ as_of, reading.period_end ].compact.min
+            first_day = covered_through ? covered_through + 1 : period_start
+            first_day = [ first_day, last_day ].min
+            spread_over(by_day, first_day..last_day, reading.amount_usd.to_d - previous_amount, reading)
+            covered_through = [ covered_through, last_day ].compact.max
+            previous_amount = reading.amount_usd.to_d
+          end
+        end
+        by_day
       end
-      previous_date = earlier.map(&:as_of_date).max
-      previous = previous_date && pick(earlier.select { |o| o.as_of_date == previous_date })
+    end
 
-      amount = today.amount_usd.to_d - (previous&.amount_usd.to_d || 0)
-      { amount: [ amount, 0 ].max, basis: "differenced", confidence: today.confidence, source: today.source }
+    # Equal shares to four places, the rounding remainder on the last day, so the
+    # days add up to the delta exactly.
+    def spread_over(by_day, days, delta, reading)
+      count = days.count
+      share = (delta / count).round(4)
+      days.each_with_index do |day, i|
+        amount = i == count - 1 ? delta - share * (count - 1) : share
+        prior = by_day[day]&.dig(:amount) || 0
+        by_day[day] = { amount: prior + amount, basis: "differenced", confidence: reading.confidence, source: reading.source }
+      end
     end
 
     # The part of this day's usage above what the active plan includes for its

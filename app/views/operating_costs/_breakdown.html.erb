@@ -42,7 +42,7 @@
                 <div class="h-full rounded-full bg-indigo-500" style="width: <%= max.positive? ? (row[:month_projected_usd].to_f / max * 100).round(1) : 0 %>%"></div>
               </div>
               <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500 tabular-nums">
-                <span>so far <%= number_to_currency(row[:month_to_date_usd], precision: 2) %></span>
+                <span>so far <%= number_to_currency(row[:month_to_date_usd], precision: 2) %><% if row[:month_to_date_estimated_usd].positive? %> <span class="text-amber-700" title="Not billed yet this month: the forward rate over the days no invoice covers yet">(<%= number_to_currency(row[:month_to_date_estimated_usd], precision: 2) %> estimated)</span><% end %></span>
                 <span>last month <%= number_to_currency(row[:previous_month_usd], precision: 2) %></span>
                 <span>forward <%= number_to_currency(row[:forward_monthly_usd], precision: 2) %>/mo</span>
               </div>
@@ -56,6 +56,7 @@
                   </div>
                   <div class="flex flex-wrap gap-x-3 text-gray-400 tabular-nums">
                     <span class="min-w-0 truncate"><%= account[:vendor] %> · <%= account[:allocation_rule].to_s.humanize(capitalize: false) %></span>
+                    <% if account[:month_to_date_estimated_usd].positive? %><span class="text-amber-700">not billed yet this month · <%= number_to_currency(account[:month_to_date_estimated_usd], precision: 2) %> estimated so far</span><% end %>
                     <span>last month <%= number_to_currency(account[:previous_month_usd], precision: 2) %></span>
                     <span>forward <%= number_to_currency(account[:forward_monthly_usd], precision: 2) %>/mo</span>
                   </div>

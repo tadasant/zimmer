@@ -43,19 +43,71 @@ class OperatingCosts::LedgerTest < ActiveSupport::TestCase
     assert_equal 1, @account.daily_entries.count, "replaced, not added"
   end
 
-  test "a running total is differenced against its latest earlier report, so a missed day moves money rather than losing it" do
+  test "consecutive daily reports of a running total each land their own day's increase" do
     period = Date.new(2026, 3, 1)
-    observe(metric: "period_to_date", period_start: period, as_of_date: period + 1, amount: 2)
-    observe(metric: "period_to_date", period_start: period, as_of_date: period + 2, amount: 5)
-    observe(metric: "period_to_date", period_start: period, as_of_date: period + 4, amount: 9)
+    observe(metric: "period_to_date", period_start: period, as_of_date: period, amount: 2)
+    observe(metric: "period_to_date", period_start: period, as_of_date: period + 1, amount: 5)
+    observe(metric: "period_to_date", period_start: period, as_of_date: period + 2, amount: 9)
 
     rebuild
 
-    assert_equal 2, entry(period + 1).amount_usd, "the first report counts everything the period accrued before it"
-    assert_equal 3, entry(period + 2).amount_usd
-    assert_nil entry(period + 3)
-    assert_equal 4, entry(period + 4).amount_usd, "the missed day's spend lands on the next report"
+    assert_equal [ 2, 3, 4 ], (0..2).map { |d| entry(period + d).amount_usd }
+    assert_equal %w[differenced metered], [ entry(period + 1).basis, entry(period + 1).confidence ]
+  end
+
+  test "the first report of a period, made mid-period, spreads over the period up to it" do
+    period = Date.new(2026, 3, 1)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 17), amount: 34)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 18), amount: 36)
+
+    rebuild
+
+    assert_equal [ 2 ] * 18, (1..18).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
+    assert_nil entry(Date.new(2026, 3, 19)), "nothing is invented past the latest report"
+    assert_equal 36, @account.daily_entries.sum(:amount_usd)
+  end
+
+  test "a report after a gap spreads its increase over the days since the previous report" do
+    period = Date.new(2026, 3, 1)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 2), amount: 2)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 6), amount: 14)
+
+    rebuild
+
+    assert_equal [ 1, 1, 3, 3, 3, 3 ], (1..6).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
+    assert_equal 14, @account.daily_entries.sum(:amount_usd)
+  end
+
+  test "an uneven spread puts the rounding remainder on the last day, so the month total is exact" do
+    period = Date.new(2026, 3, 1)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 3), amount: 10)
+
+    rebuild
+
+    assert_equal [ 3.3333, 3.3333, 3.3334 ].map(&:to_d), (1..3).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
+    assert_equal 10, @account.daily_entries.sum(:amount_usd)
+  end
+
+  test "a running total that goes down spreads the drop as negative days, so the period sums to its latest total" do
+    period = Date.new(2026, 3, 1)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 2), amount: 10)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 4), amount: 6)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 5), amount: 9)
+
+    rebuild
+
+    assert_equal [ 5, 5, -2, -2, 3 ], (1..5).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
     assert_equal 9, @account.daily_entries.sum(:amount_usd)
+  end
+
+  test "a new period's first report spreads from its own start, not from the previous period's last report" do
+    observe(metric: "period_to_date", period_start: Date.new(2026, 2, 1), as_of_date: Date.new(2026, 2, 27), amount: 50)
+    observe(metric: "period_to_date", period_start: Date.new(2026, 3, 1), as_of_date: Date.new(2026, 3, 2), amount: 4)
+
+    rebuild(from: Date.new(2026, 2, 1))
+
+    assert_equal 50, @account.daily_entries.where(date: Date.new(2026, 2, 1)..Date.new(2026, 2, 28)).sum(:amount_usd)
+    assert_equal [ 2, 2 ], (1..2).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
   end
 
   test "a subscription accrues daily where nothing else covers the day, within its dates" do
