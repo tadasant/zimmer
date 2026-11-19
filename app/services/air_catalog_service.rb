@@ -564,6 +564,8 @@ class AirCatalogService
     # rather than like prose — the same three conditions TranscriptRedactor puts
     # on a known value, for the same reason: replacing a short, spaced or
     # ordinary-word value would shred the error rather than protect anything.
+    # A value on TranscriptRedactor's known-value allowlist (the instance's own
+    # base URL) is public and left in place, as it is in a transcript.
     #
     # @return [Array<Array(String, String)>] [name, value] pairs
     def redactable_secrets
@@ -571,6 +573,7 @@ class AirCatalogService
         ENV.select { |name, _value| name.match?(TranscriptRedactor::SENSITIVE_KEY) }.to_a
       candidates
         .select { |_name, value| redactable_value?(value) }
+        .reject { |name, value| TranscriptRedactor.allowlisted?(name, value) }
         .uniq { |_name, value| value }
         .sort_by { |_name, value| -value.length }
     end

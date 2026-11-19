@@ -1057,6 +1057,17 @@ class AirCatalogServiceTest < ActiveSupport::TestCase
     assert_equal "Pins not saved: 401 using [REDACTED:AIR_GITHUB_TOKEN]", scrubbed
   end
 
+  test "redact_secrets leaves an allowlisted public value in place and still scrubs the credentials beside it" do
+    token = "ghp_#{"q" * 36}"
+    bundle = { "ZIMMER_PROD_BASE_URL" => "https://zimmer.example.test", "AIR_GITHUB_TOKEN" => token }
+
+    scrubbed = SecretsLoader.stub(:all, bundle) do
+      AirCatalogService.redact_secrets("fetch https://zimmer.example.test/catalog failed with #{token}")
+    end
+
+    assert_equal "fetch https://zimmer.example.test/catalog failed with [REDACTED:AIR_GITHUB_TOKEN]", scrubbed
+  end
+
   test "scrubs a credential Zimmer holds out of the recorded resolve failure" do
     token = "ghp_#{"z" * 36}"
 

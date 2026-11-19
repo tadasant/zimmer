@@ -263,7 +263,8 @@ It works in two tiers:
 
   Each value is also matched in its JSON-escaped form, one level deep. These are exact string
   matches, so they never fire on text that is not the value, and they cover Zimmer-specific
-  credential formats no regex could know about.
+  credential formats no regex could know about. Values on the [known-value
+  allowlist](#public-values-are-not-credentials) are left out.
 - **Shapes.** High-confidence patterns — `sk-ant-oat01…`, `ghp_…`, `xoxb-…`, JWTs, PEM blocks,
   `Authorization: Bearer …`, credentials embedded in a URL, and a value sitting immediately after
   a name that says "credential". Ported from the upstream reference redactor and extended with
@@ -302,6 +303,35 @@ length and the framing can tell "that was my `GITHUB_TOKEN`" from "something her
 The character count is disclosed on purpose: redaction is defense in depth over material already
 treated as secret, most labels imply the length anyway, and the count is what lets a reader recognise
 their own value in the gap.
+
+### Public values are not credentials
+
+Tier 1 matches the value of every variable it can see, and some of those variables hold public
+configuration. The instance's own base URL is the one that hurt: it sits in the secret bundle, so every
+session link an agent wrote came back as `[REDACTED:ENV:ZIMMER_PROD_BASE_URL:27ch]/sessions/N`
+([session 29283](https://zimmer.tadasant.com/sessions/29283)), although the same URL is in every
+session's system prompt.
+
+So tier 1 skips values on an explicit allowlist:
+
+- **By variable name.** `ZIMMER_PROD_BASE_URL`, `ZIMMER_STAGING_BASE_URL` and
+  `ZIMMER_LOCAL_BASE_URL` are on it by default. A deployment adds more with
+  `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`, comma-separated. A name is the better key: it keeps
+  working when the value changes.
+- **By literal value.** `TRANSCRIPT_REDACTION_ALLOWLIST_VALUES`, comma-separated, for a public value
+  that sits under a variable you would rather not exempt by name.
+
+The allowlist is exact. It never exempts part of a value, so a credential that *contains* the base URL
+(a webhook URL on the same host) is a value of its own and is still redacted whole, and a URL carrying
+credentials in its userinfo still hits the `URL_CREDENTIALS` shape. A variable whose name says it is a
+credential (`token`, `secret`, `key`, `password`, `credential`), Zimmer's own API keys and stored OAuth
+tokens can never be allowlisted, by name or by value. The same list applies to the catalog-error
+scrubbing in `AirCatalogService.redact_secrets`.
+
+The list is deploy configuration rather than a Settings-page field on purpose. It un-redacts values, and
+a setting that any API key or agent session could write would let a session exempt the credential it
+wants to read. There is no general "plain URLs are public" rule in tier 1 either: a Slack-style webhook
+URL has no userinfo and no query and is still a credential.
 
 ### Resource names are not credentials
 
