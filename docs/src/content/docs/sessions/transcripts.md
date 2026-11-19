@@ -223,6 +223,29 @@ thousands of pixels is indistinguishable from new content arriving, and a reader
 would be thrown to the bottom of the transcript, past what they just opened. The `toggle` clears
 tailing, the same as scrolling up does.
 
+## How a message's markdown renders
+
+Every message body on the web is rendered by one helper, `ApplicationHelper#markdown`, and so are
+the Status panel's summary, the gate ledger's entries and an MCP log line. It parses with
+Commonmarker (the Ruby binding to comrak), which follows CommonMark and GitHub Flavored Markdown,
+the dialect agents write. A message renders the way GitHub would render it:
+
+- A list item's content continues at the item's content column. A table, paragraph or fenced code
+  block indented three spaces under `1. ` (two under `- `) stays inside the item, and the list
+  carries on after it. A table, or a list starting at 1, may follow a paragraph's line with no
+  blank line between.
+- Tables render inside list items and blockquotes as well as at the top level. Each is wrapped in
+  a `.table-wrapper` that scrolls sideways on a phone rather than widening the page.
+- Strikethrough, footnotes, `2^10^` superscript, `==highlight==` and bare URLs made into links
+  are on. A line ends in a line break, as a chat message does.
+
+Two things are Zimmer's own. A code block is highlighted by Rouge, and a code span gets the
+`inline-code` class. Both are swapped for a random per-render token before comrak renders the
+document and swapped back afterwards, so the HTML Zimmer adds never goes through comrak's raw-HTML
+path. Raw HTML in a message is escaped and shown as text. A link whose scheme is not safe, such as
+`javascript:` or `data:`, keeps its text and loses the link. Every other link opens in a new tab.
+A message the renderer raises on falls back to its raw text in a `<pre>`.
+
 ## Secret redaction
 
 Zimmer hands its agents real credentials. MCP `${VAR}` values are interpolated into `.mcp.json`

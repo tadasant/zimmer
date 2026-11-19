@@ -52,8 +52,7 @@ class ApplicationHelperTest < ActionView::TestCase
   end
 
   test "codespan handles nil code without crashing" do
-    renderer = ApplicationHelper::MarkdownRenderer.new(filter_html: true, escape_html: true, safe_links_only: true)
-    result = renderer.codespan(nil)
+    result = ApplicationHelper::MarkdownRenderer.new.codespan(nil)
     assert_includes result, 'class="inline-code"'
   end
 
@@ -76,6 +75,64 @@ class ApplicationHelperTest < ActionView::TestCase
     result = markdown(markdown_table)
     assert_includes result, 'class="table-wrapper"'
     assert_includes result, 'class="markdown-table"'
+  end
+
+  # A table an agent nests under a numbered item, indented to the item's content
+  # column (three spaces under "1. ") — the shape agents write in their final messages.
+  test "markdown renders a table nested in a list item, inside the item" do
+    text = <<~MD
+      **What changed:**
+      1. **Live figures**: for this month so far:
+
+         | Functionality | Before | After |
+         |---|---|---|
+         | Agent inference | $10 | $20 |
+         | Docs site | $5 | gone (it held only fixed cost) |
+
+         The monthly total rose about $5.
+      2. **Skill**: updated.
+    MD
+    fragment = Nokogiri::HTML5.fragment(markdown(text))
+
+    items = fragment.css("ol > li")
+    assert_equal 2, items.size, "the indented table and paragraph must not end the list"
+    table = items.first.at_css("div.table-wrapper > table.markdown-table")
+    assert table, "the table renders inside the first list item"
+    assert_equal %w[Functionality Before After], table.css("thead th").map(&:text)
+    assert_equal [ "Agent inference", "$10", "$20" ], table.css("tbody tr").first.css("td").map(&:text)
+    assert_includes items.first.text, "The monthly total rose about $5."
+    assert_not_includes fragment.text, "|---|"
+  end
+
+  test "markdown renders a table nested in a bulleted item and in a blockquote" do
+    bulleted = Nokogiri::HTML5.fragment(markdown("- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n"))
+    assert bulleted.at_css("ul > li table.markdown-table")
+
+    quoted = Nokogiri::HTML5.fragment(markdown("> | a | b |\n> |---|---|\n> | 1 | 2 |\n"))
+    assert quoted.at_css("blockquote.markdown-blockquote table.markdown-table")
+  end
+
+  test "markdown escapes raw HTML in a table cell" do
+    fragment = Nokogiri::HTML5.fragment(markdown("| a |\n|---|\n| <img src=x onerror=alert(1)> |\n"))
+    assert_empty fragment.css("img")
+    assert_includes fragment.at_css("td").text, "<img src=x onerror=alert(1)>"
+  end
+
+  test "markdown highlights a fenced code block nested in a list item" do
+    fragment = Nokogiri::HTML5.fragment(markdown("1. Run:\n\n   ```ruby\n   puts 1\n   ```\n2. Done\n"))
+    assert fragment.at_css("ol > li pre.highlight.language-ruby")
+    assert_equal 2, fragment.css("ol > li").size
+  end
+
+  test "markdown code tokens cannot be forged by the text" do
+    result = markdown("`x`123 zmdspan0n0z")
+    assert_includes result, %(<code class="inline-code">x</code>123)
+    assert_includes result, "zmdspan0n0z"
+  end
+
+  test "markdown keeps a bare URL's closing parenthesis and colon out of the link" do
+    result = markdown("Live figures (https://zimmer.example.com/sessions/42): rose")
+    assert_includes result, %(<a href="https://zimmer.example.com/sessions/42" target="_blank" rel="noopener noreferrer">)
   end
 
   # Blockquote tests
@@ -214,8 +271,9 @@ class ApplicationHelperTest < ActionView::TestCase
     assert_includes fragment.text, "<script>alert(2)</script>"
   end
 
-  test "inline_markdown keeps quotation marks the quote extension wraps" do
-    assert_includes inline_markdown('The gate said "too broad" and stopped.'), "<q>too broad</q>"
+  test "inline_markdown keeps quotation marks" do
+    result = Nokogiri::HTML5.fragment(inline_markdown('The gate said "too broad" and stopped.'))
+    assert_equal %(The gate said "too broad" and stopped.), result.text.strip
   end
 
   test "markdown_plain_text keeps quotation marks" do

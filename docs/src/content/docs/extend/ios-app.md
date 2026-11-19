@@ -163,7 +163,7 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   links opens a menu with *Open Link*, *Copy Link* and *Share…* for each of them, and *Copy Text*,
   so a long signed URL in an agent's message can be pasted elsewhere; a paragraph with links is
   copied through that menu rather than selected. A link in a heading or a table cell opens on a
-  tap and has no menu. Two places the app reads markdown more leniently than the web's Redcarpet: `#1293` at
+  tap and has no menu. It reads markdown as the web's GFM renderer does: `#1293` at
   the start of a line stays text rather than becoming a heading, and a table or list may follow
   a paragraph's line without a blank line between. Fenced code is in the monospaced face, scrolling sideways rather than wrapping,
   with a *Copy* button in the block's corner that puts the code on the clipboard, as the web's
