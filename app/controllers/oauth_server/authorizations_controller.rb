@@ -145,6 +145,7 @@ module OauthServer
     end
 
     rescue_from NotSignedIn do
+      SecurityTelemetry.record_auth_failure(:oauth_authorize, :not_signed_in)
       @heading = "Sign in to Zimmer first"
       @detail = "Approving a connection names the person who approved it, and nobody is signed in. " \
         "This deployment has not turned on web sign-in, so it cannot issue a token for /mcp."
@@ -152,6 +153,7 @@ module OauthServer
     end
 
     rescue_from DomainRefused do |error|
+      SecurityTelemetry.record_auth_failure(:oauth_authorize, :domain_refused)
       domains = oauth_config.allowed_domains
       @heading = "This account cannot connect"
       @detail = if domains.empty?

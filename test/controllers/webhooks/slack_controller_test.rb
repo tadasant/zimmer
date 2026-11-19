@@ -9,6 +9,7 @@ require "mocha/minitest"
 class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
   include SlackWebhookTestHelpers
+  include SecurityTelemetryTestHelpers
   include UntrustedFenceAssertions
 
   setup { setup_slack_webhook }
@@ -70,11 +71,14 @@ class Webhooks::SlackControllerTest < ActionDispatch::IntegrationTest
   # --- rejected before the payload is used for anything -----------------------------
 
   test "a body signed with the wrong secret is rejected and creates nothing" do
-    assert_no_difference [ -> { Session.count }, -> { WebhookDelivery.count } ] do
-      deliver(new_message, secret: "somebody-elses-secret")
+    report = with_security_telemetry do
+      assert_no_difference [ -> { Session.count }, -> { WebhookDelivery.count } ] do
+        deliver(new_message, secret: "somebody-elses-secret")
+      end
     end
 
     assert_response :unauthorized
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["webhook_slack"]["bad_signature"]
     assert_no_enqueued_jobs only: SlackEventJob
   end
 

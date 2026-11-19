@@ -56,8 +56,14 @@ module Webhooks
         timestamp: request.headers["webhook-timestamp"],
         signature: request.headers["webhook-signature"]
       )
-      return refuse(:unauthorized, "unknown subscription token") if subscription.nil?
-      return refuse(:unauthorized, "subscription #{subscription.id}: #{verification.reason}") unless verification.valid?
+      if subscription.nil?
+        SecurityTelemetry.record_auth_failure(:webhook_mcp_events, :unknown_subscription)
+        return refuse(:unauthorized, "unknown subscription token")
+      end
+      unless verification.valid?
+        SecurityTelemetry.record_auth_failure(:webhook_mcp_events, :bad_signature)
+        return refuse(:unauthorized, "subscription #{subscription.id}: #{verification.reason}")
+      end
 
       payload = parse_payload
       return refuse(:bad_request, "subscription #{subscription.id}: body is not a JSON object") unless payload.is_a?(Hash)

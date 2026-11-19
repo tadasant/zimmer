@@ -11,6 +11,7 @@ require "mocha/minitest"
 class Webhooks::McpEventsControllerTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
   include McpEventCatalogHelper
+  include SecurityTelemetryTestHelpers
 
   BASE_URL = "https://zimmer.test"
   TEMPLATE = "Event {{event_id}}:\n{{event.text|untrusted}}"
@@ -134,6 +135,13 @@ class Webhooks::McpEventsControllerTest < ActionDispatch::IntegrationTest
   test "every refusal is an empty 401: unknown token, wrong secret, stale timestamp, missing signature" do
     @server.publish(channel_id: "C0BAD", ts: "1793400000.000400")
     event = @server.last_event
+
+    report = with_security_telemetry do
+      deliver(event, path: "/webhooks/mcp_events/#{SecureRandom.urlsafe_base64(24)}")
+      deliver(event, secret: Webhooks::StandardWebhooksSignature.generate_secret)
+    end
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["webhook_mcp_events"]["unknown_subscription"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["webhook_mcp_events"]["bad_signature"]
 
     deliver(event, path: "/webhooks/mcp_events/#{SecureRandom.urlsafe_base64(24)}")
     assert_response :unauthorized

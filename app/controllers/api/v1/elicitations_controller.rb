@@ -187,6 +187,7 @@ class Api::V1::ElicitationsController < Api::BaseController
       Rails.logger.warn "[Api::V1::ElicitationsController] Elicitation POST with a session token that does not verify " \
         "(request_id: #{log_value(elicitation_meta['com.pulsemcp/request-id'])}) — a forged URL, or one minted under a different secret_key_base"
     end
+    SecurityTelemetry.record_auth_failure(:elicitation_token, :invalid)
     render_api_error("Unauthorized", "This elicitation URL does not belong to any session", status: :unauthorized)
   end
 

@@ -9,6 +9,7 @@ require "mocha/minitest"
 class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
   include ActiveJob::TestHelper
   include GithubWebhookTestHelpers
+  include SecurityTelemetryTestHelpers
 
   setup { setup_github_webhook }
   teardown { teardown_github_webhook }
@@ -30,6 +31,18 @@ class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
 
   def opened(number = 4242, **attrs)
     issues_payload(github_issue(number: number, **attrs))
+  end
+
+  test "a delivery whose signature does not verify is counted as a webhook auth failure" do
+    report = with_security_telemetry do
+      deliver(opened, secret: "wrong-secret")
+      assert_response :unauthorized
+      deliver(opened)
+    end
+
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["webhook_github"]["bad_signature"]
+    assert_equal 1, report[:client_errors_by_surface_and_status]["webhooks"]["401"]
+    assert_equal 1, report[:responses_by_surface_and_status_class]["webhooks"]["2xx"]
   end
 
   # --- the one that fires ---------------------------------------------------------

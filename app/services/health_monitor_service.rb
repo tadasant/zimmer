@@ -385,6 +385,8 @@ class HealthMonitorService
       warm_process_pool_health: warm_process_pool_health,
       # Also absent — see #trigger_poller_health.
       trigger_poller_health: trigger_poller_health,
+      # Also absent — see #security_health.
+      security_health: security_health,
       overall_status: calculate_overall_status(
         [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
       ),
@@ -563,6 +565,39 @@ class HealthMonitorService
       sources: [],
       status: HealthStatus.new(status: :warning, message: "Webhook delivery status could not be read: #{e.message}")
     }
+  end
+
+  # Security counts for the monitoring plane, over SecurityTelemetry::WINDOW:
+  # authentication failures by kind and reason, responses by surface and status,
+  # and what was created — sessions by genesis, OAuth grants and clients, API keys.
+  # A burst of any of these is the rate an alert rule thresholds; none of it is a
+  # judgement this report can make for itself, so the section carries no status and
+  # is absent from `overall_status`. See SecurityTelemetry.
+  #
+  # Every label value is a constant (a genesis key, a reason in
+  # SecurityTelemetry::AUTH_FAILURE_REASONS), never an id, address or credential.
+  def security_health
+    since = Time.current - SecurityTelemetry::WINDOW
+    created = Session.where(created_at: since..).group(:genesis).count
+
+    by_genesis = SessionGenesis::KEYS.to_h { |key| [ key, created.fetch(key, 0) ] }
+    # A row whose genesis is not a current key (NULL, or a retired kind) still
+    # counts, so the map adds up to every session created in the window.
+    by_genesis[SecurityTelemetry::OTHER] = created.except(*SessionGenesis::KEYS).values.sum
+
+    SecurityTelemetry.report.merge(
+      sessions_created_by_genesis: by_genesis,
+      oauth_grants_issued: OauthServer::Grant.where(created_at: since..).count,
+      oauth_clients_registered: OauthServer::Client.where(created_at: since..).count,
+      # Minted only: an env key's row is written lazily on its first use, which
+      # is bookkeeping, not a new credential.
+      api_keys_created: ApiKey.where(source: ApiKey::MINTED_SOURCE, created_at: since..).count
+    )
+  rescue StandardError => e
+    @logger.warn("Security health could not be read", error: e.class.name)
+    # The class, not the message: this payload is served over the API and MCP,
+    # and a database error's message can carry connection detail.
+    { window_seconds: SecurityTelemetry::WINDOW.to_i, error: e.class.name }
   end
 
   # What WarmClonePool holds, what WarmPoolPolicy chose and left out, and how

@@ -90,6 +90,7 @@ class McpController < Api::BaseController
     else
       Rails.logger.info("[oauth_server] #{request.request_method} #{request.path} refused from #{request.remote_ip}: access token #{lookup.refusal}")
       @oauth_token_refused = true
+      SecurityTelemetry.record_auth_failure(:oauth_access_token, lookup.refusal)
       render_api_error("Unauthorized", "Invalid or expired access token", status: :unauthorized)
     end
   end

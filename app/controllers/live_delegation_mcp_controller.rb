@@ -46,6 +46,7 @@ class LiveDelegationMcpController < McpController
       else "its conversation is no longer an active gpt_live_claude call"
       end
       Rails.logger.warn("[live.claude] #{request.request_method} #{request.path} refused from #{request.remote_ip}: #{reason}")
+      SecurityTelemetry.record_auth_failure(:live_delegation_token, :invalid)
       render_api_error("Unauthorized", "Invalid or expired delegation token", status: :unauthorized)
     end
   end
