@@ -1584,14 +1584,19 @@ gap is worth naming precisely:
   the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
   `[REDACTED:…]` where the credential was — correct for a credential, and a real loss of context if the
   span was over-redacted.
-- **Any `${VAR}` the catalog declares is redacted by exact value, whether or not it is a secret.**
-  Today every one of them is (`SLACK_BOT_TOKEN`, `STRAD_API_KEY`, `ZIMMER_PROD_API_KEY`). The first
-  externalized-but-not-secret variable — an org slug, a model id, a base URL — will start being scrubbed
-  out of every transcript that mentions it. The same is true of every entry in the `.env` secret
+- **Any `${VAR}` the catalog declares is redacted by exact value, whether or not it is a secret,
+  unless it is on the [known-value allowlist](/sessions/transcripts/#public-values-are-not-credentials).**
+  The `ZIMMER_*_BASE_URL` variables are on it by default. Any other externalized-but-not-secret
+  variable (an org slug, a model id) is scrubbed out of every transcript that mentions it until a
+  deployment adds it to `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`. The same is true of every entry in the `.env` secret
   bundle, and of any process environment variable whose name says "key", "token", "secret",
   "password" or "credential" and whose value is 16+ characters mixing letters and digits (and is not
   a path, a plain URL or a list of other variables' names). A multi-line value, such as the Parameter
   Store service-account JSON, is not matched by value at all; its PEM key is caught by shape.
+- **Allowlisting a value does not un-redact transcripts already stored.** A live session's transcript
+  is re-redacted from the runtime's raw file on its next poll and loses the marker; an archived
+  session keeps the `[REDACTED:ENV:…]` it was stored with. A literal in
+  `TRANSCRIPT_REDACTION_ALLOWLIST_VALUES` cannot contain a comma, since the list is comma-separated.
 - **The injected MCP config still holds plaintext credentials, and the agent still sees them.**
   Redaction protects what Zimmer stores and renders. It does not reach the clone's own
   `.mcp.json` / `.codex/config.toml` or `.env`, which carry resolved values, or the runtime's

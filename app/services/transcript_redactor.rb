@@ -129,6 +129,40 @@ module TranscriptRedactor
   CONFIG_URL_VALUE = %r{\A[a-z][a-z0-9+.\-]*://[^@?\s]*\z}
   NAME_LIST_VALUE = /\A[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*\z/
 
+  # The known-value allowlist: values Zimmer resolves but that are not secret,
+  # so tier 1 never redacts them.
+  #
+  # Tier 1 matches every value of every variable it can see, and some of those
+  # variables hold public configuration. The base URL is the one that hurts: it
+  # is in every session's system prompt and in every session link an agent
+  # writes, and redacting it turns each of those links into
+  # `[REDACTED:ENV:ZIMMER_PROD_BASE_URL:27ch]/sessions/N`.
+  #
+  # Entries are keyed by variable NAME first, because a name survives a change
+  # of value (a new domain needs no allowlist edit). A literal VALUE can also be
+  # listed, for public text that sits under a variable you would rather not
+  # exempt by name. Both are exact: nothing here is a heuristic, and no
+  # substring of a value is ever exempted, so a credential that CONTAINS an
+  # allowlisted value (a webhook URL under the base URL, a credentialed URL) is
+  # still a value of its own and still redacted, longest-first, as before.
+  #
+  # The defaults are Zimmer's own base-URL variables (see AppUrl). A deployment
+  # extends the list through the environment, comma-separated:
+  #
+  #   TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES=PUBLIC_DOCS_URL,STATUS_PAGE_URL
+  #   TRANSCRIPT_REDACTION_ALLOWLIST_VALUES=https://status.example.com
+  #
+  # This is deploy configuration, not a Settings-page field, on purpose: the
+  # allowlist un-redacts values, and a setting any API key or agent session can
+  # write would let a session exempt the credential it wants to read.
+  #
+  # Two things can never be allowlisted, by name or by value: a variable whose
+  # name says it is a credential (SENSITIVE_KEY), and anything collected as one
+  # of Zimmer's own API keys or stored OAuth tokens.
+  DEFAULT_ALLOWLISTED_VARIABLES = (AppUrl::BASE_URL_KEYS.values + [ AppUrl::LOCAL_BASE_URL_KEY ]).freeze
+  ALLOWLIST_VARIABLES_ENV = "TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES"
+  ALLOWLIST_VALUES_ENV = "TRANSCRIPT_REDACTION_ALLOWLIST_VALUES"
+
   # Guards the memoized known-credential set. A constant rather than `@mutex
   # ||= Mutex.new`, which can hand two racing threads two different mutexes.
   MUTEX = Mutex.new
@@ -590,6 +624,33 @@ module TranscriptRedactor
       nil
     end
 
+    # Whether the value Zimmer resolved for variable `name` is on the
+    # known-value allowlist, and so must not be redacted. See
+    # DEFAULT_ALLOWLISTED_VARIABLES.
+    #
+    # Public because AirCatalogService#redact_secrets runs its own known-value
+    # table over the same secret bundle and has to honour the same list.
+    #
+    # @param name [String] the variable the value was resolved from
+    # @param value [String] the resolved value
+    # @return [Boolean]
+    def allowlisted?(name, value)
+      name = name.to_s
+      return false if name.match?(SENSITIVE_KEY) || ZIMMER_API_KEY_VARIABLES.include?(name)
+
+      allowlisted_variables.include?(name) || allowlisted_values.include?(value)
+    end
+
+    # @return [Array<String>] the defaults plus ALLOWLIST_VARIABLES_ENV
+    def allowlisted_variables
+      (DEFAULT_ALLOWLISTED_VARIABLES + allowlist_from_env(ALLOWLIST_VARIABLES_ENV)).uniq
+    end
+
+    # @return [Array<String>] ALLOWLIST_VALUES_ENV
+    def allowlisted_values
+      allowlist_from_env(ALLOWLIST_VALUES_ENV)
+    end
+
     # Drop the cached known-credential set. Used by tests and after a rotation.
     def reset_known_secrets!
       MUTEX.synchronize do
@@ -600,6 +661,19 @@ module TranscriptRedactor
     end
 
     private
+
+    def allowlist_from_env(variable)
+      ENV.fetch(variable, "").split(",").map(&:strip).reject(&:empty?)
+    end
+
+    # Record a variable's resolved value in the known-value table unless it is
+    # allowlisted. The first label a value is recorded under wins.
+    def remember_variable(values, name, value)
+      return unless redactable?(value)
+      return if allowlisted?(name, value)
+
+      values[value] ||= "ENV:#{name}"
+    end
 
     def cached_known_secrets
       MUTEX.synchronize do
@@ -898,11 +972,7 @@ module TranscriptRedactor
     # whole bundle covers every session's `.env` whatever its scope, including a
     # skill-mentioned `${VAR}` no catalog MCP server declares.
     def collect_session_secret_bundle(values)
-      SecretsLoader.all.each do |name, value|
-        next unless redactable?(value)
-
-        values[value] ||= "ENV:#{name}"
-      end
+      SecretsLoader.all.each { |name, value| remember_variable(values, name, value) }
     rescue StandardError => e
       warn_degraded("session secret bundle", e)
     end
@@ -933,7 +1003,7 @@ module TranscriptRedactor
         next unless name.match?(SENSITIVE_KEY)
         next unless process_env_secret?(value)
 
-        values[value] ||= "ENV:#{name}"
+        remember_variable(values, name, value)
       end
     rescue StandardError => e
       warn_degraded("process environment", e)
@@ -977,12 +1047,7 @@ module TranscriptRedactor
     # whose formats no regex knows.
     def collect_catalog_variables(values)
       names = ServersConfig.all.flat_map { |server| server.required_variables + server.optional_variables }.uniq
-      names.each do |name|
-        value = resolve_variable(name)
-        next unless redactable?(value)
-
-        values[value] ||= "ENV:#{name}"
-      end
+      names.each { |name| remember_variable(values, name, resolve_variable(name)) }
     rescue StandardError => e
       warn_degraded("catalog variables", e)
     end

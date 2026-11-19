@@ -729,6 +729,118 @@ token=#{'Zz9' * 12}
     end
   end
 
+  # --- The known-value allowlist --------------------------------------------
+  #
+  # Session 29283's status summary turned a session link into
+  # `[REDACTED:ENV:ZIMMER_PROD_BASE_URL:27ch]/sessions/N`: the base URL sat in the
+  # secret bundle, so tier 1 matched it like a credential. It is public.
+
+  ALLOWLIST_BASE_URL = "https://zimmer.example.test"
+  ALLOWLIST_WEBHOOK = "https://zimmer.example.test/hooks/fixture0webhook0path0a1b2"
+
+  def with_bundle(bundle, env: {})
+    SecretsLoader.stubs(:all).returns(bundle)
+    ServersConfig.stubs(:all).returns([])
+    SecretProviders.chain.stubs(:get).returns(nil)
+    ApiKey.stubs(:env_keys).returns([])
+    original = env.keys.to_h { |name| [ name, ENV[name] ] }
+    env.each { |name, value| ENV[name] = value }
+    TranscriptRedactor.reset_known_secrets!
+    yield
+  ensure
+    original&.each do |name, value|
+      if value.nil?
+        ENV.delete(name)
+      else
+        ENV[name] = value
+      end
+    end
+  end
+
+  test "the instance's base URL is never redacted, so session links survive" do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "STRAD_API_KEY" => INJECTED_STRAD_TOKEN }) do
+      text = "See #{ALLOWLIST_BASE_URL}/sessions/29284 (token #{INJECTED_STRAD_TOKEN})"
+
+      assert_equal "See #{ALLOWLIST_BASE_URL}/sessions/29284 (token [REDACTED:ENV:STRAD_API_KEY:#{INJECTED_STRAD_TOKEN.length}ch])",
+        TranscriptRedactor.redact(text)
+      refute TranscriptRedactor.known_secrets.to_h.key?(ALLOWLIST_BASE_URL)
+    end
+  end
+
+  test "the base URL is allowlisted when it comes from the catalog's variables too" do
+    server = ServersConfig::Server.new("fake", {
+      "type" => "http",
+      "url" => "${ZIMMER_STAGING_BASE_URL}/mcp",
+      "headers" => { "X-Hook" => "${FIXTURE_HOOK_URL}" }
+    })
+    with_bundle({}) do
+      ServersConfig.stubs(:all).returns([ server ])
+      SecretProviders.chain.stubs(:get).with("ZIMMER_STAGING_BASE_URL").returns(ALLOWLIST_BASE_URL)
+      SecretProviders.chain.stubs(:get).with("FIXTURE_HOOK_URL").returns(ALLOWLIST_WEBHOOK)
+      TranscriptRedactor.reset_known_secrets!
+      known = TranscriptRedactor.known_secrets.to_h
+
+      assert_equal "ENV:FIXTURE_HOOK_URL", known[ALLOWLIST_WEBHOOK], "the catalog collector ran"
+      refute known.key?(ALLOWLIST_BASE_URL)
+      assert_equal "#{ALLOWLIST_BASE_URL}/sessions/1", TranscriptRedactor.redact("#{ALLOWLIST_BASE_URL}/sessions/1")
+    end
+  end
+
+  test "a credential that contains the allowlisted base URL is still redacted whole" do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "FIXTURE_WEBHOOK_URL" => ALLOWLIST_WEBHOOK }) do
+      redacted = TranscriptRedactor.redact("posting to #{ALLOWLIST_WEBHOOK} from #{ALLOWLIST_BASE_URL}/sessions/7")
+
+      assert_equal "posting to [REDACTED:ENV:FIXTURE_WEBHOOK_URL:#{ALLOWLIST_WEBHOOK.length}ch] from #{ALLOWLIST_BASE_URL}/sessions/7",
+        redacted
+    end
+  end
+
+  test "credentials embedded in a URL on the allowlisted host are still redacted" do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL }) do
+      redacted = TranscriptRedactor.redact("curl https://agent:fixture0password0x9@zimmer.example.test/api/v1/sessions")
+
+      refute_includes redacted, "fixture0password0x9"
+      assert_includes redacted, "[REDACTED:MATCH:URL_CREDENTIALS:"
+    end
+  end
+
+  test "the allowlist extends by variable name and by literal value through the environment" do
+    bundle = {
+      "FIXTURE_DOCS_URL" => "https://docs.fixture.example.test",
+      "FIXTURE_STATUS_URL" => "https://status.fixture.example.test",
+      "FIXTURE_OTHER_URL" => "https://other.fixture.example.test"
+    }
+    env = {
+      TranscriptRedactor::ALLOWLIST_VARIABLES_ENV => " FIXTURE_DOCS_URL , ",
+      TranscriptRedactor::ALLOWLIST_VALUES_ENV => "https://status.fixture.example.test"
+    }
+    with_bundle(bundle, env: env) do
+      known = TranscriptRedactor.known_secrets.to_h
+
+      refute known.key?("https://docs.fixture.example.test"), "allowlisted by name"
+      refute known.key?("https://status.fixture.example.test"), "allowlisted by value"
+      assert_equal "ENV:FIXTURE_OTHER_URL", known["https://other.fixture.example.test"], "not on the list"
+    end
+  end
+
+  test "a credential-named variable or a Zimmer API key can never be allowlisted" do
+    bundle = { "FIXTURE_DEPLOY_TOKEN" => "fixture0deploy0token0value0z9" }
+    env = {
+      TranscriptRedactor::ALLOWLIST_VARIABLES_ENV => "FIXTURE_DEPLOY_TOKEN,ZIMMER_PROD_API_KEY",
+      TranscriptRedactor::ALLOWLIST_VALUES_ENV => "fixture0deploy0token0value0z9,#{INJECTED_ZIMMER_KEY},#{INJECTED_API_KEYS_ENTRY}"
+    }
+    with_bundle(bundle, env: env) do
+      SecretProviders.chain.stubs(:get).with("ZIMMER_PROD_API_KEY").returns(INJECTED_ZIMMER_KEY)
+      ApiKey.stubs(:env_keys).returns([ INJECTED_API_KEYS_ENTRY ])
+      TranscriptRedactor.reset_known_secrets!
+      known = TranscriptRedactor.known_secrets.to_h
+
+      assert_equal "ENV:FIXTURE_DEPLOY_TOKEN", known["fixture0deploy0token0value0z9"]
+      assert_equal "ENV:ZIMMER_PROD_API_KEY", known[INJECTED_ZIMMER_KEY]
+      assert_equal "ZIMMER_API_KEY", known[INJECTED_API_KEYS_ENTRY]
+    end
+  end
+
   test "known secrets include credential-named process environment, but not configuration that only looks like it" do
     env = {
       "FIXTURE_DEPLOY_SECRET_KEY" => "fixture0deploy0secret0key0value",
