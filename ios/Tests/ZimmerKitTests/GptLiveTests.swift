@@ -216,6 +216,51 @@ final class GptLiveConductorTests: XCTestCase {
         XCTAssertTrue(conductor.tick(at: 18).contains(.hangUp))
     }
 
+    /// Live conversation 38: "let's hang up now", "Okay, hanging up. Bye!", and the call stayed
+    /// open, because GPT-Live answered without delegating the hang-up.
+    func testAGoodbyeToThePersonsOwnHangUpEndsTheCallOnceSaid() {
+        var conductor = started()
+        _ = conductor.handle(event("session.input_transcript.delta", ["delta": .string("Alright, let's hang up now.")]), at: 1)
+        _ = conductor.handle(event("session.output_transcript.delta", ["delta": .string("Okay, hanging up. Bye!")]), at: 1.5)
+        XCTAssertFalse(conductor.tick(at: 2).contains(.hangUp), "not while the goodbye is still being said")
+        let after = conductor.tick(at: 2.8)
+        XCTAssertEqual(records(after), ["assistant: Okay, hanging up. Bye!"])
+        XCTAssertTrue(after.contains(.hangUp))
+    }
+
+    func testAGoodbyeThePersonDidNotAskForLeavesTheCallOpen() {
+        for (asked, said) in [("Tell Sam I said bye, but don't hang up.", "Will do. Bye to Sam, then."),
+                              ("How do I hang up?", "Just say hang up, or tap End."),
+                              ("What's running?", "Two sessions. Bye!")] {
+            var conductor = started()
+            _ = conductor.handle(event("session.input_transcript.delta", ["delta": .string(asked)]), at: 1)
+            _ = conductor.handle(event("session.output_transcript.delta", ["delta": .string(said)]), at: 1.5)
+            XCTAssertFalse(conductor.tick(at: 2.8).contains(.hangUp), asked)
+            XCTAssertFalse(conductor.tick(at: 30).contains(.hangUp), asked)
+        }
+    }
+
+    func testAGoodbyeSaidOverARunningDelegationWaitsForTheBackend() {
+        var conductor = started()
+        _ = conductor.handle(event("session.input_transcript.delta", ["delta": .string("Hang up.")]), at: 1)
+        _ = conductor.handle(event("session.delegation.created", ["delegation": .object(["id": .string("d"), "target": .string("client")])]), at: 1.2)
+        _ = conductor.handle(event("session.output_transcript.delta", ["delta": .string("Okay, bye!")]), at: 1.3)
+        XCTAssertFalse(conductor.tick(at: 2.8).contains(.hangUp), "Claude is still working on it")
+        _ = conductor.delegated(id: "d", answer: LiveDelegation(chunks: ["Okay, hanging up."], endCall: true), failure: nil, at: 3)
+        _ = conductor.handle(event("session.output_transcript.delta", ["delta": .string("Hanging up now.")]), at: 3.2)
+        XCTAssertTrue(conductor.tick(at: 4.5).contains(.hangUp))
+    }
+
+    func testTheHangUpRuleNeedsTheAskAndTheGoodbye() {
+        XCTAssertTrue(GptLiveConductor.endsTheCall(asked: "Alright, let's hang up now", said: "Okay, hanging up. Bye!"))
+        XCTAssertTrue(GptLiveConductor.endsTheCall(asked: "I thought I told you to hang up", said: "You're right. Bye."))
+        XCTAssertTrue(GptLiveConductor.endsTheCall(asked: "Zimmer, end the call", said: "Ending the call. Talk soon."))
+        XCTAssertTrue(GptLiveConductor.endsTheCall(asked: "Stop listening", said: "Goodbye!"))
+        XCTAssertFalse(GptLiveConductor.endsTheCall(asked: "Don\u{2019}t hang up yet", said: "Okay. Bye for now isn't happening."))
+        XCTAssertFalse(GptLiveConductor.endsTheCall(asked: "Hang up", said: "Are you sure?"))
+        XCTAssertFalse(GptLiveConductor.endsTheCall(asked: "Hang up", said: "Hanging upstairs is not something I do."))
+    }
+
     func testTheSessionIsReportedEveryMinuteAndTheRestFromClosedUsage() {
         var conductor = started(at: 100)
         let minute = conductor.tick(at: 160)

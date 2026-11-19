@@ -42,6 +42,7 @@ class LiveConversations::ClaudeDelegateTest < ActiveSupport::TestCase
     assert_equal "claude-sonnet-5-5", request["model"]
     assert_includes request["system"], "You are answering a delegation"
     assert_includes request["system"], "zimmer_live"
+    assert_includes request["system"], "a goodbye without it leaves the microphone open"
     assert_includes request["prompt"], "Them: Hi there."
     assert_includes request["prompt"], "What model are you on?"
     claims = LiveConversations::DelegationToken.verify(request["mcp_token"])

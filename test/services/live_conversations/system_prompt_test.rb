@@ -98,6 +98,16 @@ class LiveConversations::SystemPromptTest < ActiveSupport::TestCase
     assert_not_includes phone, "right now is CarPlay"
   end
 
+  # Live conversation 38: GPT-Live said "Okay, hanging up. Bye!" itself, and the
+  # call stayed open. Only a delegation reaches `hang_up`.
+  test "GPT-Live's front end is told a goodbye ends nothing and a hang-up must be delegated" do
+    prompt = LiveConversations::SystemPrompt.build_front_end(create_live_conversation(mode: "voice"))
+
+    assert_includes prompt, "You cannot end this call yourself, and saying goodbye does not end it"
+    assert_includes prompt, "delegate it at once, every time, even if you already said goodbye"
+    assert_operator prompt.index("## How this call works (written by Zimmer)"), :<, prompt.index("You cannot end this call yourself")
+  end
+
   # A lookup is not triage: the CarPlay-fit filter that drops laptop-only rows from
   # "what needs me" must not drop the session the driver is asking about.
   test "a CarPlay conversation is told to keep carplay_fit off a search for a particular session" do

@@ -33,14 +33,15 @@ const advance = (ms) => {
 const drain = async () => { for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve)) }
 
 const { LiveCueDirector } = new Function(`${strip(process.argv[3])}\nreturn { LiveCueDirector }`)()
-const { GptLiveCall } = new Function(
+const { GptLiveCall, endsTheCall } = new Function(
   "csrfHeaders", "LiveUsageReporter", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance",
-  `${strip(process.argv[2])}\nreturn { GptLiveCall }`
+  `${strip(process.argv[2])}\nreturn { GptLiveCall, endsTheCall }`
 )(() => ({}), class { add() {} latency() {} flush() {} }, clock.setTimeout, clock.clearTimeout, clock.setInterval, clock.clearInterval, clock.performance)
 
 function call(answers = {}) {
   const director = new LiveCueDirector()
   const heard = []
+  const sent = []
   let state = null
   const hear = (actions) => actions.forEach((action) => heard.push(
     action.play ? `play:${action.play}` : action.startLoop ? `loop:${action.startLoop}` : action.stopLoop ? "stopLoop" : "stopCues"
@@ -54,17 +55,18 @@ function call(answers = {}) {
     onEnded: () => {},
     onCue: (signal, arg) => hear(director[signal](arg))
   })
-  gpt.send = () => {}
+  gpt.send = (event) => sent.push(event.type)
   gpt.post = async (url, body) => {
     if (!url.endsWith("/delegations")) return { ok: true, status: 200, json: async () => ({}) }
     const answer = answers[body.delegation_id] ?? { chunks: ["Done."] }
     if (answer === "unreachable") throw new Error("offline")
     return { ok: answer.status === undefined, status: answer.status ?? 200, json: async () => answer }
   }
-  return { gpt, heard }
+  return { gpt, heard, sent }
 }
 
-const report = (name, { heard }) => console.log(JSON.stringify({ name, heard }))
+// `closed`: the call sent `session.close`, which is how it hangs up.
+const report = (name, { heard, sent }) => console.log(JSON.stringify({ name, heard, closed: sent.includes("session.close") }))
 const input = (delta) => ({ type: "session.input_transcript.delta", delta })
 const output = (delta) => ({ type: "session.output_transcript.delta", delta })
 const delegation = (id) => ({ type: "session.delegation.created", delegation: { id, target: "client" } })
@@ -189,3 +191,80 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   advance(1000)
   report("closing", run)
 }
+
+// The person asks to hang up and GPT-Live says goodbye without delegating
+// (Live conversation 38): the call still ends once the goodbye is said.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Alright, let's hang up now."))
+  advance(300)
+  run.gpt.handle(output("Okay, hanging up. Bye!"))
+  advance(500)
+  run.heard.push(run.sent.includes("session.close") ? "closed-early" : "|")
+  advance(1000)
+  report("goodbye_without_delegating", run)
+}
+
+// A goodbye that answers something else does not end the call.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Tell Sam I said bye, but don't hang up."))
+  advance(300)
+  run.gpt.handle(output("Will do. Bye to Sam, then."))
+  advance(5000)
+  report("goodbye_not_asked", run)
+}
+
+// Asking how to hang up is not hanging up.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("How do I hang up?"))
+  advance(300)
+  run.gpt.handle(output("Just say hang up, or tap End."))
+  advance(5000)
+  report("how_to_hang_up", run)
+}
+
+// GPT-Live delegated the hang-up and said "bye" over it while Claude worked:
+// the call waits for the backend, which ends it after its own goodbye.
+{
+  let release
+  const run = call({ d1: { chunks: ["Okay, hanging up."], end_call: true } })
+  const post = run.gpt.post
+  run.gpt.post = (url, body) => url.endsWith("/delegations")
+    ? new Promise((resolve) => { release = () => resolve(post(url, body)) })
+    : post(url, body)
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Hang up."))
+  advance(200)
+  run.gpt.handle(delegation("d1"))
+  run.gpt.handle(output("Okay, bye!"))
+  advance(1500)
+  run.heard.push(run.sent.includes("session.close") ? "closed-early" : "|")
+  release()
+  await drain()
+  run.gpt.handle(output("Hanging up now."))
+  advance(1500)
+  report("goodbye_over_a_delegation", run)
+}
+
+// The rule itself, line by line.
+console.log(JSON.stringify({
+  name: "ends_the_call",
+  heard: [
+    ["Alright, let's hang up now", "Okay, hanging up. Bye!"],
+    ["I thought I told you to hang up", "You're right. Bye."],
+    ["Zimmer, end the call", "Ending the call. Talk soon."],
+    ["Stop listening", "Goodbye!"],
+    ["Okay bye", "Bye!"],
+    ["Don\u2019t hang up yet", "Okay, I'm here. Bye for now isn't happening."],
+    ["Not yet, don't hang up", "Bye"],
+    ["How do I hang up?", "Say hang up. Bye is fine too."],
+    ["Hang up", "Are you sure?"],
+    ["What's running?", "Two sessions. Bye!"],
+    ["Hang up", "Hanging upstairs is not something I do."]
+  ].map(([asked, said]) => endsTheCall(asked, said))
+}))

@@ -16,6 +16,10 @@ import Foundation
 ///   delegation   `session.delegation.created` → `.delegate` → `delegated(…)`: each chunk as
 ///                commentary, a cap warning once as quiet `session.thinking.append`, and
 ///                `end_call` hangs up once the goodbye has been said
+///   hang-up      GPT-Live can say goodbye without delegating, and a goodbye ends nothing. So when
+///                the person's last line asked to hang up and GPT-Live's answer to it is a goodbye,
+///                with no delegation running, the call ends once it has been said (`endsTheCall`),
+///                as if the backend had asked
 ///   cues         the same `LiveCueDirector.Signal`s a Realtime call gives (`.signal`), read off
 ///                GPT-Live's events, which have no speech boundaries: the person's transcript
 ///                starting is *talking*, its going quiet for `heardIdle` with no answer begun is
@@ -78,6 +82,8 @@ public struct GptLiveConductor: Sendable {
     private var seq = 0
     private var eventSeq = 0
     private var userText = ""
+    /// The person's last finished line: what GPT-Live's next answer is answering.
+    private var lastUserLine = ""
     private var assistantText = ""
     private var userSpokeAt: TimeInterval?
     private var awaitingAnswer = false
@@ -249,8 +255,9 @@ public struct GptLiveConductor: Sendable {
         }
         if let lastOutput, now - lastOutput >= Self.spokenIdle {
             self.lastOutput = nil
+            let said = assistantText
             effects += flushAssistant()
-            if saidGoodbye {
+            if saidGoodbye || (delegations.isEmpty && Self.endsTheCall(asked: lastUserLine, said: said)) {
                 goodbyeDeadline = nil
                 return effects + [.hangUp]
             }
@@ -308,7 +315,25 @@ public struct GptLiveConductor: Sendable {
     private mutating func flushUser() -> [Effect] {
         let text = userText.trimmingCharacters(in: .whitespacesAndNewlines)
         userText = ""
-        return text.isEmpty ? [] : [.record(.user, text)]
+        guard !text.isEmpty else { return [] }
+        lastUserLine = text
+        return [.record(.user, text)]
+    }
+
+    /// The person's line asked to hang up and the answer to it said goodbye: the call is over,
+    /// whether or not GPT-Live delegated the hang-up. Kept in step with `endsTheCall` in the web
+    /// dock's app/javascript/lib/gpt_live_call.js.
+    public static func endsTheCall(asked: String, said: String) -> Bool {
+        func plain(_ text: String) -> String {
+            text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'").replacingOccurrences(of: "\u{2018}", with: "'")
+        }
+        func matches(_ text: String, _ pattern: String) -> Bool {
+            text.range(of: pattern, options: .regularExpression) != nil
+        }
+        let line = plain(asked)
+        return matches(line, #"\b(hang (it )?up|end (the|this) call|stop listening|good ?bye|bye)\b"#)
+            && !matches(line, #"\b(don'?t|do not|not yet|never|how)\b"#)
+            && matches(plain(said), #"\b(hanging up|ending (the|this) call|good ?bye|bye)\b"#)
     }
 
     private mutating func flushAssistant() -> [Effect] {
