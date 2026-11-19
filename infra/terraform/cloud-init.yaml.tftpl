@@ -14,6 +14,24 @@ packages:
   - curl
   - gnupg
 
+%{ if ssh_host_ed25519_key != "" ~}
+# Pinned SSH host identity: survives a droplet rebuild so an SSH client's known_hosts
+# stays valid instead of tripping host-key-changed on every re-provision. Empty on
+# staging: its deploy pins the host key over SSH instead
+# (scripts/converge-ssh-identity.sh), keeping it out of user_data.
+#
+# This MUST be `ssh_keys`, not a write_files entry for /etc/ssh/ssh_host_ed25519_key.
+# write_files runs BEFORE the ssh module in cloud-init's init stage, and the ssh module
+# begins by deleting every /etc/ssh/ssh_host_*key* (ssh_deletekeys defaults to true) --
+# so a key written by write_files is deleted and replaced with a freshly generated one,
+# and the droplet never presents the pinned key. The ssh module writes `ssh_keys` AFTER
+# that delete step. It then skips its own key generation entirely, so runcmd below
+# regenerates the RSA and ECDSA host keys with `ssh-keygen -A`.
+ssh_keys:
+  ed25519_private: |
+    ${indent(4, ssh_host_ed25519_key)}
+  ed25519_public: ${ssh_host_ed25519_key_pub}
+%{ endif ~}
 write_files:
   # The CI deploy key (Kamal's SSH control channel), authorized for root. Written to
   # a drop-in and appended below rather than overwriting root's authorized_keys, so
@@ -79,19 +97,6 @@ write_files:
       PasswordAuthentication no
       PermitRootLogin prohibit-password
       KbdInteractiveAuthentication no
-%{ if ssh_host_ed25519_key != "" ~}
-  # Pinned SSH host identity: survives a droplet rebuild so an SSH client's
-  # known_hosts stays valid instead of tripping host-key-changed on every
-  # re-provision. Empty on staging: its deploy pins the host key over SSH instead
-  # (scripts/converge-ssh-identity.sh), keeping it out of user_data.
-  - path: /etc/ssh/ssh_host_ed25519_key
-    permissions: "0600"
-    content: |
-      ${indent(6, ssh_host_ed25519_key)}
-  - path: /etc/ssh/ssh_host_ed25519_key.pub
-    permissions: "0644"
-    content: ${ssh_host_ed25519_key_pub}
-%{ endif ~}
 %{ if node_exporter_enabled ~}
   # node_exporter, opt-in (var.node_exporter_enabled). A Prometheus-style host
   # metrics endpoint -- node_cpu_seconds_total, node_memory_*, node_filesystem_*,
@@ -276,6 +281,7 @@ runcmd:
   # load-bearing for the deploy itself: every session here runs pam_unix.
 %{ endif ~}
 %{ if ssh_host_ed25519_key != "" ~}
+  - ssh-keygen -A
   - systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 %{ endif ~}
   # --- Tailnet-only SSH: bind OpenSSH's extra :2222 listener ---------------------

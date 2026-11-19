@@ -685,7 +685,11 @@ drifting. Two things pin it when a rebuild does happen:
   (the droplet itself is deliberately *not* `create_before_destroy` — the tailnet hostname is fixed).
 - **`ssh_host_ed25519_key`** (optional; empty on staging) pins the SSH **host key**, so a rebuild does
   not invalidate an SSH client's `known_hosts`. Without it, every re-provision rotates the host key and
-  breaks anything keyed to it.
+  breaks anything keyed to it. cloud-init installs it through its `ssh` module's `ssh_keys`, not
+  `write_files`: that module deletes every host key on first boot before it writes the ones it was
+  handed, so a key written earlier by `write_files` is replaced, and the droplet presents a key nobody
+  pinned. The RSA and ECDSA host keys are still generated fresh on each box. Like the rest of
+  `user_data`, it takes effect only when a droplet is created.
 
 `scripts/tailnet-reap-node.sh` deletes the stale tailnet node so the MagicDNS name doesn't drift to
 `zimmer-staging-1`, `-2`, …

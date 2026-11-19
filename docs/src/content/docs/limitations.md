@@ -731,6 +731,17 @@ droplet keeps whatever sshd posture it booted with — which, on an Ubuntu cloud
 Deploy with `recreate_droplet: true` to force the rebuild, or apply the two files by hand and let the
 next rebuild converge.
 
+### A droplet built before the `ssh_keys` fix does not present its pinned host key
+
+`ssh_host_ed25519_key` used to be installed with `write_files`, which cloud-init's `ssh` module
+deletes right afterwards, so no droplet built with it ever presented the pinned key. The template now
+hands the key to that module as `ssh_keys`, which it writes after deleting. That reaches only a droplet
+created from now on, because `user_data` is under `ignore_changes`. A long-lived droplet built with
+the pin set keeps serving the key cloud-init generated for it. Its first rebuild switches to the
+pinned key, so every client that trusted the generated one on first use sees one host-key-changed
+warning. After that the key stays fixed across rebuilds. Staging is unaffected: it leaves the
+variable empty and pins its key from the deploy (`scripts/converge-ssh-identity.sh`).
+
 ### Neither the sshd config files nor `sshd -T` tell you what sshd is actually doing
 
 Two independent traps, and they stack. Both bit this repo for real.
