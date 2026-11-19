@@ -43,12 +43,15 @@ class IdleContractTest < ActiveSupport::TestCase
       b if @s.waiting? || @s.needs_input?
       if x then y elsif session.waiting? || session.needs_input? then z end
       c = x || foo(s.needs_input? || s.waiting?)
+      d = x || list.any? { |s| s.needs_input? || s.waiting? }
+      e if (s.reload.needs_input? || s.waiting?) && x
     RUBY
-    assert_equal %w[x.rb:1 x.rb:2 x.rb:3 x.rb:4], spelled_out_copies("x.rb", flagged)
+    assert_equal %w[x.rb:1 x.rb:2 x.rb:3 x.rb:4 x.rb:5 x.rb:6], spelled_out_copies("x.rb", flagged)
 
     ignored = <<~RUBY
       a if s.running? || s.waiting? || s.needs_input?
       b if (s.needs_input? || s.waiting? || s.failed?)
+      f if s.running? || (s.needs_input? || s.waiting?)
       c if s.running? || s.waiting?
       d = s.needs_input? && s.waiting?
       # s.needs_input? || s.waiting?
@@ -59,5 +62,7 @@ class IdleContractTest < ActiveSupport::TestCase
     assert_empty spelled_out_copies(PREDICATE_HOME, "def idle?\n  needs_input? || waiting?\nend\n")
     assert_equal [ "#{PREDICATE_HOME}:2" ],
                  spelled_out_copies(PREDICATE_HOME, "def accepts_follow_up?\n  needs_input? || waiting?\nend\n")
+    assert_equal [ "#{PREDICATE_HOME}:2" ],
+                 spelled_out_copies(PREDICATE_HOME, "def idle?\n  self.needs_input? || waiting?\nend\n")
   end
 end
