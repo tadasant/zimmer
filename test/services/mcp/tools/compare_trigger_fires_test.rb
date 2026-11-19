@@ -39,6 +39,26 @@ class Mcp::Tools::CompareTriggerFiresTest < ActiveSupport::TestCase
     assert_equal 20, matched[:seconds_apart]
   end
 
+  test "lines up an email condition's gmail claims with a Gmail MCP event's" do
+    email = Trigger.create!(
+      name: "Zimmer inbox", status: "enabled", agent_root_name: "zimmer", prompt_template: "{{message_id}} {{text|untrusted}}",
+      trigger_conditions_attributes: [ { condition_type: "email", configuration: { "query" => "in:inbox" } } ]
+    )
+    # One email fire covers a thread's two new messages; the MCP shadow fires once per message.
+    claim(email, "gmail:18c0a1", at: 1.hour.ago, via: "email_record")
+    claim(email, "gmail:18c0a2", at: 1.hour.ago, via: "email_record")
+    claim(@shadow, "mcp:slack-zimmer:gmail:18c0a1", at: 1.hour.ago + 30.seconds, via: "mcp_event")
+    claim(@shadow, "mcp:slack-zimmer:gmail:18c0a2", at: 1.hour.ago + 31.seconds, via: "mcp_event")
+    # Mail the email condition skipped (automated, or dropped by burst control) records nothing.
+    claim(@shadow, "mcp:slack-zimmer:gmail:18c0b9", at: 1.hour.ago, via: "mcp_event")
+
+    result = @tool.call("trigger_a_id" => email.id, "trigger_b_id" => @shadow.id)
+
+    assert_equal({ matched: 2, only_a: 0, only_b: 1, pending: 0 }, result[:counts])
+    assert_equal %w[gmail:18c0a1 gmail:18c0a2], result[:recent].select { |row| row[:status] == "matched" }.map { |row| row[:event] }.sort
+    assert_equal "gmail:18c0b9", result[:recent].find { |row| row[:status] == "only_b" }[:event]
+  end
+
   test "since bounds the comparison" do
     claim(@original, "slack:C1:1.000001", at: 2.days.ago, via: "poll")
     result = @tool.call("trigger_a_id" => @original.id, "trigger_b_id" => @shadow.id, "since" => 1.day.ago.iso8601)
