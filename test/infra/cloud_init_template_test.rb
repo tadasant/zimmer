@@ -140,4 +140,32 @@ class CloudInitTemplateTest < ActiveSupport::TestCase
     assert_includes without, "usermod -p '*' root"
     assert_includes without, "systemctl restart ssh.socket ssh.service"
   end
+
+  # The bug this guards: the pinned host key was a write_files entry for
+  # /etc/ssh/ssh_host_ed25519_key. write_files runs before cloud-init's ssh module, which
+  # starts by deleting every /etc/ssh/ssh_host_*key* (ssh_deletekeys defaults to true) and
+  # generating fresh ones -- so the droplet never presented the pinned key, and the first
+  # client to connect with plain OpenSSH and strict host-key checking was refused with
+  # REMOTE HOST IDENTIFICATION HAS CHANGED. The ssh module writes `ssh_keys` after its
+  # delete step, which is why the key has to travel that way.
+  test "a pinned host key is handed to cloud-init's ssh module, never to write_files" do
+    pinned = CloudInitRender.parse("ssh_host_ed25519_key" => "key")
+    unpinned = CloudInitRender.parse("ssh_host_ed25519_key" => "")
+
+    assert_equal %w[ed25519_private ed25519_public], pinned["ssh_keys"]&.keys&.sort,
+      "a supplied host key must render as top-level ssh_keys: { ed25519_private, ed25519_public }"
+    refute pinned.key?("ssh_deletekeys"),
+      "keep ssh_deletekeys at its default: the image's baked-in host keys must not survive"
+
+    [ pinned, unpinned ].each do |config|
+      host_key_files = config["write_files"].map { _1["path"] }.grep(%r{\A/etc/ssh/ssh_host_})
+      assert_empty host_key_files,
+        "write_files must not write host keys -- cloud-init's ssh module deletes them right after"
+    end
+
+    # ssh_keys switches off the module's own key generation, so runcmd restores RSA/ECDSA.
+    assert_includes pinned["runcmd"], "ssh-keygen -A"
+    refute unpinned.key?("ssh_keys"), "no host key supplied, so cloud-init must generate its own"
+    refute_includes unpinned["runcmd"], "ssh-keygen -A"
+  end
 end
