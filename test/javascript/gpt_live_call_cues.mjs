@@ -206,7 +206,7 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   report("goodbye_without_delegating", run)
 }
 
-// A goodbye that answers something else does not end the call.
+// "Don't hang up" answered with a goodbye does not end the call.
 {
   const run = call()
   run.gpt.handle({ type: "session.started" })
@@ -214,7 +214,7 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   advance(300)
   run.gpt.handle(output("Will do. Bye to Sam, then."))
   advance(5000)
-  report("goodbye_not_asked", run)
+  report("goodbye_with_dont", run)
 }
 
 // Asking how to hang up is not hanging up.
@@ -251,6 +251,33 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   report("goodbye_over_a_delegation", run)
 }
 
+// A line GPT-Live delegated is the backend's to end: Claude's answer saying
+// "goodbye" without end_call keeps the call.
+{
+  const run = call({ d1: { chunks: ["Sent. Your goodbye message is on its way."] } })
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Send Sam a message saying goodbye."))
+  advance(200)
+  run.gpt.handle(delegation("d1"))
+  await drain()
+  run.gpt.handle(output("Sent. Your goodbye message is on its way."))
+  advance(5000)
+  report("delegated_goodbye", run)
+}
+
+// A line is spent once answered: a later goodbye with no new line keeps the call.
+{
+  const run = call()
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(input("Hang up."))
+  advance(300)
+  run.gpt.handle(output("Are you sure?"))
+  advance(5000)
+  run.gpt.handle(output("Okay, bye then."))
+  advance(5000)
+  report("line_spent", run)
+}
+
 // The rule itself, line by line.
 console.log(JSON.stringify({
   name: "ends_the_call",
@@ -260,6 +287,7 @@ console.log(JSON.stringify({
     ["Zimmer, end the call", "Ending the call. Talk soon."],
     ["Stop listening", "Goodbye!"],
     ["Okay bye", "Bye!"],
+    ["Pause", "Hanging up. Call again when you're ready."],
     ["Don\u2019t hang up yet", "Okay, I'm here. Bye for now isn't happening."],
     ["Not yet, don't hang up", "Bye"],
     ["How do I hang up?", "Say hang up. Bye is fine too."],

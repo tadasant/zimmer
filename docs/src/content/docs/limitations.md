@@ -410,11 +410,12 @@ talking. It is off unless somebody picks it, and falls back to Realtime when it 
 ### GPT-Live's hang-up fallback reads words, not intent
 
 On `gpt_live_claude`, a call also ends when the person's line asked to hang up and GPT-Live answered
-it with a goodbye, because GPT-Live can say goodbye without delegating the hang-up
+it itself with a goodbye, because GPT-Live can say goodbye without delegating the hang-up
 ([Hanging up by voice](/sessions/live/#hanging-up-by-voice)). The check is a word match in English on
 both lines. A hang-up phrased some other way ("we're done here") still needs GPT-Live to delegate it,
 and a line that both asks and hedges in words the check does not know ("hang up after this one") can
-end the call a turn early. Calling again carries on in the same conversation.
+end the call a turn early. So can a line GPT-Live answers itself that says "bye" to someone else
+("tell Sam bye", answered "bye to Sam"). Calling again carries on in the same conversation.
 
 ### The LiveKit voice engine is a setting with nothing behind it
 

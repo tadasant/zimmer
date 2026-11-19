@@ -522,11 +522,13 @@ loses nothing, and calling again is one tap.
   goodbye after it has been said. GPT-Live is told that a goodbye of its own ends nothing and that a
   hang-up is always delegated, but it can still answer one itself ("Okay, hanging up. Bye!"). So
   both clients (`GptLiveCall` on the web, `GptLiveConductor` on the phone and in the car) also end
-  the call when the person's last line asked to hang up ("hang up", "end the call", "stop
-  listening", "bye") and GPT-Live's answer to it says goodbye ("hanging up", "ending the call",
-  "bye"), with no delegation running. The line must not say "don't", "not yet", "never" or "how",
-  so "don't hang up yet" and "how do I hang up?" keep the call. Either side alone is not enough:
-  "tell Sam bye" answered with "bye to Sam, then" keeps it too.
+  the call when the person's line asked to hang up ("hang up", "end the call", "stop listening",
+  "pause", "bye"), GPT-Live answered it itself rather than delegating it, and its first answer
+  says goodbye ("hanging up", "ending the call", "bye"). The line must not say "don't", "not yet",
+  "never" or "how", so "don't hang up yet" and "how do I hang up?" keep the call. Either side alone
+  is not enough: "what's running?" answered "two sessions, bye!" keeps it. A line GPT-Live
+  delegated is ended only by Claude's `hang_up`, so "send Sam a goodbye" keeps the call whatever
+  the answer says.
 - **In the car** a voice hang-up counts as the driver's End: nothing is retried, the call screen
   comes down with the hung-up cue, and the tiles come back with **Continue**.
 - **Why no pause.** A pause that kept the call open would keep the microphone open, which is what

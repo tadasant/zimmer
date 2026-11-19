@@ -63,9 +63,14 @@ class GptLiveCallCuesTest < ActiveSupport::TestCase
     assert closed?("goodbye_without_delegating")
   end
 
-  test "a goodbye the person did not ask for, or a question about hanging up, leaves the call open" do
-    assert_not closed?("goodbye_not_asked")
+  test "a goodbye to \"don't hang up\", or to a question about hanging up, leaves the call open" do
+    assert_not closed?("goodbye_with_dont")
     assert_not closed?("how_to_hang_up")
+  end
+
+  test "a goodbye in the answer to a delegated line is the backend's to act on, and a line is spent once answered" do
+    assert_not closed?("delegated_goodbye")
+    assert_not closed?("line_spent")
   end
 
   test "a goodbye said over a running hang-up delegation waits for the backend's own goodbye" do
@@ -75,6 +80,6 @@ class GptLiveCallCuesTest < ActiveSupport::TestCase
   end
 
   test "the hang-up rule needs the person to ask and the answer to say goodbye" do
-    assert_equal [ true, true, true, true, true, false, false, false, false, false, false ], heard("ends_the_call")
+    assert_equal [ true, true, true, true, true, true, false, false, false, false, false, false ], heard("ends_the_call")
   end
 end

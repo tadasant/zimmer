@@ -17,9 +17,10 @@ import Foundation
 ///                commentary, a cap warning once as quiet `session.thinking.append`, and
 ///                `end_call` hangs up once the goodbye has been said
 ///   hang-up      GPT-Live can say goodbye without delegating, and a goodbye ends nothing. So when
-///                the person's last line asked to hang up and GPT-Live's answer to it is a goodbye,
-///                with no delegation running, the call ends once it has been said (`endsTheCall`),
-///                as if the backend had asked
+///                the person's line asked to hang up, GPT-Live answered it itself (no delegation)
+///                and that answer is a goodbye, the call ends once it has been said
+///                (`endsTheCall`), as if the backend had asked. A delegated line is the backend's
+///                to end, with `end_call`
 ///   cues         the same `LiveCueDirector.Signal`s a Realtime call gives (`.signal`), read off
 ///                GPT-Live's events, which have no speech boundaries: the person's transcript
 ///                starting is *talking*, its going quiet for `heardIdle` with no answer begun is
@@ -84,6 +85,8 @@ public struct GptLiveConductor: Sendable {
     private var userText = ""
     /// The person's last finished line: what GPT-Live's next answer is answering.
     private var lastUserLine = ""
+    /// GPT-Live delegated `lastUserLine`: ending the call for it is the backend's (`end_call`).
+    private var lineDelegated = false
     private var assistantText = ""
     private var userSpokeAt: TimeInterval?
     private var awaitingAnswer = false
@@ -178,6 +181,7 @@ public struct GptLiveConductor: Sendable {
             guard event["delegation"]?["target"]?.string == "client", let id = event["delegation"]?["id"]?.string else { return [] }
             let pending = userText
             var effects = flushUser() + personDone()
+            lineDelegated = true
             delegatedThisTurn = true
             thinkingDeadline = nil
             delegations.insert(id)
@@ -257,7 +261,11 @@ public struct GptLiveConductor: Sendable {
             self.lastOutput = nil
             let said = assistantText
             effects += flushAssistant()
-            if saidGoodbye || (delegations.isEmpty && Self.endsTheCall(asked: lastUserLine, said: said)) {
+            // Only the first answer to a line GPT-Live did not delegate is checked: the line is
+            // spent once answered.
+            let asked = lineDelegated ? "" : lastUserLine
+            lastUserLine = ""
+            if saidGoodbye || (delegations.isEmpty && Self.endsTheCall(asked: asked, said: said)) {
                 goodbyeDeadline = nil
                 return effects + [.hangUp]
             }
@@ -317,6 +325,7 @@ public struct GptLiveConductor: Sendable {
         userText = ""
         guard !text.isEmpty else { return [] }
         lastUserLine = text
+        lineDelegated = false
         return [.record(.user, text)]
     }
 
@@ -331,7 +340,7 @@ public struct GptLiveConductor: Sendable {
             text.range(of: pattern, options: .regularExpression) != nil
         }
         let line = plain(asked)
-        return matches(line, #"\b(hang (it )?up|end (the|this) call|stop listening|good ?bye|bye)\b"#)
+        return matches(line, #"\b(hang (it )?up|end (the|this) call|stop listening|pause|good ?bye|bye)\b"#)
             && !matches(line, #"\b(don'?t|do not|not yet|never|how)\b"#)
             && matches(plain(said), #"\b(hanging up|ending (the|this) call|good ?bye|bye)\b"#)
     }
