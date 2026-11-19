@@ -758,7 +758,7 @@ token=#{'Zz9' * 12}
   end
 
   test "the instance's base URL is never redacted, so session links survive" do
-    with_bundle("ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "STRAD_API_KEY" => INJECTED_STRAD_TOKEN) do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "STRAD_API_KEY" => INJECTED_STRAD_TOKEN }) do
       text = "See #{ALLOWLIST_BASE_URL}/sessions/29284 (token #{INJECTED_STRAD_TOKEN})"
 
       assert_equal "See #{ALLOWLIST_BASE_URL}/sessions/29284 (token [REDACTED:ENV:STRAD_API_KEY:#{INJECTED_STRAD_TOKEN.length}ch])",
@@ -787,7 +787,7 @@ token=#{'Zz9' * 12}
   end
 
   test "a credential that contains the allowlisted base URL is still redacted whole" do
-    with_bundle("ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "FIXTURE_WEBHOOK_URL" => ALLOWLIST_WEBHOOK) do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL, "FIXTURE_WEBHOOK_URL" => ALLOWLIST_WEBHOOK }) do
       redacted = TranscriptRedactor.redact("posting to #{ALLOWLIST_WEBHOOK} from #{ALLOWLIST_BASE_URL}/sessions/7")
 
       assert_equal "posting to [REDACTED:ENV:FIXTURE_WEBHOOK_URL:#{ALLOWLIST_WEBHOOK.length}ch] from #{ALLOWLIST_BASE_URL}/sessions/7",
@@ -796,7 +796,7 @@ token=#{'Zz9' * 12}
   end
 
   test "credentials embedded in a URL on the allowlisted host are still redacted" do
-    with_bundle("ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL) do
+    with_bundle({ "ZIMMER_PROD_BASE_URL" => ALLOWLIST_BASE_URL }) do
       redacted = TranscriptRedactor.redact("curl https://agent:fixture0password0x9@zimmer.example.test/api/v1/sessions")
 
       refute_includes redacted, "fixture0password0x9"
