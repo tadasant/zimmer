@@ -322,7 +322,7 @@ class WorkBacklogItem < ApplicationRecord
   # rate it, which leaves a `waiting` session and stays in flight, and comes to
   # rest in `needs_input` only when a human is what the PR is waiting on.
   scope :in_flight, -> {
-    started.where(started_session_id: Session.where(status: [ :running, :waiting ]).select(:id))
+    started.where(started_session_id: Session.where(status: Session::TURN_STATUSES).select(:id))
   }
 
   # The SUBSET of `in_flight` whose sessions are dormant on a spot-gate hold:

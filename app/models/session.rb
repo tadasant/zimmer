@@ -316,6 +316,13 @@ class Session < ApplicationRecord
   # StaleCloneCleanupJob for failed-after-24h).
   NON_REAPABLE_STATUSES = %w[running waiting needs_input].freeze
 
+  # The statuses a turn can be in: `running` once a worker has spawned its
+  # process, `waiting` while it is queued for one. #in_turn_state? reads it, and
+  # it is the one spelling of the pair for a query (`where(status:)`), a `when`
+  # clause or an `include?`. `test/contracts/turn_statuses_contract_test.rb`
+  # fails on a new literal list of exactly these two under app/ or lib/.
+  TURN_STATUSES = %w[running waiting].freeze
+
   # Absolute, normalized clone paths for every live (non-reapable) session.
   #
   # This is the authoritative "never reap this, regardless of age" set shared by
@@ -499,7 +506,7 @@ class Session < ApplicationRecord
   # alone, because PendingAgentTurns is more than a query.
   def self.running_claude_code_burn_keys
     scope = where(agent_runtime: ClaudeAuthProvider::RUNTIME)
-    candidates = scope.where(status: [ :running, :waiting ]).pluck("sessions.id")
+    candidates = scope.where(status: TURN_STATUSES).pluck("sessions.id")
     return [] if candidates.empty?
 
     turns = PendingAgentTurns.split(candidates)
@@ -1976,7 +1983,7 @@ class Session < ApplicationRecord
   #
   # @return [Boolean]
   def in_turn_state?
-    running? || waiting?
+    TURN_STATUSES.include?(status)
   end
 
   # Why this session refuses a follow-up, or nil when it takes one.

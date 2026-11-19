@@ -70,7 +70,8 @@ class Trigger < ApplicationRecord
   # fleet session it spawns is itself parked by the quota exhaustion it exists to
   # answer.
   #
-  # PENDING means `waiting` or `running`, and deliberately nothing else:
+  # PENDING means Session::TURN_STATUSES, `waiting` or `running`, and
+  # deliberately nothing else:
   #
   #   - `waiting` is the "queued, has not had its turn" state, and it is where a
   #     session sits both before it is first started and while it is parked on an
@@ -88,7 +89,7 @@ class Trigger < ApplicationRecord
   # Burst-notice sessions are excluded: a notice carries the "investigate this
   # burst" intent, not the trigger's own, so one sitting in `needs_input`-adjacent
   # limbo must not stand in for the work the trigger was asked to do.
-  PENDING_INTENT_STATUSES = %w[waiting running].freeze
+  PENDING_INTENT_STATUSES = Session::TURN_STATUSES
 
   # How much of the event that tipped the cap to quote in the notice prompt.
   BURST_NOTICE_PROMPT_EXCERPT = 500

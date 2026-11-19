@@ -1208,7 +1208,7 @@ class HealthMonitorService
   # Find orphaned processes (running but no matching session)
   def find_orphaned_processes(active_processes)
     # Get all running sessions with their process PIDs
-    running_sessions = Session.where(status: [ :running, :waiting ])
+    running_sessions = Session.where(status: Session::TURN_STATUSES)
     session_pids = running_sessions.filter_map { |s| s.metadata&.dig("process_pid")&.to_i }
 
     # Find processes not associated with any session
