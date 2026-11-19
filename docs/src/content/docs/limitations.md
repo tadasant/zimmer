@@ -5178,15 +5178,31 @@ records nothing either: only the web page and the iOS app stamp an author on a L
 ### A voice Merge trusts a transcript and a word list
 
 The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
-(`authorize_merge`) checks that the assistant line just before the person's answer names the PR's
-repository and number, the number in digits. That line is the call's transcript of what the model
-said, so a model whose transcript spells the number out ("fourteen ninety") is refused and has to
-say it again. Zimmer cannot check the audio itself: a transcript that names the PR while the speech
-said something else would pass. Order is the order lines were recorded, not spoken, so on a voice
-call a "yes" said over the end of the read-back can be recorded after it. Whether the person said
-yes is a word list: a short answer starting with "yes", "yeah", "go ahead", "merge it" and the like,
-with no question and no qualifier, so "yes, why not" and "sure, but after the deploy" are refused.
-All of this fails closed: nothing merges, and the model asks again.
+(`authorize_merge`) checks that, after Zimmer composed the question, an assistant sentence says
+"merge" as a request and the PR's number right after "pull request", "PR" or the repository, with
+nothing negating it outside a quoted title, and that everything the person said after it is a plain
+yes. That line is the call's transcript of what the model said. Zimmer cannot
+check the audio itself: a transcript that names the PR while the speech said something else would
+pass. The number is matched in digits and in the ways a transcript spells it out ("thirty six
+hundred", "three thousand six hundred", "three six zero zero", "fourteen oh five"); a spelling it does
+not know is refused, and the model asks again. The repository can be left out of the spoken
+question, so on a call juggling two PRs with the same number in different repositories, the person
+hears only the number and title words; Zimmer still merges only the PR it named to the model.
+
+The model chooses the words of the question. A model steered by text it read mid-call could ask "Merge
+pull request 1490?" and then fold an unrelated request into the same line; a yes to that line counts.
+A *separate* line after it ends the confirmation, and so does any answer that is not a plain yes.
+Filler is a closed word list ("okay", "sure", "merging", "here's the full read-back"), so any other
+line ends it, which fails closed. Negation is a word list too ("not", "won't", "already"…), so a
+question phrased as a negative ("Why not merge pull request 1490?") is not counted as asking, and a
+paraphrased title that negates something ("…so it doesn't page twice") has to be quoted or left out.
+And all of it reads words, not meaning: a line that says "merge pull request 1490" as a request and
+asks nothing else counts, whatever the model meant by it.
+
+Whether the person said yes is a closed word list: at most six words, every one of them from "yes",
+"yeah", "okay", "do it", "merge it", "please", "great" and the like, at least one a real yes, and
+no question. So "yes, why not", "sure, but after the deploy" and "please say that again" are
+refused, and so is an answer the transcript garbled. All of this fails closed: nothing merges.
 
 A conversation that had a `typed` line before authors were recorded (2026-11-12T20:23Z) can never
 carry a Live Mode human message or a voice Merge, because nothing on the row says whether a person

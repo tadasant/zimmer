@@ -9,7 +9,7 @@ module Mcp
     # - `follow_up` — tell a session something (queued, or `force_immediate` to
     #   redirect it). No goal change, no sync wait, and never a merge: a prompt
     #   carrying the merge-authorization marker is refused, because the only
-    #   route to merging by voice is `authorize_merge`, which reads the PR back
+    #   route to merging by voice is `authorize_merge`, which names the PR once
     #   and needs a fresh yes.
     # - `archive` — never forced. Archiving over a queued message, or over a
     #   turn in flight, is refused with the reason, and the assistant says it.
@@ -32,7 +32,7 @@ module Mcp
       LIVE_FORCE_IMMEDIATE_DESC = 'Optional for "follow_up". true interrupts a running session so it reads this now. Only when the message changes what it should be doing; otherwise leave it off and it is read when the current turn ends.'
 
       REFUSED_MERGE = "Nothing was sent: a follow-up cannot carry a merge authorization. To merge a PR the person " \
-                      "approved, use `authorize_merge`, which reads it back and needs their yes."
+                      "approved, use `authorize_merge`, which names the PR once and needs their yes."
 
       description <<~DESC
         Tell an existing session something with follow_up (never a merge approval; that is authorize_merge), or archive, unarchive or set its CarPlay fit.

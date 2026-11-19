@@ -78,7 +78,7 @@ Three records are written, and they are not equal:
   Merge writes it on the [`assistant` channel](/sessions/hierarchy-and-human-messages/#the-assistant-channel)
   (`ios_app.authorize_merge`), through `POST /api/v1/sessions/:id/authorize_merge`, which answers
   only the app's sign-in when it acts as you. [Live Mode](/sessions/live/) has the same button by
-  voice: its `authorize_merge` reads the PR back by name and records your yes as
+  voice: its `authorize_merge` names the PR in one question and records your yes as
   `live_mode.authorize_merge` (see
   [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)).
   An API key and MCP cannot write one. Like every

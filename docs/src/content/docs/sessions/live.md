@@ -240,8 +240,8 @@ shares one API key. For what the live model does on its own, it is a real one. I
 what an agent the model starts through `quick_router` can do: see
 [limitations](/limitations/#live-modes-narrow-surface-waits-on-a-catalog-change).
 
-**Merging is never a follow-up.** `authorize_merge` is the only route, and needs a fresh yes to a
-read-back. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
+**Merging is never a follow-up.** `authorize_merge` is the only route, and needs a fresh yes to one short
+question naming the PR. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
 `[HUMAN-AUTHORIZED MERGE]` marker, in any spelling inside brackets, and say to use `authorize_merge`.
 Both descriptions say so in their first sentence.
 
@@ -285,8 +285,8 @@ A delivery more than five minutes after your last line records nothing either. A
 had a typed line before this was recorded stays barred, so start a new one; old spoken lines do not
 bar it. When a delivery is not recorded as yours, the live model is told why and says so.
 
-To merge, the live model uses `authorize_merge`, the Merge button by voice: Zimmer reads the PR back
-by repository and number, and only your yes to that read-back sends the merge. See
+To merge, the live model uses `authorize_merge`, the Merge button by voice: the model asks you once,
+naming the PR by its number, and only your yes to that question sends the merge. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 
 ### Telling a session something

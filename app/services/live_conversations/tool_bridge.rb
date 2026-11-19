@@ -59,8 +59,8 @@ module LiveConversations
   #    present, both modes. It takes no conversation id: the pad it reads and
   #    writes is this conversation's and no other. A write mid-call hands a
   #    voice client a `session.update`, so the call's instructions carry it.
-  # 8. **Merging** — `authorize_merge`, the Merge button by voice: Zimmer reads
-  #    the PR back by name, and only a fresh, signed-in yes to that read-back
+  # 8. **Merging** — `authorize_merge`, the Merge button by voice: Zimmer names
+  #    the PR in one short question, and only a fresh, signed-in yes to it
   #    sends the same authorization the button sends. Always present. See
   #    LiveConversations::AuthorizeMerge.
   #

@@ -229,7 +229,7 @@ module Mcp
       lines = []
       if entry.confirmed_pr_url.present?
         url = Sanitize.sanitize_for_markdown_line(entry.confirmed_pr_url)
-        lines << "  They were answering Zimmer's read-back of #{url} (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, the title from the session, any hold reason from the merge gate):"
+        lines << "  They were answering Zimmer's read-back of #{url} (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):"
         lines.concat(fenced(entry.read_back.to_s, content_limit))
       elsif entry.replying_to.present?
         lines << "  They were answering this line from the Live Mode assistant (the model's words, not theirs):"
