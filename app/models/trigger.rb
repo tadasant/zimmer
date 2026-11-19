@@ -2069,7 +2069,7 @@ class Trigger < ApplicationRecord
           )
           @last_follow_up_status = :queued
         end
-      elsif session.needs_input? || session.waiting?
+      elsif session.idle?
         # Tell the resume WHICH wake woke this session, so its
         # cancel_pending_one_time_wake_triggers callback holds the rest of the
         # wake group instead of consuming it. Consuming it there is right for a

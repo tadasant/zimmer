@@ -52,7 +52,7 @@ module McpApps
 
         if kind.to_s == "context" || Sessions::LiveTurn.underway?(session)
           queue(session, prompt)
-        elsif session.waiting? || session.needs_input?
+        elsif session.idle?
           send_now(session, prompt)
         else
           rejected("this session is #{session.status} and cannot take a message")

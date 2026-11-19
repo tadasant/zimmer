@@ -18,7 +18,7 @@
 #
 # What makes it safe is not this branch: it is EnqueuedMessage's after_create_commit
 # hook, which schedules EnqueuedMessageDrainJob for any session that is already idle
-# by Session#idle_for_queued_delivery? — BOTH resting states, not just needs_input
+# by Session#idle? — BOTH resting states, not just needs_input
 # (#566). That job re-reads the session under its own rules and either delivers the
 # message or names the population of `waiting` that genuinely cannot take one, each
 # of which has something else coming that ends in a turn boundary.

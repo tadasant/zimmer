@@ -146,7 +146,7 @@ class EnqueuedMessageDrainJob < ApplicationJob
   # second agent process against one clone or re-run the session straight back
   # into the wall it just hit.
   def skip_reason(session)
-    return "no longer idle (#{session.status})" unless session.idle_for_queued_delivery?
+    return "no longer idle (#{session.status})" unless session.idle?
     return "queue is empty" unless session.enqueued_messages.pending.exists?
 
     # Everything from here to the `nil` is about a session resting in `waiting`

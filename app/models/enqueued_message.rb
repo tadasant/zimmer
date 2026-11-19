@@ -93,7 +93,7 @@ class EnqueuedMessage < ApplicationRecord
   # and nothing was going to come back for the row: the only sweep that wakes an
   # idle session, HeartbeatSweepJob, skips one that has a pending message.
   #
-  # "At rest" is Session#idle_for_queued_delivery?, which is BOTH resting states.
+  # "At rest" is Session#idle?, which is BOTH resting states.
   # It used to be `needs_input?` alone, and `waiting` — the state an `open-pr`
   # self-wake, an `action_session sleep` and every park leave behind — had no
   # drain trigger whatsoever. That is the gap in #566: a PR-merged notice was
@@ -428,7 +428,7 @@ class EnqueuedMessage < ApplicationRecord
   # other side is a message nobody ever comes back for.
   def deliver_if_session_already_idle
     return unless status == "pending"
-    return unless session&.idle_for_queued_delivery?
+    return unless session&.idle?
 
     EnqueuedMessageDrainJob.set(wait: EnqueuedMessageDrainJob::DELAY).perform_later(session_id)
   rescue => e
