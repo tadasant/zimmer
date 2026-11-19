@@ -389,7 +389,10 @@ exactly four sanctioned reasons to send it:
    it — or the self-wake budget running out with no verdict at all. Either way it archives when the
    PR merges.
 3. A human invoked the session to explore something or answer a question — it is the user's to
-   close.
+   close. This starts only once the answer exists: while sessions it started, or their children,
+   are still producing it, the session is waiting on a machine. When a human can answer a question
+   now *and* a related session still has to finish, it rests here with `rest_in_needs_input` and
+   keeps its wake on that session armed, because the finish can change the question or make it moot.
 4. Rare: an ambiguity both too dangerous and too irreversible to guess at.
 
 On top of those, one rule bounds the whole queue: **exactly one session per human-initiated goal
@@ -418,11 +421,14 @@ an incident later, or a user-facing experience a real person would complain abou
 it is a GitHub issue. The prompt states that bar as a sentence the agent has to complete rather
 than an adjective it can argue past, and caps filing at one issue per session with an expected
 number of zero. The prompt also names four things that *look* like reasons to park and are not: waiting on a
-machine (CI, an outage, a rate limit, a peer session: none of those is a human, and a PR whose
-merge disposition is unsettled is the one carve-out), a blocker another session is already fixing,
+machine (CI, an outage, a rate limit, a peer or child session — including the sessions a child
+spawned: none of those is a human, and a PR whose merge disposition is unsettled is the one
+carve-out), a blocker another session is already fixing,
 a reason that went stale while the agent worked (the PR merged; the question is moot), and
 finishing with nothing to show (a sweep that found nothing and a gate that aborted both ran to
-completion).
+completion). If nothing is actionable for a human until a child or peer session finishes, the
+agent arms a wake on it plus a backstop and sleeps in `waiting`; a child others wait on reports to
+its parent with `message_parent` when it finishes.
 
 The second of those is the one agents miss, because it looks like a handoff rather than a wait: red
 CI on `main` from a failure unrelated to the agent's own diff, an upstream fix in flight. The prompt
