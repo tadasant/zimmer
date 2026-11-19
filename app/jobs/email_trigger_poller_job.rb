@@ -23,8 +23,10 @@
 # that is the trigger's choice.)
 #
 # Each thread's spawn commits with its messages' place in the seen-set, so a fire that raises is
-# retried on the next tick and one that succeeded is never repeated. The cursor moves only when
-# every thread found was settled; a thread that raised, was held (`skip_if_pending_session`, or a
+# retried on the next tick and one that succeeded is never repeated. A fire that spawned (or
+# followed up into) a session also records each of its messages as a `gmail:<id>` TriggerEventClaim,
+# for compare_trigger_fires; nothing else reads it (#record_fire!). The cursor moves only when every
+# thread found was settled; a thread that raised, was held (`skip_if_pending_session`, or a
 # reused session that would not take it) or is past MAX_FIRES_PER_TICK keeps the cursor where it
 # was, and the next tick re-reads it. A burst-suppressed fire is dropped, as on Slack. A message the
 # mailbox server cannot return (MAX_READ_ATTEMPTS ticks running) is given up on with one report, so
@@ -389,7 +391,23 @@ class EmailTriggerPollerJob < ApplicationJob
     return :burst_suppressed if session.nil?
     return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
 
+    record_fire!(condition, messages, session)
     session
+  end
+
+  # Records each message the fire delivered as a TriggerEventClaim (`gmail:<id>`, `email_record`),
+  # in the fire's transaction and with its session on it. Nothing reads it to decide anything — the
+  # seen-set does that; it is the record compare_trigger_fires lines up against another trigger's
+  # fires, such as an `mcp_event` trigger on a Gmail event shadowing this one.
+  #
+  # Every message of the thread is recorded, not only the newest: the fire delivered all of them,
+  # and a per-message event source fires on each. A burst notice is not a fire for the mail that
+  # opened the burst, so it records nothing.
+  def record_fire!(condition, messages, session)
+    return if session.metadata["burst_notice"]
+
+    keys = messages.map { |message| TriggerEventClaim.email_event_key(message.id) }
+    TriggerEventClaim.claim!(condition, keys, via: "email_record", session_id: session.id)
   end
 
   def log_outcome(condition, thread_id, count, outcome)

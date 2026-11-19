@@ -3,7 +3,7 @@
 module Mcp
   module Tools
     # Lines up the external events two triggers fired on, by the event's identity. Built for a
-    # parity test — an `mcp_event` trigger shadowing a Slack trigger — but it compares any two
+    # parity test — an `mcp_event` trigger shadowing a Slack or email trigger — but it compares any two
     # triggers whose conditions record TriggerEventClaim rows.
     class CompareTriggerFires < Tool
       tool_name "compare_trigger_fires"
@@ -22,13 +22,23 @@ module Mcp
         (say an `mcp_event` condition on strad's Slack server) shadows an existing one (a Slack
         trigger) and should fire on exactly the same messages.
 
-        Every fire of a Slack or MCP event condition records a claim per event (a GitHub condition
-        records one only while its webhook is on). A Slack message burst control or a pending
-        session stopped records nothing, while an MCP event condition retries such an event, so a
-        few `only_b` rows can be by design: read the sessions before calling one a miss. This tool
-        joins the two triggers' claims on the event's identity — an MCP event's
-        `mcp:<server>:<eventId>` with the server prefix stripped, so strad's
-        `slack:<channel>:<ts>` lines up with the Slack poller's — and reports, since `since`:
+        Every fire of a Slack, email or MCP event condition records a claim per event (a GitHub
+        condition records one only while its webhook is on). This tool joins the two triggers'
+        claims on the event's identity — an MCP event's `mcp:<server>:<eventId>` with the server
+        prefix stripped — so strad's `slack:<channel>:<ts>` lines up with the Slack poller's claim,
+        and a strad Gmail event whose eventId is `gmail:<message_id>` lines up with an email
+        condition's `gmail:<message_id>` (the Gmail id the email trigger renders as
+        `{{message_id}}`). An email fire covers every new message of one thread, so each of them
+        is claimed against that fire's one session.
+
+        A few `only_b` rows can be by design, so read the sessions before calling one a miss. A
+        Slack message that burst control or a pending session stopped records nothing; so does an
+        email thread burst control stopped, which the email poller drops. An MCP event condition
+        retries such an event and fires it later. (An email thread held by a pending or busy
+        session is not dropped: the email poller retries it and records it when it fires.) Mail an
+        email condition skips as automated (`include_automated: false`) or as sent, draft, spam or
+        trash records nothing either, so a shadow that does not filter the same mail shows it as
+        `only_b`. The tool reports, since `since`:
 
         - `matched`: events both triggers fired on, with the time between the two fires;
         - `only_a` / `only_b`: events one fired on and the other did not, once older than

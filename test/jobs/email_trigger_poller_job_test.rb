@@ -101,6 +101,63 @@ class EmailTriggerPollerJobTest < ActiveJob::TestCase
     assert_equal "t2", second.metadata["email_thread_id"]
   end
 
+  test "a fire records every message it delivered as a gmail claim on its session, for compare_trigger_fires" do
+    baseline!
+    @server.deliver(id: "m1", thread_id: "t9", received_at: @now)
+    @server.deliver(id: "m2", thread_id: "t9", received_at: @now + 1)
+    @server.deliver(id: "auto1", thread_id: "t8", from: "no-reply@example.org", received_at: @now + 2)
+
+    EmailTriggerPollerJob.perform_now
+
+    session = spawned_sessions.sole
+    claims = TriggerEventClaim.where(trigger_condition: @condition).order(:event_key)
+    assert_equal %w[gmail:m1 gmail:m2], claims.map(&:event_key), "skipped mail records nothing"
+    assert_equal [ session.id ], claims.map(&:session_id).uniq
+    assert_equal [ "email_record" ], claims.map(&:claimed_via).uniq
+    assert_equal "gmail:m2", TriggerEventClaim.natural_key(TriggerEventClaim.mcp_event_key("gmail-zimmer", "gmail:m2"))
+  end
+
+  test "a held fire records nothing until it fires; a fire rolled back after recording leaves no record" do
+    @trigger.update!(skip_if_pending_session: true)
+    baseline!
+    @server.deliver(id: "p1", thread_id: "p1", received_at: @now)
+    EmailTriggerPollerJob.perform_now
+    @server.deliver(id: "p2", thread_id: "p2", received_at: @now + 1)
+    EmailTriggerPollerJob.perform_now
+    assert_equal %w[gmail:p1], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
+
+    spawned_sessions.first.update_columns(status: "archived")
+    # The fire spawns and records, then the seen-set write after it raises: the claim and the
+    # session roll back together.
+    TriggerCondition.any_instance.stubs(:update!).raises(RuntimeError, "boom")
+    ErrorReporter.stubs(:report_exception)
+    assert_no_difference -> { spawned_sessions.count } do
+      EmailTriggerPollerJob.perform_now
+    end
+    assert_equal %w[gmail:p1], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
+
+    TriggerCondition.any_instance.unstub(:update!)
+    EmailTriggerPollerJob.perform_now
+    p2 = spawned_sessions.find { |session| session.metadata["email_message_id"] == "p2" }
+    assert_equal p2.id, TriggerEventClaim.find_by(trigger_condition: @condition, event_key: "gmail:p2").session_id
+  end
+
+  test "mail that opens or falls in a burst records nothing" do
+    @trigger.update!(max_sessions_per_minute: 1)
+    baseline!
+    3.times { |i| @server.deliver(id: "u#{i}", thread_id: "u#{i}", received_at: @now + i) }
+
+    EmailTriggerPollerJob.perform_now
+
+    fired = spawned_sessions.reject { |session| session.metadata["burst_notice"] }
+    notice = spawned_sessions.select { |session| session.metadata["burst_notice"] }
+    assert_equal 1, fired.size
+    assert_equal 1, notice.size, "the second fire opened the burst"
+    claims = TriggerEventClaim.where(trigger_condition: @condition)
+    assert_equal [ "gmail:#{fired.sole.metadata['email_message_id']}" ], claims.pluck(:event_key)
+    assert_equal [ fired.sole.id ], claims.pluck(:session_id)
+  end
+
   test "mail delivered before the cursor but indexed late, inside the look-back window, still fires" do
     baseline!
     @server.deliver(id: "late1", received_at: @condition.last_message_ts.to_i - 300)
