@@ -317,12 +317,19 @@ export default class extends Controller {
 
   // Show loading indicator on attach buttons
   showLoading() {
+    this.uploading = true
     this.setButtonsDisabled(true)
   }
 
   // Hide loading indicator
   hideLoading() {
+    this.uploading = false
     this.setButtonsDisabled(false)
+  }
+
+  // Whether an upload is in flight, so a submit can wait for it.
+  isUploading() {
+    return this.uploading === true
   }
 
   // Every attach button in this composer, desktop row and phone row alike.

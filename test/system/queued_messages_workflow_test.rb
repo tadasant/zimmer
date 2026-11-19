@@ -28,9 +28,10 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     fill_in "follow_up_prompt", with: "First queued message"
     click_button "Queue Message"
 
-    # Wait for Turbo Stream response
-    # UI should reset: button should be re-enabled with correct text, textarea should be cleared
+    # The composer is cleared and the button enabled at the click
     assert_button "Queue Message", wait: 3
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     # Note: assert_selector with text: "" doesn't check textarea value attribute, only text content
     # We must use find().value to properly check the textarea was cleared
     textarea = find("textarea[name='follow_up_prompt']")
@@ -62,24 +63,30 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     fill_in "follow_up_prompt", with: "First message"
     click_button "Queue Message"
 
-    # Wait for form to reset
+    # Wait for the queue to settle
     assert_button "Queue Message", wait: 3
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "1"
 
     # Queue second message
     fill_in "follow_up_prompt", with: "Second message"
     click_button "Queue Message"
 
-    # Wait for form to reset
+    # Wait for the queue to settle
     assert_button "Queue Message", wait: 3
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "2"
 
     # Queue third message
     fill_in "follow_up_prompt", with: "Third message"
     click_button "Queue Message"
 
-    # Wait for form to reset and verify final state
+    # Wait for the queue to settle and verify final state
     assert_button "Queue Message", wait: 3
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
     assert_selector ".bg-indigo-100", text: "3"
 
     # Verify message order is preserved
@@ -109,11 +116,13 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     # Fill in message
     fill_in "follow_up_prompt", with: "Test message"
 
-    # Click button and verify it gets re-enabled
+    # Click button; it stays enabled
     click_button "Queue Message"
 
-    # Button should be re-enabled within reasonable time (Turbo Stream response)
+    # The button stays enabled throughout
     assert_button "Queue Message", disabled: false, wait: 5
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
 
     # Verify message was queued in database
     session.reload
@@ -314,8 +323,8 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
   end
 
   # Test 11: Textarea is cleared after successful queue submission
-  # Note: This tests that the form replacement happens correctly AND that
-  # the data-turbo-permanent textarea is properly cleared via JavaScript
+  # The composer clears the textarea at the click and keeps it clear once the
+  # server's answer redraws the queue.
   test "textarea is cleared after successful queue submission" do
     session = Session.create!(
       prompt: "Initial prompt",
@@ -331,12 +340,13 @@ class QueuedMessagesWorkflowTest < ApplicationSystemTestCase
     fill_in "follow_up_prompt", with: "Test message to clear"
     click_button "Queue Message"
 
-    # Wait for button to return to Queue Message state (form was replaced)
+    # The button stays enabled throughout
     assert_button "Queue Message", disabled: false, wait: 5
+    # The queue's placeholder leaving is the server's answer.
+    assert_no_selector "[data-pending-enqueued-message]", wait: 5
 
     # CRITICAL: Verify textarea value is actually cleared
-    # The textarea has data-turbo-permanent attribute which preserves it across Turbo Stream
-    # replacements, so we rely on JavaScript (handleSubmitEnd) to clear the value.
+    # The textarea is data-turbo-permanent, so only the composer's JavaScript clears it.
     # Note: assert_selector with text: "" only checks text content, not value attribute!
     textarea = find("textarea[name='follow_up_prompt']")
     assert_empty textarea.value, "Textarea value should be cleared after successful queue submission"

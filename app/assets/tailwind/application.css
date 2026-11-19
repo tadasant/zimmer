@@ -399,8 +399,17 @@
    place, and the content is still the right session.
 
    Not while the frame holds the loading skeleton (_drawer_skeleton): that is
-   already the loading state, and its Close button has to stay clickable. */
-turbo-frame#session_detail[busy]:not(:has(> [data-drawer-skeleton])) {
+   already the loading state, and its Close button has to stay clickable.
+
+   And not for a form submitted inside the drawer. Turbo marks the frame busy for
+   those too — the composer's Send, a button_to without `turbo_frame: "_top"` —
+   and Turbo marks the submitting form `aria-busy` alongside it, which is what
+   tells the two apart. A submission redraws a part of the drawer, not the whole
+   of it, and each shows its own feedback (a disabled Send button, a "Sending…"
+   bubble, lib/optimistic_actions.js), and the transcript and its links stay live
+   for the reader in the meantime. A log-level re-fetch that starts while such a
+   submission is in flight goes undimmed too; it is rare, and harmless. */
+turbo-frame#session_detail[busy]:not(:has(> [data-drawer-skeleton])):not(:has(form[aria-busy="true"])) {
   opacity: 0.6;
   pointer-events: none;
   transition: opacity 150ms ease-in-out;

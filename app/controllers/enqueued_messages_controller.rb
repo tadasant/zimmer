@@ -10,6 +10,9 @@ class EnqueuedMessagesController < ApplicationController
   include ActionView::RecordIdentifier
   include WebUiHumanMessageCapture
 
+  # Names the queued message's id on a successful web create; see #create.
+  ENQUEUED_MESSAGE_ID_HEADER = "X-Enqueued-Message-Id"
+
   before_action :find_session
   before_action :find_enqueued_message, only: [ :destroy, :reorder, :interrupt, :update ]
 
@@ -23,21 +26,7 @@ class EnqueuedMessagesController < ApplicationController
     # Validate content
     if content.blank?
       respond_to do |format|
-        format.turbo_stream do
-          # Replace the entire form to reset button state, plus show errors
-          render turbo_stream: [
-            turbo_stream.replace(
-              "session_#{@session.id}_follow_up_form",
-              partial: "sessions/follow_up_form",
-              locals: { agent_session: @session }
-            ),
-            turbo_stream.update(
-              "enqueued_messages_form_errors",
-              partial: "enqueued_messages/form_errors",
-              locals: { errors: [ "Message content cannot be empty" ] }
-            )
-          ]
-        end
+        format.turbo_stream { render_create_refusal("Message content cannot be empty") }
         format.html do
           redirect_to @session, alert: "Message content cannot be empty"
         end
@@ -47,21 +36,7 @@ class EnqueuedMessagesController < ApplicationController
 
     if content.length > Session::PROMPT_MAX_LENGTH
       respond_to do |format|
-        format.turbo_stream do
-          # Replace the entire form to reset button state, plus show errors
-          render turbo_stream: [
-            turbo_stream.replace(
-              "session_#{@session.id}_follow_up_form",
-              partial: "sessions/follow_up_form",
-              locals: { agent_session: @session }
-            ),
-            turbo_stream.update(
-              "enqueued_messages_form_errors",
-              partial: "enqueued_messages/form_errors",
-              locals: { errors: [ "Message is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)" ] }
-            )
-          ]
-        end
+        format.turbo_stream { render_create_refusal("Message is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)") }
         format.html do
           redirect_to @session, alert: "Message is too long (maximum #{Session::PROMPT_MAX_LENGTH.to_fs(:delimited)} characters)"
         end
@@ -71,21 +46,7 @@ class EnqueuedMessagesController < ApplicationController
 
     if (goal_error = goal_refusal(goal))
       respond_to do |format|
-        format.turbo_stream do
-          # Replace the entire form to reset button state, plus show errors
-          render turbo_stream: [
-            turbo_stream.replace(
-              "session_#{@session.id}_follow_up_form",
-              partial: "sessions/follow_up_form",
-              locals: { agent_session: @session }
-            ),
-            turbo_stream.update(
-              "enqueued_messages_form_errors",
-              partial: "enqueued_messages/form_errors",
-              locals: { errors: [ goal_error ] }
-            )
-          ]
-        end
+        format.turbo_stream { render_create_refusal(goal_error) }
         format.html do
           redirect_to @session, alert: goal_error
         end
@@ -131,22 +92,20 @@ class EnqueuedMessagesController < ApplicationController
     if result != false
       respond_to do |format|
         format.turbo_stream do
-          # Replace the entire enqueued messages section and the full follow-up form
-          # Replacing the entire form ensures:
-          # 1. Button state is reset from server-rendered HTML (no stale "Queueing..." state)
-          # 2. Textarea is cleared
-          # 3. All Stimulus controllers are re-initialized with fresh state
+          # The queue and nothing else. The page queued this message optimistically
+          # (lib/optimistic_queue.js) and the composer has been the user's again
+          # since the click — they may be typing the next message or staging its
+          # attachments — so redrawing the form would take that away from them.
+          # The id is how the page swaps its placeholder for this row, and how a
+          # Send Now clicked on the placeholder reaches the real message.
+          response.headers[ENQUEUED_MESSAGE_ID_HEADER] = @enqueued_message.id.to_s
           render turbo_stream: [
             turbo_stream.replace(
               "session_#{@session.id}_enqueued_messages",
               partial: "enqueued_messages/enqueued_messages_list",
               locals: { agent_session: @session }
             ),
-            turbo_stream.replace(
-              "session_#{@session.id}_follow_up_form",
-              partial: "sessions/follow_up_form",
-              locals: { agent_session: @session }
-            )
+            turbo_stream.update("enqueued_messages_form_errors", "")
           ]
         end
         format.html do
@@ -373,6 +332,18 @@ class EnqueuedMessagesController < ApplicationController
   end
 
   private
+
+  # A queue request the server will not take: the reason above the composer, and
+  # a 422 so the page reads it as a refusal and puts its placeholder into the
+  # failed state. Only the error slot is touched, for the reason #create's
+  # success branch leaves the form alone.
+  def render_create_refusal(error)
+    render turbo_stream: turbo_stream.update(
+      "enqueued_messages_form_errors",
+      partial: "enqueued_messages/form_errors",
+      locals: { errors: [ error ] }
+    ), status: :unprocessable_entity
+  end
 
   # Why a message's goal cannot be accepted, or nil. Checked before anything is
   # written, like the content checks above. The session's own goal is never

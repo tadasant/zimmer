@@ -2976,6 +2976,28 @@ of yours under the conversation the moment a follow-up is sent, which the server
 pause the server refuses says so: the stream branches carry the refusal in `#flash` with a 422,
 rather than redrawing the card and header and saying nothing.
 
+Queueing a message while a turn is underway does not wait either, and does not stop the page.
+`follow_up_prompt_controller` hands the message to `app/javascript/lib/optimistic_queue.js`,
+which draws it in the composer's queue as a *Queueing…* placeholder and empties the composer in
+the same click. The Queue Message button never disables, and focus goes back to the textarea,
+so the next message can be typed and queued straight away. The request is a `fetch`, not a Turbo
+form submission: Turbo would mark the drawer's frame busy and cancel a form's in-flight
+submission when the form is submitted again. One session's queue requests go out one at a time,
+in the order they were written, so the server numbers them that way. `EnqueuedMessagesController#create`
+answers with a stream that redraws the queue (never the form, which is the user's again by
+then) and names the new row in `X-Enqueued-Message-Id`. The placeholder leaves once that row is
+on the page. A **Send Now** clicked on a placeholder is held until the id arrives and then posted
+to the message's `interrupt`. A refusal (a 422 carrying the reason above the composer) or a
+server that cannot be reached puts the words back into an empty composer, with an alert saying
+so. If the user has already started the next message, or the message carried attachments, the
+placeholder stays as a failed row with **Retry** and **Discard**. The stored draft stays on disk
+until the server has the message, as on the send path.
+
+None of this dims the drawer. Turbo marks `turbo-frame#session_detail` busy for any form
+submitted inside it, including the composer's Send, and the stylesheet's dim-and-inert rule for
+a busy drawer is meant for the log-level filter's re-fetch. It skips a busy frame that holds a
+form marked `aria-busy`, so the transcript and its links stay live while a send is in flight.
+
 The board's Quick Router does not wait, and does not leave the board. `quick_prompt_controller`
 posts the form's fields and files as a JSON request (`#quick_prompt` answers `{ session_id, url,
 caveats }`, or `{ error }` with a 422) and shows a toast — *Starting a Quick Router session…* —
