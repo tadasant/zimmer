@@ -410,7 +410,8 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
     prompt = OrchestratorSystemPromptBuilder.build(session: @session)
 
     assert_includes prompt, "Four things that look like reasons to park and are not:"
-    assert_includes prompt, "None of those is a human. Sleep on a wake-up trigger and come back to it"
+    assert_includes prompt, "None of those is a human."
+    assert_includes prompt, "Sleep on a wake-up trigger and come back to it"
     assert_includes prompt, "re-check the real state of the PR, issue, or task"
     assert_includes prompt, "Your own transcript is not the record of last resort"
   end
