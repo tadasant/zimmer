@@ -97,7 +97,34 @@ class OperatingCosts::ReportTest < ActiveSupport::TestCase
     OperatingCostObservation.joins(:account).where(operating_cost_accounts: { key: "seat" }).update_all(created_at: 50.days.ago)
     source = report.sources.find { |s| s[:account] == "seat" }
     assert_equal @today - 50, source[:last_observation_on]
-    assert source[:stale], "a future period end no longer hides an account that stopped reporting"
+    assert_not source[:stale], "its period is still running"
+
+    OperatingCostObservation.joins(:account).where(operating_cost_accounts: { key: "seat" })
+      .update_all(period_start: @today - 80, period_end: @today - 50, as_of_date: @today - 50)
+    assert report.sources.find { |s| s[:account] == "seat" }[:stale], "40 days past its period with no new bill"
+  end
+
+  test "a yearly prepaid invoice keeps its account fresh until the year is over" do
+    record!("accounts" => [ { "key" => "yearly", "label" => "Yearly", "vendor" => "examplecloud", "functionality" => "voice" } ],
+            "observations" => [ { "account" => "yearly", "metric" => "invoice", "period_start" => (@today - 100).iso8601,
+                                  "period_end" => (@today + 264).iso8601, "amount" => 120, "source" => "agent", "confidence" => "billed" } ])
+    OperatingCostObservation.joins(:account).where(operating_cost_accounts: { key: "yearly" }).update_all(created_at: 100.days.ago)
+
+    assert_not report.sources.find { |s| s[:account] == "yearly" }[:stale]
+  end
+
+  test "a forward rate is never negative, even after a run of credits" do
+    record!("accounts" => [ { "key" => "refunded", "label" => "Refunded", "vendor" => "examplecloud", "functionality" => "voice" } ],
+            "observations" => [
+              { "account" => "refunded", "metric" => "period_to_date", "period_start" => @today.beginning_of_month.iso8601,
+                "as_of_date" => (@today - 3).iso8601, "amount" => 10, "source" => "agent", "confidence" => "metered" },
+              { "account" => "refunded", "metric" => "period_to_date", "period_start" => @today.beginning_of_month.iso8601,
+                "as_of_date" => (@today - 1).iso8601, "amount" => -5, "source" => "agent", "confidence" => "metered" }
+            ])
+    account = row(row(report.breakdown("functionality"), "voice")[:accounts], "refunded")
+
+    assert_equal 0, account[:forward_monthly_trend_usd]
+    assert_equal(-5, account[:month_to_date_usd])
   end
 
   test "an account billed monthly in arrears is not stale between invoices" do

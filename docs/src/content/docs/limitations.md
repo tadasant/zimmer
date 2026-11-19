@@ -9104,6 +9104,15 @@ The [Costs](/operate/operating-costs/) page is honest about what it knows and no
 - **Month to date for an account billed in arrears is partly estimated.** Until its invoice
   arrives, the days it has not covered carry its forward rate as an estimate, marked as such. The
   real bill replaces it when it is written.
+- **A credit can make a day negative.** A running total that goes down spreads the drop over the
+  days since the previous report, so those days, and the trend over them, dip below what was spent.
+  A forward rate is floored at zero.
+- **Last month for an account billed in arrears reads low until its invoice arrives.** The estimate
+  fills only the current month; in the first days of a month, last month and its share from bills
+  wait for the bill.
+- **An included-usage allowance is per calendar month.** Running-total usage spread across a
+  billing cycle that straddles two months is checked against each month's allowance, not the
+  cycle's.
 - **The iOS app has no screen for it.** `/costs` opens in the browser; the app's *Token Spend*
   screen is the token ledger.
 

@@ -5,8 +5,8 @@
 # replaces the figure, and anything else is a new row.
 #
 # - `daily_cost`: what one day cost (period_start = period_end = the day).
-# - `period_to_date`: a running total for a billing period; the ledger takes
-#   day-over-day differences.
+# - `period_to_date`: a running total for a billing period; the ledger spreads
+#   each report's increase over the days since the previous report.
 # - `invoice`: a closed bill for a period, spread evenly over it.
 class OperatingCostObservation < ApplicationRecord
   METRICS = %w[daily_cost period_to_date invoice].freeze

@@ -115,36 +115,47 @@ module OperatingCosts
     end
 
     # A running total, turned into days. Each report's increase over the
-    # previous report in the same period is spread evenly over the days since
-    # that report; the first report of a period spreads over the period up to
-    # it. So a collector that catches up after missing days, or a vendor whose
-    # figure lags, puts each day's share on that day instead of piling the whole
-    # gap onto the day the figure arrived. The period's days always sum to its
-    # latest total: a total that goes down (a credit or a correction) spreads its
-    # drop over the same days as negative amounts rather than being dropped.
+    # previous report from the same source in the same period is spread evenly
+    # over the days since that report; the first report of a period spreads over
+    # the period up to it. So a collector that catches up after missing days, or
+    # a vendor whose figure lags, puts each day's share on that day instead of
+    # piling the whole gap onto the day the figure arrived. The period's days
+    # always sum to its latest total: a total that goes down (a credit or a
+    # correction) spreads its drop over the same days as negative amounts.
     # Days after the latest report carry nothing until the next one arrives.
+    #
+    # Each source is its own series, never differenced against another's, and
+    # a day covered by several sources takes the most trusted one's share.
     #
     # @return [Hash{Date => Hash}] the day's entry, keyed by date
     def spread_running_totals(external)
       @spread ||= {}
       @spread[external] ||= begin
-        by_day = {}
         readings = observations.select { |o| o.metric == "period_to_date" && (o.source == "derived") != external }
-        readings.group_by(&:period_start).each do |period_start, in_period|
-          covered_through = nil
-          previous_amount = 0.to_d
-          in_period.group_by(&:as_of_date).sort.each do |as_of, same_day|
-            reading = pick(same_day)
-            last_day = [ as_of, reading.period_end ].compact.min
-            first_day = covered_through ? covered_through + 1 : period_start
-            first_day = [ first_day, last_day ].min
-            spread_over(by_day, first_day..last_day, reading.amount_usd.to_d - previous_amount, reading)
-            covered_through = [ covered_through, last_day ].compact.max
-            previous_amount = reading.amount_usd.to_d
-          end
+        by_source = readings.group_by(&:source).sort_by { |source, _| -(SOURCE_TRUST.index(source) || SOURCE_TRUST.size) }
+        by_source.each_with_object({}) do |(_source, series), by_day|
+          # Less trusted sources first, so a more trusted one overwrites them.
+          by_day.merge!(spread_series(series))
         end
-        by_day
       end
+    end
+
+    def spread_series(series)
+      by_day = {}
+      series.group_by(&:period_start).each do |period_start, in_period|
+        covered_through = nil
+        previous_amount = 0.to_d
+        in_period.group_by(&:as_of_date).sort.each do |as_of, same_day|
+          reading = same_day.max_by(&:updated_at)
+          last_day = [ [ as_of, reading.period_end ].compact.min, period_start ].max
+          first_day = covered_through ? covered_through + 1 : period_start
+          first_day = [ first_day, last_day ].min
+          spread_over(by_day, first_day..last_day, reading.amount_usd.to_d - previous_amount, reading)
+          covered_through = [ covered_through, last_day ].compact.max
+          previous_amount = reading.amount_usd.to_d
+        end
+      end
+      by_day
     end
 
     # Equal shares to four places, the rounding remainder on the last day, so the

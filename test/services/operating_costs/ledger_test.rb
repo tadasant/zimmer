@@ -110,6 +110,48 @@ class OperatingCosts::LedgerTest < ActiveSupport::TestCase
     assert_equal [ 2, 2 ], (1..2).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
   end
 
+  test "two sources reporting the same running total are never added together" do
+    observe(metric: "period_to_date", period_start: Date.new(2026, 2, 28), as_of_date: Date.new(2026, 3, 4), amount: 10,
+            source: "billing_api")
+    observe(metric: "period_to_date", period_start: Date.new(2026, 3, 1), as_of_date: Date.new(2026, 3, 5), amount: 10)
+
+    rebuild(from: Date.new(2026, 2, 28))
+
+    assert_equal [ 2 ] * 5, (0..4).map { |d| entry(Date.new(2026, 2, 28) + d).amount_usd }, "billing_api wins every day it covers"
+    assert_equal 2, entry(Date.new(2026, 3, 5)).amount_usd, "the agent's own share fills the day billing_api has not reached"
+    assert_equal "agent", entry(Date.new(2026, 3, 5)).source
+  end
+
+  test "a lagging source is not differenced against a more trusted one" do
+    period = Date.new(2026, 3, 1)
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 2), amount: 10, source: "billing_api")
+    observe(metric: "period_to_date", period_start: period, as_of_date: Date.new(2026, 3, 3), amount: 9)
+
+    rebuild
+
+    assert_equal [ 5, 5, 3 ], (1..3).map { |d| entry(Date.new(2026, 3, d)).amount_usd }, "no negative day from mixing sources"
+  end
+
+  test "a report dated before its period starts lands on the period's first day" do
+    observe(metric: "period_to_date", period_start: Date.new(2026, 3, 5), period_end: Date.new(2026, 3, 31),
+            as_of_date: Date.new(2026, 3, 3), amount: 4)
+
+    rebuild
+
+    assert_nil entry(Date.new(2026, 3, 3))
+    assert_equal 4, entry(Date.new(2026, 3, 5)).amount_usd
+  end
+
+  test "an included-usage allowance applies to running-total usage spread over the month" do
+    @account.subscriptions.create!(plan_name: "Starter", amount: 0, interval: "month", included_usage_usd: 10,
+                                   started_on: Date.new(2026, 1, 1))
+    observe(metric: "period_to_date", period_start: Date.new(2026, 3, 1), as_of_date: Date.new(2026, 3, 4), amount: 16)
+
+    rebuild(to: Date.new(2026, 3, 4))
+
+    assert_equal [ 0, 0, 2, 4 ], (1..4).map { |d| entry(Date.new(2026, 3, d)).amount_usd }
+  end
+
   test "a subscription accrues daily where nothing else covers the day, within its dates" do
     @account.subscriptions.create!(plan_name: "Seat", amount: 36.5, interval: "month", started_on: Date.new(2026, 3, 5),
                                    ended_on: Date.new(2026, 3, 20))

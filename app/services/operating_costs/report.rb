@@ -22,8 +22,9 @@ module OperatingCosts
     HISTORY_MONTHS = 6
     FORWARD_MONTHS = 3
     RENEWAL_HORIZON = 60
-    # An account billed by invoice is fresh for a monthly cycle plus the time a
-    # bill takes to arrive; anything else should have a figure every day or two.
+    # An account billed by invoice is fresh until its newest invoice's period
+    # ends, and for this long after; anything else should have a figure every
+    # day or two.
     INVOICE_STALE_AFTER_DAYS = 40
     GROUP_BYS = %w[functionality vendor account agent_root].freeze
     VIEWS = %w[summary timeseries projections sources].freeze
@@ -77,7 +78,8 @@ module OperatingCosts
       @monthly_strip ||= begin
         closed = (1..HISTORY_MONTHS).to_a.reverse.map { |n| @month << n }
         history = closed.map do |m|
-          { month: m.strftime("%Y-%m"), kind: "closed", actual_usd: sum_facts(allocation_facts(m)), projected_usd: nil }
+          { month: m.strftime("%Y-%m"), kind: "closed", actual_usd: sum_facts(allocation_facts(m)), estimated_usd: 0.to_d,
+            projected_usd: nil }
         end
         current = { month: @month.strftime("%Y-%m"), kind: current_month? ? "current" : "closed",
                     actual_usd: totals[:month_to_date_usd], estimated_usd: totals[:month_to_date_estimated_usd],
@@ -374,7 +376,8 @@ module OperatingCosts
 
     def forward_facts(kind, external: false)
       scoped_accounts(external: external).flat_map do |account|
-        monthly = kind == :trend ? trend_monthly(account) : forward_monthly(account)
+        # A run of credits can average below zero; a run rate never is.
+        monthly = [ kind == :trend ? trend_monthly(account) : forward_monthly(account), 0.to_d ].max
         next [] if monthly.zero?
 
         shares_for(account).filter_map do |share|
@@ -462,7 +465,8 @@ module OperatingCosts
       (1..FORWARD_MONTHS).map do |n|
         month = @month >> n
         cliff = promotional_cliff(month)
-        { month: month.strftime("%Y-%m"), kind: "forward", actual_usd: nil, projected_usd: base + cliff, credit_cliff_usd: cliff }
+        { month: month.strftime("%Y-%m"), kind: "forward", actual_usd: nil, estimated_usd: nil, projected_usd: base + cliff,
+          credit_cliff_usd: cliff }
       end
     end
 
@@ -521,8 +525,15 @@ module OperatingCosts
       return false if %w[manual].include?(account.vendor.ingest_method)
       return false if account.vendor.ingest_method == "derived"
       return true if last_observed.nil?
+      return last_observed < @as_of - 2 unless invoice_billed?(account)
 
-      last_observed < @as_of - (invoice_billed?(account) ? INVOICE_STALE_AFTER_DAYS : 2)
+      # A bill is fresh until its period is over, then for a cycle's grace.
+      [ last_observed, latest_invoice_period_ends[account.id] ].compact.max < @as_of - INVOICE_STALE_AFTER_DAYS
+    end
+
+    def latest_invoice_period_ends
+      @latest_invoice_period_ends ||= OperatingCostObservation.where(metric: "invoice").where.not(source: "derived")
+        .group(:account_id).maximum(:period_end)
     end
 
     def group_key(fact, group_by)
