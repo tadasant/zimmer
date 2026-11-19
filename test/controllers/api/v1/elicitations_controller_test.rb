@@ -3,6 +3,7 @@
 require "test_helper"
 
 class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
+  include SecurityTelemetryTestHelpers
   setup do
     @session = sessions(:elicitation_session)
     @valid_api_key = "test_api_key_12345"
@@ -625,9 +626,12 @@ class Api::V1::ElicitationsControllerTest < ActionDispatch::IntegrationTest
   test "show with a forged token is refused" do
     elicitation = create_pending_elicitation
 
-    get api_v1_session_elicitation_path("#{@session.id}-#{'A' * 43}", elicitation.request_id)
+    report = with_security_telemetry do
+      get api_v1_session_elicitation_path("#{@session.id}-#{'A' * 43}", elicitation.request_id)
+    end
 
     assert_response :unauthorized
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["elicitation_token"]["invalid"]
   end
 
   test "show with another session's token cannot see this session's elicitation" do

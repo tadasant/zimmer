@@ -4,6 +4,7 @@ require "test_helper"
 require "mocha/minitest"
 
 class LiveDelegationMcpControllerTest < ActionDispatch::IntegrationTest
+  include SecurityTelemetryTestHelpers
   setup do
     @conversation = create_live_conversation(mode: "voice", voice_engine: "gpt_live_claude")
     @token = LiveConversations::DelegationToken.mint(@conversation, delegation_id: "item_del_9")
@@ -49,8 +50,9 @@ class LiveDelegationMcpControllerTest < ActionDispatch::IntegrationTest
     rpc("tools/list", token: nil)
     assert_response :unauthorized
 
-    rpc("tools/list", token: "#{@token}x")
+    report = with_security_telemetry { rpc("tools/list", token: "#{@token}x") }
     assert_response :unauthorized
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["live_delegation_token"]["invalid"]
 
     travel_to(LiveConversations::DelegationToken::TTL.from_now + 1.second) do
       rpc("tools/list")

@@ -580,15 +580,24 @@ class HealthMonitorService
     since = Time.current - SecurityTelemetry::WINDOW
     created = Session.where(created_at: since..).group(:genesis).count
 
+    by_genesis = SessionGenesis::KEYS.to_h { |key| [ key, created.fetch(key, 0) ] }
+    # A row whose genesis is not a current key (NULL, or a retired kind) still
+    # counts, so the map adds up to every session created in the window.
+    by_genesis[SecurityTelemetry::OTHER] = created.except(*SessionGenesis::KEYS).values.sum
+
     SecurityTelemetry.report.merge(
-      sessions_created_by_genesis: SessionGenesis::KEYS.to_h { |key| [ key, created.fetch(key, 0) ] },
+      sessions_created_by_genesis: by_genesis,
       oauth_grants_issued: OauthServer::Grant.where(created_at: since..).count,
       oauth_clients_registered: OauthServer::Client.where(created_at: since..).count,
-      api_keys_created: ApiKey.where(created_at: since..).count
+      # Minted only: an env key's row is written lazily on its first use, which
+      # is bookkeeping, not a new credential.
+      api_keys_created: ApiKey.where(source: ApiKey::MINTED_SOURCE, created_at: since..).count
     )
   rescue StandardError => e
-    @logger.warn("Security health could not be read", error: e.message)
-    { window_seconds: SecurityTelemetry::WINDOW.to_i, error: e.message }
+    @logger.warn("Security health could not be read", error: e.class.name)
+    # The class, not the message: this payload is served over the API and MCP,
+    # and a database error's message can carry connection detail.
+    { window_seconds: SecurityTelemetry::WINDOW.to_i, error: e.class.name }
   end
 
   # What WarmClonePool holds, what WarmPoolPolicy chose and left out, and how

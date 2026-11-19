@@ -433,12 +433,16 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     reset!
 
     sign_in_with_google
-    WebIdentity::MAX_FAILED_ATTEMPTS.times do
+    report = with_security_telemetry do
+      WebIdentity::MAX_FAILED_ATTEMPTS.times do
+        post second_factor_path, params: { code: "000000" }
+        assert_response :unprocessable_entity
+      end
       post second_factor_path, params: { code: "000000" }
-      assert_response :unprocessable_entity
+      assert_response :too_many_requests
     end
-    post second_factor_path, params: { code: "000000" }
-    assert_response :too_many_requests
+    assert_equal WebIdentity::MAX_FAILED_ATTEMPTS, report[:auth_failures_by_kind_and_reason]["web_second_factor"]["wrong_code"]
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["web_second_factor"]["locked"]
     assert_includes response.body, "Try again in 15 minutes"
   end
 

@@ -819,8 +819,14 @@ credentials" or "something is creating sessions a thousand at a time".
 
 Every count is over the same trailing hour (`window_seconds: 3600`). Recorded counts
 (`SecurityTelemetry`) live in Redis as one counter per label set per five-minute bucket, and the
-report sums the current bucket and the eleven before it, so a count rises the moment an event
-happens and covers 55 to 60 minutes. The rest are `created_at` counts read from the database.
+report sums the current bucket and the eleven before it, so it covers 55 to 60 minutes. The rest
+are `created_at` counts read from the database.
+
+**Recording stays off the request path.** A refusal or a response adds one to a counter in the
+process's own memory. A background thread in each process flushes those counters to Redis every
+ten seconds, and a report flushes its own process first. A slow or unreachable Redis therefore
+costs that thread, never a request. The cost is that a count can reach the report up to ten
+seconds late.
 
 | Key | Labels | Counts |
 | --- | --- | --- |
@@ -828,16 +834,16 @@ happens and covers 55 to 60 minutes. The rest are `created_at` counts read from 
 | `auth_failures_by_kind_and_reason` | kind, reason | refusals, by why |
 | `responses_by_surface_and_status_class` | surface, `2xx`/`3xx`/`4xx`/`5xx` | controller responses |
 | `client_errors_by_surface_and_status` | surface, `400`/`401`/`403`/`404`/`422`/`429`/`other` | 4xx responses |
-| `sessions_created_by_genesis` | genesis (every `SessionGenesis` key) | sessions created |
+| `sessions_created_by_genesis` | genesis (every `SessionGenesis` key, plus `other`) | sessions created |
 | `oauth_grants_issued` | — | OAuth grants issued for `/mcp` and the iOS app |
 | `oauth_clients_registered` | — | OAuth clients registered (DCR or a metadata document) |
-| `api_keys_created` | — | API keys minted |
+| `api_keys_created` | — | API keys minted (an env key's row, written on its first use, is not counted) |
 
 The kinds and their reasons:
 
 | Kind | Reasons | Where |
 | --- | --- | --- |
-| `web_sign_in` | `provider_error`, `flow_mismatch`, `rejected`, `exchange_failed` | the Google callback |
+| `web_sign_in` | `provider_error`, `flow_mismatch`, `rejected` | the Google callback |
 | `web_second_factor` | `wrong_code`, `locked`, `enrollment_wrong_code` | the TOTP step |
 | `api_key` | `missing`, `unknown`, `revoked`, `retired`, `wrong_grant` | `/api`, `/mcp` |
 | `oauth_access_token` | `missing`, `unknown`, `revoked`, `expired`, `wrong_audience`, `server_not_configured`, `not_the_native_app` | `/mcp`, the iOS app on `/api` |
@@ -857,11 +863,19 @@ an unrouted probe like `/api/v1/admin` counts against `api`.
 **Every label value is a constant.** A reason nobody listed is counted as `other`, so a caller can
 never mint a new series, and nothing from the request (an address, a token, a user, a path) can
 reach a key or a label. Every label set is reported, zeros included, so a series exists before its
-first event. `api_key` `missing` includes an MCP client's first request with no credential, which
+first event.
+
+A few refusals are deliberately left out of the auth counts, because they are not the caller
+failing. A Google token exchange that fails is Google or the network. An `oauth_token`
+`temporarily_unavailable` is this deployment. A malformed `/oauth/authorize` request (an unknown
+`client_id`, a bad `redirect_uri`) shows only as an `oauth` 4xx. And `oauth_token`
+`invalid_client` includes a client metadata document Zimmer could not fetch.
+
+`api_key` `missing` includes an MCP client's first request with no credential, which
 is how OAuth discovery starts, so a rule on API-key guessing should read `unknown`.
 
-Recording never raises and never changes an auth decision. A cache error is swallowed and the
-count is lost. The section carries no status and is not part of `overall_status`, because a
+Recording never raises, never waits on Redis, and never changes an auth decision. A flush that
+fails is logged and its counts are lost. The section carries no status and is not part of `overall_status`, because a
 threshold on these is a judgement for the alert rule, not the report. See
 [the limitation](/limitations/#security-counts-undercount-rather-than-block).
 

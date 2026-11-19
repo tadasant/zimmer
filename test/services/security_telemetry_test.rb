@@ -8,7 +8,10 @@ class SecurityTelemetryTest < ActiveSupport::TestCase
   # Buckets are wall-clock; park mid-bucket so a burst never straddles a boundary.
   MID_BUCKET = Time.utc(2026, 11, 19, 12, 2, 30)
 
-  setup { travel_to MID_BUCKET }
+  setup do
+    SecurityTelemetry.discard_pending!
+    travel_to MID_BUCKET
+  end
   teardown { travel_back }
 
   test "auth failures are counted by kind and reason, every label set present" do
@@ -93,12 +96,53 @@ class SecurityTelemetryTest < ActiveSupport::TestCase
     assert_equal 0, report[:auth_failures_by_kind].values.sum
   end
 
-  test "a store that raises never reaches the caller" do
+  test "recording never touches the store; a flush that fails drops its counts and never raises" do
     broken = Object.new
     def broken.increment(*) = raise(StandardError, "down")
+    def broken.read_multi(*, **) = raise(StandardError, "down")
     Rails.stub(:cache, broken) do
       assert_nil SecurityTelemetry.record_auth_failure(:api_key, :unknown)
       assert_nil SecurityTelemetry.record_response("/api/v1/sessions", 401)
+      assert_nil SecurityTelemetry.flush!
     end
+  end
+
+  test "a count stays in the process until a flush, and the flush carries its bucket" do
+    store = ActiveSupport::Cache::MemoryStore.new
+    Rails.stub(:cache, store) do
+      SecurityTelemetry.record_auth_failure(:api_key, :unknown)
+      SecurityTelemetry.record_auth_failure(:api_key, :unknown)
+      key = SecurityTelemetry.key(%w[auth_failure api_key unknown], SecurityTelemetry.bucket_for(Time.current))
+      assert_nil store.read(key, raw: true), "nothing reaches the store on the request path"
+
+      travel 7.minutes
+      SecurityTelemetry.flush!
+      assert_equal 2, store.read(key, raw: true).to_i, "counted in the bucket it was recorded in"
+      assert_equal 0, SecurityTelemetry.pending.size
+    end
+  end
+
+  test "a request that raised is counted with the status Rails answers it with" do
+    report = with_security_telemetry do
+      ActiveSupport::Notifications.instrument("process_action.action_controller",
+        path: "/api/v1/sessions/999?x=1", status: nil, exception_object: ActiveRecord::RecordNotFound.new)
+      ActiveSupport::Notifications.instrument("process_action.action_controller",
+        path: "/mcp", status: nil, exception_object: RuntimeError.new)
+    end
+
+    assert_equal 1, report[:client_errors_by_surface_and_status]["api"]["404"]
+    assert_equal 1, report[:responses_by_surface_and_status_class]["mcp"]["5xx"]
+  end
+
+  # The kind check raises only at call sites a test reaches. This one reads them
+  # all, so a typo anywhere in app/ fails here rather than logging in production.
+  test "every record_auth_failure call site names a known kind" do
+    calls = Dir[Rails.root.join("app/**/*.rb")].flat_map do |file|
+      File.read(file).scan(/record_auth_failure\(:(\w+)/).flatten
+    end
+
+    assert_operator calls.size, :>=, 15
+    assert_empty calls.uniq - SecurityTelemetry::AUTH_FAILURE_KINDS
+    assert_empty SecurityTelemetry::AUTH_FAILURE_KINDS - calls.uniq, "a kind nothing records"
   end
 end
