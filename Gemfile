@@ -70,7 +70,7 @@ gem "thruster", require: false
 gem "administrate"
 
 # Markdown rendering for conversation transcripts
-gem "redcarpet"
+gem "commonmarker", "~> 2.10"
 
 # Syntax highlighting for code blocks
 gem "rouge", "~> 5.0"

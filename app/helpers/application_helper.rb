@@ -1,5 +1,4 @@
 require "rouge"
-require "rouge/plugins/redcarpet"
 
 module ApplicationHelper
   # What every composer's "Photos & videos" input accepts.
@@ -21,115 +20,128 @@ module ApplicationHelper
     MEDIA_PICKER_ACCEPT
   end
 
-  # Custom HTML renderer with Rouge syntax highlighting
-  class MarkdownRenderer < Redcarpet::Render::HTML
-    include Rouge::Plugins::Redcarpet
+  # Markdown to HTML for everything an agent or a person writes into Zimmer.
+  #
+  # Parsed by Commonmarker (comrak), which follows CommonMark and GitHub Flavored
+  # Markdown — the dialect the agents write. In particular a list item's content
+  # continues at the item's content column, so a table, a paragraph or a code
+  # block indented three spaces under "1. " stays inside the item, the way GitHub
+  # shows it.
+  #
+  # Raw HTML in the source is escaped rather than rendered, and links whose
+  # scheme is not safe (javascript:, data: …) lose their href; both are
+  # comrak's own `escape` and default (non-`unsafe`) rendering. Code is the one
+  # thing rendered outside comrak: each code block and code span is swapped for a
+  # placeholder token before rendering and for Rouge's output after, so the HTML
+  # Zimmer injects never passes through comrak's raw-HTML path.
+  class MarkdownRenderer
+    OPTIONS = {
+      parse: { smart: false },
+      render: { hardbreaks: true, escape: true, unsafe: false },
+      extension: {
+        strikethrough: true,
+        table: true,
+        autolink: true,
+        tasklist: true,
+        footnotes: true,
+        shortcodes: true,
+        # Off, though comrak has them: neither is GFM, and both pair up characters
+        # agents write in prose — `O(n^2) vs O(n^3)` and `a==b && c==d`.
+        superscript: false,
+        highlight: false,
+        header_ids: nil
+      }
+    }.freeze
 
-    # Known language identifiers for detecting language in multi-line inline code
-    # When inline code starts with one of these followed by a newline, it's treated
-    # as a code block with that language for syntax highlighting.
-    # This list covers popular languages supported by Rouge for syntax highlighting.
-    # Only includes identifiers that Rouge recognizes (verified against Rouge::Lexer.find_fancy).
-    # To verify a new language: Rouge::Lexer.find_fancy('language_name')
-    INLINE_CODE_LANGUAGES = %w[
-      bash sh shell zsh console
-      ruby rb python py perl pl php r lua tcl
-      javascript js typescript ts jsx tsx coffeescript coffee
-      json yaml yml xml html css scss sass
-      sql plsql
-      go rust java c cpp csharp cs swift kotlin scala
-      objective_c objc objective_cpp
-      clojure clj elixir erlang elm
-      fsharp haskell hs ocaml sml
-      lisp common_lisp scheme racket
-      groovy
-      dart julia nim zig crystal d mojo
-      matlab fortran pascal ada cobol
-      dockerfile docker makefile make cmake gradle
-      terraform hcl nginx apache puppet nix
-      graphql protobuf
-      diff patch
-      toml ini conf properties
-      erb liquid jinja haml slim handlebars hbs
-      markdown md tex latex
-      powershell posh batchfile batch bat
-      vim viml sed awk
-      nasm armasm llvm glsl hlsl cuda
-      prolog
-      vue svelte
-      gherkin cucumber
-      verilog vhdl
-    ].freeze
+    LINK_ATTRIBUTES = %( target="_blank" rel="noopener noreferrer").freeze
 
-    def initialize(options = {})
-      super(options.merge(
-        hard_wrap: true,
-        link_attributes: { target: "_blank", rel: "noopener noreferrer" }
-      ))
+    def render(text)
+      nonce = SecureRandom.hex(8)
+      document = Commonmarker.parse(text, options: OPTIONS)
+      code = swap_code_for_tokens(document, nonce)
+
+      html = decorate(document.to_html(options: OPTIONS, plugins: { syntax_highlighter: nil }))
+      html.gsub(%r{(<p>)?zmdblock#{nonce}n(\d+)z(</p>)?|zmdspan#{nonce}n(\d+)z}) do
+        if $2
+          # The token's paragraph is normally `<p>TOKEN</p>`, or bare in a tight
+          # list. A footnote's back-reference can land inside it, after the token;
+          # then the paragraph reopens for what follows.
+          code.fetch($2.to_i) + ($1 && !$3 ? "<p>" : "")
+        else
+          code.fetch($4.to_i)
+        end
+      end
     end
 
-    # Override to add custom classes to code blocks with syntax highlighting
+    # Rouge-highlighted code block.
     def block_code(code, language)
-      language ||= "plaintext"
+      language = language.presence || "plaintext"
       lexer = Rouge::Lexer.find_fancy(language, code) || Rouge::Lexers::PlainText.new
       formatter = Rouge::Formatters::HTMLInline.new(Rouge::Themes::Monokai)
       formatted_code = formatter.format(lexer.lex(code))
 
-      # Escape the lexer tag and language for safe HTML attribute values
       safe_tag = ERB::Util.html_escape(lexer.tag)
       safe_language = ERB::Util.html_escape(language)
 
       %(<pre class="highlight language-#{safe_tag}" data-language="#{safe_language}"><code>#{formatted_code}</code></pre>)
     end
 
-    # Style inline code with proper escaping
-    # If the code contains newlines, render it as a code block instead
     def codespan(code)
-      if code.nil?
-        %(<code class="inline-code"></code>)
-      elsif code.include?("\n")
-        # Multi-line inline code should be rendered as a code block
-        # Try to detect language from first line (e.g., `bash\ncommand`)
-        lines = code.split("\n", 2)
-        first_line = lines.first.strip.downcase
+      %(<code class="inline-code">#{ERB::Util.html_escape(code)}</code>)
+    end
 
-        # Check if first line looks like a language identifier and has actual code content
-        if lines.length > 1 && INLINE_CODE_LANGUAGES.include?(first_line)
-          actual_code = lines[1]
-          # Only use language detection if there's actual code after the language line
-          if actual_code.present?
-            language = first_line
-          else
-            # Language-only with no code: render as plaintext with the original content
-            language = "plaintext"
-            actual_code = code
-          end
+    private
+
+    # Replace every code block with a paragraph holding a block token, and every
+    # code span with a text token, returning the HTML each token stands for. The
+    # nonce keeps a token from being forged by the text itself.
+    def swap_code_for_tokens(document, nonce)
+      nodes = []
+      document.walk { |node| nodes << node if node.type == :code_block || node.type == :code }
+
+      nodes.each_with_index.map do |node, index|
+        if node.type == :code && inside_image?(node)
+          # An image's alt text is an attribute value, where HTML cannot go.
+          node.replace(Commonmarker::Node.new(:text, content: node.string_content))
+          nil
+        elsif node.type == :code_block
+          paragraph = Commonmarker::Node.new(:paragraph)
+          paragraph.append_child(Commonmarker::Node.new(:text, content: "zmdblock#{nonce}n#{index}z"))
+          node.replace(paragraph)
+          block_code(node.string_content, node.fence_info.to_s.split.first)
         else
-          language = "plaintext"
-          actual_code = code
+          html = codespan(node.string_content)
+          node.replace(Commonmarker::Node.new(:text, content: "zmdspan#{nonce}n#{index}z"))
+          html
         end
-
-        block_code(actual_code, language)
-      else
-        %(<code class="inline-code">#{ERB::Util.html_escape(code)}</code>)
       end
     end
 
-    # Add classes to blockquotes for styling
-    # Note: quote content is already processed by Redcarpet with filter_html: true
-    def block_quote(quote)
-      %(<blockquote class="markdown-blockquote">#{quote}</blockquote>)
+    def inside_image?(node)
+      while (node = node.parent)
+        return true if node.type == :image
+      end
+      false
     end
 
-    # Add classes to tables
-    # Note: header/body content is already processed by Redcarpet with filter_html: true
-    def table(header, body)
-      %(<div class="table-wrapper"><table class="markdown-table"><thead>#{header}</thead><tbody>#{body}</tbody></table></div>)
+    # Classes and attributes the stylesheet and the link behaviour key on. Every
+    # tag matched here was written by comrak: raw HTML in the source has already
+    # been escaped, and the Rouge output is substituted only afterwards. A link
+    # or image comrak emptied because its scheme was unsafe is left as its text,
+    # so nothing clickable or fetchable is left behind.
+    def decorate(html)
+      html
+        .gsub(%r{<a href=""(?: title="[^"]*")?>(.*?)</a>}m, '\\1')
+        .gsub(%r{<img src="" alt="([^"]*)"(?: title="[^"]*")? />}, '\\1')
+        .gsub("<table>", %(<div class="table-wrapper"><table class="markdown-table">))
+        .gsub("</table>", "</table></div>")
+        .gsub("<blockquote>", %(<blockquote class="markdown-blockquote">))
+        .gsub(%r{<a href="([^"]*)"( title="[^"]*")?>}) { %(<a href="#{$1}"#{$2}#{LINK_ATTRIBUTES}>) }
     end
   end
 
-  # Render markdown text as HTML with syntax highlighting
-  # Uses filter_html: true to prevent XSS attacks
+  # Render markdown text as HTML with syntax highlighting (see MarkdownRenderer
+  # for how raw HTML and unsafe links are kept out).
   # Rescues rendering errors so a single bad message never crashes the whole page
   def markdown(text)
     return "" if text.blank?
@@ -141,15 +153,13 @@ module ApplicationHelper
   end
 
   # The inline elements `inline_markdown` keeps. Everything else — paragraphs,
-  # headings, lists, tables, code blocks — is unwrapped to its text. `q` is here
-  # because the renderer's `quote` extension turns "quoted text" into one, and
-  # dropping the tag would drop the quotation marks with it.
-  INLINE_MARKDOWN_TAGS = %w[a code strong em del q].freeze
+  # headings, lists, tables, code blocks — is unwrapped to its text.
+  INLINE_MARKDOWN_TAGS = %w[a code strong em del].freeze
   INLINE_MARKDOWN_ATTRIBUTES = %w[href target rel].freeze
 
   # Markdown for a one-line slot: a row on a list, where a <p>, a heading or a
   # code block would break the layout. Rendered by `markdown` — so links keep its
-  # target="_blank" and its safe_links_only filtering — and then narrowed to
+  # target="_blank" and its unsafe-scheme filtering — and then narrowed to
   # INLINE_MARKDOWN_TAGS, which a second sanitizer pass enforces even if the
   # renderer ever let something else through.
   def inline_markdown(text)
@@ -166,8 +176,7 @@ module ApplicationHelper
     return "" if text.blank?
 
     memoized_markdown(:plain, text) do
-      html = markdown(text).gsub(%r{</?q>}, '"')
-      CGI.unescapeHTML(strip_tags(html)).squish
+      CGI.unescapeHTML(strip_tags(markdown(text))).squish
     end
   end
 
@@ -263,27 +272,7 @@ module ApplicationHelper
 
   private
 
-  # Memoize the markdown parser for better performance
   def markdown_parser
-    @markdown_parser ||= begin
-      renderer = MarkdownRenderer.new(
-        filter_html: true,
-        escape_html: true,
-        safe_links_only: true
-      )
-
-      Redcarpet::Markdown.new(
-        renderer,
-        fenced_code_blocks: true,
-        autolink: true,
-        tables: true,
-        strikethrough: true,
-        superscript: true,
-        no_intra_emphasis: true,
-        highlight: true,
-        quote: true,
-        footnotes: true
-      )
-    end
+    @markdown_parser ||= MarkdownRenderer.new
   end
 end

@@ -86,10 +86,10 @@ Three kinds of link do most of the work:
 The blurb is markdown, and it is rendered as markdown wherever it is shown. The session page's
 Status panel renders it in full through the shared renderer. A row on
 [Your board](/sessions/user-view/) renders it inline through `ApplicationHelper#inline_markdown`, which is
-the same renderer narrowed to links, code, bold, italics, strikethrough and quotes. A paragraph
+the same renderer narrowed to links, code, bold, italics and strikethrough. A paragraph
 break, heading, list or table is unwrapped to its text, and a code block keeps only its `<code>`, so
 none of them can break the row's layout. Both paths keep the
-renderer's `safe_links_only` filtering and its `target="_blank"`, and the inline one runs a
+renderer's [unsafe-link filtering](/sessions/transcripts/#how-a-messages-markdown-renders) and its `target="_blank"`, and the inline one runs a
 second sanitizer pass on top. No raw HTML or `javascript:` link survives either path. The board
 row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full
 `/sessions/:id#message-N` URL. Its `#message-N` shorthand only works on the session's own page.
