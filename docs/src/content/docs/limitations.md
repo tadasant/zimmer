@@ -9098,6 +9098,22 @@ The [Costs](/operate/operating-costs/) page is honest about what it knows and no
 - **The forward rate is a run rate.** It is the trailing 28 days (the newest invoices, for an
   account billed by invoice) times 30.44, or the active subscriptions for an account with no
   metered usage. It does not know about a plan change before it is recorded.
+- **A running total spread over a gap is evenly spread.** When a vendor's month-to-date figure is
+  first recorded mid-month, or arrives after missed days, its increase is divided equally over the
+  days it covers. The month total is exact; the shape inside the gap is flat whatever the real days
+  were.
+- **Month to date for an account billed in arrears is partly estimated.** Until its invoice
+  arrives, the days it has not covered carry its forward rate as an estimate, marked as such. The
+  real bill replaces it when it is written.
+- **A credit can make a day negative.** A running total that goes down spreads the drop over the
+  days since the previous report, so those days, and the trend over them, dip below what was spent.
+  A forward rate is floored at zero.
+- **Last month for an account billed in arrears reads low until its invoice arrives.** The estimate
+  fills only the current month; in the first days of a month, last month and its share from bills
+  wait for the bill.
+- **An included-usage allowance is per calendar month.** Running-total usage spread across a
+  billing cycle that straddles two months is checked against each month's allowance, not the
+  cycle's.
 - **The iOS app has no screen for it.** `/costs` opens in the browser; the app's *Token Spend*
   screen is the token ledger.
 

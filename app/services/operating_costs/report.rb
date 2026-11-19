@@ -22,6 +22,10 @@ module OperatingCosts
     HISTORY_MONTHS = 6
     FORWARD_MONTHS = 3
     RENEWAL_HORIZON = 60
+    # An account billed by invoice is fresh until its newest invoice's period
+    # ends, and for this long after; anything else should have a figure every
+    # day or two.
+    INVOICE_STALE_AFTER_DAYS = 40
     GROUP_BYS = %w[functionality vendor account agent_root].freeze
     VIEWS = %w[summary timeseries projections sources].freeze
     GRANULARITIES = %w[day month].freeze
@@ -58,6 +62,7 @@ module OperatingCosts
         rows = breakdown("functionality")
         {
           month_to_date_usd: rows.sum { |r| r[:month_to_date_usd] },
+          month_to_date_estimated_usd: rows.sum { |r| r[:month_to_date_estimated_usd] },
           month_projected_usd: rows.sum { |r| r[:month_projected_usd] },
           previous_month_usd: rows.sum { |r| r[:previous_month_usd] },
           forward_monthly_usd: rows.sum { |r| r[:forward_monthly_usd] },
@@ -73,10 +78,11 @@ module OperatingCosts
       @monthly_strip ||= begin
         closed = (1..HISTORY_MONTHS).to_a.reverse.map { |n| @month << n }
         history = closed.map do |m|
-          { month: m.strftime("%Y-%m"), kind: "closed", actual_usd: sum_facts(allocation_facts(m)), projected_usd: nil }
+          { month: m.strftime("%Y-%m"), kind: "closed", actual_usd: sum_facts(allocation_facts(m)), estimated_usd: 0.to_d,
+            projected_usd: nil }
         end
         current = { month: @month.strftime("%Y-%m"), kind: current_month? ? "current" : "closed",
-                    actual_usd: totals[:month_to_date_usd],
+                    actual_usd: totals[:month_to_date_usd], estimated_usd: totals[:month_to_date_estimated_usd],
                     projected_usd: current_month? ? totals[:month_projected_usd] : nil }
         forward = current_month? ? forward_months : []
         history + [ current ] + forward
@@ -87,16 +93,24 @@ module OperatingCosts
 
     # One row per group: previous month, month to date, the month projected, and
     # the forward monthly run rate, each with the accounts behind it.
+    #
+    # Month to date is what the daily entries hold, plus, for an account billed
+    # by invoice after the period closes, its forward rate over the days of this
+    # month no invoice covers yet (`month_to_date_estimated_usd`, also counted in
+    # `month_to_date_usd`). So the month projected is always month to date plus
+    # the forward rate over the days after yesterday, for every account.
     def breakdown(group_by = "functionality", external: false)
       raise ArgumentError, "group_by must be one of #{GROUP_BYS.join(', ')}" unless GROUP_BYS.include?(group_by)
 
       @breakdowns ||= {}
       @breakdowns[[ group_by, external ]] ||= begin
-        month_to_date = allocation_facts(@month, external: external)
         forward = forward_facts(:forward, external: external)
+        accrued = accrued_estimate(forward)
+        month_to_date = allocation_facts(@month, external: external) + accrued
         buckets = {
           previous_month_usd: allocation_facts(@month << 1, external: external),
           month_to_date_usd: month_to_date,
+          month_to_date_estimated_usd: accrued,
           month_projected_usd: month_to_date + projected_remainder(forward),
           forward_monthly_usd: forward,
           forward_monthly_trend_usd: forward_facts(:trend, external: external)
@@ -125,6 +139,7 @@ module OperatingCosts
         rows.group_by { |r| r[:paid_by] }.map do |payer, accounts|
           { paid_by: payer, previous_month_usd: accounts.sum { |a| a[:previous_month_usd] },
             month_to_date_usd: accounts.sum { |a| a[:month_to_date_usd] },
+            month_to_date_estimated_usd: accounts.sum { |a| a[:month_to_date_estimated_usd] },
             forward_monthly_usd: accounts.sum { |a| a[:forward_monthly_usd] }, accounts: accounts }
         end
       end
@@ -167,7 +182,7 @@ module OperatingCosts
 
     def sources
       @sources ||= begin
-        last_observed = OperatingCostObservation.group(:account_id).maximum(:as_of_date)
+        last_observed = last_observation_dates
         last_confidence = OperatingCostDailyEntry.where(date: (@as_of - TRAILING_DAYS)..@as_of)
           .group(:account_id, :confidence).count
         scoped_accounts(external: :any).map do |account|
@@ -260,8 +275,12 @@ module OperatingCosts
       when "projections"
         base.merge(totals: money(totals), monthly_strip: monthly_strip.map { |m| money(m) }, credits: credits,
                    subscriptions: subscriptions.map(&:as_api_json), upcoming_renewals: upcoming_renewals.map(&:as_api_json),
-                   method: "Forward monthly = active subscriptions at monthly equivalent for accounts with no metered usage; " \
-                           "otherwise the trailing #{TRAILING_DAYS}-day average daily cost × #{DAYS_PER_MONTH.round(2)}. " \
+                   method: "Forward monthly = active subscriptions at monthly equivalent for accounts with no metered usage, " \
+                           "and for accounts whose latest invoice only restates their subscriptions; for other accounts billed by " \
+                           "invoice, the newest invoices' daily rate × #{DAYS_PER_MONTH.round(2)}; otherwise the trailing " \
+                           "#{TRAILING_DAYS}-day average daily cost × #{DAYS_PER_MONTH.round(2)}. " \
+                           "Month to date includes, as an estimate, the forward rate over the days an invoice billed in arrears " \
+                           "has not covered yet; month projected adds the forward rate over the days after yesterday. " \
                            "Trend uses the trailing #{TREND_DAYS} days. Promotional credits cost nothing until their run-out date.")
       when "sources"
         base.merge(sources: sources, collection_runs: collection_runs.map(&:as_api_json))
@@ -357,7 +376,8 @@ module OperatingCosts
 
     def forward_facts(kind, external: false)
       scoped_accounts(external: external).flat_map do |account|
-        monthly = kind == :trend ? trend_monthly(account) : forward_monthly(account)
+        # A run of credits can average below zero; a run rate never is.
+        monthly = [ kind == :trend ? trend_monthly(account) : forward_monthly(account), 0.to_d ].max
         next [] if monthly.zero?
 
         shares_for(account).filter_map do |share|
@@ -390,7 +410,9 @@ module OperatingCosts
           subs = active_subscriptions(account)
           metered = Array(trailing_entries[account.id]).any? { |e| e.basis != "prorated_subscription" } ||
             subs.any? { |s| s.included_usage_usd.to_d.positive? }
-          if invoice_billed?(account)
+          if invoice_billed?(account) && invoice_restates_subscriptions?(account, subs)
+            subs.sum(&:monthly_usd) * account.zimmer_share.to_d
+          elsif invoice_billed?(account)
             invoice_daily_rate(account) * DAYS_PER_MONTH
           elsif metered
             average_daily(account, TRAILING_DAYS) * DAYS_PER_MONTH
@@ -443,7 +465,8 @@ module OperatingCosts
       (1..FORWARD_MONTHS).map do |n|
         month = @month >> n
         cliff = promotional_cliff(month)
-        { month: month.strftime("%Y-%m"), kind: "forward", actual_usd: nil, projected_usd: base + cliff, credit_cliff_usd: cliff }
+        { month: month.strftime("%Y-%m"), kind: "forward", actual_usd: nil, estimated_usd: nil, projected_usd: base + cliff,
+          credit_cliff_usd: cliff }
       end
     end
 
@@ -485,12 +508,32 @@ module OperatingCosts
       days.positive? ? drops / days : 0.to_d
     end
 
+    # The newest date each account's figures speak for, never later than the day
+    # the figure was written: an invoice for a cycle that runs into next month is
+    # as_of its period end, but it was recorded today, and freshness is about
+    # when a figure arrived.
+    def last_observation_dates
+      zone = ActiveRecord::Base.connection.quote(Time.zone.tzinfo.name)
+      recorded_on = "(operating_cost_observations.created_at AT TIME ZONE 'UTC' AT TIME ZONE #{zone})::date"
+      OperatingCostObservation.group(:account_id)
+        .maximum(Arel.sql("LEAST(operating_cost_observations.as_of_date, #{recorded_on})"))
+        .transform_values { |date| [ date, @today ].min }
+    end
+
     def stale_account?(account, last_observed)
       return false unless account.active
       return false if %w[manual].include?(account.vendor.ingest_method)
       return false if account.vendor.ingest_method == "derived"
+      return true if last_observed.nil?
+      return last_observed < @as_of - 2 unless invoice_billed?(account)
 
-      last_observed.nil? || last_observed < @as_of - 2
+      # A bill is fresh until its period is over, then for a cycle's grace.
+      [ last_observed, latest_invoice_period_ends[account.id] ].compact.max < @as_of - INVOICE_STALE_AFTER_DAYS
+    end
+
+    def latest_invoice_period_ends
+      @latest_invoice_period_ends ||= OperatingCostObservation.where(metric: "invoice").where.not(source: "derived")
+        .group(:account_id).maximum(:period_end)
     end
 
     def group_key(fact, group_by)
@@ -515,14 +558,15 @@ module OperatingCosts
           { key: id, vendor: account&.vendor&.name, paid_by: account&.paid_by }
         else { key: id }
         end
-      { label: label, previous_month_usd: 0.to_d, month_to_date_usd: 0.to_d, month_projected_usd: 0.to_d,
+      { label: label, previous_month_usd: 0.to_d, month_to_date_usd: 0.to_d, month_to_date_estimated_usd: 0.to_d,
+        month_projected_usd: 0.to_d,
         forward_monthly_usd: 0.to_d, forward_monthly_trend_usd: 0.to_d, accounts: {} }.merge(extra)
     end
 
     def blank_account(account)
       { key: account.key, label: account.label, vendor: account.vendor.name, paid_by: account.paid_by,
         allocation_rule: account.allocation_rule, previous_month_usd: 0.to_d, month_to_date_usd: 0.to_d,
-        month_projected_usd: 0.to_d, forward_monthly_usd: 0.to_d, forward_monthly_trend_usd: 0.to_d }
+        month_to_date_estimated_usd: 0.to_d, month_projected_usd: 0.to_d, forward_monthly_usd: 0.to_d, forward_monthly_trend_usd: 0.to_d }
     end
 
     def finish_group(group)
@@ -530,23 +574,32 @@ module OperatingCosts
       group
     end
 
-    # The rest of the month at the forward rate: the days after yesterday, plus,
-    # for an account billed by invoice, the days of the month its next invoice
-    # will cover and has not yet.
+    # The rest of the month at the forward rate: the days after yesterday.
     def projected_remainder(forward)
+      return [] unless current_month? && remaining_days.positive?
+
+      forward.map { |fact| fact.merge(amount: fact[:amount] / DAYS_PER_MONTH * remaining_days) }
+    end
+
+    # An account billed by invoice after the period closes has nothing in its
+    # current month until the bill arrives, which is not the same as costing
+    # nothing: the forward rate over this month's days through yesterday that no
+    # invoice covers yet, as an estimate. It is never a daily entry, so it never
+    # counts toward `billed_share` and never reaches the daily series.
+    def accrued_estimate(forward)
       return [] unless current_month?
 
       forward.filter_map do |fact|
-        days = uncovered_days(fact[:account])
+        next unless invoice_billed?(fact[:account])
+
+        days = elapsed_uncovered_days(fact[:account])
         fact.merge(amount: fact[:amount] / DAYS_PER_MONTH * days) if days.positive?
       end
     end
 
-    def uncovered_days(account)
-      return remaining_days unless invoice_billed?(account)
-
-      covered = month_entry_counts[account.id].to_i
-      [ (@month.end_of_month - @month).to_i + 1 - covered, 0 ].max
+    def elapsed_uncovered_days(account)
+      elapsed = (@as_of - @month).to_i + 1
+      [ elapsed - month_entry_counts[account.id].to_i, 0 ].max
     end
 
     def month_entry_counts
@@ -559,6 +612,22 @@ module OperatingCosts
       @last_metric ||= OperatingCostObservation.where.not(source: "derived")
         .select("DISTINCT ON (account_id) account_id, metric").order(:account_id, as_of_date: :desc).to_a.to_h { |o| [ o.account_id, o.metric ] }
       @last_metric[account.id] == "invoice"
+    end
+
+    # A fixed charge billed by invoice: the newest invoice is, to the cent or
+    # half a percent, what the active subscriptions charge for its period. Such
+    # an invoice is not metered usage, and spreading it over a 31-day cycle
+    # would project the seat below its own price.
+    def invoice_restates_subscriptions?(account, subs)
+      return false if subs.empty? || subs.any? { |s| s.included_usage_usd.to_d.positive? }
+
+      invoice = OperatingCostObservation.where(account_id: account.id, metric: "invoice").where.not(source: "derived")
+        .order(period_end: :desc, updated_at: :desc).first
+      return false unless invoice
+
+      months = [ ((invoice.period_end - invoice.period_start + 1) / DAYS_PER_MONTH).round, 1 ].max
+      charge = subs.sum(&:monthly_usd) * months
+      (invoice.amount_usd.to_d - charge).abs <= [ 0.01.to_d, charge * 0.005.to_d ].max
     end
 
     # The newest LOOKBACK_DAYS of an invoice-billed account's entries, averaged

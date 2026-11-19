@@ -32,6 +32,19 @@ class OperatingCostsControllerTest < ActionDispatch::IntegrationTest
     assert_select "#costs-manage form", minimum: 8
   end
 
+  test "an account billed in arrears shows its accrued month to date as an estimate, not as zero" do
+    travel_to Time.zone.local(2026, 11, 17, 12) do
+      seed_operating_costs!(today: Date.current)
+      OperatingCostsCollectionJob.perform_now
+
+      get operating_costs_path
+
+      assert_select "#costs-tiles", text: /incl\. \$[0-9.]+ estimated/
+      assert_select "#costs-by-functionality", text: /Gateway infrastructure.*estimated\)/m
+      assert_select "#costs-by-functionality", text: /not billed yet this month/
+    end
+  end
+
   test "an externally paid account is listed but kept out of the functionality breakdown" do
     seed_operating_costs!
 
