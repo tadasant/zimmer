@@ -163,8 +163,22 @@ class CloudInitTemplateTest < ActiveSupport::TestCase
         "write_files must not write host keys -- cloud-init's ssh module deletes them right after"
     end
 
-    # ssh_keys switches off the module's own key generation, so runcmd restores RSA/ECDSA.
-    assert_includes pinned["runcmd"], "ssh-keygen -A"
+    # The renderer substitutes a one-line placeholder, so a multi-line key never reaches the
+    # parse above. indent(n, ...) pads every line but the first by n, so the call must sit at
+    # exactly column n or the key's later lines fall out of the `|` block and cloud-init
+    # rejects the whole document.
+    key_line = @template[/^( *)\$\{indent\((\d+), ssh_host_ed25519_key\)\}/]
+    assert key_line, "the private key must be interpolated with indent(n, ssh_host_ed25519_key) on its own line"
+    assert_equal Regexp.last_match(2).to_i, Regexp.last_match(1).size,
+      "indent()'s argument must equal the column the private key starts at"
+
+    # ssh_keys switches off the module's own key generation, so runcmd restores RSA/ECDSA --
+    # before the restart that makes the running sshd load them.
+    runcmd = pinned["runcmd"].map(&:to_s)
+    keygen = runcmd.index("ssh-keygen -A")
+    assert keygen, "a pinned box must regenerate its RSA/ECDSA host keys (ssh-keygen -A)"
+    assert keygen < runcmd.rindex("systemctl restart ssh.socket ssh.service"),
+      "ssh-keygen -A must run before sshd's last restart"
     refute unpinned.key?("ssh_keys"), "no host key supplied, so cloud-init must generate its own"
     refute_includes unpinned["runcmd"], "ssh-keygen -A"
   end
