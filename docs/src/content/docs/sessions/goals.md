@@ -423,12 +423,12 @@ than an adjective it can argue past, and caps filing at one issue per session wi
 number of zero. The prompt also names four things that *look* like reasons to park and are not: waiting on a
 machine (CI, an outage, a rate limit, a peer or child session — including the sessions a child
 spawned: none of those is a human, and a PR whose merge disposition is unsettled is the one
-carve-out; if nothing is actionable for a human until that session finishes, the agent arms a
-wake on it plus a backstop and sleeps in `waiting`, and a session others wait on tells them with
-`message_parent` when it finishes), a blocker another session is already fixing,
+carve-out), a blocker another session is already fixing,
 a reason that went stale while the agent worked (the PR merged; the question is moot), and
 finishing with nothing to show (a sweep that found nothing and a gate that aborted both ran to
-completion).
+completion). If nothing is actionable for a human until a child or peer session finishes, the
+agent arms a wake on it plus a backstop and sleeps in `waiting`; a child others wait on reports to
+its parent with `message_parent` when it finishes.
 
 The second of those is the one agents miss, because it looks like a handoff rather than a wait: red
 CI on `main` from a failure unrelated to the agent's own diff, an upstream fix in flight. The prompt

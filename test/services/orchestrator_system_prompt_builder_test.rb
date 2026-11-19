@@ -259,11 +259,11 @@ class OrchestratorSystemPromptBuilderTest < ActiveSupport::TestCase
 
     assert reason_three.present?, "could not isolate reason 3 from the lifecycle section"
     assert machine_wait.present?, "could not isolate the machine-wait bullet"
-    assert_includes reason_three, "it starts only once the answer exists"
+    assert_includes reason_three, "This reason also starts only once the answer exists"
     assert_includes reason_three, "leave your wake on that session armed (no `cancel_wakes`)"
     assert_includes machine_wait, "a peer or child session finishing — including sessions your children spawned"
     assert_includes machine_wait, "If nothing is actionable for a human until that session finishes, do not park"
-    assert_includes machine_wait, "reports with `message_parent` when it finishes"
+    assert_includes machine_wait, "A child others are waiting on reports to its parent with `message_parent` when it finishes"
   end
 
   # Reason 1 used to offer two exits — do it yourself, or report to a parent — and
