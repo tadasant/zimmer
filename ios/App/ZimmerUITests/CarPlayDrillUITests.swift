@@ -126,9 +126,20 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
 
         // The car goes away with the call up, by the Simulator's own menu: the scene really
-        // disconnects, and the phone goes to the call.
+        // disconnects, and the phone goes to the call. The Simulator can take the click and leave
+        // the car connected (run 44560053511: no `carplay scene disconnected`, and nothing from the
+        // host between the click and the end of the test), so a phone still off the call after
+        // `timeout` gets the click again and the host's stall to act on it. The host itself is not
+        // asked: a query there can hang XCUITest (limitations.md, "CarPlay's host can stop
+        // answering").
+        let callOnThePhone = zimmer.descendants(matching: .any)["live.call.state"].firstMatch
         plug("Disabled")
-        let landed = zimmer.descendants(matching: .any)["live.call.state"].firstMatch.waitForExistence(timeout: timeout)
+        var landed = callOnThePhone.waitForExistence(timeout: timeout)
+        if !landed {
+            record("the phone before the second unplug", zimmer.debugDescription)
+            plug("Disabled")
+            landed = callOnThePhone.waitForExistence(timeout: Self.hostStall)
+        }
         photographThePhone("carplay-phone-after-the-car-left")
         record("the phone after the car left", zimmer.debugDescription)
         XCTAssertTrue(landed, "the phone goes to the call; it showed:\n\(zimmer.debugDescription)")
