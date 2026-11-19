@@ -20,6 +20,11 @@ require "prism"
 # flagged. Nor is a list with anything other than plain string and symbol
 # elements, such as an interpolated string or a splat: what it holds is not
 # known from the source.
+#
+# Only array literals and `when` lists are read. Other spellings of the same
+# set (a pattern-match `in "running" | "waiting"`, `Set[:running, :waiting]`,
+# two `where`s joined by `.or`) are not, and none is in app/ or lib/. The
+# exemption is by constant name within the home file, not by enclosing class.
 class StatusListFinder < Prism::Visitor
   # Every list in +source+ under +path+ that spells out +statuses+, as
   # "path:line", except the constant's own definition: the literal assigned to
@@ -39,7 +44,7 @@ class StatusListFinder < Prism::Visitor
   def initialize(statuses)
     @statuses = statuses.map(&:to_s).sort
     @hits = []
-    @constant_values = {}
+    @constant_values = {}.compare_by_identity
     super()
   end
 

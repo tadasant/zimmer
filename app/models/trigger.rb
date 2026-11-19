@@ -71,7 +71,8 @@ class Trigger < ApplicationRecord
   # answer.
   #
   # PENDING means Session::TURN_STATUSES, `waiting` or `running`, and
-  # deliberately nothing else:
+  # deliberately nothing else. It is the turn set by definition, so a change to
+  # TURN_STATUSES has to be checked against the reasons below:
   #
   #   - `waiting` is the "queued, has not had its turn" state, and it is where a
   #     session sits both before it is first started and while it is parked on an

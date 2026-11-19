@@ -57,8 +57,11 @@ class TurnStatusesContractTest < ActiveSupport::TestCase
       when "running", "waiting" then 1
       end
       e = x || foo(bar: [ :waiting, :running ])
+      case s.status
+      when *%w[running waiting] then 1
+      end
     RUBY
-    assert_equal %w[x.rb:1 x.rb:2 x.rb:3 x.rb:4 x.rb:6 x.rb:8], spelled_out_copies("x.rb", flagged)
+    assert_equal %w[x.rb:1 x.rb:2 x.rb:3 x.rb:4 x.rb:6 x.rb:8 x.rb:10], spelled_out_copies("x.rb", flagged)
 
     ignored = <<~RUBY
       a = %w[running waiting needs_input]
@@ -73,6 +76,9 @@ class TurnStatusesContractTest < ActiveSupport::TestCase
       # [ :running, :waiting ]
       f = "%w[running waiting]"
       g = Session::TURN_STATUSES
+      case s.status
+      when *Session::TURN_STATUSES then 1
+      end
     RUBY
     assert_empty spelled_out_copies("x.rb", ignored)
 
