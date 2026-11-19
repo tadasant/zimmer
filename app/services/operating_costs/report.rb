@@ -182,7 +182,7 @@ module OperatingCosts
 
     def sources
       @sources ||= begin
-        last_observed = last_observation_dates
+        last_observed = last_observed_on
         last_confidence = OperatingCostDailyEntry.where(date: (@as_of - TRAILING_DAYS)..@as_of)
           .group(:account_id, :confidence).count
         scoped_accounts(external: :any).map do |account|
@@ -547,8 +547,10 @@ module OperatingCosts
       @derived_gaps ||= DerivedCollector.new(today: @today).gaps.select { |account, _| account.active }
     end
 
+    # Memoized: `sources` and the stale reasons read the same dates, so a source
+    # row and its reason cannot disagree.
     def last_observed_on
-      @last_observed_on ||= OperatingCostObservation.group(:account_id).maximum(:as_of_date)
+      @last_observed_on ||= last_observation_dates
     end
 
     # The account's source had usage that is in no figure. A day's figure lands
@@ -568,8 +570,9 @@ module OperatingCosts
         source = account.derived_source.tr("_", " ")
         reasons = []
         if gap[:unpriced_models].any?
-          reasons << "#{account.label}: metered #{source} on #{gap[:unpriced_models].join(', ')} since #{gap[:unpriced_since]} " \
-                     "has no rate in TokenPricing, so it is in no figure here. That is money owed at an unknown amount, not $0."
+          reasons << "#{account.label}: metered #{source} on #{gap[:unpriced_models].join(', ')} in the last " \
+                     "#{DerivedCollector::WINDOW_DAYS} days (first on #{gap[:unpriced_since]}) has no rate in TokenPricing, " \
+                     "so it is in no figure here. That is money owed at an unknown amount, not $0."
         end
         last = last_observed_on[account.id]
         if derived_overdue?(gap, last)

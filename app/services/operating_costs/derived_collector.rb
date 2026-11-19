@@ -21,8 +21,8 @@ module OperatingCosts
   # `stale_reasons`, from the same window this reads (#gaps).
   #
   # The window is the job's to own: a derived observation in it for a day this
-  # no longer derives (a $0 written before that rule) is #superseded and
-  # removed, so a stale figure cannot outlive the reason it was wrong.
+  # does not derive (a $0 for a day whose usage is unpriced) is #superseded and
+  # removed, so a wrong figure cannot outlive the reason it was wrong.
   #
   # An account with no `derived_source` gets nothing, and so does a deployment
   # that has not created one: the repository ships no vendor names. A real bill
@@ -94,7 +94,7 @@ module OperatingCosts
     # @return [Hash{Date => [BigDecimal, Array<String>]}] each day with usage:
     #   the priced amount and the unpriced models
     def usage(account)
-      (@usage ||= {})[account.id] ||= case account.derived_source
+      (@usage ||= {})[account.derived_source] ||= case account.derived_source
       when "live_voice_metered" then live_voice_by_day
       when "pi_token_spend" then pi_spend_by_day
       else {}

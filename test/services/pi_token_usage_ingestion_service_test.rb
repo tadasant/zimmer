@@ -87,6 +87,24 @@ class PiTokenUsageIngestionServiceTest < ActiveSupport::TestCase
     assert_equal [ false ], rows.map(&:subagent).uniq
   end
 
+  # Pi stores the id it REQUESTED in `model` (the resolved one goes to
+  # `responseModel`), so a floating OpenRouter alias lands as the alias, which is
+  # what TokenPricing's alias rows key on.
+  test "a floating OpenRouter alias is stored as the alias and prices at its row" do
+    uuid = SecureRandom.uuid
+    pi_session(session_uuid: uuid, transcript: transcript(
+      header(uuid),
+      assistant(id: "a11a5e01", model: "~google/gemini-pro-latest", input: 0, output: 1_000_000)
+        .tap { |e| e["message"]["responseModel"] = "google/gemini-3.5-pro" }
+    ))
+
+    ingest
+
+    row = SessionTokenUsage.find_by!(runtime_session_id: uuid)
+    assert_equal "openrouter/~google/gemini-pro-latest", row.model
+    assert_in_delta 10.0, row.cost_usd, 0.0001
+  end
+
   test "maps Pi's usage object onto the four volume columns" do
     uuid = SecureRandom.uuid
     pi_session(

@@ -2136,7 +2136,7 @@ a stale store entry would shadow a freshly written token. `#write!` clears the e
 through the adapter's own keyring helper. If that helper cannot run, the clear is skipped with a
 warning and the spawn continues, and in that window the runtime may keep using the older token.
 
-### A Pi session on a non-Anthropic model records its tokens and no cost
+### A Pi session on a model with no rate records its tokens and no cost
 
 🟡 Pi spend **is** in the ledger. `PiTokenUsageIngestionService`
 ([costs](/operate/costs/#pis-token-usage)) reads the durable copy of the transcript in
@@ -2153,6 +2153,13 @@ row is wrong until someone re-checks it. And prompts above a vendor's long-conte
 higher than the base-tier rate stored. A pinned OpenRouter id added through `manage_models` has no
 rate until one is added; its usage is reported as metered and unpriced, and the Costs page carries
 a stale reason for it rather than a $0.
+
+That stale reason has no acknowledge button. It stays on `/costs`, in every `get_operating_costs`
+view and on the `/health` operating-costs card for as long as the call is inside the derived
+collector's 35-day window, so a single test call on a pinned id keeps the warning up for five
+weeks. The way to clear it is to add the model's rate to `TokenPricing::RATES`. The reason is
+computed on read, from a grouped query over the window's Pi rows, on every page load and health
+snapshot.
 
 ### `sol` runs as the CLI's default on a ChatGPT plan that does not offer Sol
 
