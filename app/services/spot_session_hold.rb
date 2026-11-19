@@ -742,7 +742,7 @@ class SpotSessionHold
     # rather than everything.
     def starvation_lane_occupants(excluding: nil)
       scope = Session
-        .where(agent_runtime: ClaudeAuthProvider::RUNTIME, status: [ :running, :waiting ])
+        .where(agent_runtime: ClaudeAuthProvider::RUNTIME, status: Session::TURN_STATUSES)
         .where("metadata->>? IS NOT NULL", STARVATION_ADMITTED_AT)
         .spot
       scope = scope.where.not(id: excluding) if excluding

@@ -82,7 +82,16 @@ failed, `AuthOutageParkService` again before stamping `running_job_id` on the tu
 `AgentSessionJob` before taking the turn it was handed, and `GoalCheck` to call a verdict provisional
 until the session comes to rest. `test/contracts/in_turn_state_contract_test.rb` fails on a new
 `running? || waiting?` chain under `app/` or `lib/`. A chain that also tests other states is a different
-question and passes, and so do status arrays such as `Trigger::PENDING_INTENT_STATUSES`, which feed SQL.
+question and passes.
+
+The pair is listed once, as `Session::TURN_STATUSES`, which `in_turn_state?` reads. That is the
+spelling for a query, a `when` clause or an `include?`: the spot gate's turn census
+(`RunningTurns`, `Session.running_claude_code_burn_keys`, `SpotSessionHold`'s starvation lane), the
+work backlog's `in_flight` scope, `HealthMonitorService`'s orphan check,
+`Trigger::PENDING_INTENT_STATUSES` and `HeartbeatSweepJob` all name it.
+`test/contracts/turn_statuses_contract_test.rb` fails on a new literal list of exactly `running` and
+`waiting` (strings or symbols, any order) under `app/` or `lib/`. A wider list, such as
+`Session::NON_REAPABLE_STATUSES`, passes.
 
 **Whether a session is at rest somewhere a prompt can be handed to it has one answer too:
 `Session#idle?`** — `needs_input` or `waiting`. The queue's schedulers and `EnqueuedMessageDrainJob`

@@ -53,7 +53,7 @@ class HeartbeatSweepJob < ApplicationJob
       return unless session.heartbeat_due?
 
       case session.status
-      when "running", "waiting"
+      when *Session::TURN_STATUSES
         # Already progressing/queued — just anchor the cadence. update_column
         # avoids bumping updated_at (this is a no-op beat, not real activity).
         session.update_column(:heartbeat_last_beat_at, Time.current)

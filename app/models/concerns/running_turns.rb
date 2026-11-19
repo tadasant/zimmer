@@ -228,7 +228,7 @@ module RunningTurns
     # `pluck("sessions.status")` skips ActiveRecord's enum casting.
     def pluck_ids_by_status
       running = Session.statuses[:running]
-      where(status: [ :running, :waiting ])
+      where(status: Session::TURN_STATUSES)
         .pluck(Arel.sql("sessions.id"), Arel.sql("sessions.status = #{running.to_i}"))
     end
 

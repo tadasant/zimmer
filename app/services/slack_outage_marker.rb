@@ -50,9 +50,6 @@ class SlackOutageMarker
   # The only runtime whose stored transcript this reads.
   SUPPORTED_RUNTIME = "claude_code"
 
-  # Where a marker may be added.
-  ACTIVE_STATUSES = %w[running waiting].freeze
-
   # Where a session has ended, and a marker comes off.
   ENDED_STATUSES = %w[archived failed].freeze
 
@@ -213,7 +210,8 @@ class SlackOutageMarker
   def settled? = metadata[SETTLED_KEY].present?
   def added? = metadata[ADDED_KEY].present?
   def adding? = metadata[ADDING_KEY].present?
-  def active? = ACTIVE_STATUSES.include?(session.status.to_s)
+  # Where a marker may be added: a session with a turn underway or queued.
+  def active? = session.in_turn_state?
   def ended? = ENDED_STATUSES.include?(session.status.to_s)
   def channel_id = metadata[CHANNEL_KEY]
   def message_ts = metadata[TS_KEY]
