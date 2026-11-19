@@ -215,6 +215,64 @@ class OperatingCosts::ReportTest < ActiveSupport::TestCase
     assert_match "last succeeded", report.stale_reasons.sole
   end
 
+  def add_pi_account!
+    vendor = OperatingCostVendor.create!(key: "routerco", name: "RouterCo", ingest_method: "derived")
+    OperatingCostAccount.create!(key: "routerco-pi", label: "RouterCo metered", vendor: vendor, derived_source: "pi_token_spend")
+  end
+
+  def pi_call(model, request_id, day: @today - 3)
+    SessionTokenUsage.create!(model: model, request_id: request_id, agent_runtime: "pi", input_tokens: 0, output_tokens: 1_000_000,
+                              called_at: day.in_time_zone.change(hour: 9))
+  end
+
+  def pi_source = report.sources.find { |s| s[:account] == "routerco-pi" }
+
+  test "priced metered usage becomes a figure and the account reads fresh" do
+    add_pi_account!
+    pi_call("openrouter/~x-ai/grok-latest", "pi-grok")
+    OperatingCostsCollectionJob.perform_now
+
+    assert_empty report.stale_reasons
+    assert_not pi_source[:stale]
+    assert_equal @today - 3, pi_source[:last_observation_on]
+  end
+
+  test "unpriced metered usage is not a confident zero: it is a stale reason on the page and in every API view" do
+    account = add_pi_account!
+    pi_call("openrouter/example/unpriced-model", "pi-unknown")
+    OperatingCostsCollectionJob.perform_now
+
+    assert_not OperatingCostObservation.exists?(account: account), "no $0 figure"
+    reason = report.stale_reasons.sole
+    assert_match "RouterCo metered", reason
+    assert_match "openrouter/example/unpriced-model", reason
+    assert_match "unknown amount", reason
+    assert pi_source[:stale]
+    OperatingCosts::Report::VIEWS.each do |view|
+      json = report.as_api_json(view: view)
+      assert json[:stale]
+      assert_equal [ reason ], json[:stale_reasons]
+    end
+  end
+
+  test "priced usage with no figure for its day reads as stale until the collection catches up" do
+    add_pi_account!
+    pi_call("openrouter/~x-ai/grok-latest", "pi-grok")
+
+    assert_match "latest figure is missing", report.stale_reasons.sole
+    assert pi_source[:stale]
+
+    OperatingCostsCollectionJob.perform_now
+    assert_empty report.stale_reasons
+  end
+
+  test "a metered account whose source had no usage stays quiet" do
+    add_pi_account!
+
+    assert_empty report.stale_reasons
+    assert_not pi_source[:stale]
+  end
+
   test "every view serializes" do
     OperatingCosts::Report::VIEWS.each do |view|
       json = report.as_api_json(view: view)

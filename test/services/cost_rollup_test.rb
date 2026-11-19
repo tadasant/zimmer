@@ -18,13 +18,16 @@ class CostRollupTest < ActiveSupport::TestCase
   end
 
   # Every row shape the price has a branch for: each family, an unpriced model,
-  # a split and an unsplit cache write, a web search.
+  # a split and an unsplit cache write, a web search, and a row whose rate
+  # carries explicit cache rates instead of derived ones.
   def mixed_rows
     usage
     usage(model: "claude-sonnet-5", cache_creation_5m_tokens: 3_000, cache_creation_1h_tokens: 2_000)
     usage(model: "claude-haiku-4-5-20251001", cache_creation_tokens: 1_000_000, cache_creation_1h_tokens: 0)
     usage(model: "claude-fable-5-1", agent_root: "motet", web_search_requests: 7)
     usage(model: "claude-imaginary-7", web_search_requests: 3)
+    usage(model: "openrouter/~google/gemini-pro-latest", cache_creation_5m_tokens: 3_000, cache_creation_1h_tokens: 2_000)
+    usage(model: "openrouter/~x-ai/grok-latest", agent_root: "motet")
   end
 
   test "pricing a (group, model) sum in Ruby matches pricing every row in SQL" do

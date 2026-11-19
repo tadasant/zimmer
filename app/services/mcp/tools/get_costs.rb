@@ -82,8 +82,9 @@ module Mcp
         **A caveat worth passing on:** list price is not a bill, and it is not one in three
         different ways. Claude Code spend is subscription-billed, so treat its dollars as a
         comparable unit across models rather than money owed. Pi spend is metered by OpenRouter and
-        IS money owed — priced here at the same rates OpenRouter publishes for the Anthropic models,
-        and at zero for the OpenAI and Google ones. Codex spend is billed against a ChatGPT plan and
+        IS money owed — priced at OpenRouter's published rates for the models Zimmer offers it. A Pi
+        model with no rate is listed as **metered and unpriced**: money owed at an unknown amount,
+        not $0. Codex spend is billed against a ChatGPT plan and
         is priced at **zero throughout**: its tokens are in the ledger but TokenPricing carries no
         OpenAI rates, so every Codex model appears in the unpriced list below and contributes volume
         without dollars. Read a fleet total as Claude Code plus Pi money, with Codex volume alongside
@@ -195,7 +196,7 @@ module Mcp
         lines.concat(experiment_lines(report[:by_experiment]))
         lines.concat(by_day_lines(report[:by_day]))
         lines.concat(top_sessions_lines(report[:top_sessions]))
-        lines.concat(unpriced_lines(report[:unpriced_models]))
+        lines.concat(unpriced_lines(report[:unpriced_models], report[:unpriced_metered_models]))
         lines << ""
         lines << "_List price, applied on read. Subscription-billed accounts — a comparable unit, not a bill._"
         lines.join("\n")
@@ -455,14 +456,24 @@ module Mcp
         end
       end
 
-      def unpriced_lines(unpriced)
+      # Two kinds of unpriced that mean different things: a metered model is money
+      # owed that no figure carries; a plan-billed one has no per-token money.
+      def unpriced_lines(unpriced, metered)
         return [] if unpriced.empty?
 
-        [
+        metered = Array(metered) & unpriced
+        plan = unpriced - metered
+        lines = [
           "", "### ⚠️ Unpriced models", "",
           "These appeared in the window and contribute **zero** to every figure above, " \
-          "because `TokenPricing` has no rate for them: #{unpriced.map { |m| "`#{m}`" }.join(", ")}."
+          "because `TokenPricing` has no rate for them."
         ]
+        if metered.any?
+          lines << "- **Metered and unpriced** (Pi via OpenRouter: money owed, amount unknown): " \
+                   "#{metered.map { |m| "`#{m}`" }.join(", ")}"
+        end
+        lines << "- **Plan-billed** (no per-token money, volume only): #{plan.map { |m| "`#{m}`" }.join(", ")}" if plan.any?
+        lines
       end
 
       def empty_notice(window)

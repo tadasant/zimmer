@@ -84,7 +84,7 @@ class CostAnalyticsTest < ActiveSupport::TestCase
 
     assert_equal %i[totals cost_breakdown by_day by_agent_root by_model
                     by_thread_kind by_runtime by_adhoc_source by_feature by_experiment
-                    top_sessions unpriced_models].sort,
+                    top_sessions unpriced_models unpriced_metered_models].sort,
       snapshot.keys.sort
   end
 
@@ -92,6 +92,16 @@ class CostAnalyticsTest < ActiveSupport::TestCase
     usage(model: "claude-imaginary-7")
 
     assert_equal [ "claude-imaginary-7" ], CostAnalytics.new(from: 7.days.ago).unpriced_models
+  end
+
+  test "only the Pi runtime's unpriced models are metered money" do
+    usage(model: "claude-imaginary-7")
+    usage(model: "openrouter/example/unpriced-model", agent_runtime: "pi")
+
+    analytics = CostAnalytics.new(from: 7.days.ago)
+
+    assert_equal [ "claude-imaginary-7", "openrouter/example/unpriced-model" ], analytics.unpriced_models
+    assert_equal [ "openrouter/example/unpriced-model" ], analytics.unpriced_metered_models
   end
 
   test "rolls up by agent root, model and thread kind" do

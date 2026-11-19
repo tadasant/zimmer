@@ -182,7 +182,7 @@ module OperatingCosts
 
     def sources
       @sources ||= begin
-        last_observed = last_observation_dates
+        last_observed = last_observed_on
         last_confidence = OperatingCostDailyEntry.where(date: (@as_of - TRAILING_DAYS)..@as_of)
           .group(:account_id, :confidence).count
         scoped_accounts(external: :any).map do |account|
@@ -199,8 +199,11 @@ module OperatingCosts
       @collection_runs ||= OperatingCostCollectionRun.latest_by_collector.to_a
     end
 
-    # Stale when the derived pass has not succeeded within STALE_AFTER, or any
-    # collector's latest run failed.
+    # Stale when the derived pass has not succeeded within STALE_AFTER, any
+    # collector's latest run failed, or a derived account's source had usage
+    # that did not become a figure: usage on a model with no rate (money owed,
+    # amount unknown), or a day with usage newer than the account's latest
+    # observation.
     def stale_reasons
       @stale_reasons ||= begin
         reasons = []
@@ -216,6 +219,7 @@ module OperatingCosts
         collection_runs.select { |r| r.status == "failed" && r.started_at > OperatingCostCollectionRun::STALE_AFTER.ago }.each do |run|
           reasons << "The latest #{run.collector} collection failed: #{run.error.to_s.truncate(160)}"
         end
+        reasons.concat(derived_gap_reasons)
         reasons
       end
     end
@@ -522,6 +526,7 @@ module OperatingCosts
 
     def stale_account?(account, last_observed)
       return false unless account.active
+      return true if derived_gap?(account, last_observed)
       return false if %w[manual].include?(account.vendor.ingest_method)
       return false if account.vendor.ingest_method == "derived"
       return true if last_observed.nil?
@@ -534,6 +539,48 @@ module OperatingCosts
     def latest_invoice_period_ends
       @latest_invoice_period_ends ||= OperatingCostObservation.where(metric: "invoice").where.not(source: "derived")
         .group(:account_id).maximum(:period_end)
+    end
+
+    # What the derived collector's window shows for each derived account, read
+    # live so a rate added in a deploy clears its reason without waiting a day.
+    def derived_gaps
+      @derived_gaps ||= DerivedCollector.new(today: @today).gaps.select { |account, _| account.active }
+    end
+
+    # Memoized: `sources` and the stale reasons read the same dates, so a source
+    # row and its reason cannot disagree.
+    def last_observed_on
+      @last_observed_on ||= last_observation_dates
+    end
+
+    # The account's source had usage that is in no figure. A day's figure lands
+    # the morning after, so only usage before yesterday counts as overdue.
+    def derived_gap?(account, last_observed)
+      gap = derived_gaps[account] or return false
+      gap[:unpriced_models].any? || derived_overdue?(gap, last_observed)
+    end
+
+    def derived_overdue?(gap, last_observed)
+      due = gap[:last_due_on]
+      due.present? && due < @as_of && (last_observed.nil? || last_observed < due)
+    end
+
+    def derived_gap_reasons
+      derived_gaps.flat_map do |account, gap|
+        source = account.derived_source.tr("_", " ")
+        reasons = []
+        if gap[:unpriced_models].any?
+          reasons << "#{account.label}: metered #{source} on #{gap[:unpriced_models].join(', ')} in the last " \
+                     "#{DerivedCollector::WINDOW_DAYS} days (first on #{gap[:unpriced_since]}) has no rate in TokenPricing, " \
+                     "so it is in no figure here. That is money owed at an unknown amount, not $0."
+        end
+        last = last_observed_on[account.id]
+        if derived_overdue?(gap, last)
+          reasons << "#{account.label}: #{source} had priced usage on #{gap[:last_due_on]}, " \
+                     "but its latest figure is #{last ? "for #{last}" : 'missing'}."
+        end
+        reasons
+      end
     end
 
     def group_key(fact, group_by)

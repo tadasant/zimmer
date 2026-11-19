@@ -142,10 +142,21 @@
         <div class="mb-6 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
           <p class="text-sm text-amber-900">
             <span class="font-semibold">Unpriced models in this window.</span>
-            <%= @unpriced_models.join(", ") %> —
-            these contribute <span class="font-medium">zero</span> to every figure above.
+            These contribute <span class="font-medium">zero</span> to every figure above.
             Add a rate in <code class="text-xs bg-amber-100 px-1 rounded">TokenPricing::RATES</code>.
           </p>
+          <% if @unpriced_metered_models.any? %>
+            <p class="mt-1 text-sm text-amber-900 break-words" id="unpriced-metered">
+              <span class="font-semibold">Metered and unpriced</span> (Pi via OpenRouter: money owed, amount unknown):
+              <%= @unpriced_metered_models.join(", ") %>
+            </p>
+          <% end %>
+          <% if (@unpriced_models - @unpriced_metered_models).any? %>
+            <p class="mt-1 text-sm text-amber-900 break-words" id="unpriced-plan">
+              <span class="font-semibold">Plan-billed</span> (no per-token money, volume only):
+              <%= (@unpriced_models - @unpriced_metered_models).join(", ") %>
+            </p>
+          <% end %>
         </div>
       <% end %>
 

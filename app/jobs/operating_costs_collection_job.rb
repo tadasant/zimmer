@@ -3,7 +3,9 @@
 # The daily pass over operating costs that needs no secret.
 #
 # 1. Derives what Zimmer can see in its own ledgers (OperatingCosts::DerivedCollector)
-#    and records it through the same write contract everything else uses.
+#    and records it through the same write contract everything else uses, and
+#    removes any derived figure in the window it no longer derives (a $0 for a
+#    day whose usage turned out to be unpriced).
 # 2. Rebuilds every account's daily series over the trailing year, so a
 #    subscription keeps accruing on days nothing was reported.
 # 3. Re-splits the current and previous month across agent roots and
@@ -28,8 +30,11 @@ class OperatingCostsCollectionJob < ApplicationJob
     run = OperatingCostCollectionRun.create!(collector: OperatingCostCollectionRun::DERIVED_COLLECTOR, status: "running",
                                              started_at: Time.current)
     today = Date.current
-    observations = OperatingCosts::DerivedCollector.new(today: today).observations
+    collector = OperatingCosts::DerivedCollector.new(today: today)
+    observations = collector.observations
     counts = observations.any? ? OperatingCosts::Recorder.record!({ "observations" => observations }, today: today, derived: true).counts : {}
+    # Before the rebuild below, which is what takes a removed figure off the series.
+    superseded = collector.superseded.delete_all
 
     accounts = OperatingCostAccount.all.to_a
     rows = accounts.sum { |account| OperatingCosts::Ledger.rebuild!(account: account, from: today - REBUILD_DAYS, to: today - 1) }
@@ -38,7 +43,8 @@ class OperatingCostsCollectionJob < ApplicationJob
     end
 
     run.update!(status: "succeeded", finished_at: Time.current, rows_written: observations.size,
-                details: { derived_observations: observations.size, daily_entries: rows, accounts: accounts.size, counts: counts })
+                details: { derived_observations: observations.size, superseded_observations: superseded,
+                           daily_entries: rows, accounts: accounts.size, counts: counts })
     run
   rescue StandardError => e
     # Recorded on the run (the Costs page and /health read it) and reported, so

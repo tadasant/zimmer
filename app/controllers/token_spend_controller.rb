@@ -36,6 +36,8 @@ class TokenSpendController < ApplicationController
     @by_experiment = snapshot[:by_experiment]
     @top_sessions = snapshot[:top_sessions]
     @unpriced_models = snapshot[:unpriced_models]
+    # Array(): a snapshot cached by a build without the key carries none.
+    @unpriced_metered_models = Array(snapshot[:unpriced_metered_models]) & @unpriced_models
 
     # How complete the ledger is, from the same object the REST API and the MCP
     # tool read. Without it the page implies more coverage than it has: every

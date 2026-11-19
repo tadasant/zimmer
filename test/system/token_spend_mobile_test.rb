@@ -102,6 +102,15 @@ class TokenSpendMobileTest < ApplicationSystemTestCase
       cache_read_tokens: 11_008
     )
 
+    # A Pi row on a model with no rate: metered money with no figure, which the
+    # unpriced list has to tell apart from the plan-billed Codex row above.
+    SessionTokenUsage.create!(
+      request_id: "pi:mobile-unpriced:1", session_id: session.id,
+      agent_runtime: "pi", model: "openrouter/example-vendor/an-unpriced-model-with-a-long-id",
+      agent_root: "tadasant-internal/artifacts-agent-roots-issue-work-gate",
+      called_at: 1.hour.ago, input_tokens: 500, output_tokens: 1_000
+    )
+
     AdhocTokenUsage.create!(
       request_id: "req_mobile_adhoc", source: "cli_status_probe",
       model: "claude-opus-5", called_at: 1.hour.ago,
@@ -143,6 +152,8 @@ class TokenSpendMobileTest < ApplicationSystemTestCase
     # to the reason it does.
     assert_text "codex"
     assert_text "gpt-5.6-terra"
+    within("#unpriced-metered") { assert_text "openrouter/example-vendor/an-unpriced-model-with-a-long-id" }
+    within("#unpriced-plan") { assert_text "gpt-5.6-terra" }
 
     assert page.evaluate_script(NO_DOCUMENT_OVERFLOW),
       "Token Spend page overflows the viewport at #{MOBILE_WIDTH}px"

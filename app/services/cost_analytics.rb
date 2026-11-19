@@ -70,7 +70,8 @@ class CostAnalytics
         by_feature: by_feature,
         by_experiment: by_experiment,
         top_sessions: top_sessions,
-        unpriced_models: unpriced_models
+        unpriced_models: unpriced_models,
+        unpriced_metered_models: unpriced_metered_models
       }
     end
   end
@@ -331,6 +332,14 @@ class CostAnalytics
   def unpriced_models
     models = (usage_rollup.models + adhoc_rollup.models).uniq
     models.reject { |m| TokenPricing.priced?(m) }.sort
+  end
+
+  # The unpriced models that are metered money: the ones the Pi runtime called
+  # through OpenRouter. Each is an amount owed that no figure carries. The rest
+  # of `unpriced_models` (Codex's, billed against a flat plan) are volume with no
+  # per-token money behind it.
+  def unpriced_metered_models
+    usage_rollup.rows.filter_map { |row| row.model if row.keys[1] == PiAuthProvider::RUNTIME && !TokenPricing.priced?(row.model) }.uniq.sort
   end
 
   private

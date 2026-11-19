@@ -38,6 +38,25 @@ class OperatingCostsMobileTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("The Costs page at #{NARROW_WIDTH}px")
   end
 
+  test "an unpriced metered model is a warning that fits a phone, not a $0 line" do
+    seed_operating_costs!
+    vendor = OperatingCostVendor.create!(key: "routerco", name: "RouterCo", ingest_method: "derived")
+    OperatingCostAccount.create!(key: "routerco-pi", label: "RouterCo metered", vendor: vendor, derived_source: "pi_token_spend")
+    SessionTokenUsage.create!(request_id: "pi:mobile:1", agent_runtime: "pi", model: "openrouter/example-vendor/an-unpriced-model-with-a-long-id",
+                              called_at: 3.days.ago, input_tokens: 1_000, output_tokens: 1_000)
+    OperatingCostsCollectionJob.perform_now
+
+    visit operating_costs_path
+    within("#costs-stale") do
+      assert_text "These figures may be incomplete or out of date."
+      assert_text "RouterCo metered"
+      assert_text "openrouter/example-vendor/an-unpriced-model-with-a-long-id"
+      assert_text "money owed at an unknown amount"
+    end
+    assert_no_horizontal_overflow("The Costs page with an unpriced-usage warning")
+    page.save_screenshot("tmp/screenshots/operating-costs-unpriced-375.png")
+  end
+
   test "a narrowed page fits a phone too" do
     seed_operating_costs!
     OperatingCostsCollectionJob.perform_now
