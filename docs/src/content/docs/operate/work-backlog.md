@@ -357,8 +357,8 @@ A **hold** records the third outcome on the row: `hold_work_backlog_item_for_dec
 `POST /api/v1/work_backlog_items/:id/hold`, or the **Hold** form under a row's verdict in the
 Stranded section. All three go through `WorkBacklog::Hold`. A hold takes a required `reason` (the
 decision owed, who owes it, and where it is laid out) and stamps who recorded it and when. It is not
-a removal and does not change `status`. The row moves out of `stranded`, and out of both halves of
-the alert's band, into `awaiting_decision`: its own **Awaiting your decision** section on the Issues
+a removal and does not change `status`. The row moves out of `stranded`, and out of the alert's
+count and age, into `awaiting_decision`: its own **Awaiting your decision** section on the Issues
 view, `status: "awaiting_decision"` in `get_work_backlog` and the REST index, and
 `counts.awaiting_decision`. The page names how many rows are held, so a reader knows its count is
 not the whole pile.
@@ -388,21 +388,26 @@ page. `hold_digested_at` is on each row in `get_work_backlog`, the REST API and 
 answers whether this has run and what it covered.
 
 **A hold lapses when that stops.** After `HOLD_DURATION` with no renewal the row is stranded again
-with its original age, and the next pass pages on the lapse, whatever band the sweep last paged for.
-Only then is the spent hold cleared. A digest that crashes, loses its cron entry or reaches nobody
-ends there, and none of those needs the digest to notice. Renewal being the receipt for a delivery is
-what keeps this from being the permanent silence of
+with its original age, and the next pass clears the spent hold. Whether the lapse pages depends on
+whether a page has already covered the row
+([#1592](https://github.com/tadasant/zimmer/issues/1592)). A row held before any page covered it, for
+example one held before it was a week old, pages on the lapse like any newly stranded row. A row
+already paged for does not page again just because its hold lapsed. The usual reason a hold lapses is
+a digest that reached no device, and that has already paged as an ERROR (below). Paging the lapse as
+well told the same triage chain the same thing a second time. A digest that crashes or loses its cron
+entry logs no such ERROR. Its lapsed rows rejoin the population, and the population's reminder
+ladder and the decision-digest job's own failure still reach a human. Renewal being the receipt for
+a delivery is what keeps this from being the permanent silence of
 [#1127](https://github.com/tadasant/zimmer/issues/1127) and
 [#1175](https://github.com/tadasant/zimmer/issues/1175).
 
-The lapse page is the one page a pass that could not read a repo still sends. A row in a repo that
-stays unreadable reads `unknown`, so nothing renews it, and the band alert stays deferred for as long
-as the repo is unreadable. The lapse has to get through anyway. That pass leaves the remembered band
-alone.
+A lapse on a row no page has covered is the one page a pass that could not read a repo still sends.
+A row in a repo that stays unreadable reads `unknown`, so nothing renews it, and every other page
+stays deferred for as long as the repo is unreadable. That pass marks only the rows it paged for.
 
 A failed delivery does not wait for the lapse. A push that reaches no device, which includes no device
 being subscribed or neither path being configured, logs an ERROR. That trips the
-`zimmer_backend_log_errors` rule, so it reaches `#alerts` by a different path from the lapse page. The
+`zimmer_backend_log_errors` rule, so it reaches `#alerts` by a different path from the stranded-rows page. The
 list stays due, so every tick tries again, and a failure that lasts repeats the ERROR once per
 `CADENCE`, with WARN on the ticks between. A channel that is broken while another got through logs
 WARN. A hold lasts two cadences, so delivery can fail for a week before a hold lapses.
@@ -416,10 +421,10 @@ started a triage chain whose only move was to re-hold, and no decision was answe
 these. So the two jobs are now separate: the push reaches the person who owes the decision, and the
 page is for the reminder failing, which someone can act on.
 
-**A triager cannot extend a hold** while it is in force, and a lapsed hold cannot be renewed until its
-lapse has paged. Without that second rule, a triager could re-hold the row the minute it lapsed,
-before the hourly sweep ran, and the row would never page again. After the page, a triager may read
-the row again, find out why the digest stopped, and hold it again.
+**A triager cannot extend a hold** while it is in force, and a lapsed hold cannot be renewed until
+the sweep has seen the lapse and cleared it. Without that second rule, a triager could re-hold a row
+no page has covered the minute it lapsed, before the hourly sweep ran, and the row would never page.
+After that, a triager may read the row again, find out why the digest stopped, and hold it again.
 
 **A hold is void when its evidence changes.** It records the `liveness_state` it was placed against,
 and the sweep clears it, in the same write, the first time it records a different one: the issue
@@ -437,7 +442,7 @@ at 48 days. So the hold stays on the row while the PR is moving, and the row sit
 Stranded nor Awaiting your decision, because a moving PR resolves it for the time being. Once the
 PR merges, closes or goes quiet, the hold is judged on what the row reads then: the same verdict
 keeps it, a different one voids it. The digest keeps delivering and renewing it throughout. A hold
-that does lapse while the PR is open pages on the first pass after the row is stranded again.
+that does lapse while the PR is open is seen on the first pass after the row is stranded again.
 
 `pr_stalled` is not a suspension. A stalled row is unresolved, so a hold kept across it would be a
 silenced row with nothing moving.
@@ -451,7 +456,7 @@ once a mentioning PR merges. See [limitations](/limitations/#a-hold-for-a-decisi
 
 `WorkBacklog::Hold` refuses a row that is not stranded (queued, in flight, parked or resolved), a
 row the sweep has not read yet (no `liveness_state`, or `unknown`), a row a newer row has
-superseded, a row already held, and a row whose lapsed hold has not paged yet.
+superseded, a row already held, and a row whose lapsed hold the sweep has not cleared yet.
 
 Settled rows go last because the candidate population only grows: a row whose issue closed stays
 a candidate for good. In a plain least-recently-checked round-robin, most of each pass's 200 would
@@ -474,11 +479,12 @@ first hour paged and every hour after it was silent, while the population it exi
 unwatched. That is the same invisible growth the sweep was written to end, so it must not be how the
 detector itself fails.
 
-So **every page is its own GlitchTip issue**. The event's fingerprint carries a severity band, so a
-reader can see what got worse, and then the time of the pass that paged. A reminder at a band
-already paged for — the weekly one after `ALERT_BAND_TTL`, or a lapsed hold inside the remembered
-band — is then a new issue with its own one-time notification, not another occurrence of an issue
-whose notification is spent. The sweep decides when to page, and each page notifies `#alerts` once.
+So **every page is its own GlitchTip issue**. The event's fingerprint carries a severity band (the
+oldest row's age in weeks and the count's step on `ALERT_ROW_BANDS`), so a reader can see how bad it
+is, and then the time of the pass that paged. A second page at the same band — a new row in an
+unchanged population, or the next rung of the reminder ladder — is then a new issue with its own
+one-time notification, not another occurrence of an issue whose notification is spent. The sweep
+decides when to page, and each page notifies `#alerts` once.
 
 **The page is not also an ERROR log record.** The line is logged at WARN, so it is still in
 VictoriaLogs, but it does not trip the `zimmer_backend_log_errors` Grafana rule. When it was logged
@@ -487,38 +493,50 @@ minutes later through Grafana as a generic ERROR record that named nothing — a
 its own triage router. A sweep that crashes still reaches the Grafana rule, through the job's own
 ERROR record.
 
-The band is two coarse numbers:
+### It pages on new information
 
-| Dimension | Moves when |
+Every page starts a triage session, so a page has to say something the last one did not. Before
+[#1592](https://github.com/tadasant/zimmer/issues/1592) the sweep re-paged whenever the oldest row
+aged into another week. One five-row population only a human could move paged six times in two
+weeks, each page triaged to the same answer. A pass whose oldest stranded row is past `ALERT_AFTER`
+now pages when at least one of these holds:
+
+| Reason (`paged_for`) | Pages when |
 | --- | --- |
-| `weeks` | the oldest row's age passes another multiple of `ALERT_AFTER` (7 days) |
-| `rows` | the count climbs through the next step of `ALERT_ROW_BANDS` — 1, 10, 25, 50, 100, 250, 500, 1000 |
+| `new_rows` | a stranded row has been out for `ALERT_AFTER` (7 days) and no page has gone out since then. The page names it in `newly_stranded`. |
+| `more_rows` | the count's step on `ALERT_ROW_BANDS` (1, 10, 25, 50, 100, 250, 500, 1000) is above the step of the rows a page already covers |
+| `older` | the oldest row's age has climbed a rung of the doubling ladder since the last page: 1, 2, 4, 8, 16, 32… weeks |
 
-A page costs a real step change in one of those, and the band it was sent for is then remembered for
-`ALERT_BAND_TTL` (also 7 days). So a population of 21 rows whose oldest has sat 9 days pages on the
-hour it is first seen, says nothing for the next five days, and pages again when that row reaches 14
-days — thereafter about one page a week, never an hourly flood, and never the permanent silence this
-replaced. A count climbing 21 → 60 pages on the pass that crosses 50, without waiting for the week.
+Nothing else pages. **A newly stranded row always pages.** That is the rule this cannot lose, and
+it does not depend on either band moving. A page that went out while a row was younger than
+`ALERT_AFTER` counted it but did not report it as stranded, so it still gets its own page once it
+is overdue. A population nobody acts on still pages, on a slowing schedule: a population paged at
+70 days is reminded at 112.
 
-**The remembered band is a high-water mark that expires**, and both halves of that are load-bearing.
-A band that followed the population *down* would page on every upward re-crossing of a boundary, so
-a count flickering 49 ↔ 50 would page hourly. A high-water mark that never expired would instead go
-quiet for weeks after triage took the oldest rows off, because the remainder cannot beat a mark it
-has already dropped below. Expiring the mark after a week gives the second without the first.
+**The memory is a column on each row, not a cache.** Each page stamps `stranded_paged_at` on the rows
+it went out for. Every pass clears it from any row that has left the unresolved set — closed, PR in
+flight, superseded, re-queued — so a row that strands again is new again. A hold that is voided by a
+change of evidence clears it too. A hold does not clear it, and neither does a lapse: a held row is
+parked on a person, not resolved. The column is on `/supervisor`, so "has this row been paged for"
+has an answer without a shell. The `older` rung is measured from the age the population's oldest row
+had at the last page. So when triage takes the oldest rows off, the remainder is reminded on its own
+schedule rather than measured against a row that is gone.
 
-Two more rules. A pass that **could not read a repo** says nothing at all: every row it could not
-probe is recorded `unknown`, which counts as stranded, so rows long since closed re-enter the
-population at their original age and both halves of the band jump — a false page, and a poisoned
-mark if it were remembered. And a population that **clears** forgets its band altogether, on the
-empty pass, which is why `alert_if_overdue` runs even when there was nothing to examine — so the next
-population starts from its first week rather than being measured against one that is gone.
+`more_rows` can fire again after a population drops below a step and a new row takes it back over,
+because the row that left took its mark with it. Each re-crossing needs a row to arrive, so it is
+bounded by arrivals, never by passes.
 
-The band lives in `Rails.cache` — Redis everywhere but `test`, which runs a `:null_store`. Before it
-pages, the sweep writes a throwaway token to a probe key and reads it back; a store that cannot
-remember fails that check, and the sweep then stays **silent** on purpose. An hourly page nothing can
-throttle would flood the channel every real page on this deployment travels, and a cache that has
-stopped answering is alerted on loudly in its own right. The probe is a separate key from the band
-precisely so that failing it can never leave a band written that no page went out for.
+The memory used to be a severity band in `Rails.cache` that expired weekly, and a cache that could
+not remember kept the sweep silent on purpose. An hourly page that nothing throttled would have
+flooded `#alerts`. The column lives in the same database the pass has just read and written every
+row in, so a pass that cannot write it has already failed at ERROR in the job, and there is no
+Redis dependency left. The deploy that added the column stamped the rows that were stranded at the
+time, since the band it replaced had already paged for them.
+
+A pass that **could not read a repo** sends only one kind of page: a lapsed hold on a row no page has
+covered. Every row it could not probe is recorded `unknown`, which counts as stranded, so rows long
+since closed come back at their original age with no mark, and all three reasons would fire on
+them. The unreadable repo is named at WARN by the pass itself.
 
 ## The import
 

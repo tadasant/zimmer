@@ -55,7 +55,7 @@ class WorkBacklog::HoldTest < ActiveSupport::TestCase
     end
   end
 
-  test "refuses to extend an active hold, or renew a lapsed one before its lapse has paged" do
+  test "refuses to extend an active hold, or renew a lapsed one before the sweep has seen its lapse" do
     item = stranded_row
     WorkBacklog::Hold.call(item: item, reason: "first", by: "x")
 
@@ -66,9 +66,9 @@ class WorkBacklog::HoldTest < ActiveSupport::TestCase
     error = assert_raises(WorkBacklog::Hold::Refused) do
       WorkBacklog::Hold.call(item: item, reason: "renewed quietly", by: "x", now: later)
     end
-    assert_match(/has not paged on the lapse yet/, error.message)
+    assert_match(/has not seen the lapse yet/, error.message)
 
-    # What the sweep does once it has paged on the lapse.
+    # What the sweep does once it has seen the lapse.
     item.update_columns(WorkBacklogItem::CLEARED_HOLD)
     WorkBacklog::Hold.call(item: item, reason: "still owed", by: "x", now: later)
     assert_equal "still owed", item.reload.hold_reason

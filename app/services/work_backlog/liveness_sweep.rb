@@ -97,59 +97,61 @@ module WorkBacklog
     # rather than a request per row, so this is generous; it exists so a surprise
     # population cannot turn one tick into an hour.
     MAX_EXAMINED_PER_SWEEP = 200
-
-    # How old the oldest unresolved row may get before a human is told. The point
+    # How long a row may sit stranded before a human is told about it. The point
     # of the alert is that this population used to have no upper bound at all —
-    # the worst row observed had sat for 37 days.
-    #
-    # It doubles as the WIDTH of a severity band: a population nobody triages ages
-    # into a new band every week, and a new band pages again. See
-    # `alert_if_overdue`.
+    # the worst row observed had sat for 37 days. A row is OVERDUE once it has
+    # been out of the queue this long, and every overdue row is covered by at
+    # least one page. See `alert_if_overdue`.
     ALERT_AFTER = 7.days
 
     # The population sizes that count as a step change. A count climbing through
-    # one of these pages again without waiting for the week to roll over; one
-    # drifting between two of them does not. Coarse on purpose — the question a
-    # second page has to answer is "is this materially worse than when I was last
-    # told", and 21 rows against 23 is not.
+    # one of these pages again; one drifting between two of them does not. Coarse
+    # on purpose — the question a second page has to answer is "is this
+    # materially worse than when I was last told", and 21 rows against 23 is not.
     ALERT_ROW_BANDS = [ 1, 10, 25, 50, 100, 250, 500, 1000 ].freeze
+
+    # The reminder ladder for a population nobody acts on, in multiples of
+    # ALERT_AFTER: the oldest row's age pages again at 1, 2, 4, 8, 16, 32… weeks,
+    # doubling with no ceiling. Before #1592 the reminder was every week, and one
+    # five-row population that needed a human decision paged six times in two
+    # weeks with nothing new to say. Doubling keeps a population nobody acts on
+    # paging — at 70 days the next reminder is at 112 — without a page a week.
+    # The rung is `floor(log2(weeks))`; see `ladder_rung`.
+    ALERT_LADDER_BASE = 2
 
     # The prefix every page's fingerprint starts with. The severity band and the
     # time of the paging pass are appended to it, so each page opens its own
     # GlitchTip issue and notifies once — see `alert_if_overdue`.
     ALERT_FINGERPRINT = "work-backlog-stranded-rows"
 
-    # Where the band the last page was sent for is remembered, so a steady
-    # population is silent between bands. Redis everywhere but `test`, which runs
-    # a `:null_store`; a store that cannot remember is handled in
-    # `cache_can_remember?` rather than assumed away.
-    ALERT_BAND_CACHE_KEY = "work_backlog_liveness_sweep:alerted_band"
-
-    # How long a page suppresses the band it was sent for — and so, for a
-    # population that is not getting worse, how often the reminder repeats. It is
-    # ALERT_AFTER because that is already the width of a week band: a population
-    # standing still pages when its oldest row ages into the next week, and this
-    # expiry makes a population whose band has DROPPED — the shape triage leaves,
-    # taking the oldest rows off first — page again on the same cadence instead of
-    # waiting to beat a high-water mark it may never reach.
-    ALERT_BAND_TTL = ALERT_AFTER
+    # How many newly stranded rows a page names by key. The rest are counted.
+    NAMED_ROWS_MAX = 20
 
     # WHAT THE PAGE DOES NOT COUNT: rows a triager has held for a human decision
-    # (WorkBacklogItem.awaiting_decision). Before #1225 they could not leave the
-    # population, so a standing set of rows waiting on one person aged into a new
-    # week band every ALERT_BAND_TTL and re-paged a triage chain that could only
-    # re-confirm them. They are out of `stranded` — both the age and the row band
-    # — until their hold lapses (WorkBacklogItem::HOLD_DURATION). A hold lapses only
-    # when WorkBacklog::DecisionDigest has stopped renewing it, so the row comes
-    # back with its original age and the next readable pass pages on the lapse
-    # whatever band it last paged for (`lapsed_hold_ids`). The page names how many
-    # are held so a reader knows the number is not the whole pile.
+    # (WorkBacklogItem.awaiting_decision). They are out of `stranded` — both the
+    # age and the row count — until their hold lapses (WorkBacklogItem::HOLD_DURATION),
+    # and the page names how many are held so a reader knows the number is not the
+    # whole pile. A hold lapses only when WorkBacklog::DecisionDigest has stopped
+    # renewing it, and the digest logs that at ERROR, which pages on its own. So a
+    # lapse is not news by itself: it pages only on a row no page has covered. See
+    # `alert_if_overdue`.
 
     # What one pass found. `repos_failed` is separate from the outcome counts
     # because a repo nobody could read is a fault, where an `unknown` row might
     # just be an issue that was deleted.
     Result = Data.define(:examined, :outcomes, :oldest_stranded_age, :repos_failed) do
       def count(state) = outcomes.fetch(state, 0)
+    end
+
+    # One stranded row, as much of it as the page needs. `since` is when it left
+    # the queue; `paged_at` is the last page that covered it.
+    StrandedRow = Data.define(:id, :key, :since, :paged_at, :lapsed) do
+      def overdue?(now) = since <= now - ALERT_AFTER
+
+      # Has a page gone out for this row since it became overdue? A page sent
+      # while it was still young counted it but did not report it as stranded,
+      # so that does not cover it.
+      def covered? = paged_at.present? && paged_at >= since + ALERT_AFTER
     end
 
     class << self
@@ -391,6 +393,52 @@ module WorkBacklog
       # Through ErrorReporter rather than a Slack call of its own: operational
       # alerts go to the obs pipeline since AlertService was retired (#189).
       #
+      # == It pages on NEW INFORMATION (#1592)
+      #
+      # A page costs a person's attention and starts a triage session, so it has to
+      # say something the last one did not. A pass whose oldest stranded row is
+      # overdue pages when at least one of these holds:
+      #
+      #   1. NEW ROWS. A stranded row has been out for ALERT_AFTER and no page has
+      #      gone out since then. This is the rule that must not go quiet. Every row
+      #      that strands gets a page within an hour of becoming overdue, whatever the
+      #      population around it is doing.
+      #   2. MORE ROWS. The count's step on ALERT_ROW_BANDS is above the step of the
+      #      rows a page already covers, so a pile of young rows arriving at once does
+      #      not wait a week to be mentioned. A row that left resolved takes its mark
+      #      with it, so a band re-crossed after triage pages again — but only when a
+      #      row arrives, so it is bounded by arrivals, never by passes.
+      #   3. OLDER. The oldest row's age has climbed a rung of the doubling ladder
+      #      (ALERT_LADDER_BASE) since the last page. This is the reminder for a
+      #      population nobody acts on, and it slows as the population ages.
+      #
+      # Anything else is silent. Before #1592, a five-row population that only a
+      # human decision could move re-paged every time its oldest row aged into
+      # another week, and every triage could only restate the same remedy.
+      #
+      # The memory is on the rows: `stranded_paged_at`, stamped on every stranded
+      # row a page goes out for. Every pass clears it from any row that has left
+      # the unresolved set — closed, PR in flight, superseded, re-queued — so a row
+      # that strands AGAIN is new again. A void clears it too
+      # (WorkBacklogItem#record_liveness!): the evidence a held decision stood on
+      # changed, and the row needs looking at afresh. A hold does NOT clear it. A
+      # held row is parked on a person, not resolved, and its lapse is not news
+      # about the work (below).
+      #
+      # It used to be a severity band in Redis, and a store that could not
+      # remember kept this silent on purpose, because an hourly page that nothing
+      # throttled would flood `#alerts`. The mark lives in the same database the
+      # pass has just read and written every row in, so a pass that cannot write
+      # it has already failed, at ERROR, in the job.
+      #
+      # A LAPSED HOLD does not page by itself. A hold lapses only when
+      # WorkBacklog::DecisionDigest has stopped renewing it, and a digest that
+      # reaches no device is already an ERROR that pages through
+      # `zimmer_backend_log_errors`. So a lapse pages only through rule 1, on a row
+      # no page has covered, such as one held before it was ever overdue. Either
+      # way the spent hold is cleared on the pass that sees it, so WorkBacklog::Hold
+      # can accept a fresh one.
+      #
       # == Reaching a human MORE THAN ONCE (#1175)
       #
       # The first version of this reported one constant fingerprint through
@@ -404,13 +452,12 @@ module WorkBacklog
       # #1127 was written to end, so it must not be how the detector itself fails.
       #
       # So EVERY PAGE IS ITS OWN GLITCHTIP ISSUE. The fingerprint carries the
-      # severity band, so a GlitchTip reader sees what got worse, and then the time
-      # of the pass that paged, so a reminder at a band already paged for — the
-      # weekly one after ALERT_BAND_TTL, or a lapse inside the remembered band — is
-      # a new issue with its own one-time notification rather than an occurrence of
-      # an issue whose notification is spent. GlitchTip's at-most-once rule is then
-      # exactly the right number: the sweep decides when to page, and each page
-      # notifies once.
+      # severity band, so a GlitchTip reader sees how bad it is, and then the time
+      # of the pass that paged, so a second page at the same band — a new row in an
+      # unchanged population, or the next rung of the ladder — is a new issue with
+      # its own one-time notification rather than an occurrence of an issue whose
+      # notification is spent. GlitchTip's at-most-once rule is then exactly the
+      # right number: the sweep decides when to page, and each page notifies once.
       #
       # The page is NOT also an ERROR log record. A non-staging ERROR trips the
       # `zimmer_backend_log_errors` Grafana rule, so one report would page `#alerts`
@@ -418,73 +465,80 @@ module WorkBacklog
       # band nor the problem — and start a second triage router for it. A sweep
       # that crashes still reaches that rule, through the job's own ERROR record.
       #
-      # What bounds the noise is that a page costs a real step change — a week of
-      # further ageing, or a climb through ALERT_ROW_BANDS — and that the band it
-      # was sent for is then remembered for ALERT_BAND_TTL. So the ceiling is one
-      # page per step change plus one reminder a week, never the hourly flood that
-      # "report every pass" would be, and never the permanent silence this
-      # replaces.
+      # == What a pass that could not read a repo may say
       #
-      # The remembered band is a HIGH-WATER MARK that expires rather than one that
-      # tracks the population down, and that asymmetry is deliberate. A band that
-      # followed every improvement would page on every upward re-crossing of a
-      # boundary, so a count flickering 49 ↔ 50 would page hourly; a high-water
-      # mark that never expired would instead go quiet for weeks after triage took
-      # the oldest rows off, because the remainder cannot beat a mark it has
-      # already dropped below. Expiry gives the second without the first.
+      # Its census is unreliable: every row it could not probe is recorded
+      # `unknown`, which counts as stranded, so rows long since closed come back at
+      # their original age with no mark (it was cleared when they closed), and
+      # all three rules would fire on them. So such a pass pages only a LAPSED hold
+      # on a row no page has covered. The lapse is a fact about the row's own
+      # clock rather than the census, and for a repo that stays unreadable it is
+      # the only thing that can page. It marks only the rows it paged for. The
+      # unreadable repo is already named at WARN by `report`.
       def alert_if_overdue(result, now)
-        # A pass that could not read a repo has an unreliable census: every row it
-        # could not probe is recorded `unknown`, which counts as stranded, so rows
-        # long since closed re-enter the population with their original age and
-        # both halves of the band jump. Defer the reading rather than page on it or
-        # let it poison the high-water mark — the unreadable repo is already named
-        # at WARN by `report`, and the next pass says something true.
-        #
-        # A lapse is the exception. It is a fact about the row's own clock, not the
-        # census, and it is the only backstop a hold has, so a repo that stays
-        # unreadable must not hold it back. Such a pass pages the lapse and leaves
-        # the band alone.
-        unreadable = result.repos_failed.any?
-        return if unreadable && lapsed_hold_ids(now).empty?
+        forget_resolved_marks(now)
 
-        age = result.oldest_stranded_age
-        if age.nil? || age < ALERT_AFTER
-          return if unreadable
+        rows = stranded_rows(now)
+        lapsed = rows.select(&:lapsed).map(&:id)
+        paging = result.repos_failed.any? ? lapse_news(rows, now) : news(rows, now)
 
-          # The condition is over. Forgetting the band is what makes the NEXT
-          # population page from band one instead of being weighed against a worse
-          # one that no longer exists.
-          Rails.cache.delete(ALERT_BAND_CACHE_KEY)
-          return
+        if paging
+          WorkBacklogItem.where(id: paging[:mark]).update_all(stranded_paged_at: now)
+          page_stranded_rows(rows, paging, lapsed.size, now)
         end
 
-        return unless cache_can_remember?
-
-        rows = WorkBacklogItem.stranded(now: now).count
-        band = severity_band(age, rows)
-        worse = !unreadable && worse_band?(band, Rails.cache.read(ALERT_BAND_CACHE_KEY))
-        lapsed = lapsed_hold_ids(now)
-        return unless worse || lapsed.any?
-
-        Rails.cache.write(ALERT_BAND_CACHE_KEY, band, expires_in: ALERT_BAND_TTL) if worse
-        page_stranded_rows(band, age, rows, WorkBacklogItem.awaiting_decision(now: now).count, lapsed.size, now)
         announce_lapsed_holds(lapsed, now)
       end
 
-      # Stranded rows still carrying a hold that has lapsed: the lapse nobody has
-      # been paged about yet. Each one pages, whatever band was last paged for,
-      # because a lapse means the decision digest stopped renewing the hold, and
-      # this page is the backstop for that. A lapsed row that merely rejoined a
-      # population already paged at its band would otherwise come back in silence
-      # (see WorkBacklogItem::HOLD_DURATION).
-      def lapsed_hold_ids(now)
-        WorkBacklogItem.stranded(now: now).where.not(held_at: nil).pluck(:id)
+      def stranded_rows(now)
+        WorkBacklogItem.stranded(now: now)
+                       .pluck(:id, :key, Arel.sql("COALESCE(started_at, removed_at)"), :stranded_paged_at, :held_at)
+                       .map do |id, key, since, paged_at, held_at|
+          StrandedRow.new(id: id, key: key, since: since, paged_at: paged_at, lapsed: held_at.present?)
+        end
       end
 
-      # The page has gone out, so the spent holds are cleared — which is what lets
-      # WorkBacklog::Hold accept a fresh one, and what keeps the next pass from
-      # paging on the same lapse again. Conditional on the hold still being the
-      # lapsed one, so a hold recorded since the read above is left alone.
+      # A row that has left the unresolved set is no longer covered by anything,
+      # so if it strands again it is new again. Every pass, the empty one and an
+      # unreadable one included: a row can only leave on a verdict this pass or an
+      # earlier one actually read, or by its status changing.
+      def forget_resolved_marks(now)
+        WorkBacklogItem.where.not(stranded_paged_at: nil)
+                       .where.not(id: WorkBacklogItem.unresolved(now: now).select(:id))
+                       .update_all(stranded_paged_at: nil)
+      end
+
+      # What a readable pass has to say, or nil. See `alert_if_overdue`.
+      def news(rows, now)
+        oldest = rows.min_by(&:since)
+        return nil if oldest.nil? || !oldest.overdue?(now)
+
+        age = (now - oldest.since).to_i
+        fresh = rows.select { |row| row.overdue?(now) && !row.covered? }
+        last_paged = rows.filter_map(&:paged_at).max
+        reasons = []
+        reasons << "new_rows" if fresh.any?
+        reasons << "more_rows" if last_paged && row_band(rows.size) > row_band(rows.count(&:paged_at))
+        reasons << "older" if last_paged && ladder_rung(age) > ladder_rung(last_paged - oldest.since)
+        return nil if reasons.empty?
+
+        { reasons: reasons, age: age, fresh: fresh, mark: rows.map(&:id) }
+      end
+
+      # What a pass that could not read a repo may say: a lapsed hold on a row no
+      # page has covered, and nothing else.
+      def lapse_news(rows, now)
+        fresh = rows.select { |row| row.lapsed && row.overdue?(now) && !row.covered? }
+        return nil if fresh.empty?
+
+        { reasons: [ "new_rows" ], age: (now - rows.min_by(&:since).since).to_i, fresh: fresh, mark: fresh.map(&:id) }
+      end
+
+      # The page has been decided, so the spent holds are cleared — which is what
+      # lets WorkBacklog::Hold accept a fresh one. Every pass, not only one that
+      # pages: a lapse on a row already paged for pages nothing, and still has to
+      # be cleared. Conditional on the hold still being the lapsed one, so a hold
+      # recorded since the read above is left alone.
       def announce_lapsed_holds(ids, now)
         return if ids.empty?
 
@@ -492,41 +546,39 @@ module WorkBacklog
                        .update_all(WorkBacklogItem::CLEARED_HOLD.merge(updated_at: now))
       end
 
-      # The band a population is in: the week its oldest row's age has reached, and
-      # the step of the size ladder its count has reached. Coarse in both
-      # dimensions so that only a real change moves it.
+      # The band a page names: the week its oldest row's age has reached, and the
+      # step of the size ladder its count has reached. It is what the fingerprint
+      # and the title say; whether to page is `news`.
       def severity_band(age, rows)
-        { weeks: age / ALERT_AFTER.to_i, rows: ALERT_ROW_BANDS.select { |n| rows >= n }.max.to_i }
+        { weeks: age / ALERT_AFTER.to_i, rows: row_band(rows) }
       end
 
-      # Worse in EITHER dimension — a population can get older without growing, and
-      # grow without getting older, and both are news. No memory at all is worse
-      # than any band: that is a population's first page.
-      def worse_band?(band, previous)
-        return true if previous.nil?
+      def row_band(rows) = ALERT_ROW_BANDS.select { |n| rows >= n }.max.to_i
 
-        band.any? { |dimension, value| value > previous[dimension].to_i }
+      # The ladder rung an age is on: -1 under ALERT_AFTER, then 0 for 1 week, 1
+      # for 2–3, 2 for 4–7, 3 for 8–15, and so on, one rung per doubling.
+      def ladder_rung(age)
+        weeks = (age / ALERT_AFTER).floor
+        return -1 if weeks < 1
+
+        rung = 0
+        while weeks >= ALERT_LADDER_BASE
+          weeks /= ALERT_LADDER_BASE
+          rung += 1
+        end
+        rung
       end
 
-      # Can the store this throttle depends on remember anything? Written to a
-      # throwaway key and read straight back, so that a store which cannot — the
-      # `:null_store` the test env runs, or a Redis that has stopped answering,
-      # which `error_handler` turns into a silent nil — is found out without the
-      # probe itself being able to strand the real band.
-      #
-      # A store that cannot remember cannot be throttled against, and that is the
-      # one case this stays silent on purpose: an hourly page nothing can throttle
-      # would flood `#alerts`, the channel every real page on this deployment
-      # travels, and a cache that has stopped answering is loudly alerted on in its
-      # own right rather than needing this to notice it.
-      def cache_can_remember?
-        token = SecureRandom.hex(4)
-        Rails.cache.write("#{ALERT_BAND_CACHE_KEY}:probe", token, expires_in: 1.minute)
-        Rails.cache.read("#{ALERT_BAND_CACHE_KEY}:probe") == token
-      end
-
-      def page_stranded_rows(band, age, rows, awaiting_decision, lapsed, now)
+      def page_stranded_rows(rows, paging, lapsed, now)
+        age = paging[:age]
+        band = severity_band(age, rows.size)
+        awaiting_decision = WorkBacklogItem.awaiting_decision(now: now).count
         days = (age / 86_400.0).round(1)
+        named = paging[:fresh].first(NAMED_ROWS_MAX).map(&:key)
+        unnamed = paging[:fresh].size - named.size
+        news = "paged for: #{paging[:reasons].join(', ')}"
+        news += "; newly stranded: #{named.join(', ')}" if named.any?
+        news += " and #{unnamed} more" if unnamed.positive?
         held = awaiting_decision.positive? ? " (#{awaiting_decision} more held for a human decision, not counted)" : ""
         if lapsed.positive?
           held += "; #{lapsed} hold(s) for a human decision lapsed with the decision still owed, so the " \
@@ -543,8 +595,8 @@ module WorkBacklog
         # #error reports to GlitchTip itself, and nothing here should reach GlitchTip
         # except the banded event below.
         Rails.logger.warn(
-          "[WorkBacklog::LivenessSweep] #{rows} work backlog row(s) stranded, oldest #{days} days " \
-          "(band: #{band[:weeks]}w/#{band[:rows]}+ rows)#{held} — nothing re-queues these automatically. " \
+          "[WorkBacklog::LivenessSweep] #{rows.size} work backlog row(s) stranded, oldest #{days} days " \
+          "(band: #{band[:weeks]}w/#{band[:rows]}+ rows)#{held}; #{news} — nothing re-queues these automatically. " \
           "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"; " \
           "one whose remainder is a human's call is held with hold_work_backlog_item_for_decision."
         )
@@ -555,7 +607,10 @@ module WorkBacklog
           "Work backlog rows have been stranded for over #{band[:weeks]} #{"week".pluralize(band[:weeks])}",
           context: {
             oldest_stranded_days: days,
-            stranded_rows: rows,
+            stranded_rows: rows.size,
+            paged_for: paging[:reasons],
+            newly_stranded_rows: paging[:fresh].size,
+            newly_stranded: named,
             awaiting_decision_rows: awaiting_decision,
             lapsed_holds: lapsed,
             severity_band: band,
@@ -567,7 +622,9 @@ module WorkBacklog
                         "multi_slice when each session lands one slice of an issue that stays open), and hold the " \
                         "ones whose remainder is a human's call with hold_work_backlog_item_for_decision. " \
                         "A lapsed hold means WorkBacklogDecisionDigestJob did not reach the owner or could " \
-                        "not re-read the row's evidence: find out why before holding it again."
+                        "not re-read the row's evidence: find out why before holding it again. This pages " \
+                        "only on news — a row no page has covered, a count through a band, or the oldest " \
+                        "row doubling in age — so a population left as it is pages next at the next doubling."
           },
           level: :warning,
           fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}",

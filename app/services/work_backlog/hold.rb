@@ -17,11 +17,11 @@ module WorkBacklog
   #   * a row a newer row has taken over — its triage already happened;
   #   * a row already held — a triager does not extend a hold. Only a delivered
   #     WorkBacklog::DecisionDigest does, which is what keeps a human in the loop;
-  #   * a row whose hold has lapsed but whose lapse has not paged yet. A lapse
-  #     means the digest stopped renewing the hold, and the page is how anyone
-  #     finds out, so a hold renewed the minute it lapsed would skip it and silence
-  #     the row indefinitely. Once the sweep has paged, it clears the spent hold
-  #     and the row may be held again.
+  #   * a row whose hold has lapsed but whose lapse the sweep has not seen yet. A
+  #     lapse on a row no page has covered pages, and a hold renewed the minute it
+  #     lapsed would skip that page and silence the row indefinitely. Once the
+  #     sweep has seen the lapse — paging on it if it is news — it clears the spent
+  #     hold and the row may be held again.
   class Hold
     class Refused < StandardError; end
 
@@ -57,9 +57,9 @@ module WorkBacklog
         end
         if item.hold_lapsed?(now: now)
           raise Refused, "#{item.key} (row #{item.id})'s hold lapsed at #{item.held_until.iso8601} and the " \
-                         "sweep has not paged on the lapse yet. A lapse means the decision digest stopped " \
-                         "renewing it, and that page is how anyone finds out; the row can be held again " \
-                         "once WorkBacklogLivenessSweepJob has sent it"
+                         "sweep has not seen the lapse yet. A lapse means the decision digest stopped renewing " \
+                         "it, and on a row no page has covered the sweep pages on it; the row can be held " \
+                         "again once WorkBacklogLivenessSweepJob has cleared the spent hold"
         end
 
         item.hold_for_decision!(reason: reason, by: by, session: session, now: now)

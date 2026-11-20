@@ -203,22 +203,24 @@ class WorkBacklogItem < ApplicationRecord
   # IT LAPSES UNLESS A DELIVERY RENEWS IT (#1453), because a hold nothing maintains
   # is the permanent silence #1127 and #1175 were written to end. HOLD_DURATION
   # after it was recorded or last renewed the row is stranded again with its
-  # original age, and the next sweep pass that can read GitHub PAGES ON THE LAPSE,
-  # whatever band it last paged for, and only then clears the spent hold
-  # (WorkBacklog::LivenessSweep#announce_lapsed_holds).
+  # original age. The next sweep pass clears the spent hold
+  # (WorkBacklog::LivenessSweep#announce_lapsed_holds), and pages on it only if
+  # no page has covered the row: a lapse on a row already paged for is not news
+  # by itself, because the digest's failure is an ERROR that pages on its own
+  # (#1592).
   #
   # WorkBacklog::DecisionDigest is the only thing that renews one, and only by
   # delivering it: a push that reached a device, with the row's evidence re-read
   # and unchanged. So the person who owes the decision hears about it every
-  # CADENCE for as long as it is owed, and an unanswered hold does not page. When
-  # delivery stops the hold lapses into the page, so the page is the backstop for a
-  # reminder that is not getting through rather than the reminder itself: as the
-  # reminder it reached a triage chain whose only move was to re-hold, 8 times in
-  # five weeks, and answered no decisions (#1453).
+  # CADENCE for as long as it is owed, and an unanswered hold does not page. A
+  # delivery that reaches no device logs ERROR, which is the page for a reminder
+  # that is not getting through. The reminder itself must not be a page: as one it
+  # reached a triage chain whose only move was to re-hold, 8 times in five weeks,
+  # and answered no decisions (#1453).
   #
   # A triager cannot extend a hold while it is active, and cannot renew a lapsed
-  # one until that page has gone out: WorkBacklog::Hold refuses a row still carrying
-  # a spent hold.
+  # one until the sweep has seen the lapse: WorkBacklog::Hold refuses a row still
+  # carrying a spent hold.
   #
   # And it is VOID once the evidence it was recorded against has changed. A hold
   # says "given THIS, a person has to decide"; once the issue closes, the row is
@@ -235,7 +237,7 @@ class WorkBacklogItem < ApplicationRecord
   # judged like any other verdict: it is unresolved, so a hold that survived it
   # would be a silenced row with nothing moving. The hold lapses on its own
   # clock throughout, the digest keeps delivering and renewing it, and a `pr_open`
-  # row is not stranded, so a lapse while the PR is open pages on the first pass
+  # row is not stranded, so a lapse while the PR is open is seen on the first pass
   # after the row is stranded again.
   HOLD_DURATION = 14.days
 
@@ -601,7 +603,10 @@ class WorkBacklogItem < ApplicationRecord
   def record_liveness!(state, now: Time.current)
     with_lock do
       attributes = { liveness_state: state, liveness_checked_at: now }
-      attributes.merge!(CLEARED_HOLD) if hold_voided_by?(state)
+      # A void also forgets the page that covered the row: the evidence the held
+      # decision stood on changed, so the row is news to the stranded-rows page
+      # again (WorkBacklog::LivenessSweep#alert_if_overdue). A lapse keeps it.
+      attributes.merge!(CLEARED_HOLD, stranded_paged_at: nil) if hold_voided_by?(state)
       update!(attributes)
     end
   end

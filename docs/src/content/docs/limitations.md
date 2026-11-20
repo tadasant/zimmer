@@ -1226,14 +1226,24 @@ its own issue, and the report line is logged at WARN, so the
 [log-errors Grafana rule](/operate/observability/#an-error-record-is-the-alert-that-can-fire-twice)
 does not page a second time. The cost is that nothing else carries the page. If Sentry is not
 initialized, or GlitchTip drops the event (the SDK sends in the background and does not report
-failure), no page goes out. The sweep still records the band as paged, so it says nothing for that
-band until `ALERT_BAND_TTL` (7 days) passes or the population gets worse. The standing count stays
-readable on the Issues view and in `get_work_backlog`, and a GlitchTip outage is visible in its own
-right. But this alert does not page it.
+failure), no page goes out. The sweep still stamps the rows as paged (`stranded_paged_at`), so it
+says nothing more about them until a new row strands, the count climbs a band, or the oldest row
+doubles in age. The standing count stays readable on the Issues view and in `get_work_backlog`, and a
+GlitchTip outage is visible in its own right. But this alert does not page it.
 
 The [decision digest](/operate/work-backlog/#the-decision-digest) does not close this. It covers the
-reminder for held rows, on a separate path. A lapse page is its backstop and travels this same single
-path, so a digest failure is also logged at ERROR, which trips the Grafana rule instead.
+reminder for held rows, on a separate path, and a digest failure is logged at ERROR, which trips the
+Grafana rule instead.
+
+### A lapsed hold on a row already paged for does not page by itself
+
+A hold lapses when the decision digest stops renewing it. When the cause is a push that reached no
+device, the digest has already logged an ERROR that pages, so since
+[#1592](https://github.com/tadasant/zimmer/issues/1592) the sweep does not page the lapse again on a
+row it has already paged for. A digest that stops for a reason that logs nothing, such as a cron
+entry that disappears, therefore has no page of its own. Its rows return to Stranded on the Issues
+view with their original age, and the population's next rung of the reminder ladder (1, 2, 4, 8, 16…
+weeks of the oldest row's age) is the next page. A lapse on a row no page has covered still pages.
 
 ### The decision digest knows a push was accepted, not that it was read
 
