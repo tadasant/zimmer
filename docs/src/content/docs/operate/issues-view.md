@@ -66,8 +66,9 @@ the decision owed and the row moves to **Awaiting your decision**. That section 
 person or an agent held because what remains is a human's call, with the reason and the date the
 hold lapses, soonest first. A held row does not page, and a push carries it to you every week until
 you answer it. Each push that reaches a device moves that date out. If the pushes stop reaching
-anyone the hold lapses, and it goes back to Stranded and pages. So it does if the sweep reads new
-evidence on it. See [Held for a human
+anyone the hold lapses and it goes back to Stranded. The failed push has already paged, and the
+lapse pages too if no page has covered the row yet. A row whose hold is voided because the sweep
+read new evidence on it goes back to Stranded and pages. See [Held for a human
 decision](/operate/work-backlog/#held-for-a-human-decision).
 
 **In GitHub, not on the queue** is every open issue across the six repos with no live backlog row —

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_140000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1522,6 +1522,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_140000) do
     t.bigint "started_by_session_id"
     t.bigint "started_session_id"
     t.string "status", default: "queued", null: false
+    t.datetime "stranded_paged_at"
     t.string "surface", null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false

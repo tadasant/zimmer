@@ -534,18 +534,15 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   end
 
   # GlitchTip notifies an issue at most once, ever, so a page that reused an
-  # issue would reach nobody. Every page — a new band, the weekly reminder at an
-  # unchanged one, a lapse inside the remembered band — opens its own.
+  # issue would reach nobody. Every page — a new band, a new row in an unchanged
+  # band, the next rung of the reminder ladder — opens its own.
   test "every page opens its own GlitchTip issue, so each one notifies" do
     started_row(started_at: 8.days.ago)
-    cache = ActiveSupport::Cache::MemoryStore.new
 
-    with_alerts(cache: cache) do |alerts|
+    with_alerts do |alerts|
       sweep
-      # The remembered band has gone — the shape ALERT_BAND_TTL's expiry leaves
-      # for a population whose band dropped — so the next pass pages again at the
-      # band it is in, which is the band it last paged for.
-      cache.clear
+      # A second row strands into the same band: news, at the band already paged.
+      started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
       travel(1.hour) { sweep }
 
       assert_equal 2, alerts.pages.size
@@ -582,19 +579,126 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
   # The defect (#1175): past the first notification the old alert was silent for
   # ever, because one constant fingerprint plus GlitchTip's at-most-once
-  # ProjectAlert can reach a human exactly once.
-  test "a population that ages into the next week pages again" do
-    started_row(started_at: 9.days.ago)
+  # ProjectAlert can reach a human exactly once. And the defect after it (#1592):
+  # it then re-paged an unchanged population every week. A population nobody
+  # acts on is reminded as its oldest row doubles in age, and at no other time.
+  test "an unchanged population is reminded at 1, 2, 4, 8 and 16 weeks, and not every week" do
+    started_row(started_at: 7.days.ago - 1.hour)
 
     with_alerts do |alerts|
-      sweep(probes: { 1 => probe(references: []) })
-      travel 7.days do
-        sweep(probes: { 1 => probe(references: []) })
-      end
+      each_day(16 * 7) { |no_pr| sweep(probes: no_pr) }
+
+      assert_equal %w[weeks-1 weeks-2 weeks-4 weeks-8 weeks-16], alerts.events.map { |event| event[:fingerprint][1] }
+      assert_equal [ [ "new_rows" ], [ "older" ], [ "older" ], [ "older" ], [ "older" ] ],
+                   alerts.events.map { |event| event.dig(:context, :paged_for) }
+      assert_match(/stranded for over 2 weeks\z/, alerts.events.second[:message])
+    end
+  end
+
+  # GlitchTip #194 → #213's population (#1592): five rows only a human could move,
+  # paged at 70 days. The weekly band paged it again at 77, 84, 91…; the ladder's
+  # next rung is 16 weeks.
+  test "a population paged at 70 days says nothing more until 112" do
+    rows = { 1 => 70, 2 => 66, 3 => 50, 4 => 40, 5 => 30 }
+    rows.each { |number, days| started_row(key: "zimmer##{number}", number: number, started_at: days.days.ago - 1.hour) }
+    probes = rows.keys.to_h { |number| [ number, probe(number: number) ] }
+
+    with_alerts do |alerts|
+      each_day(42, probes: probes) { |current| sweep(probes: current) }
+      assert_equal [ "weeks-10" ], alerts.events.map { |event| event[:fingerprint][1] }, "silent through day 111"
+
+      travel(42.days) { sweep(probes: probes) }
+      assert_equal 2, alerts.pages.size, "and reminded at 16 weeks"
+      assert_equal [ "older" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal 0, alerts.events.last.dig(:context, :newly_stranded_rows)
+    end
+  end
+
+  # THE ONE NOT TO REGRESS (#1592): quieting the reminder must not quiet a row
+  # that has just stranded. It pages even though neither band moved.
+  test "a row that strands into an already-paged population pages, though no band moved" do
+    started_row(key: "zimmer#1", number: 1, started_at: 70.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 40.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      assert_equal 1, alerts.pages.size
+
+      started_row(key: "zimmer#3", number: 3, started_at: 7.days.ago - 1.hour)
+      travel(1.hour) { sweep }
 
       assert_equal 2, alerts.pages.size
-      assert_equal [ "weeks-1", "weeks-2" ], alerts.events.map { |event| event[:fingerprint][1] }
-      assert_match(/stranded for over 2 weeks\z/, alerts.events.last[:message])
+      assert_equal [ "weeks-10", "rows-1" ], alerts.events.last[:fingerprint][1..2], "same band as the last page"
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal [ "zimmer#3" ], alerts.events.last.dig(:context, :newly_stranded)
+      assert_match(/newly stranded: zimmer#3/, alerts.records.last)
+
+      travel(2.hours) { sweep }
+      assert_equal 2, alerts.pages.size, "and once"
+    end
+  end
+
+  # A page that went out while a row was young counted it, but did not report it
+  # as stranded. It still gets its own page once it has been out a week.
+  test "a row counted by a page while young still pages when it becomes overdue" do
+    started_row(key: "zimmer#1", number: 1, started_at: 9.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 2.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      assert_equal [ 2 ], alerts.events.map { |event| event.dig(:context, :stranded_rows) }
+
+      travel(4.days) { sweep }
+      assert_equal 1, alerts.pages.size
+
+      travel(5.days + 1.hour) { sweep }
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "zimmer#2" ], alerts.events.last.dig(:context, :newly_stranded)
+    end
+  end
+
+  # Archiving a long-dead session restarts the GRACE clock on its row, which would
+  # take the row out of `unresolved` for six hours. That is not the row resolving.
+  test "archiving an ended session does not make its paged row new again" do
+    item = started_row(started_at: 20.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      item.started_session.update_columns(archived_at: Time.current)
+
+      sweep(probes: { 1 => probe })
+      assert item.reload.stranded_paged_at.present?
+      travel(7.hours) { sweep(probes: { 1 => probe }) }
+
+      assert_equal 1, alerts.pages.size
+    end
+  end
+
+  test "a pass that raises while composing the page marks nothing" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do
+      WorkBacklogItem.stub(:awaiting_decision, ->(**) { raise ActiveRecord::StatementInvalid, "boom" }) do
+        assert_raises(ActiveRecord::StatementInvalid) { sweep(probes: { 1 => probe }) }
+      end
+    end
+
+    assert_nil item.reload.stranded_paged_at, "so the next pass pages it"
+  end
+
+  test "a row that leaves the stranded set and strands again pages again" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      assert item.reload.stranded_paged_at.present?
+
+      sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
+      assert_nil item.reload.stranded_paged_at, "a PR in flight resolves it, and the mark goes with it"
+
+      sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: Time.current) ]) })
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
     end
   end
 
@@ -613,9 +717,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
-  # The band is a high-water mark, so an improvement is silent — otherwise a count
-  # flickering across a boundary would page on every upward re-crossing.
-  test "a band that drops and climbs back does not page twice" do
+  test "an improvement is not a page" do
     rows = (1..10).map { |n| started_row(key: "zimmer##{n}", number: n, started_at: 9.days.ago) }
 
     with_alerts do |alerts|
@@ -624,19 +726,13 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
       rows.last.destroy!
       sweep
-      assert_equal 1, alerts.pages.size, "an improvement is not a page"
-
-      started_row(key: "zimmer#11", number: 11, started_at: 9.days.ago)
-      sweep
-      assert_equal 1, alerts.pages.size, "and re-crossing the same boundary is not a second page"
+      assert_equal 1, alerts.pages.size
     end
   end
 
-  # ...but a high-water mark that never expired would go quiet for weeks after
-  # triage took the oldest rows off, because the remainder cannot beat a mark it
-  # has already dropped below. The mark expires after ALERT_BAND_TTL, so a
-  # population that is still overdue is told about again on that cadence.
-  test "the remembered band expires, so a population below it is reported again" do
+  # Triage that takes the oldest rows off does not silence the remainder: its
+  # ladder runs from the age its own oldest row had at the last page.
+  test "the remainder after triage takes the oldest off is reminded on its own ladder" do
     oldest = started_row(key: "zimmer#1", number: 1, started_at: 22.days.ago)
     started_row(key: "zimmer#2", number: 2, started_at: 8.days.ago)
 
@@ -646,15 +742,14 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
       oldest.destroy!
       sweep
-      assert_equal 1, alerts.pages.size, "the remainder is in a lower band, so it says nothing"
+      assert_equal 1, alerts.pages.size, "the remainder is not news"
 
-      travel(WorkBacklog::LivenessSweep::ALERT_BAND_TTL - 1.day) { sweep }
-      assert_equal 1, alerts.pages.size, "still inside the window the last page bought"
+      travel(5.days) { sweep }
+      assert_equal 1, alerts.pages.size, "13 days: still on the rung it was paged at"
 
-      travel(WorkBacklog::LivenessSweep::ALERT_BAND_TTL + 1.hour) { sweep }
+      travel(6.days + 1.hour) { sweep }
       assert_equal 2, alerts.pages.size
-      assert_equal "weeks-2", alerts.events.last[:fingerprint][1],
-                   "and it is reported at the band it is actually in"
+      assert_equal "weeks-2", alerts.events.last[:fingerprint][1], "reported at the band it is actually in"
     end
   end
 
@@ -675,7 +770,8 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     with_alerts do |alerts|
       sweep(probes: no_pr)
       held.reload.hold_for_decision!(reason: "Tadas to pick #79/#141/#217", by: "fleet-maintenance")
-      Rails.cache.clear
+      # As if no page had covered the unheld row, so this pass pages and shows what it counts.
+      WorkBacklogItem.update_all(stranded_paged_at: nil)
 
       result = sweep(probes: no_pr)
 
@@ -749,6 +845,45 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
         WorkBacklog::Hold.call(item: held, reason: "still owed", by: "fleet-maintenance")
         assert held.reload.hold_active?
       end
+    end
+  end
+
+  # #1592, rule 4: the lapse's real cause, a digest that reached no device, is an
+  # ERROR that pages on its own. A row already paged for is not news again.
+  test "a lapse on a row already paged for does not page by itself, and the spent hold is still cleared" do
+    held = started_row(started_at: 30.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      assert_equal 1, alerts.pages.size
+
+      held.reload.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+      sweep(probes: { 1 => probe })
+      assert held.reload.stranded_paged_at.present?, "a hold parks the row, it does not resolve it"
+
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) do
+        sweep(probes: { 1 => probe })
+
+        assert_equal 1, alerts.pages.size, "44 days is the same rung as 30"
+        assert_nil held.reload.held_at, "the spent hold is cleared anyway"
+        WorkBacklog::Hold.call(item: held, reason: "still owed", by: "fleet-maintenance")
+        assert held.reload.hold_active?
+      end
+    end
+  end
+
+  test "a void on a row already paged for pages again: the evidence changed" do
+    held = started_row(started_at: 30.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      held.reload.hold_for_decision!(reason: "pick one", by: "fleet-maintenance")
+
+      sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: 1.day.ago) ]) })
+
+      assert_nil held.reload.held_at
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
     end
   end
 
@@ -1005,11 +1140,11 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
   # A repo that stays unreadable defers the band alert for as long as it lasts, so
   # the lapse has to be able to page anyway or nothing would.
   test "a repo that stays unreadable still gets the lapse page, and leaves the band alone" do
-    held_row(started_at: 22.days.ago)
+    held = held_row(started_at: 22.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 9.days.ago)
     channel = PushCounter.new(sent: 1)
-    cache = ActiveSupport::Cache::MemoryStore.new
 
-    with_alerts(cache: cache) do |alerts|
+    with_alerts do |alerts|
       16.times do |day|
         travel(day.days) do
           sweep(probe_error: "repository not found")
@@ -1020,8 +1155,8 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_equal 1, alerts.pages.size
       assert_equal 1, alerts.events.last.dig(:context, :lapsed_holds)
       assert_operator channel.pushes, :>=, 2, "it stayed in the digest until it lapsed"
-      assert_nil cache.read(WorkBacklog::LivenessSweep::ALERT_BAND_CACHE_KEY),
-                 "a census that could not be read does not set the high-water mark"
+      assert_equal [ held.id ], WorkBacklogItem.where.not(stranded_paged_at: nil).pluck(:id),
+                   "a census that could not be read marks only the lapse it paged for"
     end
   end
 
@@ -1080,19 +1215,15 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
-  # A store that cannot remember cannot be throttled against, and an hourly page
-  # nothing throttles would flood `#alerts` — the channel every real page travels.
-  # The test env's :null_store is that store, so this needs no stubbing.
-  test "a cache that cannot remember stays silent rather than paging every pass" do
+  # The memory is the row, not a cache. The test env's :null_store remembers
+  # nothing, and the sweep pages once through it and then stays quiet.
+  test "pages through a cache that remembers nothing, once" do
     started_row(started_at: 9.days.ago)
 
-    # Everything `with_alerts` captures, but against the test env's real
-    # :null_store rather than a memory store.
     with_alerts(cache: ActiveSupport::Cache::NullStore.new) do |alerts|
-      2.times { sweep(probes: { 1 => probe(references: []) }) }
+      3.times { sweep(probes: { 1 => probe(references: []) }) }
 
-      assert_empty alerts.pages
-      assert_empty alerts.records
+      assert_equal 1, alerts.pages.size
     end
   end
 
@@ -1199,9 +1330,9 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     def error_records = log.string.lines.grep(/ERROR/)
   end
 
-  # Runs a block against a cache that can actually remember. The test env's
-  # :null_store cannot, and the sweep deliberately stays silent against a store
-  # that cannot — see `remember_alert_band`.
+  # Captures the pages and the log lines a block's passes leave. The cache is one
+  # that can remember for WorkBacklog::DecisionDigest, which throttles its own
+  # ERROR in it; the sweep itself keeps nothing there.
   def with_alerts(cache: ActiveSupport::Cache::MemoryStore.new)
     log = StringIO.new
     events = []
