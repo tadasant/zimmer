@@ -143,6 +143,8 @@ struct SignInView: View {
                     .font(.body)
                     .foregroundStyle(Theme.inkSoft)
                     .multilineTextAlignment(.center)
+                    // Wrapped, never truncated: the add sheet's line is two lines on a phone.
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
