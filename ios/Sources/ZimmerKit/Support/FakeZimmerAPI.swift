@@ -337,6 +337,24 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// A believable board: two sessions waiting on a person, work in flight, one failure,
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
+    /// The fixture's second deployment (`-ZimmerFixtureDeployments`): a board of its own, with no
+    /// session id in common with `sampleSessions`, so a screen that showed one deployment's rows
+    /// after a switch would be caught.
+    public static func otherDeploymentSessions(now: Date = Date()) -> [SessionSummary] {
+        func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
+        return [
+            SessionSummary(id: 4207, title: "Lab: approve the staging migration plan", status: .needsInput,
+                           agentRuntime: "claude_code", createdAt: ago(55), updatedAt: ago(4),
+                           priorityClass: "priority", precedence: 3, agentRoot: "lab", lastUserActivityAt: ago(20)),
+            SessionSummary(id: 4203, title: "Lab: which retention window for the audit log?", status: .needsInput,
+                           agentRuntime: "claude_code", createdAt: ago(180), updatedAt: ago(12),
+                           priorityClass: "spot", precedence: 9, agentRoot: "lab", lastUserActivityAt: ago(90)),
+            SessionSummary(id: 4199, title: "Lab: nightly dependency sweep", status: .running,
+                           agentRuntime: "claude_code", createdAt: ago(30), updatedAt: ago(1),
+                           priorityClass: "spot", precedence: 20, agentRoot: "lab", lastUserActivityAt: ago(30)),
+        ]
+    }
+
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
         return carplayMarked(now, wired(ran(trashed([

@@ -279,9 +279,13 @@ struct SessionListView: View {
                 }
                 .accessibilityIdentifier("select.done")
             } else {
-                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
-                    .accessibilityLabel("Settings")
-                    .accessibilityIdentifier("settings.open")
+                // The deployment in front, Slack's workspace avatar, then Settings.
+                HStack(spacing: 14) {
+                    DeploymentSwitcherButton()
+                    Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                        .accessibilityIdentifier("settings.open")
+                }
             }
         }
         ToolbarItemGroup(placement: .bottomBar) {

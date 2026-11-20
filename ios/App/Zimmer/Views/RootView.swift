@@ -6,6 +6,7 @@ import ZimmerKit
 /// notifications, triggers, and costs and health under More).
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var workspaces: Workspaces
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -17,10 +18,21 @@ struct RootView: View {
             case .none:
                 LoadingState(text: "Opening Zimmer…").background(Theme.ground)
             case .some(false):
-                SignInView()
+                // No deployment yet: the first sign-in. A deployment whose grant ended: signing in
+                // to it again, with the way to the others.
+                if let deployment = model.deployment {
+                    SignInView(mode: .again(deployment))
+                } else {
+                    SignInView(mode: .first)
+                }
             case .some(true):
                 tabs
             }
+        }
+        // Here, over the sign-in screen too: a deployment that needs signing in again must not
+        // stand between a person and the others.
+        .sheet(isPresented: $workspaces.showingSwitcher) {
+            DeploymentSwitcher().environmentObject(workspaces)
         }
         .overlay(alignment: .topLeading) { ToastLogElement() }
         // Behind the status bar, where the build strip's gold does not reach.
@@ -28,6 +40,7 @@ struct RootView: View {
         // Here, at the scene's root, rather than on the board: heard whatever is on screen.
         // The poller's state changes here, before the app can be suspended; the reads follow.
         .onChange(of: scenePhase) { _, phase in
+            if phase == .active { workspaces.reloadIfEmpty() }
             model.sceneChanged(to: phase)
             Task { await model.sceneEntered(phase) }
         }
@@ -41,7 +54,7 @@ extension RootView {
                 SessionListView()
                     .background { BoardPoller() }
                     .navigationDestination(for: Int.self) { id in
-                        SessionDetailView(id: id, api: model.api)
+                        SessionDetailView(id: id, api: model.api, drafts: model.drafts)
                     }
             }
             .tabItem { Label("Sessions", systemImage: "rectangle.stack") }

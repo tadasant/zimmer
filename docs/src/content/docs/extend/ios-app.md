@@ -635,6 +635,40 @@ Ranked row's inline precedence field is not on the phone's row: the rank is read
 from the session's page. The session's cost is one more read per page load; the board's rows carry
 no cost, since `session_json` does not.
 
+## Deployments
+
+One install can be signed in to several Zimmer deployments at once and show one at a time, the way
+the Slack app switches workspaces. No deployment is built in: you add each one by its address.
+
+- **The switcher.** The board's top-left corner shows the deployment you are in as an avatar: its
+  initials on a colour of its own, the same on every launch. Tapping it opens a half-height sheet
+  listing every deployment with its name and host. The current one is ringed and ticked. Tap
+  another to switch, or tap *Add a deployment* at the foot. The same sheet opens from *More →
+  Deployment*, and from the sign-in screen of a deployment whose sign-in has ended.
+- **Adding one** asks for its address (and its app host, if it has one), then runs that
+  deployment's own sign-in: its edge login first when it has an app host, then its Zimmer OAuth.
+  It joins the list, in front, only once both have finished. A cancelled or failed sign-in
+  forgets what it stored and changes nothing else. An address that is already on the list
+  switches to it instead.
+- **Edit** in the sheet reorders the list or removes a deployment. A row's long press renames it
+  (on this phone only; an empty name puts back the host) or signs out of it. Signing out of a
+  deployment, from the sheet or from *Settings → Sign out*, revokes this phone's connection on that
+  server, unregisters the phone from its pushes and forgets its drafts and board settings here.
+  Then it comes off the list, and the next deployment comes to the front. The others stay signed in.
+- **A deployment whose sign-in ended** (its connection revoked, its refresh token expired) stays on
+  the list. Its screen offers *Sign in* to the same addresses, *Switch deployment*, and *Remove*.
+
+**Nothing crosses between deployments.** Each one keeps its Zimmer tokens and its edge login under
+Keychain items of its own, and its drafts, board filters, view and push registration under
+UserDefaults keys of its own. Switching builds a new connection from that deployment's items and a
+new set of screens, so no row, draft, open sheet, navigation path or request in flight carries
+over. A Live call on the deployment you leave is hung up first. CarPlay's tiles and its warm
+connection are read again from the new one.
+
+**Updating from a single-deployment version** turns the deployment you were signed in to into the
+first entry on the list, named by its host. Its sign-in, edge login, drafts and settings stay
+under the storage names they already had, so nothing moves and nobody signs in again.
+
 ## Two origins
 
 A deployment can serve the app from two origins:
@@ -680,7 +714,8 @@ runs the handoff again when less than a day is left, or when Access refuses a ca
 **Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/#tokens),
 under the built-in `zimmer-ios` client:
 
-1. You type your Zimmer's https address, unless the build already carries one.
+1. You type your Zimmer's https address, unless the build already carries one. Adding a second
+   deployment from the switcher starts here too, under that deployment's own Keychain items.
 2. The system sign-in sheet opens `/oauth/authorize` with a PKCE challenge. Zimmer's
    [web sign-in](/auth/web-sign-in/) does the rest, as it does in a browser: Google, restricted to
    the deployment's domain, then the second factor. Zimmer then shows a consent screen for
@@ -718,6 +753,17 @@ sends the APNs token and the environment it belongs to: `sandbox` for a developm
 `production` for TestFlight. Tapping a notification opens its session. Signing out unregisters the
 phone (a connection can unregister only its own phones), and revoking its connection stops its pushes
 even if it never signs out.
+
+**With several deployments**, the phone registers its one APNs token with each deployment as that
+deployment comes to the front, so every deployment it is signed in to can notify it. Signing out of
+one unregisters from that one only. Every push names the deployment that sent it in a `deployment`
+field: the first 16 hex digits of the SHA-256 of the sending server's host
+(`ApnsService.deployment_tag`, from its base URL). It is a digest rather than the host because Apple
+can read the payload. Tapping a push from a deployment behind the one in front switches to it, then
+opens the session. The same tag prefixes the push's thread and collapse ids, so one deployment's
+"session 12 needs you" never replaces another's on the lock screen. *Settings → Notifications*
+shows the registration of the deployment in front. Each deployment sends pushes only if it has an
+APNs key for this app's bundle id (below).
 
 A phone that ends up with no registration has stopped somewhere the server cannot see, so the app
 says where. Settings → Notifications shows how the last attempt went under *This phone*: registered,

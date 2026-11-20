@@ -30,6 +30,7 @@ import os
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate, CPInterfaceControllerDelegate {
     private var home: CarPlayHome?
     private var live: CarPlayLive?
+    private var deploymentObserver: NSObjectProtocol?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "carplay")
 
     func templateApplicationScene(
@@ -61,6 +62,18 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         self.live = live
         home.tiles = live.tiles
         home.showsSettings = live.offersSettings
+
+        // Another deployment came to the front on the phone (the call on the old one was hung up
+        // there): the car's warm connection and its tiles were the old deployment's, so both
+        // are read again from the new one.
+        deploymentObserver = NotificationCenter.default.addObserver(forName: .zimmerDeploymentChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let live = self.live else { return }
+                LiveTelemetry.shared.track(.carPlay("deployment_changed"))
+                LiveWarmKeeper.shared.carConnected()
+                live.readWhatIsOpen()
+            }
+        }
 
         Task { [weak self, log] in
             do {
@@ -98,6 +111,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     private func tearDown() {
+        if let deploymentObserver { NotificationCenter.default.removeObserver(deploymentObserver) }
+        deploymentObserver = nil
         live?.disconnect()
         home = nil
         live = nil

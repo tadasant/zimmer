@@ -45,12 +45,13 @@ struct KeychainItem: Sendable {
     }
 }
 
-/// The Zimmer sign-in — the deployment's origins and the OAuth tokens — as one JSON item.
+/// One deployment's Zimmer sign-in — its origins and the OAuth tokens — as one JSON item,
+/// under that deployment's own account (`Deployment.signInAccount`).
 public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
     private let item: KeychainItem
 
-    public init(service: String = "com.tadasant.zimmer") {
-        item = KeychainItem(service: service, account: "zimmer.sign-in")
+    public init(service: String = "com.tadasant.zimmer", account: String) {
+        item = KeychainItem(service: service, account: account)
     }
 
     public func load() -> StoredSignIn? {
@@ -62,12 +63,13 @@ public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
     }
 }
 
-/// The edge's Cloudflare Access JWT, kept apart from Zimmer's own tokens.
+/// One deployment's Cloudflare Access JWT, kept apart from Zimmer's own tokens, under that
+/// deployment's own account (`Deployment.edgeAccount`).
 public final class KeychainEdgeTokenStore: EdgeTokenStore, @unchecked Sendable {
     private let item: KeychainItem
 
-    public init(service: String = "com.tadasant.zimmer") {
-        item = KeychainItem(service: service, account: "zimmer.edge-access-token")
+    public init(service: String = "com.tadasant.zimmer", account: String) {
+        item = KeychainItem(service: service, account: account)
     }
 
     public func load() -> String? {

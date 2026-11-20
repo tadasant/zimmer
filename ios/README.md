@@ -188,10 +188,51 @@ intercepted code is useless without the verifier. `OAuthSignIn.code(fromCallback
 `state`, the RFC 9207 `iss`, and the scheme.
 
 Tokens: `AuthSession` (an actor) keeps them in the Keychain via `KeychainTokenStore`
-(`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, service `com.tadasant.zimmer`), refreshes
+(`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, service `com.tadasant.zimmer`, one account per
+deployment: `Deployment.signInAccount`), refreshes
 60 seconds before expiry, makes one refresh however many requests find the token stale (Zimmer
 rotates refresh tokens and revokes a grant on replay), and signs out locally on `invalid_grant`.
 Signing out revokes the refresh token at `/oauth/revoke`.
+
+## Deployments (workspaces)
+
+One install is signed in to any number of deployments and shows one, as Slack does workspaces.
+The user-facing description is the docs page's *Deployments*; the design:
+
+- **`Deployment` / `DeploymentList`** (`ZimmerKit/Configuration/Deployments.swift`, tested on
+  Linux in `DeploymentsTests`) are the list, its order, which one is in front, adding, removing,
+  renaming, the push routing and the migration. The list is in UserDefaults
+  (`UserDefaultsDeploymentStore`, key `zimmer.deployments`): origins, names and order, no secret.
+- **Every per-deployment thing is keyed by the deployment.** Keychain: `signInAccount`,
+  `edgeAccount`. UserDefaults: `defaultsKey(_:)`, which `AppModel` (board filters, view,
+  visibility), `DraftStore` (via `AppModel.drafts`) and `PushCoordinator` (token, registration,
+  reported decline) go through. Removing a deployment deletes its keys
+  (`UserDefaultsDeploymentStore.forgetDefaults`). A new piece of per-deployment state must take its
+  key from `Deployment.defaultsKey`, or it will leak across a switch.
+- **Migration moves nothing.** A single-deployment install's sign-in becomes the deployment with id
+  `primary` (`Deployment.migratedID`), whose keys are the old unprefixed names (`zimmer.sign-in`,
+  `zimmer.edge-access-token`, `boardFilters`, `draft.<id>`, `zimmer.apnsToken`…). It is read only
+  when no list is stored, and an empty read (no sign-in, or a Keychain locked before the first
+  unlock) is not saved, so it is tried again (`Workspaces.reloadIfEmpty`, on coming to the front).
+- **`AppEnvironment`** holds the list and one `Connection`, the active deployment's, built from that
+  deployment's own stores. `activate` swaps it, hanging up a Live call first, and posts
+  `.zimmerDeploymentChanged`, on which the CarPlay scene re-warms and re-reads its tiles. Removing a
+  deployment that is not in front uses a connection whose edge never raises a sign-in sheet.
+- **`Workspaces`** (`App/Zimmer/Workspaces.swift`) owns the active deployment's `AppModel`, and
+  `ZimmerApp` keys the whole view tree on it. A switch makes a new model rather than emptying the old
+  one, so screens, sheets, navigation and in-flight work cannot carry over. `AppModel` takes its
+  connection once, at init, so a task finishing after a switch still talks to its own deployment.
+- **Pushes** carry `deployment`, a 16-hex SHA-256 digest of the sender's host
+  (`ApnsService.deployment_tag`; `Deployment.pushTag(host:)` is the same function, pinned on both
+  sides by the value for `zimmer.example.com`). `DeploymentList.route(forPush:)` says whether to open
+  on the deployment in front, switch first, or only come forward (an unknown sender, or an untagged
+  push with several deployments). The phone registers its token with each deployment as it comes to
+  the front.
+- **The fixture**: `-ZimmerFixtureDeployments` starts with two in-memory deployments, *Workshop*
+  (the usual sample board) in front and *Lab* (`FakeZimmerAPI.otherDeploymentSessions`) behind it;
+  `-ZimmerFixtureLabInFront` starts on Lab; `-ZimmerFixtureSwitcher` opens the switcher. Adding one
+  in the fixture succeeds without a sign-in. `DeploymentSwitcherUITests` drives switching, adding,
+  renaming and removing.
 
 ## Two origins, and the edge sign-in
 
@@ -330,6 +371,9 @@ Each unblocks the next:
 
 ## What is not verified
 
+- **Two deployments signed in on one real phone**: the switcher, the add flow and per-deployment
+  isolation are driven against the fixture; the Keychain items per deployment and a push tapped
+  from the deployment behind the one in front have not run on a device.
 - **The two sign-ins end to end against Tadas's deployment** — waiting on the app host and its
   Access application (private companion repo) being applied, and on this route being deployed.
 - **Anything signed**: no TestFlight build exists until the steps above are done.

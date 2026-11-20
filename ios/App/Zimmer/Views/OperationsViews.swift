@@ -394,6 +394,7 @@ private struct TriggerRow: View {
 /// Costs, Health, CLIs and Inference, the web UI's other top-navigation pages, plus Settings.
 struct MoreView: View {
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var workspaces: Workspaces
     @State private var showingSettings = false
     /// Costs opened by a fixture launch, narrowed as it asked.
     @State private var openedCosts: CostScope?
@@ -406,6 +407,26 @@ struct MoreView: View {
 
     var body: some View {
         List {
+            if let active = workspaces.active {
+                Section {
+                    Button { workspaces.showingSwitcher = true } label: {
+                        HStack(spacing: 12) {
+                            DeploymentAvatar(deployment: active, size: 32)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(active.name).font(Theme.headline()).foregroundStyle(Theme.ink).lineLimit(1)
+                                Text(workspaces.list.deployments.count > 1 ? "Switch deployment" : "Add a deployment")
+                                    .font(.caption).foregroundStyle(Theme.inkSoft)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Image(systemName: "rectangle.2.swap").foregroundStyle(Theme.inkSoft)
+                        }
+                    }
+                    .accessibilityIdentifier("more.deployments")
+                } header: {
+                    Text("Deployment")
+                }
+                .themeRows()
+            }
             Section {
                 NavigationLink { CostsView() } label: { row("Token Spend", "dollarsign.circle", "Coverage, spend by day, root, feature, model and session, burn rates") }
                     .accessibilityIdentifier("more.costs")

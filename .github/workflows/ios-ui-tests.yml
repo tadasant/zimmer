@@ -145,7 +145,7 @@ jobs:
             classes: SessionParityUITests,BoardViewUITests,RankedUITests,SessionActionsUITests,SessionExtrasUITests,LiveUITests,LiveHandoverUITests,AttachmentsUITests,SessionSectionsUITests,CatalogUITests,QuickRouterKeyboardUITests,LiveUpdatesUITests,CarplayFitUITests,OptimisticActionsUITests,RowLongPressUITests
             photos: false
           - name: photos
-            classes: AccountUITests,WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests
+            classes: AccountUITests,WaitingUITests,InteractionUITests,DecisionsUITests,SessionListUITests,BoardFiltersUITests,InAppLinksUITests,BoardStaysCurrentUITests,DeploymentSwitcherUITests
             photos: true
           # The CarPlay drill, in the Simulator's CarPlay window (`--carplay`), which its
           # class needs and the other shards do not open. Also gates every iOS pull request,

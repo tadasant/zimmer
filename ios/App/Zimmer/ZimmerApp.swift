@@ -8,7 +8,7 @@ import ZimmerKit
 @main
 struct ZimmerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    @StateObject private var workspaces = Workspaces.shared
 
     init() {
         Theme.applyBarAppearance()
@@ -16,10 +16,15 @@ struct ZimmerApp: App {
 
     var body: some Scene {
         WindowGroup {
+            // Keyed on the active deployment's model: a switch is a new tree, so no screen's state
+            // — a scroll position, a sheet, a half-typed search — survives into the other one.
             RootView()
-                .environmentObject(model)
+                .environmentObject(workspaces.model)
+                .environmentObject(workspaces)
+                .id(ObjectIdentifier(workspaces.model))
                 .tint(Theme.accent)
-                .task {
+                .task(id: ObjectIdentifier(workspaces.model)) {
+                    let model = workspaces.model
                     PushCoordinator.shared.model = model
                     await model.start()
                 }

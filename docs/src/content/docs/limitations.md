@@ -268,6 +268,17 @@ closes that, and neither is configured. If a collision gets through, the release
 boot. Either way the deploy fails instead of silently skipping a migration, and production stays on
 the old image until someone renumbers the migration.
 
+### A push from an older server opens nothing on a phone with several deployments
+
+The iOS app opens a tapped push on the deployment that sent it, which it reads from the push's
+`deployment` tag. A server from before that tag sends pushes without it. On a phone signed in to
+one deployment, such a push opens as it always did. On a phone signed in to several, the app cannot
+tell which one sent it, so it only comes to the front and opens no session: the same session id on
+another deployment is another session. Updating the sending deployment fixes it.
+
+A push also reaches the phone only from a deployment whose APNs key belongs to the team that signs
+the app. Every deployment the app adds must be configured with such a key, or it sends nothing.
+
 ### An iOS build older than the backlog reads a backlogged session as on the board
 
 The iOS app decodes a board-visibility value it does not know as `visible`. A build installed before

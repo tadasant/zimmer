@@ -13,8 +13,8 @@ final class AppModel: ObservableObject {
     /// What the list is narrowed to — statuses, scheduling class, agent root, genesis — all
     /// combining, as the web UI's filter form does. Remembered, as the web UI remembers its
     /// filters in a cookie.
-    @Published private(set) var filters: BoardFilters = AppModel.stored("boardFilters") ?? .default {
-        didSet { AppModel.store(filters, "boardFilters") }
+    @Published private(set) var filters: BoardFilters = .default {
+        didSet { store(filters, "boardFilters") }
     }
     /// The filter sheet (the funnel on the chip row).
     @Published var showingFilters = false {
@@ -24,12 +24,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var filterOptions: AppConfigs?
     /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
     /// remembers it in a cookie; "Last Touched" by default, the web UI's default on a phone.
-    @Published var view: BoardView = BoardView(rawValue: UserDefaults.standard.string(forKey: "boardView") ?? "") ?? .lastTouched {
-        didSet { UserDefaults.standard.set(view.rawValue, forKey: "boardView") }
+    @Published var view: BoardView = .lastTouched {
+        didSet { UserDefaults.standard.set(view.rawValue, forKey: key("boardView")) }
     }
     /// The board-visibility filter; "On board" by default, as on the web UI's board.
-    @Published private(set) var board: BoardFilter = BoardFilter(rawValue: UserDefaults.standard.string(forKey: "boardVisibility") ?? "") ?? .onBoard {
-        didSet { UserDefaults.standard.set(board.rawValue, forKey: "boardVisibility") }
+    @Published private(set) var board: BoardFilter = .onBoard {
+        didSet { UserDefaults.standard.set(board.rawValue, forKey: key("boardVisibility")) }
     }
     /// The search box. Empty means the plain list.
     @Published var searchText = ""
@@ -221,13 +221,27 @@ final class AppModel: ObservableObject {
     private var bannersCheckedAt: Date?
 
     let environment: AppEnvironment
+    /// The deployment this model shows, for its whole life: switching to another builds a new
+    /// model (`Workspaces`), so nothing on screen, in flight or remembered here can reach the
+    /// other. Nil only before any deployment is configured.
+    let deployment: Deployment?
+    /// This deployment's own connection, taken when the model is made. Not read through
+    /// `environment` on each call: a task still running after a switch must keep talking to the
+    /// deployment it started on, never to the one that replaced it.
+    private let connection: AppEnvironment.Connection
+    /// Composer drafts, under this deployment's own keys.
+    let drafts: DraftStore
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "app")
 
     init(environment: AppEnvironment = .shared) {
         self.environment = environment
+        connection = environment.connection
+        deployment = environment.connection.deployment
+        drafts = DraftStore(prefix: (deployment?.defaultsPrefix ?? "") + "draft.")
+        filters = stored("boardFilters") ?? .default
+        view = BoardView(rawValue: UserDefaults.standard.string(forKey: key("boardView")) ?? "") ?? .lastTouched
+        board = BoardFilter(rawValue: UserDefaults.standard.string(forKey: key("boardVisibility")) ?? "") ?? .onBoard
     }
-
-    private var connection: AppEnvironment.Connection { environment.connection }
 
     var buildTarget: BuildTarget { environment.configuration.buildTarget(signedInTo: signedInOrigins) }
     var hasEdge: Bool { connection.edge != nil }
@@ -238,9 +252,6 @@ final class AppModel: ObservableObject {
     /// fail (a push before the phone's first unlock) and that is not a sign-out.
     func start() async {
         let signIn = await connection.auth.signIn
-        // The connection was built from a Keychain read at launch; when that read failed it
-        // was built for no deployment, and an edge in front of this one would be missing.
-        if let origins = signIn?.origins { environment.resume(origins) }
         signedInOrigins = signIn?.origins
         isSignedIn = signIn != nil
         guard signIn != nil else { return }
@@ -277,7 +288,7 @@ final class AppModel: ObservableObject {
         let arguments = ProcessInfo.processInfo.arguments
         // Drafts outlive a launch by design; every fixture launch starts without any, so one
         // test's words never appear in another's composer.
-        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("draft.") {
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.contains("draft.") {
             UserDefaults.standard.removeObject(forKey: key)
         }
         if let flag = arguments.firstIndex(of: "-ZimmerFixtureOpenSession"),
@@ -295,6 +306,8 @@ final class AppModel: ObservableObject {
             }
         }
         if arguments.contains("-ZimmerFixtureNewSession") { showingNewSession = true }
+        // The deployment switcher, over the board (`-ZimmerFixtureDeployments` gives it two).
+        if arguments.contains("-ZimmerFixtureSwitcher") { Workspaces.shared.showingSwitcher = true }
         // Live: the home sheet, or straight into one conversation's thread.
         if arguments.contains("-ZimmerFixtureLiveHome") { showingLive = true }
         let liveThread = arguments.firstIndex(of: "-ZimmerFixtureLiveConversation")
@@ -378,12 +391,22 @@ final class AppModel: ObservableObject {
         #endif
     }
 
-    private static func stored<T: Decodable>(_ key: String) -> T? {
-        UserDefaults.standard.data(forKey: key).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    /// The UserDefaults keys this model writes, by their names before deployments had prefixes:
+    /// the migrated deployment's (`Deployment.migratedID`) are still these.
+    static let legacyDefaultsKeys = ["boardFilters", "boardView", "boardVisibility"]
+
+    /// `name`, as this model's deployment stores it: every board preference is per deployment,
+    /// since one deployment's agent roots and statuses mean nothing on another.
+    private func key(_ name: String) -> String {
+        deployment?.defaultsKey(name) ?? name
     }
 
-    private static func store<T: Encodable>(_ value: T, _ key: String) {
-        UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: key)
+    private func stored<T: Decodable>(_ name: String) -> T? {
+        UserDefaults.standard.data(forKey: key(name)).flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    private func store<T: Encodable>(_ value: T, _ name: String) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(value), forKey: key(name))
     }
 
     /// An error raised on another screen that the whole app has to act on: a sign-in
@@ -1178,21 +1201,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Sign in to a deployment: the edge first when machine calls go to a separate app
-    /// host (its credential has to ride on the token call), then Zimmer's own OAuth.
-    func signIn(web rawWeb: String, api rawAPI: String) async {
-        guard let web = ServerURL.parse(rawWeb) else {
-            error = .signIn("Enter the https address of your Zimmer, like https://zimmer.example.com.")
-            return
-        }
-        let trimmedAPI = rawAPI.trimmingCharacters(in: .whitespaces)
-        let api = trimmedAPI.isEmpty ? nil : ServerURL.parse(trimmedAPI)
-        if !trimmedAPI.isEmpty && api == nil {
-            error = .signIn("The app host must be an https address too, or left empty.")
-            return
-        }
-        let origins = ServerOrigins(web: web, api: api)
-        let connection = environment.connect(to: origins)
+    /// Sign in to this model's deployment again, after its grant ended: the edge first when its
+    /// machine calls go to a separate app host (its credential has to ride on the token call),
+    /// then Zimmer's own OAuth. Adding another deployment is `Workspaces.add`.
+    func signInAgain() async {
+        guard let origins = deployment?.origins else { return }
         do {
             if let edge = connection.edge, await edge.needsLogin() {
                 try await edge.login()
@@ -1200,8 +1213,7 @@ final class AppModel: ObservableObject {
             let flow = OAuthSignIn(origins: origins)
             let callback = try await WebAuthPresenter.shared.present(flow.authorizeURL)
             try await connection.auth.complete(flow, callback: callback)
-            environment.configuration.remember(origins)
-            log.info("signed in to \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
+            log.info("signed in again to \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
             error = nil
             await start()
         } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
@@ -1225,19 +1237,18 @@ final class AppModel: ObservableObject {
         await refreshEdgeExpiry()
     }
 
+    /// Sign out of this deployment and take it off the list (`Workspaces.remove`): its grant is
+    /// revoked and its push registration dropped. Another deployment, if there is one, comes to
+    /// the front; the others stay signed in.
     func signOut() async {
-        await PushCoordinator.shared.unregister()
-        await connection.auth.signOut()
-        await connection.edge?.forget()
         freshness.noteLocalChange()
         forgetEverythingInFlight()
         sessions = []
-        signedInOrigins = nil
-        edgeExpiry = nil
-        // The next deployment's banners are its own, read on the first refresh.
-        systemBanners = SystemBanners()
-        bannersCheckedAt = nil
-        isSignedIn = false
+        guard let deployment else {
+            isSignedIn = false
+            return
+        }
+        await Workspaces.shared.remove(deployment.id)
     }
 
     /// The sign-in ended: nothing shown ahead of an answer is this account's any more.

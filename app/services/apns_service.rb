@@ -13,6 +13,14 @@
 # authenticated API. `title:` and `body:` are accepted so both services share the
 # job's payload, and are deliberately never sent.
 #
+# **One phone, several deployments.** The app can be signed in to more than one
+# Zimmer, and each registers the same device token. So every push says which
+# deployment sent it — `deployment`, a digest of this deployment's host
+# (`deployment_tag`) rather than the host itself, for the reason above — and the
+# app opens the push there. The same tag namespaces the thread and collapse ids,
+# so one deployment's "session 12 needs you" never replaces another's on the lock
+# screen.
+#
 # APNs takes one HTTP/2 POST per device to /3/device/<token>, on the production
 # host for TestFlight and App Store builds and the sandbox host for development
 # builds — a token only works against the environment it was issued in, which is
@@ -162,8 +170,20 @@ class ApnsService
     type = (data[:notification_type] || data["notification_type"]).to_s
     alert_body = ALERT_BODIES.fetch(type, "Something happened in a session.")
     aps = { alert: { title: ALERT_TITLE, body: alert_body }, sound: "default" }
-    aps[:"thread-id"] = "session-#{session_id}" if session_id
-    { aps: aps }.merge(data.to_h.transform_keys(&:to_s).slice("session_id", "notification_type")).to_json
+    aps[:"thread-id"] = "#{deployment_tag}-session-#{session_id}" if session_id
+    { aps: aps, deployment: deployment_tag }.merge(data.to_h.transform_keys(&:to_s).slice("session_id", "notification_type")).to_json
+  end
+
+  # This deployment, as a push names it: the first 16 hex digits of the SHA-256 of
+  # the lowercased host of its base URL (AppUrl). The iOS app computes the same
+  # from each deployment it is signed in to (`Deployment.pushTag(host:)`).
+  def self.deployment_tag(base_url = AppUrl.base_url)
+    host = URI.parse(base_url.to_s).host.to_s.downcase
+    Digest::SHA256.hexdigest(host).first(16)
+  end
+
+  def deployment_tag
+    @deployment_tag ||= self.class.deployment_tag
   end
 
   # A newer push of the same kind about the same session replaces the older one on
@@ -173,6 +193,6 @@ class ApnsService
     type = data[:notification_type] || data["notification_type"]
     return nil if session_id.nil? || type.nil? || type.to_s == "custom_message"
 
-    "session-#{session_id}-#{type}".first(64)
+    "#{deployment_tag}-session-#{session_id}-#{type}".first(64)
   end
 end
