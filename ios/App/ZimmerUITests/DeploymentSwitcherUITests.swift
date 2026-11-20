@@ -1,0 +1,163 @@
+import XCTest
+
+/// The deployment switcher, against two in-memory deployments (`-ZimmerFixtureDeployments`):
+/// *Workshop*, with the usual sample board, in front, and *Lab*, whose board shares no session
+/// with it. Every assertion is on what the board shows after the switch — the other deployment's
+/// rows, and none of the first's — so a switch that left any of the old deployment on screen fails.
+@MainActor
+final class DeploymentSwitcherUITests: XCTestCase {
+    private let timeout: TimeInterval = 20
+
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func test_the_switcher_lists_the_deployments_and_a_tap_reloads_the_board_against_the_other() throws {
+        let app = launch()
+        let workshopRow = app.descendants(matching: .any)["session.row.1038"]
+        XCTAssertTrue(workshopRow.waitForExistence(timeout: timeout), "Workshop's board")
+        let avatar = app.buttons["deployments.open"]
+        XCTAssertTrue(avatar.waitForExistence(timeout: timeout))
+        XCTAssertEqual(avatar.label, "Deployment: Workshop")
+        attachScreenshot(app, named: "deployments-board-workshop")
+
+        avatar.tap()
+        let workshop = app.buttons["deployments.row.workshop"]
+        let lab = app.buttons["deployments.row.lab"]
+        XCTAssertTrue(workshop.waitForExistence(timeout: timeout))
+        XCTAssertTrue(lab.exists)
+        XCTAssertEqual(workshop.value as? String, "Current")
+        XCTAssertNotEqual(lab.value as? String, "Current")
+        XCTAssertTrue(app.buttons["deployments.add"].exists)
+        attachScreenshot(app, named: "deployments-switcher")
+
+        lab.tap()
+        let labRow = app.descendants(matching: .any)["session.row.4207"]
+        XCTAssertTrue(labRow.waitForExistence(timeout: timeout), "Lab's board")
+        XCTAssertFalse(app.descendants(matching: .any)["session.row.1038"].exists, "nothing of Workshop's board stays")
+        XCTAssertTrue(waitForLabel(app.buttons["deployments.open"], "Deployment: Lab"))
+        attachScreenshot(app, named: "deployments-switched-lab")
+
+        // And back: Workshop's board, as it was.
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.row.lab"].waitForExistence(timeout: timeout))
+        XCTAssertEqual(app.buttons["deployments.row.lab"].value as? String, "Current")
+        app.buttons["deployments.row.workshop"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        XCTAssertFalse(app.descendants(matching: .any)["session.row.4207"].exists)
+    }
+
+    func test_adding_a_deployment_signs_in_to_it_and_puts_it_in_front() throws {
+        let app = launch()
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        let add = app.buttons["deployments.add"]
+        XCTAssertTrue(add.waitForExistence(timeout: timeout))
+        add.tap()
+
+        let server = app.textFields["signin.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: timeout))
+        XCTAssertEqual(app.staticTexts["signin.title"].label, "Add a deployment")
+        replaceText(in: server)
+        server.typeText("https://third.invalid")
+        attachScreenshot(app, named: "deployments-add")
+        app.buttons["signin.button"].tap()
+
+        // The fixture's sign-in succeeds at once: the new deployment is in front, on its own board.
+        XCTAssertTrue(waitForLabel(app.buttons["deployments.open"], "Deployment: third.invalid"))
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.row.lab"].waitForExistence(timeout: timeout))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deployments.row.'"))
+        XCTAssertEqual(rows.count, 3)
+        let added = rows.matching(NSPredicate(format: "value == 'Current'")).firstMatch
+        XCTAssertTrue(added.label.contains("third.invalid"), added.label)
+        attachScreenshot(app, named: "deployments-added")
+    }
+
+    func test_an_address_already_on_the_list_switches_to_it_instead_of_adding_it_again() throws {
+        let app = launch()
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.add"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.add"].tap()
+        let server = app.textFields["signin.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: timeout))
+        replaceText(in: server)
+        server.typeText("https://lab.invalid/")
+        app.buttons["signin.button"].tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.4207"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.row.lab"].waitForExistence(timeout: timeout))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deployments.row.'")).count, 2)
+    }
+
+    func test_signing_out_of_the_one_in_front_brings_the_next_forward_and_leaves_it_signed_in() throws {
+        let app = launch(["-ZimmerFixtureLabInFront"])
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.4207"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        let lab = app.buttons["deployments.row.lab"]
+        XCTAssertTrue(lab.waitForExistence(timeout: timeout))
+
+        lab.swipeLeft()
+        let delete = app.buttons["Delete"]
+        XCTAssertTrue(delete.waitForExistence(timeout: timeout))
+        delete.tap()
+        let confirm = app.buttons["Sign out and remove"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
+        confirm.tap()
+
+        XCTAssertTrue(waitForDisappearance(lab))
+        let workshop = app.buttons["deployments.row.workshop"]
+        XCTAssertTrue(waitForValue(workshop, "Current"), "the one left comes to the front")
+        app.buttons["deployments.done"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout),
+                      "Workshop is still signed in, on its own board")
+        XCTAssertFalse(app.descendants(matching: .any)["session.row.4207"].exists)
+    }
+
+    // MARK: - Helpers
+
+    private func launch(_ extra: [String] = []) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureDeployments"] + extra
+        app.launch()
+        return app
+    }
+
+    /// Empty the field before typing: whatever an earlier launch left in it is not this test's.
+    private func replaceText(in field: XCUIElement) {
+        field.tap()
+        if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        }
+    }
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", label), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func attachScreenshot(_ app: XCUIApplication, named name: String) {
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        // Beside the result bundle too, where a pull request can take it from the artifact.
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
+    }
+}

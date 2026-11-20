@@ -3,7 +3,7 @@ import Foundation
 import ZimmerKit
 
 /// The app's one call log (`LiveTelemetry`, in ZimmerKit): every Live voice call, from the phone
-/// or the car, reports through it, and it sends to the deployment the app is signed in to
+/// or the car, reports through it, and it sends to the deployment in front
 /// (`POST /api/v1/live/telemetry`), which puts each event on the shipped log stream.
 ///
 /// How much it keeps is Zimmer's Live setting `voice_telemetry` (Settings → Live settings → Call
@@ -22,8 +22,10 @@ extension LiveTelemetry {
             os: "iOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)",
             device: machine()
         ))
+        // The deployment in front's API, read when the batch goes. It moves only after a switch has
+        // sent or dropped the log of the deployment left behind (`AppEnvironment.leaveFront`).
         telemetry.setSink { batch in
-            let api = await MainActor.run { AppEnvironment.shared.connection.api }
+            guard let api = AppEnvironment.telemetryRoute.api else { throw ZimmerError.unauthorized }
             return try await api.reportLiveTelemetry(batch)
         }
         telemetry.recoverAbandonedCall()

@@ -63,7 +63,8 @@ class ApnsServiceTest < ActiveSupport::TestCase
     request = transport.requests.first
     assert_equal "com.tadasant.zimmer", request[:headers]["apns-topic"]
     assert_equal "alert", request[:headers]["apns-push-type"]
-    assert_equal "session-1038-needs_input", request[:headers]["apns-collapse-id"]
+    tag = ApnsService.deployment_tag
+    assert_equal "#{tag}-session-1038-needs_input", request[:headers]["apns-collapse-id"]
     jwt = request[:headers]["authorization"].delete_prefix("bearer ")
     claims, header = JWT.decode(jwt, @key, true, algorithms: [ "ES256" ])
     assert_equal "TEAM123456", claims["iss"]
@@ -74,7 +75,8 @@ class ApnsServiceTest < ActiveSupport::TestCase
     assert_equal({ "title" => "Zimmer", "body" => "A session needs you." }, body["aps"]["alert"])
     assert_not_includes request[:body].to_json, "PR #1261"
     assert_not_includes request[:body].to_json, "go-ahead"
-    assert_equal "session-1038", body["aps"]["thread-id"]
+    assert_equal "#{tag}-session-1038", body["aps"]["thread-id"]
+    assert_equal tag, body["deployment"]
     assert_equal 1038, body["session_id"]
     assert_not_nil @phone.reload.last_delivered_at
   end
@@ -129,6 +131,20 @@ class ApnsServiceTest < ActiveSupport::TestCase
     %w[strad sk_live_123 db-7].each { |secret| assert_not_includes sent, secret }
     assert_includes sent, "A session sent you a message."
     assert_includes sent, "A session failed."
+  end
+
+  test "a push names its deployment by a digest of its host, never the host, the same one the app computes" do
+    # The same value ios/Tests/ZimmerKitTests/DeploymentsTests.swift holds the app to.
+    assert_equal "90662b17ebf2df11", ApnsService.deployment_tag("https://zimmer.example.com")
+    assert_equal "90662b17ebf2df11", ApnsService.deployment_tag("https://Zimmer.Example.com/")
+
+    transport = FakeTransport.new
+    AppUrl.stubs(:base_url).returns("https://zimmer.example.com")
+    ApnsService.new(config: @config, transport: transport).send_to_all(**@payload)
+    request = transport.requests.first
+    assert_equal "90662b17ebf2df11", request[:body]["deployment"]
+    assert_equal "90662b17ebf2df11-session-1038-needs_input", request[:headers]["apns-collapse-id"]
+    assert_not_includes request[:body].to_json, "zimmer.example.com"
   end
 
   test "custom messages are never collapsed into one another" do

@@ -1,6 +1,7 @@
 import Foundation
 
-/// FIPS 180-4 SHA-256, for one job: the PKCE S256 challenge.
+/// FIPS 180-4 SHA-256, for two jobs: the PKCE S256 challenge, and the tag a push names its
+/// deployment by (`Deployment.pushTag(host:)`).
 ///
 /// In this package rather than CryptoKit because ZimmerKit builds and tests on Linux, where
 /// CryptoKit does not exist, and the package takes no dependencies. Correctness is pinned by

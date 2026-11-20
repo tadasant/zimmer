@@ -25,6 +25,11 @@ public enum PushToken {
 public struct PushPayload: Hashable, Sendable {
     public var sessionID: Int?
     public var notificationType: String?
+    /// Which deployment sent it, as `Deployment.pushTag(host:)` of the sender's own host, so a
+    /// phone signed in to several can open the push on the one it came from
+    /// (`DeploymentList.route(forPush:)`). A digest rather than the host, because Apple reads
+    /// every payload. Nil from a server older than that.
+    public var deployment: String?
 
     /// Read from a notification's `userInfo`. Tolerant of the number arriving as a
     /// string, since a payload is JSON and its producer is a separate deploy.
@@ -36,6 +41,7 @@ public struct PushPayload: Hashable, Sendable {
         default: sessionID = nil
         }
         notificationType = userInfo["notification_type"] as? String
+        deployment = (userInfo["deployment"] as? String).flatMap { $0.isEmpty ? nil : $0.lowercased() }
     }
 }
 

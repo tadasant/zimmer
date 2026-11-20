@@ -135,6 +135,29 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(sent.first?.fields["reason"], .string("failed"), "the real reason, not abandoned")
     }
 
+    /// Switching deployments: what could not be sent to the deployment being left is dropped,
+    /// end and all, never sent to the next one, now or on the next launch.
+    func testDiscardingLeavesNothingForTheNextSinkOrTheNextLaunch() async {
+        struct Offline: Error {}
+        let store = defaults()
+        let log = telemetry(defaults: store, sink: { _ in throw Offline() })
+        _ = log.beginCall(conversation: 8)
+        log.track(.callEnded(reason: "hang_up", duration: 3, summary: [:]))
+        log.endCall()
+        await log.send()
+        XCTAssertGreaterThan(log.pending, 0, "the failed batch came back")
+        XCTAssertFalse(log.isSending)
+
+        log.discardPending()
+        XCTAssertEqual(log.pending, 0)
+        let sent = await wasSent(by: log)
+        XCTAssertEqual(sent, [])
+        let next = telemetry(defaults: store)
+        next.recoverAbandonedCall()
+        let resent = await wasSent(by: next)
+        XCTAssertEqual(resent, [])
+    }
+
     func testTheNextCallEndsOneTheAppLostEvenBeforeAnyLaunchHook() async {
         let store = defaults()
         let dead = telemetry(defaults: store)

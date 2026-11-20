@@ -43,7 +43,9 @@ final class SessionDetailModel: ObservableObject {
     @Published var draft: String {
         didSet { drafts.save(draft, for: id) }
     }
-    private let drafts = DraftStore()
+    /// The deployment's own drafts (`AppModel.drafts`): the same session id on another
+    /// deployment is another session, and its draft is not this one's.
+    private let drafts: DraftStore
     /// The messages waiting for the turn in flight to end (`QueueCard`).
     @Published var queue: [QueuedMessage] = [] { didSet { noteChange() } }
     /// Messages accepted and never delivered (`UndeliveredCard`): read-only, as the web shows them.
@@ -70,10 +72,11 @@ final class SessionDetailModel: ObservableObject {
     /// on each load, not on polls; nil until it reads, and zero draws nothing, as on the web.
     @Published private(set) var cost: Double?
 
-    init(id: Int, api: ZimmerAPI) {
+    init(id: Int, api: ZimmerAPI, drafts: DraftStore) {
         self.id = id
         self.api = api
-        self.draft = DraftStore().draft(for: id)
+        self.drafts = drafts
+        self.draft = drafts.draft(for: id)
     }
 
     /// The page opened on a placeholder: nothing to read until the server has answered with
@@ -573,9 +576,9 @@ struct SessionDetailView: View {
     /// adopted the session's own id. What "this page is the one in front" compares against.
     private let openedAs: Int
 
-    init(id: Int, api: ZimmerAPI) {
+    init(id: Int, api: ZimmerAPI, drafts: DraftStore) {
         openedAs = id
-        _model = StateObject(wrappedValue: SessionDetailModel(id: id, api: api))
+        _model = StateObject(wrappedValue: SessionDetailModel(id: id, api: api, drafts: drafts))
     }
 
     private var isFront: Bool { app.path.last == openedAs && app.tab == .sessions }
