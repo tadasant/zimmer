@@ -276,6 +276,13 @@ one deployment, such a push opens as it always did. On a phone signed in to seve
 tell which one sent it, so it only comes to the front and opens no session: the same session id on
 another deployment is another session. Updating the sending deployment fixes it.
 
+The same happens when a deployment's base URL (`ZIMMER_PROD_BASE_URL`) is unset or names a host
+other than the ones the phone signed in to: its tag matches none of the phone's deployments.
+
+The phone registers its APNs token with a deployment when that deployment comes to the front. If
+APNs gives the phone a new token, a deployment not opened since keeps the old one, and its pushes
+stop until it is opened again.
+
 A push also reaches the phone only from a deployment whose APNs key belongs to the team that signs
 the app. Every deployment the app adds must be configured with such a key, or it sends nothing.
 

@@ -34,9 +34,16 @@ final class AppEnvironment {
         var origins: ServerOrigins? { deployment?.origins }
     }
 
+    /// Where the Live call log goes (`LiveTelemetry+App`): the deployment in front's API. Read
+    /// off the main actor, by the telemetry's own sender, so it is a lock rather than state of
+    /// this class; it moves only after the log has been drained to the deployment being left.
+    nonisolated static let telemetryRoute = TelemetryRoute()
+
     let configuration = AppConfiguration()
     private(set) var deployments: DeploymentList
-    private(set) var connection: Connection
+    private(set) var connection: Connection {
+        didSet { Self.telemetryRoute.api = connection.api }
+    }
     /// True when a `#if DEBUG` launch argument swapped in the in-memory fake.
     let isFixture: Bool
 
@@ -59,6 +66,7 @@ final class AppEnvironment {
             connection = Connection(deployment: nil, auth: AuthSession(store: InMemoryTokenStore(), transport: transport),
                                     api: FakeZimmerAPI(), edge: nil)
             connection = deployments.active.map { fixtureConnection(for: $0) } ?? connection
+            Self.telemetryRoute.api = connection.api
             return
         }
         #endif
@@ -70,6 +78,7 @@ final class AppEnvironment {
         }
         connection = Self.unconfigured(transport: transport)
         connection = deployments.active.map { makeConnection(for: $0) } ?? connection
+        Self.telemetryRoute.api = connection.api
     }
 
     // MARK: - The deployment in front
@@ -88,14 +97,14 @@ final class AppEnvironment {
     }
 
     /// Put deployment `id` in front: a new connection from its own stores, and every call, the
-    /// car's included, goes there from now on. A Live call on the one going to the back is hung
-    /// up first, so nothing said in it reaches the other.
+    /// car's included, goes there from now on. The one going to the back is left first
+    /// (`leaveFront`), so nothing of its Live call reaches the other.
     @discardableResult
-    func activate(_ id: String) -> Bool {
+    func activate(_ id: String) async -> Bool {
+        guard id != deployments.activeID, deployments.deployment(id) != nil else { return false }
+        await leaveFront()
+        // Asked again: another switch may have happened while the call log drained.
         guard id != deployments.activeID, let deployment = deployments.deployment(id) else { return false }
-        if LiveCall.shared.isActive { LiveCall.shared.hangUp() }
-        LiveCall.shared.personChoseElsewhere()
-        LiveTelemetry.shared.flush()
         deployments.activate(id)
         store.save(deployments)
         connection = connectionFor(deployment)
@@ -113,9 +122,8 @@ final class AppEnvironment {
     }
 
     /// Put a deployment that has just been signed in to on the list, in front.
-    func add(_ deployment: Deployment, connection: Connection) {
-        if LiveCall.shared.isActive { LiveCall.shared.hangUp() }
-        LiveCall.shared.personChoseElsewhere()
+    func add(_ deployment: Deployment, connection: Connection) async {
+        await leaveFront()
         deployments.add(deployment)
         store.save(deployments)
         self.connection = connection
@@ -152,7 +160,7 @@ final class AppEnvironment {
         // Not interactive when it is not the one in front: removing it must never raise its
         // edge's sign-in sheet.
         let doomed = wasActive ? connection : connectionFor(deployment, interactive: false)
-        if wasActive, LiveCall.shared.isActive { LiveCall.shared.hangUp() }
+        if wasActive { await leaveFront() }
         await beforeSignOut(doomed.api, deployment)
         await doomed.auth.signOut()
         await doomed.edge?.forget()
@@ -164,6 +172,21 @@ final class AppEnvironment {
             connection = deployments.active.map { connectionFor($0) } ?? Self.unconfigured(transport: transport)
             NotificationCenter.default.post(name: .zimmerDeploymentChanged, object: nil)
         }
+    }
+
+    /// Before another deployment comes to the front: hang up a Live call on this one, and send
+    /// the call log to this one — never to the next. The hang-up's own send is waited out (a few
+    /// seconds at most), what is still waiting is sent, and anything that could not be sent is
+    /// dropped rather than sent to the wrong deployment.
+    private func leaveFront() async {
+        if LiveCall.shared.isActive { LiveCall.shared.hangUp() }
+        LiveCall.shared.personChoseElsewhere()
+        let telemetry = LiveTelemetry.shared
+        for _ in 0..<20 where telemetry.isSending {
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        await telemetry.send()
+        telemetry.discardPending()
     }
 
     // MARK: - Connections
@@ -185,7 +208,7 @@ final class AppEnvironment {
         let edgeStore = KeychainEdgeTokenStore(account: deployment.edgeAccount)
         let presenter: CloudflareAccessCredential.Presenter = interactive
             ? WebAuthPresenter.presenter
-            : { _ in throw ZimmerError.edgeRefused }
+            : { @Sendable _ in throw ZimmerError.edgeRefused }
         let edge = deployment.origins.isSplit
             ? CloudflareAccessCredential(apiBaseURL: deployment.origins.api, store: edgeStore, presenter: presenter)
             : nil
@@ -275,5 +298,16 @@ extension Deployment {
     /// migrate it (`DeploymentList.load`).
     static var migratedAccount: String {
         Deployment(id: migratedID, origins: ServerOrigins(web: URL(string: "https://migrating.invalid")!)).signInAccount
+    }
+}
+
+/// The API the Live call log is sent to, readable from any thread.
+final class TelemetryRoute: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: ZimmerAPI?
+
+    var api: ZimmerAPI? {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
     }
 }

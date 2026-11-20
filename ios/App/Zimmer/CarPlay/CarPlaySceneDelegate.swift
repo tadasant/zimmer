@@ -39,6 +39,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     ) {
         // A connect without the disconnect before it (CarPlay restarting the scene) starts clean.
         tearDown()
+        // A car that launched the app before the phone's first unlock read no deployment list.
+        Workspaces.shared.reloadIfEmpty()
         // After the tear-down, which leaves any call to the phone: the car has it again.
         LiveCall.shared.carCameBack()
         log.notice("carplay scene connected")

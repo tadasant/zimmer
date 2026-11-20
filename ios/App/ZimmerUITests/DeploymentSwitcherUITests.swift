@@ -58,7 +58,7 @@ final class DeploymentSwitcherUITests: XCTestCase {
         let server = app.textFields["signin.server"]
         XCTAssertTrue(server.waitForExistence(timeout: timeout))
         XCTAssertEqual(app.staticTexts["signin.title"].label, "Add a deployment")
-        server.tap()
+        replaceText(in: server)
         server.typeText("https://third.invalid")
         attachScreenshot(app, named: "deployments-add")
         app.buttons["signin.button"].tap()
@@ -83,7 +83,7 @@ final class DeploymentSwitcherUITests: XCTestCase {
         app.buttons["deployments.add"].tap()
         let server = app.textFields["signin.server"]
         XCTAssertTrue(server.waitForExistence(timeout: timeout))
-        server.tap()
+        replaceText(in: server)
         server.typeText("https://lab.invalid/")
         app.buttons["signin.button"].tap()
 
@@ -124,6 +124,14 @@ final class DeploymentSwitcherUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureDeployments"] + extra
         app.launch()
         return app
+    }
+
+    /// Empty the field before typing: whatever an earlier launch left in it is not this test's.
+    private func replaceText(in field: XCUIElement) {
+        field.tap()
+        if let current = field.value as? String, !current.isEmpty, current != field.placeholderValue {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        }
     }
 
     private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {

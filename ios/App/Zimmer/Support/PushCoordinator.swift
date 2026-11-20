@@ -117,7 +117,7 @@ final class PushCoordinator: ObservableObject {
             } catch {
                 log.error("push registration failed: \(String(describing: error), privacy: .public)")
                 record("Could not register with Zimmer: \(Self.describe(error))", key: registrationKey)
-                report(.register, String(describing: error))
+                report(.register, String(describing: error), to: api)
             }
         }
     }
@@ -156,7 +156,9 @@ final class PushCoordinator: ObservableObject {
     func open(_ payload: PushPayload) {
         guard let id = payload.sessionID else { return }
         LiveCall.shared.personChoseElsewhere()
-        guard let model else {
+        // A tap that launched the app before the first unlock may find the list unread yet.
+        Workspaces.shared.reloadIfEmpty()
+        guard let model, !Workspaces.shared.list.isEmpty else {
             pending = payload
             return
         }
@@ -166,7 +168,7 @@ final class PushCoordinator: ObservableObject {
         case let .other(deployment):
             log.info("push is for another deployment; switching")
             pending = payload
-            Workspaces.shared.switchTo(deployment.id)
+            Task { await Workspaces.shared.switchTo(deployment.id) }
         case .unknown:
             log.notice("push from a deployment this phone cannot place; not opening session \(id, privacy: .public)")
         }
@@ -182,8 +184,10 @@ final class PushCoordinator: ObservableObject {
 
     /// Best-effort: a report that cannot reach Zimmer either is already in the phone's log.
     /// `delivered` runs only once Zimmer has taken it.
-    private func report(_ stage: PushFailureStage, _ detail: String, delivered: (@MainActor @Sendable () -> Void)? = nil) {
-        guard let api = model?.api else { return }
+    /// `api`: the deployment the failure is about, when it may no longer be the one in front.
+    private func report(_ stage: PushFailureStage, _ detail: String, to api: ZimmerAPI? = nil,
+                        delivered: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let api = api ?? model?.api else { return }
         let environment = Self.environment
         let version = Self.appVersion
         Task {

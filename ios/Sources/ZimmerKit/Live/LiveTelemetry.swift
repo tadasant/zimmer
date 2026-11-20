@@ -351,6 +351,23 @@ public final class LiveTelemetry: @unchecked Sendable {
     /// Events waiting to be sent.
     public var pending: Int { lock.withLock { buffer.count } }
 
+    /// Whether a batch is out and not yet answered.
+    public var isSending: Bool { lock.withLock { sending } }
+
+    /// Forget everything waiting: the buffer, the count of what was dropped, and every call end
+    /// kept for a later launch to resend. For the app switching deployments: what is waiting is
+    /// about the deployment being left, and the next send would go to the one coming in, so
+    /// the app sends what it can first (`send()`) and drops the rest rather than let it reach the
+    /// wrong server.
+    public func discardPending() {
+        lock.withLock {
+            buffer.removeAll()
+            dropped = 0
+            again = false
+            saveUnsentEnds([])
+        }
+    }
+
     // MARK: - Internals
 
     private func takeBatch() -> (LiveTelemetryBatch, Sink)? {

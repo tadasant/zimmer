@@ -16,8 +16,8 @@
 # **One phone, several deployments.** The app can be signed in to more than one
 # Zimmer, and each registers the same device token. So every push says which
 # deployment sent it — `deployment`, a digest of this deployment's host
-# (`deployment_tag`) rather than the host itself, for the reason above — and the
-# app opens the push there. The same tag namespaces the thread and collapse ids,
+# (`deployment_tag`), so the payload does not spell the host out (though anyone who
+# already knows a host can confirm it) — and the app opens the push there. The same tag namespaces the thread and collapse ids,
 # so one deployment's "session 12 needs you" never replaces another's on the lock
 # screen.
 #
@@ -178,7 +178,11 @@ class ApnsService
   # the lowercased host of its base URL (AppUrl). The iOS app computes the same
   # from each deployment it is signed in to (`Deployment.pushTag(host:)`).
   def self.deployment_tag(base_url = AppUrl.base_url)
-    host = URI.parse(base_url.to_s).host.to_s.downcase
+    host = begin
+      URI.parse(base_url.to_s).host.to_s.downcase
+    rescue URI::InvalidURIError
+      ""
+    end
     Digest::SHA256.hexdigest(host).first(16)
   end
 

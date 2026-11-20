@@ -39,6 +39,7 @@ struct SettingsView: View {
     /// The fixture's push, made once: the task runs again each time the child pops.
     @State private var openedAccountForFixture = false
     @State private var confirmingSignOutEverywhere = false
+    @State private var confirmingSignOut = false
     @State private var signingOutEverywhere = false
     @State private var signOutEverywhereError: String?
     /// The server's row; nil until it has been read.
@@ -202,13 +203,8 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("settings.signin.loading")
             }
-            Button("Sign out", role: .destructive) {
-                Task {
-                    await model.signOut()
-                    dismiss()
-                }
-            }
-            .accessibilityIdentifier("settings.signout")
+            Button("Sign out", role: .destructive) { confirmingSignOut = true }
+                .accessibilityIdentifier("settings.signout")
             Button("Sign out everywhere", role: .destructive) { confirmingSignOutEverywhere = true }
                 .disabled(account == nil || signingOutEverywhere)
                 .accessibilityIdentifier("settings.signin.everywhere")
@@ -219,7 +215,17 @@ struct SettingsView: View {
         } header: {
             Text("Sign-in")
         } footer: {
-            Text("Signing out revokes this phone's connection on the server. Signing out everywhere also ends every browser signed in as you; this phone has to sign in again afterwards.")
+            Text("Signing out revokes this phone's connection on the server and takes this deployment off the phone's list; your other deployments stay signed in. Signing out everywhere also ends every browser signed in as you; this phone has to sign in again afterwards.")
+        }
+        .confirmationDialog("Sign out of \(model.deployment?.name ?? "this deployment")?", isPresented: $confirmingSignOut, titleVisibility: .visible) {
+            Button("Sign out and remove", role: .destructive) {
+                Task {
+                    await model.signOut()
+                    dismiss()
+                }
+            }
+        } message: {
+            Text("This phone's connection is revoked, and its drafts and settings for this deployment are forgotten. Your other deployments stay signed in.")
         }
         .confirmationDialog("Sign out everywhere?", isPresented: $confirmingSignOutEverywhere, titleVisibility: .visible) {
             Button("Sign out everywhere", role: .destructive) { Task { await signOutEverywhere() } }

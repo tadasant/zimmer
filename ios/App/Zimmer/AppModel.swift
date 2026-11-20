@@ -284,7 +284,10 @@ final class AppModel: ObservableObject {
     /// so `ios/bin/ui-test` can photograph it.
     private func openFixtureScreen() {
         #if DEBUG
-        guard environment.isFixture else { return }
+        // Once per launch: a switch makes a new model, and the screen a launch asked for is the
+        // first deployment's.
+        guard environment.isFixture, !Self.openedFixtureScreen else { return }
+        Self.openedFixtureScreen = true
         let arguments = ProcessInfo.processInfo.arguments
         // Drafts outlive a launch by design; every fixture launch starts without any, so one
         // test's words never appear in another's composer.
@@ -390,6 +393,10 @@ final class AppModel: ObservableObject {
         }
         #endif
     }
+
+    #if DEBUG
+    private static var openedFixtureScreen = false
+    #endif
 
     /// The UserDefaults keys this model writes, by their names before deployments had prefixes:
     /// the migrated deployment's (`Deployment.migratedID`) are still these.

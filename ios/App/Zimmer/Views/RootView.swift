@@ -21,7 +21,8 @@ struct RootView: View {
                 // No deployment yet: the first sign-in. A deployment whose grant ended: signing in
                 // to it again, with the way to the others.
                 if let deployment = model.deployment {
-                    SignInView(mode: .again(deployment))
+                    // The list's copy, which a rename in the switcher has already reached.
+                    SignInView(mode: .again(workspaces.list.deployment(deployment.id) ?? deployment))
                 } else {
                     SignInView(mode: .first)
                 }
@@ -29,11 +30,7 @@ struct RootView: View {
                 tabs
             }
         }
-        // Here, over the sign-in screen too: a deployment that needs signing in again must not
-        // stand between a person and the others.
-        .sheet(isPresented: $workspaces.showingSwitcher) {
-            DeploymentSwitcher().environmentObject(workspaces)
-        }
+
         .overlay(alignment: .topLeading) { ToastLogElement() }
         // Behind the status bar, where the build strip's gold does not reach.
         .background(Theme.ground.ignoresSafeArea())

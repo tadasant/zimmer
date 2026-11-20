@@ -1,6 +1,7 @@
 import AuthenticationServices
 import Foundation
 import SwiftUI
+import UIKit
 import ZimmerKit
 import os
 
@@ -28,20 +29,27 @@ final class Workspaces: ObservableObject {
     @Published var addError: ZimmerError?
 
     let environment: AppEnvironment
+    private var unlockObserver: NSObjectProtocol?
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "deployments")
 
     init(environment: AppEnvironment = .shared) {
         self.environment = environment
         list = environment.deployments
         model = AppModel(environment: environment)
+        // A launch before the first unlock (a push, CarPlay) reads no list; the unlock is when it
+        // can be read, whether or not the phone's screen ever comes to the front.
+        unlockObserver = NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                                               object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { Workspaces.shared.reloadIfEmpty() }
+        }
     }
 
     var active: Deployment? { list.active }
 
     /// Bring deployment `id` to the front and close the switcher.
-    func switchTo(_ id: String) {
+    func switchTo(_ id: String) async {
         showingSwitcher = false
-        guard environment.activate(id) else { return }
+        guard await environment.activate(id) else { return }
         log.info("switched deployment")
         rebuild()
     }
@@ -61,7 +69,7 @@ final class Workspaces: ObservableObject {
         }
         if let existing = list.existing(for: origins) {
             addError = nil
-            if existing.id != list.activeID { switchTo(existing.id) } else { showingSwitcher = false }
+            if existing.id != list.activeID { await switchTo(existing.id) } else { showingSwitcher = false }
             // Already in front and signed out: the sign-in screen for it is the one showing.
             if model.isSignedIn == false { await model.signInAgain() }
             return true
@@ -78,8 +86,9 @@ final class Workspaces: ObservableObject {
                 let callback = try await WebAuthPresenter.shared.present(flow.authorizeURL)
                 try await connection.auth.complete(flow, callback: callback)
             }
-            environment.configuration.remember(origins)
-            environment.add(deployment, connection: connection)
+            // Not in the fixture: what one UI test typed would be offered to the next.
+            if !environment.isFixture { environment.configuration.remember(origins) }
+            await environment.add(deployment, connection: connection)
             log.info("added a deployment: \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
             addError = nil
             showingSwitcher = false
@@ -103,6 +112,9 @@ final class Workspaces: ObservableObject {
             await PushCoordinator.shared.unregister(from: api, deployment: deployment)
         }
         list = environment.deployments
+        // The switcher stays up over the deployment that came forward, showing what is left; with
+        // none left there is nothing to switch to, and the sign-in screen is what comes next.
+        if list.isEmpty { showingSwitcher = false }
         if wasActive { rebuild() }
     }
 

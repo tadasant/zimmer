@@ -94,6 +94,8 @@ struct DeploymentSwitcher: View {
                 NavigationStack { SignInView(mode: .add) }
                     .environmentObject(workspaces.model)
                     .environmentObject(workspaces)
+                    // A sign-in under way finishes by switching; the sheet stays until it has.
+                    .interactiveDismissDisabled(workspaces.isAdding)
             }
             .alert("Rename deployment", isPresented: isRenaming, presenting: renaming) { deployment in
                 TextField(deployment.host, text: $newName)
@@ -121,7 +123,7 @@ struct DeploymentSwitcher: View {
     private func row(_ deployment: Deployment) -> some View {
         let isActive = deployment.id == workspaces.list.activeID
         return Button {
-            if isActive { dismiss() } else { workspaces.switchTo(deployment.id) }
+            if isActive { dismiss() } else { Task { await workspaces.switchTo(deployment.id) } }
         } label: {
             HStack(spacing: 12) {
                 DeploymentAvatar(deployment: deployment, size: 40)

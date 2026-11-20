@@ -652,18 +652,21 @@ the Slack app switches workspaces. No deployment is built in: you add each one b
   switches to it instead.
 - **Edit** in the sheet reorders the list or removes a deployment. A row's long press renames it
   (on this phone only; an empty name puts back the host) or signs out of it. Signing out of a
-  deployment, from the sheet or from *Settings → Sign out*, revokes this phone's connection on that
+  deployment, from the sheet or from *Settings → Sign out*, asks first, then revokes this phone's connection on that
   server, unregisters the phone from its pushes and forgets its drafts and board settings here.
   Then it comes off the list, and the next deployment comes to the front. The others stay signed in.
 - **A deployment whose sign-in ended** (its connection revoked, its refresh token expired) stays on
   the list. Its screen offers *Sign in* to the same addresses, *Switch deployment*, and *Remove*.
 
-**Nothing crosses between deployments.** Each one keeps its Zimmer tokens and its edge login under
-Keychain items of its own, and its drafts, board filters, view and push registration under
+**What a deployment holds stays with it.** Each one keeps its Zimmer tokens and its edge login
+under Keychain items of its own, and its drafts, board filters, view and push registration under
 UserDefaults keys of its own. Switching builds a new connection from that deployment's items and a
 new set of screens, so no row, draft, open sheet, navigation path or request in flight carries
-over. A Live call on the deployment you leave is hung up first. CarPlay's tiles and its warm
-connection are read again from the new one.
+over. A Live call on the deployment you leave is hung up first. Its call log is sent to that
+deployment before the switch, and whatever cannot be sent then is dropped rather than sent to the
+next one. CarPlay's tiles and its warm connection are read again from the new one. Two things are
+the phone's rather than a deployment's: the call log's level (the last one any deployment set) and
+the address the sign-in screen offers first (the last one signed in to).
 
 **Updating from a single-deployment version** turns the deployment you were signed in to into the
 first entry on the list, named by its host. Its sign-in, edge login, drafts and settings stay
@@ -758,8 +761,9 @@ even if it never signs out.
 deployment comes to the front, so every deployment it is signed in to can notify it. Signing out of
 one unregisters from that one only. Every push names the deployment that sent it in a `deployment`
 field: the first 16 hex digits of the SHA-256 of the sending server's host
-(`ApnsService.deployment_tag`, from its base URL). It is a digest rather than the host because Apple
-can read the payload. Tapping a push from a deployment behind the one in front switches to it, then
+(`ApnsService.deployment_tag`, from its base URL). It is a digest so the payload, which Apple can
+read, does not spell the host out; it is not a secret, since anyone who already knows a host can
+compute it. Tapping a push from a deployment behind the one in front switches to it, then
 opens the session. The same tag prefixes the push's thread and collapse ids, so one deployment's
 "session 12 needs you" never replaces another's on the lock screen. *Settings → Notifications*
 shows the registration of the deployment in front. Each deployment sends pushes only if it has an

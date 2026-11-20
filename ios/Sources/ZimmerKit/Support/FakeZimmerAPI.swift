@@ -335,8 +335,6 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     // MARK: - Sample data
 
-    /// A believable board: two sessions waiting on a person, work in flight, one failure,
-    /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     /// The fixture's second deployment (`-ZimmerFixtureDeployments`): a board of its own, with no
     /// session id in common with `sampleSessions`, so a screen that showed one deployment's rows
     /// after a switch would be caught.
@@ -355,6 +353,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
         ]
     }
 
+    /// A believable board: two sessions waiting on a person, work in flight, one failure,
+    /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
         return carplayMarked(now, wired(ran(trashed([

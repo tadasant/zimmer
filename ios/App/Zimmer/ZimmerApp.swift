@@ -22,6 +22,13 @@ struct ZimmerApp: App {
                 .environmentObject(workspaces.model)
                 .environmentObject(workspaces)
                 .id(ObjectIdentifier(workspaces.model))
+                // Outside the keyed tree, so a switch or a removal that rebuilds it does not take
+                // the switcher down and have to raise it again mid-dismissal.
+                .sheet(isPresented: $workspaces.showingSwitcher) {
+                    DeploymentSwitcher()
+                        .environmentObject(workspaces.model)
+                        .environmentObject(workspaces)
+                }
                 .tint(Theme.accent)
                 .task(id: ObjectIdentifier(workspaces.model)) {
                     let model = workspaces.model
