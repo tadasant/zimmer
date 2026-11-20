@@ -657,6 +657,35 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
+  # Archiving a long-dead session restarts the GRACE clock on its row, which would
+  # take the row out of `unresolved` for six hours. That is not the row resolving.
+  test "archiving an ended session does not make its paged row new again" do
+    item = started_row(started_at: 20.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      item.started_session.update_columns(archived_at: Time.current)
+
+      sweep(probes: { 1 => probe })
+      assert item.reload.stranded_paged_at.present?
+      travel(7.hours) { sweep(probes: { 1 => probe }) }
+
+      assert_equal 1, alerts.pages.size
+    end
+  end
+
+  test "a pass that raises while composing the page marks nothing" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do
+      WorkBacklogItem.stub(:awaiting_decision, ->(**) { raise ActiveRecord::StatementInvalid, "boom" }) do
+        assert_raises(ActiveRecord::StatementInvalid) { sweep(probes: { 1 => probe }) }
+      end
+    end
+
+    assert_nil item.reload.stranded_paged_at, "so the next pass pages it"
+  end
+
   test "a row that leaves the stranded set and strands again pages again" do
     item = started_row(started_at: 9.days.ago)
 

@@ -425,11 +425,11 @@ module WorkBacklog
       # held row is parked on a person, not resolved, and its lapse is not news
       # about the work (below).
       #
-      # It used to be a severity band in Redis, and a store that could not
-      # remember kept this silent on purpose, because an hourly page that nothing
-      # throttled would flood `#alerts`. The mark lives in the same database the
-      # pass has just read and written every row in, so a pass that cannot write
-      # it has already failed, at ERROR, in the job.
+      # Nothing here depends on a cache. A throttle kept in a store that can stop
+      # remembering would have to stay silent when it does, because an hourly page
+      # that nothing throttles would flood `#alerts`. The mark lives in the same
+      # database the pass has just read and written every row in, so a pass that
+      # cannot write it has already failed, at ERROR, in the job.
       #
       # A LAPSED HOLD does not page by itself. A hold lapses only when
       # WorkBacklog::DecisionDigest has stopped renewing it, and a digest that
@@ -483,8 +483,12 @@ module WorkBacklog
         paging = result.repos_failed.any? ? lapse_news(rows, now) : news(rows, now)
 
         if paging
-          WorkBacklogItem.where(id: paging[:mark]).update_all(stranded_paged_at: now)
-          page_stranded_rows(rows, paging, lapsed.size, now)
+          # One transaction, so a pass that raises while composing the page leaves
+          # no row marked as paged for a page that never went out.
+          WorkBacklogItem.transaction do
+            WorkBacklogItem.where(id: paging[:mark]).update_all(stranded_paged_at: now)
+            page_stranded_rows(rows, paging, lapsed.size, now)
+          end
         end
 
         announce_lapsed_holds(lapsed, now)
@@ -493,7 +497,9 @@ module WorkBacklog
       def stranded_rows(now)
         WorkBacklogItem.stranded(now: now)
                        .pluck(:id, :key, Arel.sql("COALESCE(started_at, removed_at)"), :stranded_paged_at, :held_at)
-                       .map do |id, key, since, paged_at, held_at|
+                       .filter_map do |id, key, since, paged_at, held_at|
+          next if since.nil? # a hand-edited row with neither time has no age to page on
+
           StrandedRow.new(id: id, key: key, since: since, paged_at: paged_at, lapsed: held_at.present?)
         end
       end
@@ -502,9 +508,15 @@ module WorkBacklog
       # so if it strands again it is new again. Every pass, the empty one and an
       # unreadable one included: a row can only leave on a verdict this pass or an
       # earlier one actually read, or by its status changing.
+      #
+      # With no GRACE. The grace keeps a row out until its session has been over
+      # for six hours, and it is measured from the session's last write, so
+      # archiving a long-dead session would otherwise take a paged row out for six
+      # hours, clear its mark, and re-page it as new. Only a session that is live
+      # again takes the row out here.
       def forget_resolved_marks(now)
         WorkBacklogItem.where.not(stranded_paged_at: nil)
-                       .where.not(id: WorkBacklogItem.unresolved(now: now).select(:id))
+                       .where.not(id: WorkBacklogItem.unresolved(grace: 0.seconds, now: now).select(:id))
                        .update_all(stranded_paged_at: nil)
       end
 

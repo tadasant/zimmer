@@ -1243,7 +1243,11 @@ device, the digest has already logged an ERROR that pages, so since
 row it has already paged for. A digest that stops for a reason that logs nothing, such as a cron
 entry that disappears, therefore has no page of its own. Its rows return to Stranded on the Issues
 view with their original age, and the population's next rung of the reminder ladder (1, 2, 4, 8, 16…
-weeks of the oldest row's age) is the next page. A lapse on a row no page has covered still pages.
+weeks of the oldest row's age) is the next page. The same is true when the digest's ERROR does not
+fire: it is throttled to once per `CADENCE` through `Rails.cache`, so with Redis unavailable it logs
+WARN, which does not page. And a hold that lapses because the sweep could not re-read the row's
+evidence, while pushes are still delivered, logs no ERROR at all. A lapse on a row no page has covered
+still pages.
 
 ### The decision digest knows a push was accepted, not that it was read
 

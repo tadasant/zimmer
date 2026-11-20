@@ -495,11 +495,11 @@ ERROR record.
 
 ### It pages on new information
 
-Every page starts a triage session, so a page has to say something the last one did not. Before
-[#1592](https://github.com/tadasant/zimmer/issues/1592) the sweep re-paged whenever the oldest row
-aged into another week. One five-row population only a human could move paged six times in two
-weeks, each page triaged to the same answer. A pass whose oldest stranded row is past `ALERT_AFTER`
-now pages when at least one of these holds:
+Every page starts a triage session, so a page has to say something the last one did not. A
+weekly reminder did not: one five-row population only a human could move paged six times in two
+weeks, and each page was triaged to the same answer
+([#1592](https://github.com/tadasant/zimmer/issues/1592)). A pass whose oldest stranded row is past
+`ALERT_AFTER` pages when at least one of these holds:
 
 | Reason (`paged_for`) | Pages when |
 | --- | --- |
@@ -526,12 +526,15 @@ schedule rather than measured against a row that is gone.
 because the row that left took its mark with it. Each re-crossing needs a row to arrive, so it is
 bounded by arrivals, never by passes.
 
-The memory used to be a severity band in `Rails.cache` that expired weekly, and a cache that could
-not remember kept the sweep silent on purpose. An hourly page that nothing throttled would have
-flooded `#alerts`. The column lives in the same database the pass has just read and written every
-row in, so a pass that cannot write it has already failed at ERROR in the job, and there is no
-Redis dependency left. The deploy that added the column stamped the rows that were stranded at the
-time, since the band it replaced had already paged for them.
+There is no cache in this. A throttle kept in a store that can stop remembering has to stay silent
+when it does, since an hourly page that nothing throttled would flood `#alerts`. The column lives in
+the same database the pass has just read and written every row in, so a pass that cannot write it
+has already failed at ERROR in the job. The mark and the page share a transaction, so a pass that
+raises while composing the page marks nothing. Clearing ignores `GRACE`, so archiving a session that
+ended long ago does not make its row look new. The migration that added the column stamped the
+unheld rows that were stranded at the time with the time of the last page the previous scheme sent
+(2026-11-20 16:25 UTC), so those rows were not paged again as new, while a row that became overdue
+after that page still pages.
 
 A pass that **could not read a repo** sends only one kind of page: a lapsed hold on a row no page has
 covered. Every row it could not probe is recorded `unknown`, which counts as stranded, so rows long

@@ -17,9 +17,10 @@ module WorkBacklog
   # Renewal is the receipt for a delivery. A hold gets a fresh HOLD_DURATION only
   # when a push listing it reached a device and the sweep has freshly re-read its
   # evidence unchanged. So a digest that crashes, loses its cron entry or reaches
-  # nobody renews nothing: the hold lapses and WorkBacklog::LivenessSweep pages,
-  # and none of those needs anything here to notice it. A delivery that reaches no
-  # device also logs an ERROR on that tick, on a different path from the lapse page.
+  # nobody renews nothing: the hold lapses and its row is stranded again, which
+  # WorkBacklog::LivenessSweep pages on if no page has covered the row, and none
+  # of those needs anything here to notice it. A delivery that reaches no device
+  # logs an ERROR on that tick, which is the page for a row already paged for.
   #
   # The receipt is only as good as a push service accepting the message. The limits
   # of that are recorded in limitations.md rather than papered over here.
@@ -177,7 +178,7 @@ module WorkBacklog
       def report_failure(rows, failures)
         soonest = rows.map(&:held_until).min
         message = "[WorkBacklog::DecisionDigest] #{rows.size} owed decision(s) reached no device " \
-                  "(#{failures.join('; ')}). Nothing was renewed, so these holds lapse and page, the first at " \
+                  "(#{failures.join('; ')}). Nothing was renewed, so these holds lapse back into Stranded, the first at " \
                   "#{soonest.utc.iso8601}. Check the VAPID keys, the APNs key and that a device is subscribed; " \
                   "the decisions are on the Issues page under Awaiting your decision."
         if Rails.cache.write(FAILURE_PAGED_CACHE_KEY, true, expires_in: CADENCE, unless_exist: true)

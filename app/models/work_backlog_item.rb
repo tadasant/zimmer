@@ -611,7 +611,7 @@ class WorkBacklogItem < ApplicationRecord
     end
   end
 
-  # A hold that has lapsed and whose lapse the sweep has not paged on yet.
+  # A hold that has lapsed and that the sweep has not cleared yet.
   def hold_lapsed?(now: Time.current) = held_at.present? && !hold_active?(now: now)
 
   # Is a hold in force on this row right now?
