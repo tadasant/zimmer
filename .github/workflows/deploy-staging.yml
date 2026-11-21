@@ -64,6 +64,14 @@ jobs:
       # here for scripts/, and the second checkout is the one that decides what gets built.
       - uses: actions/checkout@v4
 
+      # The tailnet-join scripts come from THIS workflow's commit, not the deploy ref: the
+      # second checkout replaces the tree with a ref that may predate them (a PR branch cut
+      # before they existed), and the runner's join must not depend on what the app ships.
+      - name: Stash the tailnet-join scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-scripts"
+          cp .github/scripts/tailnet-authkey.sh .github/scripts/tailnet-verify-joined.sh "$RUNNER_TEMP/ci-scripts/"
+
       # `ref` never reaches actions/checkout raw: checkout only special-cases a full
       # 40-character SHA, so an abbreviated one is read as a branch name, matches no ref,
       # and dies a minute later on "git failed with exit code 1" without naming the ref.
@@ -312,12 +320,29 @@ jobs:
           fi
           terraform apply -input=false -auto-approve -var-file=staging.tfvars $replace
 
-      # Join the tailnet so we can resolve the droplet's tailnet IP, SSH to it with
-      # Kamal, and health-check the app.
+      # Join the tailnet as tag:zimmer-ci so we can resolve the droplet's tailnet IP, SSH to
+      # it with Kamal (Tailscale SSH on :22), and health-check the app. The key is minted per
+      # job from a non-expiring OAuth client; the static TS_CI_AUTHKEY is only a warned
+      # fallback. See .github/scripts/tailnet-authkey.sh.
+      - name: Mint the runner's tailnet auth key
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_CI_OAUTH_CLIENT_ID }}
+          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_CI_OAUTH_CLIENT_SECRET }}
+          TS_FALLBACK_AUTHKEY: ${{ secrets.TS_CI_AUTHKEY }}
+        run: bash "$RUNNER_TEMP/ci-scripts/tailnet-authkey.sh" "$RUNNER_TEMP/tailnet-authkey"
+
       - name: Tailscale
         uses: tailscale/github-action@v3
         with:
-          authkey: ${{ secrets.TS_CI_AUTHKEY }}
+          authkey: file:${{ runner.temp }}/tailnet-authkey
+
+      # The action reports success even when every `tailscale up` was rejected, so check
+      # the runner's own login here -- otherwise the next step waits ten minutes and blames
+      # the droplet.
+      - name: Verify the runner joined the tailnet
+        run: |
+          rm -f "$RUNNER_TEMP/tailnet-authkey"
+          bash "$RUNNER_TEMP/ci-scripts/tailnet-verify-joined.sh"
 
       # GitHub runners get no MagicDNS, so resolve zimmer-staging's tailnet IP from
       # `tailscale status`, and load the Kamal deploy key.
