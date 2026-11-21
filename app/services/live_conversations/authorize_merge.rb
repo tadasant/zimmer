@@ -541,6 +541,11 @@ module LiveConversations
         raise Refused, "Cannot merge #{pr_url}: this Zimmer has no key to sign approvals for another Zimmer with " \
                        "(#{MergeAttestations::SIGNING_KEY_ENV}). Tell the person."
       end
+      begin
+        MergeAttestations::SigningKey.current
+      rescue MergeAttestations::SigningKey::NotConfigured => e
+        raise Refused, "Cannot merge #{pr_url}: this Zimmer's signing key is set but unusable (#{e.message}). Tell the person."
+      end
 
       remotes = MergeAttestations::Remote.among(hierarchy_servers(session))
       if remotes.empty?

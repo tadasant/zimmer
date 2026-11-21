@@ -215,9 +215,19 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
     assert result["error"]
     assert_match(/does not trust this Zimmer's signing key yet/, result["output"])
 
-    ENV.delete(MergeAttestations::SIGNING_KEY_ENV)
+    trust_issuer
+    [ nil, "", "   " ].each do |value|
+      value.nil? ? ENV.delete(MergeAttestations::SIGNING_KEY_ENV) : ENV[MergeAttestations::SIGNING_KEY_ENV] = value
+      result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
+      assert result["error"]
+      assert_match(/this Zimmer has no key to sign approvals for another Zimmer with/, result["output"], value.inspect)
+    end
+
+    ENV[MergeAttestations::SIGNING_KEY_ENV] = "not-a-key"
     result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
-    assert_match(/no key to sign approvals/, result["output"])
+    assert result["error"]
+    assert_match(/signing key is set but unusable/, result["output"])
+    assert_equal 0, MergeAttestation.count, "nothing is issued without a usable key"
   end
 
   test "a child of the driving session carrying the remote counts as the hierarchy driving it" do

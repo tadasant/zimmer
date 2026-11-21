@@ -117,8 +117,19 @@ Payload:
   issuer's user key to a user on the receiver: an approval from anyone not listed is refused, and the
   record is written as the local user. `repos` is an optional allowlist. `MERGE_ATTESTATION_AUDIENCE`
   names the receiver (default its base URL).
-- **Rotation.** Add the new key to the receiver's `keys`, switch the issuer's signing key, then
-  remove the old key. Tokens live five minutes, so there is no long overlap to manage.
+- **Rotation.** In this order, so no approval is ever refused:
+  1. Derive the new public key from the new seed.
+  2. Have the receiver pin it beside the old one in `keys`.
+  3. Set the issuer's secret to the new key and redeploy.
+  4. Check `/.well-known/merge-attestation-jwks.json` shows the new `kid`.
+  5. Only then have the receiver drop the old key.
+
+  Tokens live five minutes, so there is no long overlap to manage.
+- **Production.** `config/deploy.production.yml` sets `MERGE_ATTESTATION_REMOTE_SERVERS` in
+  `env.clear` and lists `MERGE_ATTESTATION_SIGNING_KEY` in `env.secret`, mapped in
+  `.kamal/secrets.production` from `PROD_MERGE_ATTESTATION_SIGNING_KEY`. Spell the key as the
+  base64url seed, since a Kamal env-file cannot carry a PEM's newlines. Unset or empty, the
+  deployment signs nothing.
 - **Remotes.** On the issuer, `MERGE_ATTESTATION_REMOTE_SERVERS` lists the catalog MCP servers that
   are other Zimmer deployments, as comma-separated `server=audience` pairs
   (`remote-zimmer=https://remote.example.com`). The audience is pinned here, not taken from the

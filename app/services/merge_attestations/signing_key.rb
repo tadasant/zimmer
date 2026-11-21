@@ -4,7 +4,8 @@ module MergeAttestations
   # This Zimmer's Ed25519 signing key, read from MERGE_ATTESTATION_SIGNING_KEY.
   #
   # Two spellings are accepted: a PKCS#8 PEM (`openssl genpkey -algorithm
-  # ed25519`), or the 32-byte private seed in base64url. The key is for the
+  # ed25519`), or the 32-byte private seed in base64url. Production takes the
+  # seed: a Kamal env-file cannot carry a PEM's newlines. The key is for the
   # Rails process only. Agent CLIs inherit Zimmer's environment minus a
   # denylist, and this variable is on it (CliSpawnEnv#clear_inherited_env_vars),
   # so it is not one `env` away in a session's shell. That is the same boundary
