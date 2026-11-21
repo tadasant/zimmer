@@ -653,8 +653,10 @@ the Slack app switches workspaces. No deployment is built in: you add each one b
 - **Adding one** asks for its address (and its app host, if it has one), then runs that
   deployment's own sign-in: its edge login first when it has an app host, then its Zimmer OAuth.
   It joins the list, in front, only once both have finished. A cancelled or failed sign-in
-  forgets what it stored and changes nothing else. An address that is already on the list
-  switches to it instead.
+  forgets what it stored and changes nothing else. Spaces, line breaks and invisible characters
+  a paste brings along (zero-width spaces, a byte-order mark) are dropped from the address. Each
+  try starts with no error showing, so closing the sign-in sheet leaves none behind. An address
+  that is already on the list switches to it instead.
 - **Edit** in the sheet reorders the list or removes a deployment. A row's long press renames it
   (on this phone only; an empty name puts back the host) or signs out of it. Signing out of a
   deployment, from the sheet or from *Settings → Sign out*, asks first, then revokes this phone's connection on that

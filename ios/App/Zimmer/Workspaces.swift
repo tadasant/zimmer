@@ -60,15 +60,16 @@ final class Workspaces: ObservableObject {
     /// the deployment is now in front.
     @discardableResult
     func add(web rawWeb: String, api rawAPI: String) async -> Bool {
+        // A new attempt starts clean: what was wrong with the last one is not this one's answer.
+        addError = nil
         let origins: ServerOrigins
-        switch Self.origins(web: rawWeb, api: rawAPI) {
+        switch ServerOrigins.parse(web: rawWeb, api: rawAPI) {
         case let .success(parsed): origins = parsed
         case let .failure(error):
             addError = error
             return false
         }
         if let existing = list.existing(for: origins) {
-            addError = nil
             if existing.id != list.activeID { await switchTo(existing.id) } else { showingSwitcher = false }
             // Already in front and signed out: the sign-in screen for it is the one showing.
             if model.isSignedIn == false { await model.signInAgain() }
@@ -78,6 +79,9 @@ final class Workspaces: ObservableObject {
         defer { isAdding = false }
         let (deployment, connection) = environment.prepare(origins)
         do {
+            #if DEBUG
+            if environment.fixtureCancelsSignIn { throw ASWebAuthenticationSessionError(.canceledLogin) }
+            #endif
             if !environment.isFixture {
                 if let edge = connection.edge, await edge.needsLogin() {
                     try await edge.login()
@@ -90,11 +94,11 @@ final class Workspaces: ObservableObject {
             if !environment.isFixture { environment.configuration.remember(origins) }
             await environment.add(deployment, connection: connection)
             log.info("added a deployment: \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
-            addError = nil
             showingSwitcher = false
             rebuild()
             return true
         } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
+            // Closing the sheet is not a failure: no error, and the one before it was cleared above.
             log.info("add-deployment sign-in cancelled")
             await environment.abandon(deployment, connection: connection)
             return false
@@ -137,18 +141,5 @@ final class Workspaces: ObservableObject {
     private func rebuild() {
         list = environment.deployments
         model = AppModel(environment: environment)
-    }
-
-    /// The origins a person typed, or what is wrong with them.
-    static func origins(web rawWeb: String, api rawAPI: String) -> Result<ServerOrigins, ZimmerError> {
-        guard let web = ServerURL.parse(rawWeb) else {
-            return .failure(.signIn("Enter the https address of your Zimmer, like https://zimmer.example.com."))
-        }
-        let trimmedAPI = rawAPI.trimmingCharacters(in: .whitespaces)
-        let api = trimmedAPI.isEmpty ? nil : ServerURL.parse(trimmedAPI)
-        if !trimmedAPI.isEmpty && api == nil {
-            return .failure(.signIn("The app host must be an https address too, or left empty."))
-        }
-        return .success(ServerOrigins(web: web, api: api))
     }
 }

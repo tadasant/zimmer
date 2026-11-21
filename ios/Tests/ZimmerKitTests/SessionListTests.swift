@@ -46,6 +46,41 @@ final class SessionListTests: XCTestCase {
         XCTAssertNil(ServerURL.parse("zimmer.example.test"))
     }
 
+    func testAPastedAddressSurvivesTheWhitespaceAndInvisibleCharactersAPasteBrings() {
+        let expected = "https://zimmer.example.test"
+        // A trailing newline, a no-break space, a tab in the middle of a paste broken across lines.
+        XCTAssertEqual(ServerURL.parse("https://zimmer.example.test\n")?.absoluteString, expected)
+        XCTAssertEqual(ServerURL.parse("\u{00A0}https://zimmer.example.test\u{00A0}")?.absoluteString, expected)
+        XCTAssertEqual(ServerURL.parse("https://zimmer.\n\texample.test")?.absoluteString, expected)
+        // Zero-width space, word joiner, byte-order mark, and the left-to-right and right-to-left
+        // marks: none is visible in the field, each breaks a parse.
+        for invisible in ["\u{200B}", "\u{2060}", "\u{FEFF}", "\u{200E}", "\u{200F}"] {
+            XCTAssertEqual(ServerURL.parse("\(invisible)https://zimmer.example.test\(invisible)")?.absoluteString, expected,
+                           "U+\(String(invisible.unicodeScalars.first!.value, radix: 16, uppercase: true))")
+            XCTAssertEqual(ServerURL.parse("https://zimmer\(invisible).example.test")?.absoluteString, expected)
+        }
+        // Cleaning does not make a wrong address right.
+        XCTAssertNil(ServerURL.parse("\u{200B}zimmer.example.test"))
+        XCTAssertEqual(ServerURL.clean(" \u{200B}\n"), "")
+        // The joiners are part of some internationalised host names, so they are kept.
+        XCTAssertEqual(ServerURL.clean("\u{200C}\u{200D}"), "\u{200C}\u{200D}")
+    }
+
+    func testTypedOriginsAreTheServerAndAnOptionalAppHost() throws {
+        let same = try ServerOrigins.parse(web: "https://zimmer.example.test", api: " \u{200B}").get()
+        XCTAssertEqual(same, ServerOrigins(web: URL(string: "https://zimmer.example.test")!))
+        XCTAssertFalse(same.isSplit, "an app host that is only invisible characters is no app host")
+
+        let split = try ServerOrigins.parse(web: "\u{FEFF}https://zimmer.example.test", api: "https://app.example.test\n").get()
+        XCTAssertEqual(split.api.absoluteString, "https://app.example.test")
+        XCTAssertTrue(split.isSplit)
+
+        XCTAssertEqual(ServerOrigins.parse(web: "zimmer.example.test", api: ""),
+                       .failure(.signIn("Enter the https address of your Zimmer, like https://zimmer.example.com.")))
+        XCTAssertEqual(ServerOrigins.parse(web: "https://zimmer.example.test", api: "app.example.test"),
+                       .failure(.signIn("The app host must be an https address too, or left empty.")))
+    }
+
     func testBuildEnvironmentDefaultsToProduction() {
         XCTAssertEqual(BuildEnvironment(label: nil), .production)
         XCTAssertEqual(BuildEnvironment(label: "Staging"), .staging)

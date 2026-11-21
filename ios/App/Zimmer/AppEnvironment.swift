@@ -46,6 +46,9 @@ final class AppEnvironment {
     }
     /// True when a `#if DEBUG` launch argument swapped in the in-memory fake.
     let isFixture: Bool
+    /// `-ZimmerFixtureCancelSignIn`: the fixture's add-a-deployment sign-in is closed unfinished,
+    /// as a person closing the sign-in sheet does.
+    let fixtureCancelsSignIn: Bool
 
     private let transport = URLSessionTransport()
     private let store: DeploymentStore
@@ -59,6 +62,7 @@ final class AppEnvironment {
         let arguments = ProcessInfo.processInfo.arguments
         if arguments.contains("-ZimmerFixture") {
             isFixture = true
+            fixtureCancelsSignIn = arguments.contains("-ZimmerFixtureCancelSignIn")
             let fixture = Self.fixture(arguments: arguments, transport: transport)
             store = InMemoryDeploymentStore(fixture.list)
             deployments = fixture.list
@@ -72,6 +76,7 @@ final class AppEnvironment {
         #endif
 
         isFixture = false
+        fixtureCancelsSignIn = false
         store = UserDefaultsDeploymentStore()
         deployments = DeploymentList.load(from: store) {
             KeychainTokenStore(account: Deployment.migratedAccount).load()

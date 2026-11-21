@@ -75,6 +75,41 @@ final class DeploymentSwitcherUITests: XCTestCase {
         attachScreenshot(app, named: "deployments-added")
     }
 
+    /// A bad address's message does not outlive it: a good address's attempt starts clean, so
+    /// closing its sign-in sheet unfinished (`-ZimmerFixtureCancelSignIn`) leaves no error showing.
+    func test_a_bad_address_error_clears_when_a_good_address_is_tried_and_its_sign_in_is_closed() throws {
+        let app = launch(["-ZimmerFixtureCancelSignIn"])
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.add"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.add"].tap()
+
+        let server = app.textFields["signin.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: timeout))
+        replaceText(in: server)
+        server.typeText("third.invalid")
+        app.buttons["signin.button"].tap()
+        let banner = app.descendants(matching: .any)["error.banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: timeout), "an address with no https:// is refused")
+        attachScreenshot(app, named: "deployments-add-bad-address")
+
+        replaceText(in: server)
+        server.typeText("https://third.invalid")
+        app.buttons["signin.button"].tap()
+        XCTAssertTrue(waitForDisappearance(banner), "the bad address's message is gone once a good one is tried")
+        XCTAssertTrue(app.buttons["signin.button"].waitForExistence(timeout: timeout))
+        XCTAssertTrue(waitForEnabled(app.buttons["signin.button"]), "the cancelled sign-in has finished")
+        XCTAssertFalse(banner.exists, "closing the sign-in sheet is not an error")
+        XCTAssertEqual(app.staticTexts["signin.title"].label, "Add a deployment", "the add sheet stays up to try again")
+        attachScreenshot(app, named: "deployments-add-sign-in-closed")
+
+        app.buttons["signin.cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(app.staticTexts["signin.title"]), "the add sheet closes")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deployments.row.'"))
+        XCTAssertTrue(app.buttons["deployments.row.lab"].waitForExistence(timeout: timeout))
+        XCTAssertEqual(rows.count, 2, "nothing was added")
+    }
+
     func test_an_address_already_on_the_list_switches_to_it_instead_of_adding_it_again() throws {
         let app = launch()
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
@@ -141,6 +176,11 @@ final class DeploymentSwitcherUITests: XCTestCase {
 
     private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForEnabled(_ element: XCUIElement) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: element)
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
