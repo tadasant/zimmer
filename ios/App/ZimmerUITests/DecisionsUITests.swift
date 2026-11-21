@@ -19,9 +19,7 @@ final class DecisionsUITests: XCTestCase {
         merge.tap()
 
         // The confirmation names the PR; the tap is the sign-off.
-        let confirm = app.sheets.buttons["Merge #1261"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
-        confirm.tap()
+        confirmInDialog(app, "Merge #1261")
         XCTAssertTrue(waitForToast(app, saying: "Merge authorized", on: "toast"))
     }
 
@@ -33,9 +31,7 @@ final class DecisionsUITests: XCTestCase {
         let item = app.buttons["Merge #1261"].firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: timeout))
         item.tap()
-        let confirm = app.sheets.buttons["Merge #1261"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
-        confirm.tap()
+        confirmInDialog(app, "Merge #1261")
         XCTAssertTrue(waitForToast(app, saying: "Merge authorized", on: "followup.notice"))
     }
 
@@ -47,9 +43,7 @@ final class DecisionsUITests: XCTestCase {
         let item = app.buttons["Reprioritize"].firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: timeout))
         item.tap()
-        let confirm = app.sheets.buttons["Reprioritize"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: timeout))
-        confirm.tap()
+        confirmInDialog(app, "Reprioritize")
         XCTAssertTrue(waitForToast(app, saying: "is re-ranking the board"))
     }
 

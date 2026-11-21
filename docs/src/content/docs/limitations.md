@@ -320,6 +320,19 @@ if the action ran and the page still did not open, a second tap changes nothing 
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
 
+### Merge's and Reprioritize's confirmations in the iOS UI tests are tapped again if they stay up
+
+A tap on a confirmation dialog's button can be lost too. On
+[run 44930302886](https://github.com/tadasant/zimmer/actions/runs/44930302886) (photos shard),
+XCUITest found the board's "Authorize the merge?" dialog, synthesised the tap on Merge #1261, and the
+dialog was still on screen 20 seconds later with nothing in the toast log, so the button's action
+never ran. Why the tap was lost is not known. `confirmInDialog` in
+`ios/App/ZimmerUITests/ConfirmationDialog.swift` taps again after 5 seconds, three taps at most,
+and only while the button is still there and hittable, so a dialog that took the tap is not tapped
+twice. Only `DecisionsUITests` uses it. Every other confirmation in the suite has one tap, so the
+same loss there still fails its test, and a dialog still up behind a tap that succeeded means a
+re-run first.
+
 ### A link's long press in the iOS UI tests presses again if no menu comes
 
 A long press XCUITest reports as delivered can bring nothing. On
