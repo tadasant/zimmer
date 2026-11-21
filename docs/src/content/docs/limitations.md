@@ -328,8 +328,8 @@ XCUITest found the board's "Authorize the merge?" dialog, synthesised the tap on
 dialog was still on screen 20 seconds later with nothing in the toast log, so the button's action
 never ran. Why the tap was lost is not known. `confirmInDialog` in
 `ios/App/ZimmerUITests/ConfirmationDialog.swift` taps again after 5 seconds, three taps at most,
-and only while the button is still there and hittable, so a dialog that took the tap is not tapped
-twice. Only `DecisionsUITests` uses it. Every other confirmation in the suite has one tap, so the
+and only while the button is still there, so a dialog that took the tap is not tapped twice. Each
+retry keeps the app's hierarchy as an attachment, on green runs too. Only `DecisionsUITests` uses it. Every other confirmation in the suite has one tap, so the
 same loss there still fails its test, and a dialog still up behind a tap that succeeded means a
 re-run first.
 
