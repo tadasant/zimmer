@@ -429,6 +429,12 @@ module TranscriptRedactor
     # plugin's key is minted over MCP by `action_external_app`, which puts the
     # secret in the calling session's transcript.
     pattern("ZIMMER_API_KEY", /\bzmr_[0-9a-f]{64}\b/),
+    # strad's own OAuth access and refresh tokens (`strad_oat_` / `strad_ort_`
+    # + base64url). The token broker writes a `strad_oat_` child into a
+    # session's MCP config, where an agent debugging its own auth can print
+    # it; the exact value is also in the known-value set, this is the line
+    # behind it for a token minted in the last KNOWN_SECRETS_TTL.
+    pattern("STRAD_OAUTH_TOKEN", /#{TOKEN_START}strad_o[ar]t_[A-Za-z0-9_\-]{16,}/o),
     # 1Password service-account token — the credential the `1password-provisioning`
     # MCP server runs on. The `op://` references it consumes are not secret; its
     # token is, and so is anything `op read` prints (which has no shape and is
@@ -1118,6 +1124,11 @@ module TranscriptRedactor
 
     def each_stored_token(&block)
       McpOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
+      # The token broker's parent grants and every child not yet past its
+      # expiry. Both are encrypted at rest, so they are read through the model,
+      # which decrypts; `pluck` on an encrypted column is not relied on.
+      McpBrokerGrant.find_each { |grant| [ grant.access_token, grant.refresh_token ].each(&block) }
+      McpBrokeredToken.where("expires_at > ?", 1.hour.ago).find_each { |row| block.call(row.token) }
       XOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
       ClaudeAccount.pluck(:oauth_config).each do |config|
         deep_sensitive_strings(config).each(&block)

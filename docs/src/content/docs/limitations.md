@@ -3380,6 +3380,34 @@ answer.
 
 ## MCP
 
+### The session token broker has not run against real strad
+
+The [token broker](/auth/token-broker/) is tested against an in-process stand-in for strad's
+authorization server. It answers the discovery, refresh, token-exchange and revocation requests in
+the shapes tadasant/strad#537 pins, and verifies each `private_key_jwt` assertion the way strad does.
+Nothing has yet run against a real strad, a real KMS key, or a running Zimmer with an entry opted in:
+strad staging's OAuth is not configured, Zimmer's KMS key does not exist yet, and nothing in the
+production catalog declares `brokered_auth`. Until one does, the code is inert.
+
+Four known edges:
+
+- **A turn that outlives its token loses the brokered servers until its next turn.** Children last
+  at most six hours, and nothing gives a running process a fresh one. Claude Code's `headersHelper`
+  and the Pi adapter's `!command` headers could. Codex has no equivalent. See
+  [Long turns](/auth/token-broker/#long-turns).
+- **A recovery that rests a session and then spawns more than 15 seconds later spawns with a
+  revoked token.** `TokenBrokerRevokeJob` re-checks the session before revoking, which covers the
+  usual seconds-long gap between a recovery's rest and its spawn, but not a longer one. That turn
+  runs without its brokered servers, and the next turn mints again.
+- **A failed mint is visible to the agent only from its next prompt.** The degraded-server record
+  is written during the prepare. The prompt for the turn being prepared may already have been
+  built, so the first turn's agent learns the server is gone by not finding its tools.
+- **Brokering an entry does not take `STRAD_API_KEY` out of a session's process environment** if the
+  deployment sets it there. The broker removes the variable from the clone's scoped `.env` and from
+  the entry itself, but an agent CLI inherits most of the Rails process's environment
+  (`CliSpawnEnv`). The static key leaves sessions only once no catalog entry, skill or deployment
+  environment hands it to them.
+
 ### An outage of Zimmer's own `/mcp` now fails every in-flight session at once
 
 `zimmer-self-session` is injected into nearly every session and points at the Zimmer instance serving that session. Losing it is a session-level failure rather than a degradation — that is the point of [Except the one server whose loss IS the session](/air/mcp-servers/#except-the-one-server-whose-loss-is-the-session), and it is what stops a router from running to completion having started nothing. The cost is that the blast radius of an outage of Zimmer's *own* endpoint is now every live session rather than none.

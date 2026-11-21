@@ -12,6 +12,7 @@ module ConnectorsHelper
     needs_reauth: "bg-red-100 text-red-800",
     missing_configuration: "bg-red-100 text-red-800",
     declared_unavailable: "bg-red-100 text-red-800",
+    broker_not_ready: "bg-red-100 text-red-800",
     store_unavailable: "bg-orange-100 text-orange-800",
     probe_failed: "bg-orange-100 text-orange-800"
   }.freeze
@@ -36,6 +37,7 @@ module ConnectorsHelper
   # page or from a secret store — the catalog entry itself has to change.
   SEVERITY_RANKS = {
     declared_unavailable: 0,
+    broker_not_ready: 0,
     missing_configuration: 1,
     needs_reauth: 2,
     needs_authorization: 3,

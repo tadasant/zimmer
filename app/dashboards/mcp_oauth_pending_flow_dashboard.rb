@@ -23,6 +23,9 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
     # browser redirect completing the flow.
     manual: Field::Boolean,
     mcp_server_config: Field::String.with_options(searchable: false),
+    # Set on the token broker's one-time consent: the origin whose parent grant
+    # (McpBrokerGrant) the flow completes into. Blank for a connector's flow.
+    broker_authorization_server: Field::String,
     expires_at: Field::DateTime,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
@@ -53,6 +56,7 @@ class McpOauthPendingFlowDashboard < Administrate::BaseDashboard
     scopes
     resource
     manual
+    broker_authorization_server
     expires_at
     created_at
     updated_at

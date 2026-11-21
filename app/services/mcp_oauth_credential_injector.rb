@@ -74,6 +74,12 @@ class McpOauthCredentialInjector
   def self.oauth_capable_server?(server_name)
     server_config = ServersConfig.credential_config(server_name)
     return false if server_config.nil?
+    # 4. It does not opt into the token broker. A brokered entry is authenticated
+    #    by a per-turn child token Zimmer mints from its own grant (TokenBroker),
+    #    so it has no per-entry OAuth credential, no flow, and nothing for any
+    #    runtime's credentials file — whether or not the catalog still carries a
+    #    static header on it.
+    return false if ServersConfig.find(server_name)&.brokered?
     return false unless REMOTE_TYPES.include?(server_config[:type])
 
     !static_credential_header?(server_config)
@@ -527,12 +533,20 @@ class McpOauthCredentialInjector
     ServersConfig.credential_config(server_name)
   end
 
+  # The session's servers this injector is responsible for. Entries that opt
+  # into the token broker are not among them: they carry a per-turn child token
+  # in their config (TokenBroker), so no OAuth credential — and in particular no
+  # refresh token — is ever written into a runtime's credentials file for one.
   def mcp_servers
-    @mcp_servers ||= if session.respond_to?(:user_selected_mcp_servers)
-      session.user_selected_mcp_servers
-    else
-      plugin_mcp_servers = session.respond_to?(:plugin_mcp_servers) ? session.plugin_mcp_servers : []
-      ((session.mcp_servers || []) + plugin_mcp_servers).uniq
+    @mcp_servers ||= begin
+      names = if session.respond_to?(:user_selected_mcp_servers)
+        session.user_selected_mcp_servers
+      else
+        plugin_mcp_servers = session.respond_to?(:plugin_mcp_servers) ? session.plugin_mcp_servers : []
+        ((session.mcp_servers || []) + plugin_mcp_servers).uniq
+      end
+      brokered = TokenBroker.brokered_among(names)
+      brokered.empty? ? names : names.reject { |name| brokered.include?(name.to_s) }
     end
   end
 
