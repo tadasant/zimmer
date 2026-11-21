@@ -5634,14 +5634,17 @@ provider, or failed before the agent answered (see
 
 - **Claude Code only.** Codex and Pi sessions are settled `unsupported_runtime` and get no reply.
 - **Addressed requests only.** Passive-listening and `new_message` sessions never get one, by design.
-  Neither do sessions fired before this shipped, which carry no `slack_trigger_event_type`.
-- **A crash mid-post is not retried.** `chat.postMessage` is not idempotent, so a post whose answer
-  never came back is recorded `unconfirmed` rather than risked twice.
+  Neither do sessions with no `slack_trigger_event_type`, which a fire records.
+- **A crash or timeout mid-post is not retried.** `chat.postMessage` is not idempotent, so a post
+  whose answer never came back is recorded `unconfirmed` (or `failed:TransientError`) rather than
+  risked twice.
 - **The reply is not edited when capacity returns.** It stays in the thread above the agent's own
   answer, saying the request was queued.
-- **Quota read from the transcript is a guess about the pool.** A running session whose transcript
-  shows a quota wall but that is about to rotate to another account can, if the rotation takes more
-  than five minutes, get the quota reply moments before the agent answers.
+- **A session at rest in `needs_input` with no model turn and no park gets nothing.** That is a
+  user pause or a similar stop, not an error, so no template fits it.
+- **A spot utilization hold is reported as "run out of inference quota".** The spot gate holds a
+  low-priority session at its own quota ceiling, which leaves headroom for priority work, so the
+  pool is not literally empty. To the person who asked, the effect is the same.
 
 ### While Slack is rate-limiting you, Slack triggers fire late
 

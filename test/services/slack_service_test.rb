@@ -758,6 +758,22 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_equal 3, attempts
   end
 
+  test "post_message with retry_timeouts: false does not resend a timed-out post" do
+    attempts = 0
+    fake_client = Object.new
+    fake_client.define_singleton_method(:chat_postMessage) do |**_args|
+      attempts += 1
+      raise Faraday::TimeoutError, "timeout"
+    end
+    SlackService.stubs(:client).returns(fake_client)
+    SlackService.stubs(:sleep)
+
+    assert_raises(SlackService::TransientError) do
+      SlackService.post_message(channel: "C1", text: "hi", retry_timeouts: false)
+    end
+    assert_equal 1, attempts
+  end
+
   test "send_dm opens the conversation then posts into it" do
     mock_client = mock("slack_client")
     SlackService.stubs(:client).returns(mock_client)

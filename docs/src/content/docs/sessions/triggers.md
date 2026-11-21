@@ -458,9 +458,9 @@ and each one links the session.
 
 | Class | When | Reply, roughly |
 | --- | --- | --- |
-| `failed` | the session is `failed` | Zimmer couldn't work on this, its session failed before the agent could reply |
-| `quota` | the session is parked on a `quota_exhausted` auth outage, held or paused by the spot gate for utilization, parked on a provider quota wall, or its transcript carries a quota-wall API error. Five minutes after the message (`QUOTA_THRESHOLD`) | Zimmer is out of inference quota, the request is queued and picks up automatically when capacity returns |
-| `outage` | the session is parked `auth_unrecoverable`, or its transcript carries outage-class API errors while a turn is underway. Fifteen minutes after the message (`OUTAGE_THRESHOLD`), so the hourglass covers the short ones | Zimmer can't reach its AI provider, it keeps retrying and will reply when it gets through |
+| `failed` | the session is `failed`, except by a failure Zimmer resumes on its own: a deploy interruption (`GoodJob::InterruptError`, resumed by `DeploymentRecoveryJob`) or an MCP server waiting on OAuth | Zimmer couldn't work on this, its session failed before the agent could reply |
+| `quota` | the session is parked on a `quota_exhausted` auth outage, or held or paused by the spot gate for utilization. Five minutes after the message (`QUOTA_THRESHOLD`) | Zimmer has run out of inference quota for now, the request is queued, and the agent will reply once quota frees up |
+| `outage` | the session is parked `auth_unrecoverable`, or its transcript carries outage-class API errors since its latest prompt while a turn is underway. Fifteen minutes after the message (`OUTAGE_THRESHOLD`), so the hourglass covers the short ones | Zimmer can't reach its AI provider, it keeps retrying, and the agent will reply once it gets through |
 
 The rules that keep it quiet:
 
@@ -474,7 +474,9 @@ The rules that keep it quiet:
 - **At most one reply per class per session.** A session that was out of quota and later failed gets
   both. One that was out of quota for six hours gets one.
 - A spot session held only because every session slot is taken is busy, not out of quota, and gets
-  no reply. A session that is merely slow gets none either.
+  no reply. Neither does one a user queued or a priority session preempted, nor one that is merely
+  slow. A quota-wall line in the transcript is not enough on its own: Claude Code rotates to another
+  account on one, and a pool that is really out ends in a `quota_exhausted` park.
 
 There is no follow-up when capacity returns: the agent's own reply is the follow-up. Claude Code
 only, for the same reason as the hourglass.
@@ -492,7 +494,8 @@ only, for the same reason as the hourglass.
 | `slack_error_reply_outcome` | why it settled: `not_needed`, `not_addressed`, `unsupported_runtime`, `ended`, `failed_reply_posted`, `post_failed:<slack code>` |
 | `slack_error_reply_reported_at` | when the job first sent an exception for this session to error reporting. It reports once |
 
-Posting needs `chat:write`, which the bot already uses. A Slack refusal (`missing_scope`, a channel
+Posting needs `chat:write`, which the bot already uses. The post is sent with
+`retry_timeouts: false`, so a timed-out post is not resent in process either. A Slack refusal (`missing_scope`, a channel
 the bot has left, a deleted message) is recorded on the class as `failed:<code>`, written to the
 session's log as a warning, and never retried. It raises nothing and pages no one. Only a 429, which
 Slack does not apply, is retried by the next sweep. A session stops being considered a day after it

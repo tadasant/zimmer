@@ -92,21 +92,31 @@ class SlackOutageMarker
   #
   # An API-error entry is the runtime's own line (`isApiErrorMessage: true`, `model: "<synthetic>"`).
   # It is an outage error when it is the provider being unavailable
-  # (ApiErrorRetryService.outage_error?), and a quota error when it is an account quota wall. A
+  # (ApiErrorRetryService.outage_error?). A
   # model turn is an assistant entry from a real model: not an API error, and not `<synthetic>`,
   # which also rules out the "No response requested." stub Claude Code writes on resume
   # (ClaudeTranscriptNormalizer.resume_stub?).
   #
-  # @return [Hash] { model_turn:, outage_error:, quota_error: }, all booleans
+  # `outage_error_since_prompt` is the same as `outage_error`, counted only after the latest `user`
+  # entry, so an error from before a resume does not describe the session now.
+  #
+  # @return [Hash] { model_turn:, outage_error:, outage_error_since_prompt: }, all booleans
   def self.transcript_signals(session)
-    found = { model_turn: false, outage_error: false, quota_error: false }
+    found = { model_turn: false, outage_error: false, outage_error_since_prompt: false }
     session.parsed_transcript.each do |entry|
-      next unless entry.is_a?(Hash) && entry["type"] == "assistant"
+      next unless entry.is_a?(Hash)
+
+      if entry["type"] == "user"
+        found[:outage_error_since_prompt] = false
+        next
+      end
+      next unless entry["type"] == "assistant"
 
       if entry["isApiErrorMessage"] == true
-        text = entry_text(entry)
-        found[:outage_error] = true if ApiErrorRetryService.outage_error?(entry["error"], text)
-        found[:quota_error] = true if text.match?(ApiErrorRetryService::ACCOUNT_QUOTA_LIMIT_PATTERN)
+        if ApiErrorRetryService.outage_error?(entry["error"], entry_text(entry))
+          found[:outage_error] = true
+          found[:outage_error_since_prompt] = true
+        end
       else
         model = entry.dig("message", "model").to_s
         found[:model_turn] = true if model.present? && model != ClaudeTranscriptNormalizer::SYNTHETIC_MODEL

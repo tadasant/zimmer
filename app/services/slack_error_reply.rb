@@ -24,12 +24,16 @@
 #
 #   class   | when                                                                    | waited
 #   --------|-------------------------------------------------------------------------|-------
-#   failed  | the session is `failed`                                                 | any
-#   quota   | parked on a quota_exhausted auth outage, held or paused by the spot      | QUOTA_THRESHOLD
-#           | gate for utilization, parked on a provider quota wall, or its transcript |
-#           | carries a quota-wall API error                                          |
-#   outage  | parked as auth_unrecoverable, or its transcript carries outage-class API | OUTAGE_THRESHOLD
-#           | errors (ApiErrorRetryService.outage_error?) while a turn is underway     |
+#   failed  | the session is `failed`, and not by a failure Zimmer resumes on its own   | any
+#           | (a deploy interruption, an MCP server waiting on OAuth)                  |
+#   quota   | parked on a quota_exhausted auth outage, or held or paused by the spot   | QUOTA_THRESHOLD
+#           | gate for utilization                                                    |
+#   outage  | parked as auth_unrecoverable, or outage-class API errors                 | OUTAGE_THRESHOLD
+#           | (ApiErrorRetryService.outage_error?) since the last user entry, while a  |
+#           | turn is underway                                                        |
+#
+# A quota-wall line in the transcript is deliberately not a quota signal: Claude Code rotates to
+# another account on one, and a pool that is really out of quota ends in a quota_exhausted park.
 #
 # "Waited" is measured from the Slack message's own ts, so a session that is merely slow to start
 # never gets a reply, and the turn-boundary flap of a single API error does not either. Before
@@ -46,7 +50,8 @@
 #
 # chat.postMessage is not idempotent, so this is at-most-once rather than at-least-once: the
 # posting key is written before the call, and a posting key found without a posted key (a crash
-# mid-call) is settled `unconfirmed` and never posted again. Only a 429 — which Slack documents as
+# mid-call) is settled `unconfirmed` and never posted again. It is posted with
+# `retry_timeouts: false`, so SlackService does not resend a timed-out post either, since the post may have landed. Only a 429 — which Slack documents as
 # not applied — clears the intent and is retried on the next sweep. Every other Slack error (a
 # missing scope, a message that is gone) settles the class with its code and is logged on the
 # session; nothing here raises or pages.
@@ -58,11 +63,12 @@ class SlackErrorReply
   TEMPLATES = {
     "failed" => ":x: Zimmer couldn't work on this request: its session failed before the agent " \
                 "could reply. Someone needs to look at it, or you can ask again. <%{session_url}|View the session>",
-    "quota" => ":hourglass_flowing_sand: Zimmer is out of inference quota right now, so it can't start on " \
-               "this yet. Your request is queued and will pick up automatically when capacity returns. " \
+    "quota" => ":hourglass_flowing_sand: Zimmer has run out of inference quota for now, so it can't start on " \
+               "this yet. Your request is queued, and the agent will reply here once quota frees up. " \
                "<%{session_url}|View the session>",
     "outage" => ":warning: Zimmer can't reach its AI provider right now, so it hasn't been able to start " \
-                "on this. It keeps retrying and will reply here once it gets through. <%{session_url}|View the session>"
+                "on this. It keeps retrying, and the agent will reply here once it gets through. " \
+                "<%{session_url}|View the session>"
   }.freeze
 
   # The order a session is classified in: the first class that applies is the one considered.
@@ -73,6 +79,12 @@ class SlackErrorReply
   # minutes, and SlackOutageMarker's reaction already covers the first of them.
   QUOTA_THRESHOLD = 5.minutes
   OUTAGE_THRESHOLD = 15.minutes
+
+  # Failures Zimmer resumes by itself: DeploymentRecoveryJob picks up a session a deploy killed, and
+  # McpOauthResumeService one that was waiting on an MCP server's OAuth. Neither is the end of the
+  # request, so neither gets the "failed" reply.
+  RECOVERABLE_EXCEPTION_CLASSES = %w[GoodJob::InterruptError].freeze
+  RECOVERABLE_FAILURE_REASONS = %w[oauth_required].freeze
 
   # The Slack conditions whose message was addressed to Zimmer.
   ADDRESSED_EVENT_TYPES = %w[bot_mention dm_message].freeze
@@ -141,7 +153,8 @@ class SlackErrorReply
 
   def post(error_class)
     session.merge_metadata!(self.class.posting_key(error_class) => now.iso8601)
-    SlackService.post_message(channel: channel_id, text: self.class.render(error_class, session), thread_ts: thread_ts)
+    SlackService.post_message(channel: channel_id, text: self.class.render(error_class, session),
+                              thread_ts: thread_ts, retry_timeouts: false)
     session.merge_metadata!(self.class.posted_key(error_class) => now.iso8601,
                             self.class.class_outcome_key(error_class) => "posted")
     session.logs.create!(
@@ -186,7 +199,7 @@ class SlackErrorReply
 
   def applies?(error_class)
     case error_class
-    when "failed" then session.failed?
+    when "failed" then session.failed? && !recoverable_failure?
     when "quota" then !ended? && quota_bound?
     when "outage" then !ended? && outage_bound?
     end
@@ -202,21 +215,25 @@ class SlackErrorReply
     seconds.positive? && now - Time.zone.at(seconds) >= threshold
   end
 
-  # Waiting on inference quota: the pool, the spot gate, or the provider said there is none.
-  def quota_bound?
-    return true if metadata["auth_outage_reason"] == AuthOutageParkService::QUOTA_EXHAUSTED
-    return true if metadata[ProviderQuotaWallPark::METADATA_KEY].present?
-    return true if SpotSessionHold.held?(session) && metadata[SpotSessionHold::HELD_REASON] == SpotSessionHold::UTILIZATION_REASON
-    return true if SpotSessionPause.paused?(session) && !SpotSessionPause.queued_by_user?(session) && !SpotSessionPause.preempted?(session)
-
-    session.in_turn_state? && signals[:quota_error]
+  def recoverable_failure?
+    RECOVERABLE_EXCEPTION_CLASSES.include?(metadata["exception_class"]) ||
+      RECOVERABLE_FAILURE_REASONS.include?(metadata["failure_reason"])
   end
 
-  # Waiting on the provider itself: its credentials are unusable, or it keeps answering errors.
+  # Waiting on inference quota: the account pool is out, or the spot gate is holding it for quota.
+  def quota_bound?
+    return true if metadata["auth_outage_reason"] == AuthOutageParkService::QUOTA_EXHAUSTED
+    return true if SpotSessionHold.held?(session) && metadata[SpotSessionHold::HELD_REASON] == SpotSessionHold::UTILIZATION_REASON
+
+    SpotSessionPause.paused?(session) && !SpotSessionPause.queued_by_user?(session) && !SpotSessionPause.preempted?(session)
+  end
+
+  # Waiting on the provider itself: its credentials are unusable, or it has kept answering errors
+  # since the session's latest prompt. An error before a resume says nothing about now.
   def outage_bound?
     return true if metadata["auth_outage_reason"] == AuthOutageParkService::AUTH_UNRECOVERABLE
 
-    session.in_turn_state? && signals[:outage_error]
+    session.in_turn_state? && signals[:outage_error_since_prompt]
   end
 
   def failure_note(error_class, code)

@@ -11,11 +11,15 @@ require "mocha/minitest"
 #   not Claude Code                                            | settled unsupported_runtime
 #   a model turn landed                                        | settled not_needed, never posts
 #   failed, no model turn                                      | posts "failed", settles
-#   quota_exhausted park / spot utilization hold / quota wall  | posts "quota" once the poster waited 5m
+#   failed by a deploy interruption or waiting on OAuth        | no "failed" reply (Zimmer resumes it)
+#   quota_exhausted park / spot utilization hold or pause      | posts "quota" once the poster waited 5m
+#   a quota-wall line in the transcript, no park               | waiting (the pool rotates accounts)
+#   spot pause queued by a user, or preempted                  | waiting
 #   quota, poster waited < 5m                                  | waiting
 #   spot hold for the fleet cap (not quota)                    | waiting
 #   outage-class API errors, poster waited 15m                 | posts "outage"
 #   outage-class API errors, poster waited < 15m               | waiting
+#   outage-class API errors only before the latest prompt      | waiting
 #   quota reply already posted                                 | does not post quota again
 #   quota posted, then failed                                  | posts "failed" too
 #   a post that was started and never confirmed                | unconfirmed, never re-posted
@@ -153,6 +157,23 @@ class SlackErrorReplyTest < ActiveSupport::TestCase
     assert_match(/replied in its thread/, @session.logs.order(:id).last.content)
   end
 
+  test "a session a deploy killed is resumed by Zimmer, so it gets no failed reply" do
+    status!(:failed)
+    @session.merge_metadata!("exception_class" => "GoodJob::InterruptError")
+    SlackService.expects(:post_message).never
+
+    assert_equal :settled, converge
+    assert_equal "ended", metadata["slack_error_reply_outcome"]
+  end
+
+  test "a session failed waiting on an MCP server's OAuth gets no failed reply" do
+    status!(:failed)
+    @session.merge_metadata!("failure_reason" => "oauth_required")
+    SlackService.expects(:post_message).never
+
+    assert_equal :settled, converge
+  end
+
   test "an archived session without a model turn settles ended, silently" do
     status!(:archived)
     SlackService.expects(:post_message).never
@@ -189,23 +210,42 @@ class SlackErrorReplyTest < ActiveSupport::TestCase
     assert_equal :waiting, converge
   end
 
-  test "a running session whose transcript shows a quota wall gets the quota reply" do
-    transcript(user_line, quota_error_line)
+  test "a spot session paused by the ceiling gets the quota reply" do
+    status!(:waiting)
+    @session.merge_metadata!(SpotSessionPause::PAUSED_REASON => "at_utilization_limit")
     expect_post("quota")
 
     assert_equal :posted, converge
   end
 
-  test "quota waits until the poster has waited five minutes" do
-    @session.merge_metadata!("slack_message_ts" => ts_ago(2.minutes))
+  test "a spot session a user queued, or a priority session preempted, is not out of quota" do
+    [ SpotSessionPause::QUEUED_REASON, SpotSessionPause::PREEMPTED_REASON ].each do |reason|
+      status!(:waiting)
+      @session.merge_metadata!(SpotSessionPause::PAUSED_REASON => reason)
+      SlackService.expects(:post_message).never
+
+      assert_equal :waiting, converge
+    end
+  end
+
+  test "a quota-wall line in the transcript alone is not quota: Claude Code rotates to another account" do
     transcript(user_line, quota_error_line)
     SlackService.expects(:post_message).never
 
     assert_equal :waiting, converge
   end
 
+  test "quota waits until the poster has waited five minutes" do
+    @session.merge_metadata!("slack_message_ts" => ts_ago(2.minutes))
+    status!(:waiting)
+    @session.merge_metadata!("auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED)
+    SlackService.expects(:post_message).never
+
+    assert_equal :waiting, converge
+  end
+
   test "the quota reply is posted once, and a later failure still gets its own reply" do
-    transcript(user_line, quota_error_line)
+    @session.merge_metadata!("auth_outage_reason" => AuthOutageParkService::QUOTA_EXHAUSTED)
     expect_post("quota")
     assert_equal :posted, converge
 
@@ -232,6 +272,13 @@ class SlackErrorReplyTest < ActiveSupport::TestCase
   test "outage-class API errors under fifteen minutes wait (the reaction covers those)" do
     @session.merge_metadata!("slack_message_ts" => ts_ago(10.minutes))
     transcript(user_line, api_error_line)
+    SlackService.expects(:post_message).never
+
+    assert_equal :waiting, converge
+  end
+
+  test "outage errors from before the latest prompt do not count" do
+    transcript(user_line, api_error_line, user_line)
     SlackService.expects(:post_message).never
 
     assert_equal :waiting, converge
@@ -298,9 +345,9 @@ class SlackErrorReplyTest < ActiveSupport::TestCase
   end
 
   test "a model turn that landed after the sweep loaded the row wins" do
-    transcript(user_line, quota_error_line)
-    stale = @session.reload
-    @session.update!(transcript: @session.transcript + model_turn_line + "\n")
+    transcript(user_line, api_error_line)
+    stale = Session.find(@session.id)
+    Session.find(@session.id).update_columns(transcript: [ user_line, api_error_line, model_turn_line ].join("\n") + "\n")
     SlackService.expects(:post_message).never
 
     assert_equal :settled, SlackErrorReply.new(stale, now: @now).converge!

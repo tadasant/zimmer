@@ -71,6 +71,9 @@ class FakeSlackWebApi
 
     text = JSON.generate(payload)
     socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{text.bytesize}\r\nConnection: close\r\n\r\n#{text}")
+  rescue StandardError
+    # A client that hung up must not take the accept loop down with it.
+    nil
   ensure
     socket.close
   end

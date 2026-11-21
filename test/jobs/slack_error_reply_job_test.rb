@@ -39,8 +39,11 @@ class SlackErrorReplyJobTest < ActiveJob::TestCase
     assert_equal "posted", healthy.reload.metadata["slack_error_reply_failed_outcome"]
     assert broken.reload.metadata["slack_error_reply_reported_at"].present?
 
-    # The healthy one is settled; the broken one is retried but not reported again.
+    # The broken post may have landed, so the next sweep records it unconfirmed rather than posting
+    # again, and reports nothing further.
     assert_nothing_raised { SlackErrorReplyJob.perform_now }
+    assert_equal "unconfirmed", broken.reload.metadata["slack_error_reply_failed_outcome"]
+    assert_equal "ended", broken.metadata["slack_error_reply_outcome"]
   end
 
   # The whole path with no mock at the Slack boundary: the sweep, the decision, the template, and

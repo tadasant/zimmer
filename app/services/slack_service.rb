@@ -147,13 +147,15 @@ class SlackService
     #   blocks-blind consumer sees, so it must carry the message, not just a label
     # @param blocks [Array<Hash>, nil] optional Block Kit payload
     # @param thread_ts [String, nil] the parent message's ts, to post as a reply in its thread
+    # @param retry_timeouts [Boolean] false for a caller that would rather lose a post than send it
+    #   twice: a timed-out post may have landed, so it is raised as a TransientError, not resent
     # @return [Hash] the chat.postMessage response
-    def post_message(channel:, text:, blocks: nil, thread_ts: nil)
+    def post_message(channel:, text:, blocks: nil, thread_ts: nil, retry_timeouts: true)
       raise ArgumentError, "channel is required to post a message" if channel.blank?
 
       # Not retried in process on a server-side error: Slack documents fatal_error and
       # internal_error as possibly partly applied, and a retried post can land twice.
-      with_error_handling(retry_server_errors: false) do
+      with_error_handling(retry_server_errors: false, retry_timeouts: retry_timeouts) do
         params = { channel: channel, text: text }
         params[:blocks] = blocks if blocks.present?
         params[:thread_ts] = thread_ts if thread_ts.present?
@@ -408,7 +410,8 @@ class SlackService
 
     # retry_server_errors: false hands a server-side error straight back as a
     # TransientError, for a call that is not safe to repeat.
-    def with_error_handling(retry_server_errors: true)
+    # retry_timeouts: false does the same for a timeout, which may come after the request landed.
+    def with_error_handling(retry_server_errors: true, retry_timeouts: true)
       retries = 0
 
       begin
@@ -449,6 +452,8 @@ class SlackService
         # Don't retry API errors (invalid channel, permission denied, etc.)
         raise ApiError.new("Slack API error: #{e.message}", code: e.message)
       rescue Faraday::Error => e
+        raise TransientError, "Timed out communicating with Slack: #{e.message}" if !retry_timeouts && e.is_a?(Faraday::TimeoutError)
+
         # Retry transient network errors (timeouts, connection failures, server errors)
         # with exponential backoff, so a genuinely-down endpoint is not hit at a
         # flat 1s cadence for the whole budget.
