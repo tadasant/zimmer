@@ -54,7 +54,7 @@ class SessionStatusSummary < ApplicationRecord
   # fork instead, which is what stops the repair sweep and every pause from
   # re-forking into it.
   def replay_rejected?
-    failed? && error.to_s.include?(ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX)
+    failed? && error.to_s.match?(/\binvalid_tool_name\b|#{Regexp.escape(ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX)}/)
   end
 
   # A generation is only "pending" while it is plausibly still running. Past

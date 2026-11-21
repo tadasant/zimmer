@@ -856,9 +856,16 @@ token=#{'Zz9' * 12}
     end
   end
 
-  test "a credential-named variable is redacted even when its value is a configuration word" do
-    with_bundle({ "FIXTURE_ADMIN_PASSWORD" => "correct-horse-battery-staple" }) do
-      assert_equal "ENV:FIXTURE_ADMIN_PASSWORD", TranscriptRedactor.known_secrets.to_h["correct-horse-battery-staple"]
+  test "a configuration word is still redacted unless the name says configuration too" do
+    bundle = {
+      "FIXTURE_ADMIN_PASSWORD" => "correct-horse-battery-staple",
+      "SMTP_PASS" => "abcdefghijklmnop",
+      "BACKUP_PASSPHRASE" => "tangerine-otter-violin-quartz",
+      "FIXTURE_SECRET_MODE" => "hidden_shadow_mode"
+    }
+    with_bundle(bundle) do
+      known = TranscriptRedactor.known_secrets.to_h
+      bundle.each { |name, value| assert_equal "ENV:#{name}", known[value], name }
       refute_includes TranscriptRedactor.redact("pw is correct-horse-battery-staple"), "correct-horse-battery-staple"
     end
   end

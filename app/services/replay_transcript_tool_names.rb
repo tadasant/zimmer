@@ -17,10 +17,18 @@
 #
 #   tools.20.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'
 #
-# The redactor no longer takes configuration words (CONFIG_WORD_VALUE), which
-# removes the value that did it. This is the second wall, for whatever value
-# does it next: a transcript stored before that fix, a credential that really
-# is a substring of a tool name.
+# The redactor does not take configuration settings (CONFIG_WORD_VALUE under a
+# CONFIG_VARIABLE_NAME), which covers the value that did it. This is the
+# second wall, for whatever value does it next: a transcript already stored
+# with the marker, a credential that really is a substring of a tool name.
+#
+# Claude Code shapes only. Codex rollouts name tools in `function_call.name`,
+# but fork and unarchive write no Codex transcript (it has no single-file
+# resume path), so there is nothing here for them to repair.
+#
+# Every occurrence of a name repairs the same way, so a `tool_use` and its
+# `tool_reference` agree — except that the 128-character cap could, in
+# principle, collapse two long names that differ only past it.
 #
 # **It does not un-redact.** The original characters are gone and are not
 # recovered; the marker is replaced with `REDACTED`, which is inside the

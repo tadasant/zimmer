@@ -1666,8 +1666,9 @@ gap is worth naming precisely:
   The `ZIMMER_*_BASE_URL` variables are on it by default. Any other externalized-but-not-secret
   variable (an org slug, a model id) is scrubbed out of every transcript that mentions it until a
   deployment adds it to `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`. A configuration word (lowercase
-  letters joined by `_`, `-` or `.`, like `webhook_shadow`) under a name that does not say credential is
-  the exception, and is skipped by shape. The same is true of every entry in the `.env` secret
+  letters joined by `_`, `-` or `.`, like `webhook_shadow`) under a configuration-shaped name
+  (`*_MODE`, `*_ENV`, `*_LEVEL`, …) is the exception, and is skipped by shape. A real credential stored
+  under such a name with an all-lowercase value would be skipped too. The same is true of every entry in the `.env` secret
   bundle, and of any process environment variable whose name says "key", "token", "secret",
   "password" or "credential" and whose value is 16+ characters mixing letters and digits (and is not
   a path, a plain URL or a list of other variables' names). A multi-line value, such as the Parameter

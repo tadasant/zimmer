@@ -2302,7 +2302,7 @@ class Session < ApplicationRecord
       # resume replays the same transcript, so it is named as the thing that will
       # not work.
       "The API rejected a tool name this conversation replays, so the turn did not run. Resuming " \
-        "sends the same name again — fork it from an earlier message, or start a new session"
+        "sends the same name again — fork it, or start a new session"
     when Sessions::SilentRecoveryGuard::FAILURE_REASON
       # `humanize` would render "Recovery produced no output", which states the
       # symptom and hides the two facts a reader needs: Zimmer already tried this

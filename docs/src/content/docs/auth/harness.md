@@ -1185,8 +1185,8 @@ fails the session at once under `failure_reason: invalid_tool_name` and logs a w
 
 The one cause seen so far was a redaction marker inside an MCP tool name, in the stored transcript
 that status-summary forks of session 29423 replayed. Three forks paged `#alerts`
-([#1603](https://github.com/tadasant/zimmer/issues/1603)). That cause is fixed at both ends: the
-redactor no longer takes configuration words, and every path that writes a stored transcript back
+([#1603](https://github.com/tadasant/zimmer/issues/1603)). That cause is covered at both ends: the
+redactor does not take configuration settings, and every path that writes a stored transcript back
 to disk repairs marker-bearing tool names
 ([Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk)).
 If failures keep arriving in the `invalid_tool_name` bucket, the cause is a new one.

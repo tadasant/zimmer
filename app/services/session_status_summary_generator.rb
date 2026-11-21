@@ -399,9 +399,9 @@ class SessionStatusSummaryGenerator
     #
     # A REPLAY REJECTION is the last: the previous fork died on a 400 for a tool
     # name its transcript replays, and another fork of the same transcript is
-    # most plausibly the same 400. Without this the repair sweep and every pause
-    # stood up a fork that failed the same way, each one an ERROR and a page
-    # (#1603). The one-shot reads a rendered excerpt and replays no tool names.
+    # most plausibly the same 400, so the repair sweep and every pause would each
+    # stand up a fork that fails the same way (#1603). The one-shot reads a
+    # rendered excerpt and replays no tool names.
     return run_headless(summary, line_count) if headless || replay_rejected || pool_exhausted? ||
                                                 fork_would_be_refused? || conversation_live?
 

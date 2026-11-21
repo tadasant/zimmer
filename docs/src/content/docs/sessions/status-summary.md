@@ -467,9 +467,10 @@ It is reached from five places a fork is known not to be able to deliver, and on
   ([#1603](https://github.com/tadasant/zimmer/issues/1603)).
 - **An automatic generation after a replay rejection.** While the record's last failure is that
   rejection (`SessionStatusSummary#replay_rejected?`), unforced generations — the sweep, every
-  `pause` — take this path instead of standing up another fork. Before this, the sweep and each pause
-  of session 29423 stood up a fork that failed the same way, and each one paged. A forced
-  Regenerate still forks.
+  `pause` — take this path instead of standing up another fork that fails the same way, which is
+  what paged three times for session 29423. A forced Regenerate still forks. The gate lasts one
+  generation: once the headless blurb lands (or fails with its own reason) the next stale
+  generation forks again, which the replay repair is expected to make succeed.
 - **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
   re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
   panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
