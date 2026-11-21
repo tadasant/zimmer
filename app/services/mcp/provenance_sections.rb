@@ -227,7 +227,12 @@ module Mcp
     # person's words.
     def replying_to_lines(entry, content_limit)
       lines = []
-      if entry.confirmed_pr_url.present?
+      if entry.confirmed_pr_url.present? && entry.channel == HumanMessage::ATTESTED
+        url = Sanitize.sanitize_for_markdown_line(entry.confirmed_pr_url)
+        issuer = Sanitize.sanitize_for_markdown_line(entry.attestation_issuer.to_s)
+        lines << "  They were answering this read-back of #{url}, composed by the Zimmer at #{issuer} and covered by its signature, which this Zimmer verified against a pinned key:"
+        lines.concat(fenced(entry.read_back.to_s, content_limit))
+      elsif entry.confirmed_pr_url.present?
         url = Sanitize.sanitize_for_markdown_line(entry.confirmed_pr_url)
         lines << "  They were answering Zimmer's read-back of #{url} (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):"
         lines.concat(fenced(entry.read_back.to_s, content_limit))

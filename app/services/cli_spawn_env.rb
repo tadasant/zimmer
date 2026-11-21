@@ -101,6 +101,9 @@ module CliSpawnEnv
   #   namespace-migration rake task). No deploy hands it to Zimmer, but a process
   #   that somehow has it must not pass it on: an agent session holding it could
   #   REWRITE or DELETE every production secret.
+  # - MERGE_ATTESTATION_SIGNING_KEY: the Ed25519 key MergeAttestations signs human
+  #   merge approvals with. Another Zimmer treats a token it signs as a person's
+  #   yes, so an agent holding it could approve its own pull requests there.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
@@ -179,6 +182,7 @@ module CliSpawnEnv
       ZIMMER_OPERATOR_SSH_KEY
       ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
       ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
+      MERGE_ATTESTATION_SIGNING_KEY
       SENTRY_DSN_BACKEND
     ]
 

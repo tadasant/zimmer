@@ -92,12 +92,13 @@ session gets exactly the surface it should have and no more.
 | `/mcp?tool_groups=root_data` | [Root data](/sessions/root-data/): the calling session's agent root's persistent records |
 | `/mcp?tool_groups=live_conversations` | [Live Mode](/sessions/live/): read conversations, start one, go back to one, type into it, turn voice on or off, end it; read and change the Live settings and guidance |
 | `/mcp?tool_groups=operating_costs` | [Operating costs](/operate/operating-costs/): what running the deployment costs in real money, by functionality, vendor and root, and the one write that records bills, subscriptions and credits |
+| `/mcp?tool_groups=merge_attestations` | [Merge approvals across deployments](/auth/merge-attestations/): which session here holds a PR, and the one write that accepts another Zimmer's signed human approval for it |
 | `/mcp?tool_groups=live_mode` | [The Live Mode assistant's surface](/sessions/live/#the-live_mode-surface): `quick_router` (prompt only), `get_user_view`, `quick_search_sessions` (no transcript scan), `get_session`, a four-action `action_session` and `send_push_notification` |
 | `/mcp?tool_groups=triggers_readonly,health_readonly` | Any combination; `_readonly` drops the write tools |
 | `/mcp?tool_groups=self_session&session_id=42` | Names the calling session, so self-management tools can default to it |
 
 The base groups are `sessions`, `notifications`, `triggers` and `health`; `gate_decisions`,
-`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data`, `live_conversations` and `operating_costs` are **opt-in** groups, and `self_session` and `live_mode` are composites. Each domain group, opt-in included, has a
+`work_backlog`, `outcome_analyses`, `settings`, `external_apps`, `root_data`, `live_conversations`, `operating_costs` and `merge_attestations` are **opt-in** groups, and `self_session` and `live_mode` are composites. Each domain group, opt-in included, has a
 `_readonly` variant. Omitting `tool_groups` enables the four base groups and nothing else — an
 opt-in group is valid and addressable but never handed out by default, so `/mcp` on its own does
 not carry `record_gate_decision`. An unknown group is dropped with a warning rather than failing
@@ -235,6 +236,7 @@ production.
 | `root_data` (opt-in) | `list_root_collections`, `search_root_records`, `get_root_record`, `put_root_record`, `append_root_record`, `delete_root_record` — the calling root's [persistent data](/sessions/root-data/) |
 | `live_conversations` (opt-in) | `get_live_conversations`, `action_live_conversation`, `get_live_settings`, `action_live_settings`, `get_live_costs` — [Live Mode](/sessions/live/) |
 | `operating_costs` (opt-in) | `get_operating_costs`, `search_operating_cost_records`, `action_operating_costs` — the [Costs](/operate/operating-costs/) page's figures and writes |
+| `merge_attestations` (opt-in) | `get_merge_attestation_target`, `submit_merge_attestation` — the receiving side of [merge approvals across deployments](/auth/merge-attestations/). The write's authority is the token's signature, not the caller; nothing here mints one |
 
 `get_live_conversations` and `action_live_conversation` read and drive [Live Mode](/sessions/live/)
 conversations: whether Live Mode can start, the current conversation and whether voice is on, a

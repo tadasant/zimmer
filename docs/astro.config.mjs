@@ -118,6 +118,7 @@ export default defineConfig({
             { label: "Agent harness credentials", slug: "auth/harness" },
             { label: "MCP server OAuth", slug: "auth/mcp-oauth" },
             { label: "Connecting to /mcp over OAuth", slug: "auth/mcp-authorization-server" },
+            { label: "Merge approvals across deployments", slug: "auth/merge-attestations" },
           ],
         },
         {

@@ -9614,6 +9614,23 @@ A reload is always exact. The live page can be off in these places:
   of every session with that genesis without writing their rows, so a grid filtered to Priority or
   Spot stays as it was until the next load.
 
+## Signed merge approvals inherit the issuer's process boundary
+
+A [merge approval signed for another Zimmer](/auth/merge-attestations/) is only as hard to forge as
+the issuer's signing key is to read. The key is in the Rails process's environment and is stripped
+from every agent CLI's environment, so it is not one `env` away. Agent sessions still run in the same
+container as the same Unix user, so one that went looking could reach it, the same way it could reach
+the database password and write a HumanMessage directly. The approval carries the issuer's trust
+boundary to the receiver unchanged. A receiver limits the damage with its `approvers` map and an
+optional `repos` allowlist, and tokens last five minutes for one commit.
+
+The receiver does not fetch the issuer's JWKS: keys are pinned by hand into
+`MERGE_ATTESTATION_TRUSTED_ISSUERS`, so a rotation is a configuration change on the receiver.
+
+The pin to the approved commit is in the message the merging session gets (`gh pr merge
+--match-head-commit`). Zimmer checks the head before it sends that message; after that, an agent that
+pushes and merges anyway is stopped only by the repository's branch protection.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

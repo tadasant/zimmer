@@ -33,11 +33,17 @@ class GateDecision < ApplicationRecord
 
   # How the row arrived. `import` is the one-time backfill of the JSON ledgers;
   # `mcp` is a gate calling `record_gate_decision`; `api` is a POST to
-  # /api/v1/gate_decisions. Stamped by the writer, never accepted from a caller.
+  # /api/v1/gate_decisions. `attestation` is a human approval another Zimmer
+  # signed and this one verified (MergeAttestations::Acceptor): decision
+  # `human_approved`, written by Zimmer itself, never by a gate. Stamped by the
+  # writer, never accepted from a caller.
   IMPORT = "import"
   MCP = "mcp"
   API = "api"
-  RECORDED_VIA = [ IMPORT, MCP, API ].freeze
+  ATTESTATION = "attestation"
+  RECORDED_VIA = [ IMPORT, MCP, API, ATTESTATION ].freeze
+  # The decision an `attestation` row records.
+  HUMAN_APPROVED = "human_approved"
 
   MAX_URL_LENGTH = 2048
   MAX_SURFACE_LENGTH = 200

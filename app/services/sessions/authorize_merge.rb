@@ -86,14 +86,17 @@ module Sessions
     #   message to the session and in the log line
     # @param act [String, nil] how the sign-off was given, when it was not a
     #   button press (see AutomatedPrompts.merge_authorization_message)
-    def self.call(session:, surface: "the Zimmer dashboard", act: nil)
-      new(session: session, surface: surface, act: act).call
+    # @param head_sha [String, nil] the one commit the sign-off covers, when it
+    #   covers only one (a signed approval from another Zimmer)
+    def self.call(session:, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
+      new(session: session, surface: surface, act: act, head_sha: head_sha).call
     end
 
-    def initialize(session:, surface: "the Zimmer dashboard", act: nil)
+    def initialize(session:, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
       @session = session
       @surface = surface
       @act = act
+      @head_sha = head_sha
     end
 
     def call
@@ -120,7 +123,7 @@ module Sessions
 
       delivered = deliver_automated_message(
         @session,
-        AutomatedPrompts.merge_authorization_message(pr_url, surface: @surface, act: @act),
+        AutomatedPrompts.merge_authorization_message(pr_url, surface: @surface, act: @act, head_sha: @head_sha),
         event_description: "User authorized the merge of #{pr_url} #{@act.present? ? "in #{@surface}" : "with the Merge button in #{@surface}"}",
         origin: "caller"
       )

@@ -21,6 +21,8 @@ module Mcp
   #                    OPT-IN
   #   operating_costs → read and write the all-in operating-cost ledger behind
   #                    the Costs page. OPT-IN
+  #   merge_attestations → receive signed human merge approvals from another
+  #                    Zimmer (MergeAttestations). OPT-IN
   #   self_session   → the curated set auto-injected into every session, so a
   #                    session can manage itself (notes/title/heartbeat/archive),
   #                    notify its user, and schedule its own wake-ups
@@ -46,7 +48,7 @@ module Mcp
     # included — but deliberately outside the default-everything set, the way
     # COMPOSITE_GROUPS is. A group lands here when the cost of every unscoped
     # connection carrying its write tools outweighs the convenience.
-    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations operating_costs].freeze
+    OPT_IN_GROUPS = %w[gate_decisions work_backlog outcome_analyses settings external_apps root_data live_conversations operating_costs merge_attestations].freeze
 
     # A composite group is a curated cut across domain groups, never part of
     # "no groups". `live_mode` is the one a Live conversation's own `zimmer-live`
@@ -382,7 +384,16 @@ module Mcp
       # `operating_costs_readonly` for the two reads. Not in `self_session`.
       Definition.new(klass: "Mcp::Tools::GetOperatingCosts", group: "operating_costs", write: false),
       Definition.new(klass: "Mcp::Tools::SearchOperatingCostRecords", group: "operating_costs", write: false),
-      Definition.new(klass: "Mcp::Tools::ActionOperatingCosts", group: "operating_costs", write: true)
+      Definition.new(klass: "Mcp::Tools::ActionOperatingCosts", group: "operating_costs", write: true),
+
+      # Cross-Zimmer merge approvals, receiving side (MergeAttestations).
+      # OPT-IN: only the connection another Zimmer drives this one through
+      # names it. The write is safe on any connection in the sense that what
+      # authorizes a merge is the token's signature, not the caller, but a tool
+      # every session is offered for no reason is noise. Nothing here mints:
+      # issuing is LiveConversations::AuthorizeMerge's, in process.
+      Definition.new(klass: "Mcp::Tools::GetMergeAttestationTarget", group: "merge_attestations", write: false),
+      Definition.new(klass: "Mcp::Tools::SubmitMergeAttestation", group: "merge_attestations", write: true)
     ].freeze
 
     module_function
