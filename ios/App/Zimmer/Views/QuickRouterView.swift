@@ -6,10 +6,10 @@ import ZimmerKit
 /// extension, recorded as `ios_app`.
 ///
 /// Three ways in, as the web UI has: the field pinned to the foot of the board
-/// (`QuickRouterBar`, the web's "What do you want to do?" box), a button in the corner of
-/// every other screen (`QuickRouterButton`, the web's bubble), and this sheet, which the
-/// button and the bar's sparkles open. The sheet is the web bubble's panel: the words, photos
-/// and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
+/// (`QuickRouterBar`, the web's "What do you want to do?" box, with its own paperclip), a
+/// button in the corner of every other screen (`QuickRouterButton`, the web's bubble), and
+/// this sheet, which the button and the bar's sparkles open. The sheet is the web bubble's
+/// panel: the words, photos and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
 /// session, the new one threads under it, and that session's page goes with the words as the
 /// bubble sends the page it was typed on. *Open the session when it starts* off is the
 /// bubble's plain *Submit*: the session starts and this screen stays.
@@ -30,8 +30,9 @@ struct QuickRouterView: View {
     @State private var threadUnderParent = true
     /// The web bubble's *Submit & Open* (on) or *Submit* (off).
     @State private var opensSession = true
-    /// The board's bar opened this sheet: the words go back to the bar when it closes, emptied
-    /// by a start. Held here, not read off `AppModel`, so another opening cannot change it.
+    /// The sheet opened on a draft — the board bar's, or a failed or edited start's: the words
+    /// and attachments go to the bar when it closes, emptied by a start. Held here, not read off
+    /// `AppModel`, so another opening cannot change it.
     @State private var openedFromBar = false
     /// A start succeeded. The sheet's `onDisappear` can run before or after `start()` returns,
     /// so this, not `isStarting` alone, is what keeps it from handing the words back.
@@ -105,10 +106,11 @@ struct QuickRouterView: View {
                 }
             }
             .onAppear {
-                // Words typed in the board's bar come along when it opens the sheet.
+                // Words typed and files attached in the board's bar come along when it opens the sheet.
                 if let draft = app.quickRouterDraft {
                     openedFromBar = true
-                    if prompt.isEmpty { prompt = draft }
+                    if prompt.isEmpty { prompt = draft.prompt }
+                    if attachments.isEmpty { attachments = draft.attachments }
                     app.quickRouterDraft = nil
                 }
                 #if DEBUG
@@ -117,9 +119,11 @@ struct QuickRouterView: View {
                 focused = true
             }
             .onDisappear {
-                // Closed without starting: the bar gets the words as the sheet left them. After a
-                // start, `start()` empties the bar instead.
-                if openedFromBar, !isStarting, !started { app.quickRouterBarHandback = prompt }
+                // Closed without starting: the bar gets the words and attachments as the sheet left
+                // them. After a start, `start()` empties the bar instead.
+                if openedFromBar, !isStarting, !started {
+                    app.quickRouterBarHandback = QuickRouterDraft(prompt: prompt, attachments: attachments)
+                }
             }
             .interactiveDismissDisabled(isStarting)
             .task { configs = try? await app.api.configs() }
@@ -194,16 +198,8 @@ struct QuickRouterView: View {
     /// Add what the pickers returned, refusing what the server would refuse — the whole
     /// request would fail on it — and saying what could not be read at all.
     private func attach(_ new: [MessageAttachment], problems: [String]) {
-        var refusals = problems
-        for attachment in new {
-            if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
-                refusals.append(refusal)
-            } else {
-                attachments.append(attachment)
-            }
-        }
-        if let first = refusals.first {
-            notice = refusals.count == 1 ? first : "\(first) (and \(refusals.count - 1) more not attached)"
+        if let refused = attachments.attach(new, problems: problems) {
+            notice = refused
             Haptics.failure()
         }
     }
@@ -230,7 +226,7 @@ struct QuickRouterView: View {
             page: app.quickRouterPage
         )
         started = true
-        if openedFromBar { app.quickRouterBarHandback = "" }
+        if openedFromBar { app.quickRouterBarHandback = QuickRouterDraft(prompt: "") }
         // Closes the sheet and opens the session's page at once; the page shows the start on
         // its way, and a failed one with the words kept.
         app.startQuickRouter(request, open: opensSession)
@@ -239,9 +235,11 @@ struct QuickRouterView: View {
 
 /// The web UI's prompt box on the board, pinned to the foot of the Sessions screen: the
 /// first thing a thumb reaches, and the most prominent thing on the main screen. Type a
-/// sentence, send it, and the session it starts opens. The sparkles open the sheet with
-/// the words so far, for photos, files and the Advanced choices. While it has the keyboard an
-/// X on its leading side, across the field from send, empties it as the search box's Cancel does.
+/// sentence, send it, and the session it starts opens. The paperclip at the field's end attaches
+/// photos and files right here, shown as chips above the field and sent with the words; the
+/// sparkles open the sheet with the words and attachments so far, for the Advanced choices. While
+/// it has the keyboard an X on its leading side, across the field from send, empties it as the
+/// search box's Cancel does.
 ///
 /// It stands aside while the search box has the keyboard — a second field above the
 /// keyboard would take the room the results need — and while rows are being selected,
@@ -251,6 +249,7 @@ struct QuickRouterBar: View {
     @Environment(\.isSearching) private var isSearching
     var editing = false
     @State private var prompt = ""
+    @State private var attachments: [MessageAttachment] = []
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -258,6 +257,33 @@ struct QuickRouterBar: View {
     }
 
     private var bar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !attachments.isEmpty {
+                AttachmentChips(attachments: $attachments, identifier: "quickrouter.bar.attachment")
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            row
+        }
+        .animation(.easeOut(duration: 0.2), value: attachments.isEmpty)
+        .padding(.horizontal, Theme.margin)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
+        .background {
+            Theme.ground
+                .overlay(alignment: .top) { Theme.rule.frame(height: 1) }
+                .ignoresSafeArea(edges: .bottom)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("quickrouter.bar")
+        // The sheet this bar opened has closed: nothing after a start, so the words typed
+        // before the sheet opened do not outlive the session they started; the sheet's words
+        // and attachments after a Cancel. Read on appear too, for a hand-back made while the bar
+        // stood aside.
+        .onChange(of: app.quickRouterBarHandback) { _, _ in takeHandback() }
+        .onAppear { takeHandback() }
+    }
+
+    private var row: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if focused {
                 // The search box's Cancel, beside the bar for as long as it has the keyboard:
@@ -276,14 +302,14 @@ struct QuickRouterBar: View {
                 .accessibilityHint("Clears the words and puts the keyboard away")
                 .accessibilityIdentifier("quickrouter.bar.cancel")
             }
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
                 Button {
                     // Let go of the keyboard first: UIKit hands first responder back to the
                     // field that had it when a sheet closes, so a bar still focused here would
                     // take the keyboard again as the sheet's start closes it.
                     focused = false
                     dismissKeyboard()
-                    app.openQuickRouter(draft: prompt)
+                    app.openQuickRouter(draft: QuickRouterDraft(prompt: prompt, attachments: attachments))
                 } label: {
                     Image(systemName: "sparkles")
                         .font(.system(size: 15, weight: .semibold))
@@ -297,6 +323,9 @@ struct QuickRouterBar: View {
                     .foregroundStyle(Theme.ink)
                     .focused($focused)
                     .accessibilityIdentifier("quickrouter.bar.field")
+                // Here, not only in the sheet behind the sparkles: the field a thumb is already
+                // in is where a photo is looked for.
+                AttachMenu(add: { attach($0, problems: $1) }, identifier: "quickrouter.bar.attach", compact: true)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -323,36 +352,33 @@ struct QuickRouterBar: View {
             .accessibilityIdentifier("quickrouter.bar.start")
         }
         .animation(.easeOut(duration: 0.2), value: focused)
-        .padding(.horizontal, Theme.margin)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
-        .background {
-            Theme.ground
-                .overlay(alignment: .top) { Theme.rule.frame(height: 1) }
-                .ignoresSafeArea(edges: .bottom)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("quickrouter.bar")
-        // The sheet this bar opened has closed: nothing after a start, so the words typed
-        // before the sheet opened do not outlive the session they started; the sheet's words
-        // after a Cancel. Read on appear too, for a hand-back made while the bar stood aside.
-        .onChange(of: app.quickRouterBarHandback) { _, _ in takeHandback() }
-        .onAppear { takeHandback() }
     }
 
     private func takeHandback() {
-        guard let words = app.quickRouterBarHandback else { return }
-        prompt = words
+        guard let draft = app.quickRouterBarHandback else { return }
+        prompt = draft.prompt
+        attachments = draft.attachments
         app.quickRouterBarHandback = nil
+    }
+
+    /// What the paperclip's pickers returned, less what the server would refuse; a refusal is
+    /// the board's toast, since the bar has no room of its own for one.
+    private func attach(_ new: [MessageAttachment], problems: [String]) {
+        if let refused = attachments.attach(new, problems: problems) {
+            app.notice = refused
+            Haptics.failure()
+        }
     }
 
     private var canSend: Bool {
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Back out without sending: the bar returns to rest, empty and without the keyboard.
+    /// Back out without sending: the bar returns to rest, empty of words and attachments, and
+    /// without the keyboard.
     private func cancel() {
         prompt = ""
+        attachments = []
         focused = false
         dismissKeyboard()
     }
@@ -362,8 +388,9 @@ struct QuickRouterBar: View {
     private func start() {
         focused = false
         dismissKeyboard()
-        app.startQuickRouter(prompt)
+        app.startQuickRouter(QuickRouterRequest(prompt: prompt, attachments: attachments))
         prompt = ""
+        attachments = []
     }
 }
 

@@ -295,7 +295,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
                                   prompt: text, createdAt: Date(), updatedAt: Date(),
                                   priorityClass: request.spot ? "spot" : "priority", precedence: request.spot ? topOfSpot : nil,
                                   model: request.model))
-        conversations[id] = [ConversationMessage(id: 0, role: .user, content: text, timestamp: Date())]
+        // The first message names what went with it, as a follow-up's does: the server hands the
+        // attachments to the session's first turn.
+        let named = request.attachments.isEmpty ? text : text + "\n\n📎 " + request.attachments.map(\.filename).joined(separator: ", ")
+        conversations[id] = [ConversationMessage(id: 0, role: .user, content: named, timestamp: Date())]
         quickRouterRequests.append(request)
         return id
     }

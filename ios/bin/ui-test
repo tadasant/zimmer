@@ -485,6 +485,8 @@ elif [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot session-detail-trashed -ZimmerFixture -ZimmerFixtureOpenSession 1019
   shoot session-prompt -ZimmerFixture -ZimmerFixtureOpenSession 1035
   shoot prompt-form -ZimmerFixture -ZimmerFixtureOpenSession 1035 -ZimmerFixtureOpenPrompt
+  # The board's bar with a file attached from its own paperclip, then the sheet.
+  shoot quick-router-bar-attachment -ZimmerFixture -ZimmerFixtureQuickRouterAttachment
   shoot quick-router -ZimmerFixture -ZimmerFixtureQuickRouter
   shoot quick-router-advanced -ZimmerFixture -ZimmerFixtureQuickRouter -ZimmerFixtureQuickRouterAdvanced
   shoot quick-router-from-session -ZimmerFixture -ZimmerFixtureOpenSession 1038 -ZimmerFixtureQuickRouter
