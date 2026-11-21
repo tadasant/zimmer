@@ -641,10 +641,11 @@ behaves the same way, for the same reason.
 `CliSpawnEnv` clears `SENTRY_DSN_BACKEND`, `OTEL_LOGS_EXPORTER_ENDPOINT` and
 `OTEL_LOGS_EXPORTER_BEARER_TOKEN` from every agent process, so the shared ingest token is not in an
 agent's shell. The cost is that a `bin/rails` command an agent runs in a repo clone exports nothing:
-its WARN/ERROR lines stay on its own stdout, and obs never sees them. Those records were only ever
-noise (stamped `deployment.environment=test`, outside every production alert rule), but they are gone
-as evidence too. A clone that genuinely wants to export can set both variables in its own `.env`,
-which wins.
+its WARN/ERROR lines stay on its own stdout, and obs never sees them. That is what keeps a clone's
+records out of the [alert rule](/operate/background-jobs/#who-is-allowed-to-page), which pages on
+anything not stamped staging, and it also means they are not there as evidence. A clone that
+genuinely wants to export can set both variables in its own `.env`, which wins, and then those
+records do count toward the rule.
 
 `ZIMMER_GIT_SHA` is not scrubbed, so a clone that does export carries a `service.version` that is
 true of the **image** and false of the code that emitted it: an agent session works in a clone at
@@ -1842,6 +1843,11 @@ key, the Parameter Store service-account keys, the merge-attestation signing key
 OTLP endpoint and token, the web sign-in and X OAuth client secrets, and `SLACK_BOT_TOKEN`. The full
 list, with a reason for each, is `CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS`. A clone's `.env` still wins
 over the scrub, which is how a session given a Slack server keeps its `SLACK_BOT_TOKEN`.
+`BundleInstallJob` clears the same list before it runs a clone's `bundle install`, since that
+evaluates the agent's Gemfile. Two `claude` spawns do not go through the scrub, the headless-inference
+`claude -p` (`NativeClaudePrintRunner`) and Live mode's client. Both run with `--tools ""` (no shell,
+no file access) under `--strict-mcp-config`: the first with no MCP server at all, Live with only
+Zimmer's own endpoint. So neither model has a way to read its environment.
 
 One secret is still inherited on purpose: `ZIMMER_PROD_API_KEY` (`ZIMMER_STAGING_API_KEY` on
 staging), the key every session's Zimmer MCP servers share. Codex reads it from the environment: the

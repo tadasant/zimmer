@@ -33,7 +33,7 @@ module CliSpawnEnv
   SCRUBBED_SECRET_ENV_VARS = {
     "RAILS_MASTER_KEY" =>
       "Decrypts the credentials mounted at /rails/config/credentials, mcp_secrets included. " \
-      "A session's own Rails app reads its own key from its own clone.",
+      "A clone's Rails app needs none: no clone has encrypted development or test credentials.",
     "SECRET_KEY_BASE" =>
       "Signs and encrypts Zimmer's cookies: holding it is forging a web sign-in.",
     "API_KEYS" =>

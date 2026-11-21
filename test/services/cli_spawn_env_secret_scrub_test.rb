@@ -40,7 +40,7 @@ class CliSpawnEnvSecretScrubTest < ActiveSupport::TestCase
   end
 
   teardown do
-    @saved_env.each { |name, value| ENV[name] = value }
+    @saved_env&.each { |name, value| ENV[name] = value }
     ENV["CLAUDE_SESSION_CONFIG_DIR"] = @original_config_dir
     FileUtils.rm_rf(@test_dir)
     FileUtils.rm_rf(@config_base)
@@ -96,15 +96,16 @@ class CliSpawnEnvSecretScrubTest < ActiveSupport::TestCase
     adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
     env = @process_manager.spawned_processes.last[:env]
 
-    output, status = Open3.capture2(env, "env")
+    # Assertions name variables, never print `output`: it is this process's whole
+    # environment, and a failure run inside an agent session would put it in a transcript.
+    output, status = Open3.capture2(env, "env", "-0")
     assert status.success?
-    names = output.lines.map { |line| line.split("=", 2).first }
+    child = output.split("\0").to_h { |pair| pair.split("=", 2) }
 
-    assert_empty SCRUBBED & names, "a scrubbed secret reached the child process"
-    assert_empty(SCRUBBED.select { |name| output.include?(sentinel(name)) },
-      "a scrubbed secret's value reached the child process")
+    leaked = SCRUBBED.select { |name| child.key?(name) || child.value?(sentinel(name)) }
+    assert leaked.empty?, "scrubbed secrets reached the child process: #{leaked.join(', ')}"
     INHERITED.each do |name|
-      assert_includes output, "#{name}=#{sentinel(name)}", "#{name} is documented as inherited"
+      assert child[name] == sentinel(name), "#{name} is documented as inherited, but the child does not have it"
     end
   end
 

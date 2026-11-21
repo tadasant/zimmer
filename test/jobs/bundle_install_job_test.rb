@@ -86,6 +86,24 @@ class BundleInstallJobTest < ActiveJob::TestCase
     FileUtils.rm_rf(@image_bundle) if @image_bundle && Dir.exist?(@image_bundle)
   end
 
+  # `bundle install` runs the clone's Gemfile, which is the agent's branch's code, so it
+  # gets Zimmer's secrets no more than the agent process does.
+  test "bundler runs without Zimmer's own secrets in its environment" do
+    saved = ENV["RAILS_MASTER_KEY"]
+    ENV["RAILS_MASTER_KEY"] = "sentinel-master-key"
+    job = BundleInstallJob.new
+    job.instance_variable_set(:@working_directory, @working_directory)
+
+    env = job.send(:bundler_env, nil)
+
+    CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS.each_key do |name|
+      assert env.key?(name), "#{name} must be present as nil so the subprocess has it unset"
+      assert_nil env[name]
+    end
+  ensure
+    ENV["RAILS_MASTER_KEY"] = saved
+  end
+
   # --- what the job already had to do ------------------------------------------------
 
   test "job completes successfully when bundle install succeeds" do

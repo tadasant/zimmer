@@ -83,8 +83,8 @@ With web sign-in off, "anyone who can reach the host" includes every agent sessi
 the production host, and the Rails app answers from inside a session's shell. Nothing in the app
 stops a session from reading the MCP and X tokens in `/supervisor`, minting or revoking an API key,
 or halting the job queues from `/health`. The same holds for every member of the tailnet. With it on,
-a session's `curl` meets `/login`, but the wall is not a boundary against a session. Zimmer no longer
-hands a session `SECRET_KEY_BASE` or `API_KEYS` in its environment, but the session runs as the same
+a session's `curl` meets `/login`, but the wall is not a boundary against a session. Zimmer does not
+hand a session `SECRET_KEY_BASE` or `API_KEYS` in its environment, but the session runs as the same
 user as the app, so it can read both from the app's own process (`/proc/<pid>/environ`) and forge a
 sign-in cookie. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
 [the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
@@ -193,7 +193,8 @@ What it still isn't:
 `/settings/api_keys` (linked from Settings) lists every key by name, with where it came from, its
 fingerprint, and when it was last used. It marks the key this deployment gives its own agent
 sessions' Zimmer MCP servers. `CliSpawnEnv` clears `API_KEYS` from every agent process, so a
-session's environment holds only that shared key (`ZIMMER_PROD_API_KEY`), not the whole list. The
+session's environment holds only that shared key (`ZIMMER_PROD_API_KEY`, or
+`ZIMMER_STAGING_API_KEY` on staging), not the whole list. The
 list is still one `/proc` read away, because sessions run as the app's Unix user. Only a minted key is
 out of an agent's reach. From there you can:
 
