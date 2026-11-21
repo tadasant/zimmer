@@ -1030,9 +1030,9 @@ final class LiveCall: ObservableObject {
         switch action {
         case let .play(cue, delay):
             if audio.play(cue, after: delay) { telemetry.track(.cue(cue)) }
-        case let .startLoop(cue):
+        case let .startLoop(cue, delay):
             looping = (cue, Self.now)
-            audio.startLoop(cue)
+            audio.startLoop(cue, after: delay)
             telemetry.track(.loopCue(cue, on: true))
         case .stopLoop:
             audio.stopLoop()

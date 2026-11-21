@@ -37,7 +37,13 @@ const SOUNDS = {
   ended: () => note(329.63, 0.22, 0.14)
 }
 
-export const HEARD_LEAD = 0.35
+// How long the person has to stay quiet before any cue answers their stopping
+// (LiveCue.settle on the phone): turn detection ends a turn on a short pause,
+// and a cue then tells someone mid-thought they were cut off. Their speech
+// starting again cancels the cue before it sounds. A tool or delegation
+// starting is committed work, not a pause, and does not wait.
+export const SETTLE = 1.5
+export const HEARD_LEAD = SETTLE
 export const LOOPS = {
   thinking: { period: 1, lead: 1, ceiling: 45 },
   working: { period: 2.5, lead: 0.35, ceiling: 600 }
@@ -53,11 +59,15 @@ export class LiveCueDirector {
     this.talking = false
     this.failureSounded = false
     this.failureHeld = false
+    // The person just stopped and nothing has answered it: the next loop to
+    // start waits SETTLE first, since the stop may be a pause.
+    this.stopUnanswered = false
     this.loop = null
   }
 
   transition(state) {
     this.state = state
+    if (state !== "thinking" && state !== "working") this.stopUnanswered = false
     const actions = []
     if (state === "listening" && !this.greeted) {
       this.greeted = true
@@ -73,13 +83,20 @@ export class LiveCueDirector {
   personTalking() {
     this.talking = true
     this.failureSounded = false
+    this.stopUnanswered = false
     this.loop = null
     return [{ stopCues: true }]
   }
 
   personStopped() {
     this.talking = false
-    const held = this.failureHeld ? this.actionFailed() : []
+    // A stop under a reply is not the end of a turn the call is answering.
+    this.stopUnanswered = this.state !== "speaking"
+    const held = []
+    if (this.failureHeld && !this.failureSounded) {
+      this.failureSounded = true
+      held.push({ play: "failed", after: SETTLE })
+    }
     this.failureHeld = false
     return [...this.settle(), ...held]
   }
@@ -89,6 +106,8 @@ export class LiveCueDirector {
   }
 
   toolsRunning(count) {
+    // A tool starting is work the model committed to: its loop needs no settling.
+    if (count > this.tools) this.stopUnanswered = false
     this.tools = count
     return this.settle()
   }
@@ -145,7 +164,10 @@ export class LiveCueDirector {
     if (wanted === this.loop) return []
     const stopping = this.loop ? [{ stopLoop: true }] : []
     this.loop = wanted
-    return [...stopping, ...(wanted ? [{ startLoop: wanted }] : [])]
+    if (!wanted) return stopping
+    const start = this.stopUnanswered ? { startLoop: wanted, after: SETTLE } : { startLoop: wanted }
+    this.stopUnanswered = false
+    return [...stopping, start]
   }
 }
 
@@ -180,17 +202,17 @@ export class LiveCuePlayer {
       if (action.play) this.sound(action.play, action.after || 0, this.oneShots)
       if (action.stopLoop) this.stopLoop()
       if (action.stopCues) this.stopCues()
-      if (action.startLoop) this.startLoop(action.startLoop)
+      if (action.startLoop) this.startLoop(action.startLoop, action.after || 0)
     })
   }
 
-  startLoop(cue) {
+  startLoop(cue, after = 0) {
     const { period, lead, ceiling } = LOOPS[cue]
     const repeat = () => {
       this.sound(cue, 0, this.loopSounds)
       this.loopTimer = setTimeout(repeat, period * 1000)
     }
-    this.loopTimer = setTimeout(repeat, lead * 1000)
+    this.loopTimer = setTimeout(repeat, (after + lead) * 1000)
     this.ceilingTimer = setTimeout(() => this.onLoopTimeout(), ceiling * 1000)
   }
 

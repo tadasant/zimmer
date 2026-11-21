@@ -382,6 +382,14 @@ CarPlay's **Send now** ends a turn OpenAI's turn detection has not ended, by com
 
 The phone and CarPlay play the soft-edged cues in `ios/LIVE_CUES.md`: a rounded 30 ms attack, no note above G5, sine pulses for thinking and working, and near speech level. The browser's call dock (`lib/live_cues.js`) still plays the earlier set: quieter, with a 5 ms attack, and with connected and disconnected reaching B5. The events and rules are the same, though its thinking tick still comes once a second rather than every 1.2 s, and `LiveVoiceCuesTest` holds the web's levels under its own ceiling, but nothing makes the two sets sound alike.
 
+### A failure held while you talked is lost if you pause and carry on
+
+A tool that fails while you are talking holds its Failed cue until you stop, and then it waits
+`LiveCue.settle` like every cue answering a stop. If you talk again inside that time, the cue is
+dropped with the rest, and is not held again: the cue director has no clock, so it cannot tell a
+Failed still waiting from one that already sounded. The model's reply usually says the failure
+anyway.
+
 ### The Live cues have not been heard in a car
 
 The cues are tested as samples: level, pitch, attack, brightness and length (`LiveDiagnosticsTests`). What a driver hears also passes through the voice-processing engine, the CarPlay route and the car's own processing, and none of that runs in CI. Whether each cue carries over road noise without sounding harsh is checked by ear on a drive, with the checklist in `ios/LIVE_CUES.md`.
@@ -523,8 +531,9 @@ no speech boundaries, so a call counts you as talking when your transcript start
 heard when it has been quiet for 0.6 s with no answer begun. Whether GPT-Live streams the person's
 transcript while they speak, or only once they stop, has not been checked on a real call. OpenAI's
 guide says each fragment carries its interval on the session timeline and that delivery can be
-uneven, but not when fragments are sent. If only afterwards, Heard comes late or not at all, and a
-pause mid-sentence longer than 0.6 s can sound Heard early. The phone logs each run of the person's
+uneven, but not when fragments are sent. If only afterwards, Heard comes late or not at all. The
+Heard note itself waits a further 1.5 s (`LiveCue.settle`) and is dropped if your transcript
+resumes, so a pause mid-sentence sounds nothing unless it outlasts both. The phone logs each run of the person's
 transcript as `gpt_live.input_transcript`: how long they spoke by GPT-Live's intervals, over how
 long the fragments arrived, and `streamed` when the second is at least half the first. The first
 real call answers this. A CarPlay

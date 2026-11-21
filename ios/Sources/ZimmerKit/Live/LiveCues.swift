@@ -18,8 +18,8 @@ import Foundation
 ///   yet;
 /// - **connected**: two rising notes (D5 then G5), once, when the call is up and listening;
 /// - **heard**: one short note (D5, the first note of *connected*), when the person stops
-///   talking and Zimmer takes the line on. It waits `heardLead`, so an answer that starts within
-///   it gets none;
+///   talking and Zimmer takes the line on. It waits `heardLead` (`settle`), so an answer that
+///   starts within it gets none, and a pause the person talks on from gets none either;
 /// - **thinking**: one soft sine pulse (C5, 90 ms) every 1.2 seconds, while the model works on
 ///   an answer and no tool is running. It gives up after `ceiling`;
 /// - **working**: a pair (A4 then C5) every 2.5 seconds, while a tool runs, for as long as one
@@ -68,8 +68,16 @@ public enum LiveCue: String, Sendable, CaseIterable {
         ($0, Double($0.samples().count) / RealtimeAudio.sampleRate)
     })
 
+    /// How long the person has to stay quiet before any cue answers their stopping: the *heard*
+    /// note, the loop that starts because they stopped, a failure held while they talked. Turn
+    /// detection ends a turn on a pause of half a second or less, and a cue then tells someone
+    /// mid-thought that they have been cut off. Waited out, a pause they talk on from sounds
+    /// nothing: their speech starting cancels the cue before it plays (`.stopCues`). Work the
+    /// model has committed to — a tool or a delegation starting — is not a pause and does not wait.
+    public static let settle: TimeInterval = 1.5
+
     /// How long after the person stops talking the *heard* note comes.
-    public static let heardLead: TimeInterval = 0.35
+    public static let heardLead: TimeInterval = settle
 
     /// How often the cue repeats, for the two that loop.
     /// Thinking pulses a little slower than once a second: often enough to say the call is alive,
@@ -195,20 +203,21 @@ public struct LiveCueGate: Sendable, Equatable {
 /// | --- | --- |
 /// | Talk was pressed, or a call starts that nobody pressed for (`LiveCall`, not this type) | *pressed*, once |
 /// | The call is up | *connected*, once |
-/// | The person stopped talking and the line will be answered | *heard* |
-/// | The model is working on an answer, no tool running | *thinking* loop |
+/// | The person stopped talking and the line will be answered | *heard*, once they have been quiet for `LiveCue.settle` |
+/// | The model is working on an answer, no tool running | *thinking* loop (after `settle`, when the person just stopped) |
 /// | A tool is running | *working* loop, to its end |
 /// | The last tool finished, reply not started | back to the *thinking* loop |
-/// | The person starts talking, or a reply starts | every cue stops at once; none starts until they stop |
-/// | The person stops, or a reply ends, with a tool still running | *working* loop again |
-/// | A tool failed, a reply failed or was cut short, an error ended the wait for an answer | *failed*, once a turn, after the person stops talking |
+/// | The person starts talking, or a reply starts | every cue stops at once, one still waiting out `settle` included: a pause they talk on from sounds nothing |
+/// | The person stops, or a reply ends, with a tool still running | *working* loop again (after `settle`, when the person stopped) |
+/// | A tool failed, a reply failed or was cut short, an error ended the wait for an answer | *failed*, once a turn; held while the person talks, and `settle` after they stop |
 /// | The thinking or working ceiling passes | the loop stops, *failed* |
 /// | The person hangs up | *ended* |
 /// | The call drops | *disconnected* |
 public struct LiveCueDirector: Sendable, Equatable {
     public enum Action: Equatable, Sendable {
         case play(LiveCue, after: TimeInterval = 0)
-        case startLoop(LiveCue)
+        /// Start the loop `after` plus the cue's own `lead` from now.
+        case startLoop(LiveCue, after: TimeInterval = 0)
         case stopLoop
         /// Stop the loop and any one-shot still sounding or waiting to.
         case stopCues
@@ -237,12 +246,17 @@ public struct LiveCueDirector: Sendable, Equatable {
     private var talking = false
     private var failureSounded = false
     private var failureHeld = false
+    /// The person just stopped talking and nothing has answered it yet: the next loop to start
+    /// waits `LiveCue.settle` first, since the stop may be a pause.
+    private var stopUnanswered = false
     private(set) var loop: LiveCue?
 
     public init() {}
 
     public mutating func transition(to state: LiveVoiceState) -> [Action] {
         self.state = state
+        // Only working on an answer follows from the stop; anything else answered it.
+        if state != .thinking && state != .working { stopUnanswered = false }
         var actions: [Action] = []
         switch state {
         case .listening:
@@ -265,16 +279,25 @@ public struct LiveCueDirector: Sendable, Equatable {
         case .personTalking:
             talking = true
             failureSounded = false
+            stopUnanswered = false
             loop = nil
             return [.stopCues]
         case .personStopped:
             talking = false
-            let held = failureHeld ? receive(.actionFailed) : []
+            // A stop under a reply is not the end of a turn the call is answering.
+            stopUnanswered = state != .speaking
+            var held: [Action] = []
+            if failureHeld, !failureSounded {
+                failureSounded = true
+                held = [.play(.failed, after: LiveCue.settle)]
+            }
             failureHeld = false
             return settle() + held
         case .heardPerson:
             return state == .speaking || talking ? [] : [.play(.heard, after: LiveCue.heardLead)]
         case let .toolsRunning(count):
+            // A tool starting is work the model committed to: its loop needs no settling.
+            if count > tools { stopUnanswered = false }
             tools = count
             return settle()
         case .actionFailed:
@@ -331,7 +354,10 @@ public struct LiveCueDirector: Sendable, Equatable {
         guard wanted != loop else { return [] }
         let stopping: [Action] = loop == nil ? [] : [.stopLoop]
         loop = wanted
-        return stopping + (loop.map { [.startLoop($0)] } ?? [])
+        guard let loop else { return stopping }
+        let wait = stopUnanswered ? LiveCue.settle : 0
+        stopUnanswered = false
+        return stopping + [.startLoop(loop, after: wait)]
     }
 }
 
