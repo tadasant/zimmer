@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_21_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_21_151000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -687,13 +687,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_020000) do
   end
 
   create_table "mcp_oauth_credentials", force: :cascade do |t|
-    t.text "access_token", null: false
+    t.text "access_token"
+    t.text "access_token_ciphertext"
     t.string "client_id", null: false
     t.string "client_secret"
+    t.text "client_secret_ciphertext"
     t.datetime "created_at", null: false
     t.string "credential_key", null: false
     t.datetime "expires_at"
     t.text "refresh_token"
+    t.text "refresh_token_ciphertext"
     t.boolean "refresh_token_unsupported", default: false, null: false
     t.string "resource"
     t.string "scopes"

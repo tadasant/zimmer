@@ -128,13 +128,19 @@ class McpOauthController < ApplicationController
 
       # A configured redirect_uri (e.g. the localhost redirect the third-party client
       # permits) wins over Zimmer's hosted callback.
-      redirect_uri = oauth_service.resolve_redirect_uri(preregistered_oauth.redirect_uri)
+      # `client_identity: cimd` swaps the client for Zimmer's own hosted one (when
+      # configured here): its URL as the client_id, no secret, and its document's
+      # redirect.
+      hosted_identity = OauthClientIdentity.use_for?(preregistered_oauth.client_identity, server_name: server_name)
+      redirect_uri = oauth_service.resolve_redirect_uri(
+        hosted_identity ? OauthClientIdentity.redirect_uri : preregistered_oauth.redirect_uri
+      )
 
       oauth_metadata = {
         authorization_endpoint: preregistered_oauth.authorization_endpoint,
         token_endpoint: preregistered_oauth.token_endpoint,
-        client_id: preregistered_oauth.client_id,
-        client_secret: preregistered_oauth.client_secret,
+        client_id: hosted_identity ? OauthClientIdentity.client_id : preregistered_oauth.client_id,
+        client_secret: hosted_identity ? nil : preregistered_oauth.client_secret,
         scopes: preregistered_oauth.scopes,
         resource: resource,
         manual: preregistered_oauth.manual? || oauth_service.manual_completion_required?(redirect_uri)
@@ -145,13 +151,13 @@ class McpOauthController < ApplicationController
       # Pass through any statically-configured client id from the catalog `oauth`
       # block so servers that require a pre-registered client (e.g. Slack) use it
       # instead of the `zimmer` placeholder.
+      #
+      # With `"clientIdentity": "cimd"` in that block (and the identity configured
+      # here), the client is Zimmer's own hosted one instead — see
+      # ServersConfig::Server#oauth_client_options.
       catalog_server = ServersConfig.find(server_name)
-      requirement = oauth_service.check_oauth_requirement(
-        server_url,
-        configured_client_id: catalog_server&.oauth_client_id,
-        configured_client_secret: catalog_server&.oauth_client_secret,
-        configured_redirect_uri: catalog_server&.oauth_redirect_uri
-      )
+      client_options = catalog_server&.oauth_client_options || {}
+      requirement = oauth_service.check_oauth_requirement(server_url, **client_options)
 
       unless requirement.required && requirement.metadata
         flash[:error] = "Could not determine OAuth requirements for #{server_name}"
@@ -163,7 +169,7 @@ class McpOauthController < ApplicationController
       # the client id above: a pre-registered client accepts only the redirects
       # registered against it at the provider, whether its endpoints came from the
       # catalog or from discovery. Servers without one keep the hosted callback.
-      redirect_uri = oauth_service.resolve_redirect_uri(catalog_server&.oauth_redirect_uri)
+      redirect_uri = oauth_service.resolve_redirect_uri(client_options[:configured_redirect_uri])
 
       oauth_metadata = {
         authorization_endpoint: requirement.metadata.authorization_endpoint,

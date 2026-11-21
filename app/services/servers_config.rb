@@ -126,6 +126,36 @@ class ServersConfig
       @oauth["redirectUri"] || @oauth["redirect_uri"]
     end
 
+    # Which client identity this server's OAuth flow presents, from the catalog
+    # `oauth` block: `"clientIdentity": "cimd"` opts into Zimmer's own hosted
+    # identity (OauthClientIdentity — a Client ID Metadata Document URL as the
+    # client_id, and private_key_jwt at the token endpoint). Absent means the
+    # identity Zimmer has always used for the server.
+    def oauth_client_identity
+      @oauth["clientIdentity"] || @oauth["client_identity"]
+    end
+
+    # The client the OAuth flow for this server should present, as the keyword
+    # arguments McpOauthService#check_oauth_requirement takes. With the hosted
+    # identity opted into AND configured on this deployment, it is that identity:
+    # its URL as the client id, no secret, and the redirect its document lists.
+    # Otherwise it is exactly the static `oauth` block (each value nil when unset).
+    def oauth_client_options
+      if OauthClientIdentity.use_for?(oauth_client_identity, server_name: name)
+        return {
+          configured_client_id: OauthClientIdentity.client_id,
+          configured_client_secret: nil,
+          configured_redirect_uri: OauthClientIdentity.redirect_uri
+        }
+      end
+
+      {
+        configured_client_id: oauth_client_id,
+        configured_client_secret: oauth_client_secret,
+        configured_redirect_uri: oauth_redirect_uri
+      }
+    end
+
     def stdio?
       type == "stdio"
     end

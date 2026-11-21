@@ -9,9 +9,11 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     server_url: Field::String,
     credential_key: Field::String,
     client_id: Field::String,
-    client_secret: Field::String.with_options(searchable: false),
-    access_token: Field::Text.with_options(searchable: false),
-    refresh_token: Field::Text.with_options(searchable: false),
+    # Secrets are masked: the panel says whether each is set, and the form takes
+    # a replacement without ever rendering the stored value. See MaskedSecretField.
+    client_secret: MaskedSecretField,
+    access_token: MaskedSecretField,
+    refresh_token: MaskedSecretField,
     expires_at: Field::DateTime,
     scopes: Field::String,
     # The RFC 8707 resource indicator the token was issued for, when the server
@@ -27,6 +29,19 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze
+
+  # DELIBERATELY_OMITTED
+  # columns that exist on the table and are intentionally not rendered here.
+  # test/dashboards/dashboard_schema_coverage_test.rb reads this.
+  DELIBERATELY_OMITTED = [
+    # The Active Record–encrypted twins of client_secret / access_token /
+    # refresh_token (McpOauthCredential::SECRET_COLUMNS). They hold the same
+    # values as the masked fields above, and the model's writers keep them in
+    # step, so editing the plaintext field here updates its twin too.
+    :access_token_ciphertext,
+    :refresh_token_ciphertext,
+    :client_secret_ciphertext
+  ].freeze
 
   # COLLECTION_ATTRIBUTES
   # an array of attributes that will be displayed on the model's index page.
@@ -46,6 +61,8 @@ class McpOauthCredentialDashboard < Administrate::BaseDashboard
     credential_key
     client_id
     client_secret
+    access_token
+    refresh_token
     expires_at
     scopes
     resource

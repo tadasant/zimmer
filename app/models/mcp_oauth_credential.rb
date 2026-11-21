@@ -49,6 +49,68 @@ class McpOauthCredential < ApplicationRecord
     end
   end
 
+  # The three secret columns, each with an Active Record–encrypted twin named
+  # `<column>_ciphertext`.
+  #
+  # This is the EXPAND phase of moving them to encrypted storage, and it is built
+  # so that every step of the rollout can be reverted without stranding a row:
+  #
+  # - every write goes to BOTH the plaintext column and its twin (the writers
+  #   below), so a revert of this code leaves the plaintext current;
+  # - every read takes the plaintext column, and falls back to the twin only when
+  #   the plaintext is NULL. Today that never happens. It is what will let the
+  #   CONTRACT phase — stop writing plaintext, then NULL it out — be reverted to
+  #   this code with every row still readable;
+  # - rows written before the twins existed get them from the
+  #   EncryptMcpOauthCredentialSecrets post-deploy task.
+  #
+  # Anything that bypasses the model writers (update_column, update_all, raw SQL)
+  # would update one side only. Nothing does today; nothing should.
+  #
+  # The keys come from config/initializers/active_record_encryption.rb.
+  SECRET_COLUMNS = %w[access_token refresh_token client_secret].freeze
+
+  encrypts :access_token_ciphertext, :refresh_token_ciphertext, :client_secret_ciphertext
+
+  SECRET_COLUMNS.each do |column|
+    twin = "#{column}_ciphertext"
+
+    define_method(column) do
+      value = super()
+      value.nil? ? public_send(twin) : value
+    end
+
+    define_method("#{column}=") do |value|
+      super(value)
+      public_send("#{twin}=", value)
+    end
+  end
+
+  # Any save fills a twin that is still missing, so a row written without one
+  # (by an old container during the deploy cutover, after the post-deploy task
+  # had already run) heals on its next refresh instead of waiting for the
+  # contract phase to find it.
+  before_save :fill_missing_secret_twins
+
+  # Copies each plaintext secret into its encrypted twin where the twin is
+  # missing or differs, and saves just those columns. Skips validations so a
+  # legacy row the validations now refuse still gets encrypted.
+  #
+  # @return [Boolean] whether anything was written
+  def mirror_plaintext_secrets!
+    changed = false
+    SECRET_COLUMNS.each do |column|
+      plaintext = read_attribute(column)
+      twin = "#{column}_ciphertext"
+      next if plaintext.nil? || read_attribute(twin) == plaintext
+
+      write_attribute(twin, plaintext)
+      changed = true
+    end
+    save!(validate: false, touch: false) if changed
+    changed
+  end
+
   validates :server_name, presence: true
   validates :server_url, presence: true
   validates :credential_key, presence: true, uniqueness: true
@@ -149,8 +211,23 @@ class McpOauthCredential < ApplicationRecord
   # rotation, and no half-completed refresh whose save then fails validation.
   # It reads as requires_reauth? once the access token lapses, which is the
   # truth — the endpoint has to be rediscovered before this can be renewed.
+  #
+  # A credential minted under Zimmer's hosted client identity is refreshable
+  # only while this deployment still presents that identity: the authorization
+  # server will accept the refresh only with an assertion signed for it. With
+  # the identity switched off (or its base URL changed) the refresh is not
+  # attempted at all, rather than sent unauthenticated and answered with an
+  # invalid_client that would discard the refresh token. Switching the identity
+  # back on makes it refreshable again.
   def can_refresh?
-    refresh_token.present? && HttpsTokenEndpoint.secure?(token_endpoint)
+    refresh_token.present? && HttpsTokenEndpoint.secure?(token_endpoint) && client_identity_available?
+  end
+
+  # Whether this credential's client_id is Zimmer's hosted client identity
+  # (OauthClientIdentity) as currently configured — the refresh then
+  # authenticates with a signed assertion instead of a client secret.
+  def hosted_client_identity?
+    OauthClientIdentity.owns_client_id?(client_id)
   end
 
   # Returns true if this credential is expired and cannot refresh.
@@ -208,7 +285,19 @@ class McpOauthCredential < ApplicationRecord
         "Cannot refresh #{server_name} (#{credential_key}): token_endpoint #{HttpsTokenEndpoint.describe(token_endpoint)} is not https"
     end
 
+    unless client_identity_available?
+      raise OauthClientIdentity::Unavailable,
+        "Cannot refresh #{server_name} (#{credential_key}): it was issued to Zimmer's hosted OAuth client identity, which is not configured here"
+    end
+
     uri = URI(token_endpoint)
+    # Post through McpOauthService, whose post_form bounds both the connect and the
+    # read at McpOauthService::REQUEST_TIMEOUT — the same bound the initial exchange
+    # uses. `Net::HTTP.post_form` cannot be given timeouts and falls back to
+    # Net::HTTP's 60-second defaults, which are per-read: a token endpoint that
+    # answers slowly enough holds a GoodJob thread for as long as it likes, and this
+    # runs unattended from cron (RefreshMcpOauthTokensJob).
+    oauth = McpOauthService.new
     params = {
       grant_type: "refresh_token",
       refresh_token: refresh_token,
@@ -219,14 +308,9 @@ class McpOauthCredential < ApplicationRecord
       # (e.g. Notion) reject refreshed tokens minted without it.
       resource: resource
     }.compact
-
-    # Post through McpOauthService, whose post_form bounds both the connect and the
-    # read at McpOauthService::REQUEST_TIMEOUT — the same bound the initial exchange
-    # uses. `Net::HTTP.post_form` cannot be given timeouts and falls back to
-    # Net::HTTP's 60-second defaults, which are per-read: a token endpoint that
-    # answers slowly enough holds a GoodJob thread for as long as it likes, and this
-    # runs unattended from cron (RefreshMcpOauthTokensJob).
-    oauth = McpOauthService.new
+    # The hosted identity proves itself with a fresh signed assertion. Signed
+    # before the POST, so a signer that fails leaves the refresh token unspent.
+    params = params.except(:client_secret).merge(oauth.client_assertion_params(token_endpoint)) if hosted_client_identity?
     response = oauth.post_form(uri, params)
 
     if response.code == "200"
@@ -267,6 +351,20 @@ class McpOauthCredential < ApplicationRecord
   end
 
   private
+
+  def fill_missing_secret_twins
+    SECRET_COLUMNS.each do |column|
+      twin = "#{column}_ciphertext"
+      plaintext = read_attribute(column)
+      write_attribute(twin, plaintext) if !plaintext.nil? && read_attribute(twin).nil?
+    end
+  end
+
+  # False only for a credential issued to Zimmer's hosted client identity on a
+  # deployment that no longer presents it (see #can_refresh?).
+  def client_identity_available?
+    !OauthClientIdentity.hosted_client_id?(client_id) || hosted_client_identity?
+  end
 
   # A refresh is permanently dead when the token endpoint rejects the
   # refresh_token grant with a 4xx. Some servers signal this with a

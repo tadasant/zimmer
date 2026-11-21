@@ -427,6 +427,62 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "S256", query["code_challenge_method"]
   end
 
+  # Zimmer's hosted OAuth client identity, end to end through the controller: a
+  # catalog server that opts in is authorized as the CIMD URL with no DCR and no
+  # secret, the callback exchanges the code with a signed assertion, and the
+  # stored credential carries the identity forward for its refreshes.
+  test "a catalog server that opts into the hosted identity is authorized as it, with an assertion" do
+    server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http", "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientIdentity" => "cimd" }
+    })
+    captured = nil
+    # The identity's origin is the one APP_HOST names, so its redirect IS the
+    # hosted callback and the flow completes automatically.
+    origin = McpOauthService.new.build_redirect_uri.delete_suffix("/mcp_oauth/callback")
+
+    with_oauth_client_identity(base_url: origin) do
+      initiate_catalog_server(server)
+
+      assert_response :redirect
+      query = URI.decode_www_form(URI(@response.headers["Location"]).query).to_h
+      assert_equal "#{origin}/oauth-client/metadata.json", query["client_id"]
+      assert_equal "#{origin}/mcp_oauth/callback", query["redirect_uri"]
+
+      pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
+      assert_nil pending.client_secret
+      assert_not pending.manual?
+
+      stub_token_exchange(refreshable_token_response, capture: ->(params) { captured = params }) do
+        get mcp_oauth_callback_path, params: { state: pending.state, code: "auth-code" }
+      end
+
+      assert_equal OauthClientIdentity::ASSERTION_TYPE, captured[:client_assertion_type]
+      assert captured[:client_assertion].present?
+      assert_nil captured[:client_secret]
+
+      credential = McpOauthCredential.find_by!(server_name: "slack-reframe")
+      assert_equal "#{origin}/oauth-client/metadata.json", credential.client_id
+      assert credential.hosted_client_identity?
+      assert credential.can_refresh?
+    end
+  end
+
+  # The same opt-in on a deployment that has no identity configured is today's
+  # flow, untouched: the catalog is shared, and an open-source build has no key.
+  test "an opted-in catalog server on a deployment without the identity keeps the default client" do
+    server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http", "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientIdentity" => "cimd" }
+    })
+
+    initiate_catalog_server(server)
+
+    assert_response :redirect
+    query = URI.decode_www_form(URI(@response.headers["Location"]).query).to_h
+    assert_equal "zimmer", query["client_id"]
+  end
+
   # Regression guard: the hosted callback must stay the default for ordinary servers.
   test "initiate keeps the hosted callback for a server with no catalog oauth block" do
     plain_server = ServersConfig::Server.new("slack-reframe", {
