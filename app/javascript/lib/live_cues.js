@@ -90,7 +90,8 @@ export class LiveCueDirector {
 
   personStopped() {
     this.talking = false
-    this.stopUnanswered = true
+    // A stop under a reply is not the end of a turn the call is answering.
+    this.stopUnanswered = this.state !== "speaking"
     const held = []
     if (this.failureHeld && !this.failureSounded) {
       this.failureSounded = true
@@ -164,9 +165,9 @@ export class LiveCueDirector {
     const stopping = this.loop ? [{ stopLoop: true }] : []
     this.loop = wanted
     if (!wanted) return stopping
-    const after = this.stopUnanswered ? SETTLE : 0
+    const start = this.stopUnanswered ? { startLoop: wanted, after: SETTLE } : { startLoop: wanted }
     this.stopUnanswered = false
-    return [...stopping, { startLoop: wanted, after }]
+    return [...stopping, start]
   }
 }
 

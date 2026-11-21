@@ -706,7 +706,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         _ = director.receive(.personTalking)
         XCTAssertEqual(director.receive(.heardPerson), [], "Zimmer's answer about an earlier line, arriving under the next one")
         XCTAssertEqual(director.receive(.actionFailed), [], "it would close the microphone on them")
-        XCTAssertEqual(director.receive(.personStopped), [.play(.failed)], "held, not lost")
+        XCTAssertEqual(director.receive(.personStopped), [.play(.failed, after: LiveCue.settle)], "held, not lost, and sounded once they have been quiet a moment")
     }
 
     func testATurnsFailureSoundsOnce() {

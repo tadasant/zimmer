@@ -120,6 +120,8 @@ final class LiveCueSettleTests: XCTestCase {
 
     func testAPauseWhileAToolRunsBringsTheWorkingLoopBackOnlyAfterSettle() {
         var speaker = call()
+        // GPT-Live delegating the line: the person stopped, and a tool started at once.
+        speaker.signal(.personStopped)
         speaker.signal(.toolsRunning(1))
         speaker.state(.working)
         speaker.wait(0.5)
@@ -173,6 +175,14 @@ final class LiveCueSettleTests: XCTestCase {
         XCTAssertEqual(director.transition(to: .thinking), [.startLoop(.thinking, after: LiveCue.settle)])
         XCTAssertEqual(director.receive(.heardPerson), [.play(.heard, after: LiveCue.settle)])
         XCTAssertEqual(director.receive(.toolsRunning(1)), [.stopLoop, .startLoop(.working)], "the stop is answered: no second wait")
+
+        // Gated, speech under a reply does not cut it off: its stop is not a turn the call is answering.
+        var gated = LiveCueDirector()
+        _ = gated.transition(to: .listening)
+        _ = gated.transition(to: .speaking)
+        _ = gated.receive(.personTalking)
+        XCTAssertEqual(gated.receive(.personStopped), [])
+        XCTAssertEqual(gated.transition(to: .thinking), [.startLoop(.thinking)], "the next response's loop does not wait for it")
     }
 
     /// The GPT-Live conductor's own end of a line, through the director.
@@ -192,6 +202,7 @@ final class LiveCueSettleTests: XCTestCase {
             .object(["type": .string("session.input_transcript.delta"), "delta": .string(text)])
         }
         apply(conductor.handle(.object(["type": .string("session.started")]), at: 0))
+        speaker.wait(1)
         apply(conductor.handle(input("Start a "), at: 1))
         speaker.wait(1)
         // The transcript goes quiet past heardIdle: GPT-Live counts the line heard.

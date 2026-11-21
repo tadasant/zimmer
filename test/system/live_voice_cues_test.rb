@@ -45,18 +45,18 @@ class LiveVoiceCuesTest < ApplicationSystemTestCase
   end
 
   test "being heard, then thinking, then the reply" do
-    assert_equal [ { "stopCues" => true }, { "startLoop" => "thinking" }, { "play" => "heard", "after" => 0.35 }, { "stopCues" => true } ],
+    assert_equal [ { "stopCues" => true }, { "startLoop" => "thinking", "after" => 1.5 }, { "play" => "heard", "after" => 1.5 }, { "stopCues" => true } ],
       drive(speech("started"), speech("stopped"), { type: "response.output_audio_transcript.delta" })
   end
 
   test "a tool sounds different from thinking and stops the moment the person talks" do
-    assert_equal [ { "stopCues" => true }, { "startLoop" => "thinking" }, { "play" => "heard", "after" => 0.35 },
+    assert_equal [ { "stopCues" => true }, { "startLoop" => "thinking", "after" => 1.5 }, { "play" => "heard", "after" => 1.5 },
                    { "stopLoop" => true }, { "startLoop" => "working" }, { "stopCues" => true } ],
       drive(speech("started"), speech("stopped"), tool("a"), speech("started"))
   end
 
   test "a gated call gets the working cue back when the person stops" do
-    assert_equal [ { "startLoop" => "working" }, { "stopCues" => true }, { "startLoop" => "working" } ],
+    assert_equal [ { "startLoop" => "working" }, { "stopCues" => true }, { "startLoop" => "working", "after" => 1.5 } ],
       drive(tool("a"), speech("started"), speech("stopped"), gated: true)
   end
 

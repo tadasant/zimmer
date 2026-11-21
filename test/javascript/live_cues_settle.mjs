@@ -193,6 +193,16 @@ const report = (name, run, extra = {}) =>
   report("held_failure", run, { duringPause })
 }
 
+// Gated, a stop under a reply is not a turn the call is answering: the next response's loop does not wait for it.
+{
+  const run = call()
+  run.perform(run.director.transition("speaking"))
+  run.perform(run.director.personTalking())
+  run.perform(run.director.personStopped())
+  const actions = run.director.transition("thinking")
+  console.log(JSON.stringify({ name: "stop_under_a_reply", actions }))
+}
+
 // The same held failure, and the person really done: it sounds once SETTLE has passed.
 {
   const run = call()

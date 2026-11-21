@@ -56,6 +56,10 @@ class LiveCuesSettleTest < ActiveSupport::TestCase
     assert_equal %w[working], scenario("tool_after_stop")["sounded"]
   end
 
+  test "a stop under a reply does not delay the next response's loop" do
+    assert_equal [ { "startLoop" => "thinking" } ], scenario("stop_under_a_reply")["actions"]
+  end
+
   test "a failure held while the person talks waits out the settle time after they stop" do
     assert_equal [], scenario("held_failure")["duringPause"]
     assert_equal [], scenario("held_failure")["sounded"]

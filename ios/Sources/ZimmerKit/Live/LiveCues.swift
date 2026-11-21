@@ -284,7 +284,8 @@ public struct LiveCueDirector: Sendable, Equatable {
             return [.stopCues]
         case .personStopped:
             talking = false
-            stopUnanswered = true
+            // A stop under a reply is not the end of a turn the call is answering.
+            stopUnanswered = state != .speaking
             var held: [Action] = []
             if failureHeld, !failureSounded {
                 failureSounded = true
