@@ -1607,9 +1607,10 @@ needs in-job:
   image ships, named through `CHROME_BIN`.
 - **Deploy jobs bring their own access.** SSH keys are written from secrets into `~/.ssh`
   in the job, Terraform comes from `hashicorp/setup-terraform`, Kamal is `gem install`ed at
-  the locked version, and the tailnet is joined with `tailscale/github-action` and the
-  `TS_CI_AUTHKEY` secret. A hosted runner joins fresh on every run, so that key must be
-  reusable; an expired one fails the join step.
+  the locked version, and the tailnet is joined with `tailscale/github-action` and a
+  single-use `tag:zimmer-ci` key minted per job from the `TS_CI_OAUTH_CLIENT_ID` OAuth
+  client (`.github/scripts/tailnet-authkey.sh`). The static `TS_CI_AUTHKEY` is only a
+  warned fallback. A check after the join fails the job if the runner did not authenticate.
 - **Image builds free disk first.** A hosted runner guarantees about 14 GB free, and a
   base-image build wants more, so the three image-building jobs delete the .NET, Android,
   GHC and CodeQL toolchains the image ships before the first layer lands.

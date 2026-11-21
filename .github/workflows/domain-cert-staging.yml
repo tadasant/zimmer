@@ -124,10 +124,25 @@ jobs:
 
       # Join the tailnet as tag:zimmer-ci so we can `tailscale ssh` the droplet and
       # reach https://staging.zimmer.tadasant.com (which resolves to its tailnet IP).
+      # The key is minted per job from a non-expiring OAuth client (tag:zimmer-ci); the
+      # static TS_CI_AUTHKEY is only a warned fallback. See .github/scripts/tailnet-authkey.sh.
+      - name: Mint the runner's tailnet auth key
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_CI_OAUTH_CLIENT_ID }}
+          TS_OAUTH_CLIENT_SECRET: ${{ secrets.TS_CI_OAUTH_CLIENT_SECRET }}
+          TS_FALLBACK_AUTHKEY: ${{ secrets.TS_CI_AUTHKEY }}
+        run: bash .github/scripts/tailnet-authkey.sh "$RUNNER_TEMP/tailnet-authkey"
+
       - name: Tailscale
         uses: tailscale/github-action@v3
         with:
-          authkey: ${{ secrets.TS_CI_AUTHKEY }}
+          authkey: file:${{ runner.temp }}/tailnet-authkey
+
+      # The action reports success even when every `tailscale up` was rejected.
+      - name: Verify the runner joined the tailnet
+        run: |
+          rm -f "$RUNNER_TEMP/tailnet-authkey"
+          bash .github/scripts/tailnet-verify-joined.sh
 
       - name: Issue/renew + push cert
         env:

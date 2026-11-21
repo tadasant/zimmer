@@ -138,7 +138,8 @@ resize command.
 | `KAMAL_SSH_KEY` / `KAMAL_SSH_PUBKEY` | Kamal's SSH control channel to the droplet (private half in CI; public half baked into cloud-init) |
 | `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` | minting the droplet's cloud-init auth key on every deploy: a Tailscale OAuth client with the `auth_keys` scope that owns `tag:zimmer-staging`. The key it mints is single-use, ephemeral, pre-authorized and valid for an hour, so there is nothing to rotate |
 | `TAILSCALE_AUTH_KEY` | fallback for the droplet's cloud-init `tailscale up`, used only when the OAuth client above is unset. Tailscale caps a pre-minted key at **90 days**, and it expires silently: the next droplet creation boots with no tailnet and the deploy dies at `zimmer-staging never came online on the tailnet` |
-| `TS_CI_AUTHKEY` | **CI's own** tailnet join, to resolve the droplet's IP and health-check it |
+| `TS_CI_OAUTH_CLIENT_ID` / `TS_CI_OAUTH_CLIENT_SECRET` | **CI's own** tailnet join, to resolve the droplet's IP, reach it over Tailscale SSH and health-check it: a Tailscale OAuth client with the `auth_keys` scope that owns `tag:zimmer-ci`. `.github/scripts/tailnet-authkey.sh` mints a single-use, ephemeral, pre-authorized `tag:zimmer-ci` key from it per job, valid for 15 minutes. It must be a separate client from `TS_OAUTH_CLIENT_ID`: that one owns only `tag:zimmer-staging`, and no SSH rule lets `tag:zimmer-staging` into the droplet |
+| `TS_CI_AUTHKEY` | fallback for CI's tailnet join, used only when the OAuth pair above is unset or its mint fails, with a warning. A pre-minted key, so it expires after at most 90 days |
 | `TS_API_CLIENT_ID` / `TS_API_CLIENT_SECRET` | reaping the stale tailnet node |
 | `GHCR_PULL_TOKEN` | Kamal's registry login, so the droplet can pull the image |
 | `STAGING_SECRET_BASE` | Rails `SECRET_KEY_BASE` for staging |
@@ -163,10 +164,12 @@ Actions → Variables, or `gh variable set`):
 | --- | --- |
 | `ADMIN_SSH_PUBKEYS` | `deploy-staging.yml` → `TF_VAR_admin_ssh_pubkeys`. A JSON list of strings: `["ssh-ed25519 AAAA… op@host"]`. Optional — unset means `[]` and a droplet that authorizes no operator key ([Operator keys](/operate/ssh-access/#operator-keys)). Deliberately a variable and not a secret: public keys are not secret, and GitHub masks a secret's value everywhere in a log, which would blank out the accounting line the deploy prints |
 
-:::caution[`TS_CI_AUTHKEY` must be a pre-minted auth key]
-A Tailscale OAuth client cannot mint `tag:ci` keys. `deploy-staging.yml`'s own comment says so.
-`docs/DEPLOYING_ON_DIGITALOCEAN.md` told you to use `TS_OAUTH_CLIENT_ID`/`TS_OAUTH_SECRET`; that was
-wrong and would fail.
+:::caution[The runner's tailnet join fails loudly]
+`tailscale/github-action` reports success even when every `tailscale up` was rejected. The step
+after it, `.github/scripts/tailnet-verify-joined.sh`, checks the runner's own `BackendState` and
+fails with `Runner is not on the tailnet` when it is not `Running`. That error is about CI's
+credential, not the droplet. Without the check, an expired `TS_CI_AUTHKEY` surfaces ten
+minutes later as `zimmer-staging never came online on the tailnet`.
 :::
 
 ## GitHub tokens: one per repository owner
@@ -644,15 +647,12 @@ auth, exactly as `:80` serves the app — so any peer the ACL lets reach this no
 telemetry from it. If that matters for your tailnet, scope it there; nothing in the Terraform module
 does.
 
-:::caution[Tag naming drifts across the docs and the code]
-`docs/PROVISIONING.md` said `tag:zimmer-ci`. `deploy-staging.yml` and the README say `tag:ci`. The
-DigitalOcean tags are `zimmer` and `zimmer-<env>`. These are three different naming schemes for
-overlapping concepts.
-
-`PROVISIONING.md` also required an `ssh` block in the ACL "so CI can SSH in for an in-place upgrade."
-This repo's deploy never SSHes — cloud-init's own comment calls SSH ACLs brittle. That ACL is only
-needed by the author's private production auto-upgrade workflow.
-:::
+**CI reaches the droplet as `tag:zimmer-ci`.** Every staging deploy step that touches the box —
+Kamal, the password-expiry repair, the SSH-identity converge, the cert push — goes over tailnet `:22`,
+which is Tailscale SSH. So the policy needs two things for the runner: a grant from `tag:zimmer-ci`
+to `tag:zimmer-staging`, and an `ssh` rule with `action: accept`, `src: ["tag:zimmer-ci"]`,
+`dst: ["tag:zimmer-staging"]`, `users: ["root"]`. The droplet's own tag needs no `ssh` rule, and
+must not get one for CI's sake: the CI OAuth client is a separate client that owns `tag:zimmer-ci`.
 
 ## Remote Terraform state (DigitalOcean Spaces)
 
