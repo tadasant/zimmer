@@ -433,7 +433,8 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | A follow-up, Quick Router request or Merge from [Zimmer's iOS app](/extend/ios-app/) | ✅ `ios_app.follow_up` / `ios_app.quick_router` / `ios_app.authorize_merge`, when the app's connection acts on its approver's behalf | recorded on the [`assistant` channel](#the-assistant-channel) with the same fences as any OAuth client: the author is the approver's roster row, the grant is in the provenance, and a relay-only connection records nothing. The app sends exactly what was typed, a quick reply included |
 | A `follow_up`, `send_now`, enqueue, `start_session` or `quick_router` the [Live Mode](/sessions/live/) assistant makes while talking to a person signed in on the web or the iOS app | ✅ `live_mode.follow_up` / `live_mode.start_session` / … | recorded on the [`live_mode` channel](#the-live-mode-channel): the content is what the person typed or said, and the assistant's own message rides beside it |
-| A person saying yes to Zimmer's read-back of a PR in Live Mode (`authorize_merge`) | ✅ `live_mode.authorize_merge` | recorded in the session holding the PR, with the PR and the read-back; see [Merging by voice](#merging-by-voice-live_modeauthorize_merge) |
+| A person saying yes to Zimmer's read-back of a PR in Live Mode (`authorize_merge`) | ✅ `live_mode.authorize_merge` | recorded in the session holding the PR, with the PR and the read-back; see [Merging by voice](#merging-by-voice-live_modeauthorize_merge). For a PR another Zimmer holds, recorded in the session here that drives it |
+| A signed merge approval from another Zimmer (`submit_merge_attestation`) | ✅ `attestation.authorize_merge`, channel `attested` | only after the signature verifies against a pinned key and the PR's head matches; written as the local user the issuer's approver maps to. See [Merge approvals across deployments](/auth/merge-attestations/) |
 | The same calls when the last thing said in the Live conversation came from `action_live_conversation` over MCP | ❌ | an API key wrote that turn, so no person is established |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
 | `follow_up`, `send_now`, an enqueue or its edit, a `start_session` prompt, or a [`quick_router`](/extend/mcp-server/#quick_router-the-door-for-clients-that-do-not-know-zimmer) prompt, from an OAuth connection that **acts on its approver's behalf** | ✅ `oauth.follow_up` / `oauth.follow_up_queued` / `oauth.send_now` / `oauth.enqueued_message` / `oauth.enqueued_message_edited` / `oauth.start_session` / `oauth.quick_router` | the approver chose this level for the connection (see [below](#the-assistant-channel)). Only the caller's words are recorded: `quick_router`'s page context is not |
@@ -609,6 +610,10 @@ What this establishes, and what it does not:
 A session Live Mode starts still has genesis `api`, so `live_mode` never appears as a capture gap.
 
 #### Merging by voice: `live_mode.authorize_merge`
+
+A PR held by a session on another Zimmer goes through the same two calls with `pr_url`, and ends in
+a signed approval rather than a local message: see
+[Merge approvals across deployments](/auth/merge-attestations/).
 
 The live model has an `authorize_merge` function: the [Merge button](/sessions/user-view/), by
 voice. It is the only Live Mode route to a merge, and it ends in the same

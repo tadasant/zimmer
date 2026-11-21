@@ -95,13 +95,13 @@ class HumanMessageCaptureCoverageTest < ActiveSupport::TestCase
   # still a bug, and this is what keeps it out of production. Every channel
   # CHANNEL_BY_GENESIS maps to must be one HumanMessage itself recognises, and
   # every channel HumanMessage recognises must have its own arm, so the generic
-  # fallbacks stay unreachable. `assistant` and `live_mode` are the channels with
-  # no genesis of their own (see the class comment), so they alone may be unmapped.
+  # fallbacks stay unreachable. `assistant`, `live_mode` and `attested` are the channels
+  # with no genesis of their own (see the class comment), so they alone may be unmapped.
   test "every channel is a real channel with its own configured? arm" do
     mapped = HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.values
 
     assert_empty mapped - HumanMessage::CHANNELS
-    assert_equal [ HumanMessage::ASSISTANT, HumanMessage::LIVE_MODE ], HumanMessage::CHANNELS - mapped
+    assert_equal [ HumanMessage::ASSISTANT, HumanMessage::LIVE_MODE, HumanMessage::ATTESTED ], HumanMessage::CHANNELS - mapped
     HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.each_key do |genesis|
       assert_includes SessionGenesis::KEYS, genesis
     end

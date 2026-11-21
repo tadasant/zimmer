@@ -32,12 +32,18 @@ class HumanMessage < ApplicationRecord
   # whose turn was authenticated as theirs by the web UI or by the iOS app's
   # grant acting as them, recorded on the session the Live Mode assistant then
   # delivered a message into. The assistant chose that session and wrote what
-  # it delivered (`relayed_message`), so the record carries both.
+  # it delivered (`relayed_message`), so the record carries both. `attested` is
+  # a person's merge approval heard by ANOTHER Zimmer and carried here as a
+  # signed token this Zimmer verified against a key it pinned
+  # (MergeAttestations::Acceptor). The author is the local user that
+  # deployment's approver maps to; the provenance names the issuer, the token's
+  # id and what the person was asked.
   WEB_UI = "web_ui"
   SLACK = "slack"
   ASSISTANT = "assistant"
   LIVE_MODE = "live_mode"
-  CHANNELS = [ WEB_UI, SLACK, ASSISTANT, LIVE_MODE ].freeze
+  ATTESTED = "attested"
+  CHANNELS = [ WEB_UI, SLACK, ASSISTANT, LIVE_MODE, ATTESTED ].freeze
 
   MAX_CONTENT_LENGTH = Session::PROMPT_MAX_LENGTH
 
@@ -132,13 +138,19 @@ class HumanMessage < ApplicationRecord
   end
 
   # On a `live_mode.authorize_merge` sign-off: the PR Zimmer named, and the
-  # read-back Zimmer composed and the person said yes to.
+  # read-back Zimmer composed and the person said yes to. On an `attested` one,
+  # the same two, as the issuing Zimmer signed them.
   def confirmed_pr_url
-    provenance["confirmed_pr_url"].presence if channel == LIVE_MODE
+    provenance["confirmed_pr_url"].presence if [ LIVE_MODE, ATTESTED ].include?(channel)
   end
 
   def read_back
-    provenance["read_back"].presence if channel == LIVE_MODE
+    provenance["read_back"].presence if [ LIVE_MODE, ATTESTED ].include?(channel)
+  end
+
+  # The Zimmer that heard an `attested` approval and signed it.
+  def attestation_issuer
+    provenance["issuer"].presence if channel == ATTESTED
   end
 
   LIVE_MODE_SURFACES = { "web" => "web", "ios" => "iOS app", "carplay" => "CarPlay" }.freeze
@@ -152,6 +164,7 @@ class HumanMessage < ApplicationRecord
     when ASSISTANT
       "#{oauth_client_name.presence || 'an assistant'} (OAuth grant ##{oauth_grant_id}, acting on their behalf)"
     when LIVE_MODE then live_mode_label
+    when ATTESTED then attested_label
     else channel
     end
   end
@@ -162,6 +175,12 @@ class HumanMessage < ApplicationRecord
     heard = provenance["heard"] == "spoken" ? "spoken, as transcribed" : "typed"
     where = [ LIVE_MODE_SURFACES[provenance["surface"]], heard ].compact.join(", ")
     "Live Mode (#{where}; delivered by the Live Mode assistant)"
+  end
+
+  def attested_label
+    heard = [ LIVE_MODE_SURFACES[provenance["surface"]], provenance["heard"] == "spoken" ? "spoken" : nil ].compact.join(", ")
+    said = [ provenance["remote_channel"] == LIVE_MODE ? "Live Mode" : provenance["remote_channel"], heard.presence ].compact.join(" ")
+    "a signed approval from #{attestation_issuer || 'another Zimmer'} (#{said}; verified against a pinned key)"
   end
 
   def author_must_be_a_known_human

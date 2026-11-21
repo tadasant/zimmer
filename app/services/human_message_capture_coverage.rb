@@ -46,7 +46,8 @@
 # say" on nearly every hierarchy in the fleet, which destroys the signal the
 # record exists to carry.
 #
-# The other two channels, `assistant` and `live_mode`, have no genesis of their
+# `attested` has no genesis either: a signed approval lands in a session that
+# already exists. The other two such channels, `assistant` and `live_mode`, have no genesis of their
 # own. A session an OAuth client or Live Mode starts is `api` like any other
 # parentless API spawn, and an `api` session's empty record stays an
 # affirmative answer: a grant acting on its approver's behalf, or Live Mode
@@ -74,6 +75,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::SLACK then "Slack"
       when HumanMessage::ASSISTANT then "an assistant acting on a human's behalf"
       when HumanMessage::LIVE_MODE then "Live Mode"
+      when HumanMessage::ATTESTED then "a signed approval from another Zimmer"
       else channel
       end
     end
@@ -94,6 +96,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::SLACK then User.with_slack_mapping.exists?
       when HumanMessage::ASSISTANT then assistant_grant_resolves?
       when HumanMessage::LIVE_MODE then User.admin.present? || assistant_grant_resolves?
+      when HumanMessage::ATTESTED then MergeAttestations::Trust.current.any?
       else false
       end
     end
@@ -112,6 +115,9 @@ class HumanMessageCaptureCoverage
       when HumanMessage::LIVE_MODE
         "Neither the configured admin key (#{User::ADMIN_ENV_KEY}) nor the approver of any OAuth connection acting " \
         "on its approver's behalf names a row in this deployment's roster, so nothing said in Live Mode was recorded."
+      when HumanMessage::ATTESTED
+        "This deployment trusts no other Zimmer's signing key (#{MergeAttestations::TRUSTED_ISSUERS_ENV} is unset), " \
+        "so no approval signed elsewhere was accepted or recorded."
       else
         "Zimmer has no configuration check for this channel, so it cannot say whether a message on it would have " \
         "been recorded."
@@ -129,6 +135,9 @@ class HumanMessageCaptureCoverage
         "on their row at /supervisor/users."
       when HumanMessage::LIVE_MODE
         "Add the admin's row at /supervisor/users, or sign the iOS app in again allowing it to act as you."
+      when HumanMessage::ATTESTED
+        "Pin the issuing Zimmer's public key in #{MergeAttestations::TRUSTED_ISSUERS_ENV} (see Merge approvals " \
+        "across deployments in the docs)."
       else
         "Give this channel a check in HumanMessageCaptureCoverage.configured?."
       end

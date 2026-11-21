@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_21_020000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -741,6 +741,40 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_170000) do
     t.datetime "updated_at", null: false
     t.index ["credential_key"], name: "index_mcp_server_oauth_requirements_on_credential_key", unique: true
     t.index ["server_name"], name: "index_mcp_server_oauth_requirements_on_server_name"
+  end
+
+  create_table "merge_attestations", force: :cascade do |t|
+    t.text "answer", null: false
+    t.datetime "approved_at", null: false
+    t.string "approver", null: false
+    t.string "approver_name"
+    t.string "audience", null: false
+    t.string "channel", null: false
+    t.jsonb "claims", default: {}, null: false
+    t.datetime "created_at", null: false
+    t.string "direction", null: false
+    t.datetime "expires_at", null: false
+    t.string "head_sha", null: false
+    t.bigint "human_message_id"
+    t.datetime "issued_at", null: false
+    t.string "issuer", null: false
+    t.string "jti", null: false
+    t.string "key_id", null: false
+    t.string "outcome"
+    t.text "outcome_detail"
+    t.integer "pr_number", null: false
+    t.string "pr_url", null: false
+    t.text "read_back", null: false
+    t.string "remote_server"
+    t.string "remote_session_url"
+    t.string "repo", null: false
+    t.bigint "session_id"
+    t.string "surface"
+    t.datetime "updated_at", null: false
+    t.index ["direction", "issuer", "jti"], name: "index_merge_attestations_on_direction_and_issuer_and_jti", unique: true
+    t.index ["human_message_id"], name: "index_merge_attestations_on_human_message_id"
+    t.index ["pr_url"], name: "index_merge_attestations_on_pr_url"
+    t.index ["session_id"], name: "index_merge_attestations_on_session_id"
   end
 
   create_table "model_catalog_entries", force: :cascade do |t|
@@ -1620,6 +1654,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_170000) do
   add_foreign_key "logs", "sessions", on_delete: :cascade
   add_foreign_key "mcp_event_webhook_subscriptions", "trigger_conditions", on_delete: :nullify
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
+  add_foreign_key "merge_attestations", "human_messages", on_delete: :nullify
+  add_foreign_key "merge_attestations", "sessions", on_delete: :nullify
   add_foreign_key "notifications", "sessions", on_delete: :cascade
   add_foreign_key "oauth_server_authorization_codes", "oauth_server_clients", on_delete: :cascade
   add_foreign_key "oauth_server_grants", "oauth_server_clients", on_delete: :cascade

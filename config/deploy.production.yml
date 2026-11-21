@@ -300,6 +300,11 @@ env:
     # Inert until a token is seeded: with no token map the stored `gh auth login`
     # credential still authenticates everything. Not a secret.
     ZIMMER_GITHUB_DEFAULT_OWNER: tadasant
+    # The other Zimmer deployments this one may send signed human merge approvals
+    # to (MergeAttestations): `<catalog MCP server>=<that deployment's audience>`,
+    # comma-separated. Not a secret: a server name and a URL. Inert until the
+    # signing key below is set.
+    MERGE_ATTESTATION_REMOTE_SERVERS: hans-sessions=https://hans.pulsemcp.com
   secret:
     - SECRET_KEY_BASE
     - RAILS_MASTER_KEY
@@ -312,6 +317,10 @@ env:
     # ~/.ssh/zimmer_operator_ed25519 so agent sessions (and the ssh-* MCP servers they
     # attach) have an SSH identity; without it they have none. See .kamal/secrets.production.
     - ZIMMER_OPERATOR_SSH_KEY
+    # The Ed25519 key signed human merge approvals are signed with
+    # (MergeAttestations::SigningKey). Optional: unset or empty, this Zimmer issues
+    # none and authorize_merge says so. See .kamal/secrets.production.
+    - MERGE_ATTESTATION_SIGNING_KEY
     # Base64 of the Parameter Store resolver's service-account key JSON -- base64 for
     # the same env-file reason as the SSH key above, spelled out in
     # .kamal/secrets.production. Its two non-secret companions are in env.clear.

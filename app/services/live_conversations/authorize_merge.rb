@@ -60,6 +60,26 @@ module LiveConversations
   # authorization the merging session reads carries only Zimmer's words and the
   # person's answer, never the model's.
   #
+  # == A PR another Zimmer holds
+  #
+  # A session here can drive a session on another Zimmer deployment
+  # through a catalog MCP server, and the PR that needs the yes is then held
+  # over there. Called with `pr_url` naming such a PR, the same two calls run
+  # with the remote's account of it instead of a local session's record:
+  #
+  # * the session must be, or be in a spawn hierarchy with, a session carrying
+  #   one of MERGE_ATTESTATION_REMOTE_SERVERS, and that remote must answer
+  #   MergeAttestations::TARGET_TOOL saying one of its sessions holds the PR,
+  #   that it is open and green, its head commit, and that it trusts this
+  #   Zimmer's key. The read-back names the repository, the number, a few words
+  #   of the remote session's title and the deployment holding it;
+  # * on confirm, every conversation check above runs unchanged, the remote is
+  #   asked again and its head must still be the commit the person was asked
+  #   about, the yes is recorded as a `live_mode` HumanMessage on the driving
+  #   session, and only then MergeAttestations::Issuer signs an approval for
+  #   that PR at that commit, which Rails hands to the remote's
+  #   MergeAttestations::SUBMIT_TOOL. The model never sees the token.
+  #
   # The function exists only on ToolBridge, which runs in process for a Live
   # conversation. Nothing on POST /mcp reaches it, and an agent that types into
   # a conversation (`action_live_conversation`) taints it, so its words can
@@ -113,7 +133,9 @@ module LiveConversations
                   "confirmation. Ask it once, in your own words if you like, but say \"merge\", the repository and the " \
                   "number, and ask for a yes. As soon as they say yes (\"yes\", \"yeah\", \"do it\", \"merge it\"), call it " \
                   "again with the same session_id and confirm true, without asking again. If they say no or anything " \
-                  "else, do not call it again. Never call it with confirm true before you have asked."
+                  "else, do not call it again. Never call it with confirm true before you have asked. If the PR is held by " \
+                  "a session on another Zimmer that a session here drives, pass that PR's URL as " \
+                  "pr_url on both calls, with the session_id of the session here that drives it."
 
     def self.function
       ToolBridge::Function.new(
@@ -123,7 +145,8 @@ module LiveConversations
           type: "object",
           properties: {
             session_id: { type: "integer", description: "The session that opened the PR and holds it." },
-            confirm: { type: "boolean", description: "True only on the second call, after the person said yes to the confirmation." }
+            confirm: { type: "boolean", description: "True only on the second call, after the person said yes to the confirmation." },
+            pr_url: { type: "string", description: "Only for a PR held by a session on another Zimmer that this session drives: the PR's URL. Leave it out for the session's own PR." }
           },
           required: %w[session_id]
         }
@@ -141,11 +164,28 @@ module LiveConversations
     def call(args)
       session = find_session!(args["session_id"])
       summary = Sessions::PrSummary.for(session)
+      requested = args["pr_url"].to_s.strip.presence
+      if requested && requested != summary.url
+        return truthy?(args["confirm"]) ? confirm_remote(session, requested) : prepare_remote(session, requested)
+      end
+
       if (reason = summary.merge_blocked_reason)
         raise Refused, "Cannot merge from session #{session.id}: #{reason} Tell the person."
       end
 
       truthy?(args["confirm"]) ? confirm(session, summary.url) : prepare(session, summary.url)
+    end
+
+    # The read-back for a PR a session on another Zimmer holds: the same
+    # sentence, with the remote session's title and where it is held.
+    def self.remote_read_back(target, held_on:)
+      sentence = +"Merge #{target.repo.to_s.split('/').last} pull request #{pr_number(target.pr_url)}"
+      title = spoken_text(target.title)
+      sentence << ", \"#{title}\"" if title
+      sentence << "?"
+      sentence << " A session on #{held_on} holds it."
+      sentence << " Its merge gate held it for you." if target.gate_hold_reason
+      sentence
     end
 
     # The question the person is asked to say yes to. Composed here, from
@@ -165,8 +205,10 @@ module LiveConversations
     # it loses anything that could read as another PR's number before it is
     # spoken beside this one's: a "(repo#123)" reference goes whole, and so does
     # any other bare number.
-    def self.spoken_title(session)
-      title = session.title.to_s
+    def self.spoken_title(session) = spoken_text(session.title)
+
+    def self.spoken_text(text)
+      title = text.to_s
                      .gsub(%r{\(\s*[\w./-]*#\d+\s*\)}, " ")
                      .gsub(%r{[\w./-]*#\d+}, " ")
                      .gsub(/\b\d+\b/, " ")
@@ -338,7 +380,36 @@ module LiveConversations
         "#{"\nWhy the gate held it, only if they ask: #{hold}" if hold}"
     end
 
+    Confirmation = Data.define(:words, :answers, :asked, :latest, :where, :answer, :read_back)
+
     def confirm(session, pr_url)
+      yes = confirmed_yes!(session, pr_url)
+      # Only Zimmer's sentence and the person's answer go into the authorization.
+      # What the model said stays in the HumanMessage, labelled as the model's.
+      result = Sessions::AuthorizeMerge.call(
+        session: session, surface: yes.where,
+        act: "said yes in #{yes.where} when Zimmer asked them to confirm this PR by repository and number " \
+             "(they answered: \"#{yes.answer.truncate(60)}\")"
+      )
+      raise Refused, "#{result.message} Tell the person." unless result.ok?
+
+      if result.sent?
+        HumanMessageCapture.record_live_mode_merge_approval(
+          session: session, conversation: @conversation,
+          words: yes.words.with(turns: yes.answers, replying_to: yes.asked),
+          pr_url: pr_url, read_back: yes.read_back, relayed: "Merge #{pr_url}", occurred_at: @now
+        )
+      end
+      "#{result.message} Tell the person, in one short sentence."
+    end
+
+    # Every check on the conversation a confirm makes, local or remote: a
+    # fresh prepare for this session and PR, the model asking by number, and
+    # nothing but a plain yes from one signed-in person since.
+    #
+    # @return [Confirmation]
+    # @raise [Refused]
+    def confirmed_yes!(session, pr_url)
       prepared = confirm_window_start(session, pr_url)
       latest = prepared.last
       if latest.nil?
@@ -393,23 +464,152 @@ module LiveConversations
       surface = HumanMessage::LIVE_MODE_SURFACES[answers.last.author_provenance.to_h["surface"]]
       where = [ "Zimmer Live Mode", surface ].compact.join(" on ")
       read_back = latest.tool_output.to_s[/\AREAD-BACK: (.*)$/, 1].to_s
-      # Only Zimmer's sentence and the person's answer go into the authorization.
-      # What the model said stays in the HumanMessage, labelled as the model's.
-      result = Sessions::AuthorizeMerge.call(
-        session: session, surface: where,
-        act: "said yes in #{where} when Zimmer asked them to confirm this PR by repository and number " \
-             "(they answered: \"#{answer.truncate(60)}\")"
-      )
-      raise Refused, "#{result.message} Tell the person." unless result.ok?
+      Confirmation.new(words: words, answers: answers, asked: asked, latest: latest, where: where, answer: answer, read_back: read_back)
+    end
 
-      if result.sent?
-        HumanMessageCapture.record_live_mode_merge_approval(
-          session: session, conversation: @conversation,
-          words: words.with(turns: answers, replying_to: asked),
-          pr_url: pr_url, read_back: read_back, relayed: "Merge #{pr_url}", occurred_at: @now
-        )
+    # --- A PR another Zimmer holds ---------------------------------------------
+
+    def prepare_remote(session, pr_url)
+      remote, target = remote_target!(session, pr_url)
+      # The remote's answer, not this Zimmer's row: it goes stale there once
+      # the holding session comes back to rest without merging, so a yes can
+      # be given again after a merge that did not happen.
+      if target.merge_authorized_at
+        return "Already authorized: #{remote_label(remote, target)} has told the session holding #{pr_url} to merge it. " \
+               "Tell the person."
       end
-      "#{result.message} Tell the person, in one short sentence."
+
+      hold = target.gate_hold_reason&.truncate(GATE_REASON_LIMIT, separator: " ")
+      "READ-BACK: #{self.class.remote_read_back(target, held_on: remote_label(remote, target))}\n\n" \
+        "PR: #{pr_url}\n" \
+        "HEAD: #{target.head_sha}\n" \
+        "REMOTE: #{remote.server_name}\n" \
+        "Ask the person this once, now: your own words are fine, but say \"merge\", the repository and the number, and " \
+        "ask for a yes. Do not repeat it unless they ask which pull request. As soon as they say yes, call #{NAME} with " \
+        "session_id #{session.id}, pr_url #{pr_url} and confirm true. If they say no, or anything else, merge nothing." \
+        "#{"\nWhy the gate held it, only if they ask: #{hold}" if hold}"
+    end
+
+    def confirm_remote(session, pr_url)
+      yes = confirmed_yes!(session, pr_url)
+      prepared = yes.latest.tool_output.to_s
+      asked_head = prepared[/^HEAD: ([0-9a-f]{40})$/, 1]
+      remote_name = prepared[/^REMOTE: (.+)$/, 1]
+      remote = MergeAttestations::Remote.among([ remote_name ] & hierarchy_servers(session)).first
+      raise Refused, "Not merging: Zimmer's question did not name a remote it can still reach. Ask again." if asked_head.nil? || remote.nil?
+
+      target = remote_target_from!(remote, pr_url)
+      unless target.head_sha == asked_head
+        raise Refused, "Not merging: pull request #{self.class.pr_number(pr_url)} has a new commit since the person was " \
+                       "asked, so their yes does not cover it. Call #{NAME} again without confirm and ask again."
+      end
+
+      message = HumanMessageCapture.record_live_mode_merge_approval(
+        session: session, conversation: @conversation,
+        words: yes.words.with(turns: yes.answers, replying_to: yes.asked),
+        pr_url: pr_url, read_back: yes.read_back,
+        relayed: "Signed merge approval for #{pr_url} at #{asked_head}, delivered to #{remote.server_name}", occurred_at: @now
+      )
+      raise Refused, "Not merging: Zimmer could not record the person's yes, so it signs nothing. Tell the person." if message.nil?
+
+      token, attestation = MergeAttestations::Issuer.mint!(
+        session: session, human_message: message, target: target, remote: remote, read_back: yes.read_back, now: @now
+      )
+      answer = begin
+        remote.submit(token)
+      rescue MergeAttestations::Remote::Unreachable => e
+        { "accepted" => false, "code" => "unreachable", "message" => e.message }
+      end
+      label = remote_label(remote, target)
+      if answer["accepted"] == true
+        attestation.update!(outcome: "delivered", outcome_detail: answer["message"].to_s.truncate(1_000),
+                            remote_session_url: answer["session_url"].to_s.presence || attestation.remote_session_url)
+        log_remote(session, "Signed merge approval for #{pr_url} at #{asked_head[0, 12]} accepted by #{label}: #{answer['message']}")
+        return "Merge authorized on #{label}: the session holding #{pr_url} has been told to merge it. Tell the person, in one short sentence."
+      end
+
+      attestation.update!(outcome: "delivery_failed", outcome_detail: "#{answer['code']}: #{answer['message']}".truncate(1_000))
+      log_remote(session, "Signed merge approval for #{pr_url} refused by #{label} (#{answer['code']}): #{answer['message']}")
+      raise Refused, "Not merged: #{label} refused the approval (#{answer['message'].to_s.truncate(200)}). Tell the person."
+    end
+
+    # The remote that holds `pr_url`, and its account of it, from the servers
+    # the session's spawn hierarchy carries.
+    def remote_target!(session, pr_url)
+      raise Refused, "Cannot merge: #{pr_url} is not a GitHub pull request URL. Tell the person." unless MergeAttestations.parse_pr_url(pr_url)
+      unless MergeAttestations::SigningKey.configured?
+        raise Refused, "Cannot merge #{pr_url}: this Zimmer has no key to sign approvals for another Zimmer with " \
+                       "(#{MergeAttestations::SIGNING_KEY_ENV}). Tell the person."
+      end
+      begin
+        MergeAttestations::SigningKey.current
+      rescue MergeAttestations::SigningKey::NotConfigured => e
+        raise Refused, "Cannot merge #{pr_url}: this Zimmer's signing key is set but unusable (#{e.message}). Tell the person."
+      end
+
+      remotes = MergeAttestations::Remote.among(hierarchy_servers(session))
+      if remotes.empty?
+        raise Refused, "Cannot merge #{pr_url}: session #{session.id} does not drive another Zimmer this one can send " \
+                       "approvals to, and #{pr_url} is not its own PR. Find the session that drives the one holding it."
+      end
+
+      reasons = []
+      remotes.each do |remote|
+        target = remote_target_from!(remote, pr_url, raise_blocked: false)
+        return [ remote, target ] if target.ok?
+
+        reasons << "#{remote.server_name}: #{target.blocked_reason}"
+      rescue Refused => e
+        reasons << e.message
+      end
+      raise Refused, "Cannot merge #{pr_url}. #{reasons.join(' ')} Tell the person."
+    end
+
+    def remote_target_from!(remote, pr_url, raise_blocked: true)
+      target = remote.target(pr_url)
+      blocked = target.blocked_reason
+      repo, number = MergeAttestations.parse_pr_url(pr_url)
+      blocked ||= "it answered for a different PR" unless target.pr_url == pr_url && target.repo == repo && target.pr_number == number
+      blocked ||= "it did not name its head commit" unless target.head_sha.to_s.match?(MergeAttestations::SHA)
+      blocked ||= "it calls itself #{target.audience.to_s.truncate(80).inspect}, not #{remote.audience}" unless target.audience == remote.audience
+      blocked ||= "it does not trust this Zimmer's signing key yet" unless target.trusts_issuer
+      target = target.with(blocked_reason: blocked)
+      raise Refused, "Cannot merge #{pr_url} on #{remote.server_name}: #{blocked} Tell the person." if blocked && raise_blocked
+
+      target
+    rescue MergeAttestations::Remote::Unreachable => e
+      raise Refused, "Cannot merge #{pr_url}: #{e.message}. Tell the person."
+    end
+
+    # The catalog servers on this session, its ancestors and its descendants.
+    def hierarchy_servers(session)
+      chain = []
+      node = session
+      while node && chain.size < 50
+        chain << node
+        node = node.parent_session
+      end
+      frontier = [ session.id ]
+      seen = chain.map(&:id).to_set
+      while frontier.any? && seen.size < 500
+        children = Session.where(parent_session_id: frontier).where.not(id: seen.to_a).limit(500).to_a
+        chain.concat(children)
+        seen.merge(children.map(&:id))
+        frontier = children.map(&:id)
+      end
+      chain.flat_map { |member| Array(member.mcp_servers) }.map(&:to_s).uniq
+    end
+
+    def remote_label(remote, _target)
+      URI.parse(remote.audience.to_s).host.presence || remote.server_name
+    rescue URI::InvalidURIError
+      remote.server_name
+    end
+
+    def log_remote(session, content)
+      session.logs.create!(level: "info", content: content)
+    rescue => e
+      Rails.logger.warn("[LiveConversations::AuthorizeMerge] could not log on session #{session.id}: #{e.message}")
     end
 
     # An assistant line after the first asking line that moves the

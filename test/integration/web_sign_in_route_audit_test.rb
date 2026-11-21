@@ -50,6 +50,7 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     "active_storage/" => "Active Storage is drawn but unused: db/schema.rb has no active_storage_* tables, so there is no blob to serve and no upload to accept",
     "action_mailbox/" => "Action Mailbox is drawn but unused: no action_mailbox_* tables, and every ingress demands its own password",
     "rails/conductor/" => "Action Mailbox's conductor refuses every request outside development",
+    "merge_attestation_keys" => "this Zimmer's PUBLIC signing key for cross-deployment merge approvals, as a JWKS; a public key is not a secret, and receivers pin it rather than fetch it, so answering it trusts nobody",
     "native_access_handoffs" => "the iOS app's edge handoff: hands back only the Cloudflare Access assertion the request already carries, after verifying it (signature, iss, exp, required aud); 403 without one, and every API call still needs Zimmer's own OAuth token"
   }.freeze
 

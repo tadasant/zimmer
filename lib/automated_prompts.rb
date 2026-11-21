@@ -513,8 +513,26 @@ module AutomatedPrompts
   # @param act [String, nil] how the human signed off, completing "The user …".
   #   Defaults to pressing the Merge button in `surface`; Live Mode passes the
   #   spoken read-back it confirmed (LiveConversations::AuthorizeMerge).
-  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard", act: nil)
-    format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, act: act.presence || "has hit the Merge button on this PR in #{surface}")
+  # A sign-off pinned to one commit: a signed approval from another Zimmer
+  # (MergeAttestations::Acceptor) covers the head the person was asked about
+  # and no other, so the usual "rebase, push, then merge" is exactly what it
+  # must not do. Steps 2 and 3 of the template are replaced.
+  MERGE_AUTHORIZATION_PINNED_STEPS = <<~STEPS.strip
+    2. This sign-off covers commit %{head_sha} and nothing else. Confirm that is
+       still the PR's head. If the PR has moved, or there is a conflict that needs
+       a new commit, do NOT push and do NOT merge: a new commit needs a new yes.
+       Say so and come to rest in `needs_input`.
+    3. Merge the PR pinned to that commit, so GitHub refuses if the head moved:
+       `gh pr merge <number> --repo <owner/repo> --match-head-commit %{head_sha}`
+       with your usual merge-method flag.
+  STEPS
+  MERGE_AUTHORIZATION_UNPINNED_STEPS = /^2\. Confirm there are no merge conflicts.*?^3\. Merge the PR\.$/m
+
+  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
+    message = format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, act: act.presence || "has hit the Merge button on this PR in #{surface}")
+    return message if head_sha.blank?
+
+    message.sub(MERGE_AUTHORIZATION_UNPINNED_STEPS) { format(MERGE_AUTHORIZATION_PINNED_STEPS, head_sha: head_sha) }
   end
 
   # Whether a prompt is one of these. Written next to the template for the same

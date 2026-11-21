@@ -14,7 +14,11 @@ Rails.application.config.filter_parameters += [
   :cf_access_token,
   # A follow-up's inline attachments (base64 file contents): megabytes per line, and
   # whatever the person attached.
-  :attachments
+  :attachments,
+  # A signed merge approval (MergeAttestations) on its way into
+  # submit_merge_attestation: spent on arrival and five minutes long, but a
+  # credential while it lives.
+  :attestation
 ]
 
 # The handoff's redirect carries the same JWT in its fragment, and Rails logs

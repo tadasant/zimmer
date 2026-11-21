@@ -288,6 +288,9 @@ bar it. When a delivery is not recorded as yours, the live model is told why and
 To merge, the live model uses `authorize_merge`, the Merge button by voice: the model asks you once,
 naming the PR by its number, and only your yes to that question sends the merge. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
+When the PR is held by a session on another Zimmer that a session here drives, the model passes the
+PR's URL as `pr_url`: the question and the yes are the same, and Zimmer sends that deployment a signed
+approval for that commit. See [Merge approvals across deployments](/auth/merge-attestations/).
 
 ### Telling a session something
 

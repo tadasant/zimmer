@@ -2447,6 +2447,21 @@ class ClaudeCliAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  # Another Zimmer treats a token this key signs as a person's merge approval,
+  # so a session holding it could approve its own pull requests there.
+  test "spawn_process unsets the merge attestation signing key so sessions cannot sign approvals" do
+    original = ENV["MERGE_ATTESTATION_SIGNING_KEY"]
+    ENV["MERGE_ATTESTATION_SIGNING_KEY"] = "c2VjcmV0LXNlZWQtYnl0ZXMtZm9yLXRoZS10ZXN0LTMy"
+
+    @adapter.send(:spawn_process, [ "claude", "test" ], working_dir: @test_dir)
+
+    env_vars = @mock_process_manager.spawned_processes.first[:env]
+    assert env_vars.key?("MERGE_ATTESTATION_SIGNING_KEY"), "expected the var to be explicitly unset in the child"
+    assert_nil env_vars["MERGE_ATTESTATION_SIGNING_KEY"]
+  ensure
+    original.nil? ? ENV.delete("MERGE_ATTESTATION_SIGNING_KEY") : ENV["MERGE_ATTESTATION_SIGNING_KEY"] = original
+  end
+
   # The store's ADDRESS is not a credential, and a session that shells out to
   # diagnose a resolution failure should still be able to see which project it is.
   test "spawn_process leaves the non-secret Parameter Store address alone" do

@@ -32,6 +32,8 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: signed merge approvals are immutable records (MergeAttestation).
+    resources :merge_attestations, only: [ :index, :show ]
     # Read-only: rows are derived data, written by CycleTimes::Analyzer and
     # recomputed by CycleTimeSweepJob; an edit would be overwritten.
     resources :cycle_time_analyses, only: [ :index, :show ]
@@ -210,6 +212,9 @@ Rails.application.routes.draw do
     as: :oauth_server_authorization_server_metadata
   match ".well-known/oauth-protected-resource(/mcp)", to: "oauth_server/metadata#preflight", via: :options
   match ".well-known/oauth-authorization-server(/mcp)", to: "oauth_server/metadata#preflight", via: :options
+  # This Zimmer's public key for signed cross-deployment merge approvals
+  # (MergeAttestations). Receivers pin it from here; see MergeAttestationKeysController.
+  get ".well-known/merge-attestation-jwks.json", to: "merge_attestation_keys#show", as: :merge_attestation_jwks
   # The iOS app's edge sign-in: hands the app the Cloudflare Access assertion its
   # sign-in sheet earned on the app hostname. See NativeAccessHandoffsController.
   get "native/access-handoff", to: "native_access_handoffs#show", as: :native_access_handoff

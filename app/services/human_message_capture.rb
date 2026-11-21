@@ -246,6 +246,41 @@ class HumanMessageCapture
       nil
     end
 
+    # Record a merge approval another Zimmer heard and signed, once
+    # MergeAttestations::Verifier has checked the signature against a pinned
+    # key and the Acceptor has checked the PR's live head. Not best-effort like
+    # the other captures: the Acceptor merges nothing without this row, so a
+    # failed write raises.
+    #
+    # @param claims [MergeAttestations::Verifier::Claims]
+    # @param attestation [MergeAttestation] the `received` row
+    # @return [HumanMessage]
+    def record_attested_merge_approval!(session:, claims:, attestation:, occurred_at: Time.current)
+      session.human_messages.create!(
+        author: claims.local_approver,
+        channel: HumanMessage::ATTESTED,
+        content: claims.answer.to_s.strip.truncate(HumanMessage::MAX_CONTENT_LENGTH),
+        occurred_at: occurred_at,
+        provenance: {
+          "entry_point" => "attestation.authorize_merge",
+          "issuer" => claims.iss,
+          "jti" => claims.jti,
+          "key_id" => claims.kid,
+          "merge_attestation_id" => attestation.id,
+          "remote_approver" => claims.approver,
+          "remote_approver_name" => claims.approver_name,
+          "remote_channel" => claims.channel,
+          "surface" => claims.surface,
+          "heard" => claims.raw["heard"].to_s.presence,
+          "approved_at" => claims.approved_at.utc.iso8601,
+          "confirmed_pr_url" => claims.pr_url,
+          "head_sha" => claims.head_sha,
+          "read_back" => claims.read_back.strip.truncate(LIVE_MODE_RELAYED_LIMIT),
+          "issuer_session_url" => claims.raw["issuer_session_url"].to_s.presence
+        }.compact
+      )
+    end
+
     # The person's words a Live Mode delivery would be recorded as, or why there
     # are none.
     #

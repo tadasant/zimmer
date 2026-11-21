@@ -48,6 +48,7 @@ class SessionHumanMessages
     def replying_to = message.replying_to
     def confirmed_pr_url = message.confirmed_pr_url
     def read_back = message.read_back
+    def attestation_issuer = message.attestation_issuer
 
     # Where the human was speaking, named so a reader can weigh it. Deliberately
     # explicit about the elsewhere case rather than leaving it to a subtle
