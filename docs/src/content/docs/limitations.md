@@ -1404,8 +1404,9 @@ Three of those carry the most blast radius:
 
 - The **`/supervisor` Administrate panel** renders `mcp_oauth_credentials`,
   `mcp_oauth_pending_flows` and `x_oauth_credentials` as *editable* resources, and
-  `mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret` are among the fields it
-  puts in an edit form. Some credential columns are held back from the panel entirely, each listed
+  `x_oauth_credentials.access_token` / `.refresh_token` are among the fields it puts in an edit
+  form. The MCP credential secrets are masked: the panel says whether each is set and takes a
+  replacement, but never renders the stored value. Some credential columns are held back from the panel entirely, each listed
   in its dashboard's `DELIBERATELY_OMITTED` with the reason written next to it, among them
   `claude_accounts.oauth_config` (the plaintext Anthropic and OpenAI tokens the whole fleet runs on),
   `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
@@ -1733,16 +1734,36 @@ the appended bytes rather than the whole file — 8.5 s down to 34 ms on a real 
 
 ### Nothing is encrypted at rest
 
-🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
-`encrypts`, no `active_record.encryption` config exists, and every OAuth token, client secret, and PKCE
-verifier is a plaintext column. `XOauthCredential`'s own header says the quiet part: *"Security relies on
-database access controls."* The admin panel renders the MCP and X token columns in edit forms and asks
+🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. Every OAuth
+token, client secret, and PKCE verifier is a plaintext column. `McpOauthCredential` has started to move:
+its three secrets also have encrypted twins, but the plaintext columns are still written until a later
+contract deploy stops writing them ([Almost nothing is encrypted at
+rest](/auth/overview/#almost-nothing-is-encrypted-at-rest)). `XOauthCredential`'s own header says the
+quiet part: *"Security relies on database access controls."* The admin panel renders the X token
+columns in edit forms and asks
 for no credential beyond [web sign-in](/auth/web-sign-in/), and that is off by default. Without it, a
 broken perimeter exposes them in one click, and so does any agent session. The columns are plaintext,
 and anything with database access reads them too. That includes `web_identities.totp_secret`, the
 web sign-in authenticator secret.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
+
+### Zimmer's own OAuth client identity needs an edge change before anyone can use it
+
+🟡 The [hosted client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt)
+publishes `/oauth-client/metadata.json` and `/oauth-client/jwks.json`, and an authorization server
+fetches both without credentials. Behind Cloudflare Access, as production is, both are blocked until
+the edge configuration (Terraform outside this repo) admits them, so an authorization server cannot
+resolve the client id. Until then, a server that opts in fails at the authorization server, not in
+Zimmer.
+
+A credential issued to the identity also keeps its refresh token in Zimmer: the agent CLI cannot
+sign an assertion, so it gets the access token only. A session that outlives its access token waits
+for Zimmer's refresh, from the next spawn or the 30-minute cron. It does not refresh in place.
+
+The `/supervisor` panel masks MCP credential secrets, and a blank field there means "keep the stored
+value". So a refresh token or client secret cannot be *cleared* from the panel. Revoke the
+credential from the Connectors page instead.
 
 ### An elicitation URL is a session credential that sits on disk
 

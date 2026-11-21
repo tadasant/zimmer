@@ -142,7 +142,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
   test "a re-authorization that omits the refresh token keeps the stored one" do
     McpOauthCredential.create!(
       server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
-      client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      client_id: "test-client", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
       refresh_token: "issued-on-first-consent", expires_at: 1.hour.from_now
     )
     flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-a")
@@ -158,6 +158,28 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_not credential.refresh_token_unsupported?,
       "a server that has issued a refresh token before is not one-shot"
     assert_not credential.requires_periodic_reauth?
+  end
+
+  # A refresh token belongs to the client it was issued to. Re-consenting as a
+  # DIFFERENT client (a new DCR registration, or a move onto Zimmer's hosted
+  # client identity) must not carry the old one over: it would be refused, and
+  # that refusal discards it, as an unexplained re-auth later.
+  test "a re-authorization as a different client does not carry the old refresh token over" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "old-client", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      refresh_token: "issued-to-old-client", expires_at: 1.hour.from_now
+    )
+    flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-new-client")
+
+    stub_token_exchange(token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_equal "test-client", credential.client_id
+    assert_nil credential.refresh_token
+    assert credential.refresh_token_unsupported?
   end
 
   # Re-authorizing against a server that has since started issuing refresh
@@ -425,6 +447,62 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_not_equal McpOauthService.new.build_redirect_uri, query["redirect_uri"]
     assert_equal "1601185624273.8899143856786", query["client_id"]
     assert_equal "S256", query["code_challenge_method"]
+  end
+
+  # Zimmer's hosted OAuth client identity, end to end through the controller: a
+  # catalog server that opts in is authorized as the CIMD URL with no DCR and no
+  # secret, the callback exchanges the code with a signed assertion, and the
+  # stored credential carries the identity forward for its refreshes.
+  test "a catalog server that opts into the hosted identity is authorized as it, with an assertion" do
+    server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http", "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientIdentity" => "cimd" }
+    })
+    captured = nil
+    # The identity's origin is the one APP_HOST names, so its redirect IS the
+    # hosted callback and the flow completes automatically.
+    origin = McpOauthService.new.build_redirect_uri.delete_suffix("/mcp_oauth/callback")
+
+    with_oauth_client_identity(base_url: origin) do
+      initiate_catalog_server(server)
+
+      assert_response :redirect
+      query = URI.decode_www_form(URI(@response.headers["Location"]).query).to_h
+      assert_equal "#{origin}/oauth-client/metadata.json", query["client_id"]
+      assert_equal "#{origin}/mcp_oauth/callback", query["redirect_uri"]
+
+      pending = McpOauthPendingFlow.for_session(@session).find_by(server_name: "slack-reframe")
+      assert_nil pending.client_secret
+      assert_not pending.manual?
+
+      stub_token_exchange(refreshable_token_response, capture: ->(params) { captured = params }) do
+        get mcp_oauth_callback_path, params: { state: pending.state, code: "auth-code" }
+      end
+
+      assert_equal OauthClientIdentity::ASSERTION_TYPE, captured[:client_assertion_type]
+      assert captured[:client_assertion].present?
+      assert_nil captured[:client_secret]
+
+      credential = McpOauthCredential.find_by!(server_name: "slack-reframe")
+      assert_equal "#{origin}/oauth-client/metadata.json", credential.client_id
+      assert credential.hosted_client_identity?
+      assert credential.can_refresh?
+    end
+  end
+
+  # The same opt-in on a deployment that has no identity configured is today's
+  # flow, untouched: the catalog is shared, and an open-source build has no key.
+  test "an opted-in catalog server on a deployment without the identity keeps the default client" do
+    server = ServersConfig::Server.new("slack-reframe", {
+      "type" => "streamable-http", "url" => "https://mcp.slack.com/mcp",
+      "oauth" => { "clientIdentity" => "cimd" }
+    })
+
+    initiate_catalog_server(server)
+
+    assert_response :redirect
+    query = URI.decode_www_form(URI(@response.headers["Location"]).query).to_h
+    assert_equal "zimmer", query["client_id"]
   end
 
   # Regression guard: the hosted callback must stay the default for ordinary servers.

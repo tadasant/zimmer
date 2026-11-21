@@ -18,7 +18,10 @@ Rails.application.config.filter_parameters += [
   # A signed merge approval (MergeAttestations) on its way into
   # submit_merge_attestation: spent on arrival and five minutes long, but a
   # credential while it lives.
-  :attestation
+  :attestation,
+  # A private_key_jwt client assertion (OauthClientIdentity) on its way to a
+  # token endpoint: a minute long, but it authenticates as Zimmer while it lives.
+  :client_assertion
 ]
 
 # The handoff's redirect carries the same JWT in its fragment, and Rails logs

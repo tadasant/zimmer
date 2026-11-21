@@ -276,7 +276,13 @@ class McpOauthService
       client_id: pending_flow.client_id
     }
 
-    params[:client_secret] = pending_flow.client_secret if pending_flow.client_secret.present?
+    if OauthClientIdentity.owns_client_id?(pending_flow.client_id)
+      # Zimmer's hosted identity authenticates with a signed assertion, never a
+      # secret (RFC 7523 §2.2).
+      params.merge!(client_assertion_params(pending_flow.token_endpoint))
+    elsif pending_flow.client_secret.present?
+      params[:client_secret] = pending_flow.client_secret
+    end
 
     # RFC 8707 resource indicator — binds the issued token's audience to the MCP
     # resource server. Required by servers that enforce audience binding (Notion).
@@ -407,6 +413,23 @@ class McpOauthService
       open_timeout: REQUEST_TIMEOUT, read_timeout: REQUEST_TIMEOUT) do |http|
       http.request(request)
     end
+  end
+
+  # The private_key_jwt fields for one request to `token_endpoint`, signed with
+  # Zimmer's hosted client identity (OauthClientIdentity). The audience is the
+  # endpoint without any userinfo, so a credential embedded in the URL never
+  # lands inside a signed claim.
+  #
+  # Public because McpOauthCredential#refresh! authenticates its refresh grant
+  # the same way.
+  #
+  # @raise [OauthClientIdentity::Unavailable] before anything is sent, so a
+  #   failed signature never consumes a code or a refresh token
+  def client_assertion_params(token_endpoint)
+    uri = URI(token_endpoint.to_s)
+    uri.user = nil
+    uri.password = nil
+    OauthClientIdentity.assertion_params(audience: uri.to_s)
   end
 
   private

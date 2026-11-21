@@ -102,7 +102,7 @@ exposes port 80 (a reverse proxy, a public load balancer, a well-meaning `docker
 box with a public IP) hands an anonymous visitor every session transcript, the `/inference` OAuth
 flow, the MCP and X OAuth tokens in `/supervisor`, and a page that mints full-API keys. With it on,
 there is a second wall, but it guards only the browser surfaces. The machine paths stay behind their
-API keys and signatures, and nothing is [encrypted at rest](#nothing-is-encrypted-at-rest). Tracked
+API keys and signatures, and nothing is [encrypted at rest](#almost-nothing-is-encrypted-at-rest). Tracked
 in [#43](https://github.com/tadasant/zimmer/issues/43).
 :::
 
@@ -248,6 +248,12 @@ A completely separate system: `McpOauthCredential` + `McpOauthPendingFlow`, doin
 discovery, RFC 7591 dynamic client registration, and PKCE — then writing the resulting tokens into
 the CLI's own credential file so the agent's MCP client picks them up.
 
+As the client in those flows, Zimmer can also present an identity of its own, for servers that opt
+in: a Client ID Metadata Document at `/oauth-client/metadata.json`, public keys at
+`/oauth-client/jwks.json`, and `private_key_jwt` assertions signed by a GCP KMS key that cannot be
+exported. It is off until configured. See [Zimmer's own client
+identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt).
+
 X (Twitter) is the exception: its token is an `XOauthCredential` row, vended as an env var, and
 minted by a consent flow that runs from `/supervisor`.
 
@@ -292,14 +298,30 @@ Every stdio server you replace with a remote one shrinks that blast radius. See
 plumbing works today.
 :::
 
-## Nothing is encrypted at rest
+## Almost nothing is encrypted at rest
 
-:::danger[No `encrypts` declaration exists anywhere in the codebase]
-There is no `encrypts` in any model and no `config.active_record.encryption.*` anywhere in `config/`.
+:::danger[Encryption at rest has started, and the plaintext is still there]
+`McpOauthCredential` is the one model with `encrypts`. Each of `access_token`, `refresh_token` and
+`client_secret` has an encrypted twin (`<column>_ciphertext`). Every write goes to both, every read
+takes the plaintext column only, and the `EncryptMcpOauthCredentialSecrets` post-deploy task filled
+the twins for rows that predate them. That is the **expand** half of the rollout. The plaintext
+columns are still written, so for now the twins add a copy rather than take one away.
 
-In `db/schema.rb`:
+The **contract** half is two later deploys. The first re-mirrors every row and switches reads to
+the twin while still writing both. Re-mirroring is needed because the expand task only fills
+*missing* twins, and an old container or a reverted deploy can leave a twin stale. The second stops
+writing plaintext and `NULL`s it out. The columns are dropped after that. A revert at any step lands
+on code that reads every row correctly.
 
-- `mcp_oauth_credentials.access_token`, `.refresh_token`, `.client_secret` — plain `text` / `string`
+The keys come from `config/initializers/active_record_encryption.rb`: an `active_record_encryption`
+block in Rails credentials if there is one, otherwise three keys derived from `secret_key_base`.
+Rotating `secret_key_base` makes the twins unreadable. That costs nothing while the plaintext is
+still written. Before the contract phase, pin the derived values as explicit keys.
+
+Everything else in `db/schema.rb` is still plain:
+
+- `mcp_oauth_credentials.access_token`, `.refresh_token`, `.client_secret` — plain `text` / `string`,
+  until the contract phase above
 - `mcp_oauth_pending_flows.code_verifier`, `.client_secret` — unencrypted
 - `claude_accounts.oauth_config` — plain `jsonb`, holding Anthropic and OpenAI access and refresh
   tokens
@@ -320,8 +342,10 @@ Security relies on database access controls."*
 `string`, held back from `/supervisor` but readable by anything with database access. The recovery
 codes are stored only as SHA-256 digests.
 
-Combined with an Administrate panel that renders the MCP and X token columns in edit forms, database
-access controls do not help much: the panel reads the database for whoever reaches it. Without web
+The panel masks the MCP credential secrets (`MaskedSecretField`): it says whether each is set and never
+renders the value, not even into the edit form, where a blank field keeps the stored one. The X
+token columns are still rendered in their edit form, and with that, database access controls do not
+help much: the panel reads the database for whoever reaches it. Without web
 sign-in, the network perimeter is the only thing between the plaintext and a visitor, and agent
 sessions are already inside it.
 :::
@@ -384,6 +408,7 @@ provider would have rotated the single-use refresh token, and only then would th
 | `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
 | `X_OAUTH_REDIRECT_URI` | Where X sends the operator after consent, on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`, where nothing listens, so the operator pastes the redirect URL back into `/supervisor`. Set it to `https://<APP_HOST>/supervisor/x_oauth/callback` and the flow finishes on its own. Whatever you set must already be registered on the X app. See [X (Twitter) is minted from `/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor). |
+| `ZIMMER_OAUTH_CLIENT_BASE_URL`, `ZIMMER_OAUTH_CLIENT_KMS_KEY_VERSIONS` / `ZIMMER_OAUTH_CLIENT_SIGNING_KEYS` | Zimmer's own [OAuth client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt) toward MCP servers: the public origin its client id is built from, and the KMS key versions (production) or local private keys (development) that sign its assertions. Both halves unset means off |
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
 | `ZIMMER_WEB_AUTH_*` | [Web sign-in](/auth/web-sign-in/#turning-it-on): the Google OAuth client ID and secret, the allowed Workspace domains, the second-factor mode, and how long sessions and trusted browsers last. Setting `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID` turns the wall on |
 

@@ -104,6 +104,11 @@ module CliSpawnEnv
   # - MERGE_ATTESTATION_SIGNING_KEY: the Ed25519 key MergeAttestations signs human
   #   merge approvals with. Another Zimmer treats a token it signs as a person's
   #   yes, so an agent holding it could approve its own pull requests there.
+  # - ZIMMER_OAUTH_CLIENT_SIGNING_KEYS: the local private key(s) behind Zimmer's
+  #   hosted OAuth client identity (OauthClientIdentity). Whoever holds one can
+  #   sign client assertions and BE Zimmer to every authorization server that
+  #   trusts it. Production signs in KMS instead and never sets this; a
+  #   deployment that does must not pass it on.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
@@ -183,6 +188,7 @@ module CliSpawnEnv
       ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
       ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
       MERGE_ATTESTATION_SIGNING_KEY
+      ZIMMER_OAUTH_CLIENT_SIGNING_KEYS
       SENTRY_DSN_BACKEND
     ]
 
