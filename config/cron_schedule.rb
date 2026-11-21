@@ -237,6 +237,12 @@ module CronSchedule
       description: "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands",
       environments: %i[production staging development]
     },
+    slack_error_reply: {
+      cron: "* * * * *", # Every minute — one query; Slack is called only when a request cannot be served
+      class: "SlackErrorReplyJob",
+      description: "Reply in the thread of a Slack request whose session is out of quota, cut off from the provider, or failed before the agent could answer",
+      environments: %i[production staging development]
+    },
     github_rate_limit_snapshot: {
       cron: "* * * * *", # Every minute — `gh api rate_limit` per token, which GitHub does not count
       class: "GithubRateLimitSnapshotJob",

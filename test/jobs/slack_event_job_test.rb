@@ -256,6 +256,16 @@ class SlackEventJobTest < ActiveJob::TestCase
     assert_equal "1756500000.000100", metadata["slack_message_ts"]
   end
 
+  test "a fired session records the kind of condition that fired it, and a reply's thread parent (SlackErrorReply)" do
+    configure_condition("channel_id" => CHANNEL, "event_type" => "bot_mention", "allowed_user_ids" => [ "U_ALICE" ])
+    run_event(slack_event(ts: "1756500000.000200", thread_ts: "1756400000.000100", text: mention))
+
+    metadata = Session.order(:id).last.metadata
+    assert_equal "bot_mention", metadata["slack_trigger_event_type"]
+    assert_equal "1756400000.000100", metadata["slack_thread_ts"]
+    assert_equal "1756500000.000200", metadata["slack_message_ts"]
+  end
+
   test "a poller fire that lost its head to the webhook records the first message it won" do
     run_event(slack_event(ts: "1756500000.000100", user: "U_ALERTS", text: "alert one"))
 

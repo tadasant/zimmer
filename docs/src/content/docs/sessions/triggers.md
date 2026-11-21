@@ -448,6 +448,59 @@ retried by the next sweep. A failed *removal* is retried every minute until it w
 Slack says the message or channel is gone. A marked session stays a candidate however old it is. An
 unmarked one stops being considered a day after it was created.
 
+#### When a request cannot be served: the error reply
+
+The hourglass says "waiting". It does not say why, and some waits are long: a quota park lasts until
+the account pool's window rolls over, which can be hours. So when a session spawned by an @mention or
+a DM cannot serve the request, Zimmer itself posts one short reply in the thread of the message. The
+model is not involved, and the text is fixed. All three templates live in `SlackErrorReply::TEMPLATES`,
+and each one links the session.
+
+| Class | When | Reply, roughly |
+| --- | --- | --- |
+| `failed` | the session is `failed`, except by a failure Zimmer resumes on its own: a deploy interruption (`GoodJob::InterruptError`, resumed by `DeploymentRecoveryJob`) or an MCP server waiting on OAuth | Zimmer couldn't work on this, its session failed before the agent could reply |
+| `quota` | the session is parked on a `quota_exhausted` auth outage, or held or paused by the spot gate for utilization. Five minutes after the message (`QUOTA_THRESHOLD`) | Zimmer has run out of inference quota for now, the request is queued, and the agent will reply once quota frees up |
+| `outage` | the session is parked `auth_unrecoverable`, or its transcript carries outage-class API errors since its latest prompt while a turn is underway. Fifteen minutes after the message (`OUTAGE_THRESHOLD`), so the hourglass covers the short ones | Zimmer can't reach its AI provider, it keeps retrying, and the agent will reply once it gets through |
+
+The rules that keep it quiet:
+
+- **Addressed requests only.** The session must come from a `bot_mention` or `dm_message` condition.
+  A passive-listening or `new_message` session was started for a message nobody asked Zimmer about,
+  and nothing about the passive listener's silence changes. During a quota outage a reply there would
+  land on every message in the channel.
+- **Before the agent's first model turn only.** Once a real model has answered, the agent has had
+  its chance to reply, so Zimmer never posts after it and never doubles up with it. The session
+  settles `not_needed`.
+- **At most one reply per class per session.** A session that was out of quota and later failed gets
+  both. One that was out of quota for six hours gets one.
+- A spot session held only because every session slot is taken is busy, not out of quota, and gets
+  no reply. Neither does one a user queued or a priority session preempted, nor one that is merely
+  slow. A quota-wall line in the transcript is not enough on its own: Claude Code rotates to another
+  account on one, and a pool that is really out ends in a `quota_exhausted` park.
+
+There is no follow-up when capacity returns: the agent's own reply is the follow-up. Claude Code
+only, for the same reason as the hourglass.
+
+`SlackErrorReplyJob` runs this once a minute. Its record is on the session:
+
+| Metadata key | Meaning |
+| --- | --- |
+| `slack_trigger_event_type` | the kind of Slack condition that fired the session, stamped at fire |
+| `slack_thread_ts` | the thread's parent, when the message was itself a reply. The error reply goes there; otherwise it threads under `slack_message_ts` |
+| `slack_error_reply_<class>_posting_at` | Zimmer is about to post. Written first: `chat.postMessage` is not idempotent, so if the call dies midway the class is recorded `unconfirmed` and never posted again |
+| `slack_error_reply_<class>_posted_at` | when Slack confirmed the post |
+| `slack_error_reply_<class>_outcome` | `posted`, `unconfirmed`, or `failed:<slack code>` |
+| `slack_error_reply_settled_at` | nothing more to do for this session |
+| `slack_error_reply_outcome` | why it settled: `not_needed`, `not_addressed`, `unsupported_runtime`, `ended`, `failed_reply_posted`, `post_failed:<slack code>` |
+| `slack_error_reply_reported_at` | when the job first sent an exception for this session to error reporting. It reports once |
+
+Posting needs `chat:write`, which the bot already uses. The post is sent with
+`retry_timeouts: false`, so a timed-out post is not resent in process either. A Slack refusal (`missing_scope`, a channel
+the bot has left, a deleted message) is recorded on the class as `failed:<code>`, written to the
+session's log as a warning, and never retried. It raises nothing and pages no one. Only a 429, which
+Slack does not apply, is retried by the next sweep. A session stops being considered a day after it
+was created.
+
 #### Slack Events API delivery
 
 Slack triggers can also fire from Slack's Events API, which pushes each message to Zimmer as it is

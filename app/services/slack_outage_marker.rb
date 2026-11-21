@@ -71,13 +71,67 @@ class SlackOutageMarker
   ERROR_KEY = "slack_outage_marker_error"
   REPORTED_KEY = "slack_outage_marker_reported_at"
 
+  # Which kind of Slack condition fired the session ("bot_mention", "passive_listen_channel", ...),
+  # and the thread the message sits in when it is a reply. SlackErrorReply reads both: it answers
+  # only a message that was addressed to Zimmer, and answers it in the message's own thread.
+  EVENT_TYPE_KEY = "slack_trigger_event_type"
+  THREAD_TS_KEY = "slack_thread_ts"
+
   # The metadata a Slack trigger fire stamps on the session it spawns.
   # @return [Hash]
-  def self.source_metadata(channel_id:, message_ts:)
+  def self.source_metadata(channel_id:, message_ts:, event_type: nil, thread_ts: nil)
     return {} if channel_id.blank? || message_ts.blank?
 
-    { CHANNEL_KEY => channel_id, TS_KEY => message_ts.to_s }
+    metadata = { CHANNEL_KEY => channel_id, TS_KEY => message_ts.to_s }
+    metadata[EVENT_TYPE_KEY] = event_type.to_s if event_type.present?
+    metadata[THREAD_TS_KEY] = thread_ts.to_s if thread_ts.present? && thread_ts.to_s != message_ts.to_s
+    metadata
   end
+
+  # One pass over a session's stored transcript, for the two Slack-side acknowledgements.
+  #
+  # An API-error entry is the runtime's own line (`isApiErrorMessage: true`, `model: "<synthetic>"`).
+  # It is an outage error when it is the provider being unavailable
+  # (ApiErrorRetryService.outage_error?). A
+  # model turn is an assistant entry from a real model: not an API error, and not `<synthetic>`,
+  # which also rules out the "No response requested." stub Claude Code writes on resume
+  # (ClaudeTranscriptNormalizer.resume_stub?).
+  #
+  # `outage_error_since_prompt` is the same as `outage_error`, counted only after the latest `user`
+  # entry, so an error from before a resume does not describe the session now.
+  #
+  # @return [Hash] { model_turn:, outage_error:, outage_error_since_prompt: }, all booleans
+  def self.transcript_signals(session)
+    found = { model_turn: false, outage_error: false, outage_error_since_prompt: false }
+    session.parsed_transcript.each do |entry|
+      next unless entry.is_a?(Hash)
+
+      if entry["type"] == "user"
+        found[:outage_error_since_prompt] = false
+        next
+      end
+      next unless entry["type"] == "assistant"
+
+      if entry["isApiErrorMessage"] == true
+        if ApiErrorRetryService.outage_error?(entry["error"], entry_text(entry))
+          found[:outage_error] = true
+          found[:outage_error_since_prompt] = true
+        end
+      else
+        model = entry.dig("message", "model").to_s
+        found[:model_turn] = true if model.present? && model != ClaudeTranscriptNormalizer::SYNTHETIC_MODEL
+      end
+    end
+    found
+  end
+
+  def self.entry_text(entry)
+    content = entry.dig("message", "content")
+    return content.to_s unless content.is_a?(Array)
+
+    content.filter_map { |block| block["text"] if block.is_a?(Hash) }.join(" ")
+  end
+  private_class_method :entry_text
 
   # Sessions this may still have work for: spawned by a Slack trigger and not yet settled. An
   # unmarked one must also be young enough that a reaction on the message still means something;
@@ -234,28 +288,7 @@ class SlackOutageMarker
     transcript_signals[:outage_error]
   end
 
-  # One pass over the stored transcript. An API-error entry is the runtime's own line
-  # (`isApiErrorMessage: true`, `model: "<synthetic>"`), and it counts only when it is the provider
-  # being unavailable. A model turn is an assistant entry from a real model: not an API error, and
-  # not `<synthetic>`, which also rules out the "No response requested." stub Claude Code writes on
-  # resume (ClaudeTranscriptNormalizer.resume_stub?).
   def transcript_signals
-    @transcript_signals ||= session.parsed_transcript.each_with_object({ model_turn: false, outage_error: false }) do |entry, found|
-      next unless entry.is_a?(Hash) && entry["type"] == "assistant"
-
-      if entry["isApiErrorMessage"] == true
-        found[:outage_error] = true if ApiErrorRetryService.outage_error?(entry["error"], entry_text(entry))
-      else
-        model = entry.dig("message", "model").to_s
-        found[:model_turn] = true if model.present? && model != ClaudeTranscriptNormalizer::SYNTHETIC_MODEL
-      end
-    end
-  end
-
-  def entry_text(entry)
-    content = entry.dig("message", "content")
-    return content.to_s unless content.is_a?(Array)
-
-    content.filter_map { |block| block["text"] if block.is_a?(Hash) }.join(" ")
+    @transcript_signals ||= self.class.transcript_signals(session)
   end
 end

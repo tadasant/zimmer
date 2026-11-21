@@ -115,6 +115,11 @@
       "class": "SlackOutageMarkerJob",
       "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
     },
+    "slack_error_reply": {
+      "cron": "* * * * *",
+      "class": "SlackErrorReplyJob",
+      "description": "Reply in the thread of a Slack request whose session is out of quota, cut off from the provider, or failed before the agent could answer"
+    },
     "github_rate_limit_snapshot": {
       "cron": "* * * * *",
       "class": "GithubRateLimitSnapshotJob",
@@ -467,6 +472,11 @@
       "class": "SlackOutageMarkerJob",
       "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
     },
+    "slack_error_reply": {
+      "cron": "* * * * *",
+      "class": "SlackErrorReplyJob",
+      "description": "Reply in the thread of a Slack request whose session is out of quota, cut off from the provider, or failed before the agent could answer"
+    },
     "github_rate_limit_snapshot": {
       "cron": "* * * * *",
       "class": "GithubRateLimitSnapshotJob",
@@ -803,6 +813,11 @@
       "cron": "* * * * *",
       "class": "SlackOutageMarkerJob",
       "description": "Put :hourglass_flowing_sand: on a Slack message whose session is stuck on API errors, and take it off when the agent's turn lands"
+    },
+    "slack_error_reply": {
+      "cron": "* * * * *",
+      "class": "SlackErrorReplyJob",
+      "description": "Reply in the thread of a Slack request whose session is out of quota, cut off from the provider, or failed before the agent could answer"
     },
     "slack_trigger_health_check": {
       "cron": "45 * * * *",

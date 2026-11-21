@@ -316,7 +316,10 @@ module SlackTriggerFiring
       if fired.any?
         session = trigger.create_session!(
           prompt: rendered.prompt,
-          session_metadata: SlackOutageMarker.source_metadata(channel_id: channel_id, message_ts: rendered.head.ts)
+          session_metadata: SlackOutageMarker.source_metadata(
+            channel_id: channel_id, message_ts: rendered.head.ts,
+            event_type: condition.event_type, thread_ts: rendered.head.try(:thread_ts)
+          )
         )
 
         if session

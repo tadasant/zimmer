@@ -731,6 +731,14 @@ class SlackServiceTest < ActiveSupport::TestCase
     SlackService.post_message(channel: "C1", text: "hi")
   end
 
+  test "post_message threads the post under thread_ts when given" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi", thread_ts: "1.0").returns(true)
+
+    SlackService.post_message(channel: "C1", text: "hi", thread_ts: "1.0")
+  end
+
   test "post_message raises ArgumentError without a channel" do
     assert_raises(ArgumentError) { SlackService.post_message(channel: nil, text: "hi") }
   end
@@ -748,6 +756,22 @@ class SlackServiceTest < ActiveSupport::TestCase
 
     SlackService.post_message(channel: "C1", text: "hi")
     assert_equal 3, attempts
+  end
+
+  test "post_message with retry_timeouts: false does not resend a timed-out post" do
+    attempts = 0
+    fake_client = Object.new
+    fake_client.define_singleton_method(:chat_postMessage) do |**_args|
+      attempts += 1
+      raise Faraday::TimeoutError, "timeout"
+    end
+    SlackService.stubs(:client).returns(fake_client)
+    SlackService.stubs(:sleep)
+
+    assert_raises(SlackService::TransientError) do
+      SlackService.post_message(channel: "C1", text: "hi", retry_timeouts: false)
+    end
+    assert_equal 1, attempts
   end
 
   test "send_dm opens the conversation then posts into it" do
