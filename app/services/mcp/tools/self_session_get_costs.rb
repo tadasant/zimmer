@@ -55,8 +55,9 @@ module Mcp
         OpenRouter and IS money owed.
 
         Spend is swept out of transcripts by a job that runs every ten minutes, so the most recent
-        few minutes of a running session are usually not in the ledger yet. A session that has just
-        started may legitimately report nothing at all.
+        few minutes of a running Claude Code or Codex session are usually not in the ledger yet. A Pi
+        session's spend is swept again as each model response lands, so it is behind by seconds,
+        not minutes. A session that has just started may legitimately report nothing at all.
       DESC
 
       input_schema({

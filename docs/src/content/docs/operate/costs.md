@@ -446,6 +446,30 @@ A per-card lookup would be a per-card round trip on a page that renders hundreds
 A session with no stored usage renders **nothing** rather than `$0.00` — usually it just
 means its transcript has not been swept yet, and a zero would assert it was free.
 
+The detail page's meta row says more than the card does: the dollar figure, the session's total
+tokens, and a tooltip with the breakdown (fresh input, output, cache read, cache write, API calls)
+and what the figure means for this runtime. `get_session` renders the same thing as its **Cost**
+section, from the same `SessionCostSummary`, so the page and the MCP dump cannot disagree:
+
+- **Pi** is metered through OpenRouter, so its figure is **money owed**, priced at the rate
+  OpenRouter publishes for the model. For every priced model it is the per-call `usage.cost` Pi
+  recorded in its own transcript, to the cent.
+- **Claude Code and Codex** are subscription-billed, so theirs is list price: a comparable unit,
+  not a bill.
+- Usage on a model with **no rate** reads `unpriced`, with the model named, rather than `$0`.
+
+**A Pi session's figure moves as each model response lands**, not on the 10-minute sweep. When
+`TranscriptPollerService` stores a new Pi entry that carries `usage`, it enqueues
+`PiSessionUsageRefreshJob` for that session. The job runs `PiTokenUsageIngestionService` over
+that one row, which is cheap because the durable copy is `sessions.transcript`. If that adds
+rows, `Session#broadcast_cost` repaints the cost line and the phone header's badge of every session
+the new rows were credited to. A forked transcript is credited by its header, so that can be the
+source rather than the session that was swept. Per session there is at most one refresh queued,
+one running, and one run every 15 seconds; a run past the throttle is retried by GoodJob, so the
+newest response still lands. The bound matters because a sweep re-parses the session's whole
+stored transcript. Claude Code and Codex sessions still wait for the cron, and their figures
+update on the next page load.
+
 ## Burn rate by harness + model
 
 The Token Spend page answers "what did we spend"; the scheduler needs "what does a minute of this cost".

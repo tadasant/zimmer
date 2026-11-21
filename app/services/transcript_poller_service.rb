@@ -275,6 +275,8 @@ class TranscriptPollerService
       # Run transcript hooks to extract data and update custom_metadata
       run_transcript_hooks(transcript_content, messages_to_broadcast)
 
+      refresh_pi_usage_if_billed(messages_to_broadcast)
+
       # Update the running loader to keep it at the bottom
       if @session.running?
         broadcast_running_loader
@@ -859,6 +861,31 @@ class TranscriptPollerService
     end
 
     task_tool_uses
+  end
+
+
+  # A Pi session's spend reaches the ledger as each model response lands, rather
+  # than on the ten-minute fleet sweep. Only when the transcript just stored holds
+  # a new entry that carries `usage` — a tool result or a user turn costs nothing
+  # and needs no sweep. Never fails the poll: the cron sweep is the backstop.
+  def refresh_pi_usage_if_billed(new_events)
+    return unless @session.agent_runtime == PiTokenUsageIngestionService::RUNTIME
+    return unless Array(new_events).any? { |event| pi_usage_bearing?(event) }
+
+    PiSessionUsageRefreshJob.perform_later(@session.id)
+  rescue StandardError => e
+    Rails.logger.warn "[TranscriptPollerService] Could not enqueue Pi usage refresh: #{e.class}: #{e.message}"
+  end
+
+  # Whether a raw Pi transcript entry reports token usage — the same shapes
+  # PiTokenUsageIngestionService reads.
+  def pi_usage_bearing?(event)
+    return false unless event.is_a?(Hash)
+    return false unless PiTokenUsageIngestionService::USAGE_BEARING_TYPES.include?(event["type"])
+
+    message = event["message"]
+    usage = (message.is_a?(Hash) && message["usage"]) || event["usage"]
+    usage.is_a?(Hash)
   end
 
   # Run transcript hooks to extract data and update custom_metadata

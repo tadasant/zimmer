@@ -133,7 +133,7 @@
                 cost itself — same muted treatment, beside the id, where the card puts
                 it too. Without this the indicator exists on the page and is invisible
                 on the device Zimmer is actually read on. %>
-            <%= session_cost_badge(@session) %>
+            <%= render "sessions/session_cost_badge", agent_session: @session %>
           </div>
         </div>
 

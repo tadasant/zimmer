@@ -20,6 +20,29 @@ class Mcp::Tools::GetSessionTest < ActiveSupport::TestCase
     assert_includes @tool.call("id" => session.id), "- **Effort:** medium (model default)"
   end
 
+  test "states the session's cost, its token breakdown and what the figure means" do
+    session = sessions(:needs_input)
+    session.update!(agent_runtime: "pi")
+    SessionTokenUsage.create!(request_id: "pi:#{SecureRandom.uuid}:aaaa0001", model: "openrouter/~x-ai/grok-latest",
+                              session_id: session.id, agent_root: "zimmer", agent_runtime: "pi",
+                              called_at: Time.utc(2026, 11, 21, 14, 23, 48),
+                              input_tokens: 647, output_tokens: 786, cache_read_tokens: 57_216)
+
+    output = @tool.call("id" => session.id)
+
+    assert_includes output, "### Cost"
+    assert_includes output, "- **Cost:** $0.0346 — Metered through OpenRouter, so this is money owed"
+    assert_includes output, "- **Tokens:** 58,649 — 647 input, 786 output, 57,216 cache read, 0 cache write, across 1 API call."
+    assert_includes output, "- **Newest call in the ledger:** 2026-11-21T14:23:48Z"
+  end
+
+  test "says outright when no usage is stored yet" do
+    output = @tool.call("id" => sessions(:needs_input).id)
+
+    assert_includes output, "### Cost"
+    assert_includes output, "- No usage is in Zimmer's token ledger for this session yet."
+  end
+
   test "returns session details and the transcript file hint instead of the transcript" do
     session = sessions(:archived)
 
