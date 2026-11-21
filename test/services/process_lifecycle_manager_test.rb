@@ -3842,6 +3842,57 @@ class ProcessLifecycleManagerTest < ActiveJob::TestCase
       "The same refused turn must not be failed again by a resume that wrote nothing new"
   end
 
+  # ===========================================================================
+  # Invalid replayed tool name (#1603, production sessions 29929/29937/29941):
+  # a known wording, failed deliberately, never retried, never paged.
+  # ===========================================================================
+
+  INVALID_TOOL_NAME_MESSAGE = "API Error: 400 tools.20.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'"
+
+  def setup_transcript_ending_with_invalid_tool_name
+    transcript_dir = calculate_test_transcript_dir
+    @mock_file_system.mkdir_p(transcript_dir)
+    @mock_file_system.write(File.join(transcript_dir, "#{@session.session_id}.jsonl"), <<~JSONL)
+      {"type": "assistant", "message": {"content": [{"type": "text", "text": "Checked the shadow comparison."}]}}
+      {"type": "user", "message": {"content": [{"type": "text", "text": "Write the Status panel for this Zimmer session"}]}}
+      #{api_error_json(INVALID_TOOL_NAME_MESSAGE, error_type: "invalid_request")}
+    JSONL
+  end
+
+  test "handle_exit fails an invalid replayed tool name deliberately, buckets it, and does not page" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_ending_with_invalid_tool_name
+
+    UnclassifiedFailureReporter.expects(:report).never
+    ErrorReporter.expects(:report_message).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    decision = manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone")
+
+    assert_equal :failed, decision.action
+    assert_equal 0, @mock_cli_adapter.resumed_sessions.length,
+      "A resume replays the same tool name, so nothing may retry it"
+    assert_match(/\A#{Regexp.escape(ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX)}/, decision.error_message)
+    assert_match(/tools\.20\.custom\.name/, decision.error_message)
+    assert_equal "invalid_tool_name", AgentSessionJob.new.send(:failure_reason_for, decision.error_message)
+  end
+
+  test "handle_exit does not fail twice on the same invalid replayed tool name" do
+    @mock_cli_adapter.execute_hook = ->(_opts) { { pid: 12345, stderr_log_path: "/tmp/stderr.log" } }
+    setup_transcript_ending_with_invalid_tool_name
+    UnclassifiedFailureReporter.expects(:report).never
+
+    manager = create_manager
+    manager.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    assert_equal :failed, manager.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone").action
+
+    @session.update!(status: :running)
+    manager2 = create_manager
+    manager2.spawn(prompt: "Hello", working_dir: "/tmp/test")
+    assert_equal :needs_input, manager2.handle_exit(MockProcessManager::MockStatus.new(1), working_dir: "/tmp/test-clone").action
+  end
+
   # A backstop that cannot answer must not become the thing that breaks exit
   # handling — it sits on the hot path for every normal completion.
   test "handle_exit parks as before when the terminal-error check raises" do

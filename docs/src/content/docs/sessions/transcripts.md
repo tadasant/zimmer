@@ -345,6 +345,16 @@ So tier 1 skips values on an explicit allowlist:
   working when the value changes.
 - **By literal value.** `TRANSCRIPT_REDACTION_ALLOWLIST_VALUES`, comma-separated, for a public value
   that sits under a variable you would rather not exempt by name.
+- **By shape: configuration settings.** A value that is only lowercase letters joined by `_`, `-` or
+  `.` — no digit, no capital, like `webhook_shadow` — under a name that says configuration (`*_MODE`,
+  `*_ENV`, `*_LEVEL`, `*_STRATEGY`, `*_REGION` and a few more; `CONFIG_VARIABLE_NAME`) is a mode or
+  an enum, and is skipped. Such words are also inside identifiers everywhere in a transcript. Both
+  halves are required: a 16-letter app password or a diceware passphrase has the value shape too. `GITHUB_TRIGGER_INGEST_MODE=webhook_shadow` sat in the
+  secret bundle, and matching it rewrote the MCP tool name `mcp__zimmer__compare_github_webhook_shadow`
+  into `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`. Every fork that
+  replayed that name got a 400 from the API
+  ([#1603](https://github.com/tadasant/zimmer/issues/1603)). A credential-named variable is redacted
+  whatever its suffix or value.
 
 The allowlist is exact. It never exempts part of a value, so a credential that *contains* the base URL
 (a webhook URL on the same host) is a value of its own and is still redacted whole, and a URL carrying
@@ -546,6 +556,17 @@ TranscriptRuntime.source_for(session, file_system: file_system)
 
 For Claude Code that is `~/.claude/projects/<sanitized-cwd>/<session_id>.jsonl` — the same file
 `locate` prefers, so the runtime resumes from exactly what the poller reads.
+
+**The stored transcript is the redacted copy, and all three paths repair tool names before they
+write it.** The runtime replays tool names out of the file it resumes (`tool_use.name`,
+`tool_reference.tool_name`, the `deferred_tools_delta` attachment's name lists) and sends them to
+the API, which only accepts names matching `^[a-zA-Z0-9_-]{1,128}$`. A redaction marker landing
+inside a name makes every request from that conversation a 400.
+`ReplayTranscriptToolNames.repair` replaces the marker in those fields, and only those, with
+`REDACTED`, so `mcp__zimmer__compare_github_[REDACTED:ENV:…:14ch]` is written as
+`mcp__zimmer__compare_github_REDACTED`. It does not recover the original name. The replay carries a
+name the runtime has no tool for, the same thing a removed MCP server leaves behind. Line count is
+unchanged, and lines with no marker are written back byte for byte.
 
 **Pi has one too, and gets it for a different reason.** Pi resolves `--session-id` against the id
 recorded *inside* a session file rather than against the filename, so Zimmer writes the stored

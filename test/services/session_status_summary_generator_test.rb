@@ -444,6 +444,58 @@ class SessionStatusSummaryGeneratorTest < ActiveSupport::TestCase
   # and the MCP `action_session` regenerate action are all FORCED, and none of
   # them consults the login pool. Before this, pressing Regenerate during an
   # outage stood a fork up, watched it park, and reported a failure.
+  # #1603. Forks of session 29423 replayed a redacted tool name and every one
+  # got the same 400; the sweep and every pause stood up another.
+  def record_replay_rejection!
+    SessionStatusSummary.create!(
+      session: @session, state: "failed", transcript_line_count: 0,
+      error: "The summary fork failed: invalid_tool_name — #{ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX}, so the turn did not run."
+    )
+  end
+
+  test "an automatic generation after a replay rejection is answered without a fork" do
+    record_replay_rejection!
+
+    result = nil
+    assert_no_difference -> { Session.count } do
+      result, = generate_with_inference("Opened the PR.")
+    end
+
+    assert_equal :ready, result.outcome
+    assert_equal "Opened the PR.", @session.reload.status_summary.summary
+  end
+
+  test "a forced generation after a replay rejection still forks" do
+    record_replay_rejection!
+
+    assert_difference -> { Session.count }, 1 do
+      assert_equal :started, generate(force: true).outcome
+    end
+  end
+
+  test "a summary fork's on-disk transcript carries no redaction marker in a tool name" do
+    redacted = "mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]"
+    lines = @transcript.lines + [
+      JSON.generate({ "type" => "assistant", "message" => { "role" => "assistant", "content" => [
+        { "type" => "tool_use", "id" => "toolu_1", "name" => redacted, "input" => {} }
+      ] } }) + "\n",
+      JSON.generate({ "type" => "user", "message" => { "role" => "user", "content" => [
+        { "type" => "tool_result", "tool_use_id" => "toolu_1", "content" => [ { "type" => "tool_reference", "tool_name" => redacted } ] }
+      ] } }) + "\n"
+    ]
+    @session.update!(transcript: lines.join)
+
+    fork = generate.fork_session
+    path = TranscriptRuntime.source_for(fork, file_system: @fs)
+      .resume_transcript_path(session: fork, working_directory: fork.working_directory)
+    written = @fs.read(path)
+
+    assert_equal 4, written.lines.count
+    assert_includes written, %("name":"mcp__zimmer__compare_github_REDACTED")
+    assert_includes written, %("tool_name":"mcp__zimmer__compare_github_REDACTED")
+    assert_not_includes written, "[REDACTED:"
+  end
+
   test "a forced generation falls back to the one-shot path when the pool is empty" do
     ClaudeAccount.update_all(status: ClaudeAccount.statuses[:quota_exceeded])
     inference = FakeInference.new("Where things stand.")

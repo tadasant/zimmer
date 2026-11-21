@@ -2297,6 +2297,12 @@ class Session < ApplicationRecord
       # on the session page (PATCH /sessions/:id/update_model).
       "Anthropic's safeguards flagged this turn's request, so it did not run — rephrase it in a " \
         "new session, or change this session's model and resume it"
+    when "invalid_tool_name"
+      # ProcessLifecycleManager#handle_invalid_tool_name_rejection (#1603). A plain
+      # resume replays the same transcript, so it is named as the thing that will
+      # not work.
+      "The API rejected a tool name this conversation replays, so the turn did not run. Resuming " \
+        "sends the same name again — fork it, or start a new session"
     when Sessions::SilentRecoveryGuard::FAILURE_REASON
       # `humanize` would render "Recovery produced no output", which states the
       # symptom and hides the two facts a reader needs: Zimmer already tried this

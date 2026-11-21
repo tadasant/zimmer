@@ -4579,7 +4579,9 @@ class AgentSessionJob < ApplicationJob
     return unless transcript_holds_conversation?(session)
 
     @file_system.mkdir_p(File.dirname(path))
-    @file_system.write(path, session.transcript)
+    # The stored transcript is the redacted copy; a marker inside a tool name
+    # would make every request the resume sends a 400 (#1603).
+    @file_system.write(path, ReplayTranscriptToolNames.repair(session.transcript))
   rescue => e
     msg = "Failed to write transcript for session #{session.id}: #{e.message}"
     if log_buffer
@@ -4753,6 +4755,10 @@ class AgentSessionJob < ApplicationJob
       # remedies. Its own bucket so a wave of them reads as one thing on the health
       # dashboard, and so it never counts as a stale classifier.
       "safeguards_flagged"
+    when /\A#{Regexp.escape(ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX)}/i
+      # ProcessLifecycleManager#handle_invalid_tool_name_rejection: the API refused
+      # a tool name the transcript replays, so a resume cannot clear it (#1603).
+      "invalid_tool_name"
     when /Clone directory no longer exists/i
       # Benign terminal case: the clone was GC'd after the session was torn down,
       # so a continuation re-spawn is impossible (not a system fault).

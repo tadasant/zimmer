@@ -864,7 +864,9 @@ class ForkSessionService
 
     @logger.info("Writing transcript file", path: transcript_file, lines: truncated_transcript.lines.count)
 
-    file_system.write(transcript_file, truncated_transcript)
+    # The stored transcript is the redacted copy; a marker inside a tool name
+    # would make every request the fork sends a 400 (#1603).
+    file_system.write(transcript_file, ReplayTranscriptToolNames.repair(truncated_transcript))
 
     :written
   rescue => e
