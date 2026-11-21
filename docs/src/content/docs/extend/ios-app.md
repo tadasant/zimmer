@@ -359,8 +359,13 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   *Run as spot* (wait for quota room, at the top of the spot queue), each picker leading with
   the default rather than preselecting it. While the field has the keyboard, an X on its left,
   across the field from send, empties it and puts the keyboard away, as the search box's *Cancel*
-  does. The sparkles in the bar open the sheet with the words typed so far. A start from the sheet empties the bar too; closing the sheet without starting
-  (*Cancel*, or a swipe down) gives the bar the sheet's words, edits included. The sheet cannot
+  does. The bar has its own paperclip at the end of the field: photos (the library, or an image
+  pasted) and files attach right there, show as chips above the bar, and go with the words, so
+  nothing is behind a second screen. The sparkles in the bar open the sheet with the words typed
+  and the files attached so far. A start from the sheet empties the bar too; closing the sheet
+  without starting (*Cancel*, or a swipe down) gives the bar the sheet's words and attachments,
+  edits included. A failed start's *Edit*, or a refusal of one asked for in the background, puts
+  its attachments back in the sheet with its words. The sheet cannot
   be closed while a start is in flight, and a failed start keeps the words where they were
   typed. Opened from a session, the new one threads under it (*Thread under #id*, the bubble's
   `parent_session_id`), which you can switch off, and carries that session's page, as the bubble

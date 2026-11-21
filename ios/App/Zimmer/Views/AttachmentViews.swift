@@ -11,6 +11,12 @@ import ZimmerKit
 struct AttachMenu: View {
     /// What could be attached, and a sentence for each thing that could not be, to show.
     let add: ([MessageAttachment], [String]) -> Void
+    /// Distinct where two paperclips can share a screen: the board's Quick Router bar is
+    /// `quickrouter.bar.attach`, every composer and the sheet `composer.attach`.
+    var identifier = "composer.attach"
+    /// The size for a paperclip inside a one-line field, the Quick Router bar's, beside its
+    /// sparkles; a composer's stands on its own at 36 points.
+    var compact = false
 
     @State private var photos: [PhotosPickerItem] = []
     @State private var choosingPhotos = false
@@ -29,12 +35,14 @@ struct AttachMenu: View {
                 }
             } label: {
                 Image(systemName: "paperclip")
-                    .font(.system(size: 18, weight: .medium))
+                    .font(.system(size: compact ? 16 : 18, weight: .medium))
                     .foregroundStyle(Theme.inkSoft)
-                    .frame(width: 36, height: 36)
+                    .frame(width: compact ? 26 : 36, height: compact ? 22 : 36)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Attach")
-            .accessibilityIdentifier("composer.attach")
+            .accessibilityHint("Photos and files go with the words")
+            .accessibilityIdentifier(identifier)
             .photosPicker(isPresented: $choosingPhotos, selection: $photos, maxSelectionCount: MessageAttachment.limit, matching: .images)
         }
         // On the container rather than the Menu, which already presents the photo picker.
@@ -175,6 +183,10 @@ struct AttachMenu: View {
 /// What is going with the next message, each one removable.
 struct AttachmentChips: View {
     @Binding var attachments: [MessageAttachment]
+    /// Each chip is `<identifier>.<filename>` and its remove button `<identifier>.remove.<filename>`:
+    /// the board's bar is `quickrouter.bar.attachment`, so its chips stay apart from the sheet's
+    /// over it.
+    var identifier = "composer.attachment"
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -192,7 +204,7 @@ struct AttachmentChips: View {
                             Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.inkMute)
                         }
                         .accessibilityLabel("Remove \(attachment.filename)")
-                        .accessibilityIdentifier("composer.attachment.remove.\(attachment.filename)")
+                        .accessibilityIdentifier("\(identifier).remove.\(attachment.filename)")
                     }
                     .font(.footnote)
                     .foregroundStyle(Theme.ink)
@@ -201,9 +213,27 @@ struct AttachmentChips: View {
                     .background(Theme.surface, in: Capsule())
                     .overlay(Capsule().strokeBorder(Theme.rule, lineWidth: 1))
                     .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("composer.attachment.\(attachment.filename)")
+                    .accessibilityIdentifier("\(identifier).\(attachment.filename)")
                 }
             }
         }
+    }
+}
+
+extension Array where Element == MessageAttachment {
+    /// Add what a paperclip's pickers returned, refusing what the server would refuse — the
+    /// whole message would fail on it. Answers the sentence to show for what was refused or
+    /// could not be read at all (`problems`), or nil when everything went on.
+    mutating func attach(_ new: [MessageAttachment], problems: [String] = []) -> String? {
+        var refusals = problems
+        for attachment in new {
+            if let refusal = MessageAttachment.refusal(adding: attachment, to: self) {
+                refusals.append(refusal)
+            } else {
+                append(attachment)
+            }
+        }
+        guard let first = refusals.first else { return nil }
+        return refusals.count == 1 ? first : "\(first) (and \(refusals.count - 1) more not attached)"
     }
 }

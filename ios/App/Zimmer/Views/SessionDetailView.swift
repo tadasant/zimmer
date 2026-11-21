@@ -315,16 +315,8 @@ final class SessionDetailModel: ObservableObject {
     /// Add what the pickers returned, refusing anything the server would refuse — the whole
     /// message would fail on it — and saying what could not be read at all.
     func attach(_ new: [MessageAttachment], problems: [String] = []) {
-        var refusals = problems
-        for attachment in new {
-            if let refusal = MessageAttachment.refusal(adding: attachment, to: attachments) {
-                refusals.append(refusal)
-            } else {
-                attachments.append(attachment)
-            }
-        }
-        if let first = refusals.first {
-            notice = refusals.count == 1 ? first : "\(first) (and \(refusals.count - 1) more not attached)"
+        if let refused = attachments.attach(new, problems: problems) {
+            notice = refused
             Haptics.failure()
         }
     }

@@ -77,4 +77,18 @@ final class QuickRouterTests: XCTestCase {
         let recorded = await fake.quickRouterRequests.last
         XCTAssertEqual(recorded?.parentSessionID, 1038)
     }
+
+    func testTheFixtureNamesTheAttachmentsOnTheStartedSessionsFirstMessage() async throws {
+        let fake = FakeZimmerAPI()
+        let file = MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed\n".utf8))
+        let id = try await fake.startQuickRouter(QuickRouterRequest(prompt: "Why did it fail?", attachments: [file]))
+        let first = try await fake.conversation(id, limit: 100).messages.first
+        XCTAssertEqual(first?.content, "Why did it fail?\n\n📎 deploy.log")
+        let recorded = await fake.quickRouterRequests.last
+        XCTAssertEqual(recorded?.attachments.map(\.filename), ["deploy.log"])
+
+        let plain = try await fake.startQuickRouter("Sweep")
+        let words = try await fake.conversation(plain, limit: 100).messages.first
+        XCTAssertEqual(words?.content, "Sweep", "no attachments, no paperclip line")
+    }
 }

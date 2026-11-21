@@ -113,12 +113,13 @@ final class AppModel: ObservableObject {
     /// The screen the Quick Router was opened on, as the web bubble sends the page it was typed
     /// on: a session's page, with its web URL and title. Nil from the board and the tabs.
     var quickRouterPage: QuickRouterPage?
-    /// Words typed in the board's bar, carried into the sheet when it is opened for more. `nil`
-    /// when the sheet was opened from anywhere else.
-    var quickRouterDraft: String?
+    /// Words and attachments from the board's bar, carried into the sheet when it is opened for
+    /// more; a failed or edited start's, carried back. `nil` when the sheet was opened from
+    /// anywhere else.
+    var quickRouterDraft: QuickRouterDraft?
     /// What the bar holds once the sheet it opened has closed: empty after a start, the sheet's
-    /// words after a Cancel. Set only then, so typing in the bar publishes nothing.
-    @Published var quickRouterBarHandback: String?
+    /// words and attachments after a Cancel. Set only then, so typing in the bar publishes nothing.
+    @Published var quickRouterBarHandback: QuickRouterDraft?
     /// The full new-session form (the pencil in the Sessions toolbar).
     @Published var showingNewSession = false
     /// Live Mode (LiveHomeView), from the session list's waveform button.
@@ -156,6 +157,9 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
+    /// `-ZimmerFixtureQuickRouterAttachment`: the board's Quick Router bar starts with a file
+    /// attached, for the same reason.
+    var fixtureBarAttachesFile = false
     /// `-ZimmerFixtureOpenPrompt`: the opened session shows its first prompt's form, once.
     var fixtureOpensPrompt = false
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
@@ -321,6 +325,7 @@ final class AppModel: ObservableObject {
             openFixtureLiveThread(liveThread)
         }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
+        fixtureBarAttachesFile = arguments.contains("-ZimmerFixtureQuickRouterAttachment")
         fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
@@ -444,11 +449,11 @@ final class AppModel: ObservableObject {
     /// words back in the Quick Router; one asked for in the background puts them back there
     /// at once. Returns the placeholder, which `pendingStarts` is keyed by.
     @discardableResult
-    func startSession(prompt: String?, title: String, open: Bool = true, editable: Bool = true,
+    func startSession(prompt: String?, attachments: [MessageAttachment] = [], title: String, open: Bool = true, editable: Bool = true,
                       start: @escaping @MainActor (ZimmerAPI) async throws -> Int) -> Int {
         nextPlaceholder -= 1
         let placeholder = nextPlaceholder
-        pendingStarts[placeholder] = PendingStart(prompt: prompt, title: title, opens: open, editable: editable)
+        pendingStarts[placeholder] = PendingStart(prompt: prompt, attachments: attachments, title: title, opens: open, editable: editable)
         startWork[placeholder] = start
         if open { path.append(placeholder) }
         Haptics.success()
@@ -470,7 +475,7 @@ final class AppModel: ObservableObject {
         guard let start = pendingStarts[placeholder], start.editable else { return }
         forgetStart(placeholder)
         if path.last == placeholder { path.removeLast() }
-        presentAfterCover { $0.openQuickRouter(draft: start.prompt ?? "") }
+        presentAfterCover { $0.openQuickRouter(draft: QuickRouterDraft(prompt: start.prompt ?? "", attachments: start.attachments)) }
     }
 
     /// A start's page left, or its session opened: the placeholder has nothing more to say.
@@ -507,14 +512,17 @@ final class AppModel: ObservableObject {
                 // back to the Quick Router.
                 forgetStart(placeholder)
                 handle(error)
-                if start.editable, let prompt = start.prompt { openQuickRouter(draft: prompt) }
+                if start.editable, let prompt = start.prompt {
+                    openQuickRouter(draft: QuickRouterDraft(prompt: prompt, attachments: start.attachments))
+                }
             }
         }
     }
 
     /// Open the Quick Router sheet. `parent` is the session it was opened on and `page` that
-    /// session's page; `draft` is the board bar's words, given only by the bar.
-    func openQuickRouter(parent: Int? = nil, page: QuickRouterPage? = nil, draft: String? = nil) {
+    /// session's page; `draft` is the board bar's words and attachments, or a failed or edited
+    /// start's.
+    func openQuickRouter(parent: Int? = nil, page: QuickRouterPage? = nil, draft: QuickRouterDraft? = nil) {
         quickRouterParent = parent
         quickRouterPage = page
         quickRouterDraft = draft
@@ -540,7 +548,9 @@ final class AppModel: ObservableObject {
         quickRouterParent = nil
         quickRouterPage = nil
         if !open { notice = "Starting a session in the background…" }
-        startSession(prompt: request.prompt, title: "Quick Router", open: open, editable: true) { try await $0.startQuickRouter(request) }
+        startSession(prompt: request.prompt, attachments: request.attachments, title: "Quick Router", open: open, editable: true) {
+            try await $0.startQuickRouter(request)
+        }
     }
 
     /// `silently`: no loading state, and a failure other than a sign-in that ended is not
@@ -1296,6 +1306,13 @@ final class AppModel: ObservableObject {
 }
 
 /// A session asked for and not yet answered with its id: what its page shows meanwhile.
+/// What the Quick Router holds before a start: the words and the photos and files with them,
+/// handed between the board's bar and the sheet.
+struct QuickRouterDraft: Equatable {
+    var prompt: String
+    var attachments: [MessageAttachment] = []
+}
+
 struct PendingStart: Equatable {
     enum State: Equatable {
         /// Asked of the server; no answer yet.
@@ -1314,6 +1331,9 @@ struct PendingStart: Equatable {
     /// The words the session starts from — the first message its page shows, on its way. Nil
     /// for a start without any: a fork, a clone.
     var prompt: String?
+    /// The photos and files that go with the words, so an *Edit* or a refusal hands them back
+    /// to the Quick Router with them.
+    var attachments: [MessageAttachment] = []
     /// What the page is titled until the session has one: "Quick Router", the agent root.
     var title: String
     /// Whether a page opened on it. Without one, the start's outcome is a toast or a refusal
