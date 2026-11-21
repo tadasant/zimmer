@@ -52,9 +52,9 @@ final class SessionListTests: XCTestCase {
         XCTAssertEqual(ServerURL.parse("https://zimmer.example.test\n")?.absoluteString, expected)
         XCTAssertEqual(ServerURL.parse("\u{00A0}https://zimmer.example.test\u{00A0}")?.absoluteString, expected)
         XCTAssertEqual(ServerURL.parse("https://zimmer.\n\texample.test")?.absoluteString, expected)
-        // Zero-width space, zero-width joiner and non-joiner, word joiner, byte-order mark, and the
-        // left-to-right and right-to-left marks: none is visible in the field, each breaks a parse.
-        for invisible in ["\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{200E}", "\u{200F}"] {
+        // Zero-width space, word joiner, byte-order mark, and the left-to-right and right-to-left
+        // marks: none is visible in the field, each breaks a parse.
+        for invisible in ["\u{200B}", "\u{2060}", "\u{FEFF}", "\u{200E}", "\u{200F}"] {
             XCTAssertEqual(ServerURL.parse("\(invisible)https://zimmer.example.test\(invisible)")?.absoluteString, expected,
                            "U+\(String(invisible.unicodeScalars.first!.value, radix: 16, uppercase: true))")
             XCTAssertEqual(ServerURL.parse("https://zimmer\(invisible).example.test")?.absoluteString, expected)
@@ -62,6 +62,8 @@ final class SessionListTests: XCTestCase {
         // Cleaning does not make a wrong address right.
         XCTAssertNil(ServerURL.parse("\u{200B}zimmer.example.test"))
         XCTAssertEqual(ServerURL.clean(" \u{200B}\n"), "")
+        // The joiners are part of some internationalised host names, so they are kept.
+        XCTAssertEqual(ServerURL.clean("\u{200C}\u{200D}"), "\u{200C}\u{200D}")
     }
 
     func testTypedOriginsAreTheServerAndAnOptionalAppHost() throws {

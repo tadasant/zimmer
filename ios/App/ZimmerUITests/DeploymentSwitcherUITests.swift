@@ -75,8 +75,8 @@ final class DeploymentSwitcherUITests: XCTestCase {
         attachScreenshot(app, named: "deployments-added")
     }
 
-    /// A bad address's message does not outlive it: a good address's attempt starts clean, and
-    /// closing its sign-in sheet unfinished (`-ZimmerFixtureCancelSignIn`) leaves no error behind.
+    /// A bad address's message does not outlive it: a good address's attempt starts clean, so
+    /// closing its sign-in sheet unfinished (`-ZimmerFixtureCancelSignIn`) leaves no error showing.
     func test_a_bad_address_error_clears_when_a_good_address_is_tried_and_its_sign_in_is_closed() throws {
         let app = launch(["-ZimmerFixtureCancelSignIn"])
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
@@ -104,6 +104,7 @@ final class DeploymentSwitcherUITests: XCTestCase {
         attachScreenshot(app, named: "deployments-add-sign-in-closed")
 
         app.buttons["signin.cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(app.staticTexts["signin.title"]), "the add sheet closes")
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deployments.row.'"))
         XCTAssertTrue(app.buttons["deployments.row.lab"].waitForExistence(timeout: timeout))
         XCTAssertEqual(rows.count, 2, "nothing was added")

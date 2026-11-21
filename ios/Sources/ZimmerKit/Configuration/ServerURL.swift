@@ -25,12 +25,15 @@ public enum ServerURL {
     /// What a person typed or pasted, with every character no address can contain taken out:
     /// whitespace and line breaks anywhere (a paste can carry a trailing newline, or break across
     /// lines), and the invisible format characters a copy from a web page or a chat brings along —
-    /// zero-width spaces and joiners, a byte-order mark, direction marks.
+    /// zero-width spaces, a word joiner, a byte-order mark, direction marks. The zero-width joiner
+    /// and non-joiner stay: internationalised host names in some scripts legitimately carry them,
+    /// and taking them out would sign in to a different host.
     public static func clean(_ raw: String?) -> String {
-        let scalars = (raw ?? "").unicodeScalars.filter { scalar in
-            !CharacterSet.whitespacesAndNewlines.contains(scalar) && scalar.properties.generalCategory != .format
-        }
-        return String(String.UnicodeScalarView(scalars))
+        String((raw ?? "").unicodeScalars.filter { scalar in
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) { return false }
+            if scalar == "\u{200C}" || scalar == "\u{200D}" { return true }
+            return scalar.properties.generalCategory != .format
+        })
     }
 }
 

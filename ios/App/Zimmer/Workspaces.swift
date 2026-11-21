@@ -70,7 +70,6 @@ final class Workspaces: ObservableObject {
             return false
         }
         if let existing = list.existing(for: origins) {
-            addError = nil
             if existing.id != list.activeID { await switchTo(existing.id) } else { showingSwitcher = false }
             // Already in front and signed out: the sign-in screen for it is the one showing.
             if model.isSignedIn == false { await model.signInAgain() }
@@ -80,7 +79,9 @@ final class Workspaces: ObservableObject {
         defer { isAdding = false }
         let (deployment, connection) = environment.prepare(origins)
         do {
+            #if DEBUG
             if environment.fixtureCancelsSignIn { throw ASWebAuthenticationSessionError(.canceledLogin) }
+            #endif
             if !environment.isFixture {
                 if let edge = connection.edge, await edge.needsLogin() {
                     try await edge.login()
@@ -93,14 +94,12 @@ final class Workspaces: ObservableObject {
             if !environment.isFixture { environment.configuration.remember(origins) }
             await environment.add(deployment, connection: connection)
             log.info("added a deployment: \(origins.web.host ?? "?", privacy: .public) via \(origins.api.host ?? "?", privacy: .public)")
-            addError = nil
             showingSwitcher = false
             rebuild()
             return true
         } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
-            // Closing the sheet is not a failure, and leaves nothing on screen to answer for.
+            // Closing the sheet is not a failure: no error, and the one before it was cleared above.
             log.info("add-deployment sign-in cancelled")
-            addError = nil
             await environment.abandon(deployment, connection: connection)
             return false
         } catch {
