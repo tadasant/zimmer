@@ -1525,6 +1525,10 @@ costs:
   the no-shell recovery path for a lost authenticator and lost recovery codes. Whoever can write the
   store, plus whoever holds the Google account, can use it. The same writer can take the wall down
   by removing the client ID.
+- **An authenticator entry's name is fixed when it is added.** The entry names the deployment's host
+  as it was at setup. Entries set up before Zimmer named the host read just `Zimmer:you@example.com`,
+  and an entry keeps its old host if the base URL later changes. Setting up a new authenticator gives
+  the current name.
 - **The authenticator secret is plaintext in the database,** like [every other
   credential](#nothing-is-encrypted-at-rest). `/supervisor` does not render it.
 - **A store outage pauses new sign-ins.** A process keeps the configuration it last read, and one

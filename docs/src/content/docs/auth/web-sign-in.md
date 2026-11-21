@@ -121,7 +121,8 @@ Then Zimmer shows **ten recovery codes, once**. Each code stands in for the auth
 single sign-in. Put them in your password manager.
 
 The entry is named after the deployment's host: `Zimmer (zimmer.example.com):you@example.com`. The
-host comes from the deployment's base URL (`ZIMMER_PROD_BASE_URL`), or from the address you reached
+host comes from the deployment's base URL (`ZIMMER_PROD_BASE_URL`, or `ZIMMER_STAGING_BASE_URL` on
+staging), or from the address you reached
 it at if that is unset. The setup page shows the name the entry will have. If you sign in to more
 than one Zimmer, each gets its own entry, and you can tell them apart. Codes from another
 deployment's entry never match, and the wrong-code message says to check which entry you read.

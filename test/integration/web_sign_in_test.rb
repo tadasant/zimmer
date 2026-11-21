@@ -502,6 +502,16 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_select "a[href*=?]", "issuer=Zimmer%20%28www.example.com%29"
   end
 
+  test "a base URL with no host falls back to the host the browser asked for" do
+    enable_web_auth
+    sign_in_with_google
+    [ "zimmer.example.com", "not a url" ].each do |base_url|
+      AppUrl.stubs(:base_url).returns(base_url)
+      get second_factor_setup_path
+      assert_select "a[href*=?]", "issuer=Zimmer%20%28www.example.com%29", { count: 1 }, "base URL #{base_url.inspect}"
+    end
+  end
+
   test "a wrong code says to check it is this deployment's entry" do
     enable_web_auth
     AppUrl.stubs(:base_url).returns("https://hans.example.com")

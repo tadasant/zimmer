@@ -54,15 +54,19 @@ module WebAuth
     # The name this deployment's entry carries in an authenticator app. It
     # names the host, because every Zimmer is "Zimmer": someone signed in to
     # two deployments would otherwise hold two identical-looking entries and
-    # read codes off the wrong one. The port is dropped because a colon is
-    # what separates the issuer from the account in the label.
+    # read codes off the wrong one.
     #
-    # @param host [String, nil] e.g. "zimmer.example.com"
+    # @param host [String, nil] a hostname without a port, e.g. "zimmer.example.com"
     # @return [String] e.g. "Zimmer (zimmer.example.com)", or "Zimmer" with no host
     def issuer_for(host)
-      host = host.to_s.split(":").first.to_s.strip.downcase
+      host = display_host(host)
       host.empty? ? "Zimmer" : "Zimmer (#{host})"
     end
+
+    # A hostname as the issuer shows it: lowercase, and with no colon, since a
+    # colon is what separates the issuer from the account in the label (an IPv6
+    # literal's colons become dots).
+    def display_host(host) = host.to_s.strip.downcase.delete("[]").tr(":", ".")
 
     # The label an authenticator app shows for the entry: "issuer:account".
     def label(account:, issuer:) = "#{issuer.to_s.delete(":")}:#{account}"

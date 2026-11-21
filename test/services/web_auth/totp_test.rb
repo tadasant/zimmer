@@ -64,7 +64,7 @@ class WebAuth::TotpTest < ActiveSupport::TestCase
   test "each deployment's issuer names its host, so two Zimmers' entries look different" do
     assert_equal "Zimmer (hans.example.com)", WebAuth::Totp.issuer_for("hans.example.com")
     assert_equal "Zimmer (zimmer.example.com)", WebAuth::Totp.issuer_for("Zimmer.Example.com")
-    assert_equal "Zimmer (localhost)", WebAuth::Totp.issuer_for("localhost:3000"), "a colon would split the label"
+    assert_equal "Zimmer (..1)", WebAuth::Totp.issuer_for("[::1]"), "a colon would split the label"
     assert_equal "Zimmer", WebAuth::Totp.issuer_for(nil)
   end
 
