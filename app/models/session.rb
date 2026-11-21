@@ -3107,6 +3107,29 @@ class Session < ApplicationRecord
     config&.dig("effort").presence
   end
 
+  # Repaint the spend figures on the detail page after the ledger gained rows for
+  # this session: the meta row's cost line and the phone header's badge. Two
+  # small targets rather than the whole meta row, because the meta row re-renders
+  # every catalog select and this fires once per model response on a Pi session.
+  def broadcast_cost
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_cost"
+    ) do
+      SessionsController.render(partial: "sessions/session_cost", locals: { agent_session: self })
+    end
+
+    broadcaster.broadcast_html(
+      action: :replace,
+      stream: "session_#{id}_status",
+      target: "session_#{id}_cost_badge"
+    ) do
+      helpers = SessionsController.helpers
+      helpers.tag.span(helpers.session_cost_badge(self), id: "session_#{id}_cost_badge")
+    end
+  end
+
   private
 
   # Write the back-reference the replaced session was missing (#801).

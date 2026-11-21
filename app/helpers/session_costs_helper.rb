@@ -39,11 +39,34 @@ module SessionCostsHelper
     cost = session_cost_usd(session)
     return nil unless cost.positive?
 
+    basis = if SessionCostSummary::METERED_RUNTIMES.include?(session.agent_runtime)
+      "Inference cost for this session, metered through OpenRouter: money owed."
+    else
+      "Estimated inference cost for this session at current list prices."
+    end
+
     tag.span(
       number_to_currency(cost, precision: cost < 1 ? 3 : 2),
       class: classes,
-      title: "Estimated inference cost for this session at current list prices. " \
-             "Volumes are Zimmer's own ledger; see the Token Spend page."
+      title: "#{basis} Volumes are Zimmer's own ledger; see the Token Spend page."
     )
+  end
+
+  # The detail page's spend line tooltip: what the figure is made of and what it
+  # means, in the same words `get_session` uses.
+  #
+  # @param summary [SessionCostSummary]
+  def session_cost_title(summary)
+    return "" unless summary.any?
+
+    parts = []
+    parts << "Inference cost for this session from Zimmer's own ledger."
+    parts << summary.basis
+    if summary.unpriced_models.any?
+      parts << "No price is configured for #{summary.unpriced_models.join(', ')}, so its spend is not in this figure."
+    end
+    parts << "#{number_with_delimiter(summary.total_tokens)} tokens: #{summary.breakdown_sentence}"
+    parts << summary.freshness
+    parts.join(" ")
   end
 end

@@ -64,7 +64,7 @@ module Mcp
 
         **Status summary:** the cached 2-3 sentence "where things stand" blurb Zimmer writes when a session comes to rest, with a freshness marker saying how many transcript events have landed since. Reading it never generates one — a stale blurb is returned as stale. **When the summary is stale, missing, or does not answer your question, read what was actually said instead of guessing:** call this tool again with `transcript_last_messages: 10` (the last 10 user and assistant messages, tool traffic folded away). Use `action_session` with `regenerate_status_summary` when you need the blurb itself rewritten.
 
-        **Returns:** Complete session details including status, configuration, metadata, the session hierarchy and its human messages (always), and optionally:
+        **Returns:** Complete session details including status, configuration, metadata, the session's cost (dollars, token breakdown, and whether the figure is money owed or list price — the same figures the session page shows), the session hierarchy and its human messages (always), and optionally:
         - The session transcript, as a bounded slice (see **Transcript access**)
         - Session logs (paginated)
         - Subagent transcripts (paginated)
@@ -689,6 +689,8 @@ module Mcp
 
         lines.concat(goal_check_lines(session))
 
+        lines.concat(cost_lines(session))
+
         lines.concat(prompt_lines(session, verbose)) if session.prompt.present?
 
         lines << ""
@@ -726,6 +728,28 @@ module Mcp
         end
 
         lines.join("\n")
+      end
+
+      # The spend the session page shows beside the id, with what it is made of.
+      # Always present, so "no usage stored yet" reads as an answer rather than as
+      # a section that went missing.
+      def cost_lines(session)
+        summary = SessionCostSummary.for(session)
+        lines = [ "", "### Cost" ]
+        unless summary.any?
+          lines << "- No usage is in Zimmer's token ledger for this session yet. #{summary.freshness}"
+          return lines
+        end
+
+        figure = summary.unpriced? ? "unpriced" : format("$%.4f", summary.cost)
+        lines << "- **Cost:** #{figure} — #{summary.basis}"
+        if summary.unpriced_models.any?
+          lines << "- **Unpriced models:** #{summary.unpriced_models.join(', ')} — no rate is configured, so their spend is not in the figure above."
+        end
+        lines << "- **Tokens:** #{ActiveSupport::NumberHelper.number_to_delimited(summary.total_tokens)} — #{summary.breakdown_sentence}"
+        lines << "- **Newest call in the ledger:** #{summary.last_called_at.utc.iso8601}" if summary.last_called_at
+        lines << "- **Freshness:** #{summary.freshness}"
+        lines
       end
 
       # What GoalCheck can read back about the goal. Nothing for a free-text goal:

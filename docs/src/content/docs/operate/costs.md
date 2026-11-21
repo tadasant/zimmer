@@ -446,6 +446,27 @@ A per-card lookup would be a per-card round trip on a page that renders hundreds
 A session with no stored usage renders **nothing** rather than `$0.00` — usually it just
 means its transcript has not been swept yet, and a zero would assert it was free.
 
+The detail page's meta row says more than the card does: the dollar figure, the session's total
+tokens, and a tooltip with the breakdown (fresh input, output, cache read, cache write, API calls)
+and what the figure means for this runtime. `get_session` renders the same thing as its **Cost**
+section, from the same `SessionCostSummary`, so the page and the MCP dump cannot disagree:
+
+- **Pi** is metered through OpenRouter, so its figure is **money owed**, priced at the rate
+  OpenRouter publishes for the model. For every priced model it is the per-call `usage.cost` Pi
+  recorded in its own transcript, to the cent.
+- **Claude Code and Codex** are subscription-billed, so theirs is list price: a comparable unit,
+  not a bill.
+- Usage on a model with **no rate** reads `unpriced`, with the model named, rather than `$0`.
+
+**A Pi session's figure moves as each model response lands**, not on the 10-minute sweep. When
+`TranscriptPollerService` stores a new Pi entry that carries `usage`, it enqueues
+`PiSessionUsageRefreshJob` for that session. The job runs `PiTokenUsageIngestionService` over
+that one row, which is cheap because the durable copy is `sessions.transcript`. If that adds
+rows, `Session#broadcast_cost` repaints the cost line and the phone header's badge. At most one
+refresh is queued and one is running per session, so a burst of responses coalesces into one
+sweep. Claude Code and Codex sessions still wait for the cron, and their figures update on the
+next page load.
+
 ## Burn rate by harness + model
 
 The Token Spend page answers "what did we spend"; the scheduler needs "what does a minute of this cost".
