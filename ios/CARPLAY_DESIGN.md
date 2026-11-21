@@ -224,8 +224,8 @@ table):
 | --- | --- | --- | --- |
 | pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
 | connected | D5, G5, rising | −9.3 dBFS | Once, when the call is up |
-| heard | D5, short | −9.7 dBFS | 0.35 s after the driver stops talking, on a line that will be answered |
-| thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | −9.3 dBFS | From 1 s after the end of speech to the reply, no tool running; gives up after 45 s |
+| heard | D5, short | −9.7 dBFS | 1.5 s (`LiveCue.settle`) after the driver stops talking and stays quiet, on a line that will be answered |
+| thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | −9.3 dBFS | From 2.5 s after the end of speech to the reply, no tool running; gives up after 45 s |
 | working | A4, C5, a pair of pulses, every 2.5 s | −9.2 dBFS | While a tool runs, for as long as it runs |
 | failed | F4, D4, low and falling, with a strong octave | −8.8 dBFS | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up |
 | ended | E4, one low note with its octave | −10.9 dBFS | The driver hung up |

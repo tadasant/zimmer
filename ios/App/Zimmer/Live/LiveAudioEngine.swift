@@ -521,12 +521,13 @@ final class LiveAudioEngine {
         return true
     }
 
-    /// Loop `cue` from its lead, or from the end of the queued reply, until `stopLoop()`.
-    func startLoop(_ cue: LiveCue) {
+    /// Loop `cue` from `delay` plus its lead, or from the end of the queued reply, until
+    /// `stopLoop()`.
+    func startLoop(_ cue: LiveCue, after delay: TimeInterval = 0) {
         guard looping == nil else { return }
         // Remembered even with the engine stopped, so `recoverIfStopped()` brings it back.
         looping = cue
-        let wait = max(cue.lead, replyRemaining)
+        let wait = max(delay + cue.lead, replyRemaining)
         guard let engine, let loopPlayer, engine.isRunning,
               let lead = Self.buffer([Float](repeating: 0, count: Int(wait * RealtimeAudio.sampleRate))),
               let loop = Self.buffer(cue.loop()) else { return }

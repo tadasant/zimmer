@@ -479,7 +479,8 @@ cues, and the call still works.
 
 On the `gpt_live_claude` engine the dock reads the same cues off GPT-Live's events
 (`lib/gpt_live_call.js`), as the phone does ([the mapping](/extend/ios-app/#carplay)): heard when
-your transcript goes quiet, working while Claude answers a delegation, failed when Zimmer could not.
+your transcript goes quiet and stays quiet for the settle time ([a pause is not the end of your
+turn](/extend/ios-app/#carplay)), working while Claude answers a delegation, failed when Zimmer could not.
 It does not silence the microphone for them. GPT-Live reports no speech boundaries, so the call
 learns you are talking only when your transcript arrives, and a gate would cut your first words out
 of what GPT-Live hears.

@@ -683,7 +683,7 @@ final class LiveDiagnosticsTests: XCTestCase {
         XCTAssertEqual(talkedOver.receive(.personTalking), [.stopCues], "the instant the person talks")
         XCTAssertEqual(talkedOver.transition(to: .listening), [], "and not back while they do")
         XCTAssertEqual(talkedOver.transition(to: .thinking), [], "not for a response that starts under them either")
-        XCTAssertEqual(talkedOver.receive(.personStopped), [.startLoop(.working)], "they stopped, and the tool still runs")
+        XCTAssertEqual(talkedOver.receive(.personStopped), [.startLoop(.working, after: LiveCue.settle)], "they stopped, and the tool still runs, once they have been quiet a moment")
         XCTAssertEqual(talkedOver.transition(to: .speaking), [.stopCues], "the interim answer")
         XCTAssertEqual(talkedOver.transition(to: .listening), [.startLoop(.working)], "which ended, and the tool still runs")
         XCTAssertEqual(talkedOver.receive(.toolsRunning(0)), [.stopLoop])

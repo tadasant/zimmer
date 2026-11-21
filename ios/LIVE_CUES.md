@@ -52,7 +52,7 @@ Each one is held by a test in `Tests/ZimmerKitTests/LiveDiagnosticsTests.swift`,
 | --- | --- | --- | --- | --- |
 | pressed | F5, F5 (698 Hz), quick and level | 0.27 | −19.4 dBFS | The Talk tap, before any request |
 | connected | D5 → G5 (587 → 784 Hz), rising a fourth | 0.34 | −17.8 | The call is up |
-| heard | D5, one short note | 0.33 | −17.7 | 0.35 s after the driver stops |
+| heard | D5, one short note | 0.33 | −17.7 | 1.5 s (`LiveCue.settle`) after the driver stops, if they stay quiet |
 | thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | 0.35 | −16.5 | The model is working, no tool running |
 | working | A4, C5 (440, 523 Hz), a pair of pulses every 2.5 s | 0.35 | −16.5 | A tool is running |
 | failed | F4 → D4, falling a minor third, with a strong octave | 0.36 | −18.7 | Something did not happen |

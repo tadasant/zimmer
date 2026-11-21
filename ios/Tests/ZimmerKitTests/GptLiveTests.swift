@@ -375,7 +375,7 @@ final class GptLiveConductorTests: XCTestCase {
         XCTAssertEqual(ear.hear(conductor.tick(at: 1.9)), [], "a pause shorter than heardIdle is still the person talking")
         let heard = conductor.tick(at: 1.4 + GptLiveConductor.heardIdle)
         XCTAssertEqual(heard, [.signal(.personStopped), .state(.thinking), .signal(.heardPerson)])
-        XCTAssertEqual(ear.hear(heard), [.startLoop(.thinking), .play(.heard, after: LiveCue.heardLead)])
+        XCTAssertEqual(ear.hear(heard), [.startLoop(.thinking, after: LiveCue.settle), .play(.heard, after: LiveCue.heardLead)])
         XCTAssertEqual(ear.hear(conductor.tick(at: 3)), [], "heard once")
         XCTAssertEqual(ear.hear(conductor.handle(output("Two."), at: 3.2)), [.stopCues], "the answer starting stops the thinking loop")
     }
@@ -447,7 +447,7 @@ final class GptLiveConductorTests: XCTestCase {
         _ = ear.hear(conductor.handle(input("Start"), at: 1))
         _ = ear.hear(conductor.tick(at: 2))
         XCTAssertEqual(ear.hear(conductor.handle(input(" a session"), at: 2.5)), [.stopCues])
-        XCTAssertEqual(ear.hear(conductor.tick(at: 3.2)), [.startLoop(.thinking), .play(.heard, after: LiveCue.heardLead)])
+        XCTAssertEqual(ear.hear(conductor.tick(at: 3.2)), [.startLoop(.thinking, after: LiveCue.settle), .play(.heard, after: LiveCue.heardLead)])
     }
 
     func testTalkingOverClaudeStopsTheWorkingLoopUntilThePersonStops() {
@@ -455,7 +455,7 @@ final class GptLiveConductorTests: XCTestCase {
         _ = ear.hear(conductor.handle(delegation("d1"), at: 1))
         XCTAssertEqual(ear.hear(conductor.handle(input("Also"), at: 2)), [.stopCues])
         // Heard, and still working: the working loop, not thinking.
-        XCTAssertEqual(ear.hear(conductor.tick(at: 3)), [.startLoop(.working), .play(.heard, after: LiveCue.heardLead)])
+        XCTAssertEqual(ear.hear(conductor.tick(at: 3)), [.startLoop(.working, after: LiveCue.settle), .play(.heard, after: LiveCue.heardLead)])
     }
 
     func testThinkingThatGptLiveNeverAnswersGoesBackToListeningQuietly() {

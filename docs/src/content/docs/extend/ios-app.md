@@ -905,8 +905,8 @@ without Pressed ([Voice](/sessions/live/#voice)).
 | --- | --- | --- |
 | **Pressed**: two quick, level notes | The moment you press Talk (in the car) or start a call, before Zimmer is even asked for the conversation. Not when New ends a running call: you hear Ended instead | The press registered and a call is coming. Level, not rising, so it can't pass for Connected |
 | **Connected**: two rising notes | Once, when the call is up | Zimmer is listening |
-| **Heard**: one short note | A third of a second after you stop talking, or once Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none |
-| **Thinking**: a soft, low pulse every 1.2 seconds | From a second after you stop talking until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
+| **Heard**: one short note | Once you have been quiet for a second and a half (`LiveCue.settle`), or that long after Zimmer says it will answer when Listening is gated | You were heard and Zimmer is on it. An answer that starts sooner gets none, and so does a pause you talk on from |
+| **Thinking**: a soft, low pulse every 1.2 seconds | From two and a half seconds after you stop talking (a second after Heard) until the reply, with no tool running | The model is working on an answer. Gives up after 45 seconds (`cue.thinking_timeout`) and plays Failed |
 | **Working**: a pair of notes every 2.5 seconds, lower and longer than the thinking pulse | For as long as a tool runs | Zimmer is doing something, however long it takes. When the last tool ends, back to the thinking pulse |
 | **Failed**: two low notes falling | A tool failed, a reply failed or was cut short, an error ended the wait, or a loop gave up | What you asked for did not happen. Once a turn |
 | **Ended**: one low note | You hung up | The call is over |
@@ -915,7 +915,17 @@ without Pressed ([Voice](/sessions/live/#voice)).
 Every cue except Pressed (a fifth of a second, before the call exists) stops the moment you talk
 or a reply starts, nothing starts while you are talking, and a
 cue due while the reply is still playing waits for it to finish. A successful tool has no sound of its own: the next thing you hear is
-the answer. If you talk over a running tool, the working cue comes back when you stop.
+the answer. If you talk over a running tool, the working cue comes back once you have been quiet for
+the settle time.
+
+**A pause is not the end of your turn.** Turn detection ends a turn on a pause of half a second or
+less, so anything that answers you stopping — Heard, the thinking or working loop coming back, a
+Failed held while you talked — waits out `LiveCue.settle` (1.5 s) first. Talk again inside it and
+the cue is dropped before it sounds: you hear nothing, and the microphone is never closed on you.
+The model can still start on an answer in that time; only the sound waits. Work the model commits
+to — a tool or a GPT-Live delegation starting — is not a pause, and its working loop does not
+wait. The rule is `LiveCueDirector`'s, so it is the same on Realtime and on GPT-Live, on the
+phone, in the car and in the browser.
 
 The cues play through the same voice-processing engine as the reply, so the echo canceller hears
 them as the phone's own output. While one sounds, the microphone is sent to OpenAI as silence
