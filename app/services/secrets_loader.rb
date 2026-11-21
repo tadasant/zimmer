@@ -18,6 +18,8 @@ class SecretsLoader
 
   # Secret model to represent individual secrets
   class Secret
+    include RedactedInspect
+
     attr_reader :name, :value, :description
 
     def initialize(name:, value:, description: nil)
@@ -25,6 +27,8 @@ class SecretsLoader
       @value = value
       @description = description
     end
+
+    def redacted_inspect_fields = { name: name }
 
     def to_h
       {

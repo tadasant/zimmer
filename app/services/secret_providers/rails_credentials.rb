@@ -9,6 +9,8 @@ module SecretProviders
   # under a running process is picked up without a restart. This provider stays
   # cacheless for the same reason.
   class RailsCredentials
+    include RedactedInspect
+
     LABEL = "Zimmer's Rails encrypted credentials"
 
   # Fixed badge string — see SecretProviders::Env::BADGE.

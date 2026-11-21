@@ -23,6 +23,10 @@ module SecretProviders
   # the sole place it showed. So it reads BOTH, canonical first, and
   # {#namespace_for} says which one answered.
   class ParameterStoreProvider
+    # The snapshot cache holds every value in the namespaces it reads, and the
+    # client holds the service-account key.
+    include RedactedInspect
+
     LABEL = "Zimmer's Google Parameter Store"
 
     # Fixed badge string — see SecretProviders::Env::BADGE. "GSM" rather than
@@ -46,6 +50,8 @@ module SecretProviders
       # pass over the project: reading two namespaces costs what reading one did.
       @cache = ParameterStore::SnapshotCache.new { |key| client.resolve_all(key) }
     end
+
+    def redacted_inspect_fields = { namespaces: namespaces }
 
     def name = "parameter_store"
     def label = LABEL

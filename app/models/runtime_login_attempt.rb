@@ -25,6 +25,10 @@
 class RuntimeLoginAttempt < ApplicationRecord
   belongs_to :claude_account, optional: true
 
+  # The authorization code a person pastes back, and the device code shown to
+  # them. The global filter_parameters list catches neither name.
+  self.filter_attributes += %w[pasted_code verification_code]
+
   STATUSES = %w[
     starting awaiting_user awaiting_code completing
     succeeded failed canceled expired

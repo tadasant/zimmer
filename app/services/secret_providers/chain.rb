@@ -6,6 +6,8 @@ module SecretProviders
   # A provider that RAISES does not fall through — see the note on miss-vs-error
   # in SecretProviders.
   class Chain
+    include RedactedInspect
+
     attr_reader :providers
 
     def initialize(providers)
@@ -13,6 +15,8 @@ module SecretProviders
 
       @providers = providers
     end
+
+    def redacted_inspect_fields = { providers: providers.map(&:name) }
 
     def name = "chain(#{providers.map(&:name).join(',')})"
 

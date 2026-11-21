@@ -53,6 +53,9 @@ module ParameterStore
   # Because a rendered payload contains a secret, no response body is ever logged
   # or interpolated into an error message.
   class GcpClient
+    # Holds the service account, and so its key.
+    include RedactedInspect
+
     PM_API_BASE = "https://parametermanager.googleapis.com"
     SM_API_BASE = "https://secretmanager.googleapis.com"
     # Cloud Resource Manager, where a project-level IAM binding — including one
@@ -106,6 +109,12 @@ module ParameterStore
     # pre-rename path but served from the canonical one resolves normally, and
     # a name refused at the pre-rename path is still sitting there.
     class Snapshot < Hash
+      # Every resolved value lives in here. `[]`, `fetch` and equality are
+      # untouched; only how it prints changes.
+      include RedactedInspect
+
+      def redacted_inspect_fields = { names: transform_values { |values| values.respond_to?(:keys) ? values.keys : values.class.name } }
+
       # @return [Hash{String => Array<String>}] per namespace, variables the
       #   store HOLDS whose envelope declared a value encoding this resolver
       #   does not implement, or declared base64url over bytes that are not.
@@ -135,6 +144,8 @@ module ParameterStore
     # deployment has no separate writer key — see ParameterStore::Writer. It
     # does not make this client writable; there is still no write verb here.
     attr_reader :project_id, :location, :account
+
+    def redacted_inspect_fields = { project_id: project_id, location: location }
 
     def initialize(project_id:, account:, location: "global",
       pm_api_base: PM_API_BASE, sm_api_base: SM_API_BASE, crm_api_base: CRM_API_BASE,

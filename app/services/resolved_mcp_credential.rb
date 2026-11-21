@@ -31,4 +31,10 @@ ResolvedMcpCredential = Data.define(
   :scope,
   :headers,
   :credential_key
-)
+) do
+  # Carries the access and refresh tokens, and `headers` can carry a static
+  # Authorization header.
+  include RedactedInspect
+
+  def redacted_inspect_fields = { server_name: server_name, server_url: server_url, expires_at: expires_at }
+end
