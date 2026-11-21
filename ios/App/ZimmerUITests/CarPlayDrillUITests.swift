@@ -39,14 +39,13 @@ final class CarPlayDrillUITests: XCTestCase {
     /// can stall longer before it draws them (`hostStall`). Shorter than the 20 seconds or more
     /// before a New the app took comes back, once its retries are spent.
     private static let lostTap: TimeInterval = 15
-    /// How long the phone may take to land on the call, counted from the first unplug. The host
-    /// can stall the disconnect itself for over a minute: in
+    /// How long the phone may take to land on the call, counted from when the drill asks for the
+    /// first unplug. The host can stall the disconnect itself for over a minute: in
     /// [run 44939231478](https://github.com/tadasant/zimmer/actions/runs/44939231478) the app
-    /// logged `carplay scene disconnected` 65 seconds after the first click, and the phone landed
-    /// `LiveHandover.settle` and one half-second look after that, a second past a fresh
-    /// `hostStall` from the second click. Two `hostStall`s cover a stall that long with the settle
-    /// to spare.
-    private static let carGone: TimeInterval = 2 * hostStall
+    /// logged `carplay scene disconnected` about 65 seconds after the first click, and the phone
+    /// landed `LiveHandover.settle` and one half-second look after that, about 73 seconds after
+    /// the drill asked, and a second past a fresh `hostStall` from the second click.
+    private static let carGone: TimeInterval = 90
     private var zimmer: XCUIApplication!
     private let dashboard = XCUIApplication(bundleIdentifier: "com.apple.CarPlayApp")
     private let car = XCUIApplication(bundleIdentifier: "com.apple.CarPlayTemplateUIHost")
@@ -139,7 +138,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // no `carplay scene disconnected`, and the host silent from before the click until after
         // the test ended), whether the Simulator ignored it or the host stalled. So a phone still
         // off the call after `timeout` gets the click again, and the rest of `carGone` from the
-        // first click to land: the host's stall can hold up the disconnect, and the phone waits
+        // first ask to land: the host's stall can hold up the disconnect, and the phone waits
         // `LiveHandover.settle` past it. The host itself is not asked: a query there can hang
         // XCUITest (limitations.md, "CarPlay's host can stop answering in the drill").
         let callOnThePhone = zimmer.descendants(matching: .any)["live.call.state"].firstMatch
