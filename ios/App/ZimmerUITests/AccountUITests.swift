@@ -103,6 +103,8 @@ final class AccountUITests: XCTestCase {
         // Leaving the screen is the last of the token; the key stays.
         goBack(app)
         reopenAccount(app)
+        // Down at the form, where the token sat: off screen, its row would be in no tree either way.
+        reveal(app, app.textFields["account.key.new.name"])
         XCTAssertFalse(app.staticTexts["account.key.token"].exists)
         let rowAgain = app.descendants(matching: .any)["account.key.3"]
         reveal(app, rowAgain)
