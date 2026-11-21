@@ -1117,11 +1117,7 @@ module TranscriptRedactor
     end
 
     def each_stored_token(&block)
-      # Through the model readers, not a pluck: a token may live only in its
-      # encrypted twin (McpOauthCredential::SECRET_COLUMNS), which SQL cannot read.
-      McpOauthCredential
-        .select(:id, :access_token, :refresh_token, :access_token_ciphertext, :refresh_token_ciphertext)
-        .find_each { |credential| [ credential.access_token, credential.refresh_token ].each(&block) }
+      McpOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
       XOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
       ClaudeAccount.pluck(:oauth_config).each do |config|
         deep_sensitive_strings(config).each(&block)

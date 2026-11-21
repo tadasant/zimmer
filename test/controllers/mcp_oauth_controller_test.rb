@@ -142,7 +142,7 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
   test "a re-authorization that omits the refresh token keeps the stored one" do
     McpOauthCredential.create!(
       server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
-      client_id: "c", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      client_id: "test-client", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
       refresh_token: "issued-on-first-consent", expires_at: 1.hour.from_now
     )
     flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-a")
@@ -158,6 +158,28 @@ class McpOauthControllerTest < ActionDispatch::IntegrationTest
     assert_not credential.refresh_token_unsupported?,
       "a server that has issued a refresh token before is not one-shot"
     assert_not credential.requires_periodic_reauth?
+  end
+
+  # A refresh token belongs to the client it was issued to. Re-consenting as a
+  # DIFFERENT client (a new DCR registration, or a move onto Zimmer's hosted
+  # client identity) must not carry the old one over: it would be refused, and
+  # that refusal discards it, as an unexplained re-auth later.
+  test "a re-authorization as a different client does not carry the old refresh token over" do
+    McpOauthCredential.create!(
+      server_name: "server-a", server_url: CONFIG_A[:url], credential_key: @key_a,
+      client_id: "old-client", access_token: "old", token_endpoint: "https://a.example.com/oauth/token",
+      refresh_token: "issued-to-old-client", expires_at: 1.hour.from_now
+    )
+    flow = pending_flow_for("server-a", CONFIG_A, state: "reconsent-new-client")
+
+    stub_token_exchange(token_response) do
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "auth-code" }
+    end
+
+    credential = McpOauthCredential.for_credential_key(@key_a).first
+    assert_equal "test-client", credential.client_id
+    assert_nil credential.refresh_token
+    assert credential.refresh_token_unsupported?
   end
 
   # Re-authorizing against a server that has since started issuing refresh

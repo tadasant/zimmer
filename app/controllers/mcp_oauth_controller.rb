@@ -424,7 +424,14 @@ class McpOauthController < ApplicationController
     # Both the column and the flag below are derived from this one value, so they
     # cannot disagree: the credential is one-shot exactly when no refresh token
     # survives this exchange.
-    refresh_token = tokens["refresh_token"].presence || credential.refresh_token
+    #
+    # Only a refresh token issued to the SAME client carries over. A refresh token
+    # belongs to the client it was issued to, so after a client change (a new DCR
+    # registration, or a server moving onto Zimmer's hosted client identity) the
+    # old one would be sent as the new client and refused, and that refusal
+    # discards it anyway.
+    carried_over = credential.client_id == pending_flow.client_id ? credential.refresh_token : nil
+    refresh_token = tokens["refresh_token"].presence || carried_over
 
     credential.update!(
       server_name: pending_flow.server_name,

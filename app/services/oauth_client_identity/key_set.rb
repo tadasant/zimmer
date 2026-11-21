@@ -27,6 +27,8 @@ module OauthClientIdentity
 
     MEMO_KEYS = [ KMS_KEY_VERSIONS_ENV, LOCAL_KEYS_ENV, KMS_CREDENTIAL_ENV, KMS_API_BASE_ENV, TOKEN_URL_ENV ].freeze
 
+    @mutex = Mutex.new
+
     class << self
       def configured?(env = ENV)
         env[KMS_KEY_VERSIONS_ENV].present? || env[LOCAL_KEYS_ENV].present?
@@ -36,7 +38,6 @@ module OauthClientIdentity
       # fetched once per process rather than once per request.
       def from_env(env = ENV)
         fingerprint = MEMO_KEYS.map { |k| env[k].to_s }
-        @mutex ||= Mutex.new
         @mutex.synchronize do
           @memo = nil unless @memo && @memo[0] == fingerprint
           @memo ||= [ fingerprint, build(env) ]
@@ -45,7 +46,7 @@ module OauthClientIdentity
       end
 
       def reset!
-        @memo = nil
+        @mutex.synchronize { @memo = nil }
       end
 
       private
@@ -53,7 +54,12 @@ module OauthClientIdentity
       def build(env)
         kms = split(env[KMS_KEY_VERSIONS_ENV])
         if kms.any?
-          account, = ParameterStore::ServiceAccount.parse(env[KMS_CREDENTIAL_ENV], token_url: env[TOKEN_URL_ENV])
+          # A credential that is set but unreadable is reported as exactly that,
+          # not as "none configured", which would send someone to the wrong place.
+          account, reason = ParameterStore::ServiceAccount.parse(env[KMS_CREDENTIAL_ENV], token_url: env[TOKEN_URL_ENV])
+          if account.nil? && env[KMS_CREDENTIAL_ENV].present?
+            raise Unavailable, "#{KMS_CREDENTIAL_ENV} #{reason}, so Zimmer cannot call KMS"
+          end
           return new(kms.map { |name| GcpKmsSigner.new(name, account: account, api_base: env[KMS_API_BASE_ENV]) })
         end
 

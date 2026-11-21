@@ -57,15 +57,22 @@ class McpOauthCredential < ApplicationRecord
   #
   # - every write goes to BOTH the plaintext column and its twin (the writers
   #   below), so a revert of this code leaves the plaintext current;
-  # - every read takes the plaintext column, and falls back to the twin only when
-  #   the plaintext is NULL. Today that never happens. It is what will let the
-  #   CONTRACT phase — stop writing plaintext, then NULL it out — be reverted to
-  #   this code with every row still readable;
+  # - every read takes the plaintext column, and only the plaintext column. A
+  #   NULL plaintext means NULL, even when a twin still holds an older value: a
+  #   secret cleared by something that bypasses the writers (update_column, a
+  #   raw-SQL repair migration) must stay cleared, not come back from its twin;
   # - rows written before the twins existed get them from the
-  #   EncryptMcpOauthCredentialSecrets post-deploy task.
+  #   EncryptMcpOauthCredentialSecrets post-deploy task, and any later save
+  #   fills a twin that is still missing.
   #
-  # Anything that bypasses the model writers (update_column, update_all, raw SQL)
-  # would update one side only. Nothing does today; nothing should.
+  # A twin can still go STALE (not missing): an old container during the cutover,
+  # or a reverted deploy, writes plaintext only over a row whose twin is set.
+  # Nothing here repairs that, so this phase's task is not proof of coverage.
+  # The CONTRACT phase therefore runs in two deploys: first re-mirror every row
+  # (#mirror_plaintext_secrets! already rewrites a twin that differs) and switch
+  # reads to the twin while still writing both; then stop writing plaintext and
+  # NULL it out. Each of those reverts onto the one before with every row
+  # readable.
   #
   # The keys come from config/initializers/active_record_encryption.rb.
   SECRET_COLUMNS = %w[access_token refresh_token client_secret].freeze
@@ -74,11 +81,6 @@ class McpOauthCredential < ApplicationRecord
 
   SECRET_COLUMNS.each do |column|
     twin = "#{column}_ciphertext"
-
-    define_method(column) do
-      value = super()
-      value.nil? ? public_send(twin) : value
-    end
 
     define_method("#{column}=") do |value|
       super(value)

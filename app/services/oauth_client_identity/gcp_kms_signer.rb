@@ -60,6 +60,14 @@ module OauthClientIdentity
       signature = Base64.decode64(body["signature"].to_s)
       raise Unavailable, "KMS returned no signature for #{@version_name}" if signature.empty?
 
+      # Checked here because the other side's answer to a bad signature is
+      # invalid_client, which Zimmer treats as permanent and which discards the
+      # refresh token. A corrupt signature must fail as a retryable Unavailable
+      # instead, before anything is posted.
+      unless public_key.verify_raw("SHA256", signature, digest)
+        raise Unavailable, "KMS returned a signature for #{@version_name} that does not verify"
+      end
+
       alg == ES256 ? Signer.der_to_raw_ecdsa(signature) : signature
     end
 
@@ -106,11 +114,16 @@ module OauthClientIdentity
       end
 
       JSON.parse(response.body.to_s)
+    rescue Unavailable
+      raise
     rescue ParameterStore::AuthError => e
       raise Unavailable, "could not get a GCP access token for KMS: #{e.message}"
     rescue JSON::ParserError
       raise Unavailable, "KMS answered #{@version_name} with a body that is not JSON"
-    rescue Timeout::Error, SystemCallError, SocketError, OpenSSL::SSL::SSLError => e
+    rescue StandardError => e
+      # Every other failure — a timeout, a reset, a truncated response, a token
+      # mint that raised something unexpected — is the same answer to a caller:
+      # no signature right now. Named by class only; the message may carry a URL.
       raise Unavailable, "KMS could not be reached (#{e.class})"
     end
   end
