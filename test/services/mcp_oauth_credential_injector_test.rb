@@ -772,6 +772,34 @@ class McpOauthCredentialInjectorTest < ActiveSupport::TestCase
     end
   end
 
+  # A credential issued to Zimmer's hosted OAuth client identity can be refreshed
+  # only with an assertion Zimmer signs, so the runtime gets the access token and
+  # never the refresh token. Any other credential is handed over whole.
+  test "inject_credentials! withholds the refresh token of a hosted-identity credential from the runtime" do
+    credential = mcp_oauth_credentials(:notion)
+    written = nil
+    fake_writer = Object.new
+    fake_writer.define_singleton_method(:credential_key_for) { |name, config| McpOauthCredential.compute_credential_key(name, config) }
+    fake_writer.define_singleton_method(:write!) { |working_directory:, credentials:| written = credentials; "/tmp/fake-credentials.json" }
+    fake_writer.define_singleton_method(:clear_needs_auth_cache) { |names| names }
+
+    with_oauth_client_identity do
+      ServersConfig.stub(:find, ->(name) { name == "notion" ? notion_server_config : nil }) do
+        credential.update!(credential_key: notion_credential_key, expires_at: 1.hour.from_now, refresh_token: "rt",
+          client_id: OauthClientIdentity.client_id)
+        injector = McpOauthCredentialInjector.new(mock_claude_session([ "notion" ]), working_directory: @working_directory)
+        injector.stubs(:credential_writer).returns(fake_writer)
+        injector.inject_credentials!
+        assert_nil written.first.refresh_token
+        assert_equal credential.access_token, written.first.access_token
+
+        credential.update!(client_id: "agent-orchestrator-test")
+        injector.inject_credentials!
+        assert_equal "rt", written.first.refresh_token
+      end
+    end
+  end
+
   # --- .oauth_capable_server? -------------------------------------------------
   #
   # The single source of truth for "can this server actually be authorized via OAuth?",

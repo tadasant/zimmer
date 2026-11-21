@@ -9,8 +9,8 @@
         601
       ],
       "file": "app/controllers/mcp_oauth_controller.rb",
-      "fingerprint": "decb2507e26de3af1b3a94c6c424959ce114b244521cf20bbfcc2a78bc4fed63",
-      "line": 220,
+      "fingerprint": "3d7b5be683d2e59ca9b94b404659ffdbeb4704d80b21a10cd2cf8a78619ca933",
+      "line": 254,
       "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
       "location": {
         "class": "McpOauthController",
@@ -18,7 +18,7 @@
         "type": "method"
       },
       "message": "Possible unprotected redirect",
-      "note": "Expected behavior: This is the OAuth flow initiation redirect. The authorization_url is constructed from OAuth metadata fetched from the server's well-known endpoints (RFC 9728/8414), from the server's catalog `oauth` block, or from pre-registered OAuth config in Rails credentials -- never from user params. The allow_other_host: true flag is intentionally used to redirect to the external OAuth provider's authorization endpoint.",
+      "note": "Expected behavior: This is the OAuth flow initiation redirect. The authorization_url is constructed from OAuth metadata fetched from the server's well-known endpoints (RFC 9728/8414), from the server's catalog `oauth` block, or from pre-registered OAuth config in Rails credentials (with the client_id optionally swapped for Zimmer's own hosted OAuth client identity, a URL from configuration) -- never from user params. The allow_other_host: true flag is intentionally used to redirect to the external OAuth provider's authorization endpoint.",
       "render_path": null,
       "user_input": "McpOauthPendingFlow.create_for_session!(...).authorization_url",
       "warning_code": 18,

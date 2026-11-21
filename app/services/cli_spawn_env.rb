@@ -54,6 +54,9 @@ module CliSpawnEnv
       "that somehow has one must not pass it on.",
     "MERGE_ATTESTATION_SIGNING_KEY" =>
       "Signs human merge approvals another Zimmer treats as a person's yes.",
+    "ZIMMER_OAUTH_CLIENT_SIGNING_KEYS" =>
+      "Local private key(s) behind Zimmer's hosted OAuth client identity: holding one is " \
+      "signing client assertions as Zimmer. Production signs in KMS and never sets it.",
     "SENTRY_DSN_BACKEND" =>
       "The production GlitchTip DSN wired to #alerts: a clone's bin/rails would page it (#176).",
     "OTEL_LOGS_EXPORTER_BEARER_TOKEN" =>

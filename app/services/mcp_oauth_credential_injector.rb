@@ -467,7 +467,11 @@ class McpOauthCredentialInjector
         server_url: credential.server_url,
         client_id: credential.client_id,
         access_token: credential.access_token,
-        refresh_token: credential.refresh_token,
+        # A credential issued to Zimmer's hosted client identity can only be
+        # refreshed with an assertion Zimmer signs, which the runtime cannot do,
+        # so its refresh token stays here. Zimmer refreshes it (above, and
+        # RefreshMcpOauthTokensJob); the runtime gets only the access token.
+        refresh_token: credential.hosted_client_identity? ? nil : credential.refresh_token,
         expires_at: credential.expires_at,
         scope: credential.scopes,
         headers: server_config[:headers] || {},

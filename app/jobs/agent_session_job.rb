@@ -6698,12 +6698,7 @@ class AgentSessionJob < ApplicationJob
       # the authorization flow will actually send.
       begin
         catalog_server = ServersConfig.find(server_name)
-        requirement = oauth_service.check_oauth_requirement(
-          server_url,
-          configured_client_id: catalog_server&.oauth_client_id,
-          configured_client_secret: catalog_server&.oauth_client_secret,
-          configured_redirect_uri: catalog_server&.oauth_redirect_uri
-        )
+        requirement = oauth_service.check_oauth_requirement(server_url, **(catalog_server&.oauth_client_options || {}))
 
         # Keep what the server just told us, so the Connectors page — which
         # cannot make a network call — reads a recorded fact instead of assuming
