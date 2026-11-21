@@ -83,8 +83,11 @@ final class AccountUITests: XCTestCase {
         name.tap()
         name.typeText("phone\n")
 
-        // Return dismissed the keyboard and minted; the token sits above the field.
+        // Return dismissed the keyboard and minted; the token sits above the field. The mint
+        // answers asynchronously: until it has, the token is in no tree, and `reveal` would
+        // scroll blind, carrying the form away from where the token then appears.
         let token = app.staticTexts["account.key.token"]
+        XCTAssertTrue(token.waitForExistence(timeout: timeout), "the mint answered")
         reveal(app, token, above: true)
         let shown = token.label
         XCTAssertTrue(shown.hasPrefix("zmr_"), "the token, in the clear, this once: \(shown)")
