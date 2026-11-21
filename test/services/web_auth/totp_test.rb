@@ -60,4 +60,33 @@ class WebAuth::TotpTest < ActiveSupport::TestCase
     uri = WebAuth::Totp.provisioning_uri("JBSWY3DPEHPK3PXP", account: "owner@example.com", issuer: "Zimmer")
     assert_equal "otpauth://totp/Zimmer%3Aowner%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Zimmer&algorithm=SHA1&digits=6&period=30", uri
   end
+
+  test "each deployment's issuer names its host, so two Zimmers' entries look different" do
+    assert_equal "Zimmer (hans.example.com)", WebAuth::Totp.issuer_for("hans.example.com")
+    assert_equal "Zimmer (zimmer.example.com)", WebAuth::Totp.issuer_for("Zimmer.Example.com")
+    assert_equal "Zimmer (localhost)", WebAuth::Totp.issuer_for("localhost:3000"), "a colon would split the label"
+    assert_equal "Zimmer", WebAuth::Totp.issuer_for(nil)
+  end
+
+  test "the label prefix and the issuer parameter carry the same percent-encoded issuer" do
+    issuer = WebAuth::Totp.issuer_for("hans.example.com")
+    uri = WebAuth::Totp.provisioning_uri("JBSWY3DPEHPK3PXP", account: "owner@example.com", issuer: issuer)
+
+    assert_equal "otpauth://totp/Zimmer%20%28hans.example.com%29%3Aowner%40example.com" \
+                 "?secret=JBSWY3DPEHPK3PXP&issuer=Zimmer%20%28hans.example.com%29&algorithm=SHA1&digits=6&period=30", uri
+    refute_includes uri, "+", "some authenticator apps show a + literally"
+
+    parsed = URI(uri)
+    label_issuer = URI.decode_uri_component(parsed.path.delete_prefix("/")).split(":").first
+    query_issuer = URI.decode_uri_component(parsed.query[/issuer=([^&]*)/, 1])
+    assert_equal "Zimmer (hans.example.com)", label_issuer
+    assert_equal label_issuer, query_issuer
+  end
+
+  test "an issuer can never carry a colon into the label" do
+    uri = WebAuth::Totp.provisioning_uri("JBSWY3DPEHPK3PXP", account: "owner@example.com", issuer: "Zim:mer")
+    assert_equal "Zimmer:owner@example.com", WebAuth::Totp.label(account: "owner@example.com", issuer: "Zim:mer")
+    assert_includes uri, "otpauth://totp/Zimmer%3Aowner%40example.com?"
+    assert_includes uri, "&issuer=Zimmer&"
+  end
 end

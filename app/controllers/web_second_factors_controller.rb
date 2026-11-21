@@ -41,7 +41,8 @@ class WebSecondFactorsController < ApplicationController
       render :new, status: :too_many_requests
     else
       SecurityTelemetry.record_auth_failure(:web_second_factor, :wrong_code)
-      @error = "That code did not match. Check the time on your phone, or use a recovery code."
+      @error = "That code did not match. Check you are reading the entry you set up for this Zimmer " \
+        "(#{totp_host}), not another one's. Then check the time on your phone, or use a recovery code."
       render :new, status: :unprocessable_entity
     end
   end
@@ -67,6 +68,21 @@ class WebSecondFactorsController < ApplicationController
   end
 
   private
+
+  # The name this deployment's authenticator entry carries. The configured
+  # base URL is the deployment's identity; a deploy that never set it falls
+  # back to the host the browser asked for.
+  def totp_issuer = WebAuth::Totp.issuer_for(totp_host)
+  helper_method :totp_issuer
+
+  def totp_host
+    base_url = AppUrl.base_url
+    return request.host if AppUrl.placeholder?(base_url)
+
+    URI(base_url).host.presence || request.host
+  rescue URI::InvalidURIError
+    request.host
+  end
 
   def require_totp_mode
     redirect_to root_path unless web_auth_configuration.enabled? && web_auth_configuration.totp_required?

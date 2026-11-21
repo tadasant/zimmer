@@ -13,11 +13,12 @@
 <ol class="mt-5 space-y-4 text-sm text-gray-700">
   <li>
     <span class="font-medium text-gray-900">1. Add Zimmer to your app.</span>
-    On your phone, <%= link_to "open this link", WebAuth::Totp.provisioning_uri(@secret, account: @identity.email, issuer: "Zimmer"),
+    On your phone, <%= link_to "open this link", WebAuth::Totp.provisioning_uri(@secret, account: @identity.email, issuer: totp_issuer),
                           class: "text-indigo-600 underline hover:text-indigo-800" %>.
     Or enter this setup key by hand:
     <div class="mt-2 select-all break-words rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-base tracking-wider text-gray-900" data-testid="totp-secret"><%= @secret.scan(/.{1,4}/).join(" ") %></div>
     <span class="mt-1 block text-xs text-gray-500">Account: <%= @identity.email %> · time-based · 6 digits · 30 seconds</span>
+    <span class="mt-1 block break-words text-xs text-gray-500" data-testid="totp-label">In your app this entry appears as <span class="font-medium text-gray-700"><%= WebAuth::Totp.label(account: @identity.email, issuer: totp_issuer) %></span>. Use that entry for this Zimmer, not another one's.</span>
   </li>
   <li>
     <span class="font-medium text-gray-900">2. Enter the code it shows.</span>
