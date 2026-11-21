@@ -7,7 +7,7 @@ import Foundation
 /// applies to `--api-base-url`, so a build and a typed-in value cannot disagree.
 public enum ServerURL {
     public static func parse(_ raw: String?) -> URL? {
-        let trimmed = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = clean(raw)
         guard !trimmed.isEmpty,
               var components = URLComponents(string: trimmed),
               components.scheme?.lowercased() == "https",
@@ -20,6 +20,17 @@ public enum ServerURL {
         components.host = host.lowercased()
         components.path = ""
         return components.url
+    }
+
+    /// What a person typed or pasted, with every character no address can contain taken out:
+    /// whitespace and line breaks anywhere (a paste can carry a trailing newline, or break across
+    /// lines), and the invisible format characters a copy from a web page or a chat brings along —
+    /// zero-width spaces and joiners, a byte-order mark, direction marks.
+    public static func clean(_ raw: String?) -> String {
+        let scalars = (raw ?? "").unicodeScalars.filter { scalar in
+            !CharacterSet.whitespacesAndNewlines.contains(scalar) && scalar.properties.generalCategory != .format
+        }
+        return String(String.UnicodeScalarView(scalars))
     }
 }
 
@@ -57,4 +68,18 @@ public struct ServerOrigins: Codable, Hashable, Sendable {
 
     /// Whether machine calls go to a separate app host, which is when the edge login runs.
     public var isSplit: Bool { web != api }
+
+    /// The origins a person typed, or what is wrong with them. An empty app host (after
+    /// `ServerURL.clean`) means the same origin as the server.
+    public static func parse(web rawWeb: String, api rawAPI: String) -> Result<ServerOrigins, ZimmerError> {
+        guard let web = ServerURL.parse(rawWeb) else {
+            return .failure(.signIn("Enter the https address of your Zimmer, like https://zimmer.example.com."))
+        }
+        let cleanedAPI = ServerURL.clean(rawAPI)
+        guard !cleanedAPI.isEmpty else { return .success(ServerOrigins(web: web)) }
+        guard let api = ServerURL.parse(cleanedAPI) else {
+            return .failure(.signIn("The app host must be an https address too, or left empty."))
+        }
+        return .success(ServerOrigins(web: web, api: api))
+    }
 }

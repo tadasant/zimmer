@@ -231,8 +231,10 @@ The user-facing description is the docs page's *Deployments*; the design:
 - **The fixture**: `-ZimmerFixtureDeployments` starts with two in-memory deployments, *Workshop*
   (the usual sample board) in front and *Lab* (`FakeZimmerAPI.otherDeploymentSessions`) behind it;
   `-ZimmerFixtureLabInFront` starts on Lab; `-ZimmerFixtureSwitcher` opens the switcher. Adding one
-  in the fixture succeeds without a sign-in. `DeploymentSwitcherUITests` drives switching, adding
-  (and adding an address already on the list), and removing; renaming is `DeploymentsTests`'.
+  in the fixture succeeds without a sign-in, unless `-ZimmerFixtureCancelSignIn` closes that sign-in
+  unfinished, as a person closing the sheet does. `DeploymentSwitcherUITests` drives switching,
+  adding (an address already on the list, and a bad address's message clearing once a good one's
+  sign-in is closed), and removing; renaming is `DeploymentsTests`'.
 - **Live's call log** is sent through `AppEnvironment.telemetryRoute`, which moves to a new
   deployment only after `AppEnvironment.leaveFront` has hung up the call, sent the log to the
   deployment being left and dropped what it could not send (`LiveTelemetry.discardPending`).

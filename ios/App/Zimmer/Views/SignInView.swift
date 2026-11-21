@@ -65,7 +65,7 @@ struct SignInView: View {
                 }
             }
             .buttonStyle(PrimaryButtonStyle())
-            .disabled(isSigningIn || (asksForAddress && server.trimmingCharacters(in: .whitespaces).isEmpty))
+            .disabled(isSigningIn || (asksForAddress && ServerURL.clean(server).isEmpty))
             .accessibilityIdentifier("signin.button")
 
             if let error = shownError {

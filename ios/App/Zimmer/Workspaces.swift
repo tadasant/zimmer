@@ -60,8 +60,10 @@ final class Workspaces: ObservableObject {
     /// the deployment is now in front.
     @discardableResult
     func add(web rawWeb: String, api rawAPI: String) async -> Bool {
+        // A new attempt starts clean: what was wrong with the last one is not this one's answer.
+        addError = nil
         let origins: ServerOrigins
-        switch Self.origins(web: rawWeb, api: rawAPI) {
+        switch ServerOrigins.parse(web: rawWeb, api: rawAPI) {
         case let .success(parsed): origins = parsed
         case let .failure(error):
             addError = error
@@ -78,6 +80,7 @@ final class Workspaces: ObservableObject {
         defer { isAdding = false }
         let (deployment, connection) = environment.prepare(origins)
         do {
+            if environment.fixtureCancelsSignIn { throw ASWebAuthenticationSessionError(.canceledLogin) }
             if !environment.isFixture {
                 if let edge = connection.edge, await edge.needsLogin() {
                     try await edge.login()
@@ -95,7 +98,9 @@ final class Workspaces: ObservableObject {
             rebuild()
             return true
         } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
+            // Closing the sheet is not a failure, and leaves nothing on screen to answer for.
             log.info("add-deployment sign-in cancelled")
+            addError = nil
             await environment.abandon(deployment, connection: connection)
             return false
         } catch {
@@ -137,18 +142,5 @@ final class Workspaces: ObservableObject {
     private func rebuild() {
         list = environment.deployments
         model = AppModel(environment: environment)
-    }
-
-    /// The origins a person typed, or what is wrong with them.
-    static func origins(web rawWeb: String, api rawAPI: String) -> Result<ServerOrigins, ZimmerError> {
-        guard let web = ServerURL.parse(rawWeb) else {
-            return .failure(.signIn("Enter the https address of your Zimmer, like https://zimmer.example.com."))
-        }
-        let trimmedAPI = rawAPI.trimmingCharacters(in: .whitespaces)
-        let api = trimmedAPI.isEmpty ? nil : ServerURL.parse(trimmedAPI)
-        if !trimmedAPI.isEmpty && api == nil {
-            return .failure(.signIn("The app host must be an https address too, or left empty."))
-        }
-        return .success(ServerOrigins(web: web, api: api))
     }
 }
