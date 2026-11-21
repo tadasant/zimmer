@@ -32,6 +32,8 @@ Rails.application.routes.draw do
     # authenticated human at the web-UI boundary rather than typed into a form.
     resources :gate_decisions, only: [ :index, :show ]
     resources :gate_decision_feedbacks, only: [ :index, :show ]
+    # Read-only: signed merge approvals are immutable records (MergeAttestation).
+    resources :merge_attestations, only: [ :index, :show ]
     # Read-only: rows are derived data, written by CycleTimes::Analyzer and
     # recomputed by CycleTimeSweepJob; an edit would be overwritten.
     resources :cycle_time_analyses, only: [ :index, :show ]

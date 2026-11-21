@@ -84,8 +84,15 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
   # There is no tool for PRESSING that button, and that is the design rather than
   # an omission: what sanctions an agent merging its own work is that a human
   # clicked it.
+  #
+  # The two merge_attestations tools are the one named exception: they receive
+  # an approval another Zimmer signed from a person's confirmed yes, and the
+  # authority is that signature, which no tool can produce
+  # (test/services/merge_attestations/issuer_test.rb holds that line).
+  RECEIVES_SIGNED_APPROVALS = %w[Mcp::Tools::GetMergeAttestationTarget Mcp::Tools::SubmitMergeAttestation].freeze
+
   test "no tool in any group can authorize a merge" do
-    all = Mcp::Registry::ALL_TOOLS.map { |d| d.klass }
+    all = Mcp::Registry::ALL_TOOLS.map { |d| d.klass } - RECEIVES_SIGNED_APPROVALS
 
     assert_empty all.grep(/AuthorizeMerge|Merge/),
       "the Merge button must stay browser-only — an MCP tool for it would let an agent authorize its own merge"
