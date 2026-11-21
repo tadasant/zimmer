@@ -146,8 +146,9 @@ class SlackService
     # @param text [String] fallback text; drives push notifications and is all a
     #   blocks-blind consumer sees, so it must carry the message, not just a label
     # @param blocks [Array<Hash>, nil] optional Block Kit payload
+    # @param thread_ts [String, nil] the parent message's ts, to post as a reply in its thread
     # @return [Hash] the chat.postMessage response
-    def post_message(channel:, text:, blocks: nil)
+    def post_message(channel:, text:, blocks: nil, thread_ts: nil)
       raise ArgumentError, "channel is required to post a message" if channel.blank?
 
       # Not retried in process on a server-side error: Slack documents fatal_error and
@@ -155,6 +156,7 @@ class SlackService
       with_error_handling(retry_server_errors: false) do
         params = { channel: channel, text: text }
         params[:blocks] = blocks if blocks.present?
+        params[:thread_ts] = thread_ts if thread_ts.present?
 
         client.chat_postMessage(**params)
       end

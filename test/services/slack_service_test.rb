@@ -731,6 +731,14 @@ class SlackServiceTest < ActiveSupport::TestCase
     SlackService.post_message(channel: "C1", text: "hi")
   end
 
+  test "post_message threads the post under thread_ts when given" do
+    mock_client = mock("slack_client")
+    SlackService.stubs(:client).returns(mock_client)
+    mock_client.expects(:chat_postMessage).with(channel: "C1", text: "hi", thread_ts: "1.0").returns(true)
+
+    SlackService.post_message(channel: "C1", text: "hi", thread_ts: "1.0")
+  end
+
   test "post_message raises ArgumentError without a channel" do
     assert_raises(ArgumentError) { SlackService.post_message(channel: nil, text: "hi") }
   end

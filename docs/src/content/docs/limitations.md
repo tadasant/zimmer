@@ -5626,6 +5626,23 @@ The marker has gaps of its own:
   can come off up to a minute after the agent's first turn, so for a moment the hourglass and the
   agent's :eyes: can sit side by side.
 
+### A Slack request that cannot be served gets a fixed reply, with gaps
+
+Zimmer replies in the thread of an @mention or DM whose session is out of quota, cut off from the
+provider, or failed before the agent answered (see
+[the error reply](/sessions/triggers/#when-a-request-cannot-be-served-the-error-reply)). The gaps:
+
+- **Claude Code only.** Codex and Pi sessions are settled `unsupported_runtime` and get no reply.
+- **Addressed requests only.** Passive-listening and `new_message` sessions never get one, by design.
+  Neither do sessions fired before this shipped, which carry no `slack_trigger_event_type`.
+- **A crash mid-post is not retried.** `chat.postMessage` is not idempotent, so a post whose answer
+  never came back is recorded `unconfirmed` rather than risked twice.
+- **The reply is not edited when capacity returns.** It stays in the thread above the agent's own
+  answer, saying the request was queued.
+- **Quota read from the transcript is a guess about the pool.** A running session whose transcript
+  shows a quota wall but that is about to rotate to another account can, if the rotation takes more
+  than five minutes, get the quota reply moments before the agent answers.
+
 ### While Slack is rate-limiting you, Slack triggers fire late
 
 `SlackTriggerPollerJob` is a `total_limit: 1` singleton, so while it runs it *is* Slack polling for
