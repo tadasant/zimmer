@@ -5,7 +5,7 @@ a symlink to this file.)
 
 ## What this is
 
-Zimmer is a Rails 8 app (Ruby 3.4.6) that orchestrates AI coding agents. Key
+Zimmer is a Rails 8 app (Ruby 3.4.13) that orchestrates AI coding agents. Key
 stack: PostgreSQL, Redis, GoodJob, Hotwire (Turbo + Stimulus), Tailwind.
 
 ## Production invariants

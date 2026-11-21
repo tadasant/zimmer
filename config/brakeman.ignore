@@ -2,29 +2,6 @@
   "brakeman_version": "7.1.2",
   "ignored_warnings": [
     {
-      "check_name": "Execute",
-      "code": "Open3.capture3(\"gh\", \"api\", \"repos/#{comment_info[:owner]}/#{comment_info[:repo]}\", \"--jq\", \".private\")",
-      "confidence": "Medium",
-      "cwe_id": [
-        77
-      ],
-      "file": "app/services/github_comment_prompt_builder.rb",
-      "fingerprint": "090f54dacbe6e0d3fc5075a648ed9a1f674868d8fa2ef043d156fd823d69b7cf",
-      "line": 217,
-      "link": "https://brakemanscanner.org/docs/warning_types/command_injection/",
-      "location": {
-        "class": "GithubCommentPromptBuilder",
-        "method": "public_repo?",
-        "type": "method"
-      },
-      "message": "Possible command injection",
-      "note": "False positive: Open3.capture3 with array syntax prevents shell injection. The owner and repo are extracted from validated GitHub PR URLs via regex match (github.com/[^/]+/[^/]+/pull/\\d+), which restricts the character set and prevents path traversal.",
-      "render_path": null,
-      "user_input": "comment_info[:owner]",
-      "warning_code": 14,
-      "warning_type": "Command Injection"
-    },
-    {
       "check_name": "Redirect",
       "code": "redirect_to(McpOauthPendingFlow.start!(...).authorization_url, :allow_other_host => true)",
       "confidence": "Weak",

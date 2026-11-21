@@ -44,7 +44,7 @@ jobs:
       # No bundle: the script and the guard it loads are stdlib-only.
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: false
       - name: Check open PRs against main
         env:

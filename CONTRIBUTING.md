@@ -25,7 +25,7 @@ rest of this guide helps you get it running and find your way around the code.
 
 ## Development setup
 
-See the [README](README.md#try-it-locally). In short: Ruby 3.4.6,
+See the [README](README.md#try-it-locally). In short: Ruby 3.4.13,
 PostgreSQL, Redis, then `bundle install && bin/rails db:setup && bin/dev`.
 
 ## Tests, lint, and security

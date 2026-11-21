@@ -3,7 +3,7 @@ name: CI
 # Standalone CI for the Zimmer Rails app. Every job runs on a GitHub-hosted runner, which
 # is free and unmetered on a public repository. The Ruby jobs pin `ubuntu-24.04` rather
 # than `ubuntu-latest`: ruby/setup-ruby builds only the newest patch of each Ruby series
-# for a newer image, so on ubuntu-26.04 there is no 3.4.6 to install. The macOS jobs use
+# for a newer image, so on ubuntu-26.04 the pinned patch disappears as soon as a newer one ships. The macOS jobs use
 # `macos-latest`. `runs-on` is hard-coded, never switched by a variable: a fork PR must
 # never be able to reach a self-hosted runner. Postgres + Redis come up as service
 # containers on dynamic host ports, and ruby/setup-ruby installs Ruby and caches the bundle
@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: true
       - name: Rubocop
         run: bin/rubocop -f github --parallel
@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: true
       - name: Brakeman
         run: bin/brakeman --no-pager -q
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           # No install: `bundle lock` only resolves, and a cached bundle restored from
           # the very lockfile under test would prove nothing about it.
           bundler-cache: false
@@ -172,7 +172,7 @@ jobs:
           echo "REDIS_URL=redis://localhost:${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
@@ -264,7 +264,7 @@ jobs:
           echo "REDIS_URL=redis://localhost:${{ job.services.redis.ports[6379] }}" >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: true
       - name: Prepare test database
         run: bin/rails db:test:prepare
@@ -354,7 +354,7 @@ jobs:
           echo "DATABASE_PORT=$port" >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
           bundler-cache: true
       - name: Round-trip db/schema.rb against db/migrate
         run: bin/rails db:schema:verify
@@ -432,7 +432,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
       - name: Test GHCR retention selection logic
         run: ruby scripts/ghcr_retention_test.rb
 

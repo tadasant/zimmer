@@ -1199,7 +1199,7 @@ the first exceeds the second.
 
 **`Dockerfile.base` → `ghcr.io/tadasant/zimmer-base`** — the heavy one. Two different workflows
 publish it, and confusing them is a live trap — see
-[Two paths rebuild the base image](#two-paths-rebuild-the-base-image). From `ruby:3.4.6-slim`, it
+[Two paths rebuild the base image](#two-paths-rebuild-the-base-image). From `ruby:3.4.13-slim`, it
 bakes in:
 
 - Gems, pre-bundled to `/usr/local/bundle` with bootsnap precompiled
@@ -1249,7 +1249,7 @@ building the app image FROM that tag. Present means reuse. So a `Dockerfile.base
 production on the merge that lands it, automatically, and a base build that *failed* cannot be skipped
 by a later commit — the content tag is still absent.
 
-**`build-base-image.yml` — the world outside the repo changed.** A patched `ruby:3.4.6-slim`, an apt
+**`build-base-image.yml` — the world outside the repo changed.** A patched `ruby:3.4.13-slim`, an apt
 security update, a newer `claude` from `claude.ai/install.sh`. None of that moves the content key, so
 `release-image.yml` cannot see it; the monthly cron (`0 6 1 * *`) and manual dispatch exist for exactly
 this. It computes the key the same way `release-image.yml` does and promotes to `content-<key>` **and**
@@ -1586,14 +1586,14 @@ step that asks for a self-hosted toolcache.
 
 Linux jobs pin `ubuntu-24.04` rather than following `ubuntu-latest`, because
 `ruby/setup-ruby` builds only the newest patch of each Ruby series for a newer image: on
-ubuntu-26.04 there is no Ruby 3.4.6, and every Ruby job fails in its setup step. Moving to a
+ubuntu-26.04 the pinned patch disappears as soon as a newer one ships, and every Ruby job then fails in its setup step. Moving to a
 newer image goes with a Ruby patch bump.
 
 A hosted runner starts empty every time, so a job installs or configures everything it
 needs in-job:
 
 - **Ruby and gems come from `ruby/setup-ruby` with `bundler-cache: true`.** It installs
-  Ruby 3.4.6 and restores the bundle from the Actions cache keyed on `Gemfile.lock`.
+  Ruby 3.4.13 (the `ruby-version` pin) and restores the bundle from the Actions cache keyed on `Gemfile.lock`.
   `verify_lockfile` alone sets `bundler-cache: false`, because it only runs `bundle lock`.
 - **Postgres and Redis are service containers on dynamic host ports.** They declare
   `- 5432/tcp` / `- 6379/tcp`, and a step resolves the assigned port via

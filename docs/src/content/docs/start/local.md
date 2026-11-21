@@ -13,7 +13,7 @@ Redis. To run the whole stack in Docker instead — no host Ruby, Postgres, or R
 
 ## Prerequisites
 
-- **Ruby 3.4.6** (see `.ruby-version`)
+- **Ruby 3.4.13** (see `.ruby-version`)
 - **PostgreSQL 14+**
 - **Redis**
 - **Node.js** (for the AIR CLI and `npx`-based MCP servers)

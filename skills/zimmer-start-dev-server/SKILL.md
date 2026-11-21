@@ -13,7 +13,7 @@ user-invocable: true
 
 # Start the Zimmer Dev Server
 
-Zimmer is a Rails 8 app (Ruby 3.4.6) on PostgreSQL + Redis, with Hotwire and a
+Zimmer is a Rails 8 app (Ruby 3.4.13) on PostgreSQL + Redis, with Hotwire and a
 Tailwind watcher. `bin/dev` runs it under foreman via `Procfile.dev`.
 
 ## Want the whole stack in Docker instead?
