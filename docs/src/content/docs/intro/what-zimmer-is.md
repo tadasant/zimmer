@@ -80,7 +80,7 @@ reimplement it.
 
 ## The stack, in one breath
 
-Rails 8 on Ruby 3.4.6. PostgreSQL for everything (including Action Cable, via `solid_cable`
+Rails 8 on Ruby 3.4.13. PostgreSQL for everything (including Action Cable, via `solid_cable`
 on a second database). Redis for the cache. GoodJob for background jobs and cron. Hotwire
 (Turbo + Stimulus) for the UI, so the session timeline streams in without a SPA. Tailwind
 for styling. Agent processes are real OS subprocesses, spawned and reaped by Zimmer.

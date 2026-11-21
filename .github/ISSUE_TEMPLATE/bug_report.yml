@@ -63,7 +63,7 @@ body:
       placeholder: |
         Zimmer: 0.1.1 (commit abc1234)
         Runtime: claude_code
-        Ruby: 3.4.6
+        Ruby: 3.4.13
         Deploy: self-hosted via Kamal on Ubuntu 24.04
     validations:
       required: true

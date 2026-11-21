@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
       - name: Prune old image versions
         env:
           # Default GITHUB_TOKEN can delete versions of packages owned by the

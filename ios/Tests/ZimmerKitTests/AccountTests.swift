@@ -15,7 +15,7 @@ final class AccountTests: XCTestCase {
             "web_sign_in": ["email": "tadas@example.com", "name": "Tadas", "last_signed_in_at": "2026-10-14T09:00:00Z", "totp_required": true,
                             "totp_enrolled_at": "2026-09-25T12:00:00.123Z", "recovery_codes_remaining": 8],
             "deployment": ["git": ["commit_sha": "b7d4e1c9a0f2d3e4c5b6a7980f1e2d3c4b5a6978", "commit_short": "b7d4e1c", "branch": "main", "commit_date": "2026-10-14 17:22:05 +0000"],
-                           "environment": ["rails_env": "production", "ruby_version": "3.4.6", "rails_version": "8.1.0"]],
+                           "environment": ["rails_env": "production", "ruby_version": "3.4.13", "rails_version": "8.1.0"]],
         ]
     }
 

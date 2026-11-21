@@ -12,8 +12,8 @@
 # mounted Gemfile so bundle state lives in the repo's own vendor/ or the shared
 # bundle path, and code edits on the host are reflected instantly in the container.
 
-# Pinned to Zimmer's .ruby-version (3.4.6). Keep in lockstep with that file.
-FROM ruby:3.4.6-slim
+# Pinned to Zimmer's .ruby-version. Keep in lockstep with that file.
+FROM ruby:3.4.13-slim
 
 # System dependencies:
 #   - build-essential, libpq-dev, libyaml-dev, pkg-config: native gem builds (pg, etc.)

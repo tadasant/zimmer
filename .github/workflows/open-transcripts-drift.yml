@@ -60,6 +60,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.4.6"
+          ruby-version: "3.4.13"
       - name: Compare vendored snapshot against upstream
         run: ruby scripts/check_open_transcripts_drift.rb

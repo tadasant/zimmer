@@ -265,7 +265,7 @@ extension FakeZimmerAPI {
             "queue_recovery_mode": queueRecovery,
             "timestamp": iso(0),
             "rails_env": "production",
-            "ruby_version": "3.4.6",
+            "ruby_version": "3.4.13",
         ]
     }
 
