@@ -34,5 +34,10 @@ module SecretProviders
     def names = @env.keys.select { |key| @env[key].present? }
 
     def invalidate(_variable = nil) = nil
+
+    # Never the environment itself. The default inspect prints `@env`, which is
+    # every secret the process holds, and a provider is embedded in objects
+    # that get inspected while debugging (SecretsInterpolator::Resolution#source).
+    def inspect = "#<#{self.class.name}>"
   end
 end

@@ -292,6 +292,8 @@ class McpOauthController < ApplicationController
       return
     end
 
+    return complete_broker_consent(pending_flow, params[:code]) if pending_flow.broker_flow?
+
     session = pending_flow.session
     credential = store_tokens_and_resume(pending_flow, params[:code])
 
@@ -340,6 +342,8 @@ class McpOauthController < ApplicationController
       render :manual, status: :bad_request
       return
     end
+
+    return complete_broker_consent(pending_flow, code) if pending_flow.broker_flow?
 
     session = pending_flow.session
     credential = store_tokens_and_resume(pending_flow, code)
@@ -471,6 +475,36 @@ class McpOauthController < ApplicationController
     McpOauthResumeService.new(session, authorized_server: credential.server_name).call if session
 
     credential
+  end
+
+  # Finish the token broker's one-time consent (TokenBrokerController#connect):
+  # exchange the code as Zimmer's hosted client and store the parent grant for
+  # the authorization server. It never becomes an McpOauthCredential, so no
+  # runtime credentials writer can ever see it.
+  def complete_broker_consent(pending_flow, code)
+    origin = pending_flow.broker_authorization_server
+    oauth_service = McpOauthService.new
+    tokens = oauth_service.extract_tokens(oauth_service.exchange_code_for_tokens(pending_flow, code))
+
+    unless tokens && tokens["refresh_token"].present?
+      pending_flow.destroy
+      reason = tokens ? "it returned no refresh token, so the grant could not be renewed" : "the code exchange failed"
+      render_error("Could not connect the token broker to #{origin}: #{reason}. Try again from the Token broker page.")
+      return
+    end
+
+    metadata = begin
+      TokenBroker::Client.new.discover(origin)
+    rescue TokenBroker::Client::Error
+      nil
+    end
+    McpBrokerGrant.store_consent!(pending_flow, tokens,
+      revocation_endpoint: metadata&.revocation_endpoint, issuer: metadata&.issuer)
+    pending_flow.destroy
+
+    Rails.logger.info "[McpOauthController] Token broker grant stored for #{origin}"
+    flash[:notice] = "Connected the token broker to #{origin}. Sessions with brokered entries there get their own short-lived token from their next turn."
+    redirect_to token_broker_path
   end
 
   def render_error(message)

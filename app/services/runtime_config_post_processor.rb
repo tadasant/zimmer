@@ -57,6 +57,15 @@ class RuntimeConfigPostProcessor
 
   attr_reader :session, :working_directory, :file_system, :injected_mcp_servers
 
+  # Whether #inject_brokered_credentials! mints child tokens (a turn is
+  # starting) or only leaves brokered entries out. See AirPrepareService.
+  attr_accessor :mint_brokered_tokens
+
+  # @return [TokenBroker::MintResult] what the broker step did on the last run
+  def brokered_token_result
+    @brokered_token_result || TokenBroker::MintResult.empty
+  end
+
   # @param session [Session] the session being prepared
   # @param working_directory [String] the session's working directory
   # @param file_system [FileSystemAdapter] injectable file system
@@ -90,6 +99,7 @@ class RuntimeConfigPostProcessor
     stamp_session_id_on_zimmer_servers!(servers)
     inject_elicitation_env!(servers)
     inject_elicitation_header!(servers)
+    inject_brokered_credentials!(servers)
     resolve_secrets!(servers)
     pin_npx_caches_to_clone!(servers)
     apply_startup_timeouts!(servers)
@@ -332,6 +342,68 @@ class RuntimeConfigPostProcessor
         "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end
   end
+
+  # Brokered auth (TokenBroker): for every entry whose catalog declaration opts
+  # in, replace whatever `Authorization` the entry carries with this turn's
+  # child token — or, when there is no token, remove the entry from the config.
+  #
+  # Never a fallback. The catalog may still write `Bearer ${STRAD_API_KEY}` on
+  # an opted-in entry (and AIR may already have resolved it), but this runs
+  # before #resolve_secrets! and deletes that header under any casing, along
+  # with Codex's forwarding forms of it (`env_http_headers`,
+  # `bearer_token_env_var`). An entry that could not be given a child token is
+  # absent from the turn rather than present with the whole-gateway key; the
+  # cause is in #brokered_token_result, which AgentSessionJob writes into the
+  # session's log and metadata.
+  #
+  # Free when nothing opts in: one pass over the catalog finds no declaration
+  # and returns before touching the config.
+  def inject_brokered_credentials!(servers)
+    @brokered_token_result = TokenBroker::MintResult.empty
+    brokered_names = TokenBroker.brokered_among(servers.keys)
+    return if brokered_names.empty?
+
+    brokered = servers.keys.select { |name| brokered_names.include?(name.to_s) && servers[name].is_a?(Hash) }
+    return if brokered.empty?
+
+    unless mint_brokered_tokens
+      brokered.each { |name| servers.delete(name) }
+      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{brokered.join(', ')} out of a config " \
+        "written outside a turn start; the turn that runs them mints their token"
+      return
+    end
+
+    result = begin
+      TokenBroker.mint_for_session(session, brokered.map(&:to_s))
+    rescue StandardError => e
+      # A broker bug must cost the brokered entries, not the whole turn.
+      failure = "the token broker raised #{e.class}"
+      TokenBroker::MintResult.new(tokens: {}, failures: brokered.to_h { |name| [ name.to_s, failure ] })
+    end
+    @brokered_token_result = result
+
+    brokered.each do |name|
+      token = result.tokens[name.to_s]
+      if token
+        apply_brokered_bearer!(servers[name], token)
+      else
+        servers.delete(name)
+      end
+    end
+  end
+
+  def apply_brokered_bearer!(entry, token)
+    headers = (entry[http_headers_key] ||= {})
+    headers.delete_if { |header, _| header.to_s.casecmp?("Authorization") }
+    drop_forwarded_credential_header!(entry, "Authorization")
+    drop_bearer_token_env_var!(entry)
+    headers["Authorization"] = "Bearer #{token}"
+  end
+
+  # Hook: a runtime that can forward a bearer token from the process
+  # environment (Codex's `bearer_token_env_var`) drops that rule for a brokered
+  # entry. A no-op for the JSON runtimes, which have no such rule.
+  def drop_bearer_token_env_var!(_entry); end
 
   # Write the approval endpoint's address into every stdio server's own `env`
   # table: ELICITATION_REQUEST_URL (where an approval request goes) and

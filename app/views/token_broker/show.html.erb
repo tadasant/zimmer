@@ -1,0 +1,121 @@
+<div class="min-h-screen bg-gray-50">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div class="mb-6">
+      <div class="flex items-center mb-4">
+        <%= link_to connectors_path, class: "text-gray-500 hover:text-gray-700 mr-4", aria: { label: "Back to Connectors" } do %>
+          <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          </svg>
+        <% end %>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Token broker</h1>
+      </div>
+      <p class="text-sm text-gray-600">
+        For catalog entries that opt in with <code>brokered_auth</code>, Zimmer holds one grant per
+        authorization server and gives every session turn its own short-lived token, scoped to the
+        servers that session has. The token is revoked when the turn ends. Sessions never see the grant.
+      </p>
+    </div>
+
+    <% if flash[:notice] %>
+      <div class="mb-4 rounded-md bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800 break-words"><%= flash[:notice] %></div>
+    <% end %>
+    <% if flash[:error] %>
+      <div class="mb-4 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 break-words"><%= flash[:error] %></div>
+    <% end %>
+
+    <div class="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm">
+      <% if @identity_enabled %>
+        <p class="text-gray-700">Client identity: <span class="font-mono text-xs break-all"><%= @client_id %></span></p>
+      <% else %>
+        <p class="text-gray-700">
+          Zimmer's OAuth client identity is not configured on this deployment
+          (<code><%= OauthClientIdentity::BASE_URL_ENV %></code> and a signing key), so nothing can be brokered here.
+          Every entry keeps its own credential, as before.
+        </p>
+      <% end %>
+    </div>
+
+    <% if @invalid_declarations.any? %>
+      <div class="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <p class="font-medium mb-1">Entries whose <code>brokered_auth</code> declaration is invalid. Sessions run without them:</p>
+        <ul class="list-disc ml-5">
+          <% @invalid_declarations.each do |declaration| %>
+            <li class="break-words"><span class="font-mono text-xs"><%= declaration.server_name %></span>: <%= declaration.error %></li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+
+    <% if @servers.empty? %>
+      <div class="rounded-lg border border-gray-200 bg-white px-4 py-6 text-sm text-gray-600">
+        No catalog entry opts into brokered auth, and Zimmer holds no grant. Every session uses each
+        entry's own credential.
+      </div>
+    <% else %>
+      <div class="space-y-4">
+        <% @servers.each do |server| %>
+          <% grant = server[:grant] %>
+          <section class="rounded-lg border border-gray-200 bg-white overflow-hidden" data-authorization-server="<%= server[:origin] %>">
+            <div class="px-4 py-3 border-b border-gray-200 flex flex-wrap items-center gap-2 justify-between">
+              <h2 class="font-mono text-sm text-gray-900 break-all"><%= server[:origin] %></h2>
+              <% if grant&.active? %>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Connected</span>
+              <% elsif grant %>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Needs consent again</span>
+              <% else %>
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">Not connected</span>
+              <% end %>
+            </div>
+
+            <div class="px-4 py-3 text-sm text-gray-700 space-y-2">
+              <% if grant %>
+                <p>
+                  Consented <%= grant.consented_at ? "#{time_ago_in_words(grant.consented_at)} ago" : "at an unknown time" %>;
+                  last renewed <%= grant.last_refreshed_at ? "#{time_ago_in_words(grant.last_refreshed_at)} ago" : "never" %>.
+                  Scope: <span class="font-mono text-xs break-all"><%= grant.scope.presence || "not reported" %></span>.
+                </p>
+                <% if grant.last_error.present? %>
+                  <p class="text-red-700 break-words">Last error: <%= grant.last_error %></p>
+                <% end %>
+                <p>
+                  Live tokens: <%= server[:live_session_tokens] %> for sessions, <%= server[:live_backend_tokens] %> for Zimmer itself.
+                  Revocations pending: <%= server[:pending_revocations] %><%= " (#{server[:failing_revocations]} retrying)" if server[:failing_revocations].positive? %>.
+                </p>
+                <% if server[:last_revoke_error].present? %>
+                  <p class="text-amber-700 break-words">Last revocation error: <%= server[:last_revoke_error] %>. It is retried until the token expires on its own.</p>
+                <% end %>
+              <% else %>
+                <p>No grant yet. Until a human connects it once, sessions run without the entries below.</p>
+              <% end %>
+
+              <% if server[:declarations].any? %>
+                <details>
+                  <summary class="cursor-pointer text-gray-600"><%= pluralize(server[:declarations].size, "opted-in entry") %></summary>
+                  <ul class="mt-2 space-y-1">
+                    <% server[:declarations].sort_by(&:server_name).each do |declaration| %>
+                      <li class="break-words"><span class="font-mono text-xs"><%= declaration.server_name %></span> <span class="text-gray-500 text-xs"><%= declaration.scopes.join(" ") %></span></li>
+                    <% end %>
+                  </ul>
+                </details>
+              <% end %>
+            </div>
+
+            <div class="px-4 py-3 bg-gray-50 border-t border-gray-200 flex flex-wrap gap-2">
+              <% if @identity_enabled %>
+                <%= button_to (grant ? "Reconnect" : "Connect"), connect_token_broker_path,
+                      params: { authorization_server: server[:origin] },
+                      class: "inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700" %>
+              <% end %>
+              <% if grant %>
+                <%= button_to "Disconnect", disconnect_token_broker_path, method: :delete,
+                      params: { authorization_server: server[:origin] },
+                      form: { data: { turbo_confirm: "Revoke the grant for #{server[:origin]}? Every session token minted under it stops working at once." } },
+                      class: "inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-white border border-gray-300 text-gray-700 hover:bg-gray-100" %>
+              <% end %>
+            </div>
+          </section>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+</div>

@@ -489,6 +489,10 @@ fresh signed JWT), `assertion_params(audience:)` (the two form fields), `owns_cl
 `hosted_client_id?(id)`. A signer is any `OauthClientIdentity::Signer` with `alg`, `public_key` and
 `sign(signing_input)`. `LocalKeySigner` and `GcpKmsSigner` are the two there are.
 
+The [session token broker](/auth/token-broker/) is built on it. It holds one parent grant per
+authorization server as this identity, and exchanges it for a short-lived child token per session
+turn.
+
 ## The credential key is a copy of Claude Code's private algorithm
 
 To make the agent's MCP client find the token, Zimmer must key it exactly the way Claude Code keys

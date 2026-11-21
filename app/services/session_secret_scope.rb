@@ -128,7 +128,7 @@ class SessionSecretScope
     def mcp_server_variables(session)
       server_names(session).flat_map do |name|
         server = ServersConfig.find(name)
-        server ? server.required_variables + server.optional_variables : []
+        server ? server.session_variables : []
       end
     rescue StandardError => e
       # A catalog that cannot resolve must not stop a session spawning. It fails

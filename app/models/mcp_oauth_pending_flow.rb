@@ -75,7 +75,11 @@ class McpOauthPendingFlow < ApplicationRecord
   # @param redirect_uri [String] The callback URI to use
   # @param mcp_server_config [Hash] Full MCP server config for credential key computation
   # @return [McpOauthPendingFlow] The created flow
-  def self.start!(session:, server_name:, server_url:, oauth_metadata:, redirect_uri:, mcp_server_config:)
+  # @param broker_authorization_server [String, nil] set for the token
+  #   broker's one-time consent (TokenBrokerController#connect): the flow then
+  #   completes into an McpBrokerGrant for that origin, not a per-entry
+  #   McpOauthCredential. See #broker_flow?.
+  def self.start!(session:, server_name:, server_url:, oauth_metadata:, redirect_uri:, mcp_server_config:, broker_authorization_server: nil)
     # Generate PKCE code verifier (43 characters from base64url alphabet)
     code_verifier = SecureRandom.urlsafe_base64(32).gsub(/=+$/, "")[0, 43]
 
@@ -95,8 +99,15 @@ class McpOauthPendingFlow < ApplicationRecord
       resource: oauth_metadata[:resource],
       manual: oauth_metadata[:manual] || false,
       mcp_server_config: mcp_server_config,
+      broker_authorization_server: broker_authorization_server,
       expires_at: EXPIRATION_DURATION.from_now
     )
+  end
+
+  # True for the token broker's consent: the code exchanges into the parent
+  # grant for `broker_authorization_server`, which only the backend holds.
+  def broker_flow?
+    broker_authorization_server.present?
   end
 
   # Returns true if this flow has expired
