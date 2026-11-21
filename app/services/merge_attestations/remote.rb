@@ -9,6 +9,13 @@ module MergeAttestations
   # Two calls, both served by the receiver's `merge_attestations` tool group:
   # TARGET_TOOL to learn which remote session holds a PR and its head commit,
   # SUBMIT_TOOL to hand over a signed approval. Both answer JSON.
+  #
+  # The name a tool is called by comes from the server's own listing, not from
+  # the constant. A gateway in front of the remote may namespace every tool as
+  # `<server>__<tool>` and refuse the bare name, so the listing is matched on
+  # the exact name or a `__<tool>` suffix. No match, or more than one, is
+  # refused rather than guessed: calling the wrong tool with a signed approval
+  # is the one mistake here worth stopping for.
   class Remote
     Unreachable = Class.new(StandardError)
 
@@ -59,7 +66,7 @@ module MergeAttestations
     private
 
     def call(tool, arguments)
-      text, error = catalog_server.call_tool(tool, arguments)
+      text, error = catalog_server.call_tool(resolved_name(tool), arguments)
       data = begin
         JSON.parse(text.to_s)
       rescue JSON::ParserError
@@ -70,6 +77,22 @@ module MergeAttestations
       data
     rescue LiveConversations::CatalogServer::Unavailable, McpApps::Client::Error => e
       raise Unreachable, "#{server_name} could not be reached: #{e.message.to_s.truncate(200)}"
+    end
+
+    # The name `tool` is listed under on this server.
+    def resolved_name(tool)
+      names = listed_names
+      return tool if names.include?(tool)
+
+      matches = names.select { |name| name.end_with?("__#{tool}") }
+      return matches.first if matches.one?
+
+      raise Unreachable, "#{server_name} lists #{matches.empty? ? "no #{tool} tool" : "more than one #{tool} tool (#{matches.first(5).join(', ')})"}; " \
+                         "it must expose the merge_attestations tool group"
+    end
+
+    def listed_names
+      @listed_names ||= catalog_server.list_tools.map { |listed| listed.name.to_s }
     end
 
     def catalog_server = (@catalog_server ||= LiveConversations::CatalogServer.find!(server_name))

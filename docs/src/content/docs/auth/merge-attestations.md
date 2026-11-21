@@ -124,7 +124,10 @@ Payload:
   (`remote-zimmer=https://remote.example.com`). The audience is pinned here, not taken from the
   remote's answer: a remote that calls itself anything else is refused, so it cannot obtain a token
   addressed to another deployment. Each server's catalog entry must reach the receiver's opt-in
-  `merge_attestations` tool group (`?tool_groups=…,merge_attestations`).
+  `merge_attestations` tool group (`?tool_groups=…,merge_attestations`). The issuer calls each tool by the name
+  the server lists it under: the exact name, or one ending in `__<tool>`, since a gateway may
+  namespace every tool as `<server>__<tool>` and refuse the bare name. No match, or more than one,
+  is refused rather than guessed.
 
 ## Verification, in order
 

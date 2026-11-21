@@ -116,6 +116,37 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
     assert_match(/\AREAD-BACK: /, again["output"], "nothing was authorized, so the question is asked again")
   end
 
+  test "behind a gateway that namespaces tools, the round trip calls the namespaced names" do
+    @remote = MergeAttestationHelpers::LoopbackRemote.new(prefix: "hans")
+    LiveConversations::CatalogServer.stubs(:find!).with("remote-zimmer").returns(@remote)
+    stub_github
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    prepare_and_say(conversation, phone)
+    say(conversation, phone, "user", "Yes.")
+
+    confirmed = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR, confirm: true })
+    assert_not confirmed["error"], confirmed["output"]
+    assert_equal "accepted", MergeAttestation.received.sole.outcome
+    assert_equal %w[hans__get_merge_attestation_target hans__submit_merge_attestation], @remote.calls.map(&:first).uniq.sort
+  end
+
+  test "a remote listing no receiving tool, or two that match, is refused before anyone is asked" do
+    stub_github
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    say(conversation, phone, "user", "Merge it.")
+
+    [ MergeAttestationHelpers::LoopbackRemote.new(prefix: "a", extra_tools: [ "b__get_merge_attestation_target" ]),
+      Class.new(MergeAttestationHelpers::LoopbackRemote) { def list_tools = [] }.new ].each do |remote|
+      LiveConversations::CatalogServer.stubs(:find!).with("remote-zimmer").returns(remote)
+      result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
+      assert result["error"], result["output"]
+      assert_match(/must expose the merge_attestations tool group/, result["output"])
+      assert_empty remote.calls, "nothing is called on a guess"
+    end
+  end
+
   test "a push between the question and the yes signs nothing" do
     stub_github
     conversation = create_live_conversation(mode: "voice")

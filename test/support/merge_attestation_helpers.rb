@@ -63,17 +63,32 @@ module MergeAttestationHelpers
   end
 
   # The other Zimmer, in process: answers the two receiving tools exactly as
-  # its MCP surface would, through the real tool classes.
+  # its MCP surface would, through the real tool classes. With a `prefix`, it
+  # behaves like a gateway that namespaces every tool as `<prefix>__<tool>`
+  # and refuses the bare name, as strad does.
   class LoopbackRemote
+    TOOLS = { MergeAttestations::TARGET_TOOL => Mcp::Tools::GetMergeAttestationTarget,
+              MergeAttestations::SUBMIT_TOOL => Mcp::Tools::SubmitMergeAttestation }.freeze
+
     attr_reader :calls
 
-    def initialize = @calls = []
+    def initialize(prefix: nil, extra_tools: [])
+      @calls = []
+      @prefix = prefix
+      @extra_tools = extra_tools
+    end
 
-    def call_tool(tool, arguments)
-      @calls << [ tool, arguments ]
-      klass = { MergeAttestations::TARGET_TOOL => Mcp::Tools::GetMergeAttestationTarget,
-                MergeAttestations::SUBMIT_TOOL => Mcp::Tools::SubmitMergeAttestation }.fetch(tool)
-      [ klass.new(context: Mcp::Context.new).call(arguments), false ]
+    def list_tools
+      names = TOOLS.keys.map { |tool| @prefix ? "#{@prefix}__#{tool}" : tool } + @extra_tools
+      names.map { |name| LiveConversations::CatalogServer::Tool.new(name, "", {}) }
+    end
+
+    def call_tool(name, arguments)
+      @calls << [ name, arguments ]
+      tool = @prefix ? name.delete_prefix("#{@prefix}__") : name
+      raise LiveConversations::CatalogServer::Unavailable, "#{name} is not namespaced as <server>__<tool>" if @prefix && tool == name
+
+      [ TOOLS.fetch(tool).new(context: Mcp::Context.new).call(arguments), false ]
     end
   end
 end
