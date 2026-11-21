@@ -51,11 +51,35 @@ module WebAuth
       end
     end
 
-    # What an authenticator app scans or opens to add the account.
+    # The name this deployment's entry carries in an authenticator app. It
+    # names the host, because every Zimmer is "Zimmer": someone signed in to
+    # two deployments would otherwise hold two identical-looking entries and
+    # read codes off the wrong one.
+    #
+    # @param host [String, nil] a hostname without a port, e.g. "zimmer.example.com"
+    # @return [String] e.g. "Zimmer (zimmer.example.com)", or "Zimmer" with no host
+    def issuer_for(host)
+      host = display_host(host)
+      host.empty? ? "Zimmer" : "Zimmer (#{host})"
+    end
+
+    # A hostname as the issuer shows it: lowercase, and with no colon, since a
+    # colon is what separates the issuer from the account in the label (an IPv6
+    # literal's colons become dots).
+    def display_host(host) = host.to_s.strip.downcase.delete("[]").tr(":", ".")
+
+    # The label an authenticator app shows for the entry: "issuer:account".
+    def label(account:, issuer:) = "#{issuer.to_s.delete(":")}:#{account}"
+
+    # What an authenticator app scans or opens to add the account. The label
+    # prefix and the `issuer` parameter carry the same text, both
+    # percent-encoded: a space as `%20` in both places, never `+` in the query,
+    # which some apps show literally and then treat as a different issuer.
     def provisioning_uri(secret, account:, issuer:)
-      label = ERB::Util.url_encode("#{issuer}:#{account}")
-      query = URI.encode_www_form(secret: secret, issuer: issuer, algorithm: "SHA1", digits: DIGITS, period: PERIOD)
-      "otpauth://totp/#{label}?#{query}"
+      issuer = issuer.to_s.delete(":")
+      params = { secret: secret, issuer: issuer, algorithm: "SHA1", digits: DIGITS, period: PERIOD }
+      query = params.map { |key, value| "#{key}=#{ERB::Util.url_encode(value.to_s)}" }.join("&")
+      "otpauth://totp/#{ERB::Util.url_encode(label(account: account, issuer: issuer))}?#{query}"
     end
 
     def base32_encode(bytes)

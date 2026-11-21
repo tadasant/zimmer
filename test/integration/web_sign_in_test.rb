@@ -481,6 +481,49 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_includes response.body, "ZIMMER_WEB_AUTH_SECOND_FACTOR must be one of totp, google"
   end
 
+  test "the setup page names this deployment's entry, by its configured base URL" do
+    enable_web_auth
+    AppUrl.stubs(:base_url).returns("https://hans.example.com")
+    sign_in_with_google
+    get second_factor_setup_path
+
+    link = css_select("a").map { |a| a["href"] }.find { |href| href.to_s.start_with?("otpauth://") }
+    assert link.start_with?("otpauth://totp/Zimmer%20%28hans.example.com%29%3A"), link
+    assert_includes link, "issuer=Zimmer%20%28hans.example.com%29&"
+    assert_select "[data-testid=totp-label]", text: /Zimmer \(hans\.example\.com\):/
+  end
+
+  test "a deployment with no base URL set names its entry by the host it was reached at" do
+    enable_web_auth
+    AppUrl.stubs(:base_url).returns(AppUrl::PLACEHOLDER_PROD_BASE_URL)
+    sign_in_with_google
+    get second_factor_setup_path
+
+    assert_select "a[href*=?]", "issuer=Zimmer%20%28www.example.com%29"
+  end
+
+  test "a base URL with no host falls back to the host the browser asked for" do
+    enable_web_auth
+    sign_in_with_google
+    [ "zimmer.example.com", "not a url" ].each do |base_url|
+      AppUrl.stubs(:base_url).returns(base_url)
+      get second_factor_setup_path
+      assert_select "a[href*=?]", "issuer=Zimmer%20%28www.example.com%29", { count: 1 }, "base URL #{base_url.inspect}"
+    end
+  end
+
+  test "a wrong code says to check it is this deployment's entry" do
+    enable_web_auth
+    AppUrl.stubs(:base_url).returns("https://hans.example.com")
+    sign_in_and_enroll
+    reset!
+
+    sign_in_with_google
+    post second_factor_path, params: { code: "000000" }
+    assert_response :unprocessable_entity
+    assert_includes response.body, "the entry you set up for this Zimmer (hans.example.com)"
+  end
+
   test "the setup page is not cacheable" do
     enable_web_auth
     sign_in_with_google
