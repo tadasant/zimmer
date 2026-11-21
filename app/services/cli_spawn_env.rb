@@ -20,6 +20,67 @@ module CliSpawnEnv
   # says otherwise. See #apply_test_parallelism for why this is Zimmer's business at all.
   DEFAULT_TEST_PARALLELISM = 2
 
+  # Zimmer's own secrets: what the deployment hands the Rails process, and what an agent
+  # session must never inherit from it. Every runtime and the warm process pool build
+  # their environment through #clear_inherited_env_vars, which unsets each of these.
+  #
+  # Sessions run inside the production worker container, so anything here that leaked
+  # would be one `env` away from a transcript, a PR, or a prompt-injected curl.
+  #
+  # test/services/cli_spawn_env_secret_scrub_test.rb reads every `env.secret` in
+  # config/deploy*.yml and fails until each name is either here or in
+  # INHERITED_SECRET_ENV_VARS — so a new deploy secret cannot reach sessions by default.
+  SCRUBBED_SECRET_ENV_VARS = {
+    "RAILS_MASTER_KEY" =>
+      "Decrypts the credentials mounted at /rails/config/credentials, mcp_secrets included. " \
+      "A session's own Rails app reads its own key from its own clone.",
+    "SECRET_KEY_BASE" =>
+      "Signs and encrypts Zimmer's cookies: holding it is forging a web sign-in.",
+    "API_KEYS" =>
+      "Every REST/MCP key this instance accepts. Sessions reach Zimmer through the key " \
+      "written into their MCP config, never through this list.",
+    "DATABASE_PASSWORD" =>
+      "The production database. Unset with the other DATABASE_* variables.",
+    "POSTGRES_PASSWORD" =>
+      "Staging's database password, mapped for its db accessory. Never needed by a session.",
+    "ZIMMER_OPERATOR_SSH_KEY" =>
+      "The operator SSH private key. A session gets the PATH of the key file " \
+      "(SSH_PRIVATE_KEY_PATH, apply_operator_ssh_key), never the material.",
+    "ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON" =>
+      "Reads every Parameter Store secret VALUE. Rails resolves ${VAR} with it and hands " \
+      "a session only the results its own MCP servers need.",
+    "ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON" =>
+      "Could rewrite or delete every Parameter Store secret. No deploy sets it; a process " \
+      "that somehow has one must not pass it on.",
+    "MERGE_ATTESTATION_SIGNING_KEY" =>
+      "Signs human merge approvals another Zimmer treats as a person's yes.",
+    "SENTRY_DSN_BACKEND" =>
+      "The production GlitchTip DSN wired to #alerts: a clone's bin/rails would page it (#176).",
+    "OTEL_LOGS_EXPORTER_BEARER_TOKEN" =>
+      "Writes to the production log store as Zimmer.",
+    "OTEL_LOGS_EXPORTER_ENDPOINT" =>
+      "Where that token writes. Useless without it, and nothing in a session ships logs there.",
+    "ZIMMER_WEB_AUTH_GOOGLE_CLIENT_SECRET" =>
+      "Web sign-in's Google OAuth client secret.",
+    "X_OAUTH_CLIENT_SECRET" =>
+      "The X app's OAuth client secret. Sessions get minted X tokens, never the client.",
+    "SLACK_BOT_TOKEN" =>
+      "Zimmer's own Slack bot. SessionSecretScope writes it into the .env of a session " \
+      "that was given a Slack server, and that .env value still wins here."
+  }.freeze
+
+  # Secret-shaped deploy variables an agent session still inherits, and why. Each one is
+  # a deliberate decision with a reason, not an omission.
+  INHERITED_SECRET_ENV_VARS = {
+    "ZIMMER_PROD_API_KEY" =>
+      "Codex reads it from the environment: the AIR Codex adapter turns a catalog " \
+      "`X-API-Key: ${ZIMMER_PROD_API_KEY}` header into an env_http_headers forwarding " \
+      "rule, and CodexConfigTomlPostProcessor inlines it only when the encrypted " \
+      "mcp_secrets carry the name. Replaced by per-session tokens in a later step.",
+    "ZIMMER_STAGING_API_KEY" =>
+      "Staging's ZIMMER_PROD_API_KEY, for the same reason."
+  }.freeze
+
   private
 
   # Load environment variables from a .env file if present in working_dir.
@@ -78,32 +139,9 @@ module CliSpawnEnv
   #   database rather than a leaked variable.
   # - RAILS_ENV: Force child to determine its own environment
   #
-  # Secret material cleared:
-  # - ZIMMER_OPERATOR_SSH_KEY: the operator SSH private key (base64). The Rails
-  #   process needs it to write the key file; the agent needs only the PATH of that
-  #   file (SSH_PRIVATE_KEY_PATH, set in apply_operator_ssh_key below). Leaving the
-  #   material in the child's environment would put a root-on-every-host private key
-  #   one `env` away from a transcript.
-  # - ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: the Google Parameter Store
-  #   resolver credential (base64 key JSON). It reads secret VALUES — that is the
-  #   whole point of it, and why it is a separate GCP project from strad's. The Rails
-  #   process resolves `${VAR}` with it and injects the RESULTS a session's own MCP
-  #   servers need; the session itself never needs the key. Sessions run inside the
-  #   production worker container, so inheriting it would hand every agent a
-  #   credential for every production secret, one `env` away. That is the same
-  #   argument .kamal/secrets.staging makes for refusing staging this credential —
-  #   and it applies with more force here, because these sessions run ON production.
-  #   Its two non-secret companions (ZIMMER_PARAMS_PROJECT_ID / _LOCATION) are
-  #   deliberately left alone: an address is not a credential.
-  # - ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON: the same argument with more
-  #   force. The writer credential holds the write roles the resolver
-  #   deliberately does not (ParameterStore::Writer, used only by the
-  #   namespace-migration rake task). No deploy hands it to Zimmer, but a process
-  #   that somehow has it must not pass it on: an agent session holding it could
-  #   REWRITE or DELETE every production secret.
-  # - MERGE_ATTESTATION_SIGNING_KEY: the Ed25519 key MergeAttestations signs human
-  #   merge approvals with. Another Zimmer treats a token it signs as a person's
-  #   yes, so an agent holding it could approve its own pull requests there.
+  # Secret material cleared: every name in SCRUBBED_SECRET_ENV_VARS, each with its
+  # reason. The Parameter Store's two non-secret companions (ZIMMER_PARAMS_PROJECT_ID /
+  # _LOCATION) are deliberately left alone: an address is not a credential.
   #
   # Production telemetry cleared (issue #176):
   # - SENTRY_DSN_BACKEND: the write DSN of the *production* GlitchTip project, the
@@ -160,7 +198,6 @@ module CliSpawnEnv
       DATABASE_PORT
       DATABASE_NAME
       DATABASE_USERNAME
-      DATABASE_PASSWORD
       DATABASE_ADAPTER
       DATABASE_SSLMODE
       RAILS_ENV
@@ -179,12 +216,7 @@ module CliSpawnEnv
       RUBYLIB
       RUBYOPT
       RUBYGEMS_GEMDEPS
-      ZIMMER_OPERATOR_SSH_KEY
-      ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON
-      ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON
-      MERGE_ATTESTATION_SIGNING_KEY
-      SENTRY_DSN_BACKEND
-    ]
+    ] + SCRUBBED_SECRET_ENV_VARS.keys
 
     # Set each inherited env var to nil to unset it in the child process
     # This allows the child to use its own configuration without inheritance

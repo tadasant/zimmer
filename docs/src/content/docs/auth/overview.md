@@ -83,9 +83,10 @@ With web sign-in off, "anyone who can reach the host" includes every agent sessi
 the production host, and the Rails app answers from inside a session's shell. Nothing in the app
 stops a session from reading the MCP and X tokens in `/supervisor`, minting or revoking an API key,
 or halting the job queues from `/health`. The same holds for every member of the tailnet. With it on,
-a session's `curl` meets `/login`, but the wall is not a boundary against a session: it runs as the
-same user as the app, can read `SECRET_KEY_BASE` and forge a sign-in cookie, and holds `API_KEYS`
-besides. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
+a session's `curl` meets `/login`, but the wall is not a boundary against a session. Zimmer no longer
+hands a session `SECRET_KEY_BASE` or `API_KEYS` in its environment, but the session runs as the same
+user as the app, so it can read both from the app's own process (`/proc/<pid>/environ`) and forge a
+sign-in cookie. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
 [the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
 :::
 
@@ -191,9 +192,10 @@ What it still isn't:
 
 `/settings/api_keys` (linked from Settings) lists every key by name, with where it came from, its
 fingerprint, and when it was last used. It marks the key this deployment gives its own agent
-sessions' Zimmer MCP servers, but that is not the only entry agents hold: `CliSpawnEnv` does not
-clear `API_KEYS`, so every session's environment carries all of them. Only a minted key is out of an
-agent's reach. From there you can:
+sessions' Zimmer MCP servers. `CliSpawnEnv` clears `API_KEYS` from every agent process, so a
+session's environment holds only that shared key (`ZIMMER_PROD_API_KEY`), not the whole list. The
+list is still one `/proc` read away, because sessions run as the app's Unix user. Only a minted key is
+out of an agent's reach. From there you can:
 
 - **Create** a named key, choosing what it opens: **Full API**, or **Quick Router only** for the
   browser extension. Copy it from the page, because it is not shown again.
@@ -381,7 +383,7 @@ provider would have rotated the single-use refresh token, and only then would th
 | --- | --- |
 | `API_KEYS` | REST API and MCP auth (comma-separated). Each entry gets a named row the first time it is used, and can be revoked on `/settings/api_keys`. Minted keys live only in the database. |
 | `APP_HOST` | The MCP OAuth **redirect URI**. Defaults to `localhost:3000`, and picks `http` iff the host string contains "localhost". |
-| `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`) |
+| `RAILS_MASTER_KEY` | Unlocks Rails credentials (`mcp_oauth_clients`, `mcp_secrets`). Cleared from every agent process, with the rest of `CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS` |
 | `X_OAUTH_CLIENT_ID` / `_SECRET` | X/Twitter token vending |
 | `X_OAUTH_REDIRECT_URI` | Where X sends the operator after consent, on both the consent request and the token exchange. Defaults to `http://localhost:8080/callback`, where nothing listens, so the operator pastes the redirect URL back into `/supervisor`. Set it to `https://<APP_HOST>/supervisor/x_oauth/callback` and the flow finishes on its own. Whatever you set must already be registered on the X app. See [X (Twitter) is minted from `/supervisor`](/auth/mcp-oauth/#x-twitter-is-minted-from-supervisor). |
 | `ANTHROPIC_API_KEY` | Local dev, when not using OAuth |
