@@ -1761,6 +1761,10 @@ A credential issued to the identity also keeps its refresh token in Zimmer: the 
 sign an assertion, so it gets the access token only. A session that outlives its access token waits
 for Zimmer's refresh, from the next spawn or the 30-minute cron. It does not refresh in place.
 
+The `/supervisor` panel masks MCP credential secrets, and a blank field there means "keep the stored
+value". So a refresh token or client secret cannot be *cleared* from the panel. Revoke the
+credential from the Connectors page instead.
+
 ### An elicitation URL is a session credential that sits on disk
 
 An MCP server raises and polls approval requests on `POST /api/v1/elicitations/session/<token>` and

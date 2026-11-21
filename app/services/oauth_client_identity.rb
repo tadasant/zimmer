@@ -80,6 +80,11 @@ module OauthClientIdentity
     return false unless opted_in?(value)
     return true if enabled?
 
+    # Once per server per process: the catalog is shared on purpose, so on a
+    # deployment without the identity this is a standing fact, not news.
+    @warned ||= Concurrent::Set.new
+    return false unless @warned.add?(server_name.to_s)
+
     Rails.logger.warn(
       "[OauthClientIdentity] #{server_name || 'a server'} opts into Zimmer's OAuth client identity, " \
       "but #{BASE_URL_ENV} or a signing key is not configured here; using the default client identity"

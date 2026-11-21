@@ -51,6 +51,7 @@ class WebSignInRouteAuditTest < ActionDispatch::IntegrationTest
     "action_mailbox/" => "Action Mailbox is drawn but unused: no action_mailbox_* tables, and every ingress demands its own password",
     "rails/conductor/" => "Action Mailbox's conductor refuses every request outside development",
     "merge_attestation_keys" => "this Zimmer's PUBLIC signing key for cross-deployment merge approvals, as a JWKS; a public key is not a secret, and receivers pin it rather than fetch it, so answering it trusts nobody",
+    "oauth_client_identity" => "Zimmer's OAuth CLIENT identity toward MCP servers (OauthClientIdentity): its Client ID Metadata Document and the PUBLIC keys its private_key_jwt assertions verify against. An authorization server fetches both without credentials; neither carries a secret, and both are 404 until configured",
     "native_access_handoffs" => "the iOS app's edge handoff: hands back only the Cloudflare Access assertion the request already carries, after verifying it (signature, iss, exp, required aud); 403 without one, and every API call still needs Zimmer's own OAuth token"
   }.freeze
 

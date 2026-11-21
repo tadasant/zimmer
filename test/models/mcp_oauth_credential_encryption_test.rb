@@ -4,8 +4,7 @@ require "test_helper"
 
 # The expand phase of encrypting MCP OAuth credentials at rest: every secret is
 # written to its plaintext column and to an encrypted twin, reads take the
-# plaintext first and fall back to the twin, and a legacy row (plaintext only)
-# reads exactly as before.
+# plaintext only, and a legacy row (plaintext only) reads exactly as before.
 class McpOauthCredentialEncryptionTest < ActiveSupport::TestCase
   def raw(credential, column)
     McpOauthCredential.connection.select_value(
@@ -40,15 +39,12 @@ class McpOauthCredentialEncryptionTest < ActiveSupport::TestCase
     assert_equal "test-access-token-12345", credential.access_token
   end
 
-  test "a row whose plaintext is gone reads its encrypted twin (the contract phase, reverted)" do
+  test "a NULL plaintext reads as NULL even when its twin still holds a value" do
     credential = mcp_oauth_credentials(:notion)
-    credential.update!(access_token: "at-1", refresh_token: "rt-1")
-    McpOauthCredential.where(id: credential.id).update_all(access_token: nil, refresh_token: nil)
+    credential.update!(refresh_token: "rt-revoked")
+    credential.update_column(:refresh_token, nil)
 
-    credential.reload
-    assert_equal "at-1", credential.access_token
-    assert_equal "rt-1", credential.refresh_token
-    assert credential.valid?
+    assert_nil credential.reload.refresh_token, "a secret cleared outside the writers must stay cleared"
   end
 
   test "any save of a legacy row fills the twins it is missing" do

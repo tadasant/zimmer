@@ -4,7 +4,7 @@
 #
 # Adds an Active Record–encrypted twin of each secret column. From this deploy
 # McpOauthCredential writes every secret to both its plaintext column and its
-# encrypted twin, and reads the plaintext column first, so:
+# encrypted twin, and reads only the plaintext column, so:
 #
 # - the old containers still serving during the cutover read and write exactly
 #   what they always did;

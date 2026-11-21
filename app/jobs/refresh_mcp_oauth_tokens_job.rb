@@ -57,11 +57,17 @@ class RefreshMcpOauthTokensJob < ApplicationJob
   # Network errors where the request never reached the token endpoint (the
   # connection was never established), so the refresh token was definitely NOT
   # consumed. Safe to retry: the provider issued nothing and our token is intact.
+  #
+  # OauthClientIdentity::Unavailable belongs here for the same reason: a
+  # credential on Zimmer's hosted client identity signs its assertion (in KMS)
+  # BEFORE anything is posted, so a signer that is briefly unreachable has sent
+  # nothing. It retries on the same ladder and pages only once retrying is spent.
   RETRYABLE_REFRESH_ERRORS = [
     Net::OpenTimeout,
     Errno::ECONNREFUSED,
     Errno::EHOSTUNREACH,
-    SocketError
+    SocketError,
+    OauthClientIdentity::Unavailable
   ].freeze
 
   # Network errors that strike after the request may already have been

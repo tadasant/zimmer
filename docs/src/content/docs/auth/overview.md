@@ -303,12 +303,15 @@ plumbing works today.
 :::danger[Encryption at rest has started, and the plaintext is still there]
 `McpOauthCredential` is the one model with `encrypts`. Each of `access_token`, `refresh_token` and
 `client_secret` has an encrypted twin (`<column>_ciphertext`). Every write goes to both, every read
-takes the plaintext column and falls back to the twin only when the plaintext is `NULL`, and the
-`EncryptMcpOauthCredentialSecrets` post-deploy task filled the twins for rows that predate them.
-That is the **expand** half of the rollout. The plaintext columns are still written, so for now the
-twins add a copy rather than take one away. The **contract** half will stop writing plaintext, `NULL`
-it out from a post-deploy task, and later drop the columns. It is a later deploy, so that a revert at
-any step leaves every row readable.
+takes the plaintext column only, and the `EncryptMcpOauthCredentialSecrets` post-deploy task filled
+the twins for rows that predate them. That is the **expand** half of the rollout. The plaintext
+columns are still written, so for now the twins add a copy rather than take one away.
+
+The **contract** half is two later deploys. The first re-mirrors every row and switches reads to
+the twin while still writing both. Re-mirroring is needed because the expand task only fills
+*missing* twins, and an old container or a reverted deploy can leave a twin stale. The second stops
+writing plaintext and `NULL`s it out. The columns are dropped after that. A revert at any step lands
+on code that reads every row correctly.
 
 The keys come from `config/initializers/active_record_encryption.rb`: an `active_record_encryption`
 block in Rails credentials if there is one, otherwise three keys derived from `secret_key_base`.

@@ -379,6 +379,33 @@ class RefreshMcpOauthTokensJobTest < ActiveJob::TestCase
     assert credential.can_refresh?
   end
 
+  # A credential on Zimmer's hosted client identity signs its assertion before
+  # anything is posted, so a signer outage (KMS unreachable) has spent nothing:
+  # it retries at info, like a connection that never opened, and never posts.
+  test "a signer outage on a hosted-identity credential retries at info and posts nothing" do
+    credential = mcp_oauth_credentials(:expiring_soon)
+    disable_other_refreshable_credentials!(credential)
+
+    with_oauth_client_identity do
+      credential.update!(client_id: OauthClientIdentity.client_id)
+      # Past PROACTIVE_REFRESH_MIN_INTERVAL, so the throttle does not skip it.
+      credential.update_column(:updated_at, 5.hours.ago)
+      log_output = capture_rails_logs do
+        assert_enqueued_with(job: RefreshMcpOauthTokensJob) do
+          OauthClientIdentity.stub(:assertion_params, ->(**) { raise OauthClientIdentity::Unavailable, "KMS could not be reached" }) do
+            stub_token_post(->(*) { flunk "nothing may be posted without an assertion" }) do
+              RefreshMcpOauthTokensJob.perform_now
+            end
+          end
+        end
+      end
+
+      assert_includes log_output, "(will retry)"
+      assert_not_includes log_output, "ERROR"
+      assert credential.reload.can_refresh?
+    end
+  end
+
   test "ambiguous network error (response lost after send) is not retried and leaves the credential refreshable" do
     credential = mcp_oauth_credentials(:expiring_soon)
     disable_other_refreshable_credentials!(credential)

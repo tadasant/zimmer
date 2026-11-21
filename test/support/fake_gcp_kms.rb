@@ -19,7 +19,7 @@ class FakeGcpKms
   ACCESS_TOKEN = "fake-gcp-access-token"
 
   attr_reader :requests, :version_name
-  attr_accessor :algorithm, :refuse_sign
+  attr_accessor :algorithm, :refuse_sign, :corrupt_signature
 
   def self.start(...) = new(...).tap(&:start)
 
@@ -77,6 +77,7 @@ class FakeGcpKms
 
       digest = Base64.strict_decode64(JSON.parse(body).dig("digest", "sha256"))
       signature = @key.is_a?(OpenSSL::PKey::RSA) ? @key.sign_raw("SHA256", digest) : @key.dsa_sign_asn1(digest)
+      signature = signature.reverse if corrupt_signature
       [ 200, { signature: Base64.strict_encode64(signature), name: @version_name } ]
     else
       [ 404, { error: { code: 404 } } ]

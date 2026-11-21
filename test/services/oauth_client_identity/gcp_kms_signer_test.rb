@@ -69,6 +69,26 @@ class OauthClientIdentity::GcpKmsSignerTest < ActiveSupport::TestCase
     assert_match(/answered 403/, error.message)
   end
 
+  test "a signature that does not verify against the key is refused before it is used" do
+    @kms = FakeGcpKms.start(key: OpenSSL::PKey::RSA.new(2048))
+    @kms.corrupt_signature = true
+
+    error = assert_raises(OauthClientIdentity::Unavailable) do
+      OauthClientIdentity.client_assertion(audience: "https://as.example.com/token", env: env_for(@kms))
+    end
+    assert_match(/does not verify/, error.message)
+  end
+
+  test "a service-account credential that is set but unreadable says so" do
+    @kms = FakeGcpKms.start(key: OpenSSL::PKey::EC.generate("prime256v1"))
+    env = env_for(@kms).merge(OauthClientIdentity::KeySet::KMS_CREDENTIAL_ENV => "not-json")
+
+    error = assert_raises(OauthClientIdentity::Unavailable) do
+      OauthClientIdentity.client_assertion(audience: "https://as.example.com/token", env: env)
+    end
+    assert_match(/is not valid JSON/, error.message)
+  end
+
   test "a key algorithm that is not RS256 or ES256 is refused" do
     @kms = FakeGcpKms.start(key: OpenSSL::PKey::RSA.new(2048), algorithm: "RSA_SIGN_PSS_2048_SHA256")
 
