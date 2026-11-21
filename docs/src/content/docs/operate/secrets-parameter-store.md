@@ -40,6 +40,32 @@ it does not hold is **Missing configuration**, and a secret the store could not
 be asked about is **Secret store unreachable**. They are different words because
 they call for different actions.
 
+### Printing a provider never prints a value
+
+Every object that holds a secret prints as its class and a few safe fields:
+names, paths, counts. It never prints a value. That covers the chain and each
+of its links, the Parameter Store client, its service account, snapshot cache and
+snapshot, a `SecretsInterpolator` resolution, `SecretsLoader::Secret`, and the
+OAuth value objects (`ResolvedMcpCredential`, `PreregisteredOauthConfig::OAuthClient`,
+`McpOauthService::OAuthMetadata`). So `p`, `pp`, an exception message or a log line
+that names one of them is safe:
+
+```text
+#<SecretProviders::Env (values redacted)>
+#<ParameterStore::GcpClient::Snapshot names={"/zimmer/production/secrets/static/" => ["GH_TOKEN"]} (values redacted)>
+```
+
+Ruby's default `inspect` on `SecretProviders::Env` would print the whole
+process environment. The `RedactedInspect` module replaces `inspect`, `to_s`
+and `pretty_print`, and `as_json` on plain objects, and changes nothing that
+reads a value.
+ActiveRecord models get the same treatment from `filter_attributes`, which
+inherits the `filter_parameters` list and matches top-level column names. A
+column that holds tokens as nested JSON keys, like `claude_accounts.oauth_config`,
+is named in its model's `filter_attributes`. `test/services/redacted_inspect_test.rb`
+fails if a new `SecretProviders` class lacks the module, or if a
+credential-shaped column is missing from a model's filter.
+
 ## Not only MCP secrets: `GH_TOKEN`
 
 The chain exists for the `${VAR}` placeholders in MCP server configs, and that is still almost

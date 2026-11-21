@@ -83,6 +83,12 @@ class SecretsInterpolator
   # reporting the second as the first sends someone off to set a secret that is
   # already there.
   Resolution = Struct.new(:state, :source, :error, keyword_init: true) do
+    # `source` is a provider. Each provider redacts itself too; this keeps the
+    # resolution safe to print even if one does not.
+    include RedactedInspect
+
+    def redacted_inspect_fields = { state: state, source: source_badge, error: error&.class&.name }.compact
+
     def found? = state == :found
     def absent? = state == :absent
     def unavailable? = state == :unavailable

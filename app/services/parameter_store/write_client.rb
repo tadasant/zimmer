@@ -33,6 +33,9 @@ module ParameterStore
   # error bodies on these verbs can quote the payload, so neither is ever
   # interpolated into a message. Failures name the verb and the status.
   class WriteClient
+    # Holds the service account, and so its key.
+    include RedactedInspect
+
     PM_API_BASE = GcpClient::PM_API_BASE
     SM_API_BASE = GcpClient::SM_API_BASE
     CRM_API_BASE = GcpClient::CRM_API_BASE
@@ -46,6 +49,8 @@ module ParameterStore
     ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"
 
     attr_reader :project_id, :location
+
+    def redacted_inspect_fields = { project_id: project_id, location: location }
 
     def initialize(project_id:, account:, location: "global",
       pm_api_base: PM_API_BASE, sm_api_base: SM_API_BASE, crm_api_base: CRM_API_BASE,

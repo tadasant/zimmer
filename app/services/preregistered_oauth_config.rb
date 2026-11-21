@@ -38,8 +38,12 @@
 class PreregisteredOauthConfig
   # OAuth client configuration
   class OAuthClient
+    include RedactedInspect
+
     attr_reader :key, :client_id, :client_secret, :authorization_endpoint,
       :token_endpoint, :scopes, :redirect_uri, :resource
+
+    def redacted_inspect_fields = { key: key, client_id: client_id, token_endpoint: token_endpoint }
 
     def initialize(key:, client_id:, authorization_endpoint:, token_endpoint:,
       client_secret: nil, scopes: nil, redirect_uri: nil, manual: false, resource: nil)

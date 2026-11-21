@@ -25,10 +25,17 @@ module ParameterStore
   #     discards that refresh's result, so a write is never masked by a read that
   #     started before it.
   class SnapshotCache
+    # Holds every value it has loaded.
+    include RedactedInspect
+
     DEFAULT_TTL = 60.seconds
     FAILURE_BACKOFF = 5.seconds
 
-    Entry = Struct.new(:values, :fetched_at, :generation, :last_failure_at, keyword_init: true)
+    Entry = Struct.new(:values, :fetched_at, :generation, :last_failure_at, keyword_init: true) do
+      include RedactedInspect
+
+      def redacted_inspect_fields = { fetched_at: fetched_at, generation: generation }
+    end
 
     def initialize(ttl: DEFAULT_TTL, &loader)
       @ttl = ttl

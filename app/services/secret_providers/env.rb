@@ -4,6 +4,10 @@ module SecretProviders
   # The process environment. Last link in the chain, and the only one with no
   # durable home: a value here lives as long as the container does.
   class Env
+    # Holds the whole environment, so its default inspect would print every
+    # value in it.
+    include RedactedInspect
+
     LABEL = "the process environment"
 
   # Fixed badge string. strad's Secrets Console ships the same three labels

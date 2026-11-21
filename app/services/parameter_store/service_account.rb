@@ -20,6 +20,9 @@ module ParameterStore
     # when the clock crosses does not 401.
     EXPIRY_SKEW = 60
 
+    # Holds the private key and the minted access token.
+    include RedactedInspect
+
     attr_reader :client_email
 
     # Parse key JSON into an account, reporting failures by SHAPE only.
@@ -95,6 +98,8 @@ module ParameterStore
       nil
     end
     private_class_method :decode_base64
+
+    def redacted_inspect_fields = { client_email: client_email }
 
     def initialize(client_email:, private_key:, token_url: TOKEN_URL, http: nil)
       @client_email = client_email

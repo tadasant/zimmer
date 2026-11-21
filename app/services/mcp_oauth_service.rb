@@ -51,7 +51,12 @@ class McpOauthService
     :client_secret,
     :resource,
     keyword_init: true
-  )
+  ) do
+    # Carries the client secret.
+    include RedactedInspect
+
+    def redacted_inspect_fields = { client_id: client_id, token_endpoint: token_endpoint }
+  end
 
   # Checks if an MCP server requires OAuth authentication.
   # Probes the server with a request and checks for 401 with OAuth metadata.
