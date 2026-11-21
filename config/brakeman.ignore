@@ -97,6 +97,29 @@
         601
       ],
       "note": "False positive: the redirect target is always XOauthCredential::AUTHORIZE_ENDPOINT (https://x.com/i/oauth2/authorize), built by XOauthBootstrap.authorize_url. The request params only become the account_key / access_token_env_var stored on the pending flow; they never reach the URL's scheme, host or path."
+    },
+    {
+      "check_name": "Redirect",
+      "code": "redirect_to(McpOauthPendingFlow.start!(:session => nil, :server_name => (\"token-broker #{TokenBroker.normalize_origin(params[:authorization_server])}\"), :server_url => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first, :oauth_metadata => ({ :authorization_endpoint => TokenBroker::Client.new.discover(TokenBroker.normalize_origin(params[:authorization_server])).authorization_endpoint, :token_endpoint => TokenBroker::Client.new.discover(TokenBroker.normalize_origin(params[:authorization_server])).token_endpoint, :client_id => OauthClientIdentity.client_id, :client_secret => nil, :scopes => \"mcp\", :resource => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first, :manual => McpOauthService.new.manual_completion_required?(OauthClientIdentity.redirect_uri) }), :redirect_uri => OauthClientIdentity.redirect_uri, :mcp_server_config => ({ \"type\" => \"streamable-http\", \"url\" => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first }), :broker_authorization_server => TokenBroker.normalize_origin(params[:authorization_server])).authorization_url, :allow_other_host => true)",
+      "confidence": "Weak",
+      "cwe_id": [
+        601
+      ],
+      "file": "app/controllers/token_broker_controller.rb",
+      "fingerprint": "5e83f89763a9cfa13616420b760951e4455682112a0d601891d8b6e1e08b9fdb",
+      "line": 98,
+      "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
+      "location": {
+        "type": "method",
+        "class": "TokenBrokerController",
+        "method": "connect"
+      },
+      "message": "Possible unprotected redirect",
+      "render_path": null,
+      "user_input": "McpOauthPendingFlow.start!(:session => nil, :server_name => (\"token-broker #{TokenBroker.normalize_origin(params[:authorization_server])}\"), :server_url => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first, :oauth_metadata => ({ :authorization_endpoint => TokenBroker::Client.new.discover(TokenBroker.normalize_origin(params[:authorization_server])).authorization_endpoint, :token_endpoint => TokenBroker::Client.new.discover(TokenBroker.normalize_origin(params[:authorization_server])).token_endpoint, :client_id => OauthClientIdentity.client_id, :client_secret => nil, :scopes => \"mcp\", :resource => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first, :manual => McpOauthService.new.manual_completion_required?(OauthClientIdentity.redirect_uri) }), :redirect_uri => OauthClientIdentity.redirect_uri, :mcp_server_config => ({ \"type\" => \"streamable-http\", \"url\" => (TokenBroker.declarations_by_authorization_server.fetch(TokenBroker.normalize_origin(params[:authorization_server]), []).map(&:resource).uniq or [McpBrokerGrant.for_authorization_server(TokenBroker.normalize_origin(params[:authorization_server])).resource]).first }), :broker_authorization_server => TokenBroker.normalize_origin(params[:authorization_server])).authorization_url",
+      "warning_code": 18,
+      "warning_type": "Redirect",
+      "note": "The consent redirect goes to the authorization endpoint the authorization server's own RFC 8414 metadata names. The origin is not free input: TokenBrokerController#connect accepts only an authorization server a catalog entry opts into brokered auth on, or one Zimmer already holds a grant for, so a forged POST cannot steer discovery anywhere else. Same shape as McpOauthController#initiate's ignored redirect."
     }
   ],
   "updated": "2026-06-12 00:00:00 +0000"

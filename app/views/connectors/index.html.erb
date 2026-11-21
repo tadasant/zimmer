@@ -15,6 +15,10 @@
         Each status is checked on its own — the list renders first, the badges fill in without
         scrolling, and once they have, anything that needs attention moves to the top.
       </p>
+      <p class="mt-2 text-sm">
+        <%= link_to "Token broker", token_broker_path, class: "text-indigo-600 hover:text-indigo-800" %>
+        <span class="text-gray-500">: the grants behind entries that get a short-lived token per session turn.</span>
+      </p>
     </div>
 
     <%# Where a missing secret has to go. The store's absence is a normal state,
