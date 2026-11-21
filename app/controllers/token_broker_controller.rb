@@ -87,7 +87,11 @@ class TokenBrokerController < ApplicationController
         manual: oauth_service.manual_completion_required?(redirect_uri)
       },
       redirect_uri: redirect_uri,
-      mcp_server_config: { "type" => "streamable-http", "url" => resources.first },
+      # Carries what discovery found to the callback, so the grant records the
+      # revocation endpoint Connect checked rather than depending on a second
+      # discovery succeeding after consent.
+      mcp_server_config: { "type" => "streamable-http", "url" => resources.first,
+                           "issuer" => metadata.issuer, "revocation_endpoint" => metadata.revocation_endpoint },
       broker_authorization_server: origin
     )
 
@@ -103,24 +107,31 @@ class TokenBrokerController < ApplicationController
 
   # DELETE /token_broker/disconnect — revoke the parent grant at the
   # authorization server (which ends every child under it) and forget it.
+  #
+  # The grant is forgotten only once the authorization server confirms the
+  # revocation. Until then it stays, marked as needing consent so nothing
+  # mints from it, with every live child queued for revocation on its own:
+  # deleting the rows first would leave children nobody can revoke or redact.
   def disconnect
     grant = McpBrokerGrant.for_authorization_server(params[:authorization_server])
     return redirect_with_error("Zimmer holds no token broker grant for that server.") unless grant
 
     origin = grant.authorization_server
+    grant.brokered_tokens.live.find_each(&:request_revoke!)
     revoked = begin
       grant.refresh_token.present? && TokenBroker::Client.new.revoke(grant, grant.refresh_token, token_type_hint: "refresh_token")
     rescue TokenBroker::Client::Error, OauthClientIdentity::Unavailable => e
       Rails.logger.warn("[TokenBrokerController] revoking the grant for #{origin} failed: #{e.message}")
       false
     end
-    grant.destroy!
 
     if revoked
+      grant.destroy!
       flash[:notice] = "Disconnected #{origin}: the grant and every token minted under it are revoked."
     else
-      flash[:error] = "Forgot the grant for #{origin}, but #{origin} did not confirm revoking it. " \
-        "Revoke it on #{origin}'s own grants page; its child tokens end when it does, or when they expire."
+      grant.update!(status: "needs_consent", last_error: "a Disconnect was asked for, and #{origin} did not confirm revoking the grant")
+      flash[:error] = "#{origin} did not confirm revoking the grant, so Zimmer kept it, stopped minting from it, " \
+        "and is revoking its tokens one by one. Try Disconnect again, or revoke it on #{origin}'s own grants page."
     end
     redirect_to token_broker_path
   end

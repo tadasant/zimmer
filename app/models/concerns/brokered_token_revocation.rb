@@ -10,7 +10,9 @@
 # - `needs_input`, `failed` or `archived`, from any state — except
 #   `needs_input` reached by `block_on_elicitation`, where the process is alive
 #   and waiting on a human's approval, and comes back with `unblock`;
-# - `waiting` reached from `running` (a turn that went to sleep on a wake).
+# - `waiting` reached from `running` — a spot hold returning a turn to the
+#   queue, or a queued message handed straight to the next turn. (The `sleep`
+#   event itself starts from `needs_input`, which is already a rest.)
 #
 # `waiting` reached from anywhere else is not a rest: a turn mints its token
 # while the session is still `waiting` and only becomes `running` once its

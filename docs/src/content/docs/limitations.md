@@ -3395,10 +3395,15 @@ Four known edges:
   at most six hours, and nothing gives a running process a fresh one. Claude Code's `headersHelper`
   and the Pi adapter's `!command` headers could. Codex has no equivalent. See
   [Long turns](/auth/token-broker/#long-turns).
-- **A recovery that rests a session and then spawns more than 15 seconds later spawns with a
-  revoked token.** `TokenBrokerRevokeJob` re-checks the session before revoking, which covers the
-  usual seconds-long gap between a recovery's rest and its spawn, but not a longer one. That turn
-  runs without its brokered servers, and the next turn mints again.
+- **A process re-attached after a rest keeps a revoked token.** Every spawn mints, but
+  `resume_monitoring` re-attaches to a process that is still alive and runs no prepare. If the
+  session was moved to rest under that live process for more than the revoke job's 15-second delay,
+  its token was revoked and the process runs the rest of its turn without the brokered servers. The
+  next turn mints again.
+- **A rest that is not the last save in its transaction is caught only by the sweep.** The
+  revocation hook reads `saved_change_to_status?`, which reflects a transaction's last save. A rest
+  followed by another save of the same session in one transaction is revoked by
+  `TokenBrokerSweepJob` up to 20 minutes later, not 15 seconds later.
 - **A failed mint is visible to the agent only from its next prompt.** The degraded-server record
   is written during the prepare. The prompt for the turn being prepared may already have been
   built, so the first turn's agent learns the server is gone by not finding its tools.

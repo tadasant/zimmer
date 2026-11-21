@@ -56,15 +56,21 @@ class McpBrokerGrant < ApplicationRecord
   # previous grant's tokens in place (its children keep their rows; strad ends
   # them if the human revoked the old grant).
   #
+  # The issuer and revocation endpoint come from the discovery Connect did
+  # before the human consented (TokenBrokerController#connect, which refuses an
+  # authorization server with no revocation endpoint), carried on the pending
+  # flow's `mcp_server_config`. A re-consent never blanks a known endpoint.
+  #
   # @param pending_flow [McpOauthPendingFlow] a broker flow
   # @param tokens [Hash] McpOauthService#extract_tokens output
   # @return [McpBrokerGrant]
-  def self.store_consent!(pending_flow, tokens, revocation_endpoint:, issuer:)
+  def self.store_consent!(pending_flow, tokens)
+    discovered = pending_flow.mcp_server_config.is_a?(Hash) ? pending_flow.mcp_server_config : {}
     grant = find_or_initialize_by(authorization_server: pending_flow.broker_authorization_server)
     grant.update!(
-      issuer: issuer,
+      issuer: discovered["issuer"].presence || grant.issuer,
       token_endpoint: pending_flow.token_endpoint,
-      revocation_endpoint: revocation_endpoint,
+      revocation_endpoint: discovered["revocation_endpoint"].presence || grant.revocation_endpoint,
       resource: pending_flow.resource.presence || pending_flow.server_url,
       client_id: pending_flow.client_id,
       access_token: tokens["access_token"],
@@ -125,6 +131,23 @@ class McpBrokerGrant < ApplicationRecord
 
   private
 
+  # strad rotates the refresh token on every refresh, and treats a replay of
+  # the previous generation as theft — except inside its reuse grace (30 s by
+  # default), where it answers the current generation again for a response
+  # that was lost. So a refresh that may have reached strad and come back
+  # with no usable answer (a timeout, a 5xx) is retried once, at once, while
+  # the grace still covers it. Left for the next turn, the retry would replay
+  # an old generation outside the grace and end the grant.
+  def refresh_with_one_quick_retry(client)
+    client.refresh(self)
+  rescue TokenBroker::Client::GrantRejected
+    raise
+  rescue TokenBroker::Client::Error => e
+    raise unless e.transient?
+
+    client.refresh(self)
+  end
+
   # @return [String, nil] why the refresh failed, or nil when it succeeded
   def refresh_under_lock(client)
     if refresh_token.blank?
@@ -132,7 +155,7 @@ class McpBrokerGrant < ApplicationRecord
       return unusable_message
     end
 
-    result = client.refresh(self)
+    result = refresh_with_one_quick_retry(client)
     update!(
       access_token: result.access_token,
       refresh_token: result.refresh_token.presence || refresh_token,

@@ -1124,14 +1124,27 @@ module TranscriptRedactor
 
     def each_stored_token(&block)
       McpOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
-      # The token broker's parent grants and every child not yet past its
-      # expiry. Both are encrypted at rest, so they are read through the model,
-      # which decrypts; `pluck` on an encrypted column is not relied on.
-      McpBrokerGrant.find_each { |grant| [ grant.access_token, grant.refresh_token ].each(&block) }
-      McpBrokeredToken.where("expires_at > ?", 1.hour.ago).find_each { |row| block.call(row.token) }
       XOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
       ClaudeAccount.pluck(:oauth_config).each do |config|
         deep_sensitive_strings(config).each(&block)
+      end
+      each_brokered_token(&block)
+    end
+
+    # The token broker's parent grants, and every child that has not been
+    # expired for more than an hour. Encrypted at rest, so read through the
+    # model, which decrypts. Last, and per row: a row that cannot be decrypted
+    # costs that row, never the tokens of the sources above.
+    def each_brokered_token(&block)
+      McpBrokerGrant.find_each do |grant|
+        [ grant.access_token, grant.refresh_token ].each(&block)
+      rescue ActiveRecord::Encryption::Errors::Base
+        next
+      end
+      McpBrokeredToken.where("expires_at > ?", 1.hour.ago).find_each do |row|
+        block.call(row.token)
+      rescue ActiveRecord::Encryption::Errors::Base
+        next
       end
     end
 

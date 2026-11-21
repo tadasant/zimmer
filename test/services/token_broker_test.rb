@@ -311,4 +311,42 @@ class TokenBrokerTest < ActiveSupport::TestCase
       refute_includes grant.inspect, "strad_ort_secretvalue1234"
     end
   end
+
+  # --- review follow-ups ------------------------------------------------------
+
+  test "a refresh whose answer was lost is retried at once, inside strad's reuse grace" do
+    with_oauth_client_identity do
+      grant = @strad.create_grant!(access_token_expires_at: 1.minute.ago, refresh_token: "strad_ort_gen1")
+      calls = 0
+      original = @strad.method(:call)
+      @strad.define_singleton_method(:call) do |uri, request|
+        calls += 1 if uri.path == "/oauth/token" && request.body.to_s.include?("grant_type=refresh_token")
+        raise Timeout::Error if calls == 1 && request.body.to_s.include?("grant_type=refresh_token")
+
+        original.call(uri, request)
+      end
+
+      result = TokenBroker.mint_for_session(@session, %w[image-diff])
+
+      assert_equal 2, calls, "one lost answer, one immediate retry"
+      assert_empty result.failures
+      assert_match(/\Astrad_ort_rotated/, grant.reload.refresh_token)
+      assert_equal "active", grant.status
+    end
+  end
+
+  test "a child strad issued but Zimmer could not record is revoked, not handed out" do
+    with_oauth_client_identity do
+      @strad.create_grant!
+      McpBrokeredToken.any_instance.stubs(:save!).raises(ActiveRecord::RecordInvalid)
+      McpBrokeredToken.stubs(:create!).raises(ActiveRecord::RecordInvalid)
+      McpBrokerGrant.any_instance.stubs(:brokered_tokens).returns(stub(create!: nil, for_sessions: McpBrokeredToken.none).tap { |r| r.stubs(:create!).raises(ActiveRecord::RecordInvalid) })
+
+      result = TokenBroker.mint_for_session(@session, %w[image-diff])
+
+      assert_match(/could not be recorded.*revoked/, result.failures["image-diff"])
+      assert_equal 1, @strad.revoked.size
+      assert_match(/\Astrad_oat_child/, @strad.revoked.sole)
+    end
+  end
 end

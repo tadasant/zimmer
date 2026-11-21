@@ -186,15 +186,34 @@ module TokenBroker
 
     grant = usable_grant!(declaration.authorization_server, [ declaration ])
     scope = declaration.scopes.join(" ")
+    cached = ->(at) {
+      grant.brokered_tokens.for_backend.live.where(scope: scope)
+        .where("expires_at > ?", at + BACKEND_TOKEN_MIN_REMAINING).order(expires_at: :desc).first
+    }
+    hit = cached.call(now)
+    return hit.token if hit
 
-    cached = grant.brokered_tokens.for_backend.live.where(scope: scope)
-      .where("expires_at > ?", now + BACKEND_TOKEN_MIN_REMAINING).order(expires_at: :desc).first
-    return cached.token if cached
+    # Renew the parent first, outside the lock below: a refresh that fails
+    # records why on the grant, and a raise inside that lock's transaction
+    # would roll the record back.
+    begin
+      grant.access_token!(client: client)
+    rescue McpBrokerGrant::Unusable => e
+      raise MintError, e.message
+    end
 
-    row = exchange!(grant, scopes: declaration.scopes, label: BACKEND_LABEL, ttl: BACKEND_TOKEN_TTL,
-      purpose: "backend", session: nil, client: client)
-    grant.brokered_tokens.for_backend.live.where(scope: scope).where.not(id: row.id).find_each(&:request_revoke!)
-    row.token
+    # Serialized per grant, and the cache re-read under the lock, so two
+    # processes missing the cache at once do not each mint and then revoke
+    # the other's token.
+    grant.with_lock do
+      hit = cached.call(Time.current)
+      next hit.token if hit
+
+      row = exchange!(grant, scopes: declaration.scopes, label: BACKEND_LABEL, ttl: BACKEND_TOKEN_TTL,
+        purpose: "backend", session: nil, client: client)
+      grant.brokered_tokens.for_backend.live.where(scope: scope).where.not(id: row.id).find_each(&:request_revoke!)
+      row.token
+    end
   end
 
   # Revoke the children a session minted at or before `rested_at`. A child
@@ -287,11 +306,23 @@ module TokenBroker
     tokens = client.exchange(grant, subject_token: subject, scopes: scopes, label: label, expires_in: ttl.to_i)
     expires_in = tokens.expires_in.to_i.positive? ? tokens.expires_in.to_i : ttl.to_i
 
-    row = grant.brokered_tokens.create!(
-      purpose: purpose, session: session, label: label,
-      scope: tokens.scope.presence || scopes.join(" "),
-      token: tokens.access_token, expires_at: Time.current + expires_in.seconds
-    )
+    # Stored as asked for, which is what the backend cache looks up by; strad
+    # answers with the same set, sorted.
+    row = begin
+      grant.brokered_tokens.create!(
+        purpose: purpose, session: session, label: label, scope: scopes.join(" "),
+        token: tokens.access_token, expires_at: Time.current + expires_in.seconds
+      )
+    rescue StandardError => e
+      # strad issued a child that Zimmer could not record. Unrecorded, nothing
+      # could revoke or redact it, so it is revoked here, and not handed out.
+      begin
+        client.revoke(grant, tokens.access_token)
+      rescue Client::Error, OauthClientIdentity::Unavailable
+        nil
+      end
+      raise MintError, "a token was issued but could not be recorded (#{e.class}), so it was revoked"
+    end
     # The redactor rebuilds its known-value set on a timer; a token that is
     # about to be written into a session's config should be covered now. Its
     # `strad_oat_` shape is also a redaction pattern, as a second line.

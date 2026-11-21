@@ -493,13 +493,7 @@ class McpOauthController < ApplicationController
       return
     end
 
-    metadata = begin
-      TokenBroker::Client.new.discover(origin)
-    rescue TokenBroker::Client::Error
-      nil
-    end
-    McpBrokerGrant.store_consent!(pending_flow, tokens,
-      revocation_endpoint: metadata&.revocation_endpoint, issuer: metadata&.issuer)
+    McpBrokerGrant.store_consent!(pending_flow, tokens)
     pending_flow.destroy
 
     Rails.logger.info "[McpOauthController] Token broker grant stored for #{origin}"

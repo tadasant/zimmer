@@ -274,7 +274,8 @@ for the iOS app, which reads the victim off `GET /sessions/:id`'s `waiting.banne
 A session with an MCP entry on the [token broker](/auth/token-broker/) holds a child token for the
 length of one turn. `BrokeredTokenRevocation`, an `after_commit` on the status column, enqueues
 `TokenBrokerRevokeJob` whenever a turn comes to rest. That is any move to `needs_input`, `failed` or
-`archived`, and a move to `waiting` from `running`. Two moves are excluded:
+`archived`, and a move to `waiting` from `running` (a spot hold returning a turn to the queue, or a
+queued message handed straight to the next turn). Two moves are excluded:
 
 - `block_on_elicitation` (`running → needs_input`). The agent process is alive, waiting on a
   human's approval, and `unblock_from_elicitation` hands it back. Revoking there would cut the turn's

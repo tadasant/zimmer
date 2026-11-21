@@ -48,6 +48,9 @@ because AIR's Claude adapter copies `oauth` into the runtime's `.mcp.json`, whic
 Code an OAuth configuration for a server Zimmer authenticates itself. A malformed declaration is
 still an opt-in: the entry fails visibly instead of falling back.
 
+Only the `Authorization` header is replaced. A static credential in any other header stays on the
+entry, so a brokered entry should carry its credential in `Authorization` alone.
+
 The entry may keep its static header while it is cut over. Zimmer never uses it for a brokered
 entry: the prepare step deletes it before secrets are resolved, the variable it names leaves the
 session's [secret scope](/sessions/spawning/), and the OAuth injector skips the entry. Removing it
@@ -79,8 +82,11 @@ strad needs this client entry (tadasant/strad#537), plus `grants.enabled: true`:
     maxChildTokenTtlSeconds: 21600
 ```
 
-**Disconnect** revokes the grant's refresh token at the authorization server, which ends every
-child under it, then forgets the grant.
+**Disconnect** queues every live child for revocation, then revokes the grant's refresh token at
+the authorization server, which ends every child under it, and forgets the grant. If the
+authorization server does not confirm, Zimmer keeps the grant, marks it as needing consent so
+nothing mints from it, and keeps revoking its children one by one. Deleting the rows would leave
+children nobody can revoke.
 
 ## Lifecycle
 
@@ -111,7 +117,8 @@ sequenceDiagram
   clone-only job write a config with the brokered entry absent, because no turn is starting. The
   previous turn's child is superseded and revoked.
 - **Revoke at rest.** `BrokeredTokenRevocation` enqueues `TokenBrokerRevokeJob` on every rest:
-  `needs_input`, `failed` or `archived` from any state, and `waiting` from `running`. Two
+  `needs_input`, `failed` or `archived` from any state, and `waiting` from `running` (a spot hold
+  returning a turn to the queue, or a queued message handed straight to the next turn). Two
   transitions are not a rest. `needs_input` reached by an elicitation block leaves the process
   alive. `waiting` from anywhere but `running` is the moment before a turn spawns. The job runs 15
   seconds later and re-checks the session first. It revokes only children minted at or before the
@@ -123,7 +130,11 @@ sequenceDiagram
   working when it expires, which is the designed fallback.
 - **Parent refresh** runs under a row lock and re-reads the row after taking it. strad rotates the
   refresh token on every refresh and treats a replayed generation as theft, so two processes must
-  never refresh at once.
+  never refresh at once. A refresh that times out or gets a 5xx may still have rotated the token,
+  so it is retried once, straight away, while strad's 30-second reuse grace still answers the
+  previous generation.
+- **Backend children** are minted under the same lock, with the cache re-read after taking it, so
+  two processes that miss the cache together do not each mint and revoke the other's.
 
 ## When minting fails
 
@@ -166,14 +177,16 @@ endpoint unresolvable, with the cause, the same way a missing `${VAR}` does.
 - Every secret column is Active Record–encrypted from its first write, with no plaintext column:
   `mcp_broker_grants.access_token` / `refresh_token` and `mcp_brokered_tokens.token`. Encrypted
   attributes are filtered from `inspect`.
-- `TranscriptRedactor` adds the grants and every child minted in the last hour to its known-value
-  set. The process that mints a child drops its cached set at once, and every other process picks
+- `TranscriptRedactor` adds the grants, and every child that has not been expired for more than an
+  hour, to its known-value set. A row that cannot be decrypted costs that row, not the other
+  sources. The process that mints a child drops its cached set at once, and every other process picks
   the child up within the set's 60-second rebuild. It also redacts `strad_oat_…` and `strad_ort_…`
   by shape, which covers that window.
 - `token`, `subject_token` and `client_assertion` are filtered parameters. Error messages carry only
   the authorization server's `error` and `error_description`, never a response body.
-- Neither table has a `/supervisor` dashboard. `/token-broker` shows status, timestamps, counts and
-  the last error, never a token.
+- `/supervisor/mcp_broker_grants` and `/supervisor/mcp_brokered_tokens` are read-only, and show
+  each token as `MaskedSecretField` ("set (hidden)"). `/token-broker` shows status, timestamps,
+  counts and the last error, never a token.
 
 ## Long turns
 

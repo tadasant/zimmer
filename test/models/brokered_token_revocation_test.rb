@@ -39,7 +39,7 @@ class BrokeredTokenRevocationTest < ActiveSupport::TestCase
     end
   end
 
-  test "going to sleep from running is a rest; becoming waiting from elsewhere is not" do
+  test "running → waiting is a rest; needs_input → waiting (the sleep event) is not" do
     mint!
     @session.update!(status: :needs_input)
     clear_enqueued_jobs

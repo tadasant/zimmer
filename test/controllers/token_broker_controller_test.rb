@@ -155,4 +155,20 @@ class TokenBrokerControllerTest < ActionDispatch::IntegrationTest
       end
     end
   end
+
+  test "a disconnect strad does not confirm keeps the grant, stops minting, and queues every child" do
+    with_oauth_client_identity do
+      grant = @strad.create_grant!
+      TokenBroker.mint_for_session(sessions(:active_session), %w[image-diff])
+      @strad.revoke_failure = [ 503, { error: "temporarily_unavailable" } ]
+
+      delete disconnect_token_broker_path, params: { authorization_server: FakeStrad::ORIGIN }
+
+      assert_redirected_to token_broker_path
+      assert_match(/did not confirm/, flash[:error])
+      assert_equal "needs_consent", grant.reload.status
+      assert_equal %w[revoke_pending], McpBrokeredToken.pluck(:state).uniq
+      assert_match(/not usable/, TokenBroker.mint_for_session(sessions(:active_session), %w[image-diff]).failures["image-diff"])
+    end
+  end
 end
