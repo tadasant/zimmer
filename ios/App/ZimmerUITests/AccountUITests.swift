@@ -83,8 +83,11 @@ final class AccountUITests: XCTestCase {
         name.tap()
         name.typeText("phone\n")
 
-        // Return dismissed the keyboard and minted; the token sits above the field.
+        // Return dismissed the keyboard and minted; the token sits above the field. The mint
+        // answers asynchronously: until it has, the token is in no tree, and `reveal` would
+        // scroll blind, carrying the form away from where the token then appears.
         let token = app.staticTexts["account.key.token"]
+        XCTAssertTrue(token.waitForExistence(timeout: timeout), "the mint answered")
         reveal(app, token, above: true)
         let shown = token.label
         XCTAssertTrue(shown.hasPrefix("zmr_"), "the token, in the clear, this once: \(shown)")
@@ -100,11 +103,13 @@ final class AccountUITests: XCTestCase {
         // Leaving the screen is the last of the token; the key stays.
         goBack(app)
         reopenAccount(app)
-        XCTAssertFalse(app.staticTexts["account.key.token"].exists)
         let rowAgain = app.descendants(matching: .any)["account.key.3"]
         reveal(app, rowAgain)
         XCTAssertTrue(rowAgain.label.contains("phone"))
         XCTAssertFalse(rowAgain.label.contains(shown))
+        // Down at the form, where the token sat: off screen, its row would be in no tree either way.
+        reveal(app, app.textFields["account.key.new.name"])
+        XCTAssertFalse(app.staticTexts["account.key.token"].exists)
     }
 
     func test_revoking_a_key_keeps_its_row_and_restore_undoes_it() throws {
