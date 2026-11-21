@@ -452,7 +452,7 @@ What that mode does not need is the point of it:
 | Cost | an agent turn | one small-model completion |
 | Reach | the real conversation, its tools, its clone | the rendered transcript tail only |
 
-It is reached from four places a fork is known not to be able to deliver, and one where it could deliver and must not be stood up anyway:
+It is reached from five places a fork is known not to be able to deliver, and one where it could deliver and must not be stood up anyway:
 
 - **The repair sweep during an auth outage.** A runtime with no available account switches to this
   path rather than standing down, admitted by the
@@ -461,7 +461,15 @@ It is reached from four places a fork is known not to be able to deliver, and on
   while the pool was empty, enqueues a headless retry for its source session immediately rather than
   leaving it to a sweep that would re-fork into the same empty pool. A fork that died of something
   else while the pool was healthy is deliberately *not* downgraded — re-forking is the right repair
-  there, and stamping a terser blurb as current would stop the sweep ever trying again.
+  there, and stamping a terser blurb as current would stop the sweep ever trying again. The
+  exception is a fork the API refused for a replayed tool name (`failure_reason: invalid_tool_name`).
+  The next fork replays the same transcript, so a re-fork would most plausibly get the same 400
+  ([#1603](https://github.com/tadasant/zimmer/issues/1603)).
+- **An automatic generation after a replay rejection.** While the record's last failure is that
+  rejection (`SessionStatusSummary#replay_rejected?`), unforced generations — the sweep, every
+  `pause` — take this path instead of standing up another fork. Before this, the sweep and each pause
+  of session 29423 stood up a fork that failed the same way, and each one paged. A forced
+  Regenerate still forks.
 - **Any generation at all, forced included, when the pool has nothing to fork on.** The generator
   re-checks the pool itself rather than trusting the caller, because the three forced surfaces — the
   panel's **Regenerate** button, `POST /api/v1/sessions/:id/regenerate_status_summary`, and the MCP
@@ -523,7 +531,7 @@ A headless run blocks a worker thread on a subprocess for up to `HEADLESS_TIMEOU
 remain queued once until a lane worker is free, while maintenance on `default` keeps moving.
 
 The queue placement is unconditional. The caller does not decide whether a generation blocks — the
-generator does, on `headless || pool_exhausted? || fork_would_be_refused?` — so a generation enqueued
+generator does, on `headless || replay_rejected || pool_exhausted? || fork_would_be_refused?` — so a generation enqueued
 as a fork by a `pause` transition can become a blocking subprocess the moment the pool runs dry or
 the fleet fills.
 Two properties keep it honest:

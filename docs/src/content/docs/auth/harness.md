@@ -1170,6 +1170,27 @@ The first one, on 2026-09-20, refused Zimmer's own PR-merged notification to pro
 ([#1217](https://github.com/tadasant/zimmer/issues/1217)). The page was right — the wording was
 unknown — and this is the classifier it asked for.
 
+### An invalid replayed tool name fails on purpose, and does not page
+
+The API rejects a request whose tools include a name outside `^[a-zA-Z0-9_-]{1,128}$`:
+
+```text
+API Error: 400 tools.20.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'
+```
+
+The name comes out of the transcript the turn resumed from, so a resume sends it again and gets the
+same 400. `ApiErrorRetryService::INVALID_TOOL_NAME_PATTERNS` recognises the wording, so it is never
+retried and never pages as unknown. `ProcessLifecycleManager#handle_invalid_tool_name_rejection`
+fails the session at once under `failure_reason: invalid_tool_name` and logs a warning, not an error.
+
+The one cause seen so far was a redaction marker inside an MCP tool name, in the stored transcript
+that status-summary forks of session 29423 replayed. Three forks paged `#alerts`
+([#1603](https://github.com/tadasant/zimmer/issues/1603)). That cause is fixed at both ends: the
+redactor no longer takes configuration words, and every path that writes a stored transcript back
+to disk repairs marker-bearing tool names
+([Writing a transcript back to disk](/sessions/transcripts/#writing-a-transcript-back-to-disk)).
+If failures keep arriving in the `invalid_tool_name` bucket, the cause is a new one.
+
 ### The recovery decision tree
 
 Everything below runs under a pool-wide advisory lock (`ClaudeAccount.with_pool_lock`, namespace

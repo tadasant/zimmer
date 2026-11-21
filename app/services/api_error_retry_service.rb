@@ -49,6 +49,11 @@ require "automated_prompts"
 #   no error type at all — and it belongs in the same transient category, because a
 #   fresh draw usually parses. See MALFORMED_TOOL_CALL_PATTERNS.
 #
+# Invalid tool names:
+#   A 400 on a tool name the conversation replays is a property of the
+#   transcript, not of the API, so a resume gets it again. Recognized and not
+#   retried, like a safeguards rejection. See INVALID_TOOL_NAME_PATTERNS.
+#
 # Safeguards rejections:
 #   Anthropic's safeguards refusing a request is a 400 on that exact request, and
 #   a resume sends the same request back. It is recognized here so it never pages
@@ -220,6 +225,23 @@ class ApiErrorRetryService
     %r{flagged.{0,200}anthropic\.com/legal/aup}im
   ].freeze
 
+  # The API refusing a tool NAME the conversation replays (#1603). Known
+  # production wording (Claude Code 2.1.x, status-summary forks of session
+  # 29423):
+  #
+  #   "API Error: 400 tools.20.custom.name: String should match pattern
+  #    '^[a-zA-Z0-9_-]{1,128}$'"
+  #
+  # The name comes out of the transcript the turn resumed from, so the request
+  # is a pure function of that file: a resume sends it again, byte for byte, and
+  # gets the same 400. It is NOT retryable. ProcessLifecycleManager fails the
+  # session at once, with no page, because the wording is known — the cause it
+  # had (a redaction marker inside a tool name) is repaired at every replay
+  # write by ReplayTranscriptToolNames.
+  INVALID_TOOL_NAME_PATTERNS = [
+    /tools\.\d+\.(?:custom\.)?name:? String should match pattern/i
+  ].freeze
+
   # The prompt a retry resumes with: the recovery nudge, naming what sent it.
   #
   # The bare nudge offers two readings, "carry on" and "you were done, wait",
@@ -297,6 +319,16 @@ class ApiErrorRetryService
     SAFEGUARDS_FLAGGED_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
   end
 
+  # Whether some error text is the API rejecting a replayed tool name (see
+  # INVALID_TOOL_NAME_PATTERNS). A class method for the same reason as
+  # .safeguards_flagged?.
+  #
+  # @param message_text [String] the message text from a transcript entry
+  # @return [Boolean] true if the request was rejected for an invalid tool name
+  def self.invalid_tool_name?(message_text)
+    INVALID_TOOL_NAME_PATTERNS.any? { |pattern| message_text.to_s.match?(pattern) }
+  end
+
   # Whether some error text is an edge/WAF block page rather than the API (see
   # EDGE_BLOCK_PATTERNS). A class method because AuthRecoveryService asks it
   # before it claims a "Failed to authenticate" entry as an auth failure.
@@ -320,6 +352,7 @@ class ApiErrorRetryService
     message_text = message_text.to_s
     return false if message_text.match?(ACCOUNT_QUOTA_LIMIT_PATTERN)
     return false if malformed_tool_call?(message_text) || safeguards_flagged?(message_text)
+    return false if invalid_tool_name?(message_text)
     return true if edge_block?(message_text)
     return true if RETRYABLE_ERROR_TYPES.include?(error_type)
 
@@ -719,6 +752,9 @@ class ApiErrorRetryService
     # Owned by ProcessLifecycleManager#handle_safeguards_rejection, which fails
     # the turn deliberately rather than retrying it.
     return true if self.class.safeguards_flagged?(message_text)
+    # Owned by ProcessLifecycleManager#handle_invalid_tool_name_rejection, for the
+    # same reason: a resume replays the same name.
+    return true if self.class.invalid_tool_name?(message_text)
 
     false
   end

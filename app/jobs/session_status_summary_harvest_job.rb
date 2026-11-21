@@ -100,7 +100,11 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
     # Enqueued rather than run inline so this job stays short, and only after
     # the record is committed as `failed`, so the retry claims a record no other
     # runner holds.
-    enqueue_headless_retry(source_id) if text.blank? && (parked || pool_exhausted?(fork.agent_runtime))
+    #
+    # A fork the API refused for a replayed tool name is the other case where a
+    # re-fork cannot deliver: the next fork replays the same transcript (#1603).
+    enqueue_headless_retry(source_id) if text.blank? &&
+      (parked || replay_rejected?(fork, failed) || pool_exhausted?(fork.agent_runtime))
   rescue StandardError => e
     Rails.logger.error "[SessionStatusSummaryHarvestJob] Failed to harvest fork #{fork_session_id}: #{e.message}"
     archive_fork(Session.find_by(id: fork_session_id))
@@ -140,6 +144,12 @@ class SessionStatusSummaryHarvestJob < ApplicationJob
 
       part["text"].presence
     end.join("\n\n")
+  end
+
+  # Whether the fork failed on the API rejecting a tool name it replayed. See
+  # ProcessLifecycleManager#handle_invalid_tool_name_rejection.
+  def replay_rejected?(fork, failed)
+    failed && fork.metadata&.dig("failure_reason") == "invalid_tool_name"
   end
 
   # The park this fork is sitting in, or nil if it is not parked.
