@@ -8,8 +8,8 @@ import ZimmerKit
 /// Three ways in, as the web UI has: the field pinned to the foot of the board
 /// (`QuickRouterBar`, the web's "What do you want to do?" box, with its own paperclip), a
 /// button in the corner of every other screen (`QuickRouterButton`, the web's bubble), and
-/// this sheet, which the button and the bar's sparkles open. The sheet is the web bubble's panel: the words, photos
-/// and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
+/// this sheet, which the button and the bar's sparkles open. The sheet is the web bubble's
+/// panel: the words, photos and files, and under *Advanced* the harness, the model and *Run as spot*. Opened from a
 /// session, the new one threads under it, and that session's page goes with the words as the
 /// bubble sends the page it was typed on. *Open the session when it starts* off is the
 /// bubble's plain *Submit*: the session starts and this screen stays.
@@ -30,8 +30,9 @@ struct QuickRouterView: View {
     @State private var threadUnderParent = true
     /// The web bubble's *Submit & Open* (on) or *Submit* (off).
     @State private var opensSession = true
-    /// The board's bar opened this sheet: the words and attachments go back to the bar when it
-    /// closes, emptied by a start. Held here, not read off `AppModel`, so another opening cannot change it.
+    /// The sheet opened on a draft — the board bar's, or a failed or edited start's: the words
+    /// and attachments go to the bar when it closes, emptied by a start. Held here, not read off
+    /// `AppModel`, so another opening cannot change it.
     @State private var openedFromBar = false
     /// A start succeeded. The sheet's `onDisappear` can run before or after `start()` returns,
     /// so this, not `isStarting` alone, is what keeps it from handing the words back.
@@ -279,15 +280,7 @@ struct QuickRouterBar: View {
         // and attachments after a Cancel. Read on appear too, for a hand-back made while the bar
         // stood aside.
         .onChange(of: app.quickRouterBarHandback) { _, _ in takeHandback() }
-        .onAppear {
-            takeHandback()
-            #if DEBUG
-            if app.fixtureBarAttachesFile {
-                app.fixtureBarAttachesFile = false
-                attach([MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8))], problems: [])
-            }
-            #endif
-        }
+        .onAppear { takeHandback() }
     }
 
     private var row: some View {
@@ -309,7 +302,7 @@ struct QuickRouterBar: View {
                 .accessibilityHint("Clears the words and puts the keyboard away")
                 .accessibilityIdentifier("quickrouter.bar.cancel")
             }
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
                 Button {
                     // Let go of the keyboard first: UIKit hands first responder back to the
                     // field that had it when a sheet closes, so a bar still focused here would

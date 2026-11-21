@@ -157,9 +157,6 @@ final class AppModel: ObservableObject {
     /// `-ZimmerFixtureAttachment`: the opened session's composer starts with a file attached,
     /// since a UI test cannot drive the system photo and file pickers.
     var fixtureAttachesFile = false
-    /// `-ZimmerFixtureQuickRouterAttachment`: the board's Quick Router bar starts with a file
-    /// attached, for the same reason.
-    var fixtureBarAttachesFile = false
     /// `-ZimmerFixtureOpenPrompt`: the opened session shows its first prompt's form, once.
     var fixtureOpensPrompt = false
     /// `-ZimmerFixtureCustomSnooze`: the opened session's custom snooze sheet starts open, so
@@ -325,7 +322,14 @@ final class AppModel: ObservableObject {
             openFixtureLiveThread(liveThread)
         }
         fixtureAttachesFile = arguments.contains("-ZimmerFixtureAttachment")
-        fixtureBarAttachesFile = arguments.contains("-ZimmerFixtureQuickRouterAttachment")
+        // `-ZimmerFixtureQuickRouterAttachment`: the board's Quick Router bar holds a file, for
+        // the same reason. Through the hand-back, which the bar takes whenever it is on screen,
+        // since it is already up by the time the fixture's screen is chosen.
+        if arguments.contains("-ZimmerFixtureQuickRouterAttachment") {
+            quickRouterBarHandback = QuickRouterDraft(prompt: "", attachments: [
+                MessageAttachment(filename: "deploy.log", mediaType: "text/plain", data: Data("failed at step 3\n".utf8)),
+            ])
+        }
         fixtureOpensPrompt = arguments.contains("-ZimmerFixtureOpenPrompt")
         fixtureOpensCustomSnooze = arguments.contains("-ZimmerFixtureCustomSnooze")
         fixtureOpensPanels = arguments.contains("-ZimmerFixtureOpenPanels")
@@ -1305,7 +1309,6 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// A session asked for and not yet answered with its id: what its page shows meanwhile.
 /// What the Quick Router holds before a start: the words and the photos and files with them,
 /// handed between the board's bar and the sheet.
 struct QuickRouterDraft: Equatable {
@@ -1313,6 +1316,7 @@ struct QuickRouterDraft: Equatable {
     var attachments: [MessageAttachment] = []
 }
 
+/// A session asked for and not yet answered with its id: what its page shows meanwhile.
 struct PendingStart: Equatable {
     enum State: Equatable {
         /// Asked of the server; no answer yet.

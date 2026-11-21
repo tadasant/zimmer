@@ -37,8 +37,12 @@ struct AttachMenu: View {
                 Image(systemName: "paperclip")
                     .font(.system(size: compact ? 16 : 18, weight: .medium))
                     .foregroundStyle(Theme.inkSoft)
-                    .frame(width: compact ? 26 : 36, height: compact ? 22 : 36)
+                    .frame(width: compact ? 24 : 36, height: compact ? 22 : 36)
+                    // Inside a one-line field the glyph is drawn small, but a thumb still gets
+                    // a 44-point target: the padding widens what takes the tap, not the layout.
+                    .padding(compact ? 10 : 0)
                     .contentShape(Rectangle())
+                    .padding(compact ? -10 : 0)
             }
             .accessibilityLabel("Attach")
             .accessibilityHint("Photos and files go with the words")

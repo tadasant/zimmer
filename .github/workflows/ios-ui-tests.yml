@@ -124,8 +124,7 @@ jobs:
     #                 LiveHandover ~330 (nine tests)                                ≈ 1400 s
     #   photos        Account 625, Waiting 62, Interaction 59, Decisions 58,
     #                 SessionList 47, BoardFilters 35, InAppLinks ~30,
-    #                 BoardStaysCurrent 23, QuickRouterAttachments ~60 (four
-    #                 tests; no green run yet)                                    ≈ 1000 s
+    #                 BoardStaysCurrent 23, QuickRouterAttachments ~60          ≈ 1000 s
     #                 + the photograph pass, some 90 screenshots at a six-second settle
     # A new class goes in whichever shard is lightest; test/config/ios_ui_test_shards_test.rb
     # fails the Linux `test-unit` job on a class that is in no shard or in two, so a class

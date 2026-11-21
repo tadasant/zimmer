@@ -19,10 +19,20 @@ final class QuickRouterAttachmentsUITests: XCTestCase {
         XCTAssertTrue(attach.waitForExistence(timeout: timeout), "the bar has its own paperclip")
         let field = app.descendants(matching: .any)["quickrouter.bar.field"]
         let start = app.buttons["quickrouter.bar.start"]
-        // Inside the field, before send, so it reads as part of what is being typed.
-        XCTAssertLessThan(field.frame.maxX, attach.frame.maxX, "the paperclip is at the field's end")
+        // After the field, before send, so it reads as part of what is being typed.
+        XCTAssertLessThanOrEqual(field.frame.maxX, attach.frame.minX, "the paperclip is at the field's end")
         XCTAssertLessThan(attach.frame.maxX, start.frame.minX, "send stays the trailing control")
         attachScreenshot(app, named: "quick-router-bar-paperclip")
+
+        // With the keyboard up the X joins the row; the empty field's placeholder still fits on
+        // one line, so the bar does not grow under the thumb that tapped it.
+        let restingHeight = field.frame.height
+        field.tap()
+        XCTAssertTrue(app.buttons["quickrouter.bar.cancel"].waitForExistence(timeout: timeout))
+        XCTAssertEqual(field.frame.height, restingHeight, accuracy: 2, "the focused, empty bar stays one line tall")
+        XCTAssertTrue(attach.exists, "the paperclip stays while the bar has the keyboard")
+        attachScreenshot(app, named: "quick-router-bar-paperclip-focused")
+        app.buttons["quickrouter.bar.cancel"].tap()
 
         attach.tap()
         XCTAssertTrue(app.buttons["Photo Library"].firstMatch.waitForExistence(timeout: timeout))
@@ -69,9 +79,12 @@ final class QuickRouterAttachmentsUITests: XCTestCase {
         XCTAssertTrue(sheetChip.waitForExistence(timeout: timeout), "the sheet opens with the bar's attachment")
         attachScreenshot(app, named: "quick-router-sheet-with-bar-attachment")
 
-        app.navigationBars["Quick Router"].buttons["Cancel"].tap()
+        // What the sheet does to them is what the bar gets back: removed there, gone here.
+        app.buttons["composer.attachment.remove.deploy.log"].tap()
         XCTAssertTrue(waitForDisappearance(sheetChip))
-        XCTAssertTrue(barChip.waitForExistence(timeout: timeout), "closing the sheet hands the attachment back to the bar")
+        app.navigationBars["Quick Router"].buttons["Cancel"].tap()
+        XCTAssertTrue(waitForDisappearance(app.navigationBars["Quick Router"]))
+        XCTAssertTrue(waitForDisappearance(barChip), "closing the sheet hands the bar the sheet's attachments, not its own")
     }
 
     // MARK: - Helpers
