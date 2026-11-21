@@ -462,10 +462,13 @@ section, from the same `SessionCostSummary`, so the page and the MCP dump cannot
 `TranscriptPollerService` stores a new Pi entry that carries `usage`, it enqueues
 `PiSessionUsageRefreshJob` for that session. The job runs `PiTokenUsageIngestionService` over
 that one row, which is cheap because the durable copy is `sessions.transcript`. If that adds
-rows, `Session#broadcast_cost` repaints the cost line and the phone header's badge. At most one
-refresh is queued and one is running per session, so a burst of responses coalesces into one
-sweep. Claude Code and Codex sessions still wait for the cron, and their figures update on the
-next page load.
+rows, `Session#broadcast_cost` repaints the cost line and the phone header's badge of every session
+the new rows were credited to. A forked transcript is credited by its header, so that can be the
+source rather than the session that was swept. Per session there is at most one refresh queued,
+one running, and one run every 15 seconds; a run past the throttle is retried by GoodJob, so the
+newest response still lands. The bound matters because a sweep re-parses the session's whole
+stored transcript. Claude Code and Codex sessions still wait for the cron, and their figures
+update on the next page load.
 
 ## Burn rate by harness + model
 

@@ -39,7 +39,7 @@ module SessionCostsHelper
     cost = session_cost_usd(session)
     return nil unless cost.positive?
 
-    basis = if SessionCostSummary::METERED_RUNTIMES.include?(session.agent_runtime)
+    basis = if SessionCostSummary.metered?(session.agent_runtime)
       "Inference cost for this session, metered through OpenRouter: money owed."
     else
       "Estimated inference cost for this session at current list prices."

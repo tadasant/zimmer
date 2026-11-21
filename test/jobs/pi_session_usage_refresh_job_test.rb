@@ -59,4 +59,26 @@ class PiSessionUsageRefreshJobTest < ActiveJob::TestCase
     assert_includes badge_html, %(id="session_#{session.id}_cost_badge")
     assert_includes badge_html, "$0.001"
   end
+
+  # The badge must not be rendered through a process-wide helper proxy: its cost
+  # cache would pin the first figure and every later repaint would resend it.
+  test "a second repaint shows the new figure, not the first one" do
+    session = pi_session
+    PiSessionUsageRefreshJob.perform_now(session.id)
+    rendered = []
+    fake = Object.new
+    fake.define_singleton_method(:broadcast_html) { |target:, **, &block| rendered << [ target, block.call ] }
+    session.define_singleton_method(:broadcaster) { fake }
+
+    session.broadcast_cost
+    SessionTokenUsage.create!(request_id: "pi:#{SecureRandom.uuid}:bbbb0002", model: "openrouter/~x-ai/grok-latest",
+                              session_id: session.id, agent_root: "zimmer", agent_runtime: "pi",
+                              called_at: Time.current, output_tokens: 1_000_000)
+    session.broadcast_cost
+
+    badges = rendered.select { |target, _| target == "session_#{session.id}_cost_badge" }.map(&:last)
+    assert_equal 2, badges.size
+    assert_includes badges.first, "$0.001"
+    assert_includes badges.last, "$6.00"
+  end
 end

@@ -863,8 +863,7 @@ class TranscriptPollerService
     task_tool_uses
   end
 
-  # Run transcript hooks to extract data and update custom_metadata
-  # Hooks are run in a fire-and-forget manner - errors don't affect transcript polling
+
   # A Pi session's spend reaches the ledger as each model response lands, rather
   # than on the ten-minute fleet sweep. Only when the transcript just stored holds
   # a new entry that carries `usage` — a tool result or a user turn costs nothing
@@ -875,7 +874,7 @@ class TranscriptPollerService
 
     PiSessionUsageRefreshJob.perform_later(@session.id)
   rescue StandardError => e
-    Rails.logger.error "[TranscriptPollerService] Could not enqueue Pi usage refresh: #{e.class}: #{e.message}"
+    Rails.logger.warn "[TranscriptPollerService] Could not enqueue Pi usage refresh: #{e.class}: #{e.message}"
   end
 
   # Whether a raw Pi transcript entry reports token usage — the same shapes
@@ -889,6 +888,8 @@ class TranscriptPollerService
     usage.is_a?(Hash)
   end
 
+  # Run transcript hooks to extract data and update custom_metadata
+  # Hooks are run in a fire-and-forget manner - errors don't affect transcript polling
   def run_transcript_hooks(transcript_content, new_messages)
     executor = TranscriptHooks::Executor.new(
       session: @session,

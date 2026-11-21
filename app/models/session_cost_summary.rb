@@ -22,6 +22,9 @@ class SessionCostSummary
   # @param session [Session]
   def self.for(session) = new(session)
 
+  # Whether a runtime's spend is metered money owed rather than subscription list price.
+  def self.metered?(runtime) = METERED_RUNTIMES.include?(runtime.to_s)
+
   def initialize(session)
     @session = session
     rows = SessionTokenUsage.where(session_id: session.id)
@@ -50,7 +53,7 @@ class SessionCostSummary
 
   def total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
 
-  def metered? = METERED_RUNTIMES.include?(session.agent_runtime)
+  def metered? = self.class.metered?(session.agent_runtime)
 
   # Usage stored, but none of it carries a price — so "$0" would assert it was free.
   def unpriced? = any? && cost.zero? && unpriced_models.any?
@@ -88,7 +91,8 @@ class SessionCostSummary
   # "2.37M", "58.6K", "940" — the compact form for the meta row.
   def self.compact_tokens(count)
     count = count.to_i
-    if count >= 1_000_000
+    # 999,950 rounds to "1000.0K"; it reads as 1M.
+    if count >= 999_950
       "#{format('%.2f', count / 1_000_000.0).sub(/\.?0+\z/, '')}M"
     elsif count >= 1_000
       "#{format('%.1f', count / 1_000.0).sub(/\.0\z/, '')}K"

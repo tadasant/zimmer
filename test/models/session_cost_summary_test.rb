@@ -100,5 +100,7 @@ class SessionCostSummaryTest < ActiveSupport::TestCase
     assert_equal "2K", SessionCostSummary.compact_tokens(2_000)
     assert_equal "2.37M", SessionCostSummary.compact_tokens(2_373_445)
     assert_equal "3M", SessionCostSummary.compact_tokens(3_000_000)
+    assert_equal "1M", SessionCostSummary.compact_tokens(999_960)
+    assert_equal "999.9K", SessionCostSummary.compact_tokens(999_900)
   end
 end

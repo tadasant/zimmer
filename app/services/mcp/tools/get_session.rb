@@ -744,7 +744,7 @@ module Mcp
         figure = summary.unpriced? ? "unpriced" : format("$%.4f", summary.cost)
         lines << "- **Cost:** #{figure} — #{summary.basis}"
         if summary.unpriced_models.any?
-          lines << "- **Unpriced models:** #{summary.unpriced_models.join(', ')} — no rate is configured, so their spend is not in the figure above."
+          lines << "- **Unpriced models:** #{summary.unpriced_models.map { |m| "`#{m}`" }.join(', ')} — no rate is configured, so their spend is not in the figure above."
         end
         lines << "- **Tokens:** #{ActiveSupport::NumberHelper.number_to_delimited(summary.total_tokens)} — #{summary.breakdown_sentence}"
         lines << "- **Newest call in the ledger:** #{summary.last_called_at.utc.iso8601}" if summary.last_called_at

@@ -1,0 +1,5 @@
+<%# The phone header's cost badge, wrapped in its own target so a ledger sweep can
+    repaint it (Session#broadcast_cost). Rendered through a fresh view context each
+    time, never through the process-wide `SessionsController.helpers`, whose
+    `@session_cost_index` would otherwise pin the first figure forever. %>
+<span id="session_<%= agent_session.id %>_cost_badge"><%= session_cost_badge(agent_session) %></span>

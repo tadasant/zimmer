@@ -3125,8 +3125,7 @@ class Session < ApplicationRecord
       stream: "session_#{id}_status",
       target: "session_#{id}_cost_badge"
     ) do
-      helpers = SessionsController.helpers
-      helpers.tag.span(helpers.session_cost_badge(self), id: "session_#{id}_cost_badge")
+      SessionsController.render(partial: "sessions/session_cost_badge", locals: { agent_session: self })
     end
   end
 
