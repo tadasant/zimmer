@@ -1585,15 +1585,16 @@ job with no `timeout-minutes` (GitHub's default is six hours), and on a `ruby/se
 step that asks for a self-hosted toolcache.
 
 Linux jobs pin `ubuntu-24.04` rather than following `ubuntu-latest`, because
-`ruby/setup-ruby` builds only the newest patch of each Ruby series for a newer image: on
-ubuntu-26.04 the pinned patch disappears as soon as a newer one ships, and every Ruby job then fails in its setup step. Moving to a
-newer image goes with a Ruby patch bump.
+`ruby/setup-ruby` builds only the then-newest patch of each Ruby series for a newly added
+image, so older patches never exist on it: a pin that ubuntu-26.04 lacks fails every Ruby job
+in its setup step. Moving to a newer image goes with checking that it has the pinned patch.
 
 A hosted runner starts empty every time, so a job installs or configures everything it
 needs in-job:
 
 - **Ruby and gems come from `ruby/setup-ruby` with `bundler-cache: true`.** It installs
-  Ruby 3.4.13 (the `ruby-version` pin) and restores the bundle from the Actions cache keyed on `Gemfile.lock`.
+  Ruby 3.4.13 (the `ruby-version` pin) and restores the bundle from the Actions cache keyed
+  on `Gemfile.lock`.
   `verify_lockfile` alone sets `bundler-cache: false`, because it only runs `bundle lock`.
 - **Postgres and Redis are service containers on dynamic host ports.** They declare
   `- 5432/tcp` / `- 6379/tcp`, and a step resolves the assigned port via

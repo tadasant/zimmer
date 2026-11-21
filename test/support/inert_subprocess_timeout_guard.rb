@@ -13,7 +13,7 @@ require "prism"
 # call takes exactly as long as the child does; all the timeout changes is that
 # the return value is replaced by a `Timeout::Error` **after** the wait.
 #
-# Measured on this repo's Ruby (3.4.6) — a 1s timeout around an 8s child:
+# Measured on Ruby 3.4.6 — a 1s timeout around an 8s child:
 #
 #   Timeout.timeout(1) { Open3.capture3("sh", "-c", "trap '' TERM; sleep 8") }
 #   # => rescued Timeout::Error after 8.01s

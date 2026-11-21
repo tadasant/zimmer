@@ -50,8 +50,9 @@ class GithubHostedRunnersTest < ActiveSupport::TestCase
     end
   end
 
-  # ruby/setup-ruby builds only the newest patch of each Ruby series for a newer image, so
-  # `ubuntu-latest` (ubuntu-26.04) loses the pinned patch as soon as a newer one ships, and every Ruby job dies in setup.
+  # ruby/setup-ruby builds only the then-newest patch of each Ruby series for a newly added
+  # image, so `ubuntu-latest` (ubuntu-26.04) lacks older patches and a pin it lacks kills
+  # every Ruby job in setup.
   test "every job that sets up Ruby pins ubuntu-24.04" do
     self.class.jobs.each do |where, job|
       next unless (job["steps"] || []).any? { |s| s["uses"].to_s.start_with?("ruby/setup-ruby@") }

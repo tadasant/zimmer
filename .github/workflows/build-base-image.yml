@@ -12,7 +12,7 @@ name: Build base image
 # that lands it, with nobody dispatching anything.
 #
 # This workflow covers the half release-image cannot see: fixes that move no repo
-# input, and therefore no content key — security updates in `ruby:3.4-slim` and the
+# input, and therefore no content key — security updates in `ruby:<RUBY_VERSION>-slim` and the
 # apt packages above it, and the unpinned installers Dockerfile.base runs
 # (`claude.ai/install.sh`, `fly.io/install.sh`). Hence the monthly cron.
 on:
