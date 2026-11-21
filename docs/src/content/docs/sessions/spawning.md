@@ -1014,22 +1014,28 @@ Shared scrubbing (`CliSpawnEnv`):
   [What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env).
 - Clears inherited env vars — `DATABASE_*`, `RAILS_ENV`, `GEM_*`, `RUBY*`, and a sweep of
   everything prefixed `BUNDLE*`. Without this the agent would inherit Zimmer's own database
-  credentials and Ruby toolchain. Four values are cleared for their own reasons:
-  `ZIMMER_OPERATOR_SSH_KEY` (the agent gets the key's *path*, not its material),
-  `ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (the
-  [Parameter Store](/operate/secrets-parameter-store/) resolver credential — Zimmer resolves
-  `${VAR}` with it and injects the *results* a session's MCP servers need, so the session
-  itself never needs a key that reads every production secret value), and
-  `SENTRY_DSN_BACKEND` (the production error DSN — an agent running `bin/rails` in a clone
+  credentials and Ruby toolchain. Then every name in `CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS`,
+  Zimmer's own secrets, each with its reason in the code: `RAILS_MASTER_KEY`, `SECRET_KEY_BASE`,
+  `API_KEYS`, `DATABASE_PASSWORD`, `ZIMMER_OPERATOR_SSH_KEY` (the agent gets the key's *path*, not
+  its material), both [Parameter Store](/operate/secrets-parameter-store/) service-account keys
+  (Zimmer resolves `${VAR}` with them and injects the *results* a session's MCP servers need),
+  `MERGE_ATTESTATION_SIGNING_KEY`, the OTLP endpoint and token, the web sign-in and X OAuth client
+  secrets, `SLACK_BOT_TOKEN`, and `SENTRY_DSN_BACKEND` (an agent running `bin/rails` in a clone
   would otherwise report that clone's exceptions as
-  [production errors](/operate/observability/#only-production-and-staging-may-report) — and that
-  DSN is the whole of the [authorization to page](/operate/background-jobs/#who-is-allowed-to-page),
-  so clearing it is what keeps an agent's test run out of `#alerts`).
+  [production errors](/operate/observability/#only-production-and-staging-may-report), and that
+  DSN is the whole of the [authorization to page](/operate/background-jobs/#who-is-allowed-to-page)).
   A value in the clone's `.env` always wins.
 
   **This list is a denylist, not an allowlist.** Sessions are plain child processes of the
-  worker, so anything else in Zimmer's environment is inherited verbatim — a new secret in
-  `env.secret` is one `env` away from a transcript until it is named here.
+  worker, so anything else in Zimmer's environment is inherited verbatim. The worker's environment
+  is also written by the image, `bin/docker-entrypoint` and the private deploy companion, which
+  this repo cannot enumerate, so an allowlist would silently drop what sessions rely on. What
+  keeps the denylist honest is `test/services/cli_spawn_env_secret_scrub_test.rb`: it fails when
+  a name in any `config/deploy*.yml` `env.secret` is neither scrubbed nor listed in
+  `CliSpawnEnv::INHERITED_SECRET_ENV_VARS` with a reason. The one entry there is
+  `ZIMMER_PROD_API_KEY` (and staging's twin), which Codex's `env_http_headers` forwarding reads
+  from the environment; see
+  [agents run unsandboxed](/limitations/#agents-run-unsandboxed-on-the-app-host).
 - Sets `PARALLEL_WORKERS` — `ZIMMER_SESSION_PARALLEL_WORKERS`, 2 by default — capping the test
   workers a session's Rails suite forks. Rails sizes `parallelize(workers:
   :number_of_processors)` off the processor count, which inside the container is the whole

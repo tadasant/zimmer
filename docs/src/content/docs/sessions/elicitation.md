@@ -212,8 +212,9 @@ declines that on its own.
 :::caution[The token keeps out the network, not the neighbours]
 Every session runs as the same Unix user on the same filesystem, and a session's token sits in its
 agent's environment and its clone's MCP config. An agent can raise a prompt on its own session. An
-agent that reads another clone's config can raise one on that session too, and so can any agent using
-the `SECRET_KEY_BASE` its own environment carries, which mints any session's token. None of them can
+agent that reads another clone's config can raise one on that session too. So can any agent that
+reads `SECRET_KEY_BASE`, which mints any session's token: it is cleared from an agent's own
+environment, but the app's `/proc/<pid>/environ` is readable by the same user. None of them can
 answer a prompt.
 
 An elicitation that ends unanswered leaves a `lost_elicitation` marker on the session. Its `summary`
