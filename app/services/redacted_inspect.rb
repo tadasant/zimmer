@@ -18,6 +18,15 @@
 # Reading values is unchanged: `get`, `[]`, `to_h`, member readers. Only how
 # the object describes itself changes.
 module RedactedInspect
+  # A plain object's ActiveSupport `as_json` serializes every instance
+  # variable, so `to_json` would leak just as `inspect` did. Struct, Data and
+  # Hash keep their own `as_json`: their members are read on purpose.
+  def self.included(base)
+    return if base < Struct || base < Data || base < Hash
+
+    base.define_method(:as_json) { |*| redacted_inspect_fields.as_json }
+  end
+
   # @return [Hash{Symbol => Object}] fields that are safe to print. Override in
   #   the including class.
   def redacted_inspect_fields = {}

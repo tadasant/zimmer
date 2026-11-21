@@ -33,8 +33,9 @@ ResolvedMcpCredential = Data.define(
   :credential_key
 ) do
   # Carries the access and refresh tokens, and `headers` can carry a static
-  # Authorization header.
+  # Authorization header. `server_url` is left out too: a URL can carry a
+  # token in its query string.
   include RedactedInspect
 
-  def redacted_inspect_fields = { server_name: server_name, server_url: server_url, expires_at: expires_at }
+  def redacted_inspect_fields = { server_name: server_name, expires_at: expires_at }
 end

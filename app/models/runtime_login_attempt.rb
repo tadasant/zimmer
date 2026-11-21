@@ -26,7 +26,8 @@ class RuntimeLoginAttempt < ApplicationRecord
   belongs_to :claude_account, optional: true
 
   # The authorization code a person pastes back, and the device code shown to
-  # them. The global filter_parameters list catches neither name.
+  # them. The global filter_parameters list catches neither name. (Rails also
+  # adds model-scoped copies of this list to the request-log filter; harmless.)
   self.filter_attributes += %w[pasted_code verification_code]
 
   STATUSES = %w[

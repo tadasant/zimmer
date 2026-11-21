@@ -55,11 +55,14 @@ that names one of them is safe:
 #<ParameterStore::GcpClient::Snapshot names={"/zimmer/production/secrets/static/" => ["GH_TOKEN"]} (values redacted)>
 ```
 
-Without this, `SecretProviders::Env#inspect` printed the whole process
-environment. The mechanism is the `RedactedInspect` module, which replaces
-`inspect`, `to_s` and `pretty_print` and changes nothing that reads a value.
+Ruby's default `inspect` on `SecretProviders::Env` would print the whole
+process environment. The `RedactedInspect` module replaces `inspect`, `to_s`
+and `pretty_print`, and `as_json` on plain objects, and changes nothing that
+reads a value.
 ActiveRecord models get the same treatment from `filter_attributes`, which
-inherits the `filter_parameters` list. `test/services/redacted_inspect_test.rb`
+inherits the `filter_parameters` list and matches top-level column names. A
+column that holds tokens as nested JSON keys, like `claude_accounts.oauth_config`,
+is named in its model's `filter_attributes`. `test/services/redacted_inspect_test.rb`
 fails if a new `SecretProviders` class lacks the module, or if a
 credential-shaped column is missing from a model's filter.
 

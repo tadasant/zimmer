@@ -31,6 +31,11 @@
 #   bin/rails 'codex_accounts:add[email@example.com,0]'
 #   bin/rails claude_accounts:list  /  bin/rails codex_accounts:list
 class ClaudeAccount < ApplicationRecord
+  # Holds the runtime's OAuth access and refresh tokens as nested JSON keys,
+  # which the global filter_parameters list cannot see: it matches the top-level
+  # column name only.
+  self.filter_attributes += %w[oauth_config]
+
   # Agent runtimes that can own an account in this pool.
   RUNTIMES = %w[claude_code codex].freeze
 

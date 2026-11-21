@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require "pp"
 require "support/fake_parameter_store"
 
@@ -164,10 +165,25 @@ class RedactedInspectTest < ActiveSupport::TestCase
     assert_redacted metadata
   end
 
+  test "ClaudeAccount does not print the runtime's OAuth tokens" do
+    account = ClaudeAccount.new(oauth_config: { "credentials_json" => { "claudeAiOauth" => { "accessToken" => SENTINEL } } })
+
+    refute account.full_inspect.include?(SENTINEL), "ClaudeAccount leaked a token through full_inspect"
+    refute PP.pp(account, +"").include?(SENTINEL), "ClaudeAccount leaked a token through pp"
+  end
+
+  test "plain secret-holding objects do not leak through to_json" do
+    account = ParameterStore::ServiceAccount.new(client_email: "fake@example.invalid", private_key: SENTINEL)
+
+    [ SecretProviders::Env.new(fake_env), account, ParameterStore::GcpClient.new(project_id: "fake-project", account: account) ].each do |object|
+      refute object.to_json.include?(SENTINEL), "#{object.class} leaked a value through to_json"
+    end
+  end
+
   test "RuntimeLoginAttempt does not print the pasted authorization code" do
     attempt = RuntimeLoginAttempt.new(pasted_code: SENTINEL, verification_code: "#{SENTINEL}-device")
 
-    refute attempt.inspect.include?(SENTINEL), "RuntimeLoginAttempt leaked a code through inspect"
+    refute attempt.full_inspect.include?(SENTINEL), "RuntimeLoginAttempt leaked a code through full_inspect"
     refute PP.pp(attempt, +"").include?(SENTINEL), "RuntimeLoginAttempt leaked a code through pp"
   end
 
@@ -176,8 +192,9 @@ class RedactedInspectTest < ActiveSupport::TestCase
   # model-level filter_attributes entry; this fails when it is caught by neither.
   test "every credential-shaped column is filtered from ActiveRecord inspect" do
     credential_shaped = /(token|secret|verifier|password|private_key|pasted_code|verification_code)\z/
-    # One-way digests and public halves are not secrets.
-    not_secret = /digest|challenge|\Ap256dh_key\z|endpoint|_env_var\z/
+    # Columns that hold tokens as nested JSON keys. The filter matches top-level
+    # column names only, so these must be named outright.
+    nested = { "ClaudeAccount" => %w[oauth_config] }
 
     Rails.application.eager_load!
     leaks = ApplicationRecord.descendants.reject(&:abstract_class?).flat_map do |model|
@@ -185,7 +202,7 @@ class RedactedInspectTest < ActiveSupport::TestCase
 
       filter = ActiveSupport::ParameterFilter.new(model.filter_attributes)
       model.column_names
-        .select { |column| column.match?(credential_shaped) && !column.match?(not_secret) }
+        .select { |column| column.match?(credential_shaped) || nested.fetch(model.name, []).include?(column) }
         .select { |column| filter.filter(column => "x")[column] == "x" }
         .map { |column| "#{model.name}.#{column}" }
     end
