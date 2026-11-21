@@ -41,6 +41,9 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "human_messages", "session_id", :cascade ],
     [ "logs", "session_id", :cascade ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
+    # A signed merge approval outlives the session it was recorded on: it is
+    # the record that a person approved a merge (MergeAttestation).
+    [ "merge_attestations", "session_id", :nullify ],
     [ "notifications", "session_id", :cascade ],
     # An analysis describes one transcript, so it goes when that transcript does;
     # the session that PRODUCED it is nullified instead, because the finding
