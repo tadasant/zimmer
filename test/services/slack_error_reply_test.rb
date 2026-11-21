@@ -347,7 +347,10 @@ class SlackErrorReplyTest < ActiveSupport::TestCase
   test "a model turn that landed after the sweep loaded the row wins" do
     transcript(user_line, api_error_line)
     stale = Session.find(@session.id)
-    Session.find(@session.id).update_columns(transcript: [ user_line, api_error_line, model_turn_line ].join("\n") + "\n")
+    stale.transcript # the sweep's batch row has read the transcript as it was
+    # Written through the model, which stores it in transcript chunks; `update_columns` would only
+    # reach the legacy column the reader no longer consults.
+    Session.find(@session.id).update!(transcript: [ user_line, api_error_line, model_turn_line ].join("\n") + "\n")
     SlackService.expects(:post_message).never
 
     assert_equal :settled, SlackErrorReply.new(stale, now: @now).converge!
