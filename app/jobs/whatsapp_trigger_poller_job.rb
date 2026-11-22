@@ -24,6 +24,10 @@
 # the batch again together with anything newer and delivers it then. Only a burst-suppressed fire
 # is dropped, as on Slack: replaying a burst is what the cap exists to prevent.
 #
+# A batch that reached its session also records each of its messages as a
+# `whatsapp:<chat_jid>:<message_id>` TriggerEventClaim, in the same transaction, for
+# compare_trigger_fires. Nothing reads it to decide anything — the seen-set does that (#record_fire!).
+#
 # A condition the poller has never visited is baselined, not fired: its cursor is set to the
 # newest message in the chat, so turning a trigger on never replays the chat's history.
 #
@@ -260,7 +264,25 @@ class WhatsappTriggerPollerJob < ApplicationJob
     return :burst_suppressed if session.nil?
     return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
 
+    record_fire!(condition, messages, session, chat_id: chat_id)
     session
+  end
+
+  # Records each message the batch delivered as a TriggerEventClaim (`whatsapp:<chat>:<id>`,
+  # `whatsapp_record`) with its session on it. Nothing reads it to decide anything; it is what
+  # compare_trigger_fires lines up against an `mcp_event` trigger on strad's WhatsApp
+  # `message_received` event, whose eventId has the same shape.
+  #
+  # Every message of the batch is recorded, not only the newest: the session got all of them, and
+  # the event source fires once per message. The chat is the one the bridge stored each message
+  # under, which is the chat strad's eventId names; the condition's own chat id is only the fallback,
+  # since a condition saved with a chat's LID reads a chat the bridge keys by its phone JID. A burst
+  # notice is not a fire for the batch that opened the burst, so it records nothing.
+  def record_fire!(condition, messages, session, chat_id:)
+    return if session.metadata["burst_notice"]
+
+    keys = messages.map { |message| TriggerEventClaim.whatsapp_event_key(message.chat_id.presence || chat_id, message.id) }
+    TriggerEventClaim.claim!(condition, keys, via: "whatsapp_record", session_id: session.id)
   end
 
   # The batch as a chat log, oldest first: one line per message, time, author, text. A message

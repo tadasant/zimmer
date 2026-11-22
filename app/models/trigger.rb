@@ -658,8 +658,9 @@ class Trigger < ApplicationRecord
   # (#validate_mcp_event_template_fences_payload), and renders as `|id` would anywhere else.
   EVENT_FIELD_PATTERN = /\{\{event\.([A-Za-z_][A-Za-z0-9_]{0,63})(\|untrusted|\|id)?\}\}/
 
-  # What `{{event.<field>|id}}` lets through: an id, a timestamp, a channel — never prose.
-  MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:-]{1,128}\z/
+  # What `{{event.<field>|id}}` lets through: an id, a timestamp, a channel, a WhatsApp JID
+  # (`…@g.us`) — never prose.
+  MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:@-]{1,128}\z/
 
   # The variables an `email` condition fills with what the SENDER wrote: the message, the From
   # header, the subject. Anyone on the internet can write all three, and From is spoofable, so a
