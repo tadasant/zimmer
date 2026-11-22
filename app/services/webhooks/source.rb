@@ -59,6 +59,20 @@ module Webhooks
       )
     end
 
+    # The same GitHub endpoint and secret, read for a different consumer: the per-session PR
+    # pollers (Github::PrPollPass, Github::OrphanedPrConflictSweep) rather than triggers. Its
+    # own mode, so PR polling can move without moving triggers and the other way round; see
+    # Github::PrWebhookIngest for what each mode does there. It fires no trigger condition, and
+    # it is not in .all: its deliveries are the `github` source's deliveries, which the health
+    # report already counts.
+    def self.github_prs
+      @github_prs ||= new(
+        name: "github_prs", mode_key: "GITHUB_PR_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
+        expects_daily_deliveries: false,
+        shadow_supported: true
+      )
+    end
+
     # Every source with a webhook endpoint, in the order the health report lists them.
     def self.all
       [ slack, github ]

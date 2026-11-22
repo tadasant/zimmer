@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_21_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_22_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -384,6 +384,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_21_020000) do
     t.index ["payload"], name: "index_gate_decisions_on_payload", using: :gin
     t.index ["source_key"], name: "index_gate_decisions_on_source_key", unique: true
     t.index ["writing_session_id"], name: "index_gate_decisions_on_writing_session_id"
+  end
+
+  create_table "github_pr_signals", force: :cascade do |t|
+    t.string "kind", null: false
+    t.datetime "signaled_at", null: false
+    t.string "subject", null: false
+    t.index ["signaled_at"], name: "index_github_pr_signals_on_signaled_at"
+    t.index ["subject", "kind"], name: "index_github_pr_signals_on_subject_and_kind", unique: true
   end
 
   create_table "good_job_batches", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|

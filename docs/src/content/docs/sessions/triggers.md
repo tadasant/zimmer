@@ -1768,7 +1768,10 @@ settings turn it on, read from encrypted credentials first and ENV second:
 | `GITHUB_WEBHOOK_SECRET` | the secret set on the GitHub webhook |
 
 With a webhook mode and the secret both set, `POST /webhooks/github` is the webhook's payload URL. With either missing it answers
-every request with a 404 and reads nothing. It is the same ingress as
+every request with a 404 and reads nothing. The same endpoint also serves the per-session PR pollers
+under their own mode, `GITHUB_PR_INGEST_MODE` (see
+[Driven by GitHub's webhook](/operate/background-jobs/#driven-by-githubs-webhook-instead-of-the-clock)),
+and it answers when either mode is listening. It is the same ingress as
 [Slack Events API delivery](#slack-events-api-delivery), and a delivery goes through the same checks
 in the same order: a body over a megabyte is a 413; `X-Hub-Signature-256` must be `sha256=` and the
 HMAC-SHA256 of the raw body under the secret, compared in constant time, or it is a 401; only then is

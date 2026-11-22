@@ -64,11 +64,19 @@ module PollBackoff
   # UPDATE. Three separate stamp writes per session per tick was the database half of
   # what #711 was about.
   #
+  # `at` stamps a time other than now. Github::PrPollPass passes the moment its pass
+  # STARTED, so a webhook signal that lands while the pass is reading GitHub is newer
+  # than the stamp and makes the session due again on the next tick, instead of being
+  # covered by a stamp written after it. That stamp keeps its microseconds, because a
+  # signal that arrived in the same second the pass started is on one side of it or the
+  # other, and a whole-second stamp would put the earlier half after it.
+  #
   # @param job_key [String, Array<String>] the key(s) to stamp
-  def record_poll!(session, job_key:)
+  # @param at [Time, nil] the time to stamp; now when nil
+  def record_poll!(session, job_key:, at: nil)
     session.reload if session.persisted?
     last_polled = (session.custom_metadata&.dig("poller_last_polled_at") || {}).dup
-    now = Time.current.iso8601
+    now = at ? at.utc.iso8601(6) : Time.current.iso8601
     Array(job_key).each { |key| last_polled[key] = now }
     session.merge_custom_metadata!("poller_last_polled_at" => last_polled)
   end
@@ -106,6 +114,11 @@ module PollBackoff
     interval = [ interval, min_interval ].max unless min_interval.nil?
 
     interval
+  end
+
+  # When `job_key` last stamped this session, or nil when it never has.
+  def last_polled_at(session, job_key)
+    parse_last_polled_at(session, job_key)
   end
 
   def parse_last_polled_at(session, job_key)
