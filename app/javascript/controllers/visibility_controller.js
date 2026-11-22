@@ -159,7 +159,11 @@ export default class extends Controller {
     // A card sits inside its own <turbo-frame>; taking the frame with it stops
     // an empty frame being left behind for a live status broadcast to fill.
     const parent = unit.parentElement
-    const removable = parent && parent.tagName === "TURBO-FRAME" ? parent : unit
+    let removable = parent && parent.tagName === "TURBO-FRAME" ? parent : unit
+    // Your board v2 holds each card in a wrapper with its drag handle; the
+    // handle leaves with the card.
+    const wrapper = removable.parentElement?.closest("[data-visibility-wrapper]")
+    if (wrapper) removable = wrapper
     const place = { element: removable, parent: removable.parentNode, next: removable.nextSibling }
     removable.remove()
     return place

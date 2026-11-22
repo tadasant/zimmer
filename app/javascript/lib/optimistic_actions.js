@@ -58,13 +58,13 @@ const RULES = [
   {
     // Trash. Every Trash affordance — the card's link, the ranked row's menu, the
     // User view's button, the mobile joystick, the detail header's form — posts
-    // here. The dashboard shows the session as one of three elements; each leaves.
+    // here. The dashboard shows the session as one of four elements; each leaves.
     test: (path, method) => method === "post" && /^\/sessions\/(\d+)\/archive$/.exec(path),
     apply(match) {
       const id = match[1]
       // The ranked view keeps a trashed row, reading "Trashed", when its filter
       // shows the trash: the row's leaving is the ranked stream's call there.
-      const ids = [`session_${id}`, `user_view_row_${id}`]
+      const ids = [`session_${id}`, `user_view_row_${id}`, `board_v2_row_${id}`]
       if (!rankedShowsTrash()) ids.push(`ranked_row_${id}`)
       return {
         detached: detach(ids),

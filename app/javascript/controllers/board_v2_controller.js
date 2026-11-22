@@ -15,15 +15,16 @@ import { csrfHeaders } from "lib/csrf"
 //   * a category's chevron — collapses or expands it, and stores that on the
 //     category so it survives a reload (PATCH /board_categories/:id).
 //
-// Trash, Snooze, Merge and CarPlay on a row are the row's own controls, exactly
-// as on Your board. A row that leaves (Trash, Snooze) or arrives (Undo) is seen
+// Each row is a Last Touched card with a drag handle beside it
+// (sessions/_board_v2_row). Trash, Snooze and View are the card's own
+// controls, exactly as on Last Touched. A row that leaves (Trash, Snooze) or arrives (Undo) is seen
 // by each list's MutationObserver, which keeps the counts and the order true.
 //
 // Every Sortable forces the pointer-based fallback, for the reason the User
 // view's does: native HTML5 drag and drop does not work on a phone.
 export default class extends Controller {
-  // `row` and `handle` are declared for the shared row partial, which names them;
-  // the controller reads them through selectors.
+  // `row` and `handle` are declared for the row partial, which names them; the
+  // controller reads them through selectors.
   static targets = ["list", "categories", "category", "total", "error", "row", "handle"]
   static values = {
     assignUrlTemplate: String,

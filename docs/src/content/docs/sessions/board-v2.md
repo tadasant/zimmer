@@ -1,6 +1,6 @@
 ---
 title: Your board v2
-description: The dashboard's category tab — the same sessions as Your board, grouped into flat categories you make and drag sessions into by hand, most recently touched first inside each.
+description: The dashboard's category tab — the same sessions as Your board, drawn as Last Touched cards and grouped into flat categories you make and drag sessions into by hand, most recently touched first inside each.
 ---
 
 `/?view=board_v2` is the **Your board v2** tab, beside [Your board](/sessions/user-view/). It shows
@@ -22,13 +22,17 @@ Deleting a category moves its sessions to Uncategorized. Nothing else about them
 
 | Do | How |
 | --- | --- |
-| Put a session in a category | Drag the row by its handle (the dots on its left) into the category. Drag it into Uncategorized to take it out. |
+| Put a session in a category | Drag the card by its handle (the dots to its left) into the category. Drag it into Uncategorized to take it out. |
 | Reorder categories | Drag a category by the handle in its header. |
 | Collapse a category | The chevron in its header. Stored on the category, so it stays collapsed across reloads and devices. |
 | Snooze or backlog a category | The **Snooze** button in its header. See below. |
 
-Every row is the [Your board row](/sessions/user-view/#what-a-row-shows), so Merge, Snooze, CarPlay
-fit and Trash are all there and behave identically.
+Every session is drawn as the **Last Touched** card — the same partial, not a copy — with the drag
+handle beside it. So a card on v2 shows what it shows on Last Touched (status, title, agent root,
+genesis and class, cost, PR link) and has the same controls: Snooze and backlog in its **⋯** menu,
+Trash with Undo, and View. Your board's heavier row (the status summary, its freshness line, CarPlay
+fit, Merge, the precedence readout) is not on v2. Inside a category the cards wrap into the Last
+Touched grid, so a wide screen shows several side by side and a phone shows one column.
 
 ## The order inside a category
 
@@ -38,10 +42,10 @@ is the same rule as the **Last Touched** tab and `get_user_view`'s `order: "last
 
 It is deliberately not `updated_at`. Every heartbeat, transcript append and status write bumps
 `updated_at`, so sorting on it would order each category by which agent was most active, not by what
-you were last on. Dragging a session into a category does not count as touching it either: the row
+you were last on. Dragging a session into a category does not count as touching it either: the card
 lands where its own last-touched time puts it.
 
-Dragging a row within its own category does nothing; it settles back into that order. Unlike Your
+Dragging a card within its own category does nothing; it settles back into that order. Unlike Your
 board, nothing on v2 writes `precedence`.
 
 ## Snoozing or backlogging a whole category
