@@ -527,8 +527,12 @@ module WorkBacklog
       # quiet (`pr_stalled`) brings it back the same way, still covered, and the
       # ladder (rule 3) is what reminds a human of it from there. Everything
       # else that takes a row out of the unresolved set clears it — a terminal
-      # verdict, a re-queue (the row stops being a candidate), and a session live
-      # on the row, which is new work on it.
+      # verdict, a re-queue (the old row reads `superseded`), and a session live
+      # on the row, which is new work on it. A HELD row is the one exception the
+      # suspension does not cover: if the merged PR leaves it reading different
+      # evidence from the hold's, WorkBacklogItem#record_liveness! voids the hold
+      # and its mark together, and the row pages afresh because the decision it
+      # was parked on is about a row that no longer exists (#1420).
       #
       # With no GRACE. The grace keeps a row out until its session has been over
       # for six hours, and it is measured from the session's last write, so

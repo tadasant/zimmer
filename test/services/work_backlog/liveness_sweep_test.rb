@@ -779,6 +779,36 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     end
   end
 
+  test "a paged row whose PR is open loses its mark to a session live on it" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do
+      sweep(probes: { 1 => probe })
+      sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
+      assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, item.reload.liveness_state
+      assert item.stranded_paged_at.present?
+
+      @dead_session.update_columns(status: "running", archived_at: nil)
+      sweep(probes: { 1 => probe })
+      assert_nil item.reload.stranded_paged_at
+    end
+  end
+
+  test "a paged row whose PR is open loses its mark when a newer row supersedes it" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do
+      sweep(probes: { 1 => probe })
+      sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
+      assert item.reload.stranded_paged_at.present?
+
+      backlog_item(key: item.key, issue_url: item.issue_url)
+      sweep(probes: { 1 => probe })
+      assert_equal WorkBacklogItem::LIVENESS_SUPERSEDED, item.reload.liveness_state
+      assert_nil item.stranded_paged_at
+    end
+  end
+
   test "a population that grows through a size band pages again without waiting for the week" do
     started_row(key: "zimmer#1", number: 1, started_at: 9.days.ago)
 

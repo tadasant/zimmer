@@ -516,12 +516,15 @@ is overdue. A population nobody acts on still pages, on a slowing schedule: a po
 **The memory is a column on each row, not a cache.** Each page stamps `stranded_paged_at` on the rows
 it went out for. Every pass clears it from any row that has resolved for good — closed, superseded,
 re-queued, awaiting recurrence, or picked up by a live session — so a row that strands again after
-that is new again. A hold that is voided by a change of evidence clears it too. A moving open PR
-does not clear it: it only suspends it, the way it suspends a hold. A PR that merely references the
-issue reads `pr_open` while it is open and changes nothing once it merges, and the row comes back
-at its original age. Clearing the mark on the way through re-paged a population that had not
-changed ([#1621](https://github.com/tadasant/zimmer/issues/1621)). A hold does not clear it, and neither does a lapse: a held row is
-parked on a person, not resolved. The column is on `/supervisor`, so "has this row been paged for"
+that is new again. A hold that is voided by a change of evidence clears it too. A hold does not
+clear it, and neither does a lapse: a held row is parked on a person, not resolved.
+
+A moving open PR does not clear it either: it only suspends it, the way it suspends a hold. A PR
+that merely references the issue reads `pr_open` while it is open and changes nothing once it
+merges, and the row comes back at its original age. Clearing the mark on the way through re-paged
+a population that had not changed ([#1621](https://github.com/tadasant/zimmer/issues/1621)). The
+one exception is a held row whose evidence the merged PR changed: the hold is voided, and its mark
+goes with it, so that row pages afresh. The column is on `/supervisor`, so "has this row been paged for"
 has an answer without a shell. The `older` rung is measured from the age the population's oldest row
 had at the last page. So when triage takes the oldest rows off, the remainder is reminded on its own
 schedule rather than measured against a row that is gone.
