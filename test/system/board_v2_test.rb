@@ -175,6 +175,19 @@ class BoardV2Test < ApplicationSystemTestCase
     assert_operator handle[1], :>=, 100, "the phone handle should run the card's height"
   end
 
+  # Trash detaches the card's frame and then the wrapper around it; a refusal
+  # (here, queued messages) has to put both back, card inside wrapper.
+  test "a refused trash puts the whole card back in its category" do
+    @infra_row.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    visit_board
+    within("#board_v2_row_#{@infra_row.id}") { click_on "Trash" }
+
+    assert_selector "#flash", text: "Archive anyway"
+    assert_selector "#board_v2_list_#{@infra.id} #board_v2_row_#{@infra_row.id} turbo-frame#session_#{@infra_row.id}", text: "infra one"
+    assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-count]", text: "1"
+    assert_not @infra_row.reload.archived?
+  end
+
   test "collapsing a category survives a reload" do
     visit_board
     find("[data-board-v2-target='category'][data-category-id='#{@infra.id}'] button[data-action='board-v2#toggle']").click

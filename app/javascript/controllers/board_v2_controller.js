@@ -16,8 +16,8 @@ import { csrfHeaders } from "lib/csrf"
 //     category so it survives a reload (PATCH /board_categories/:id).
 //
 // Each row is a Last Touched card with a drag handle beside it
-// (sessions/_board_v2_row). Trash, Snooze and View are the card's own
-// controls, exactly as on Last Touched. A row that leaves (Trash, Snooze) or arrives (Undo) is seen
+// (sessions/_board_v2_row). Trash, Snooze and View are the card's own controls,
+// exactly as on Last Touched. A row that leaves (Trash, Snooze) or arrives (Undo) is seen
 // by each list's MutationObserver, which keeps the counts and the order true.
 //
 // Every Sortable forces the pointer-based fallback, for the reason the User

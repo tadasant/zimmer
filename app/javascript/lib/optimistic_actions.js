@@ -250,10 +250,15 @@ function detach(ids) {
 // Put a change back. True when everything detached found its place again: in
 // front of the sibling it had, at the end of its container, or at the top of the
 // container's replacement when a broadcast swapped the container meanwhile.
+//
+// Last detached, first restored. A detach can take an element and then one of
+// its ancestors (Your board v2's card frame, then the wrapper holding it and its
+// drag handle); the ancestor has to be back in the document before the element
+// can find its old parent there.
 function rollback(change) {
   change.undo?.()
   let restored = true
-  for (const { element, parent, parentId, next } of change.detached || []) {
+  for (const { element, parent, parentId, next } of [ ...(change.detached || []) ].reverse()) {
     if (parent && parent.isConnected) {
       parent.insertBefore(element, next && next.parentNode === parent ? next : null)
     } else if (parentId && document.getElementById(parentId)) {
