@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "pty"
+require "mocha/minitest"
 
 class RuntimeLoginJobTest < ActiveJob::TestCase
   # A driver whose "CLI" is a tiny shell script: it prints a verification URL,
@@ -141,6 +142,53 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     end
   end
 
+  # A :paste driver whose "CLI" prints a link the driver does not recognize and
+  # then its paste prompt — the shape of the CLI 2.1.330 regression, where the
+  # link moved to a host URL_REGEX did not know. It then blocks on stdin forever,
+  # as the real CLI does. The job must fail with what the CLI printed rather than
+  # sit on awaiting_code with no link.
+  class FakeUnrecognizedLinkPasteDriver < RuntimeLoginDriver
+    def resolved_command
+      script = <<~SH
+        printf 'If the browser did not open, visit:\\nhttps://login.new-host.example/authorize?x=1\\n'
+        printf 'Paste code here if prompted > '
+        read code
+      SH
+      [ "/bin/sh", "-c", script ]
+    end
+
+    def env(_dir) = {}
+    def completion_mode = :paste
+    def paste_prompt = /Paste code here/
+    def parse_verification(_clean) = { url: nil, code: nil }
+    def capture!(_config_dir, _account) = raise("unreachable")
+  end
+
+  # A :poll driver whose "CLI" prints nothing recognizable and never exits.
+  class FakeSilentPollDriver < RuntimeLoginDriver
+    def resolved_command = [ "/bin/sh", "-c", "printf 'starting up\\n'; sleep 60" ]
+    def env(_dir) = {}
+    def completion_mode = :poll
+    def parse_verification(_clean) = { url: nil, code: nil }
+    def capture!(_config_dir, _account) = raise("unreachable")
+  end
+
+  # The real ClaudeLoginDriver (its URL_REGEX, strip_ansi and paste prompt), with
+  # only the spawn swapped for a script that replays CLI 2.1.330's exact output
+  # (the same bytes as ClaudeLoginDriverTest's fixture) and then exits — so the
+  # job's parse of the real bytes is what is under test.
+  URL_2_1_330 = "https://claude.ai/oauth/authorize?z-oScAmtAxVAwSIZ-nYi-xdhxIrh7Fo-JF5RstGJeFEbg"
+  OUTPUT_2_1_330 =
+    "Opening browser to sign in\u2026\r\n" \
+    "If the browser didn't open, visit:\r\n" \
+    "\e]8;;#{URL_2_1_330}\a#{URL_2_1_330}\e]8;;\a\r\n" \
+    "Paste code here if prompted > "
+
+  class Replay21330LoginDriver < ClaudeLoginDriver
+    def resolved_command = [ "/bin/sh", "-c", 'printf "%s" "$OUT"; sleep 0.5' ]
+    def env(_dir) = { "OUT" => OUTPUT_2_1_330 }
+  end
+
   setup do
     @account = ClaudeAccount.create!(
       email: "runtime-login-job@example.com", runtime: "codex",
@@ -252,6 +300,67 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     assert_match "CLI reported: Login failed: getaddrinfo ESERVFAIL platform.claude.com",
       attempt.error_message
     assert_not claude.reload.active?
+  end
+
+  test "paste path: surfaces the claude.ai link CLI 2.1.330 prints" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-2130@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 70, oauth_config: {}
+    )
+    attempt = claude.runtime_login_attempts.create!(runtime: "claude_code")
+
+    RuntimeLoginDriver.stub(:for, Replay21330LoginDriver.new) do
+      RuntimeLoginJob.perform_now(attempt.id)
+    end
+
+    attempt.reload
+    assert_equal URL_2_1_330, attempt.verification_url
+    assert_no_match(/no authorization link/, attempt.error_message.to_s)
+  end
+
+  test "paste path: a paste prompt with no recognizable link fails with the CLI's output instead of waiting forever" do
+    claude = ClaudeAccount.create!(
+      email: "runtime-login-job-nolink@example.com", runtime: "claude_code",
+      status: :needs_reauth, is_current: false, priority: 71, oauth_config: {}
+    )
+    attempt = claude.runtime_login_attempts.create!(runtime: "claude_code")
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    RuntimeLoginDriver.stub(:for, FakeUnrecognizedLinkPasteDriver.new) do
+      RuntimeLoginJob.perform_now(attempt.id)
+    end
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_nil attempt.verification_url
+    assert_match "asked for an authorization code but printed no authorization link", attempt.error_message
+    assert_match "https://login.new-host.example/authorize?…", attempt.error_message,
+      "the panel must quote what the CLI printed so the cause is visible without a worker shell"
+    assert_operator elapsed, :<, 10, "must fail as soon as the prompt appears, not after a timeout"
+  end
+
+  test "the no-link excerpt keeps each URL's host, drops its query string, and collapses the hyperlink's double copy" do
+    long_url = "https://login.new-host.example/oauth/authorize?#{"a" * 450}"
+    clean = "visit:\n#{long_url} #{long_url}\nPaste code here if prompted > "
+
+    excerpt = RuntimeLoginJob.new.send(:output_excerpt, clean)
+
+    assert_equal "visit: https://login.new-host.example/oauth/authorize?… Paste code here if prompted >", excerpt
+  end
+
+  test "fails when the CLI prints no link within the verification timeout" do
+    attempt = @account.runtime_login_attempts.create!(runtime: "codex")
+
+    RuntimeLoginJob.any_instance.stubs(:verification_url_timeout).returns(2.seconds)
+    RuntimeLoginDriver.stub(:for, FakeSilentPollDriver.new) do
+      RuntimeLoginJob.perform_now(attempt.id)
+    end
+
+    attempt.reload
+    assert_equal "failed", attempt.status
+    assert_match "printed no authorization link within 2 seconds", attempt.error_message
+    assert_match "starting up", attempt.error_message
   end
 
   test "paste path: captures as soon as credentials land, without waiting for the CLI to exit" do

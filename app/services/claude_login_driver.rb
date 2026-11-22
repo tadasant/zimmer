@@ -9,13 +9,17 @@
 # stdin. We point CLAUDE_CONFIG_DIR at a scratch dir so the login writes its
 # identity/credentials there instead of clobbering the worker's live ~/.claude.
 class ClaudeLoginDriver < RuntimeLoginDriver
-  # The OAuth authorization URL the CLI prints. --claudeai (subscription) emits a
-  # claude.com/cai/oauth/authorize URL; the --console (API billing) variant emits
-  # platform.claude.com/oauth/authorize. Match both so the driver is robust to
-  # either default. The tail is built from URL_CHAR rather than `\S` so a match
-  # stops at a control character instead of swallowing the terminal decoration
-  # around the link — see RuntimeLoginDriver::URL_CHAR.
-  URL_REGEX = %r{https://(?:claude\.com/cai|platform\.claude\.com)/oauth/authorize\?#{URL_CHAR}+}
+  # The OAuth authorization URL the CLI prints. The host has moved between CLI
+  # releases — claude.com/cai/oauth/authorize, platform.claude.com/oauth/authorize
+  # (the --console variant), and, from Claude Code 2.1.330,
+  # claude.ai/oauth/authorize — and a miss here is silent: the CLI still prints
+  # its paste prompt, so the panel would sit on "waiting for link…" forever. So
+  # the pattern accepts any path ending in /oauth/authorize on an Anthropic-owned
+  # host (claude.ai, claude.com, anthropic.com and their subdomains) rather than
+  # pinning one spelling. The tail is built from URL_CHAR rather than `\S` so a
+  # match stops at a control character instead of swallowing the terminal
+  # decoration around the link — see RuntimeLoginDriver::URL_CHAR.
+  URL_REGEX = %r{https://(?:[a-z0-9-]+\.)*(?:claude\.ai|claude\.com|anthropic\.com)(?:/[\w.-]+)*/oauth/authorize\?#{URL_CHAR}+}i
   # The CLI's stdin prompt that signals it is ready for the pasted auth code.
   PASTE_PROMPT = /Paste code here/i
   # Lines the CLI prints when a login can't complete. `Login failed:` is the

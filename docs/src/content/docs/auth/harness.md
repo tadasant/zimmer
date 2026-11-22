@@ -1715,6 +1715,13 @@ the URL twice — once as the escape sequence's target, once as the visible labe
 `\S+` tail ran straight through the `BEL` terminator into the second copy. The panel showed a
 907-character link no browser could open, so the login could not be completed at all.
 
+It happened again with `2.1.330`, which moved the link from `claude.com/cai/oauth/authorize` to
+`claude.ai/oauth/authorize`. `URL_REGEX` named the two hosts it had seen, so it matched nothing,
+while the paste prompt still matched. The panel went to `awaiting_code` with no link and showed
+*(waiting for link…)* until the attempt expired. `URL_REGEX` now accepts any `…/oauth/authorize?`
+URL on an Anthropic-owned host (`claude.ai`, `claude.com`, `anthropic.com`, or a subdomain of one)
+instead of a fixed list.
+
 Three properties keep `RuntimeLoginDriver#strip_ansi` and the URL patterns honest against that class
 of drift:
 
@@ -1726,6 +1733,13 @@ of drift:
 - **A half-arrived escape sequence at the end of the buffer is discarded.** The job re-parses a
   growing buffer every tick and surfaces the first URL it sees exactly once, so a chunk read that
   cuts a hyperlink in half would otherwise pin the panel to a truncated link for the whole attempt.
+
+- **A missing link fails the attempt, with the CLI's output quoted.** If the paste prompt shows up
+  before any recognizable link, the link was printed and not understood, so `RuntimeLoginJob` fails
+  the attempt right away. If the CLI prints no link within `VERIFICATION_URL_TIMEOUT` (60s), the job
+  fails it too. In both cases the error quotes the last 300 characters of cleaned CLI output, so the
+  panel's *Last login failed:* line shows what the CLI actually printed. Nobody needs a worker shell
+  to diagnose the next drift.
 
 This is the concrete shape of the screen-scraping hazard recorded in
 [Limitations](/limitations/#the-login-flow-screen-scrapes-a-tui).
@@ -1744,6 +1758,7 @@ again. Three independent deadlines cover it, in order of how fast they fire:
 | Signal | Fires after | Enforced by |
 | --- | --- | --- |
 | `heartbeat_at` goes stale | `HEARTBEAT_TIMEOUT` (90s) | `login_status` on the next 2s poll; `CleanupRuntimeLoginAttemptsJob` every 5 min |
+| no recognizable link yet | `VERIFICATION_URL_TIMEOUT` (60s from spawn), or at once when the paste prompt arrives first | `RuntimeLoginJob`'s loop |
 | the CLI's own lifetime | `MAX_DURATION` (12 min from spawn) | `RuntimeLoginJob`'s loop |
 | `expires_at` elapses | `DEFAULT_TTL` (14 min from creation) | `login_status` and the cleanup job |
 
@@ -1776,7 +1791,8 @@ is no account left to capture credentials into.
 The command string (`claude auth login --claudeai`), the authorize-URL host regex, and the literal
 prompt `/Paste code here/i` are all hardcoded. `ClaudeLoginDriver` even hardcodes
 `/home/rails/.local/bin/claude` as its first binary candidate. If Claude Code changes any of these,
-login breaks wholesale.
+login breaks wholesale. When the link is what changed, the break is at least visible: the attempt
+fails and quotes the CLI's output instead of waiting for a link that never comes.
 
 Codex is the same story, with `codex login --device-auth` and a device-code regex
 (`/\b([A-Z0-9]{4}-[A-Z0-9]{4,8})\b/`) tuned to an *observed* 4–5 character split.
