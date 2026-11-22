@@ -17,5 +17,6 @@ class CreateGithubPrShadowObservations < ActiveRecord::Migration[8.1]
 
     add_index :github_pr_shadow_observations, :created_at
     add_index :github_pr_shadow_observations, %i[kind created_at]
+    add_index :github_pr_shadow_observations, :session_id
   end
 end

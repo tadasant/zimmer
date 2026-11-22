@@ -407,6 +407,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_210000) do
     t.datetime "signaled_at"
     t.index ["created_at"], name: "index_github_pr_shadow_observations_on_created_at"
     t.index ["kind", "created_at"], name: "index_github_pr_shadow_observations_on_kind_and_created_at"
+    t.index ["session_id"], name: "index_github_pr_shadow_observations_on_session_id"
   end
 
   create_table "github_pr_signals", force: :cascade do |t|

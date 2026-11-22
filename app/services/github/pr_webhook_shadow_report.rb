@@ -26,14 +26,15 @@ module Github
       new(**options).report
     end
 
-    # +kind+ and +mode+ narrow to one kind or one ingest mode. +sessions+ is the scope of sessions
-    # the caller may see, for a restricted MCP connection; everything when nil.
-    def initialize(now: Time.current, since: nil, kind: nil, mode: nil, sessions: nil, recent: DEFAULT_RECENT)
+    # +kind+ and +mode+ narrow to one kind or one ingest mode. +visible+ decides which session ids
+    # the caller may see, for a restricted MCP connection (called with the ids in the window,
+    # returns the visible ones); everything when nil.
+    def initialize(now: Time.current, since: nil, kind: nil, mode: nil, visible: nil, recent: DEFAULT_RECENT)
       @now = now
       @since = since || (now - WINDOW)
       @kind = kind
       @mode = mode
-      @sessions = sessions
+      @visible = visible
       @recent = recent.to_i.clamp(0, MAX_RECENT)
     end
 
@@ -62,7 +63,7 @@ module Github
       scope = GithubPrShadowObservation.where(created_at: @since..@now)
       scope = scope.where(kind: @kind) if @kind
       scope = scope.where(mode: @mode) if @mode
-      scope = scope.where(session_id: @sessions.select(:id)) if @sessions
+      scope = scope.where(session_id: @visible.call(scope.distinct.pluck(:session_id))) if @visible
       scope.order(:created_at, :id)
         .pluck(:session_id, :pr_url, :kind, :mode, :hit, :signaled_at, :created_at)
         .map do |session_id, pr_url, kind, mode, hit, signaled_at, at|

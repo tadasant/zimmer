@@ -48,7 +48,7 @@ module Mcp
           since: parse_since(args["since"]),
           kind: kind,
           mode: args["mode"].presence,
-          sessions: visible_sessions,
+          visible: visible_sessions,
           recent: (args["limit"].presence || Github::PrWebhookShadowReport::DEFAULT_RECENT).to_i
         )
         report.merge(since: report[:since].iso8601)
@@ -56,11 +56,15 @@ module Mcp
 
       private
 
-      # A restricted connection sees only sessions on the roots it may act on.
+      # A restricted connection sees only sessions on the roots it may act on, compared as
+      # canonical root tokens (Tool#allowed_root?), so an alias of an allowed root still counts.
       def visible_sessions
         return nil unless context.restricted?
 
-        Session.where("sessions.metadata->>'agent_root_key' IN (?)", context.allowed_agent_roots)
+        lambda do |session_ids|
+          Session.where(id: session_ids).pluck(:id, Arel.sql("metadata->>'agent_root_key'"))
+            .filter_map { |id, root| id if allowed_root?(root) }
+        end
       end
 
       def parse_since(value)

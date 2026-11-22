@@ -270,8 +270,14 @@ module Github
     #
     # Four changes are compared, one per GithubPrShadowObservation kind: a recorded PR status that
     # moved, a recorded CI status that moved, a comment the evaluator had not stored before, and a
-    # merge-conflict marker that appeared or cleared. A PR's first reading is a baseline, not a
-    # change, so a PR with no status recorded before the pass is skipped.
+    # merge conflict that appeared or was resolved. A PR's first reading is a baseline, not a
+    # change, so a PR with no status recorded before the pass is skipped. A PR that left `open`
+    # is one change, `status`: the CI status and conflict markers the evaluators drop with it
+    # are its consequences, not changes of their own.
+    #
+    # +now+ is the poll's time, for the lead: the moment the pass started, which is also when its
+    # Reading was taken, so a signal that landed while the pass read GitHub is neither a hit nor
+    # a lead.
     #
     # @param before [Hash] the session's custom_metadata before the pass's evaluators ran
     # @param after [Hash] the same, after
@@ -297,21 +303,33 @@ module Github
 
     # The GithubPrShadowObservation kinds that changed for +url+ between +before+ and +after+.
     def changed_kinds(url, before, after)
+      status_after = after&.dig("github_pull_request_statuses", url)
+      return [ "status" ] if status_after != "open" && before&.dig("github_pull_request_statuses", url) != status_after
+
       kinds = []
-      kinds << "status" if before&.dig("github_pull_request_statuses", url) != after&.dig("github_pull_request_statuses", url)
+      kinds << "status" if before&.dig("github_pull_request_statuses", url) != status_after
       kinds << "ci" if before&.dig("github_pull_request_ci_statuses", url) != after&.dig("github_pull_request_ci_statuses", url)
       if before&.dig("github_comments", url).is_a?(Hash) && comment_count(after, url) > comment_count(before, url)
         kinds << "comments"
       end
-      kinds << "merge_conflict" if conflict_marked?(before, url) != conflict_marked?(after, url)
+      kinds << "merge_conflict" if conflict_changed?(before, after, url)
       kinds
     end
 
-    # Whether the merge-conflict evaluator holds any marker, suspected or confirmed, for +url+.
-    # A suspicion appearing or every marker clearing is a change; suspected becoming confirmed
-    # is the same conflict read twice, not a new one.
-    def conflict_marked?(metadata, url)
-      [ MergeConflictEvaluator::CONFIRMED_METADATA_KEY, MergeConflictEvaluator::SUSPECTED_METADATA_KEY ].any? do |key|
+    # A conflict appeared (the first conflicting reading, which records a suspicion) or a
+    # CONFIRMED one cleared. A suspicion that clears unconfirmed is GitHub's stale reading after a
+    # push, the flap the debounce exists for, and suspected becoming confirmed is the same
+    # conflict read twice; neither is a change the webhook could have announced.
+    def conflict_changed?(before, after, url)
+      appeared = !conflict_marker?(before, url, :any) && conflict_marker?(after, url, :any)
+      resolved = conflict_marker?(before, url, :confirmed) && !conflict_marker?(after, url, :any)
+      appeared || resolved
+    end
+
+    def conflict_marker?(metadata, url, which)
+      keys = [ MergeConflictEvaluator::CONFIRMED_METADATA_KEY ]
+      keys << MergeConflictEvaluator::SUSPECTED_METADATA_KEY if which == :any
+      keys.any? do |key|
         markers = metadata&.dig(key)
         markers.is_a?(Hash) && markers.key?(url)
       end

@@ -12,12 +12,17 @@
 #
 # Kinds, one per evaluator reading the webhook can make due:
 #
-#   status          the PR's recorded state (open, merged, closed) moved. Announced by `status`.
+#   status          the PR's recorded state (open, merged, closed) moved. Announced by `status`,
+#                   which a `pull_request` delivery writes and so does a `check_suite` / `check_run`
+#                   naming the PR: a hit says a signal made the pass due, not which delivery it was.
+#                   A PR leaving `open` records only this kind, not the CI and conflict state the
+#                   evaluators drop with it.
 #   ci              the PR's recorded CI status moved. Announced by `status` on the PR (check_suite,
 #                   check_run) or `ci` on the repository (a commit status) while CI was unsettled.
 #   comments        a comment the evaluator had not stored before. Announced by `comments`.
-#   merge_conflict  a conflict marker appeared or cleared. Announced by `merge_conflict` on the PR
-#                   or `base_push` on the repository.
+#   merge_conflict  a conflict appeared (first conflicting reading) or a confirmed one cleared.
+#                   A suspicion that clears unconfirmed is a stale reading, not a change. Announced
+#                   by `merge_conflict` on the PR or `base_push` on the repository.
 #
 # Written in webhook_shadow and webhook_with_poll_fallback (in the latter, every miss is a change
 # only the fallback caught). Kept RETENTION, pruned by InboundEventRetentionJob, read by

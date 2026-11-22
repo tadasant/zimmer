@@ -63,6 +63,12 @@ class Mcp::Tools::CompareGithubPrWebhookShadowTest < ActiveSupport::TestCase
     assert_equal 1, tool.call({})[:totals][:miss]
   end
 
+  test "a single sample is its own median, p90 and max" do
+    observe("ci", 1.hour.ago, lead: 15.seconds)
+
+    assert_equal({ samples: 1, median_seconds: 15, p90_seconds: 15, max_seconds: 15 }, @tool.call({})[:lead])
+  end
+
   test "a malformed since or an unknown kind is a tool error" do
     assert_raises(Mcp::ToolError) { @tool.call("since" => "yesterday") }
     assert_raises(Mcp::ToolError) { @tool.call("kind" => "labels") }

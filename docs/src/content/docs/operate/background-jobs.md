@@ -1208,12 +1208,12 @@ evaluator's last stamp. A PR's first reading is a baseline and records nothing.
 
 | Kind | The change the poll found | The signal that counts as announcing it |
 | --- | --- | --- |
-| `status` | the recorded PR state (open, merged, closed) moved | `status` on the PR |
+| `status` | the recorded PR state (open, merged, closed) moved. A PR leaving `open` is this one change, not also a CI or conflict change | `status` on the PR (a `pull_request` delivery, or a `check_suite` / `check_run` naming it) |
 | `ci` | the recorded CI status moved | `status` on the PR, or `ci` on the repository while CI was `pending` or unrecorded |
 | `comments` | a comment `CommentEvaluator` had not stored before | `comments` on the PR |
-| `merge_conflict` | a conflict suspicion appeared, or every marker cleared | `merge_conflict` on the PR, or `base_push` on the repository |
+| `merge_conflict` | a conflict appeared (the first conflicting reading), or a confirmed one cleared. A suspicion that clears unconfirmed is GitHub's stale reading after a push and is not counted | `merge_conflict` on the PR, or `base_push` on the repository |
 
-A row with a signal is a **hit**, and the poll's time minus the signal's is the webhook's **lead**.
+A row with a signal is a **hit**, and the time the pass started minus the signal's is the webhook's **lead**.
 `github_pr_signals` keeps only the newest time per PR and kind, so after a burst of deliveries the
 lead is the last delivery's, which understates the first's. A row without one is a **miss**: a hook
 missing an event type, a dropped delivery, or a change no delivery names (a fork PR's CI, a stacked
