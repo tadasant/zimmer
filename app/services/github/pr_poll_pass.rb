@@ -132,16 +132,34 @@ module Github
     # @param session [Session]
     # @return [void]
     def poll_session(session)
+      # The stamp is the moment the pass STARTED, so a webhook signal that lands while it is
+      # reading GitHub is newer than the stamp and makes the session due on the next tick.
+      started_at = Time.current
+
       # One ceiling for the whole pass — the pass's own gate and the merge-conflict
       # gate inside it answer to the same number. See #max_poll_interval_for.
       ceiling = max_poll_interval_for(session)
+      refs = PrRef.for_session(session)
 
-      unless due?(session, ceiling)
+      # What GitHub's webhook has said about these PRs, or nil in `poll`. When it is driving,
+      # each gate below is due on a signal newer than its stamp, and otherwise only on
+      # PrWebhookIngest::FALLBACK_POLL_INTERVAL. See Github::PrWebhookIngest.
+      reading = PrWebhookIngest::Reading.for(refs, now: started_at)
+      webhook = reading&.driving?
+      stamps = {
+        status: PollBackoff.last_polled_at(session, POLL_BACKOFF_KEY),
+        comments: PollBackoff.last_polled_at(session, COMMENT_BACKOFF_KEY),
+        merge_conflict: PollBackoff.last_polled_at(session, MERGE_CONFLICT_BACKOFF_KEY)
+      }
+      suspicion = MergeConflictEvaluator.fresh_suspicion?(session)
+
+      unless due?(session, ceiling, webhook ? reading : nil, stamps, suspicion)
         Rails.logger.info "[Github::PrPollPass] Skipping session #{session.id} (PollBackoff: stale user activity)"
         return
       end
 
-      refs = PrRef.for_session(session)
+      # Only a pass that has a reading compares before and after; see PrWebhookIngest.observe.
+      before = reading && session.custom_metadata.deep_dup
       snapshots = refs.to_h { |ref| [ ref.url, PrSnapshot.fetch(ref) ] }
 
       stamped_keys = [ POLL_BACKOFF_KEY ]
@@ -158,13 +176,15 @@ module Github
         GoalFactsEvaluator.new.evaluate(session, refs, snapshots)
       end
 
-      if PollBackoff.should_poll?(
+      merge_conflict_due = PollBackoff.should_poll?(
         session,
         job_key: MERGE_CONFLICT_BACKOFF_KEY,
         base_interval: MERGE_CONFLICT_INTERVAL_SECONDS,
-        min_interval: MERGE_CONFLICT_INTERVAL_SECONDS,
+        min_interval: webhook && !suspicion ? [ MERGE_CONFLICT_INTERVAL_SECONDS, PrWebhookIngest::FALLBACK_POLL_INTERVAL ].max : MERGE_CONFLICT_INTERVAL_SECONDS,
         max_interval: ceiling
-      )
+      ) || (webhook && reading.merge_conflict_pending?(stamps[:merge_conflict]))
+
+      if merge_conflict_due
         stamped_keys << MERGE_CONFLICT_BACKOFF_KEY
         run_evaluator(session, "MergeConflictEvaluator") do
           # Mergeability re-read from REST for every open PR: GraphQL's is a cached
@@ -173,26 +193,47 @@ module Github
         end
       end
 
-      if PollBackoff.should_poll?(session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS)
+      comments_due = PollBackoff.should_poll?(
+        session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS,
+        min_interval: webhook ? PrWebhookIngest::FALLBACK_POLL_INTERVAL : nil
+      ) || (webhook && reading.comments_pending?(stamps[:comments]))
+
+      if comments_due
         stamped_keys << COMMENT_BACKOFF_KEY
         run_evaluator(session, "CommentEvaluator") do
           CommentEvaluator.new.evaluate(session, refs, snapshots)
         end
       end
 
-      PollBackoff.record_poll!(session, job_key: stamped_keys)
+      run_evaluator(session, "PrWebhookIngest.observe") do
+        PrWebhookIngest.observe(session, reading, refs, before: before, after: session.custom_metadata, stamps: stamps)
+      end
+
+      PollBackoff.record_poll!(session, job_key: stamped_keys, at: started_at)
     end
 
     private
 
     # Whether this session has earned another pass. See PollBackoff for the curve, and
     # #max_poll_interval_for for the ceiling.
-    def due?(session, ceiling)
+    #
+    # With a driving webhook +reading+, a signal newer than the stamp it concerns makes the
+    # session due at once, and otherwise the pass runs no more often than
+    # PrWebhookIngest::FALLBACK_POLL_INTERVAL — unless a conflict suspicion is fresh, whose
+    # confirming reading keeps its two-minute ceiling. Without one, the curve as it always was.
+    def due?(session, ceiling, reading, stamps, suspicion)
+      if reading
+        return true if reading.status_pending?(stamps[:status]) ||
+                       reading.comments_pending?(stamps[:comments]) ||
+                       reading.merge_conflict_pending?(stamps[:merge_conflict])
+      end
+
       PollBackoff.should_poll?(
         session,
         job_key: POLL_BACKOFF_KEY,
         base_interval: BASE_POLL_INTERVAL_SECONDS,
-        max_interval: ceiling
+        max_interval: ceiling,
+        min_interval: reading && !suspicion ? PrWebhookIngest::FALLBACK_POLL_INTERVAL : nil
       )
     end
 

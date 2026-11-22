@@ -50,7 +50,7 @@ From `config.good_job.cron`:
 | Cadence | Job | What it does |
 | --- | --- | --- |
 | 30s | `HeartbeatSweepJob` | Nudge `needs_input` sessions with a heartbeat enabled |
-| 30s | `GithubPrPollPassJob` | One pass over every session tracking a PR. Enumerates once, gates on `PollBackoff` once, parses each PR url once, and takes ONE `gh pr view` reading of each PR — then hands it to four evaluators: `Github::PrStatusEvaluator` (PR state + CI status, and the merged-PR message), `Github::GoalFactsEvaluator` (the description's Verification section and checkboxes, and the labels, for [the goal check](/sessions/goals/#how-a-goal-is-checked); no GitHub call of its own, and only for a session whose goal checks them), `Github::MergeConflictEvaluator` (on its own 2-minute floor inside the pass, because its debounce is tuned to that gap; it reads each open PR's mergeability from the REST pulls endpoint, which the GraphQL reading the other evaluators share is not reliable enough for) and `Github::CommentEvaluator` (its two comment endpoints are separate resources, so they stay their own fetch). It replaced three cron entries that each swept the same sessions and re-derived the same facts ([#711](https://github.com/tadasant/zimmer/issues/711)) |
+| 30s | `GithubPrPollPassJob` | One pass over every session tracking a PR. Enumerates once, gates on `PollBackoff` once, parses each PR url once, and takes ONE `gh pr view` reading of each PR — then hands it to four evaluators: `Github::PrStatusEvaluator` (PR state + CI status, and the merged-PR message), `Github::GoalFactsEvaluator` (the description's Verification section and checkboxes, and the labels, for [the goal check](/sessions/goals/#how-a-goal-is-checked); no GitHub call of its own, and only for a session whose goal checks them), `Github::MergeConflictEvaluator` (on its own 2-minute floor inside the pass, because its debounce is tuned to that gap; it reads each open PR's mergeability from the REST pulls endpoint, which the GraphQL reading the other evaluators share is not reliable enough for) and `Github::CommentEvaluator` (its two comment endpoints are separate resources, so they stay their own fetch). With `GITHUB_PR_INGEST_MODE=webhook_with_poll_fallback` the GitHub webhook decides which evaluators are due, and the clock only backs it up every 10 minutes; see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock). It replaced three cron entries that each swept the same sessions and re-derived the same facts ([#711](https://github.com/tadasant/zimmer/issues/711)) |
 | 2m | `GithubOrphanedPrConflictSweepJob` | Conflict watching for the open PRs the pass cannot see: those whose producing session archived or failed in the last 7 days, and not before 2026-10-16 (`WATCHED_SINCE`, so the first deploy revives nothing that ended while nothing could). Each such session is read about every 15 minutes, or every 2 while a conflict is suspected. It goes through the same REST mergeability read and the same two-reading debounce as `Github::MergeConflictEvaluator`. A confirmed conflict brings the producer back (unarchived, or a failed one resumed) with the conflict message and a paragraph on why it is running again. The PR is marked notified before the session is live, so the pass cannot tell it twice. Limits: at most once per conflict episode (a clean reading or a new head starts the next), 3 times per PR, and 2 revivals per run. Never a replaced session, one with no runtime session id, or one a newer session tracking the same PR supersedes. A merged or closed reading is recorded so the PR leaves the population. See `Github::OrphanedPrConflictSweep` |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
 | 1m | `WhatsappTriggerPollerJob` | Poll the WhatsApp bridge for new messages in watched chats ([`whatsapp` triggers](/sessions/triggers/#whatsapp)) |
@@ -1132,6 +1132,65 @@ calls of its own and reads the snapshot the pass already fetched.
 calls, so speeding it up for every idle PR-holding session in the fleet is a rate-limit decision
 rather than a free one — see
 [Limitations](/limitations/#a-parked-session-can-hear-about-its-merged-pr-up-to-half-an-hour-late).
+
+### Driven by GitHub's webhook instead of the clock
+
+The pass learns about every change by asking. For an active session that is `gh pr view` and
+`gh pr checks` (GraphQL) every 30 seconds, plus two REST comment pages per open PR on the same
+cadence and a REST mergeability read every two minutes. The comment pages are most of the REST
+budget: about 240 calls an hour for each open PR whose session a human touched in the last half
+hour.
+
+`GITHUB_PR_INGEST_MODE` lets the GitHub webhook that already serves
+[triggers](/sessions/triggers/#github-webhook-delivery) tell the pass when to look instead. It has
+its own mode, separate from `GITHUB_TRIGGER_INGEST_MODE`, and reads the same
+`GITHUB_WEBHOOK_SECRET`. `POST /webhooks/github` answers when either mode is listening.
+
+Every verified delivery becomes a row in `github_pr_signals` (`Github::PrWebhookIngest`), visible
+at `/supervisor/github_pr_signals`. A row records that something about a PR may have changed. It
+holds no content from the delivery:
+
+| Delivery | Signal | Evaluator it makes due |
+| --- | --- | --- |
+| `pull_request` opened, reopened, closed, synchronize, edited, labeled, unlabeled, ready_for_review, converted_to_draft | `status` on the PR | `PrStatusEvaluator` and `GoalFactsEvaluator` |
+| `pull_request` synchronize, reopened, or an edit that changed the base | `merge_conflict` on the PR | `MergeConflictEvaluator` |
+| `issue_comment` created on a PR, `pull_request_review`, `pull_request_review_comment` | `comments` on the PR | `CommentEvaluator` |
+| `check_suite`, `check_run` | `status` on each PR the delivery names | `PrStatusEvaluator` |
+| `status` | `ci` on the repository | `PrStatusEvaluator`, for every tracked PR in it |
+| `push` to the default branch | `base_push` on the repository | `MergeConflictEvaluator`, for every tracked PR in it |
+| anything, `ping` included | `delivery` on the repository | none: this is how the repository counts as covered |
+
+An evaluator is due when a signal for it is newer than its last stamp. The pass stamps the time it
+*started*, so a signal that arrives while it is reading GitHub makes the session due again on the
+next tick. A burst of deliveries (one `check_run` per CI job) updates one row and costs one pass.
+Merge-conflict signals wait `MERGE_CONFLICT_SETTLE` (60 s) first, because GitHub recomputes
+mergeability after a push and a REST read straight after the push returns `null`.
+
+The three modes:
+
+- **`poll`** (the default): no signals are written and the pass runs exactly as described above.
+- **`webhook_shadow`**: signals are written and the pass keeps its old cadence. When a poll on a
+  covered session finds a status, CI or comment change, it logs whether a signal came first:
+  `[Github::PrWebhookIngest] webhook_shadow hit` or `… miss`. Query those log lines before
+  switching modes.
+- **`webhook_with_poll_fallback`**: signals drive the pass. A covered session with no new signal is
+  polled every `FALLBACK_POLL_INTERVAL` (10 minutes), for the pass, comments and merge conflicts
+  alike, so a missed delivery costs at most 10 minutes. A fresh conflict suspicion keeps its
+  2-minute confirmation reading. Every change a fallback poll finds without a signal is logged as a
+  `webhook_with_poll_fallback miss`. `Github::OrphanedPrConflictSweep` follows the same rule, with an
+  hour as its fallback instead of 15 minutes.
+
+**Coverage.** Signals decide a session's cadence only when every repository it tracks a PR in
+delivered something within `COVERAGE_WINDOW` (6 hours). A repository with no hook never delivers,
+so its sessions keep the old cadence. If a hook is deleted or breaks, its repository goes back to
+full polling once the window passes. Switching the mode on means the operator says the hooks
+subscribe to every event in the table above. A hook that subscribes only to `issues` and
+`pull_request` still counts as covered, and comments on its PRs then wait for the 10-minute
+fallback.
+
+**A forged delivery reads, it does not tell.** A signal only makes an evaluator read GitHub sooner.
+A forged or replayed delivery can spend an extra read, but it cannot announce a merge, a green CI
+run or a comment that did not happen, because the evaluator still learns all of those from GitHub.
 
 ### The conflict debounce is a duration, not a poll count
 

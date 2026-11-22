@@ -129,7 +129,8 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
         Github::PrPollPass::POLL_BACKOFF_KEY,
         Github::PrPollPass::MERGE_CONFLICT_BACKOFF_KEY,
         Github::PrPollPass::COMMENT_BACKOFF_KEY
-      ]
+      ],
+      at: instance_of(ActiveSupport::TimeWithZone)
     )
 
     Github::PrPollPass.new.run
@@ -162,7 +163,8 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
 
     PollBackoff.expects(:record_poll!).once.with(
       instance_of(Session),
-      job_key: [ Github::PrPollPass::POLL_BACKOFF_KEY, Github::PrPollPass::COMMENT_BACKOFF_KEY ]
+      job_key: [ Github::PrPollPass::POLL_BACKOFF_KEY, Github::PrPollPass::COMMENT_BACKOFF_KEY ],
+      at: instance_of(ActiveSupport::TimeWithZone)
     )
 
     Github::PrPollPass.new.run
@@ -568,6 +570,122 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     assert_nil @session_with_pr.custom_metadata["github_pull_request_goal_facts"]
   end
 
+  # ---- driven by GitHub's webhook (Github::PrWebhookIngest) ----
+  #
+  # A covered session — every repository it tracks a PR in has delivered recently — runs an
+  # evaluator when a signal for it is newer than the evaluator's stamp, and otherwise only on
+  # the fallback cadence. A session that is not covered polls exactly as before.
+
+  test "webhook mode: a covered, recently-polled session with no signal is not polled" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+
+      Github::PrSnapshot.expects(:fetch).never
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: the fallback still polls once its interval has passed" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      active_session_tracking(PR_URL, stamps: all_stamps((Github::PrWebhookIngest::FALLBACK_POLL_INTERVAL + 5).seconds.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.expects(:fetch).once.returns(nil)
+      Github::CommentEvaluator.any_instance.expects(:evaluate).once
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a status signal runs the pass but not the comment read" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "status" ] ])
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.expects(:fetch).once.returns(nil)
+      Github::PrStatusEvaluator.any_instance.expects(:evaluate).once
+      Github::CommentEvaluator.any_instance.expects(:evaluate).never
+      Github::MergeConflictEvaluator.any_instance.expects(:evaluate).never
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a comment signal runs the comment read, and the stamp is the pass's start" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      # Clear of freeze_time's whole-second truncation below.
+      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "comments" ] ], at: 30.seconds.ago)
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.stubs(:fetch).returns(nil)
+      Github::CommentEvaluator.any_instance.expects(:evaluate).once
+      freeze_time do
+        Github::PrPollPass.new.run
+        stamp = PollBackoff.last_polled_at(@session_with_pr.reload, Github::PrPollPass::COMMENT_BACKOFF_KEY)
+        assert_equal Time.current.to_i, stamp.to_i
+      end
+
+      # The signal is now older than the stamp: the next tick does nothing.
+      Github::PrSnapshot.expects(:fetch).never
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a base-branch push runs the merge-conflict read once it has settled" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      GithubPrSignal.signal!([ %w[owner/repo base_push] ], at: 2.minutes.ago)
+      active_session_tracking(PR_URL, stamps: all_stamps(5.minutes.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.stubs(:fetch).returns(nil)
+      Github::MergeConflictEvaluator.any_instance.expects(:evaluate).once
+      Github::CommentEvaluator.any_instance.expects(:evaluate).never
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a session in a repository that never delivers polls as before" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.expects(:fetch).once.returns(nil)
+      Github::CommentEvaluator.any_instance.expects(:evaluate).once
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "shadow mode keeps the old cadence and logs whether a change was signalled first" do
+    with_pr_ingest_mode("webhook_shadow") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "status" ] ])
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      @session_with_pr.merge_custom_metadata!("github_pull_request_statuses" => { PR_URL => "open" })
+      isolate
+      Github::MergeConflictEvaluator.any_instance.stubs(:evaluate)
+      Github::CommentEvaluator.any_instance.expects(:evaluate).once
+
+      merged = Github::PrSnapshot.new(ref: Github::PrRef.parse(PR_URL), state: "MERGED", merged_at: Time.current.iso8601, mergeable: nil)
+      Github::PrSnapshot.stubs(:fetch).returns(merged)
+      Github::PrStatusEvaluator.any_instance.stubs(:post_merge_automation).returns([])
+      Github::PrStatusEvaluator.any_instance.stubs(:notify_merged_prs).returns([])
+
+      logged = []
+      Rails.logger.stubs(:info).with { |message| logged << message.to_s; true }
+      Github::PrPollPass.new.run
+
+      assert(logged.any? { |line| line.include?("webhook_shadow hit: status change on owner/repo#123") }, logged.join("\n"))
+    end
+  end
+
   private
 
   def goal_session_with_pr(goal)
@@ -590,6 +708,19 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
       .returns([ view, "", fake_process_status ])
     BoundedSubprocess.stubs(:run).with { |command, **| command[0, 3] == %w[gh pr checks] }
       .returns([ checks, "", fake_process_status ])
+  end
+
+  def with_pr_ingest_mode(mode)
+    saved = ENV["GITHUB_PR_INGEST_MODE"]
+    ENV["GITHUB_PR_INGEST_MODE"] = mode
+    yield
+  ensure
+    saved.nil? ? ENV.delete("GITHUB_PR_INGEST_MODE") : ENV["GITHUB_PR_INGEST_MODE"] = saved
+  end
+
+  def all_stamps(at)
+    [ Github::PrPollPass::POLL_BACKOFF_KEY, Github::PrPollPass::COMMENT_BACKOFF_KEY, Github::PrPollPass::MERGE_CONFLICT_BACKOFF_KEY ]
+      .index_with { at.iso8601 }
   end
 
   # Restrict the sweep to the one fixture session, so `.never` and `.once`

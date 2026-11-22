@@ -155,6 +155,9 @@ module Github
       return if session.status_summary_fork?
       return unless due?(session)
 
+      # Stamped as the sweep's start, so a signal landing mid-read is newer than the stamp.
+      started_at = Time.current
+
       # The batch row may be minutes old by now; the debounce markers must not be.
       session = Session.select(self.class.swept_columns).find(session.id)
       return unless session.archived? || session.failed?
@@ -175,7 +178,7 @@ module Github
         Rails.logger.info "[Github::OrphanedPrConflictSweep] Deferred reviving session #{session.id}: " \
           "this run has revived #{MAX_REVIVALS_PER_RUN} already"
       ensure
-        stamp_poll(session)
+        stamp_poll(session, started_at)
       end
     end
 
@@ -254,8 +257,22 @@ module Github
 
     private
 
+    # With GitHub's webhook driving (Github::PrWebhookIngest) and every repository this
+    # session's PRs live in covered, a merge-conflict or base-push signal newer than the
+    # last sweep makes the session due, and otherwise it is swept every
+    # PrWebhookIngest::ORPHAN_FALLBACK_POLL_INTERVAL instead of every POLL_INTERVAL. A fresh
+    # suspicion keeps its two-minute confirmation either way.
     def due?(session)
-      interval = MergeConflictEvaluator.fresh_suspicion?(session) ? PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS : POLL_INTERVAL
+      suspicion = MergeConflictEvaluator.fresh_suspicion?(session)
+      interval = suspicion ? PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS : POLL_INTERVAL
+
+      reading = PrWebhookIngest::Reading.for(PrRef.for_session(session))
+      if reading&.driving? && !suspicion
+        return true if reading.merge_conflict_pending?(PollBackoff.last_polled_at(session, POLL_BACKOFF_KEY))
+
+        interval = PrWebhookIngest::ORPHAN_FALLBACK_POLL_INTERVAL
+      end
+
       interval -= DUE_SLACK_SECONDS
       PollBackoff.should_poll?(
         session,
@@ -267,8 +284,8 @@ module Github
     end
 
     # Never lets a failed stamp replace the error that is already on its way out.
-    def stamp_poll(session)
-      PollBackoff.record_poll!(session, job_key: POLL_BACKOFF_KEY)
+    def stamp_poll(session, started_at)
+      PollBackoff.record_poll!(session, job_key: POLL_BACKOFF_KEY, at: started_at)
     rescue => e
       Rails.logger.error "[Github::OrphanedPrConflictSweep] Could not stamp the poll on session #{session.id}: " \
         "#{e.class}: #{e.message}"

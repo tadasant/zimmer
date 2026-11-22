@@ -5956,8 +5956,13 @@ see [GitHub webhook delivery](/sessions/triggers/#github-webhook-delivery). Like
 by default, needs the same public ingress, and runs beside the poller rather than replacing it. What
 it does not cover yet:
 
-- **The per-PR status and comment polling.** Those pollers do not fire triggers, so this ingress
-  does not reach them, and they are most of the API burn.
+- **The per-PR status and comment polling, unless `GITHUB_PR_INGEST_MODE` is on.** Those pollers
+  fire no triggers, so `GITHUB_TRIGGER_INGEST_MODE` does not reach them. Their own mode does: see
+  [Driven by GitHub's webhook](/operate/background-jobs/#driven-by-githubs-webhook-instead-of-the-clock).
+  Even with it on, a covered session is still polled every 10 minutes as a fallback. A PR from a fork
+  gets no `check_suite` / `check_run` signal, because GitHub does not name fork PRs on those
+  deliveries, so its CI changes wait for the fallback. A conflict caused by a push to a branch other
+  than the default (a stacked PR's base) also waits for the fallback.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
 - **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
   pending session releases its claim so the poller can fire the event later, and on `/health` that

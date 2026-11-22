@@ -20,6 +20,8 @@ class InboundEventRetentionJob < ApplicationJob
     deliveries = prune(WebhookDelivery, WebhookDelivery.expired(now))
     claims = prune(TriggerEventClaim, TriggerEventClaim.expired(now))
     observations = prune(TriggerShadowObservation, TriggerShadowObservation.expired(now))
+    # Nothing logs these: a signal nobody has repeated for a day is simply no longer news.
+    signals = prune(GithubPrSignal, GithubPrSignal.expired(now))
 
     if deliveries.positive? || claims.positive? || observations.positive?
       Rails.logger.info(
@@ -29,7 +31,7 @@ class InboundEventRetentionJob < ApplicationJob
       )
     end
 
-    { deliveries: deliveries, claims: claims, shadow_observations: observations }
+    { deliveries: deliveries, claims: claims, shadow_observations: observations, github_pr_signals: signals }
   end
 
   private

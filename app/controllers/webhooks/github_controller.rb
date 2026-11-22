@@ -12,6 +12,10 @@ module Webhooks
   # the conditions the poller would. Everything else — `ping` when the hook is saved, a closed
   # issue, a review requested — is acknowledged so GitHub records a success, and fires nothing.
   #
+  # Separately, while GITHUB_PR_INGEST_MODE is listening, every delivery is handed to
+  # Github::PrWebhookIngest, which records which tracked pull requests it may have changed so the
+  # per-session PR pollers read them now instead of on their next tick.
+  #
   # The body must be `application/json`. A hook configured for `application/x-www-form-urlencoded`
   # sends a body that is not JSON and gets a 400.
   #
@@ -32,7 +36,10 @@ module Webhooks
 
     def create
       source = Webhooks::Source.github
-      return render_inert(source) unless source.accepting?
+      # One endpoint, two consumers: triggers (GITHUB_TRIGGER_INGEST_MODE) and the per-session
+      # PR pollers (GITHUB_PR_INGEST_MODE). It answers when either is listening; both read the
+      # same secret.
+      return render_inert(source) unless source.accepting? || Github::PrWebhookIngest.source.accepting?
       return reject(413, source, "body over #{MAX_BODY_BYTES} bytes") if body_too_large?
 
       verification = GithubSignature.verify(
@@ -76,13 +83,18 @@ module Webhooks
           delivery_id: delivery_id,
           event_type: event_type
         )
-        if recorded && fires
+        # The trigger side reads its own mode again when the job runs; checking it here as
+        # well keeps a PR-only deployment from enqueueing a job per delivery that does nothing.
+        if recorded && fires && source.receiving?
           GithubEventJob.perform_later(
             delivery_id, event_type,
             GithubEventJob.item_arguments(object, repository: payload["repository"], pull_request: item_key == "pull_request"),
             label
           )
         end
+        # The PR side: "this PR may have changed", for Github::PrPollPass. A signal names a PR
+        # and nothing it says, so it is safe to write from any verified delivery.
+        Github::PrWebhookIngest.record_delivery!(event, payload) if recorded && Github::PrWebhookIngest.receiving?
         recorded
       end
 
