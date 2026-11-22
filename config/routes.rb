@@ -100,6 +100,10 @@ Rails.application.routes.draw do
     resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
+    # Read-only: the token broker creates, revokes and deletes every row, and a
+    # grant is ended from /token-broker, which revokes it upstream first.
+    resources :mcp_broker_grants, only: [ :index, :show ]
+    resources :mcp_brokered_tokens, only: [ :index, :show ]
     # Read-only plus destroy: every row records what a remote MCP server answered
     # when Zimmer last asked whether it requires OAuth, so there is nothing to
     # hand-author and a typed-in `advertised_not_required` would forge an
@@ -774,6 +778,14 @@ Rails.application.routes.draw do
   # AFTER the collection route above so `/connectors/secret-store` is not
   # swallowed by the glob.
   get "connectors/*name", to: "connectors#show", as: :connector, format: false
+
+  # The session token broker (TokenBroker): its parent grants, one per
+  # authorization server, and the one-time consent that creates each. The
+  # consent's callback is the shared /mcp_oauth/callback below.
+  resource :token_broker, only: [ :show ], controller: :token_broker, path: "token-broker" do
+    post :connect
+    delete :disconnect
+  end
 
   # Deleting a stored OAuth credential (the "Disconnect" button on Connectors).
   resources :mcp_oauth_credentials, only: [ :destroy ], path: "connector_credentials"

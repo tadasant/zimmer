@@ -155,6 +155,11 @@
       "class": "RefreshMcpOauthTokensJob",
       "description": "Proactively refresh MCP OAuth tokens before they expire"
     },
+    "token_broker_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "TokenBrokerSweepJob",
+      "description": "Revoke brokered session tokens left live at rest, retry failed revocations, expire the rest"
+    },
     "refresh_x_oauth_tokens": {
       "cron": "*/15 * * * *",
       "class": "RefreshXOauthTokensJob",
@@ -512,6 +517,11 @@
       "class": "RefreshMcpOauthTokensJob",
       "description": "Proactively refresh MCP OAuth tokens before they expire"
     },
+    "token_broker_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "TokenBrokerSweepJob",
+      "description": "Revoke brokered session tokens left live at rest, retry failed revocations, expire the rest"
+    },
     "refresh_x_oauth_tokens": {
       "cron": "*/15 * * * *",
       "class": "RefreshXOauthTokensJob",
@@ -833,6 +843,11 @@
       "cron": "*/30 * * * *",
       "class": "RefreshMcpOauthTokensJob",
       "description": "Proactively refresh MCP OAuth tokens before they expire"
+    },
+    "token_broker_sweep": {
+      "cron": "*/5 * * * *",
+      "class": "TokenBrokerSweepJob",
+      "description": "Revoke brokered session tokens left live at rest, retry failed revocations, expire the rest"
     },
     "refresh_x_oauth_tokens": {
       "cron": "*/15 * * * *",

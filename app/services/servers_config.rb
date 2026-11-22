@@ -31,6 +31,7 @@ class ServersConfig
       @url = config["url"]
       @headers = config["headers"] || {}
       @oauth = config["oauth"] || {}
+      @brokered_auth = config[TokenBroker::Declaration::CATALOG_KEY]
       @unavailable = config["unavailable"]
       @startup_timeout_sec = config[McpStartupTimeout::CATALOG_KEY]
     end
@@ -77,6 +78,31 @@ class ServersConfig
     end
 
     def declared_unavailable? = !unavailable_reason.nil?
+
+    # The entry's raw `brokered_auth` declaration, or nil when it does not opt
+    # into the session token broker. Parsed and validated by
+    # TokenBroker::Declaration, which is what every caller should go through.
+    attr_reader :brokered_auth
+
+    def brokered? = !@brokered_auth.nil?
+
+    # The `${VAR}`s a session's clone needs for this entry (SessionSecretScope).
+    #
+    # For most entries that is every variable the entry names. A brokered entry's
+    # `Authorization` header is replaced by a child token when the session is
+    # prepared, so the static credential it names — `${STRAD_API_KEY}`, while
+    # the catalog still carries it — is not the session's to hold, and is left
+    # out here.
+    #
+    # @return [Array<String>]
+    def session_variables
+      return required_variables + optional_variables unless brokered?
+
+      kept_headers = headers.reject { |key, _| key.to_s.casecmp?("Authorization") }
+      (env.values + kept_headers.values + args + [ url ]).flat_map do |value|
+        extract_interpolations(value, with_defaults: false) + extract_interpolations(value, with_defaults: true)
+      end.uniq
+    end
 
     # How long a runtime should wait for THIS server to start and answer
     # `initialize`, in seconds, when the catalog entry says so — nil when it does
