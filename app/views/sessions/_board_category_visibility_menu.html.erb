@@ -1,0 +1,84 @@
+<%# Snooze or backlog a whole Your board v2 category — or put it back.
+
+    The shared `visibility` Stimulus controller, pointed at the category: it
+    resolves the presets in the browser's zone and posts the same body it posts
+    for a session. The category leaves the board as a unit, sessions and all,
+    and comes back on its own when a snooze runs out. Nothing about when any of
+    its sessions runs changes.
+
+    Locals:
+      category - the BoardCategory %>
+<% tucked_away = !category.board_visible? %>
+<div class="inline-flex"
+     data-controller="visibility"
+     data-visibility-url-value="<%= visibility_board_category_path(category) %>"
+     data-visibility-inline-value="false">
+  <button type="button"
+          data-action="visibility#toggle"
+          data-visibility-target="button"
+          aria-expanded="false"
+          title="Snooze or backlog this whole category. Visual only — it does not pause, start or stop any session."
+          class="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500">
+    <%= render "sessions/visibility_icon", classes: "h-3.5 w-3.5" %>
+    <span class="ml-1"><%= tucked_away ? "Wake" : "Snooze" %></span>
+  </button>
+
+  <div data-visibility-target="panel"
+       class="hidden absolute right-0 top-full mt-2 z-40 w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100vh-8rem)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 text-left shadow-lg">
+    <div class="mb-1 flex items-center justify-between">
+      <span class="text-sm font-semibold text-gray-900">Snooze category until</span>
+      <span data-visibility-target="zone" class="max-w-[9rem] truncate font-mono text-[10px] text-gray-400"></span>
+    </div>
+    <p class="mb-2 rounded-md bg-slate-50 px-2 py-1.5 text-[11px] leading-snug text-slate-600">
+      Takes this category and every session in it off Your board v2 until then.
+      <span class="font-medium">It does not pause any session</span>, and Your board is unaffected.
+    </p>
+
+    <% if tucked_away %>
+      <button type="button"
+              data-action="visibility#restore"
+              class="mb-2 w-full rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-100 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+        Put back on the board
+      </button>
+    <% end %>
+
+    <div class="space-y-1">
+      <% SessionVisibility::SNOOZE_PRESETS.each do |preset| %>
+        <button type="button"
+                data-action="visibility#choosePreset"
+                data-preset="<%= preset[:key] %>"
+                class="flex w-full items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-slate-100 hover:text-slate-900 focus:bg-slate-100 focus:outline-none">
+          <span class="whitespace-nowrap"><%= preset[:label] %></span>
+          <span data-visibility-target="presetTime" data-preset="<%= preset[:key] %>" class="shrink-0 whitespace-nowrap text-[11px] text-gray-400"></span>
+        </button>
+      <% end %>
+    </div>
+
+    <div class="mt-3 border-t border-gray-100 pt-3">
+      <label class="mb-1 block text-xs font-medium text-gray-700" for="board_category_snooze_<%= category.id %>">Custom — pick a date and time</label>
+      <div class="flex items-center gap-2">
+        <input type="datetime-local" id="board_category_snooze_<%= category.id %>" data-visibility-target="customInput"
+               class="min-w-0 flex-1 rounded-md border-gray-300 text-sm focus:border-slate-500 focus:ring-slate-500" />
+        <button type="button" data-action="visibility#chooseCustom"
+                class="shrink-0 rounded-md bg-slate-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-1">
+          Snooze
+        </button>
+      </div>
+    </div>
+
+    <% unless category.backlogged? %>
+      <div class="mt-3 border-t border-gray-100 pt-3">
+        <button type="button"
+                data-action="visibility#backlog"
+                class="flex w-full items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-sm text-gray-700 hover:bg-amber-50 hover:text-amber-900 focus:bg-amber-50 focus:outline-none">
+          <span class="whitespace-nowrap font-medium">Move to backlog</span>
+          <span class="shrink-0 whitespace-nowrap text-[11px] text-gray-400">no end time</span>
+        </button>
+      </div>
+    <% end %>
+  </div>
+
+  <p data-visibility-target="status"
+     class="absolute right-0 top-full mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-md bg-white px-2 py-1 text-xs text-gray-500 shadow empty:hidden"
+     role="status" aria-live="polite"></p>
+</div>

@@ -702,7 +702,9 @@ class RuntimeConfigPostProcessor
     @self_session_injector ||= SelfSessionInjector.new(secrets_interpolator: secrets_interpolator)
   end
 
+  # Everything this class resolves is written into the runtime's MCP config,
+  # which the agent can read, so the secrets store is never consulted.
   def secrets_interpolator
-    @secrets_interpolator ||= SecretsInterpolator.new
+    @secrets_interpolator ||= SecretsInterpolator.for_agent_surface
   end
 end

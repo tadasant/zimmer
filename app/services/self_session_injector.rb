@@ -131,10 +131,17 @@ class SelfSessionInjector
   # (config/deploy.*.yml, .kamal/secrets.*), as prod's encrypted mcp_secrets, and as
   # what the AIR catalog interpolates.
   def self_target
-    @self_target ||= {
-      base_url: AppUrl.base_url(env: @env, secrets_interpolator: @secrets_interpolator),
-      api_key: get_env_value(api_key_var).to_s
-    }
+    @self_target ||= begin
+      api_key = get_env_value(api_key_var).to_s
+      # An empty key is a self-session server whose every call 401s, so say so
+      # where an operator looks. The agent-surface interpolator never reads the
+      # secrets store, so a key kept only there lands here.
+      Rails.logger.warn "[SelfSessionInjector] #{api_key_var} resolved empty; injected Zimmer servers will be unauthenticated" if api_key.blank?
+      {
+        base_url: AppUrl.base_url(env: @env, secrets_interpolator: @secrets_interpolator),
+        api_key: api_key
+      }
+    end
   end
 
   private

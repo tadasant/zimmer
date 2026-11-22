@@ -101,6 +101,54 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     ENV.delete("TEST_HEADER_TOKEN")
   end
 
+  # Production invariant: agents never get the secrets store's secrets. The MCP
+  # config is readable by the agent, so a ${VAR} only the store holds must not be
+  # resolved into it, and a name held in encrypted credentials too must resolve
+  # from there, not from the store.
+  test "post_process! never fills the agent's MCP config from the secrets store" do
+    store = FakeParameterStore.new
+    store.seed_secret("STORE_ONLY_TOKEN", "store-value-must-not-reach-agent")
+    store.seed_secret("IN_BOTH_TOKEN", "store-copy")
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([
+      store.provider, SecretProviders::RailsCredentials.new, SecretProviders::Env.new(ENV)
+    ]))
+    SecretsLoader.stubs(:all).returns("IN_BOTH_TOKEN" => "credentials-copy")
+    write_config(
+      "both-http" => { "type" => "http", "url" => "https://both.example.com/mcp",
+                       "headers" => { "Authorization" => "${IN_BOTH_TOKEN}" } },
+      "store-http" => { "type" => "http", "url" => "https://store.example.com/mcp",
+                        "headers" => { "Authorization" => "${STORE_ONLY_TOKEN}" } }
+    )
+
+    error = assert_raises(SecretsInterpolator::MissingVariableError) { build_processor.post_process! }
+    assert_match(/only Zimmer's secrets store holds it/, error.message)
+    assert_no_match(/store-value-must-not-reach-agent/, error.message)
+    assert_no_match(/store-value-must-not-reach-agent/, read_config.to_json)
+
+    write_config(
+      "both-http" => { "type" => "http", "url" => "https://both.example.com/mcp",
+                       "headers" => { "Authorization" => "${IN_BOTH_TOKEN}" } }
+    )
+    build_processor.post_process!
+
+    assert_equal "credentials-copy", read_config.dig("mcpServers", "both-http", "headers", "Authorization")
+  end
+
+  test "the injected self-session server never carries a key held only in the secrets store" do
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
+    store = FakeParameterStore.new
+    store.seed_secret("ZIMMER_LOCAL_API_KEY", "store-only-zimmer-key")
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([
+      store.provider, SecretProviders::RailsCredentials.new, SecretProviders::Env.new(ENV)
+    ]))
+    SecretsLoader.stubs(:all).returns({})
+    write_config({})
+
+    build_processor.post_process!
+
+    assert_no_match(/store-only-zimmer-key/, read_config.to_json)
+  end
+
   # Regression guard for zimmer#467: Zimmer used to splice `--prefix /tmp` into
   # every npx invocation here. That aimed npm's bin-linking at a directory that
   # does not exist on the host, so the `chmod 0755` that accompanies bin-linking

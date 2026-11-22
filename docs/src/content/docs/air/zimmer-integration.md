@@ -317,8 +317,10 @@ user removing a default artifact in the UI would watch AIR silently re-add it fr
 defaults. So Zimmer uses AIR's root-defaults machinery at **read** time (to seed a new session) and
 explicitly bypasses it at **prepare** time.
 
-Secrets flow through the environment. `SecretsLoader.all` is merged into the
-subprocess env; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
+Secrets flow through the environment. `SecretsLoader.all` (encrypted `mcp_secrets`) is merged
+into the subprocess env, over the inherited process environment. The secrets store is never a source:
+what AIR resolves lands in a config the agent can read, and
+[agents never read the store](/operate/secrets-parameter-store/#agents-never-read-this-store); `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
 AIR then fails the prepare if any `${VAR}` survived, which Zimmer catches as a graceful,
 non-paging `SecretResolutionError`.
 

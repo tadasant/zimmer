@@ -21,6 +21,11 @@
           limit: @user_view_limit,
           truncated: @user_view_truncated,
           visibility_filter: @visibility_filter %>
+  <% elsif @view_mode == SessionsController::VIEW_MODE_BOARD_V2 %>
+    <%# Your board v2: the same filtered rows, grouped into the operator's own
+        categories. See Sessions::BoardV2. %>
+    <%= render "sessions/content_scan_notice", scan: @content_scan %>
+    <%= render "sessions/board_v2", board: @board_v2, limit: @user_view_limit %>
   <% elsif @view_mode == SessionsController::VIEW_MODE_RANKED %>
     <%# The Ranked view: priority above, the spot queue below it in precedence
         order, both editable in place. Honors the same filters as every other

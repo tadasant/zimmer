@@ -163,6 +163,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
     t.boolean "warm_router_process_enabled", default: false, null: false
   end
 
+  create_table "board_categories", force: :cascade do |t|
+    t.boolean "collapsed", default: false, null: false
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.integer "position", default: 0, null: false
+    t.datetime "snoozed_until"
+    t.datetime "updated_at", null: false
+    t.string "visibility", default: "visible", null: false
+    t.index ["position"], name: "index_board_categories_on_position"
+  end
+
   create_table "catalog_pins", force: :cascade do |t|
     t.string "catalog", null: false
     t.datetime "created_at", null: false
@@ -1280,6 +1291,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
     t.string "agent_runtime", default: "claude_code", null: false
     t.datetime "archived_at"
     t.integer "auto_compact_window", default: 1000000, null: false
+    t.bigint "board_category_id"
     t.string "branch", default: "main", null: false
     t.datetime "carplay_engaged_at"
     t.string "carplay_fit"
@@ -1345,6 +1357,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
+    t.index ["board_category_id"], name: "index_sessions_on_board_category_id"
     t.index ["carplay_fit"], name: "index_sessions_on_carplay_fit", where: "(carplay_fit IS NOT NULL)"
     t.index ["category_id"], name: "index_sessions_on_category_id"
     t.index ["created_at"], name: "index_sessions_on_created_at"
@@ -1739,6 +1752,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
   add_foreign_key "session_transcript_chunks", "sessions", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", column: "uncle_session_id", on_delete: :cascade
   add_foreign_key "session_uncle_links", "sessions", on_delete: :cascade
+  add_foreign_key "sessions", "board_categories", on_delete: :nullify
   add_foreign_key "sessions", "categories", on_delete: :nullify
   add_foreign_key "sessions", "sessions", column: "parent_session_id", on_delete: :nullify
   add_foreign_key "subagent_transcripts", "sessions", on_delete: :cascade

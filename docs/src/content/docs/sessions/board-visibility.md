@@ -19,6 +19,9 @@ whose only job is deciding whether the card is on screen.
 | `snoozed` | Off the board until `snoozed_until`, then back on its own. |
 | `backlogged` | In the backlog: off the board with no end time, because it is low priority. Shown only on the *Backlogged* and *All* views. |
 
+A [Your board v2](/sessions/board-v2/) category carries the same pair and can be snoozed or
+backlogged as a unit, taking its sessions off that tab without writing their own visibility.
+
 ## The backlog
 
 `backlogged` is "snooze indefinitely". It is for a session that has made real progress — work you

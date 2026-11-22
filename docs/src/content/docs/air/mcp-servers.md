@@ -150,8 +150,10 @@ them at prepare time, and AIR then validates that no `${VAR}` survived and fails
 That validation is the good part: a typo'd secret name fails loudly at prepare, before the agent
 ever gets a server that 401s on every call.
 
-Zimmer's `SecretsLoader` resolves values in this order: `XOauthTokenVendor` (for X/Twitter tokens)
-→ Rails encrypted credentials (`mcp_secrets`) → `ENV`.
+Values come from Rails encrypted credentials (`mcp_secrets`), then `ENV`. A `${VAR}` Zimmer
+resolves after AIR also checks `XOauthTokenVendor` first, for X/Twitter tokens. The secrets store is
+never a source, because the result is a config the agent can read. See
+[Agents never read this store](/operate/secrets-parameter-store/#agents-never-read-this-store).
 
 ## Selection is per session
 

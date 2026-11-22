@@ -1,6 +1,8 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    # Your board v2's categories.
+    resources :board_categories
     # Read-only: both tables are measurements of API calls that already happened,
     # written from transcripts by the ingestion services. There is nothing to
     # hand-author, and a corrected row comes from re-running ingestion.
@@ -837,6 +839,14 @@ Rails.application.routes.draw do
     query = request.query_string
     query.present? ? "/?#{query}" : "/"
   }
+
+  # Your board v2's manually-managed categories. Presentation only: nothing here
+  # touches scheduling. See BoardCategory.
+  resources :board_categories, only: [ :create, :update, :destroy ] do
+    collection { patch :reorder }
+    member { patch :visibility }
+  end
+  patch "sessions/:id/board_category", to: "board_categories#assign", as: :assign_board_category_session
 
   resources :sessions, only: [ :new, :create, :show ] do
     member do
