@@ -36,12 +36,15 @@ class BoardCategory < ApplicationRecord
 
   validates :name, presence: true, length: { maximum: NAME_MAX_LENGTH }
   validates :name, uniqueness: { case_sensitive: false }
+  validates :collapsed, inclusion: { in: [ true, false ], message: "must be true or false" }
   validates :visibility, inclusion: { in: VISIBILITIES, message: "%{value} is not a valid category visibility" }
   validates :snoozed_until, presence: { message: "is required when a category is snoozed" },
             if: -> { visibility == SessionVisibility::SNOOZED }
 
   before_validation { self.name = name.to_s.squish }
-  before_create { self.position = (self.class.maximum(:position) || -1) + 1 }
+  # Bottom of the board. A race between two creates gives both the same
+  # position, which only ties their order (broken by id) until the next drag.
+  before_create { self.position = (self.class.order(position: :desc).pick(:position) || -1) + 1 }
 
   scope :ordered, -> { order(:position, :id) }
 end

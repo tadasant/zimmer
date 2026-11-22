@@ -129,7 +129,14 @@ class Api::V1::SessionsController < Api::BaseController
       render_user_view(scope)
       return
     else
-      render_api_error("Invalid parameter", "view must be one of: #{SessionsController::VALID_VIEW_MODES.join(', ')}", status: :unprocessable_entity)
+      # The list views this endpoint orders by. Your board v2 is a grouping, not
+      # an order, so it is not one of them; its categories are read over MCP
+      # (`manage_board_categories`).
+      api_views = [
+        SessionsController::VIEW_MODE_CREATED_DESC, SessionsController::VIEW_MODE_LAST_TOUCHED,
+        SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED
+      ]
+      render_api_error("Invalid parameter", "view must be one of: #{api_views.join(', ')}", status: :unprocessable_entity)
       return
     end
 

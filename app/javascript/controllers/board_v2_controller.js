@@ -22,7 +22,9 @@ import { csrfHeaders } from "lib/csrf"
 // Every Sortable forces the pointer-based fallback, for the reason the User
 // view's does: native HTML5 drag and drop does not work on a phone.
 export default class extends Controller {
-  static targets = ["list", "categories", "category", "total", "error"]
+  // `row` and `handle` are declared for the shared row partial, which names them;
+  // the controller reads them through selectors.
+  static targets = ["list", "categories", "category", "total", "error", "row", "handle"]
   static values = {
     assignUrlTemplate: String,
     reorderUrl: String,
@@ -130,7 +132,9 @@ export default class extends Controller {
     event.preventDefault()
     const button = event.currentTarget
     const category = button.closest("[data-board-v2-target='category']")
-    if (!category) return
+    // One write in flight at a time, so a double-click cannot land two PATCHes
+    // out of order and leave the saved state disagreeing with the screen.
+    if (!category || button.disabled) return
 
     const body = category.querySelector("[data-board-v2-body]")
     const chevron = category.querySelector("[data-board-v2-chevron]")
@@ -140,8 +144,10 @@ export default class extends Controller {
     button.setAttribute("aria-expanded", String(!collapsed))
 
     const url = this.categoryUrlTemplateValue.replace("__ID__", category.dataset.categoryId)
+    button.disabled = true
     this.request("PATCH", url, { collapsed })
       .catch((error) => this.rollback(error))
+      .finally(() => { button.disabled = false })
   }
 
   // ---- Order and counts ----------------------------------------------------

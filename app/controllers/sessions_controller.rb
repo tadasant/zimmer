@@ -1068,7 +1068,7 @@ class SessionsController < ApplicationController
 
   # The same restore for Your board v2: into the session's own category list,
   # whose controller re-sorts by last touched when a row arrives. A no-op on any
-  # other page, and when that category is collapsed or snoozed (no list in the DOM).
+  # other page, and when that category is snoozed or backlogged (no list in the DOM).
   def restored_board_v2_row_stream(session)
     turbo_stream.prepend(
       helpers.board_v2_list_dom_id(session.board_category_id),

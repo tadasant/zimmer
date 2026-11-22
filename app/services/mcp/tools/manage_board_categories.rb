@@ -19,7 +19,7 @@ module Mcp
         Manage the categories on the Zimmer dashboard's **Your board v2** tab (`/?view=board_v2`) — flat groups the human makes and drags sessions into by hand. Inside each category the board shows the most recently touched session first.
 
         **Actions** (`action`):
-        - `list` — every category in board order, with its id, collapsed state, visibility and session count.
+        - `list` — every category in board order, with its id, collapsed state, visibility and how many unarchived sessions it holds.
         - `create` — `name`. Added at the bottom.
         - `rename` — `category_id`, `name`.
         - `delete` — `category_id`. Its sessions move to Uncategorized; no session is touched otherwise.
@@ -62,11 +62,14 @@ module Mcp
         categories = BoardCategory.ordered.to_a
         return "No board categories yet. Every session is in Uncategorized." if categories.empty?
 
-        counts = Session.where(board_category_id: categories.map(&:id)).group(:board_category_id).count
+        # The sessions the tab can show: trashed sessions keep their category,
+        # and status-summary forks are never on a board.
+        counts = Session.excluding_status_summary_forks.where.not(status: :archived)
+          .where(board_category_id: categories.map(&:id)).group(:board_category_id).count
         lines = [ "## Your board v2 categories (top first)", "" ]
         categories.each_with_index do |category, index|
           state = [ ("collapsed" if category.collapsed), category.visibility_summary ].compact
-          lines << "#{index + 1}. **#{category.name}** (id #{category.id}) — #{counts.fetch(category.id, 0)} session(s)" \
+          lines << "#{index + 1}. **#{category.name}** (id #{category.id}) — #{counts.fetch(category.id, 0)} unarchived session(s)" \
                    "#{state.any? ? " · #{state.join(' · ')}" : ''}"
         end
         lines.join("\n")

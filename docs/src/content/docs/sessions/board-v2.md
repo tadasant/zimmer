@@ -62,6 +62,10 @@ categories — keeps showing them. That is the reason for the unit design over s
 in the category: a fan-out would lose each session's own snooze state on wake, would not cover a
 session dragged in later, and would reach into Your board, which v2 is meant to leave alone.
 
+The dashboard's **Board visibility** filter applies to sessions, not categories: choosing
+*Backlogged* or *All* shows backlogged sessions inside the visible categories, but a snoozed or
+backlogged category stays in the tray until you wake it.
+
 Like all board visibility it is **presentation only**. It does not touch `status`, scheduling class,
 precedence, the spot queue, triggers or wake-ups. A session in a snoozed category runs exactly when
 it would have run otherwise.

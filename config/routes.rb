@@ -1,6 +1,8 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
+    # Your board v2's categories.
+    resources :board_categories
     # Read-only: both tables are measurements of API calls that already happened,
     # written from transcripts by the ingestion services. There is nothing to
     # hand-author, and a corrected row comes from re-running ingestion.

@@ -119,6 +119,26 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_not category.reload.collapsed
   end
 
+  test "an empty collapsed value is refused, not a 500" do
+    category = BoardCategory.create!(name: "Infra")
+    json_patch board_category_path(category), { collapsed: "" }
+    assert_response :unprocessable_entity
+    assert_not category.reload.collapsed
+  end
+
+  test "Undo on a trashed session puts its row back in its own category list" do
+    category = BoardCategory.create!(name: "Infra")
+    session = make_session("trashed then restored", category: category)
+
+    post archive_session_url(session), as: :turbo_stream
+    assert session.reload.archived?
+    post undo_archive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_match(/target="board_v2_list_#{category.id}"/, response.body)
+    assert_match(/target="user_view_list"/, response.body)
+  end
+
   test "reorder persists" do
     a = BoardCategory.create!(name: "A")
     b = BoardCategory.create!(name: "B")

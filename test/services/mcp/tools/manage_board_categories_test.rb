@@ -51,6 +51,16 @@ class Mcp::Tools::ManageBoardCategoriesTest < ActiveSupport::TestCase
     assert_not BoardCategory.exists?(ui.id)
   end
 
+  test "list counts the sessions the tab can show, not trashed ones" do
+    category = BoardCategory.create!(name: "Infra")
+    live = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", title: "live")
+    trashed = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", title: "trashed")
+    trashed.update_columns(status: :archived)
+    [ live, trashed ].each { |s| s.update_columns(board_category_id: category.id) }
+
+    assert_match(/Infra\*\* \(id #{category.id}\) — 1 unarchived session/, @tool.call({ "action" => "list" }))
+  end
+
   test "refusals are tool errors" do
     assert_raises(Mcp::ToolError) { @tool.call({ "action" => "explode" }) }
     assert_raises(Mcp::ToolError) { @tool.call({ "action" => "rename", "category_id" => 999_999, "name" => "x" }) }
