@@ -792,6 +792,45 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_nil ENV[test_key], "ENV should remain clean after prepare!"
   end
 
+  # A production deployment, 2026-11-22: a Slack @mention fired its trigger, and the
+  # session failed `air_secret_unresolvable` on ${STRAD_API_KEY} before its first
+  # turn, because `air prepare` was handed encrypted credentials only and the
+  # deployment keeps that key in its secrets store. Every genesis prepares
+  # through this service, so the trigger path is the one pinned here.
+  test "a Slack-triggered session whose MCP server needs a store-only secret prepares" do
+    store = FakeParameterStore.new
+    store.seed_secret("SLACK_BOT_TOKEN", "xoxb-store-only-fake")
+    chain = SecretProviders::Chain.new([
+      store.provider, SecretProviders::RailsCredentials.new, SecretProviders::Env.new({})
+    ])
+    SecretProviders.stubs(:chain).returns(chain)
+    SecretsLoader.stubs(:all).returns({})
+    assert_nil ENV["SLACK_BOT_TOKEN"], "the secret must be store-only for this test to mean anything"
+
+    session = triggers(:bot_mention_slack_trigger).create_session!(prompt: "@hans what's up?")
+    assert_equal "slack", session.genesis
+    assert_includes session.mcp_servers, "slack-workspace"
+
+    prepare_env = nil
+    # What @pulsemcp/air-secrets-env does with a ${VAR} absent from its env.
+    stub_air_subprocess(proc { |env, *_cmd|
+      prepare_env = env
+      if env["SLACK_BOT_TOKEN"].present?
+        [ "", "", stub(success?: true, exitstatus: 0) ]
+      else
+        [ "", "Error: Unresolved variable in #{@working_dir}: ${SLACK_BOT_TOKEN}. " \
+              "Ensure all variables are provided via environment or a secrets transform.",
+          stub(success?: false, exitstatus: 1) ]
+      end
+    }) do
+      AirPrepareService.new(session: session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+    end
+
+    assert_equal "xoxb-store-only-fake", prepare_env["SLACK_BOT_TOKEN"]
+    assert_includes EnvFile.parse(@mock_fs.read(File.join(@working_dir, EnvFile::FILENAME))).keys,
+      "SLACK_BOT_TOKEN", "the clone's scoped secrets file must carry the store-only secret too"
+  end
+
   test "prepare! raises AirPrepareError on non-zero exit" do
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "Error: config not found", stub(success?: false, exitstatus: 1) ]

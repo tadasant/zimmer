@@ -548,8 +548,8 @@ class AirCatalogService
     #
     # Two tiers, because the exposure has two halves:
     #
-    #   1. SecretsLoader.all — Zimmer's own secret set. `air prepare` merges all
-    #      of it into its subprocess env, and #provider_credentials_env takes
+    #   1. SessionSecrets.all — Zimmer's own secret set (store, then encrypted
+    #      credentials). `air prepare` merges all of it into its subprocess env, and #provider_credentials_env takes
     #      AIR_GITHUB_TOKEN from it for `air resolve` / `air update`.
     #   2. Credential-named process ENV — every AIR subprocess inherits this
     #      process's whole environment through Open3, which is what an echoed
@@ -569,7 +569,7 @@ class AirCatalogService
     #
     # @return [Array<Array(String, String)>] [name, value] pairs
     def redactable_secrets
-      candidates = SecretsLoader.all.to_a +
+      candidates = SessionSecrets.all.to_a +
         ENV.select { |name, _value| name.match?(TranscriptRedactor::SENSITIVE_KEY) }.to_a
       candidates
         .select { |_name, value| redactable_value?(value) }

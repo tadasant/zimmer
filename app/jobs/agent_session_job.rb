@@ -6530,8 +6530,8 @@ class AgentSessionJob < ApplicationJob
     "#{(bytes / (1024.0 * 1024.0)).round(1)} MB"
   end
 
-  # Write the session's `.env`: the secrets from Rails credentials that THIS
-  # session's artifacts ask for, and no others.
+  # Write the session's `.env`: the secrets (SessionSecrets — the store, then
+  # Rails credentials) that THIS session's artifacts ask for, and no others.
   #
   # The narrowing rule, and the ways back out of it, are SessionSecretScope's;
   # the file format is SessionEnvFile's. This stays here because the clone has
@@ -6573,7 +6573,7 @@ class AgentSessionJob < ApplicationJob
   # Fail a session gracefully after `air prepare` hit a session-*configuration*
   # problem: either the agent root can't be resolved from the AIR catalog even
   # after a cache refresh, or a selected MCP server interpolates a ${VAR} that
-  # Zimmer's SecretsLoader doesn't carry. Both are deterministic, non-retryable, and
+  # none of Zimmer's secrets (SessionSecrets) carries. Both are deterministic, non-retryable, and
   # operator-fixable — nothing is broken system-side — so they are logged at WARN
   # and the session is failed here, rather than allowed to bubble to ActiveJob as
   # a terminal job crash that pages #alerts. Mirrors the oauth_required
@@ -6590,7 +6590,7 @@ class AgentSessionJob < ApplicationJob
       failure_reason = "air_secret_unresolvable"
       extra_metadata = { "unresolved_variables" => error.variable_names }
       message = "Session failed: AIR prepare could not resolve required secret(s) #{missing} — " \
-                "add them to Zimmer's mcp_secrets credentials, or deselect the MCP server that " \
+                "add them to Zimmer's secrets store or mcp_secrets credentials, or deselect the MCP server that " \
                 "needs them (#{error.message})"
     else
       failure_reason = "air_root_unresolvable"

@@ -130,7 +130,7 @@ The local file is a convenience copy for offline validation.
 ```mermaid
 flowchart LR
     CAT["mcp.json (in git)<br/>env: { API_KEY: '${MY_API_KEY}' }"]
-    SL["SecretsLoader.all<br/>Rails credentials → mcp_secrets<br/>+ XOauthTokenVendor + ENV"]
+    SL["SessionSecrets.all<br/>Parameter Store → Rails credentials (mcp_secrets)<br/>+ inherited ENV"]
     AIR["air prepare<br/>@pulsemcp/air-secrets-env transform"]
     OUT[".mcp.json in the clone<br/>env: { API_KEY: 'sk-real-value' }"]
     VAL{"any ${VAR}<br/>left?"}

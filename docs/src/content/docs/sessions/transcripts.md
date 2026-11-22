@@ -276,7 +276,7 @@ It works in two tiers:
 - **Known values.** Every secret value Zimmer can put in a session, matched exactly:
   - every `${VAR}` the AIR catalog's MCP servers reference, resolved through the same
     `SecretProviders` chain that injects them into a session;
-  - every value in the secret bundle a clone's `.env` is drawn from (`SecretsLoader.all`), which
+  - every value in the secret bundle a clone's `.env` is drawn from (`SessionSecrets.all`), which
     covers a skill-mentioned `${VAR}` that no MCP server declares;
   - Zimmer's own API keys: every `API_KEYS` entry, and the `ZIMMER_*_API_KEY` that
     `SelfSessionInjector` writes into every session's `zimmer-self-session` entry;

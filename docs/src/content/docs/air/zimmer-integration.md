@@ -25,7 +25,7 @@ flowchart TB
     end
 
     subgraph write["WRITE PATH — AirPrepareService (per session)"]
-        W["air prepare &lt;adapter&gt; --target &lt;clone&gt;<br/>--without-defaults --no-subagent-merge<br/>--root … --skill … --mcp-server … --hook … --plugin …<br/>env: SecretsLoader.all + AIR_CONFIG"]
+        W["air prepare &lt;adapter&gt; --target &lt;clone&gt;<br/>--without-defaults --no-subagent-merge<br/>--root … --skill … --mcp-server … --hook … --plugin …<br/>env: SessionSecrets.all + AIR_CONFIG"]
         W2["ClaudeMcpConfigPostProcessor /<br/>CodexConfigTomlPostProcessor /<br/>PiMcpConfigPostProcessor"]
         W3["write system prompt file (AgentsMdWriter)"]
         W --> W2 --> W3
@@ -317,8 +317,11 @@ user removing a default artifact in the UI would watch AIR silently re-add it fr
 defaults. So Zimmer uses AIR's root-defaults machinery at **read** time (to seed a new session) and
 explicitly bypasses it at **prepare** time.
 
-Secrets flow through the environment. `SecretsLoader.all` is merged into the
-subprocess env; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
+Secrets flow through the environment. `SessionSecrets.all` is merged into the
+subprocess env: every name Zimmer's Parameter Store and encrypted `mcp_secrets` hold, the store
+winning, in the same order `SecretProviders.chain` resolves one `${VAR}`. Process ENV is inherited
+below both. Every genesis prepares through this one call, so a `${VAR}` kept only in the store
+resolves for a Slack- or schedule-triggered session exactly as for one started from the web UI; `@pulsemcp/air-secrets-env` substitutes the `${VAR}` placeholders into `.mcp.json`;
 AIR then fails the prepare if any `${VAR}` survived, which Zimmer catches as a graceful,
 non-paging `SecretResolutionError`.
 

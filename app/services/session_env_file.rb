@@ -6,8 +6,11 @@
 # they have different owners:
 #
 #   - **Zimmer's block**, rewritten from scratch on every call: the secrets from
-#     `SecretsLoader.all` that SessionSecretScope says this session may hold.
-#     Read that class for the rule and for the ways back out of a narrowing.
+#     `SessionSecrets.all` (the Parameter Store, then encrypted credentials) that
+#     SessionSecretScope says this session may hold. Read that class for the
+#     rule and for the ways back out of a narrowing. GitHub tokens are never in
+#     it: CliSpawnEnv#apply_github_token hands a session its own owner's token,
+#     and an entry here would override that narrowing.
 #   - **Everything else**, carried over verbatim. An operator (or the agent
 #     itself) can set a variable in a clone's `.env` — pointing a server at a
 #     different Zimmer with `ELICITATION_REQUEST_URL`, raising
@@ -57,7 +60,7 @@ class SessionEnvFile
     def write!(session:, working_directory:, file_system:)
       return nil if session.nil? || working_directory.blank?
 
-      secrets = SecretsLoader.all
+      secrets = SessionSecrets.all.reject { |name, _value| github_token?(name) }
       return nil if secrets.empty?
 
       allowed = SessionSecretScope.allowed_keys(session: session, available_keys: secrets.keys)
@@ -73,6 +76,10 @@ class SessionEnvFile
     end
 
     private
+
+    def github_token?(name)
+      name == GithubTokens::DEFAULT_VARIABLE || GithubTokens.owner_variable?(name)
+    end
 
     # Every line of the existing file that Zimmer does not own: not the header,
     # and not a line setting a name Zimmer manages. Filtering by NAME rather than

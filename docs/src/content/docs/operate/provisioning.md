@@ -552,7 +552,10 @@ push* is a different and still-open problem — every session shares one GitHub 
 ## What reaches a session clone's `.env`
 
 Every agent session's clone gets a `.env` (mode `0600`, gitignored) holding secrets from
-`SecretsLoader.all` — the `mcp_secrets` block of the environment's encrypted credentials. That file is
+`SessionSecrets.all` — every name in Zimmer's Parameter Store and in the `mcp_secrets` block of the
+environment's encrypted credentials, the store winning. Process ENV is not in it, and neither are
+GitHub tokens (`GH_TOKEN`, `GH_TOKEN__*`): a session gets its own owner's token from
+`CliSpawnEnv#apply_github_token`, and a `.env` entry would override that narrowing. That file is
 loaded into the agent CLI's process environment by `CliSpawnEnv#load_env_file`, and on Claude Code the
 stdio MCP servers the CLI spawns inherit it.
 

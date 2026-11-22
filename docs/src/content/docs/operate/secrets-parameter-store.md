@@ -878,12 +878,10 @@ carries no project comparison.
 ### How the key reaches a Pi session
 
 Worth stating, because it is the step it would be natural to assume some other
-layer performs. It does not: `SessionEnvFile` writes a clone's `.env` from
-`SecretsLoader.all`, which reads Rails encrypted `mcp_secrets` **only** and never
-consults `SecretProviders` — so a value living in the Parameter Store does not
-land in a session `.env` by that route. (And of the names it *does* read, a clone
-receives only the subset its own artifacts declare — see
-[What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env).)
+layer performs. It does not: `SessionEnvFile` writes into a clone's `.env` only
+the names the session's own artifacts declare — see
+[What reaches a session clone's `.env`](/operate/provisioning/#what-reaches-a-session-clones-env) —
+and no artifact declares Pi's inference key.
 
 Every store-backed name reaches its consumer some other way. An MCP config's
 `${VAR}` is interpolated by Zimmer before the server is launched. `GH_TOKEN` is

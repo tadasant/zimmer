@@ -15,7 +15,7 @@ require "tmpdir"
 # session's runtime via RuntimeRegistry, so each runtime declares its own
 # adapter id (claude → "claude", codex → "codex"). After AIR runs, this service
 # hands off to the runtime's RuntimeConfigPostProcessor, which resolves
-# remaining ${VAR} interpolations from SecretsLoader and applies Zimmer-specific
+# remaining ${VAR} interpolations through SecretProviders.chain and applies Zimmer-specific
 # tweaks (server injection, env retargeting, the elicitation address) in the
 # runtime's native config format.
 class AirPrepareService
@@ -36,12 +36,13 @@ class AirPrepareService
   # session's selected MCP servers (or hooks) could not be resolved from the
   # environment or a secrets transform. Sibling to RootResolutionError, and for
   # the same reason: this is a deterministic, non-retryable, session-scoped
-  # *configuration* problem — the selected artifact needs a secret that Zimmer's
-  # SecretsLoader does not carry — not broken-system behavior. Retrying never
+  # *configuration* problem — the selected artifact needs a secret that no link
+  # of Zimmer's secrets (SessionSecrets) carries — not broken-system behavior. Retrying never
   # helps and nothing is wrong server-side, so AgentSessionJob fails the session
   # gracefully at WARN rather than letting an unhandled error bubble to
   # ActiveJob and page #alerts. The fix is always operator-side: add the
-  # variable to Zimmer's `mcp_secrets` credentials, or stop selecting that server.
+  # variable to Zimmer's secrets store (or `mcp_secrets` credentials), or stop
+  # selecting that server.
   # Carries the offending variable names so the failure message can tell the
   # operator exactly which secret to provision.
   class SecretResolutionError < AirPrepareError
@@ -679,8 +680,10 @@ class AirPrepareService
     # AIR CLI looks up its config in this order: --config flag, AIR_CONFIG env, ~/.air/air.json.
     # We pass AIR_CONFIG so Zimmer's Rails-level air.json setting drives the CLI.
     # effective_air_json_path applies any UI-configured catalog pins, so sessions
-    # resolve the same frozen catalog refs as the rest of the app.
-    env = SecretsLoader.all.merge("AIR_CONFIG" => AirCatalogService.effective_air_json_path)
+    # resolve the same frozen catalog refs as the rest of the app. The secrets are
+    # SessionSecrets' bundle — the Parameter Store, then encrypted credentials —
+    # so a `${VAR}` kept only in the store resolves for every genesis alike.
+    env = SessionSecrets.all.merge("AIR_CONFIG" => AirCatalogService.effective_air_json_path)
 
     catch_up_catalog_cache!(env)
     run_air_prepare_command!(cmd, env)

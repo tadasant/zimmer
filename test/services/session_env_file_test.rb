@@ -150,6 +150,30 @@ class SessionEnvFileTest < ActiveSupport::TestCase
     write(session(mcp_servers: %w[slack-workspace]))
   end
 
+  test "a secret kept only in the secrets store is written when the session's server needs it" do
+    SecretsLoader.stubs(:all).returns({})
+    store = FakeParameterStore.new
+    store.seed_secret("SLACK_BOT_TOKEN", "value-for-SLACK_BOT_TOKEN")
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ store.provider ]))
+
+    write(session(mcp_servers: %w[slack-workspace]))
+
+    assert_equal %w[SLACK_BOT_TOKEN], written_keys
+  end
+
+  test "GitHub tokens are never written, so the per-owner narrowing at spawn is not overridden" do
+    SecretsLoader.stubs(:all).returns(
+      "GH_TOKEN" => "value-for-GH_TOKEN", "GH_TOKEN__PULSEMCP" => "value-for-GH_TOKEN__PULSEMCP",
+      "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN"
+    )
+    # As if an artifact named all three — the GitHub MCP server declaring ${GH_TOKEN}.
+    SessionSecretScope.stubs(:allowed_keys).returns(%w[GH_TOKEN GH_TOKEN__PULSEMCP SLACK_BOT_TOKEN])
+
+    write(session(mcp_servers: %w[slack-workspace]))
+
+    assert_equal %w[SLACK_BOT_TOKEN], written_keys
+  end
+
   # ---------------------------------------------------------------------------
   # Degradation
   # ---------------------------------------------------------------------------

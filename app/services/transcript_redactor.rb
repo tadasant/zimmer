@@ -972,7 +972,7 @@ module TranscriptRedactor
     # whole bundle covers every session's `.env` whatever its scope, including a
     # skill-mentioned `${VAR}` no catalog MCP server declares.
     def collect_session_secret_bundle(values)
-      SecretsLoader.all.each { |name, value| remember_variable(values, name, value) }
+      SessionSecrets.all.each { |name, value| remember_variable(values, name, value) }
     rescue StandardError => e
       warn_degraded("session secret bundle", e)
     end

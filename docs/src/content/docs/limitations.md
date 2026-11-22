@@ -3767,7 +3767,7 @@ is given `AIR_GITHUB_TOKEN`, so the MCP surface reports only *that* resolution f
 fact, different fidelity, different audience.
 
 The error text is scrubbed before it is recorded: `AirCatalogService#record_failure` replaces every
-credential this process holds — all of `SecretsLoader.all`, plus a process-env `AIR_GITHUB_TOKEN` —
+credential this process holds — all of `SessionSecrets.all`, plus credential-named process ENV —
 with a `[REDACTED:NAME]` marker, so `/sessions/new`, which has no Rails-layer authentication
 ([#312](https://github.com/tadasant/zimmer/issues/312)), cannot render one
 ([#319](https://github.com/tadasant/zimmer/issues/319)). That is defense in depth, not a guarantee:
@@ -7150,6 +7150,22 @@ and Zimmer handles those as UTF-8 strings throughout — `ParameterStore::Resolv
 switches the whole store off rather than serve bytes that are not. A genuinely binary credential
 (raw key material, a PKCS#12 blob) therefore cannot be carried by this store, and would need the
 chain to grow a bytes-shaped path first.
+
+---
+
+## A session prepared during a cold store outage gets encrypted credentials only
+
+`air prepare` and a clone's `.env` are built from `SessionSecrets.all`: the whole Parameter Store
+namespace, then encrypted `mcp_secrets`. When the store cannot be read and the resolver holds no
+earlier snapshot to serve — a worker that boots while Google is unreachable — the bundle falls back
+to encrypted credentials alone and logs a warning naming the error class.
+
+That breaks the chain's rule for a single `${VAR}`, which raises rather than fall through so a
+rotated credential cannot come back from an old copy. A bundle read cannot apply that rule name by
+name, and failing every session spawn for the length of an outage is the worse trade. What it costs:
+a session prepared in that window fails `air_secret_unresolvable` on a store-only `${VAR}`, and may
+run with a stale `mcp_secrets` copy of a name the store has since rotated. A warm worker serves its
+last good snapshot through a short outage and never takes this path.
 
 ---
 
