@@ -171,6 +171,12 @@ module Github
       begin
         if refs.any?
           snapshots = refs.to_h { |ref| [ ref.url, PrSnapshot.fetch(ref)&.with_rest_mergeability ] }
+          # A webhook-driven read GitHub could not answer (still recomputing mergeability, or
+          # the call failed) is stamped so the next read comes after POLL_INTERVAL, the polled
+          # cadence, rather than after the hour-long webhook fallback.
+          if @webhook_driving && snapshots.values.any? { |snapshot| snapshot.nil? || (snapshot.status == "open" && snapshot.conflicting?.nil?) }
+            started_at -= PrWebhookIngest::ORPHAN_FALLBACK_POLL_INTERVAL - POLL_INTERVAL
+          end
           record_terminal_statuses(session, snapshots)
           Reviver.new(self).evaluate(session, refs, snapshots)
         end
@@ -267,7 +273,8 @@ module Github
       interval = suspicion ? PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS : POLL_INTERVAL
 
       reading = PrWebhookIngest::Reading.for(PrRef.for_session(session))
-      if reading&.driving? && !suspicion
+      @webhook_driving = reading&.driving? && !suspicion
+      if @webhook_driving
         return true if reading.merge_conflict_pending?(PollBackoff.last_polled_at(session, POLL_BACKOFF_KEY))
 
         interval = PrWebhookIngest::ORPHAN_FALLBACK_POLL_INTERVAL

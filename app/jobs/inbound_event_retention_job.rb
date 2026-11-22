@@ -2,7 +2,7 @@
 
 # Deletes webhook dedup rows past their retention: WebhookDelivery after
 # WebhookDelivery::RETENTION (7 days), and TriggerEventClaim and TriggerShadowObservation after
-# their RETENTION (30 days). Without it the tables grow with every Slack message the bot can see, forever.
+# their RETENTION (30 days), and GithubPrSignal after GithubPrSignal::RETENTION (1 day). Without it the tables grow with every Slack message the bot can see, forever.
 #
 # Idempotent — a run with nothing expired deletes nothing — and batched, so a backlog after a
 # long gap drains a slice at a time instead of in one statement.

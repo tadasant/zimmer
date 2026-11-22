@@ -124,6 +124,21 @@ class Github::PrWebhookIngestTest < ActiveSupport::TestCase
     assert Github::PrWebhookIngest::Reading.for([ ref ]).status_pending?(2.minutes.ago)
   end
 
+  test "a repository-wide CI signal does not re-read a PR whose CI already finished" do
+    GithubPrSignal.signal!([ %w[tadasant/zimmer ci] ], at: 1.minute.ago)
+
+    assert_not Github::PrWebhookIngest::Reading.for([ ref ], ci_statuses: { PR => "pass" }).status_pending?(2.minutes.ago)
+    assert Github::PrWebhookIngest::Reading.for([ ref ], ci_statuses: { PR => "pending" }).status_pending?(2.minutes.ago)
+  end
+
+  test "a comment signal waits out CommentEvaluator's attribution grace, except when observing" do
+    GithubPrSignal.signal!([ [ PR, "comments" ] ], at: 10.seconds.ago)
+    reading = Github::PrWebhookIngest::Reading.for([ ref ])
+
+    assert_not reading.comments_pending?(1.minute.ago)
+    assert reading.comments_pending?(1.minute.ago, settled: false)
+  end
+
   test "a merge-conflict signal waits for GitHub to recompute mergeability before it is pending" do
     GithubPrSignal.signal!([ %w[tadasant/zimmer base_push] ], at: 10.seconds.ago)
     assert_not Github::PrWebhookIngest::Reading.for([ ref ]).merge_conflict_pending?(1.hour.ago)

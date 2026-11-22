@@ -65,7 +65,8 @@ class GithubPrSignal < ApplicationRecord
   # @param signals [Array<Array(String, String)>] [subject, kind] pairs
   # @return [void]
   def self.signal!(signals, at: Time.current)
-    rows = signals.uniq.map { |subject, kind| { subject: subject.to_s.downcase, kind: kind, signaled_at: at } }
+    rows = signals.map { |subject, kind| [ subject.to_s.downcase, kind ] }.uniq
+                  .map { |subject, kind| { subject: subject, kind: kind, signaled_at: at } }
     return if rows.empty?
 
     upsert_all(

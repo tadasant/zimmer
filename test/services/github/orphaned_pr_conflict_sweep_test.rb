@@ -290,7 +290,47 @@ class Github::OrphanedPrConflictSweepTest < ActiveSupport::TestCase
     sweep_later
   end
 
+  # ---- driven by GitHub's webhook (Github::PrWebhookIngest) ----
+
+  test "webhook mode: a covered producer is read on a base-branch push, and otherwise hourly" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      end_session(@session, :archived, ended: 1.day.ago)
+      reading(:clean)
+      sweep
+
+      Github::PrSnapshot.expects(:fetch).never
+      sweep_later(Github::OrphanedPrConflictSweep::POLL_INTERVAL)
+
+      GithubPrSignal.signal!([ %w[owner/repo base_push] ], at: 2.minutes.ago)
+      Github::PrSnapshot.expects(:fetch).once.returns(snapshot(:clean))
+      sweep
+    end
+  end
+
+  test "webhook mode: a read GitHub could not answer comes round again on the polled cadence" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      end_session(@session, :archived, ended: 1.day.ago)
+      Github::PrSnapshot.stubs(:fetch).returns(
+        Github::PrSnapshot.new(ref: Github::PrRef.parse(PR_URL), state: "OPEN", merged_at: nil, mergeable: "UNKNOWN")
+      )
+      sweep
+
+      Github::PrSnapshot.expects(:fetch).once.returns(snapshot(:clean))
+      sweep_later(Github::OrphanedPrConflictSweep::POLL_INTERVAL)
+    end
+  end
+
   private
+
+  def with_pr_ingest_mode(mode)
+    saved = ENV["GITHUB_PR_INGEST_MODE"]
+    ENV["GITHUB_PR_INGEST_MODE"] = mode
+    yield
+  ensure
+    saved.nil? ? ENV.delete("GITHUB_PR_INGEST_MODE") : ENV["GITHUB_PR_INGEST_MODE"] = saved
+  end
 
   def end_session(session, status, ended:, extra: {})
     session.update!(

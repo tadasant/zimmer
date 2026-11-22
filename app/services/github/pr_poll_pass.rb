@@ -144,8 +144,13 @@ module Github
       # What GitHub's webhook has said about these PRs, or nil in `poll`. When it is driving,
       # each gate below is due on a signal newer than its stamp, and otherwise only on
       # PrWebhookIngest::FALLBACK_POLL_INTERVAL. See Github::PrWebhookIngest.
-      reading = PrWebhookIngest::Reading.for(refs, now: started_at)
-      webhook = reading&.driving?
+      reading = PrWebhookIngest::Reading.for(
+        refs, now: started_at, ci_statuses: session.custom_metadata&.dig("github_pull_request_ci_statuses") || {}
+      )
+      # A PR with no recorded status yet keeps the polled cadence: the merge announcement is
+      # conditioned on having recorded it `open` first, and a PR tracked after its `opened`
+      # delivery has no signal coming that would read it before it merges.
+      webhook = reading&.driving? && refs.all? { |ref| session.custom_metadata&.dig("github_pull_request_statuses", ref.url).present? }
       stamps = {
         status: PollBackoff.last_polled_at(session, POLL_BACKOFF_KEY),
         comments: PollBackoff.last_polled_at(session, COMMENT_BACKOFF_KEY),
@@ -153,8 +158,11 @@ module Github
       }
       suspicion = MergeConflictEvaluator.fresh_suspicion?(session)
 
-      unless due?(session, ceiling, webhook ? reading : nil, stamps, suspicion)
-        Rails.logger.info "[Github::PrPollPass] Skipping session #{session.id} (PollBackoff: stale user activity)"
+      deferred = webhook && deferred_comments?(session, refs)
+
+      unless due?(session, ceiling, webhook ? reading : nil, stamps, suspicion, deferred)
+        reason = webhook ? "no new webhook signal, fallback not due" : "PollBackoff: stale user activity"
+        Rails.logger.info "[Github::PrPollPass] Skipping session #{session.id} (#{reason})"
         return
       end
 
@@ -184,19 +192,30 @@ module Github
         max_interval: ceiling
       ) || (webhook && reading.merge_conflict_pending?(stamps[:merge_conflict]))
 
+      # Set when a webhook-driven merge-conflict read got no answer for some PR; see below.
+      merge_conflict_retry = false
+
       if merge_conflict_due
-        stamped_keys << MERGE_CONFLICT_BACKOFF_KEY
         run_evaluator(session, "MergeConflictEvaluator") do
           # Mergeability re-read from REST for every open PR: GraphQL's is a cached
           # value REST is what refreshes. See PrSnapshot#with_rest_mergeability.
-          MergeConflictEvaluator.new.evaluate(session, refs, snapshots.transform_values { |s| s&.with_rest_mergeability })
+          rest = snapshots.transform_values { |s| s&.with_rest_mergeability }
+          # GitHub answers `null` while it recomputes mergeability, and a REST read is what
+          # starts that. Polled, the next reading is two minutes away; webhook-driven it
+          # would be the fallback's ten. So an unanswered read is stamped as if the gate ran
+          # FALLBACK - MERGE_CONFLICT_INTERVAL earlier: the signal that asked stays pending,
+          # and the fallback comes due on the polled two-minute cadence.
+          merge_conflict_retry = webhook && rest.values.any? { |snapshot| snapshot.nil? || (snapshot.status == "open" && snapshot.conflicting?.nil?) }
+          MergeConflictEvaluator.new.evaluate(session, refs, rest)
         end
+        stamped_keys << MERGE_CONFLICT_BACKOFF_KEY unless merge_conflict_retry
       end
 
       comments_due = PollBackoff.should_poll?(
         session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS,
         min_interval: webhook ? PrWebhookIngest::FALLBACK_POLL_INTERVAL : nil
-      ) || (webhook && reading.comments_pending?(stamps[:comments]))
+      ) || (webhook && reading.comments_pending?(stamps[:comments])) ||
+        (deferred && PollBackoff.should_poll?(session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS))
 
       if comments_due
         stamped_keys << COMMENT_BACKOFF_KEY
@@ -210,6 +229,12 @@ module Github
       end
 
       PollBackoff.record_poll!(session, job_key: stamped_keys, at: started_at)
+      if merge_conflict_retry
+        PollBackoff.record_poll!(
+          session, job_key: MERGE_CONFLICT_BACKOFF_KEY,
+          at: started_at - (PrWebhookIngest::FALLBACK_POLL_INTERVAL - MERGE_CONFLICT_INTERVAL_SECONDS)
+        )
+      end
     end
 
     private
@@ -220,12 +245,15 @@ module Github
     # With a driving webhook +reading+, a signal newer than the stamp it concerns makes the
     # session due at once, and otherwise the pass runs no more often than
     # PrWebhookIngest::FALLBACK_POLL_INTERVAL — unless a conflict suspicion is fresh, whose
-    # confirming reading keeps its two-minute ceiling. Without one, the curve as it always was.
-    def due?(session, ceiling, reading, stamps, suspicion)
+    # confirming reading keeps its two-minute ceiling. A comment CommentEvaluator deferred
+    # (+deferred+) is re-read on the comment gate's polled cadence until it settles. Without a
+    # reading, the curve as it always was.
+    def due?(session, ceiling, reading, stamps, suspicion, deferred)
       if reading
         return true if reading.status_pending?(stamps[:status]) ||
                        reading.comments_pending?(stamps[:comments]) ||
                        reading.merge_conflict_pending?(stamps[:merge_conflict])
+        return true if deferred && PollBackoff.should_poll?(session, job_key: COMMENT_BACKOFF_KEY, base_interval: COMMENT_INTERVAL_SECONDS)
       end
 
       PollBackoff.should_poll?(
@@ -269,6 +297,21 @@ module Github
       return nil if Time.current - session.last_user_activity_at > AWAITING_PR_OUTCOME_MAX_IDLE
 
       AWAITING_PR_OUTCOME_MAX_POLL_INTERVAL
+    end
+
+    # Whether CommentEvaluator left a comment on a tracked PR undecided — younger than its
+    # attribution grace, or waiting on a repository-visibility lookup — so it has to be read
+    # again soon rather than on the webhook fallback.
+    def deferred_comments?(session, refs)
+      threads = session.custom_metadata&.dig("github_comments")
+      return false unless threads.is_a?(Hash)
+
+      refs.any? do |ref|
+        thread = threads[ref.url]
+        thread.is_a?(Hash) && %w[pr_comments review_comments].any? do |kind|
+          Array(thread[kind]).any? { |comment| comment.is_a?(Hash) && comment["dispatch_state"] == CommentEvaluator::DISPATCH_DEFERRED }
+        end
+      end
     end
 
     # Run one evaluator, and keep its failure to itself.

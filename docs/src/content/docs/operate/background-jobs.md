@@ -89,7 +89,7 @@ From `config.good_job.cron`:
 | 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
-| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` and `trigger_shadow_observations` rows older than 30 — the dedup and comparison stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
+| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` and `trigger_shadow_observations` rows older than 30 — the dedup and comparison stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -1162,9 +1162,18 @@ holds no content from the delivery:
 
 An evaluator is due when a signal for it is newer than its last stamp. The pass stamps the time it
 *started*, so a signal that arrives while it is reading GitHub makes the session due again on the
-next tick. A burst of deliveries (one `check_run` per CI job) updates one row and costs one pass.
+next tick. A burst of deliveries (one `check_run` per CI job) updates one row, and costs at most one
+pass per 30-second tick while it lasts. Comment signals wait `COMMENT_SETTLE` (65 s) first, because
+`CommentEvaluator` defers a comment younger than its 60-second attribution grace. A comment it does
+defer anyway keeps the comment read on its polled 30-second gate until the comment settles.
 Merge-conflict signals wait `MERGE_CONFLICT_SETTLE` (60 s) first, because GitHub recomputes
-mergeability after a push and a REST read straight after the push returns `null`.
+mergeability after a push and a REST read straight after the push returns `null`. A read that still
+gets `null` is stamped so the next one comes on the polled two-minute cadence. A repository-wide
+`ci` signal counts only for a PR whose recorded CI is `pending` or not recorded yet.
+
+A session tracking a PR with no recorded status yet keeps the polled cadence until one is recorded.
+The merge announcement needs the PR seen `open` first, and a PR tracked after its `opened` delivery
+has no signal coming that would read it before it merges.
 
 The three modes:
 
@@ -1174,8 +1183,10 @@ The three modes:
   `[Github::PrWebhookIngest] webhook_shadow hit` or `… miss`. Query those log lines before
   switching modes.
 - **`webhook_with_poll_fallback`**: signals drive the pass. A covered session with no new signal is
-  polled every `FALLBACK_POLL_INTERVAL` (10 minutes), for the pass, comments and merge conflicts
-  alike, so a missed delivery costs at most 10 minutes. A fresh conflict suspicion keeps its
+  polled no more often than every `FALLBACK_POLL_INTERVAL` (10 minutes), for the pass, comments and
+  merge conflicts alike. That is a floor on top of the `PollBackoff` curve, not a replacement: an
+  active session's missed delivery costs at most 10 minutes, an idle one's waits as long as the curve
+  and the 30-minute awaiting-PR ceiling already made it. A fresh conflict suspicion keeps its
   2-minute confirmation reading. Every change a fallback poll finds without a signal is logged as a
   `webhook_with_poll_fallback miss`. `Github::OrphanedPrConflictSweep` follows the same rule, with an
   hour as its fallback instead of 15 minutes.

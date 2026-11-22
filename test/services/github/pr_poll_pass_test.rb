@@ -579,7 +579,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
   test "webhook mode: a covered, recently-polled session with no signal is not polled" do
     with_pr_ingest_mode("webhook_with_poll_fallback") do
       GithubPrSignal.signal!([ %w[owner/repo delivery] ])
-      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      webhook_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
       isolate
 
       Github::PrSnapshot.expects(:fetch).never
@@ -590,7 +590,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
   test "webhook mode: the fallback still polls once its interval has passed" do
     with_pr_ingest_mode("webhook_with_poll_fallback") do
       GithubPrSignal.signal!([ %w[owner/repo delivery] ])
-      active_session_tracking(PR_URL, stamps: all_stamps((Github::PrWebhookIngest::FALLBACK_POLL_INTERVAL + 5).seconds.ago))
+      webhook_session_tracking(PR_URL, stamps: all_stamps((Github::PrWebhookIngest::FALLBACK_POLL_INTERVAL + 5).seconds.ago))
       isolate
       stub_evaluators
 
@@ -603,7 +603,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
   test "webhook mode: a status signal runs the pass but not the comment read" do
     with_pr_ingest_mode("webhook_with_poll_fallback") do
       GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "status" ] ])
-      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      webhook_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
       isolate
       stub_evaluators
 
@@ -617,9 +617,9 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
 
   test "webhook mode: a comment signal runs the comment read, and the stamp is the pass's start" do
     with_pr_ingest_mode("webhook_with_poll_fallback") do
-      # Clear of freeze_time's whole-second truncation below.
-      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "comments" ] ], at: 30.seconds.ago)
-      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      # Settled (older than COMMENT_SETTLE), and clear of freeze_time's whole-second truncation.
+      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "comments" ] ], at: 90.seconds.ago)
+      webhook_session_tracking(PR_URL, stamps: all_stamps(2.minutes.ago))
       isolate
       stub_evaluators
 
@@ -641,7 +641,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     with_pr_ingest_mode("webhook_with_poll_fallback") do
       GithubPrSignal.signal!([ %w[owner/repo delivery] ])
       GithubPrSignal.signal!([ %w[owner/repo base_push] ], at: 2.minutes.ago)
-      active_session_tracking(PR_URL, stamps: all_stamps(5.minutes.ago))
+      webhook_session_tracking(PR_URL, stamps: all_stamps(5.minutes.ago))
       isolate
       stub_evaluators
 
@@ -660,6 +660,76 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
 
       Github::PrSnapshot.expects(:fetch).once.returns(nil)
       Github::CommentEvaluator.any_instance.expects(:evaluate).once
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a comment signal still inside the attribution grace waits for it" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "comments" ] ], at: 10.seconds.ago)
+      webhook_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+
+      Github::PrSnapshot.expects(:fetch).never
+      Github::PrPollPass.new.run
+
+      travel Github::PrWebhookIngest::COMMENT_SETTLE do
+        stub_evaluators
+        Github::PrSnapshot.expects(:fetch).once.returns(nil)
+        Github::CommentEvaluator.any_instance.expects(:evaluate).once
+        Github::PrPollPass.new.run
+      end
+    end
+  end
+
+  test "webhook mode: a deferred comment is re-read on the polled cadence, not the fallback" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      webhook_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      @session_with_pr.merge_custom_metadata!(
+        "github_comments" => { PR_URL => { "pr_comments" => [ { "id" => 1, "dispatch_state" => "deferred" } ], "review_comments" => [] } }
+      )
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.expects(:fetch).once.returns(nil)
+      Github::CommentEvaluator.any_instance.expects(:evaluate).once
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: a PR with no recorded status keeps the polled cadence, so its merge is announced" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
+      isolate
+      stub_evaluators
+
+      Github::PrSnapshot.expects(:fetch).once.returns(nil)
+      Github::PrPollPass.new.run
+    end
+  end
+
+  test "webhook mode: an unanswered mergeability read is retried on the polled cadence" do
+    with_pr_ingest_mode("webhook_with_poll_fallback") do
+      GithubPrSignal.signal!([ %w[owner/repo delivery] ])
+      GithubPrSignal.signal!([ %w[owner/repo base_push] ], at: 2.minutes.ago)
+      webhook_session_tracking(PR_URL, stamps: all_stamps(5.minutes.ago))
+      isolate
+      stub_evaluators
+
+      open = Github::PrSnapshot.new(ref: Github::PrRef.parse(PR_URL), state: "OPEN", merged_at: nil, mergeable: "UNKNOWN")
+      Github::PrSnapshot.stubs(:fetch).returns(open)
+      freeze_time do
+        Github::PrPollPass.new.run
+
+        stamp = PollBackoff.last_polled_at(@session_with_pr.reload, Github::PrPollPass::MERGE_CONFLICT_BACKOFF_KEY)
+        backdate = Github::PrWebhookIngest::FALLBACK_POLL_INTERVAL - Github::PrPollPass::MERGE_CONFLICT_INTERVAL_SECONDS
+        assert_equal (Time.current - backdate).to_i, stamp.to_i
+      end
+
+      # The push is still newer than that stamp, so the next tick asks again.
+      Github::MergeConflictEvaluator.any_instance.expects(:evaluate).once
       Github::PrPollPass.new.run
     end
   end
@@ -716,6 +786,12 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     yield
   ensure
     saved.nil? ? ENV.delete("GITHUB_PR_INGEST_MODE") : ENV["GITHUB_PR_INGEST_MODE"] = saved
+  end
+
+  # A session the webhook can drive: tracking PR_URL with its status already recorded.
+  def webhook_session_tracking(pr_url, stamps:)
+    active_session_tracking(pr_url, stamps: stamps)
+    @session_with_pr.merge_custom_metadata!("github_pull_request_statuses" => { pr_url => "open" })
   end
 
   def all_stamps(at)

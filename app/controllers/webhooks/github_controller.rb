@@ -92,11 +92,10 @@ module Webhooks
             label
           )
         end
-        # The PR side: "this PR may have changed", for Github::PrPollPass. A signal names a PR
-        # and nothing it says, so it is safe to write from any verified delivery.
-        Github::PrWebhookIngest.record_delivery!(event, payload) if recorded && Github::PrWebhookIngest.receiving?
         recorded
       end
+
+      record_pr_signals(delivery_id, event, payload) if first
 
       unless first
         Rails.logger.info("[Webhooks::GithubController] GitHub redelivered #{delivery_id} (#{event}); " \
@@ -104,6 +103,19 @@ module Webhooks
       end
 
       render json: { ok: true, duplicate: !first }
+    end
+
+    # The PR side: "this PR may have changed", for Github::PrPollPass. A signal names a PR and
+    # nothing it says, so it is safe to write from any verified delivery. Outside the trigger
+    # transaction, so a failure here cannot cost a trigger its delivery; and a lost signal costs
+    # only latency, because the fallback poll still reads the PR.
+    def record_pr_signals(delivery_id, event, payload)
+      return unless Github::PrWebhookIngest.receiving?
+
+      Github::PrWebhookIngest.record_delivery!(event, payload)
+    rescue => e
+      Rails.logger.warn("[Webhooks::GithubController] Could not record PR signals for GitHub delivery #{delivery_id} " \
+                        "(#{event}): #{e.class}: #{e.message}; the fallback poll covers it")
     end
   end
 end

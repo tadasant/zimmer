@@ -3,7 +3,7 @@
 module Github
   # Drives the per-session PR pollers from GitHub's webhook instead of the clock.
   #
-  # Github::PrPollPass used to learn every change to a tracked PR by asking GitHub: `gh pr view`
+  # Polled, Github::PrPollPass learns every change to a tracked PR by asking GitHub: `gh pr view`
   # and `gh pr checks` (GraphQL) every 30 seconds per active session, two REST pages of comments
   # on the same cadence, and a REST mergeability read every two minutes. The comment pages are
   # the bulk of the REST budget: two calls per open PR per tick, for every session a human has
@@ -30,7 +30,7 @@ module Github
   # --------
   # A session is driven by signals only when every repository it tracks a PR in is COVERED: the
   # webhook delivered something from it within COVERAGE_WINDOW. A repository with no hook
-  # (`pulsemcp/air`) never delivers, so its sessions keep today's cadence. A hook that is deleted
+  # (`pulsemcp/air`) never delivers, so its sessions keep the polled cadence. A hook that is deleted
   # or broken stops delivering, so its repository falls back to full polling once the window
   # passes. The mode switch is the operator's statement that the hooks subscribe to every event
   # in EVENT_KINDS; coverage is how Zimmer notices a hook that stopped.
@@ -47,6 +47,11 @@ module Github
 
     # How recently a repository must have delivered something to count as covered.
     COVERAGE_WINDOW = 6.hours
+
+    # How long after a comment before a comments signal is acted on. CommentEvaluator defers a
+    # comment younger than its attribution grace, and a deferred comment read early would then
+    # wait for the fallback; reading it once the grace has passed settles it in one read.
+    COMMENT_SETTLE = (CommentEvaluator::ATTRIBUTION_GRACE_SECONDS + 5).seconds
 
     # How long after a push before a merge-conflict signal is acted on. GitHub recomputes
     # mergeability in the background after a push, and a REST read straight after it answers
@@ -65,7 +70,8 @@ module Github
     MERGE_CONFLICT_ACTIONS = %w[synchronize reopened].freeze
 
     # Event => what it signals. The list the repository hooks must subscribe to for
-    # `webhook_with_poll_fallback` to lose nothing; see docs/src/content/docs/sessions/github-prs.md.
+    # `webhook_with_poll_fallback` to lose nothing; see docs/src/content/docs/operate/background-jobs.md
+    # ("Driven by GitHub's webhook instead of the clock").
     EVENT_KINDS = {
       "pull_request" => "status, and merge_conflict on synchronize, reopened or a base change",
       "issue_comment" => "comments, for a comment on a pull request",
@@ -153,17 +159,22 @@ module Github
     # What the webhook has said about one session's tracked PRs, read once per pass.
     class Reading
       # @param refs [Array<Github::PrRef>]
+      # @param ci_statuses [Hash{String => String}] the session's recorded CI status per PR url.
+      #   A repository-wide `ci` signal counts only for a PR whose CI is pending or unrecorded:
+      #   a commit status on some other branch says nothing about a PR whose checks finished.
       # @return [Reading, nil] nil in `poll`, where nothing reads signals
-      def self.for(refs, now: Time.current)
+      def self.for(refs, now: Time.current, ci_statuses: {})
         return nil unless PrWebhookIngest.receiving?
         return nil if refs.empty?
 
         pr_subjects = refs.map { |ref| GithubPrSignal.pr_subject(ref.owner, ref.repo, ref.number) }
         repo_subjects = refs.map { |ref| GithubPrSignal.repo_subject(ref.owner, ref.repo) }.uniq
-        new(refs, GithubPrSignal.latest_for(pr_subjects + repo_subjects), now: now, driving: PrWebhookIngest.driving?)
+        new(refs, GithubPrSignal.latest_for(pr_subjects + repo_subjects), now: now, driving: PrWebhookIngest.driving?,
+            ci_statuses: ci_statuses.is_a?(Hash) ? ci_statuses : {})
       end
 
-      def initialize(refs, signals, now:, driving:)
+      def initialize(refs, signals, now:, driving:, ci_statuses: {})
+        @ci_statuses = ci_statuses
         @refs = refs
         @signals = signals
         @now = now
@@ -186,11 +197,19 @@ module Github
 
       # A status or CI signal for any of +refs+ (default: all) newer than +since+.
       def status_pending?(since, refs: @refs)
-        refs.any? { |ref| newer?(signal(ref, GithubPrSignal::STATUS), since) || newer?(repo_signal(ref, GithubPrSignal::CI), since) }
+        refs.any? do |ref|
+          newer?(signal(ref, GithubPrSignal::STATUS), since) ||
+            (ci_unsettled?(ref) && newer?(repo_signal(ref, GithubPrSignal::CI), since))
+        end
       end
 
-      def comments_pending?(since, refs: @refs)
-        refs.any? { |ref| newer?(signal(ref, GithubPrSignal::COMMENTS), since) }
+      # A comments signal newer than +since+. With +settled+, only one that has had
+      # COMMENT_SETTLE: one still settling becomes pending on a later tick.
+      def comments_pending?(since, refs: @refs, settled: true)
+        refs.any? do |ref|
+          at = signal(ref, GithubPrSignal::COMMENTS)
+          newer?(at, since) && (!settled || at <= @now - COMMENT_SETTLE)
+        end
       end
 
       # A merge-conflict or base-push signal newer than +since+ that has had
@@ -205,6 +224,10 @@ module Github
       end
 
       private
+
+      def ci_unsettled?(ref)
+        [ nil, "pending" ].include?(@ci_statuses[ref.url])
+      end
 
       def signal(ref, kind)
         @signals[[ GithubPrSignal.pr_subject(ref.owner, ref.repo, ref.number), kind ]]
@@ -231,7 +254,8 @@ module Github
     #
     # @param before [Hash] the session's custom_metadata before the pass's evaluators ran
     # @param after [Hash] the same, after
-    # @param stamps [Hash{String => Time, nil}] the evaluators' previous stamps, by backoff key
+    # @param stamps [Hash{Symbol => Time, nil}] the evaluators' previous stamps: :status,
+    #   :comments and :merge_conflict
     def observe(session, reading, refs, before:, after:, stamps:)
       return if reading.nil? || !reading.covered?
 
@@ -241,7 +265,7 @@ module Github
           log_observation(session, ref, "status", mode, reading.status_pending?(stamps[:status], refs: [ ref ]))
         end
         if before&.dig("github_comments", ref.url).is_a?(Hash) && comment_count(after, ref.url) > comment_count(before, ref.url)
-          log_observation(session, ref, "comments", mode, reading.comments_pending?(stamps[:comments], refs: [ ref ]))
+          log_observation(session, ref, "comments", mode, reading.comments_pending?(stamps[:comments], refs: [ ref ], settled: false))
         end
       end
     end
