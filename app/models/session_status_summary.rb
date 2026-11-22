@@ -47,6 +47,16 @@ class SessionStatusSummary < ApplicationRecord
   def ready? = state == "ready"
   def failed? = state == "failed"
 
+  # Whether the last generation failed because the API rejected a tool name the
+  # fork replayed from the stored transcript (#1603). That failure is a property
+  # of the transcript, so another fork of it is likely to hit the same 400 —
+  # SessionStatusSummaryGenerator answers the next unforced request without a
+  # fork instead, which is what stops the repair sweep and every pause from
+  # re-forking into it.
+  def replay_rejected?
+    failed? && error.to_s.match?(/\binvalid_tool_name\b|#{Regexp.escape(ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX)}/)
+  end
+
   # A generation is only "pending" while it is plausibly still running. Past
   # PENDING_TIMEOUT the flag is treated as debris, not as a live attempt.
   def pending?

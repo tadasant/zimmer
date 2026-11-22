@@ -823,6 +823,61 @@ token=#{'Zz9' * 12}
     end
   end
 
+  # #1603: GITHUB_TRIGGER_INGEST_MODE=webhook_shadow sat in the secret bundle,
+  # and exact-matching it rewrote the MCP tool name
+  # mcp__zimmer__compare_github_webhook_shadow into one the API rejects.
+  test "a configuration word under a non-credential name is not a known secret, so tool names survive" do
+    bundle = {
+      "GITHUB_TRIGGER_INGEST_MODE" => "webhook_shadow",
+      "FIXTURE_DEPLOY_REGION" => "production-primary",
+      "STRAD_API_KEY" => INJECTED_STRAD_TOKEN
+    }
+    with_bundle(bundle) do
+      known = TranscriptRedactor.known_secrets.to_h
+      refute known.key?("webhook_shadow")
+      refute known.key?("production-primary")
+      assert_equal "ENV:STRAD_API_KEY", known[INJECTED_STRAD_TOKEN], "the bundle collector ran"
+
+      line = %({"type":"tool_use","name":"mcp__zimmer__compare_github_webhook_shadow","input":{"mode":"webhook_shadow"}})
+      assert_equal line, TranscriptRedactor.redact(line)
+    end
+  end
+
+  test "a configuration word from the catalog's variables is not a known secret either" do
+    server = ServersConfig::Server.new("fake", {
+      "type" => "http", "url" => "https://mcp.example.test/mcp", "headers" => { "X-Mode" => "${FIXTURE_INGEST_MODE}" }
+    })
+    with_bundle({}) do
+      ServersConfig.stubs(:all).returns([ server ])
+      SecretProviders.chain.stubs(:get).with("FIXTURE_INGEST_MODE").returns("webhook_shadow")
+      TranscriptRedactor.reset_known_secrets!
+
+      refute TranscriptRedactor.known_secrets.to_h.key?("webhook_shadow")
+    end
+  end
+
+  test "a configuration word is still redacted unless the name says configuration too" do
+    bundle = {
+      "FIXTURE_ADMIN_PASSWORD" => "correct-horse-battery-staple",
+      "SMTP_PASS" => "abcdefghijklmnop",
+      "BACKUP_PASSPHRASE" => "tangerine-otter-violin-quartz",
+      "FIXTURE_SECRET_MODE" => "hidden_shadow_mode"
+    }
+    with_bundle(bundle) do
+      known = TranscriptRedactor.known_secrets.to_h
+      bundle.each { |name, value| assert_equal "ENV:#{name}", known[value], name }
+      refute_includes TranscriptRedactor.redact("pw is correct-horse-battery-staple"), "correct-horse-battery-staple"
+    end
+  end
+
+  test "a value with a digit or a capital under a non-credential name is still a known secret" do
+    with_bundle({ "FIXTURE_WEBHOOK_PATH" => "hooks_a1b2c3d4e5", "FIXTURE_OPAQUE" => "MixedCaseOpaqueValue" }) do
+      known = TranscriptRedactor.known_secrets.to_h
+      assert_equal "ENV:FIXTURE_WEBHOOK_PATH", known["hooks_a1b2c3d4e5"]
+      assert_equal "ENV:FIXTURE_OPAQUE", known["MixedCaseOpaqueValue"]
+    end
+  end
+
   test "a credential-named variable or a Zimmer API key can never be allowlisted" do
     bundle = { "FIXTURE_DEPLOY_TOKEN" => "fixture0deploy0token0value0z9" }
     env = {

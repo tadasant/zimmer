@@ -392,6 +392,24 @@ class SessionStatusSummaryHarvestJobTest < ActiveSupport::TestCase
     end
   end
 
+  # #1603: a fork the API refused for a replayed tool name. Another fork of the
+  # same transcript replays the same name, so the sweep re-forking it was one
+  # more failed fork and one more page every few minutes.
+  test "a fork refused for a replayed tool name hands the session to the headless path, and says why" do
+    fork = build_fork
+    fork.update!(metadata: fork.metadata.merge(
+      "failure_reason" => "invalid_tool_name",
+      "exit_status" => "#{ProcessLifecycleManager::INVALID_TOOL_NAME_PREFIX}, so the turn did not run."
+    ))
+    pending_record(fork)
+    ClaudeAccount.update_all(status: ClaudeAccount.statuses[:active])
+
+    assert_enqueued_with(job: SessionStatusSummaryJob, args: [ @source.id, { headless: true } ]) do
+      SessionStatusSummaryHarvestJob.perform_now(fork.id, failed: true)
+    end
+    assert @source.reload.status_summary.replay_rejected?
+  end
+
   test "a fork that answered costs no headless retry" do
     fork = build_fork(answer: "The PR is open and CI is green.")
     pending_record(fork)

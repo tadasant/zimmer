@@ -1780,6 +1780,7 @@ class ProcessLifecycleManager
   # `needs_input` said the opposite of all three.
   def handle_terminal_api_error(terminal)
     return handle_safeguards_rejection(terminal) if ApiErrorRetryService.safeguards_flagged?(terminal.text)
+    return handle_invalid_tool_name_rejection(terminal) if ApiErrorRetryService.invalid_tool_name?(terminal.text)
 
     add_log(
       "Turn ended on an API error and no recovery path claimed it, so it did not complete — failing " \
@@ -1863,6 +1864,41 @@ class ProcessLifecycleManager
     # it — remedies, support link, request id — reaches `exit_status`. The bound
     # is there for a wording that grows, and 600 keeps the remedies if one does.
     ExitDecision.new(action: :failed, error_message: guidance + TranscriptRedactor.redact(terminal.text).truncate(600))
+  end
+
+  # The prefix every invalid-tool-name failure's exit_status starts with.
+  # AgentSessionJob buckets on it (`invalid_tool_name`), and
+  # SessionStatusSummary#replay_rejected? reads it out of a summary fork's
+  # failure so the next generation does not fork into the same 400.
+  INVALID_TOOL_NAME_PREFIX = "The API rejected a tool name this conversation replays"
+
+  # A turn that ended on the API refusing a tool name the transcript replays
+  # (ApiErrorRetryService::INVALID_TOOL_NAME_PATTERNS). Fails the session at
+  # once, with no retry and no page.
+  #
+  # No retry because the request is a function of the transcript the turn
+  # resumed from: a resume replays the same name and gets the same 400. No page
+  # because the wording is known and the one cause seen in production — a
+  # redaction marker inside a tool name — is repaired on every replay write
+  # (ReplayTranscriptToolNames). One of these that keeps arriving means a new
+  # cause, and it shows up as its own `invalid_tool_name` bucket on the health
+  # dashboard rather than as an unknown wording.
+  #
+  # Production sessions 29929, 29937, 29941 (issue #1603): status-summary forks
+  # of 29423, whose stored transcript held
+  # `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`.
+  # Each fell through to the backstop above and paged as an unknown wording.
+  def handle_invalid_tool_name_rejection(terminal)
+    guidance = "#{INVALID_TOOL_NAME_PREFIX}, so the turn did not run. A resume would send the same " \
+      "name again. The runtime said: "
+    add_log(guidance + terminal.text, level: "error")
+    @log_buffer&.flush
+    @logger.warn("Turn ended on an invalid replayed tool name", runtime_output: TranscriptRedactor.redact(terminal.text))
+
+    remember_terminal_api_error_line(terminal.line)
+
+    @mutex.synchronize { @state = :idle }
+    ExitDecision.new(action: :failed, error_message: guidance + TranscriptRedactor.redact(terminal.text).truncate(300))
   end
 
   def report_terminal_api_error(error_text)

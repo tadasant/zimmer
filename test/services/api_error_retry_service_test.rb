@@ -374,6 +374,28 @@ class ApiErrorRetryServiceTest < ActiveSupport::TestCase
     assert_nil create_service.unclassified_api_error_text("/tmp/test-clone")
   end
 
+  # #1603: status-summary forks of session 29423 replayed a redacted tool name.
+  INVALID_TOOL_NAME_MESSAGE = "API Error: 400 tools.20.custom.name: String should match pattern '^[a-zA-Z0-9_-]{1,128}$'"
+
+  test "invalid_tool_name? matches the production wording and nothing ordinary" do
+    assert ApiErrorRetryService.invalid_tool_name?(INVALID_TOOL_NAME_MESSAGE)
+    assert ApiErrorRetryService.invalid_tool_name?("API Error: 400 tools.3.name: String should match pattern '^x$'")
+    assert_not ApiErrorRetryService.invalid_tool_name?("500 Internal Server Error")
+    assert_not ApiErrorRetryService.invalid_tool_name?(SAFEGUARDS_FLAGGED_MESSAGE)
+    assert_not ApiErrorRetryService.invalid_tool_name?(nil)
+    assert_not ApiErrorRetryService.outage_error?("invalid_request", INVALID_TOOL_NAME_MESSAGE)
+  end
+
+  test "an invalid replayed tool name is recognized, and is not retried" do
+    setup_transcript_with_safeguards_rejection(INVALID_TOOL_NAME_MESSAGE)
+    service = create_service
+
+    assert_not service.retryable_api_error_detected?("/tmp/test-clone")
+    assert_equal :not_applicable, service.attempt_retry("/tmp/test-clone")
+    assert service.terminal_api_error("/tmp/test-clone").recognized?
+    assert_nil service.unclassified_api_error_text("/tmp/test-clone")
+  end
+
   test "retries a malformed tool call by respawning the session" do
     setup_transcript_with_malformed_tool_call
 

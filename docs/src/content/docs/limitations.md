@@ -1680,12 +1680,21 @@ gap is worth naming precisely:
   `AgentSessionJob#restore_regressed_transcript_if_needed` writes the stored transcript back to the file
   the runtime reads on `--resume`. That copy is redacted, so the resumed conversation contains
   `[REDACTED:…]` where the credential was — correct for a credential, and a real loss of context if the
-  span was over-redacted.
+  span was over-redacted. Forks and unarchives write the same redacted copy.
+- **A tool name a redaction hit stays broken in the replay, just valid.** Before writing a stored
+  transcript back to disk, `ReplayTranscriptToolNames` turns a marker inside a tool name into
+  `REDACTED`, so the API accepts the request
+  ([#1603](https://github.com/tadasant/zimmer/issues/1603)). The original name is not recovered. The
+  resumed conversation refers to a tool the runtime does not have under that name, and a stored
+  transcript keeps its markers.
 - **Any `${VAR}` the catalog declares is redacted by exact value, whether or not it is a secret,
   unless it is on the [known-value allowlist](/sessions/transcripts/#public-values-are-not-credentials).**
   The `ZIMMER_*_BASE_URL` variables are on it by default. Any other externalized-but-not-secret
   variable (an org slug, a model id) is scrubbed out of every transcript that mentions it until a
-  deployment adds it to `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`. The same is true of every entry in the `.env` secret
+  deployment adds it to `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`. A configuration word (lowercase
+  letters joined by `_`, `-` or `.`, like `webhook_shadow`) under a configuration-shaped name
+  (`*_MODE`, `*_ENV`, `*_LEVEL`, …) is the exception, and is skipped by shape. A real credential stored
+  under such a name with an all-lowercase value would be skipped too. The same is true of every entry in the `.env` secret
   bundle, and of any process environment variable whose name says "key", "token", "secret",
   "password" or "credential" and whose value is 16+ characters mixing letters and digits (and is not
   a path, a plain URL or a list of other variables' names). A multi-line value, such as the Parameter

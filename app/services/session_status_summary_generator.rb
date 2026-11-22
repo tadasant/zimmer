@@ -365,6 +365,12 @@ class SessionStatusSummaryGenerator
 
     return Result.new(outcome: :fresh, message: "Summary is current.") if !force && !summary.stale?(line_count)
 
+    # Read before the claim, which clears the error it is read from. See
+    # SessionStatusSummary#replay_rejected?. A forced run still forks: an
+    # operator pressing Regenerate is asking for the full fork, and the replay
+    # write repairs the names that caused the last rejection.
+    replay_rejected = !force && summary.replay_rejected?
+
     unless claim(summary, line_count)
       return Result.new(outcome: :pending, message: "A summary is already being generated.")
     end
@@ -390,8 +396,14 @@ class SessionStatusSummaryGenerator
     # fork could deliver. It could; it must not be stood up anyway, because what
     # it would deliver is a second agent reading a snapshot the session has
     # already moved past (#400). See #conversation_live?.
-    return run_headless(summary, line_count) if headless || pool_exhausted? || fork_would_be_refused? ||
-                                                conversation_live?
+    #
+    # A REPLAY REJECTION is the last: the previous fork died on a 400 for a tool
+    # name its transcript replays, and another fork of the same transcript is
+    # most plausibly the same 400, so the repair sweep and every pause would each
+    # stand up a fork that fails the same way (#1603). The one-shot reads a
+    # rendered excerpt and replays no tool names.
+    return run_headless(summary, line_count) if headless || replay_rejected || pool_exhausted? ||
+                                                fork_would_be_refused? || conversation_live?
 
     fork_args = {
       source_session: session,

@@ -129,6 +129,30 @@ module TranscriptRedactor
   CONFIG_URL_VALUE = %r{\A[a-z][a-z0-9+.\-]*://[^@?\s]*\z}
   NAME_LIST_VALUE = /\A[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*\z/
 
+  # A configuration word: lowercase letters joined by `_`, `-` or `.`, with no
+  # digit and no capital — `webhook_shadow`, `webhook_with_poll_fallback`,
+  # `production-primary`. That is the shape of an enum or a mode, and it is
+  # also the shape of identifiers that are everywhere in a transcript: tool
+  # names, method names, file names.
+  #
+  # The session secret bundle and the catalog's `${VAR}`s are not all
+  # credentials. A deployment puts mode switches in the same store
+  # (`GITHUB_TRIGGER_INGEST_MODE=webhook_shadow`), and exact-matching one of
+  # those cuts it out of every identifier that contains it. #1603: the value
+  # was inside the MCP tool name `mcp__zimmer__compare_github_webhook_shadow`,
+  # the redacted name `mcp__zimmer__compare_github_[REDACTED:ENV:...:14ch]`
+  # was replayed to the API by a fork, and the API rejected the whole request.
+  #
+  # So a value of this shape is not taken when the variable's NAME also says
+  # it is configuration (CONFIG_VARIABLE_NAME: `*_MODE`, `*_ENV`, `*_LEVEL`,
+  # ...). Both halves are required because the value shape alone is not
+  # enough: a 16-letter app password, or a diceware passphrase, is a
+  # configuration word too, and credential names are not reliably spelled with
+  # SENSITIVE_KEY's nouns (`SMTP_PASS`, `BACKUP_PASSPHRASE`). A name that does
+  # match SENSITIVE_KEY is never exempt, whatever its suffix.
+  CONFIG_WORD_VALUE = /\A[a-z]+(?:[_.\-][a-z]+)*\z/
+  CONFIG_VARIABLE_NAME = /_(?:MODE|ENV|ENVIRONMENT|LEVEL|STRATEGY|STAGE|TIER|REGION|PROFILE|BACKEND|PROVIDER|FORMAT)\z/
+
   # The known-value allowlist: values Zimmer resolves but that are not secret,
   # so tier 1 never redacts them.
   #
@@ -145,6 +169,11 @@ module TranscriptRedactor
   # substring of a value is ever exempted, so a credential that CONTAINS an
   # allowlisted value (a webhook URL under the base URL, a credentialed URL) is
   # still a value of its own and still redacted, longest-first, as before.
+  #
+  # One shape rule sits beside the two lists: a configuration word
+  # (CONFIG_WORD_VALUE) under a configuration-shaped name
+  # (CONFIG_VARIABLE_NAME) is exempt too. It is a whole-value test, like the
+  # lists, so it exempts no substring of anything.
   #
   # The defaults are Zimmer's own base-URL variables (see AppUrl). A deployment
   # extends the list through the environment, comma-separated:
@@ -638,7 +667,19 @@ module TranscriptRedactor
       name = name.to_s
       return false if name.match?(SENSITIVE_KEY) || ZIMMER_API_KEY_VARIABLES.include?(name)
 
-      allowlisted_variables.include?(name) || allowlisted_values.include?(value)
+      allowlisted_variables.include?(name) || allowlisted_values.include?(value) || config_setting?(name, value)
+    end
+
+    # Whether a variable is a configuration setting rather than a credential:
+    # a configuration-shaped name holding a configuration word. Only consulted
+    # for a name that is not credential-shaped — see CONFIG_WORD_VALUE and
+    # .allowlisted?.
+    #
+    # @param name [String]
+    # @param value [String]
+    # @return [Boolean]
+    def config_setting?(name, value)
+      name.to_s.match?(CONFIG_VARIABLE_NAME) && value.is_a?(String) && value.match?(CONFIG_WORD_VALUE)
     end
 
     # @return [Array<String>] the defaults plus ALLOWLIST_VARIABLES_ENV
