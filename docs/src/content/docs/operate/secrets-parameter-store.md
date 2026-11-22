@@ -18,8 +18,8 @@ This is a production invariant: **no agent session gets access to the store's se
 for Zimmer's backend. A session reaches what a store credential unlocks in one of two ways only:
 
 - **A short-lived token minted from it.** Zimmer's backend holds the long-lived grant and pushes each
-  session turn a short-lived, scoped token: the session token broker
-  ([#1610](https://github.com/tadasant/zimmer/pull/1610)).
+  session turn a short-lived, scoped token. This is the session token broker, which is not on `main`
+  yet ([#1610](https://github.com/tadasant/zimmer/pull/1610)).
 - **Going through strad**, which holds the credential and never hands it over.
 
 So the store is not a source for anything an agent can read:
@@ -27,13 +27,14 @@ So the store is not a source for anything an agent can read:
 | Agent surface | Reads from |
 | --- | --- |
 | `air prepare`'s environment (what AIR resolves into `.mcp.json` / `.codex/config.toml`) | encrypted `mcp_secrets`, then process `ENV` |
-| `${VAR}`s Zimmer resolves after AIR (injected Zimmer servers, anything AIR left) | `SecretsInterpolator.for_agent_surface`: X tokens, encrypted `mcp_secrets`, then `ENV` |
+| `${VAR}`s Zimmer resolves after AIR (injected Zimmer servers, anything AIR left) | `SecretsInterpolator.for_agent_surface`: X tokens, encrypted `mcp_secrets`, then `ENV` (no store link) |
 | The clone's `.env` | encrypted `mcp_secrets` only, narrowed by `SessionSecretScope` |
 
 The backend chain below keeps the store first. Connector status, readiness probes, Slack, email,
 WhatsApp, Live Mode and Zimmer's own settings all read it there. A catalog `${VAR}` kept **only** in
-the store therefore fails a session with `air_secret_unresolvable`, by design. Give that server
-brokered auth or route it through strad.
+the store therefore fails a session with `air_secret_unresolvable`, by design. Route that server
+through strad, or put the value in `mcp_secrets` if a long-lived credential in the agent's reach is
+acceptable for it.
 
 Two paths still carry a store value into a session. Both are listed in
 [Limitations](/limitations/#two-store-secrets-still-reach-agent-sessions): the GitHub tokens below,
@@ -95,8 +96,8 @@ credential-shaped column is missing from a model's filter.
 
 ## Not only MCP secrets: `GH_TOKEN` and Slack
 
-The chain began as the source for the `${VAR}` placeholders in MCP server configs. Those now
-resolve for agents without it; see [Agents never read this store](#agents-never-read-this-store). The exceptions below are the reason the
+The chain serves Zimmer's backend. The `${VAR}` placeholders in an agent's MCP config resolve
+without it; see [Agents never read this store](#agents-never-read-this-store). The exceptions below are the reason the
 namespace is called `secrets` rather than `mcp` — see [The namespace
 rename](#the-namespace-rename-from-mcp-to-secrets).
 

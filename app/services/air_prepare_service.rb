@@ -43,8 +43,9 @@ class AirPrepareService
   # never get the store's secrets. Retrying never
   # helps and nothing is wrong server-side, so AgentSessionJob fails the session
   # gracefully at WARN rather than letting an unhandled error bubble to
-  # ActiveJob and page #alerts. The fix is always operator-side: give the server
-  # brokered auth, route it through strad, or stop selecting it.
+  # ActiveJob and page #alerts. The fix is always operator-side: add the
+  # variable to encrypted `mcp_secrets`, route the server through strad, or stop
+  # selecting it.
   # Carries the offending variable names so the failure message can tell the
   # operator exactly which secret to provision.
   class SecretResolutionError < AirPrepareError
@@ -503,7 +504,14 @@ class AirPrepareService
     guard_injected_files!
     write_env_file!
     run_air_prepare!
-    post_processor.post_process!
+    begin
+      post_processor.post_process!
+    rescue SecretsInterpolator::MissingVariableError => e
+      # A ${VAR} Zimmer resolves after AIR is the same configuration problem as
+      # one AIR could not resolve, so it fails the session the same graceful way
+      # instead of escaping as a job crash that pages.
+      raise SecretResolutionError.new(e.message, variable_names: [ e.variable_name ].compact)
+    end
     artifact_bridge.write!
     write_system_prompt_file!
   end

@@ -45,12 +45,16 @@ module SecretProviders
 
   # The chain for anything written where an agent can read it: an MCP config,
   # a clone's `.env`, a spawn environment. Encrypted credentials, then ENV, and
-  # never the Parameter Store.
+  # never the Parameter Store link.
+  #
+  # ENV is not entirely store-free: GhTokenProvisioner publishes the store's
+  # GitHub tokens into it. That is a known exception, listed in limitations.md.
   #
   # This is a production invariant, not a preference: agents never get access
   # to the store's secrets. A long-lived store credential reaches a session only
   # as a short-lived token Zimmer's backend mints from it (the session token
-  # broker), or not at all — the session goes through strad, which holds it.
+  # broker, tadasant/zimmer#1610), or not at all — the session goes through
+  # strad, which holds it.
   #
   # Built per call: neither link caches anything worth sharing.
   #

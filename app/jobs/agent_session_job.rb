@@ -6602,7 +6602,7 @@ class AgentSessionJob < ApplicationJob
       message = "Session failed: AIR prepare could not resolve required secret(s) #{missing}. " \
                 "Session prep reads encrypted mcp_secrets and the process environment, never " \
                 "Zimmer's secrets store, so a value kept only in the store does not count. " \
-                "Give the MCP server brokered auth, route it through strad, or deselect it " \
+                "Add it to mcp_secrets, route the MCP server through strad, or deselect it " \
                 "(#{error.message})"
     else
       failure_reason = "air_root_unresolvable"

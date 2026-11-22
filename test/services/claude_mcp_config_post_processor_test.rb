@@ -134,6 +134,21 @@ class ClaudeMcpConfigPostProcessorTest < ActiveSupport::TestCase
     assert_equal "credentials-copy", read_config.dig("mcpServers", "both-http", "headers", "Authorization")
   end
 
+  test "the injected self-session server never carries a key held only in the secrets store" do
+    ENV.delete("ZIMMER_LOCAL_API_KEY")
+    store = FakeParameterStore.new
+    store.seed_secret("ZIMMER_LOCAL_API_KEY", "store-only-zimmer-key")
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([
+      store.provider, SecretProviders::RailsCredentials.new, SecretProviders::Env.new(ENV)
+    ]))
+    SecretsLoader.stubs(:all).returns({})
+    write_config({})
+
+    build_processor.post_process!
+
+    assert_no_match(/store-only-zimmer-key/, read_config.to_json)
+  end
+
   # Regression guard for zimmer#467: Zimmer used to splice `--prefix /tmp` into
   # every npx invocation here. That aimed npm's bin-linking at a directory that
   # does not exist on the host, so the `chmod 0755` that accompanies bin-linking

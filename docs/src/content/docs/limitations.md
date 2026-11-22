@@ -7166,8 +7166,9 @@ that relies on them, with nothing to replace them yet:
 
 - **GitHub tokens.** `GhTokenProvisioner` reads `GH_TOKEN` and `GH_TOKEN__<OWNER>` from the store and
   publishes them into the worker's process environment. A session inherits its own owner's token
-  (`CliSpawnEnv#apply_github_token`), and `air prepare` inherits the environment, so a catalog
-  `${GH_TOKEN}` resolves from it too. Removing the store link breaks `gh` and `git push` in every
+  (`CliSpawnEnv#apply_github_token`). `air prepare` inherits the environment, and the agent-surface
+  interpolator's last link is the environment, so a `${GH_TOKEN}` in an MCP config resolves from it
+  too. Removing the store link breaks `gh` and `git push` in every
   session. The fix is a short-lived token per session, for example a GitHub App installation token
   minted by the backend.
 - **Pi's provider key.** `PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through

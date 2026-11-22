@@ -30,7 +30,14 @@
 # process.env.
 class SecretsInterpolator
   # Raised when a ${VAR} pattern has no resolvable value and no default.
-  class MissingVariableError < StandardError; end
+  class MissingVariableError < StandardError
+    attr_reader :variable_name
+
+    def initialize(message = nil, variable_name: nil)
+      super(message)
+      @variable_name = variable_name
+    end
+  end
 
   # An interpolator for a config an agent can read: the store is not consulted.
   # @return [SecretsInterpolator]
@@ -94,12 +101,16 @@ class SecretsInterpolator
       elsif default_value
         default_value
       else
-        raise MissingVariableError, missing_variable_message(var_name)
+        raise MissingVariableError.new(missing_variable_message(var_name), variable_name: var_name)
       end
     end
   end
 
   # Where a variable stands, without handing the caller its value.
+  #
+  # Answered from THIS interpolator's chain: on an agent-surface interpolator a
+  # name only the store holds reads as absent, which is true for an agent and
+  # false for the backend. Status pages want the backend answer.
   #
   # Precisely what this avoids: it never RETURNS a secret, and it never MINTS or
   # refreshes an X access token as a side effect of rendering a page. It does not
@@ -219,7 +230,8 @@ class SecretsInterpolator
     return base unless @agent_surface && held_only_in_store?(var_name)
 
     "#{base} for an agent: only Zimmer's secrets store holds it, and the store never fills a " \
-      "config an agent can read. Give the server brokered auth or route it through strad"
+      "config an agent can read. Route the server through strad, or give it brokered auth " \
+      "(the session token broker, pending in tadasant/zimmer#1610)"
   end
 
   def held_only_in_store?(var_name)
