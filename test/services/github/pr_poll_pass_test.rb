@@ -734,7 +734,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     end
   end
 
-  test "shadow mode keeps the old cadence and logs whether a change was signalled first" do
+  test "shadow mode keeps the old cadence and records whether a change was signalled first" do
     with_pr_ingest_mode("webhook_shadow") do
       GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "status" ] ])
       active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
@@ -753,6 +753,7 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
       Github::PrPollPass.new.run
 
       assert(logged.any? { |line| line.include?("webhook_shadow hit: status change on owner/repo#123") }, logged.join("\n"))
+      assert_equal [ [ "status", true, "webhook_shadow" ] ], GithubPrShadowObservation.where(session_id: @session_with_pr.id).pluck(:kind, :hit, :mode)
     end
   end
 

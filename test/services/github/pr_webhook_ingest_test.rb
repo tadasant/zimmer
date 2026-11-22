@@ -147,4 +147,82 @@ class Github::PrWebhookIngestTest < ActiveSupport::TestCase
       assert Github::PrWebhookIngest::Reading.for([ ref ]).merge_conflict_pending?(1.hour.ago)
     end
   end
+
+  # ---- the shadow comparison ----
+
+  # A session's custom_metadata as the pass sees it, for one PR that has been read before.
+  def metadata(status: "open", ci: "pending", comments: 0, conflict: nil)
+    {
+      "github_pull_request_statuses" => { PR => status },
+      "github_pull_request_ci_statuses" => { PR => ci },
+      "github_comments" => { PR => { "pr_comments" => Array.new(comments) { |i| { "id" => i } }, "review_comments" => [] } },
+      Github::MergeConflictEvaluator::SUSPECTED_METADATA_KEY => conflict ? { PR => conflict } : {}
+    }
+  end
+
+  def observe(before, after, stamps: { status: 5.minutes.ago, comments: 5.minutes.ago, merge_conflict: 5.minutes.ago })
+    session = sessions(:running)
+    reading = Github::PrWebhookIngest::Reading.for([ ref ], ci_statuses: before["github_pull_request_ci_statuses"])
+    Github::PrWebhookIngest.observe(session, reading, [ ref ], before: before, after: after, stamps: stamps)
+  end
+
+  test "observe records a hit per kind the webhook announced, with the signal's lead" do
+    ENV["GITHUB_PR_INGEST_MODE"] = "webhook_shadow"
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    freeze_time do
+      GithubPrSignal.signal!([ [ PR, "status" ], [ PR, "comments" ], [ PR, "merge_conflict" ] ], at: 2.minutes.ago)
+      observe(metadata, metadata(status: "merged", ci: "pass", comments: 1, conflict: Time.current.iso8601))
+    end
+
+    rows = GithubPrShadowObservation.order(:kind).pluck(:kind, :hit, :mode)
+    assert_equal [ [ "ci", true, "webhook_shadow" ], [ "comments", true, "webhook_shadow" ],
+                   [ "merge_conflict", true, "webhook_shadow" ], [ "status", true, "webhook_shadow" ] ], rows
+    row = GithubPrShadowObservation.find_by(kind: "status")
+    assert_equal 120, (row.created_at - row.signaled_at).round
+    assert_equal sessions(:running).id, row.session_id
+  end
+
+  test "observe records a miss when no signal newer than the evaluator's stamp announced the change" do
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    GithubPrSignal.signal!([ [ PR, "comments" ] ], at: 10.minutes.ago)
+
+    observe(metadata, metadata(comments: 2))
+
+    assert_equal [ [ "comments", false, nil ] ], GithubPrShadowObservation.pluck(:kind, :hit, :signaled_at)
+    assert_equal "webhook_with_poll_fallback", GithubPrShadowObservation.last.mode
+  end
+
+  test "observe credits a CI change to a repository-wide commit status, and a conflict to a base push" do
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    GithubPrSignal.signal!([ %w[tadasant/zimmer ci], %w[tadasant/zimmer base_push] ], at: 1.minute.ago)
+
+    observe(metadata, metadata(ci: "fail", conflict: Time.current.iso8601))
+
+    assert_equal [ [ "ci", true ], [ "merge_conflict", true ] ], GithubPrShadowObservation.order(:kind).pluck(:kind, :hit)
+  end
+
+  test "observe records nothing for a first reading, an unchanged PR, an uncovered repository or poll" do
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    observe({}, metadata(status: "merged"))
+    observe(metadata, metadata)
+
+    GithubPrSignal.delete_all
+    observe(metadata, metadata(status: "merged"))
+
+    ENV["GITHUB_PR_INGEST_MODE"] = "poll"
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    observe(metadata, metadata(status: "merged"))
+
+    assert_equal 0, GithubPrShadowObservation.count
+  end
+
+  test "a suspected conflict being confirmed is the same conflict, not a new change" do
+    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
+    before = metadata(conflict: 3.minutes.ago.iso8601)
+    after = metadata.merge(Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR => "abc123" })
+
+    observe(before, after)
+
+    assert_equal 0, GithubPrShadowObservation.count
+  end
 end

@@ -190,6 +190,7 @@ module Mcp
       Definition.new(klass: "Mcp::Tools::ListMcpEventSources", group: "triggers", write: false),
       Definition.new(klass: "Mcp::Tools::CompareTriggerFires", group: "triggers", write: false),
       Definition.new(klass: "Mcp::Tools::CompareGithubWebhookShadow", group: "triggers", write: false),
+      Definition.new(klass: "Mcp::Tools::CompareGithubPrWebhookShadow", group: "triggers", write: false),
       Definition.new(klass: "Mcp::Tools::WakeMeUpLater", group: "triggers", write: true, composite_groups: %w[self_session]),
       Definition.new(klass: "Mcp::Tools::WakeMeUpWhenSessionChangesState", group: "triggers", write: true, composite_groups: %w[self_session]),
 

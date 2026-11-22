@@ -1894,7 +1894,9 @@ events by key. The same reading is in `GET /api/v1/health` (`health_report.inbou
 `compare_github_webhook_shadow` (MCP, triggers group, read-only) takes its own window, grace and
 condition. A source in shadow warns on the panel when webhook-only or poll-only is above zero; like the
 rest of the panel it never moves the overall status. Rows are kept 30 days and listed one by one at
-`/supervisor/trigger_shadow_observations`.
+`/supervisor/trigger_shadow_observations`. The per-session PR pollers have their own shadow and their
+own tool, `compare_github_pr_webhook_shadow`; see
+[Reading the PR webhook shadow](/operate/background-jobs/#reading-the-pr-webhook-shadow).
 
 The rollout, in phases, each a setting change and nothing else:
 
