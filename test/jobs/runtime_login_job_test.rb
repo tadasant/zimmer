@@ -184,7 +184,7 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     "\e]8;;#{URL_2_1_330}\a#{URL_2_1_330}\e]8;;\a\r\n" \
     "Paste code here if prompted > "
 
-  class Replay2130LoginDriver < ClaudeLoginDriver
+  class Replay21330LoginDriver < ClaudeLoginDriver
     def resolved_command = [ "/bin/sh", "-c", 'printf "%s" "$OUT"; sleep 0.5' ]
     def env(_dir) = { "OUT" => OUTPUT_2_1_330 }
   end
@@ -309,7 +309,7 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     )
     attempt = claude.runtime_login_attempts.create!(runtime: "claude_code")
 
-    RuntimeLoginDriver.stub(:for, Replay2130LoginDriver.new) do
+    RuntimeLoginDriver.stub(:for, Replay21330LoginDriver.new) do
       RuntimeLoginJob.perform_now(attempt.id)
     end
 
@@ -335,9 +335,18 @@ class RuntimeLoginJobTest < ActiveJob::TestCase
     assert_equal "failed", attempt.status
     assert_nil attempt.verification_url
     assert_match "asked for an authorization code but printed no authorization link", attempt.error_message
-    assert_match "https://login.new-host.example/authorize?x=1", attempt.error_message,
+    assert_match "https://login.new-host.example/authorize?…", attempt.error_message,
       "the panel must quote what the CLI printed so the cause is visible without a worker shell"
     assert_operator elapsed, :<, 10, "must fail as soon as the prompt appears, not after a timeout"
+  end
+
+  test "the no-link excerpt keeps each URL's host, drops its query string, and collapses the hyperlink's double copy" do
+    long_url = "https://login.new-host.example/oauth/authorize?#{"a" * 450}"
+    clean = "visit:\n#{long_url} #{long_url}\nPaste code here if prompted > "
+
+    excerpt = RuntimeLoginJob.new.send(:output_excerpt, clean)
+
+    assert_equal "visit: https://login.new-host.example/oauth/authorize?… Paste code here if prompted >", excerpt
   end
 
   test "fails when the CLI prints no link within the verification timeout" do

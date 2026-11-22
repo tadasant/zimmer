@@ -28,8 +28,8 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     "Paste code here if prompted > "
 
   # The same command off CLI 2.1.330, which moved the link to claude.ai and
-  # shortened its query string. The old host-pinned URL_REGEX did not match it,
-  # while the paste prompt still did — so the panel went to awaiting_code with no
+  # shortened its query string. A URL_REGEX pinned to the earlier hosts misses it
+  # while the paste prompt still matches — so the panel went to awaiting_code with no
   # link and showed "(waiting for link…)" for good. Byte-for-byte as captured.
   CAPTURED_URL_2_1_330 = "https://claude.ai/oauth/authorize?z-oScAmtAxVAwSIZ-nYi-xdhxIrh7Fo-JF5RstGJeFEbg"
 

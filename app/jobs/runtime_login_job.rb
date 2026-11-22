@@ -75,6 +75,12 @@ class RuntimeLoginJob < ApplicationJob
   # panel shows what the CLI actually printed.
   OUTPUT_EXCERPT_LIMIT = 300
 
+  # A URL in quoted CLI output: its scheme, host and path (group 1), then an
+  # optional query string. The excerpt keeps group 1 and elides the query, which
+  # keeps the host — the part that drifts — while a 450-character authorize URL
+  # can neither crowd it out of the excerpt nor run off a phone screen.
+  QUOTED_URL = %r{(https?://[^\s?#]+)[?#]\S*}
+
   def perform(attempt_id)
     warn_on_high_dispatch_latency(attempt_id)
 
@@ -207,7 +213,7 @@ class RuntimeLoginJob < ApplicationJob
       unless surfaced_url
         prompt_without_link = driver.completion_mode == :paste && driver.paste_prompt && clean.match?(driver.paste_prompt)
         if prompt_without_link || monotonic_now - started_at > verification_url_timeout
-          break finish(attempt, pid, "failed", no_link_message(clean, prompt_without_link))
+          break finish(attempt, pid, "failed", no_link_message(attempt, clean, prompt_without_link))
         end
       end
 
@@ -330,18 +336,27 @@ class RuntimeLoginJob < ApplicationJob
   # The failure shown when the CLI never printed a recognizable verification
   # link, quoting the tail of what it did print so the cause is visible in the
   # panel (and in the log line) without anyone needing a worker shell.
-  def no_link_message(clean, prompt_without_link)
+  def no_link_message(attempt, clean, prompt_without_link)
     reason = if prompt_without_link
       "The login CLI asked for an authorization code but printed no authorization link Zimmer recognizes " \
         "(its output format may have changed)."
     else
       "The login CLI printed no authorization link within #{verification_url_timeout.inspect}."
     end
-    excerpt = clean.to_s.squish
-    excerpt = "…#{excerpt[-OUTPUT_EXCERPT_LIMIT..]}" if excerpt.length > OUTPUT_EXCERPT_LIMIT
+    excerpt = output_excerpt(clean)
     message = excerpt.present? ? "#{reason} CLI output: #{excerpt}" : "#{reason} The CLI printed nothing."
-    Rails.logger.warn "[RuntimeLoginJob] #{message}"
+    Rails.logger.warn "[RuntimeLoginJob] attempt=#{attempt.id} no verification link: #{message}"
     message
+  end
+
+  # The CLI's cleaned output as one line, with each URL cut to scheme, host and
+  # path. An OSC 8 hyperlink leaves its URL twice (target, then label), so an
+  # immediate repeat of the same URL collapses to one.
+  def output_excerpt(clean)
+    excerpt = clean.to_s.squish
+      .gsub(QUOTED_URL) { $&.include?("?") || $&.include?("#") ? "#{$1}?…" : $1 }
+      .gsub(/(?<!\S)(\S+)(?: \1)+(?!\S)/, '\1')
+    excerpt.length > OUTPUT_EXCERPT_LIMIT ? "#{excerpt[0, OUTPUT_EXCERPT_LIMIT]}…" : excerpt
   end
 
   # A method rather than a bare constant read so a test can shorten the wait.
