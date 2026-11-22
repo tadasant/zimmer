@@ -113,11 +113,11 @@ budget](/operate/deploying/#the-database-connection-budget) before you do.
 
 ### MCP server secrets
 
-Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at prepare time:
+Consumed as `${VAR}` placeholders in `mcp.json`, resolved at prepare time:
 `FLY_IO_API_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `GITHUB_API_TOKEN`, …
 
-`SecretsLoader` resolves in this order: `XOauthTokenVendor` → Rails credentials (`mcp_secrets`) →
-`ENV`.
+They resolve in this order: `XOauthTokenVendor` → the Parameter Store → Rails credentials
+(`mcp_secrets`) → `ENV`.
 
 ## Settings you change in the UI
 

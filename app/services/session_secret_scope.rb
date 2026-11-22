@@ -4,8 +4,8 @@
 #
 # ## The problem this solves
 #
-# `SecretsLoader.all` is one undifferentiated bundle — every `mcp_secrets` entry
-# the deployment holds, around ninety of them in production. Writing all of it
+# `SessionSecrets.all` is one undifferentiated bundle — every secret the
+# deployment holds in its Parameter Store and `mcp_secrets`, around ninety of them in production. Writing all of it
 # into every clone's `.env` means a session provisioned with nothing but
 # `grafana` still has `SLACK_BOT_TOKEN`, three GCS service-account keys, two
 # DigitalOcean tokens and the Cloudflare DNS/WAF read-write pair sitting in its

@@ -149,8 +149,10 @@ them at prepare time, and AIR then validates that no `${VAR}` survived and fails
 That validation is the good part: a typo'd secret name fails loudly at prepare, before the agent
 ever gets a server that 401s on every call.
 
-Zimmer's `SecretsLoader` resolves values in this order: `XOauthTokenVendor` (for X/Twitter tokens)
-→ Rails encrypted credentials (`mcp_secrets`) → `ENV`.
+`air prepare` gets its values from `SessionSecrets.all`: the Parameter Store, then Rails encrypted
+credentials (`mcp_secrets`), with process `ENV` inherited beneath both. Any `${VAR}` AIR leaves
+behind is resolved afterwards through `SecretProviders.chain`, with `XOauthTokenVendor` (for
+X/Twitter tokens) consulted first.
 
 ## Selection is per session
 

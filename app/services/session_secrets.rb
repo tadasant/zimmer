@@ -44,23 +44,29 @@ module SessionSecrets
   module_function
 
   # @param chain [SecretProviders::Chain]
-  # @return [Hash{String => String}] name => value, never with a blank value
+  # @return [Hash{String => String}] name => value
   def all(chain: SecretProviders.chain)
     credentials = SecretsLoader.all
     store = chain.providers.find { |provider| provider.is_a?(SecretProviders::ParameterStoreProvider) }
     return credentials if store.nil?
 
-    credentials.merge(store_values(store))
-  rescue ParameterStore::StoreError, ParameterStore::AuthError => e
-    # The class only: a store error's message can carry a resource path.
-    Rails.logger.warn "[SessionSecrets] Parameter Store unreadable, using encrypted credentials only: #{e.class}"
-    credentials || {}
+    begin
+      credentials.merge(store_values(store))
+    rescue StandardError => e
+      # StandardError, not just ParameterStore::StoreError: a network failure
+      # (SocketError, a timeout, a TLS error) on a cold cache surfaces unwrapped.
+      # The class only: a store error's message can carry a resource path.
+      Rails.logger.warn "[SessionSecrets] Parameter Store unreadable, using encrypted credentials only: #{e.class}"
+      credentials
+    end
   end
 
+  # nil is a miss; any other value is the store's answer, as in Chain#get.
   def store_values(store)
     store.names.each_with_object({}) do |name, values|
       value = store.get(name)
-      values[name] = value if value.present?
+      values[name] = value unless value.nil?
     end
   end
+  private_class_method :store_values
 end

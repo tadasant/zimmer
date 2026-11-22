@@ -9,8 +9,7 @@
 #     `SessionSecrets.all` (the Parameter Store, then encrypted credentials) that
 #     SessionSecretScope says this session may hold. Read that class for the
 #     rule and for the ways back out of a narrowing. GitHub tokens are never in
-#     it: CliSpawnEnv#apply_github_token hands a session its own owner's token,
-#     and an entry here would override that narrowing.
+#     it — see #withheld?.
 #   - **Everything else**, carried over verbatim. An operator (or the agent
 #     itself) can set a variable in a clone's `.env` — pointing a server at a
 #     different Zimmer with `ELICITATION_REQUEST_URL`, raising
@@ -60,16 +59,20 @@ class SessionEnvFile
     def write!(session:, working_directory:, file_system:)
       return nil if session.nil? || working_directory.blank?
 
-      secrets = SessionSecrets.all.reject { |name, _value| github_token?(name) }
-      return nil if secrets.empty?
+      bundle = SessionSecrets.all
+      return nil if bundle.empty?
 
+      secrets = bundle.reject { |name, _value| withheld?(name) }
       allowed = SessionSecretScope.allowed_keys(session: session, available_keys: secrets.keys)
       scoped = secrets.slice(*allowed)
 
       path = File.join(working_directory, EnvFile::FILENAME)
       # `perm:` sets the mode on a file this call creates, so a new `.env` is never
       # briefly world-readable under the umask; the chmod covers one that existed.
-      file_system.write(path, render(scoped, preserved_lines(path, file_system, secrets.keys)), perm: 0o600)
+      # Every bundle name counts as managed, withheld ones included, so a line an
+      # older write left for a name now withheld is dropped rather than preserved
+      # as if an operator had set it.
+      file_system.write(path, render(scoped, preserved_lines(path, file_system, bundle.keys)), perm: 0o600)
       file_system.chmod(0o600, path)
 
       Result.new(key_names: scoped.keys.sort, available_count: secrets.size)
@@ -77,7 +80,15 @@ class SessionEnvFile
 
     private
 
-    def github_token?(name)
+    # GitHub tokens are never written, even when an artifact names one or the
+    # deployment runs unscoped: CliSpawnEnv#apply_github_token gives a session its
+    # own owner's token, and a `.env` entry would override that narrowing.
+    #
+    # CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS is deliberately NOT withheld here:
+    # that scrub is about the worker's inherited environment, and this file is
+    # how a session whose artifacts declare one of those names (the Slack server's
+    # SLACK_BOT_TOKEN) gets it back.
+    def withheld?(name)
       name == GithubTokens::DEFAULT_VARIABLE || GithubTokens.owner_variable?(name)
     end
 

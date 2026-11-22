@@ -553,9 +553,9 @@ push* is a different and still-open problem — every session shares one GitHub 
 
 Every agent session's clone gets a `.env` (mode `0600`, gitignored) holding secrets from
 `SessionSecrets.all` — every name in Zimmer's Parameter Store and in the `mcp_secrets` block of the
-environment's encrypted credentials, the store winning. Process ENV is not in it, and neither are
-GitHub tokens (`GH_TOKEN`, `GH_TOKEN__*`): a session gets its own owner's token from
-`CliSpawnEnv#apply_github_token`, and a `.env` entry would override that narrowing. That file is
+environment's encrypted credentials, the store winning. Process ENV is not in it. Neither are
+GitHub tokens (`GH_TOKEN`, `GH_TOKEN__*`), since a session gets its own owner's token from
+`CliSpawnEnv#apply_github_token` and a `.env` entry would override that narrowing. That file is
 loaded into the agent CLI's process environment by `CliSpawnEnv#load_env_file`, and on Claude Code the
 stdio MCP servers the CLI spawns inherit it.
 
@@ -595,8 +595,9 @@ Smallest blast radius first:
    /api/v1/sessions/:id/mcp_servers`, or the `change_mcp_servers` MCP tool). The `.env` is rewritten on
    the session's next turn.
 2. **Fleet-wide, one variable** — `ZIMMER_SESSION_ENV_EXTRA_KEYS=A,B` in the deploy config.
-3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all`: every clone gets the whole bundle
-   again. One deploy-time variable, no code change, no shell on the box.
+3. **Fleet-wide, everything** — `ZIMMER_SESSION_ENV_SCOPE=all`: every clone gets the whole bundle,
+   the store's whole namespace included (less the GitHub tokens above), again. That includes any of
+   Zimmer's own secrets kept in the store, which a `.env` entry hands back past the spawn-time scrub. One deploy-time variable, no code change, no shell on the box.
 
 A catalog Zimmer cannot read fails **closed** — fewer keys, not more. A broken catalog silently
 restoring the whole bundle is the failure mode this is built to avoid.

@@ -56,4 +56,12 @@ class SessionSecretsTest < ActiveSupport::TestCase
 
     assert_equal %w[CREDENTIALS_ONLY IN_BOTH], secrets.keys.sort
   end
+
+  test "a network failure reaching the store falls back the same way" do
+    store = SecretProviders::ParameterStoreProvider.allocate
+    store.stubs(:names).raises(SocketError, "getaddrinfo failed")
+    chain = SecretProviders::Chain.new([ store, SecretProviders::RailsCredentials.new ])
+
+    assert_equal %w[CREDENTIALS_ONLY IN_BOTH], SessionSecrets.all(chain: chain).keys.sort
+  end
 end

@@ -796,7 +796,8 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
   # session failed `air_secret_unresolvable` on ${STRAD_API_KEY} before its first
   # turn, because `air prepare` was handed encrypted credentials only and the
   # deployment keeps that key in its secrets store. Every genesis prepares
-  # through this service, so the trigger path is the one pinned here.
+  # through this service, so the trigger path is the one pinned here, with the
+  # Slack server's own ${SLACK_BOT_TOKEN} standing in for the missing key.
   test "a Slack-triggered session whose MCP server needs a store-only secret prepares" do
     store = FakeParameterStore.new
     store.seed_secret("SLACK_BOT_TOKEN", "xoxb-store-only-fake")

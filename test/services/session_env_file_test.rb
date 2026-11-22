@@ -174,6 +174,17 @@ class SessionEnvFileTest < ActiveSupport::TestCase
     assert_equal %w[SLACK_BOT_TOKEN], written_keys
   end
 
+  test "a GitHub token an older write left in the file is dropped, not preserved as an override" do
+    SecretsLoader.stubs(:all).returns(
+      "GH_TOKEN" => "value-for-GH_TOKEN", "SLACK_BOT_TOKEN" => "value-for-SLACK_BOT_TOKEN"
+    )
+    @file_system.write(@path, "#{SessionEnvFile::MANAGED_HEADER}\nGH_TOKEN=\"old-value\"\nMY_OVERRIDE=\"kept\"\n")
+
+    write(session(mcp_servers: %w[slack-workspace]))
+
+    assert_equal %w[MY_OVERRIDE SLACK_BOT_TOKEN], written_keys
+  end
+
   # ---------------------------------------------------------------------------
   # Degradation
   # ---------------------------------------------------------------------------

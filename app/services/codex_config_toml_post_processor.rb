@@ -91,7 +91,7 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
   # Called from #inject_elicitation_env! before inline_forwarded_secrets!, so if
   # the dropped name also happened to be a SecretsLoader secret it is no longer
   # inlined from there. That is the same value either way: AgentSessionJob writes
-  # SecretsLoader.all into the clone's `.env`, which #elicitation_env already
+  # the session's scoped secrets into the clone's `.env`, which #elicitation_env already
   # prefers. (#pin_npx_caches_to_clone! calls it after that inlining instead,
   # which is harmless: it skips any entry whose `env` already carries the name.)
   def drop_forwarded_env_var!(entry, name)
