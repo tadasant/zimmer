@@ -659,8 +659,9 @@ class Trigger < ApplicationRecord
   EVENT_FIELD_PATTERN = /\{\{event\.([A-Za-z_][A-Za-z0-9_]{0,63})(\|untrusted|\|id)?\}\}/
 
   # What `{{event.<field>|id}}` lets through: an id, a timestamp, a channel, a WhatsApp JID
-  # (`…@g.us`) — never prose.
-  MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:@-]{1,128}\z/
+  # (`…@g.us`) — never prose. `@` never first, so a payload value cannot render as an `@path`
+  # file mention.
+  MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:-][A-Za-z0-9._:@-]{0,127}\z/
 
   # The variables an `email` condition fills with what the SENDER wrote: the message, the From
   # header, the subject. Anyone on the internet can write all three, and From is spoofable, so a

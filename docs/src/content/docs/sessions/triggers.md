@@ -1028,7 +1028,7 @@ typed into Slack. A template names payload fields as:
 - `{{event.<field>|untrusted}}`: fenced like any untrusted value. A value that is not a string is
   rendered as JSON.
 - `{{event.<field>|id}}`: rendered only if the value looks like an identifier
-  (`[A-Za-z0-9._:@-]`, at most 128 characters), and empty otherwise. Use it for channel ids,
+  (`[A-Za-z0-9._:@-]`, not starting with `@`, at most 128 characters), and empty otherwise. Use it for channel ids,
   timestamps, user ids and WhatsApp JIDs.
 
 A bare `{{event.<field>}}` is refused at save on a trigger with an `mcp_event` condition, and the
@@ -1064,13 +1064,15 @@ the shadow's side only (`only_b` when the email trigger is A) by design, so read
 
 A strad WhatsApp `message_received` event's eventId, `whatsapp:<chat jid>:<message id>`, meets a
 `whatsapp` condition's claim of the same shape. One WhatsApp fire covers a chat's batch for that
-minute, so every message in it is claimed against the one session. A `whatsapp` condition drops a
-batch burst control stopped, records nothing for a batch an `addressed` condition was not addressed
-in, and records nothing for the account's own phone messages unless `include_from_me`. A shadow
+minute, so every message in it is claimed against the one session. That includes the messages of an
+`addressed` batch that did not themselves address Zimmer, so a shadow filtered to addressed messages
+shows those as `only_a`. A `whatsapp` condition drops a batch burst control stopped, records nothing
+for a batch an `addressed` condition was not addressed in, and records nothing for the account's own phone messages unless `include_from_me`. A shadow
 without the same narrowing shows those as `only_b`. The other way round, the poller re-reads ten
 minutes back and fires on any message in the bridge's buffer, including one a history sync brought
-in, which strad never makes an event. That reads as `only_a`. It
-reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
+in, which strad never makes an event. That reads as `only_a`.
+
+`compare_trigger_fires` reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
 sessions. It decides nothing; a parity session reads it and judges. Claims are kept 30 days, so that
 is the furthest back it can see.
 

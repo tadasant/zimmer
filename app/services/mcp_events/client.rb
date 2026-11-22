@@ -42,8 +42,9 @@ module McpEvents
 
     # What an event id may look like: a dedupe key stored per fire, never prose. The same shape
     # Trigger::TRUSTED_IDENTIFIER_FORMATS lets {{event_id}} render. `@` is in it because a
-    # WhatsApp event's id names its chat by JID (`whatsapp:<n>@s.whatsapp.net:<message id>`).
-    EVENT_ID_FORMAT = /\A[A-Za-z0-9._:\/@-]{1,512}\z/
+    # WhatsApp event's id names its chat by JID (`whatsapp:<n>@g.us:<message id>`), but never
+    # first: a value rendered bare into a prompt must not read as an `@path` file mention.
+    EVENT_ID_FORMAT = /\A[A-Za-z0-9._:\/-][A-Za-z0-9._:\/@-]{0,511}\z/
 
     # The most events one poll asks for. The server may return fewer; `hasMore` says there is more.
     MAX_EVENTS_PER_POLL = 50

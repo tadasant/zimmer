@@ -45,7 +45,9 @@ module Mcp
         held one (pending or busy session) is retried and recorded when it fires. A WhatsApp
         condition in `addressed` mode records nothing for a batch nobody addressed it in, and an
         `include_from_me: false` one nothing for the account's own phone messages, so a shadow
-        without the same narrowing shows them as `only_b`. WhatsApp's own clock can make one the
+        without the same narrowing shows them as `only_b`. An `addressed` batch that fired records
+        every message in it, so a shadow filtered to addressed messages shows the rest of that
+        batch as `only_a`. WhatsApp's own clock can make one the
         other way: the poller re-reads ten minutes back and fires on a message the bridge got from a
         history sync, which strad never makes an event, so that reads as `only_a`. The tool
         reports, since `since`:
