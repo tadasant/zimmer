@@ -65,6 +65,9 @@ module CliSpawnEnv
       "Where that token writes. Useless without it, and nothing in a session ships logs there.",
     "ZIMMER_WEB_AUTH_GOOGLE_CLIENT_SECRET" =>
       "Web sign-in's Google OAuth client secret.",
+    "OPENROUTER_MANAGEMENT_KEY" =>
+      "Mints any number of OpenRouter keys on the account. PiSessionKeys reads it from the " \
+      "store only; a Pi session gets one short-lived key minted from it, never the key itself.",
     "X_OAUTH_CLIENT_SECRET" =>
       "The X app's OAuth client secret. Sessions get minted X tokens, never the client.",
     "SLACK_BOT_TOKEN" =>

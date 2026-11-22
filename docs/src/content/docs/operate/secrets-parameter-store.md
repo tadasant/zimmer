@@ -38,7 +38,8 @@ acceptable for it.
 
 Two paths still carry a store value into a session. Both are listed in
 [Limitations](/limitations/#two-store-secrets-still-reach-agent-sessions): the GitHub tokens below,
-and Pi's `OPENROUTER_API_KEY`.
+and Pi's `OPENROUTER_API_KEY`. The second one can be closed by turning on
+[short-lived keys for Pi](#short-lived-keys-for-pi). It is off by default.
 
 ## The chain, and its order
 
@@ -889,6 +890,8 @@ name within the 10-second negative TTL. No redeploy.
 
 Some values in this store are for Zimmer's own use, not for an MCP server:
 `OPENROUTER_API_KEY`, the provider key every Pi session runs on;
+`OPENROUTER_MANAGEMENT_KEY`, the OpenRouter management key that mints [short-lived keys for
+Pi](#short-lived-keys-for-pi) (store-only: Zimmer ignores a copy anywhere else);
 `LIVE_OPENAI_API_KEY`, the OpenAI key behind [`/live`](/sessions/live/#the-openai-key); and
 `TESTFLIGHT_ASC_ISSUER_ID`, `TESTFLIGHT_ASC_KEY_ID` and `TESTFLIGHT_ASC_KEY_P8`, the App Store
 Connect API key that [TestFlight crash collection](/operate/observability/#testflight-crash-reports)
@@ -962,6 +965,88 @@ there.
 `OpenaiClient` reads `LIVE_OPENAI_API_KEY` through the same chain.
 `CliStatusService` reads `OPENROUTER_API_KEY` through it too, rather than bare
 `ENV`, so the CLIs page answers the same question the session will.
+
+### Short-lived keys for Pi
+
+Off by default. When it is on, a Pi session never holds `OPENROUTER_API_KEY`. Each Pi spawn gets
+an OpenRouter key minted for that spawn alone, with a spend cap and an expiry, and the key is
+deleted when the turn ends.
+
+**Turning it on takes two things.** If either is missing, Pi gets the long-lived key exactly as
+before. If the flag is set but the management key cannot be read (never seeded, deleted, or the store
+unreachable), every Pi spawn is also reported to the error tracker (fingerprint
+`pi-session-key-not-configured`), because whoever set the flag believes the invariant holds.
+
+1. An OpenRouter **management key** in this store as `OPENROUTER_MANAGEMENT_KEY`, i.e.
+   `/zimmer/<env>/secrets/static/OPENROUTER_MANAGEMENT_KEY`. Create it in OpenRouter's settings
+   under management keys. A management key can create and delete the account's keys but cannot
+   call a model. `PiSessionKeys` reads it **only from the store link**. It ignores a copy in
+   encrypted credentials or `ENV`, because the worker's `ENV` is inherited by every agent it spawns.
+   `CliSpawnEnv` also scrubs the name from every spawn.
+2. `PI_OPENROUTER_SESSION_KEYS=on` (or `on_with_fallback`) in the deploy environment.
+
+```mermaid
+sequenceDiagram
+  participant A as PiRuntimeAdapter
+  participant K as PiSessionKeys
+  participant O as OpenRouter
+  participant J as PiProviderKeyRevokeJob
+  A->>K: mint_for_spawn!(session)
+  K->>J: enqueue: revoke this session's earlier keys (cutoff = now)
+  K->>O: POST /keys {name, limit, expires_at}
+  O-->>K: key (shown once) + hash
+  K->>K: PiProviderKey row (hash only)
+  K-->>A: key, as OPENROUTER_API_KEY in Pi's spawn env
+  Note over A: the turn runs
+  A->>J: session leaves running: revoke keys minted before now
+  J->>O: GET /keys/{hash} (usage), DELETE /keys/{hash}
+```
+
+- **Mint.** `PiRuntimeAdapter#apply_provider_key` calls `PiSessionKeys.mint_for_spawn!` on every
+  Pi spawn: the first turn, each resume, each retry. The key is named
+  `zimmer-pi-<tag>-s<session id>-<time>`, where `<tag>` is derived from this deployment's
+  `secret_key_base`. That tag is how the sweep tells this deployment's keys from anyone else's on
+  the same account. A provider key the clone itself supplies still wins, and nothing is minted then.
+- **Revoke when the turn ends.** When a session leaves `running`, an `after_commit` enqueues
+  `PiProviderKeyRevokeJob` with the transition time as a cutoff. The job reads the key's `usage`
+  from OpenRouter, deletes the key, and records the spend on the row as `usage_usd`. The cutoff
+  keeps the job away from a key minted for the next turn. An elicitation block is skipped: the
+  process is alive and waiting on the approval, so it keeps its key.
+- **Sweep.** Every 15 minutes, `PiProviderKeySweepJob` deletes keys past their 10-minute grace
+  whose session is no longer live, as well as keys that have expired or whose session is gone. It
+  also deletes keys at OpenRouter under this deployment's prefix that have no row at all, which
+  happens when a mint's row write failed. It never touches a key under any other name. It runs while
+  the feature is off too, so turning the feature off still cleans up. With nothing minted and the
+  feature off, it costs one `EXISTS` query.
+- **Never stored, never logged.** The row holds OpenRouter's `hash`, which identifies the key and
+  is not the secret. The plaintext key exists only in the create response and in the one spawn
+  environment. Transcripts redact it by shape (`sk-or-v1-…`, label `OPENROUTER_API_KEY`). Zimmer
+  never stores the value, so the known-values tier cannot match it.
+
+**Expiry policy.** One key per spawn. The expiry is long (`PI_OPENROUTER_SESSION_KEY_TTL_HOURS`,
+default 24) and the spend cap is tight (`PI_OPENROUTER_SESSION_KEY_LIMIT_USD`, default 20). A turn
+must never lose its credential mid-way, so the clock is not what limits a leaked key. The cap and
+the revoke when the turn ends do that. The expiry is the backstop for when Zimmer is down and
+cannot revoke. The trade-off: a key copied out of a running turn can spend up to the cap until the
+turn ends or the expiry passes. A turn that needs more than the cap stops at OpenRouter's limit, as
+a Pi quota wall. A turn that outlives the expiry fails with a 401. Raise the TTL if turns run that
+long.
+
+**When a mint fails.** OpenRouter can be down, the management key can be revoked, or the account
+can be out of credit.
+
+- `on`: the spawn fails with `Could not mint a short-lived OpenRouter key for this Pi session (…)`
+  on the session's timeline. The long-lived key is not used for that turn. This is the setting that
+  keeps the invariant.
+- `on_with_fallback`: the turn runs on the long-lived key. Every fallback is reported to the error
+  tracker (fingerprint `pi-session-key-fallback`) and written as a warning on that session's
+  timeline. Use it to stay up while gaining confidence, but know that each fallback is a turn that
+  broke the invariant.
+
+**Seeing what it did.** Every minted key is a `pi_provider_keys` row: session, `key_hash`,
+`limit_usd`, `expires_at`, `revoked_at`, `revoke_reason` (`superseded`, `session_at_rest`,
+`session_gone`, `expired`), `usage_usd`, and `last_error` for a revoke that has not
+succeeded yet. Read them at `/supervisor/pi_provider_keys`.
 
 ## A writer identity, for the namespace migration
 

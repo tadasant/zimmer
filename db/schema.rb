@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1140,6 +1140,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_200000) do
     t.index ["started_by_session_id"], name: "index_outcome_analysis_batches_on_started_by_session_id", where: "(started_by_session_id IS NOT NULL)"
     t.index ["started_via"], name: "index_outcome_analysis_batches_one_running_mcp", unique: true, where: "(((status)::text = 'running'::text) AND ((started_via)::text = 'mcp'::text))"
     t.index ["status", "id"], name: "index_outcome_analysis_batches_on_status_and_id"
+  end
+
+  create_table "pi_provider_keys", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "key_hash", null: false
+    t.text "last_error"
+    t.decimal "limit_usd", precision: 12, scale: 4, null: false
+    t.string "name", null: false
+    t.string "revoke_reason"
+    t.datetime "revoked_at"
+    t.bigint "session_id"
+    t.datetime "updated_at", null: false
+    t.decimal "usage_usd", precision: 12, scale: 6
+    t.index ["created_at"], name: "index_pi_provider_keys_active", where: "(revoked_at IS NULL)"
+    t.index ["key_hash"], name: "index_pi_provider_keys_on_key_hash", unique: true
+    t.index ["session_id"], name: "index_pi_provider_keys_on_session_id"
   end
 
   create_table "post_deploy_task_runs", force: :cascade do |t|

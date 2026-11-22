@@ -398,6 +398,12 @@ module TranscriptRedactor
     # label stays precise.
     pattern("ANTHROPIC_OAUTH_TOKEN", /#{TOKEN_START}sk-ant-(?:oat|ort)\d{2}-[A-Za-z0-9_\-]{16,}/o),
     pattern("ANTHROPIC_API_KEY", /#{TOKEN_START}sk-ant-[A-Za-z0-9_\-]{20,}/o),
+    # OpenRouter, which is what every Pi session calls: the long-lived account
+    # key, and the short-lived keys PiSessionKeys mints per spawn. Those minted
+    # keys are not in the known-values tier (Zimmer never stores one), so this
+    # shape is what redacts them. Listed before OpenAI, whose `sk-` pattern would
+    # otherwise claim them under the wrong label.
+    pattern("OPENROUTER_API_KEY", /#{TOKEN_START}sk-or-v1-[A-Za-z0-9]{32,}/o),
     # OpenAI / Codex. Runs after the Anthropic patterns, which share the `sk-`
     # prefix and have already claimed their matches.
     #

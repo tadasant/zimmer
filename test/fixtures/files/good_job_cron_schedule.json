@@ -45,6 +45,11 @@
       "class": "CycleTimeSweepJob",
       "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
     },
+    "pi_provider_key_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "PiProviderKeySweepJob",
+      "description": "Delete the short-lived OpenRouter keys minted for Pi sessions that are expired, at rest, gone or orphaned"
+    },
     "token_usage_backfill": {
       "cron": "*/5 * * * *",
       "class": "TokenUsageBackfillJob",
@@ -407,6 +412,11 @@
       "class": "CycleTimeSweepJob",
       "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
     },
+    "pi_provider_key_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "PiProviderKeySweepJob",
+      "description": "Delete the short-lived OpenRouter keys minted for Pi sessions that are expired, at rest, gone or orphaned"
+    },
     "token_usage_backfill": {
       "cron": "*/5 * * * *",
       "class": "TokenUsageBackfillJob",
@@ -758,6 +768,11 @@
       "cron": "*/15 * * * *",
       "class": "CycleTimeSweepJob",
       "description": "Compute the Cycle Time row of every settled session hierarchy the archive hook missed, and backfill the last 60 days"
+    },
+    "pi_provider_key_sweep": {
+      "cron": "*/15 * * * *",
+      "class": "PiProviderKeySweepJob",
+      "description": "Delete the short-lived OpenRouter keys minted for Pi sessions that are expired, at rest, gone or orphaned"
     },
     "post_deploy_tasks": {
       "cron": "*/2 * * * *",

@@ -7233,11 +7233,45 @@ that relies on them, with nothing to replace them yet:
   minted by the backend.
 - **Pi's provider key.** `PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through
   the full chain into the Pi process's environment. Pi calls OpenRouter itself, so the key has to be
-  in its process. The fix is a short-lived or proxied inference credential.
+  in its process. The fix is built but **off by default**:
+  [short-lived keys for Pi](/operate/secrets-parameter-store/#short-lived-keys-for-pi) mints a
+  spend-capped, expiring key per spawn from a management key only the backend reads. Until a
+  deployment puts `OPENROUTER_MANAGEMENT_KEY` in its store and sets `PI_OPENROUTER_SESSION_KEYS=on`,
+  Pi still gets the long-lived key. With `on_with_fallback`, a failed mint still gives one turn the
+  long-lived key. That fallback is reported, but it is a breach of the invariant for that turn.
 
 The Connectors page also still resolves through the full chain. A server whose `${VAR}` lives only
 in the store reads as configured there, and a session that selects it fails with
 `air_secret_unresolvable`.
+
+### What short-lived Pi keys do not cover
+
+- **A leaked key is good until the turn ends.** A key copied out of a running turn can spend up to
+  `PI_OPENROUTER_SESSION_KEY_LIMIT_USD` (default $20) until the session leaves `running`, or until
+  the expiry passes if Zimmer cannot revoke it. The cap is the bound, not the clock.
+- **A turn longer than the TTL loses its key.** A turn that outlives
+  `PI_OPENROUTER_SESSION_KEY_TTL_HOURS` (default 24) fails with OpenRouter's 401, which Pi
+  classifies as terminal. Raise the TTL if turns run that long.
+- **A turn that needs more than the cap stops.** OpenRouter refuses the key at its limit, and the
+  turn ends at a Pi quota wall. The cap applies per spawn, so a resume gets a fresh one.
+- **Spend is attributed only on a successful revoke.** `usage_usd` is OpenRouter's `usage` at the
+  moment the key is deleted. A key that expires at OpenRouter before Zimmer reaches it, or that is
+  deleted after OpenRouter has already dropped it, records no spend.
+- **Redaction is by shape only.** Zimmer never stores a minted key, so the known-values tier of
+  `TranscriptRedactor` cannot match one. The `sk-or-v1-` shape pattern is what redacts it, and it
+  would miss a key that OpenRouter issued in some other format.
+- **A provider key already in the spawn environment wins.** If the clone's own env file holds
+  `OPENROUTER_API_KEY`, or an extension contributes it, that value is used as-is and nothing is
+  minted. It comes from encrypted `mcp_secrets` or the repository, not from the store, so the
+  invariant is not what it breaks. It does mean `on` does not guarantee that every Pi turn runs on a
+  minted key.
+- **Flag on with an unreadable management key means the long-lived key.** Enablement needs both, so
+  a store that cannot be read, or a deleted management key, puts Pi back on the long-lived key.
+  Every such spawn is reported (`pi-session-key-not-configured`), but it is not refused.
+- **Rows are kept.** There is one `pi_provider_keys` row per Pi spawn, and nothing prunes revoked
+  rows yet.
+- **Not exercised against live OpenRouter in CI.** The client and the lifecycle are tested against
+  a local fake of `/api/v1/keys` built from OpenRouter's published API reference.
 
 ---
 
