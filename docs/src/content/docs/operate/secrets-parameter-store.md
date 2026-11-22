@@ -937,7 +937,9 @@ an OpenRouter key minted for that spawn alone, with a spend cap and an expiry, a
 deleted when the turn ends.
 
 **Turning it on takes two things.** If either is missing, Pi gets the long-lived key exactly as
-before.
+before. If the flag is set but the management key cannot be read (never seeded, deleted, or the store
+unreachable), every Pi spawn is also reported to the error tracker (fingerprint
+`pi-session-key-not-configured`), because whoever set the flag believes the invariant holds.
 
 1. An OpenRouter **management key** in this store as `OPENROUTER_MANAGEMENT_KEY`, i.e.
    `/zimmer/<env>/secrets/static/OPENROUTER_MANAGEMENT_KEY`. Create it in OpenRouter's settings
@@ -998,8 +1000,8 @@ long.
 can be out of credit.
 
 - `on`: the spawn fails with `Could not mint a short-lived OpenRouter key for this Pi session (…)`
-  on the session's timeline. The long-lived key is never used. This is the setting that keeps the
-  invariant.
+  on the session's timeline. The long-lived key is not used for that turn. This is the setting that
+  keeps the invariant.
 - `on_with_fallback`: the turn runs on the long-lived key. Every fallback is reported to the error
   tracker (fingerprint `pi-session-key-fallback`) and written as a warning on that session's
   timeline. Use it to stay up while gaining confidence, but know that each fallback is a turn that

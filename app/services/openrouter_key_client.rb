@@ -20,7 +20,9 @@ require "net/http"
 # carries a request header or a response's `key` field.
 class OpenrouterKeyClient
   DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-  BASE_URL_VARIABLE = "OPENROUTER_BASE_URL"
+  # Deliberately not a generic `OPENROUTER_BASE_URL`: tooling that proxies
+  # inference could set that name, and every call here carries the management key.
+  BASE_URL_VARIABLE = "OPENROUTER_KEY_MANAGEMENT_BASE_URL"
 
   OPEN_TIMEOUT_SECONDS = 5
   READ_TIMEOUT_SECONDS = 15
@@ -39,11 +41,20 @@ class OpenrouterKeyClient
     def not_found? = status == 404
   end
 
-  # The minted key and the identifier to revoke it by.
-  Minted = Struct.new(:key, :hash, :expires_at, keyword_init: true) do
-    # Never let a struct print its plaintext into a log or an exception.
-    def inspect = "#<OpenrouterKeyClient::Minted hash=#{hash.inspect} key=[REDACTED]>"
+  # The minted key and the identifier to revoke it by. A plain class rather
+  # than a Struct, so nothing (`to_h`, `to_a`, `pp`) prints the plaintext.
+  class Minted
+    attr_reader :key, :key_hash, :expires_at
+
+    def initialize(key:, key_hash:, expires_at:)
+      @key = key
+      @key_hash = key_hash
+      @expires_at = expires_at
+    end
+
+    def inspect = "#<OpenrouterKeyClient::Minted key_hash=#{key_hash.inspect} key=[REDACTED]>"
     alias_method :to_s, :inspect
+    alias_method :pretty_inspect, :inspect
   end
 
   def self.base_url = ENV.fetch(BASE_URL_VARIABLE, "").presence || DEFAULT_BASE_URL
@@ -76,7 +87,7 @@ class OpenrouterKeyClient
     hash = parsed.dig("data", "hash")
     raise Error, "OpenRouter created a key but returned no key or hash" if key.blank? || hash.blank?
 
-    Minted.new(key: key, hash: hash, expires_at: expires_at)
+    Minted.new(key: key, key_hash: hash, expires_at: expires_at)
   end
 
   # @return [Hash] the key's record (`usage`, `disabled`, `limit_remaining`, ...)
@@ -121,6 +132,12 @@ class OpenrouterKeyClient
     raise Error, "OpenRouter did not answer in time (#{e.class.name.demodulize})"
   rescue SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError => e
     raise Error, "Could not reach OpenRouter: #{e.class.name}"
+  rescue Error
+    raise
+  rescue StandardError => e
+    # Net::WriteTimeout, Net::HTTPBadResponse, a decompression error. The class
+    # only: an exception message from deep in Net::HTTP is not ours to vouch for.
+    raise Error, "OpenRouter request failed: #{e.class.name}"
   end
 
   def parse(body)

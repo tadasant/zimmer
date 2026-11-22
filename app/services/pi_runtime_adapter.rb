@@ -403,8 +403,11 @@ class PiRuntimeAdapter
 
     client = PiSessionKeys.client
     if client.nil?
-      @logger.warn "#{PiSessionKeys::MODE_VARIABLE}=#{mode} but #{PiSessionKeys::MANAGEMENT_KEY_VARIABLE} " \
-                   "is not in the store; using the long-lived key"
+      # Enablement takes both the flag and the management key, so this is the
+      # pre-feature behaviour by design. But an operator who set the flag
+      # believes the invariant holds, so it is reported on every spawn, under
+      # one fingerprint, until the key is in the store or the flag is off.
+      report_management_key_missing(mode)
       return nil
     end
 
@@ -418,6 +421,17 @@ class PiRuntimeAdapter
 
     report_session_key_fallback(e)
     nil
+  end
+
+  def report_management_key_missing(mode)
+    message = "#{PiSessionKeys::MODE_VARIABLE}=#{mode} but #{PiSessionKeys::MANAGEMENT_KEY_VARIABLE} could not be " \
+              "read from the Parameter Store; Pi session #{zimmer_session_id.inspect} runs on the long-lived " \
+              "#{PiAuthProvider::OPENROUTER_API_KEY}"
+    @logger.error message
+    ErrorReporter.report_message(message, level: :warning, fingerprint: [ "pi-session-key-not-configured" ],
+                                          context: { source: "PiRuntimeAdapter", session_id: zimmer_session_id })
+  rescue StandardError => e
+    @logger.warn "Could not report the missing management key: #{e.class}"
   end
 
   def report_session_key_fallback(error)

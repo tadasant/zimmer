@@ -36,9 +36,18 @@ class PiProviderKeySweepJob < ApplicationJob
   private
 
   def sweep_rows(client, now)
-    PiProviderKey.active.order(:created_at).limit(BATCH).each do |record|
+    # Least recently looked at first, and every row looked at is touched, so a
+    # batch full of live sessions or revokes that keep failing cannot starve the
+    # rows behind it.
+    PiProviderKey.active.where(created_at: ..(now - PiSessionKeys::SWEEP_GRACE))
+                 .or(PiProviderKey.active.where(expires_at: ..now))
+                 .order(:updated_at).limit(BATCH).each do |record|
       reason = revoke_reason_for(record, now)
-      PiSessionKeys.revoke!(record, reason: reason, client: client, now: now) if reason
+      if reason
+        PiSessionKeys.revoke!(record, reason: reason, client: client, now: now)
+      else
+        record.update_columns(updated_at: now)
+      end
     end
   end
 
@@ -56,11 +65,15 @@ class PiProviderKeySweepJob < ApplicationJob
   def sweep_orphans(client, now)
     prefix = PiSessionKeys.name_prefix
 
+    # List first, delete after: deleting while paging by offset would shift the
+    # later pages under the cursor.
+    listed = []
     MAX_PAGES.times do |page|
       keys = client.list(offset: page * OpenrouterKeyClient::PAGE_SIZE)
-      keys.each { |key| delete_orphan(client, key, prefix, now) }
+      listed.concat(keys)
       break if keys.size < OpenrouterKeyClient::PAGE_SIZE
     end
+    listed.each { |key| delete_orphan(client, key, prefix, now) }
   rescue OpenrouterKeyClient::Error => e
     Rails.logger.warn("[PiProviderKeySweep] could not list OpenRouter keys: #{e.message}")
   end

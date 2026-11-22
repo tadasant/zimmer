@@ -7206,6 +7206,16 @@ in the store reads as configured there, and a session that selects it fails with
 - **Redaction is by shape only.** Zimmer never stores a minted key, so the known-values tier of
   `TranscriptRedactor` cannot match one. The `sk-or-v1-` shape pattern is what redacts it, and it
   would miss a key that OpenRouter issued in some other format.
+- **A provider key already in the spawn environment wins.** If the clone's own env file holds
+  `OPENROUTER_API_KEY`, or an extension contributes it, that value is used as-is and nothing is
+  minted. It comes from encrypted `mcp_secrets` or the repository, not from the store, so the
+  invariant is not what it breaks. It does mean `on` does not guarantee that every Pi turn runs on a
+  minted key.
+- **Flag on with an unreadable management key means the long-lived key.** Enablement needs both, so
+  a store that cannot be read, or a deleted management key, puts Pi back on the long-lived key.
+  Every such spawn is reported (`pi-session-key-not-configured`), but it is not refused.
+- **Rows are kept.** There is one `pi_provider_keys` row per Pi spawn, and nothing prunes revoked
+  rows yet.
 - **Not exercised against live OpenRouter in CI.** The client and the lifecycle are tested against
   a local fake of `/api/v1/keys` built from OpenRouter's published API reference.
 

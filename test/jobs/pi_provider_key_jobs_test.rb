@@ -12,7 +12,7 @@ class PiProviderKeyJobsTest < ActiveJob::TestCase
 
   def key_for(session_id, created_at: 1.hour.ago, expires_at: 1.day.from_now, name: "#{PiSessionKeys.name_prefix}x")
     PiProviderKey.create!(session_id: session_id, key_hash: @api.seed_key(name: name, created_at: created_at),
-                          name: name, limit_usd: 20, expires_at: expires_at, created_at: created_at)
+                          name: name, limit_usd: 20, expires_at: expires_at, created_at: created_at, updated_at: created_at)
   end
 
   # --- revoke job ------------------------------------------------------------
@@ -108,7 +108,56 @@ class PiProviderKeyJobsTest < ActiveJob::TestCase
     key_for(session.id)
 
     assert_no_enqueued_jobs(only: PiProviderKeyRevokeJob) do
-      session.update!(status: :needs_input, metadata: (session.metadata || {}).merge("blocked_on_elicitation" => true))
+      session.block_on_elicitation!
     end
+    assert_predicate session.reload, :blocked_on_elicitation?
+  end
+
+  test "a revoke job that finds the session live again leaves its keys" do
+    session = sessions(:running)
+    record = key_for(session.id, created_at: 5.minutes.ago)
+
+    PiSessionKeys.stub(:client, @client) do
+      PiProviderKeyRevokeJob.perform_now(session.id, 1.minute.ago.iso8601(6), "session_at_rest")
+    end
+
+    assert_nil record.reload.revoked_at
+  end
+
+  test "a second revoke of the same key does not overwrite the spend the first recorded" do
+    record = key_for(sessions(:archived).id)
+    @api.set_usage(record.key_hash, 2.5)
+    stale = PiProviderKey.find(record.id)
+
+    assert PiSessionKeys.revoke!(record, reason: "session_at_rest", client: @client)
+    assert PiSessionKeys.revoke!(stale, reason: "expired", client: @client)
+
+    record.reload
+    assert_equal "session_at_rest", record.revoke_reason
+    assert_equal BigDecimal("2.5"), record.usage_usd
+  end
+
+  test "the sweep touches the rows it skips, so live sessions cannot starve the rest" do
+    live = key_for(sessions(:running).id, created_at: 2.hours.ago)
+    stub_const_batch(1) do
+      PiProviderKeySweepJob.perform_now(client: @client)
+    end
+    assert_operator live.reload.updated_at, :>, 1.minute.ago
+
+    at_rest = key_for(sessions(:archived).id, created_at: 1.hour.ago)
+    stub_const_batch(1) do
+      PiProviderKeySweepJob.perform_now(client: @client)
+    end
+    assert_equal "session_at_rest", at_rest.reload.revoke_reason
+  end
+
+  def stub_const_batch(size)
+    original = PiProviderKeySweepJob::BATCH
+    PiProviderKeySweepJob.send(:remove_const, :BATCH)
+    PiProviderKeySweepJob.const_set(:BATCH, size)
+    yield
+  ensure
+    PiProviderKeySweepJob.send(:remove_const, :BATCH)
+    PiProviderKeySweepJob.const_set(:BATCH, original)
   end
 end

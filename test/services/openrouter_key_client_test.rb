@@ -20,7 +20,7 @@ class OpenrouterKeyClientTest < ActiveSupport::TestCase
     assert_equal({ "name" => "zimmer-pi-test-s1", "limit" => 20.0, "limit_reset" => nil,
                    "expires_at" => "2026-11-23T12:00:00Z" }, JSON.parse(body))
     assert_match(/\Ask-or-v1-/, minted.key)
-    assert_equal @api.keys.keys.last, minted.hash
+    assert_equal @api.keys.keys.last, minted.key_hash
   end
 
   test "a minted key never prints its plaintext" do
@@ -33,11 +33,11 @@ class OpenrouterKeyClientTest < ActiveSupport::TestCase
 
   test "get, delete and list speak the hash-addressed routes" do
     minted = @client.create(name: "n", limit_usd: 1, expires_at: 1.hour.from_now)
-    @api.set_usage(minted.hash, 0.42)
+    @api.set_usage(minted.key_hash, 0.42)
 
-    assert_equal 0.42, @client.get(minted.hash)["usage"]
-    assert_equal [ minted.hash ], @client.list.map { |key| key["hash"] }
-    assert @client.delete(minted.hash)
+    assert_equal 0.42, @client.get(minted.key_hash)["usage"]
+    assert_equal [ minted.key_hash ], @client.list.map { |key| key["hash"] }
+    assert @client.delete(minted.key_hash)
     assert_empty @api.live_hashes
   end
 

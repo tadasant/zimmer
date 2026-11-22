@@ -151,12 +151,12 @@ module PiSessionKeys
     end
 
     begin
-      PiProviderKey.create!(session_id: session_id, key_hash: minted.hash, name: name,
+      PiProviderKey.create!(session_id: session_id, key_hash: minted.key_hash, name: name,
                             limit_usd: limit, expires_at: expires_at)
     rescue StandardError => e
       # A key with no row would only be found by the orphan sweep. Delete it now.
       begin
-        client.delete(minted.hash)
+        client.delete(minted.key_hash)
       rescue OpenrouterKeyClient::Error
         nil
       end
@@ -185,8 +185,13 @@ module PiSessionKeys
       raise unless e.not_found?
     end
 
-    record.update!(revoked_at: now, revoke_reason: reason, last_error: nil,
-                   usage_usd: usage.is_a?(Numeric) ? usage : record.usage_usd)
+    # Conditional on the row still being active: the sweep and a revoke job can
+    # both reach one key, and the second (whose GET and DELETE both 404) must not
+    # overwrite the spend and reason the first recorded.
+    PiProviderKey.active.where(id: record.id)
+                 .update_all(revoked_at: now, revoke_reason: reason, last_error: nil, updated_at: now,
+                             usage_usd: usage.is_a?(Numeric) ? usage : nil)
+    record.reload
     true
   rescue OpenrouterKeyClient::Error => e
     record.update_columns(last_error: e.message.truncate(500), updated_at: now)

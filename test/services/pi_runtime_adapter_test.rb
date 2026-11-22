@@ -353,11 +353,32 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     end
   end
 
-  test "with session keys on but no management key in the store, the long-lived key is used exactly as before" do
+  test "with session keys on but no management key in the store, the long-lived key is used, and that is reported" do
     @file_system.mkdir_p(WORKING_DIR)
+    reported = []
 
     PiSessionKeys.stub(:mode, "on") do
       PiSessionKeys.stub(:client, nil) do
+        ErrorReporter.stub(:report_message, ->(message, **) { reported << message }) do
+          with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+            @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+          end
+        end
+      end
+    end
+
+    assert_equal "sk-or-v1-from-the-store", spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
+    assert_equal 0, PiProviderKey.count
+    assert_equal 1, reported.size
+    assert_includes reported.first, "OPENROUTER_MANAGEMENT_KEY could not be read"
+    refute_includes reported.first, "sk-or-v1-from-the-store"
+  end
+
+  test "with session keys off, nothing is minted, nothing is reported, and the client is never built" do
+    @file_system.mkdir_p(WORKING_DIR)
+
+    PiSessionKeys.stub(:client, -> { flunk "the client must not be built while off" }) do
+      ErrorReporter.stub(:report_message, ->(*, **) { flunk "nothing to report while off" }) do
         with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
           @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
         end
@@ -365,7 +386,6 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     end
 
     assert_equal "sk-or-v1-from-the-store", spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
-    assert_equal 0, PiProviderKey.count
   end
 
   test "a key in the clone's own env file still wins and mints nothing" do

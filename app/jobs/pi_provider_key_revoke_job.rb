@@ -23,6 +23,11 @@ class PiProviderKeyRevokeJob < ApplicationJob
       return
     end
 
+    # Decided at enqueue time; checked again here. A session that went back to
+    # `running` holds keys minted after the cutoff, which this would skip anyway,
+    # but a live process is never worth a guess. The sweep converges the rest.
+    return if reason == "session_at_rest" && PiSessionKeys.session_live?(Session.find_by(id: session_id))
+
     PiSessionKeys.revoke_for_session!(session_id, cutoff: Time.zone.parse(cutoff), reason: reason, client: client)
   end
 end
