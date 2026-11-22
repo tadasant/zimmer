@@ -4,7 +4,7 @@ require "administrate/base_dashboard"
 # Slack message for that condition first, and the session it produced. While both paths run, a
 # `poll` claim on a message Slack should have delivered is a delivery the webhook missed, which is
 # what this page is for. The other `claimed_via` values (TriggerEventClaim::VIA) are records of
-# poll, MCP event and email fires, which compare_trigger_fires lines up between two triggers.
+# poll, MCP event, email and WhatsApp fires, which compare_trigger_fires lines up between two triggers.
 #
 # Read-only by construction: FORM_ATTRIBUTES is empty and the route offers index and show only.
 # The unique index on these rows is what keeps the two paths from firing one message twice, so an

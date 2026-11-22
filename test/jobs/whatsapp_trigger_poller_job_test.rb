@@ -63,7 +63,7 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
 
   def wa_message(id, timestamp, text: "hello", sender: "15551112222@s.whatsapp.net", name: "Planner", **flags)
     WhatsappService::Message.new(
-      id: id, chat_id: CHAT, timestamp: timestamp, sender_jid: sender, sender_name: name,
+      id: id, chat_id: flags.fetch(:chat_id, CHAT), timestamp: timestamp, sender_jid: sender, sender_name: name,
       from_me: flags.fetch(:from_me, false), sent_by_bridge: flags.fetch(:sent_by_bridge, false),
       text: text, type: flags.fetch(:type, "text"), quoted_message_id: nil,
       mentions_self: flags.fetch(:mentions_self, false), reply_to_self: flags.fetch(:reply_to_self, false)
@@ -187,6 +187,84 @@ class WhatsappTriggerPollerJobTest < ActiveJob::TestCase
     @condition.reload
     assert_equal "1020", @condition.last_message_ts
     assert_not_nil @condition.last_triggered_at
+  end
+
+  test "a fire records every message it delivered as a whatsapp claim on its session, for compare_trigger_fires" do
+    baseline_at(1_000)
+    @bridge.messages = [
+      wa_message("B1", 1_010), wa_message("B2", 1_020, text: "second"),
+      wa_message("Z1", 1_021, sent_by_bridge: true), wa_message("R1", 1_022, type: "reaction"),
+      wa_message("P1", 1_023, from_me: true)
+    ]
+
+    WhatsappTriggerPollerJob.perform_now
+
+    session = spawned_sessions.sole
+    claims = TriggerEventClaim.where(trigger_condition: @condition).order(:event_key)
+    assert_equal [ "whatsapp:#{CHAT}:B1", "whatsapp:#{CHAT}:B2" ], claims.map(&:event_key),
+                 "the bridge's own post, a reaction and a phone message that did not fire record nothing"
+    assert_equal [ session.id ], claims.map(&:session_id).uniq
+    assert_equal [ "whatsapp_record" ], claims.map(&:claimed_via).uniq
+    # strad's message_received eventId for B2, as Zimmer's MCP event poller claims it.
+    event_id = "whatsapp:#{CHAT}:B2"
+    assert_match McpEvents::Client::EVENT_ID_FORMAT, event_id
+    assert_equal "whatsapp:#{CHAT}:B2", TriggerEventClaim.natural_key(TriggerEventClaim.mcp_event_key("whatsapp-zimmer", event_id))
+  end
+
+  test "the claim names the chat the bridge stored the message under, not the condition's spelling of it" do
+    lid = "123456789012345@lid"
+    phone_jid = "15557770000@s.whatsapp.net"
+    @condition.update_columns(configuration: @condition.configuration.merge("chat_id" => lid))
+    baseline_at(1_000)
+    @bridge.messages = [ wa_message("D1", 1_010, chat_id: phone_jid), wa_message("D2", 1_011, chat_id: "") ]
+
+    WhatsappTriggerPollerJob.perform_now
+
+    assert_equal [ "whatsapp:#{lid}:D2", "whatsapp:#{phone_jid}:D1" ],
+                 TriggerEventClaim.where(trigger_condition: @condition).order(:event_key).pluck(:event_key),
+                 "a message the bridge gave no chat for falls back to the condition's chat"
+  end
+
+  test "a held batch records nothing until it is delivered; a fire rolled back after recording leaves no record" do
+    @trigger.update!(skip_if_pending_session: true)
+    baseline_at(1_000)
+    @bridge.messages = [ wa_message("H1", 1_010) ]
+    WhatsappTriggerPollerJob.perform_now
+    @bridge.messages << wa_message("H2", 1_020)
+    WhatsappTriggerPollerJob.perform_now
+    assert_equal [ "whatsapp:#{CHAT}:H1" ], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
+
+    spawned_sessions.first.update_columns(status: "archived")
+    # The fire spawns and records, then the cursor write after it raises: the claim and the
+    # session roll back together.
+    TriggerCondition.any_instance.stubs(:update!).raises(RuntimeError, "boom")
+    ErrorReporter.stubs(:report_exception)
+    assert_no_difference -> { spawned_sessions.count } do
+      WhatsappTriggerPollerJob.perform_now
+    end
+    assert_equal [ "whatsapp:#{CHAT}:H1" ], TriggerEventClaim.where(trigger_condition: @condition).pluck(:event_key)
+
+    TriggerCondition.any_instance.unstub(:update!)
+    WhatsappTriggerPollerJob.perform_now
+    h2 = spawned_sessions.find { |session| session.metadata["whatsapp_message_id"] == "H2" }
+    assert_equal h2.id, TriggerEventClaim.find_by(trigger_condition: @condition, event_key: "whatsapp:#{CHAT}:H2").session_id
+  end
+
+  test "a batch that opens or falls in a burst records nothing" do
+    @trigger.update!(max_sessions_per_minute: 1)
+    baseline_at(1_000)
+    3.times do |i|
+      @bridge.messages << wa_message("U#{i}", 1_010 + i)
+      WhatsappTriggerPollerJob.perform_now
+    end
+
+    fired = spawned_sessions.reject { |session| session.metadata["burst_notice"] }
+    notice = spawned_sessions.select { |session| session.metadata["burst_notice"] }
+    assert_equal 1, fired.size
+    assert_equal 1, notice.size, "the second batch opened the burst"
+    claims = TriggerEventClaim.where(trigger_condition: @condition)
+    assert_equal [ "whatsapp:#{CHAT}:U0" ], claims.pluck(:event_key)
+    assert_equal [ fired.sole.id ], claims.pluck(:session_id)
   end
 
   test "the same messages never fire twice" do

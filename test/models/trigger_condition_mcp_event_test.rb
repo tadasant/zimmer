@@ -76,6 +76,15 @@ class TriggerConditionMcpEventTest < ActiveSupport::TestCase
     assert_equal "[C0123][][][1793.5]", rendered
   end
 
+  test "|id renders a WhatsApp JID, and still refuses prose" do
+    trigger = build_trigger(valid_config, template: "[{{event.chat_id|id}}][{{event.sender_jid|id}}][{{event.text|id}}][{{event.path|id}}]")
+    rendered = trigger.interpolate_prompt(event_data: { "chat_id" => "120363000000000001@g.us",
+                                                        "sender_jid" => "15550001111@s.whatsapp.net",
+                                                        "text" => "meet @ noon", "path" => "@.env" })
+    assert_equal "[120363000000000001@g.us][15550001111@s.whatsapp.net][][]", rendered,
+                 "a value that starts with @ would read as a file mention, so it renders empty"
+  end
+
   test "payload filters fail closed on a field the payload does not carry" do
     condition = TriggerCondition.new(condition_type: "mcp_event", configuration: valid_config("payload_filters" => { "user_id" => [ "U1" ] }))
     assert condition.mcp_event_payload_allowed?({ "user_id" => "U1" })

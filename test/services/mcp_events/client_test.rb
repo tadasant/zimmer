@@ -41,6 +41,14 @@ class McpEvents::ClientTest < ActiveSupport::TestCase
     assert_not result.truncated
   end
 
+  test "an occurrence keeps an eventId that names a WhatsApp chat by JID, and drops one shaped like prose" do
+    whatsapp = { "eventId" => "whatsapp:120363000000000001@g.us:3EB0AA01", "name" => "message_received",
+                 "timestamp" => "2026-11-20T12:00:00Z", "data" => { "message_id" => "3EB0AA01" } }
+    assert_equal "whatsapp:120363000000000001@g.us:3EB0AA01", McpEvents::Client.occurrence_from(whatsapp).event_id
+    assert_nil McpEvents::Client.occurrence_from(whatsapp.merge("eventId" => "whatsapp:chat one:3EB0AA01"))
+    assert_nil McpEvents::Client.occurrence_from(whatsapp.merge("eventId" => "@/etc/passwd"))
+  end
+
   test "an extension error carries its code" do
     @server.refuse = [ -32024, "Forbidden" ]
     error = assert_raises(McpApps::Client::RpcError) do

@@ -725,6 +725,15 @@ follow-up in the one session that owns the chat, the way one router owns a Slack
 get `whatsapp` genesis, which is priority by default because people are talking in that chat now.
 They carry `whatsapp_chat_id` and `whatsapp_message_id` in their metadata.
 
+A batch that reached its session also records each of its messages as a
+`whatsapp:<chat jid>:<message id>` claim (`whatsapp_record`) with that session on it, in the same
+transaction. The chat is the one the bridge stored the message under, its `chat_id` in
+`whatsapp_get_messages`, which is the chat strad's `message_received` event names in its eventId; the
+condition's own `chat_id` is used only when the bridge gave none. The seen-set, not the claim, decides
+what fires. The claim is what [`compare_trigger_fires`](#parity-comparing-two-triggers-fires) lines
+up against a shadow trigger's fires. A held batch records nothing until the tick that delivers it,
+and a burst-suppressed batch, or the one that opened a burst, records nothing.
+
 A template that hands the agent the chat to act on:
 
 ```text
@@ -1045,8 +1054,8 @@ typed into Slack. A template names payload fields as:
 - `{{event.<field>|untrusted}}`: fenced like any untrusted value. A value that is not a string is
   rendered as JSON.
 - `{{event.<field>|id}}`: rendered only if the value looks like an identifier
-  (`[A-Za-z0-9._:-]`, at most 128 characters), and empty otherwise. Use it for channel ids,
-  timestamps and user ids.
+  (`[A-Za-z0-9._:@-]`, not starting with `@`, at most 128 characters), and empty otherwise. Use it for channel ids,
+  timestamps, user ids and WhatsApp JIDs.
 
 A bare `{{event.<field>}}` is refused at save on a trigger with an `mcp_event` condition, and the
 poller refuses again at fire time for a row edited behind the validation. `{{event_id}}` is a
@@ -1077,8 +1086,19 @@ same mail. One email fire covers a thread's new messages, so each of them is cla
 same session, where a per-message event source fires a session each. An `email` condition drops
 mail that burst control stopped, and skips automated mail unless `include_automated`; an
 `mcp_event` condition retries a held event and filters only on `payload_filters`. Either shows up on
-the shadow's side only (`only_b` when the email trigger is A) by design, so read the sessions before calling one a miss. It
-reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
+the shadow's side only (`only_b` when the email trigger is A) by design, so read the sessions before calling one a miss.
+
+A strad WhatsApp `message_received` event's eventId, `whatsapp:<chat jid>:<message id>`, meets a
+`whatsapp` condition's claim of the same shape. One WhatsApp fire covers a chat's batch for that
+minute, so every message in it is claimed against the one session. That includes the messages of an
+`addressed` batch that did not themselves address Zimmer, so a shadow filtered to addressed messages
+shows those as `only_a`. A `whatsapp` condition drops a batch burst control stopped, records nothing
+for a batch an `addressed` condition was not addressed in, and records nothing for the account's own phone messages unless `include_from_me`. A shadow
+without the same narrowing shows those as `only_b`. The other way round, the poller re-reads ten
+minutes back and fires on any message in the bridge's buffer, including one a history sync brought
+in, which strad never makes an event. That reads as `only_a`.
+
+`compare_trigger_fires` reports `matched`, `only_a`, `only_b` and `pending` counts, and the newest events with both
 sessions. It decides nothing; a parity session reads it and judges. Claims are kept 30 days, so that
 is the furthest back it can see.
 
