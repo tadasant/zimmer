@@ -686,17 +686,94 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     assert_nil item.reload.stranded_paged_at, "so the next pass pages it"
   end
 
-  test "a row that leaves the stranded set and strands again pages again" do
+  # #1621, the shape that paged GlitchTip #214: zimmer#217 had been paged for
+  # two days earlier when a PR that referenced it without closing it opened and
+  # merged 22 minutes later. The mark must survive the trip through `pr_open`.
+  test "a covered row whose referencing PR opens and merges with the issue open does not page again" do
+    item = started_row(key: "zimmer#217", number: 217, started_at: 66.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 30.days.ago)
+    young = started_row(key: "strad#515", number: 515, started_at: 2.days.ago)
+    open_pr = reference(state: "OPEN", updated_at: Time.current, number: 1618)
+    merged = merged_pr(merged_at: Time.current, number: 1618)
+
+    with_alerts do |alerts|
+      sweep(probes: { 217 => probe(number: 217), 2 => probe(number: 2), 515 => probe(number: 515) })
+      assert_equal 1, alerts.pages.size
+      paged_at = item.reload.stranded_paged_at
+      assert paged_at.present?
+
+      travel(2.days) do
+        sweep(probes: { 217 => probe(number: 217, references: [ open_pr ]), 2 => probe(number: 2),
+                        515 => probe(number: 515) })
+        assert_equal WorkBacklogItem::LIVENESS_PR_OPEN, item.reload.liveness_state
+        assert_equal paged_at, item.stranded_paged_at, "a moving PR suspends the mark, it does not clear it"
+      end
+
+      travel(2.days + 30.minutes) do
+        sweep(probes: { 217 => probe(number: 217, references: [ merged ]), 2 => probe(number: 2),
+                        515 => probe(number: 515) })
+        assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
+        assert_equal paged_at, item.stranded_paged_at
+      end
+      assert_equal 1, alerts.pages.size, "the population has not changed, so there is nothing to page"
+
+      # Must-not-silence: the young row in the same population strands for the
+      # first time and still pages within an hour of becoming overdue.
+      travel(5.days + 1.hour) do
+        sweep(probes: { 217 => probe(number: 217, references: [ merged ]), 2 => probe(number: 2),
+                        515 => probe(number: 515) })
+      end
+      assert_equal 2, alerts.pages.size
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal [ "strad#515" ], alerts.events.last.dig(:context, :newly_stranded)
+      assert young.reload.stranded_paged_at.present?
+    end
+  end
+
+  test "a row stranding for the first time pages once it is overdue" do
+    item = started_row(started_at: 6.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      assert_empty alerts.pages
+
+      travel(1.day + 1.hour) { sweep(probes: { 1 => probe }) }
+      assert_equal 1, alerts.pages.size
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal [ "zimmer#1" ], alerts.events.last.dig(:context, :newly_stranded)
+      assert item.reload.stranded_paged_at.present?
+    end
+  end
+
+  test "a row that resolves for good and strands again pages again" do
     item = started_row(started_at: 9.days.ago)
 
     with_alerts do |alerts|
       sweep(probes: { 1 => probe })
       assert item.reload.stranded_paged_at.present?
 
-      sweep(probes: { 1 => probe(references: [ reference(state: "OPEN", updated_at: Time.current) ]) })
-      assert_nil item.reload.stranded_paged_at, "a PR in flight resolves it, and the mark goes with it"
+      sweep(probes: { 1 => probe(state: "CLOSED") })
+      assert_nil item.reload.stranded_paged_at, "a closed issue resolves it, and the mark goes with it"
 
-      sweep(probes: { 1 => probe(references: [ reference(state: "MERGED", updated_at: Time.current) ]) })
+      sweep(probes: { 1 => probe })
+      assert_equal 2, alerts.pages.size, "reopened, it is new again"
+      assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
+    end
+  end
+
+  test "a session live on a paged row clears the mark, so a re-strand pages again" do
+    item = started_row(started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep(probes: { 1 => probe })
+      assert item.reload.stranded_paged_at.present?
+
+      @dead_session.update_columns(status: "running", archived_at: nil)
+      sweep(probes: { 1 => probe })
+      assert_nil item.reload.stranded_paged_at, "a live session is new work on the row"
+
+      @dead_session.update_columns(status: "archived", archived_at: 7.hours.ago)
+      sweep(probes: { 1 => probe })
       assert_equal 2, alerts.pages.size
       assert_equal [ "new_rows" ], alerts.events.last.dig(:context, :paged_for)
     end

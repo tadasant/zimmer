@@ -514,9 +514,13 @@ is overdue. A population nobody acts on still pages, on a slowing schedule: a po
 70 days is reminded at 112.
 
 **The memory is a column on each row, not a cache.** Each page stamps `stranded_paged_at` on the rows
-it went out for. Every pass clears it from any row that has left the unresolved set — closed, PR in
-flight, superseded, re-queued — so a row that strands again is new again. A hold that is voided by a
-change of evidence clears it too. A hold does not clear it, and neither does a lapse: a held row is
+it went out for. Every pass clears it from any row that has resolved for good — closed, superseded,
+re-queued, awaiting recurrence, or picked up by a live session — so a row that strands again after
+that is new again. A hold that is voided by a change of evidence clears it too. A moving open PR
+does not clear it: it only suspends it, the way it suspends a hold. A PR that merely references the
+issue reads `pr_open` while it is open and changes nothing once it merges, and the row comes back
+at its original age. Clearing the mark on the way through re-paged a population that had not
+changed ([#1621](https://github.com/tadasant/zimmer/issues/1621)). A hold does not clear it, and neither does a lapse: a held row is
 parked on a person, not resolved. The column is on `/supervisor`, so "has this row been paged for"
 has an answer without a shell. The `older` rung is measured from the age the population's oldest row
 had at the last page. So when triage takes the oldest rows off, the remainder is reminded on its own
