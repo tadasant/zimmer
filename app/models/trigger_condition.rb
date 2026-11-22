@@ -166,11 +166,17 @@ class TriggerCondition < ApplicationRecord
   # linked id (`…@lid`).
   WHATSAPP_CHAT_ID_FORMAT = /\A[0-9A-Za-z.:_-]+@(g\.us|s\.whatsapp\.net|lid)\z/
 
+  # The `chat_id` that watches every chat the linked account is in, one fire per chat. It is how a
+  # dedicated Zimmer number hears from people nobody created a trigger for.
+  WHATSAPP_ALL_CHATS = "*"
+
   # The poller's keys inside a `whatsapp` condition's configuration, merged back across an edit
   # for the same reason SLACK_POLL_STATE_KEYS are. The cursor's timestamp is last_message_ts;
   # `seen_messages` is id => timestamp for every message read inside the poller's look-back
   # window (WhatsappTriggerPollerJob::LOOKBACK), since each poll re-reads that window.
-  WHATSAPP_POLL_STATE_KEYS = %w[seen_messages].freeze
+  # An all-chats condition keeps one cursor per chat instead, under `chats`
+  # (#whatsapp_chat_states).
+  WHATSAPP_POLL_STATE_KEYS = %w[seen_messages chats].freeze
 
   # The Gmail search an `email` condition watches when it names none.
   DEFAULT_EMAIL_QUERY = "in:inbox"
@@ -450,6 +456,10 @@ class TriggerCondition < ApplicationRecord
     configuration["chat_name"].presence
   end
 
+  def whatsapp_all_chats?
+    condition_type == "whatsapp" && whatsapp_chat_id == WHATSAPP_ALL_CHATS
+  end
+
   def whatsapp_mode
     configuration["mode"].presence
   end
@@ -479,6 +489,15 @@ class TriggerCondition < ApplicationRecord
   def whatsapp_seen_messages
     seen = configuration["seen_messages"]
     seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
+  end
+
+  # An all-chats condition's per-chat cursors: chat id (as the bridge names it on a read) =>
+  # { "last_message_ts" => seconds, "seen_messages" => { id => seconds }, "aliases" => [ids] }.
+  # `aliases` are the other ids the chat list shows for the same chat (a person's `@lid` beside
+  # their phone-number id), so the chat is read once per tick under its own cursor.
+  def whatsapp_chat_states
+    chats = configuration["chats"]
+    chats.is_a?(Hash) ? chats.select { |_id, state| state.is_a?(Hash) } : {}
   end
 
   # Email configuration accessors
@@ -953,7 +972,7 @@ class TriggerCondition < ApplicationRecord
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
     when "whatsapp"
-      chat = whatsapp_chat_name.presence || whatsapp_chat_id || "(no chat)"
+      chat = whatsapp_all_chats? ? "all chats" : (whatsapp_chat_name.presence || whatsapp_chat_id || "(no chat)")
       whatsapp_addressed_only? ? "WhatsApp: messages addressing Zimmer in #{chat}" : "WhatsApp: every message in #{chat}"
     when "email"
       automated = email_include_automated? ? ", automated mail included" : ""
@@ -1699,8 +1718,8 @@ class TriggerCondition < ApplicationRecord
     chat_id = whatsapp_chat_id
     if chat_id.blank?
       errors.add(:configuration, "must include chat_id for WhatsApp conditions")
-    elsif !chat_id.match?(WHATSAPP_CHAT_ID_FORMAT)
-      errors.add(:configuration, "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us")
+    elsif chat_id != WHATSAPP_ALL_CHATS && !chat_id.match?(WHATSAPP_CHAT_ID_FORMAT)
+      errors.add(:configuration, "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us, or #{WHATSAPP_ALL_CHATS} for all chats")
     end
 
     unless WHATSAPP_MODES.include?(whatsapp_mode)
