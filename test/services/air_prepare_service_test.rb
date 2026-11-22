@@ -792,6 +792,21 @@ class AirPrepareServiceTest < ActiveSupport::TestCase
     assert_nil ENV[test_key], "ENV should remain clean after prepare!"
   end
 
+  test "a ${VAR} the post-processor cannot resolve fails the session gracefully, naming it" do
+    ClaudeMcpConfigPostProcessor.any_instance.stubs(:post_process!).raises(
+      SecretsInterpolator::MissingVariableError.new("Required environment variable 'ONLY_IN_STORE' not set",
+        variable_name: "ONLY_IN_STORE")
+    )
+
+    error = stub_air_subprocess(proc { |*_args| [ "", "", stub(success?: true, exitstatus: 0) ] }) do
+      assert_raises(AirPrepareService::SecretResolutionError) do
+        AirPrepareService.new(session: @session, working_directory: @working_dir, file_system: @mock_fs).prepare!
+      end
+    end
+
+    assert_equal [ "ONLY_IN_STORE" ], error.variable_names
+  end
+
   test "prepare! raises AirPrepareError on non-zero exit" do
     stub_air_subprocess(proc { |*args, **opts|
       [ "", "Error: config not found", stub(success?: false, exitstatus: 1) ]

@@ -6595,9 +6595,15 @@ class AgentSessionJob < ApplicationJob
       missing = error.variable_names.join(", ").presence || "unknown"
       failure_reason = "air_secret_unresolvable"
       extra_metadata = { "unresolved_variables" => error.variable_names }
-      message = "Session failed: AIR prepare could not resolve required secret(s) #{missing} — " \
-                "add them to Zimmer's mcp_secrets credentials, or deselect the MCP server that " \
-                "needs them (#{error.message})"
+      # Honest about where it looks: `air prepare` resolves from encrypted
+      # `mcp_secrets` and the process environment, and never from the secrets
+      # store — agents never get the store's secrets, so a name kept only there
+      # fails here by design.
+      message = "Session failed: AIR prepare could not resolve required secret(s) #{missing}. " \
+                "Session prep reads encrypted mcp_secrets and the process environment, never " \
+                "Zimmer's secrets store, so a value kept only in the store does not count. " \
+                "Add it to mcp_secrets, route the MCP server through strad, or deselect it " \
+                "(#{error.message})"
     else
       failure_reason = "air_root_unresolvable"
       extra_metadata = {}

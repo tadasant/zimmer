@@ -117,8 +117,9 @@ budget](/operate/deploying/#the-database-connection-budget) before you do.
 Consumed as `${VAR}` placeholders in `mcp.json`, resolved by `SecretsLoader` at prepare time:
 `FLY_IO_API_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `GITHUB_API_TOKEN`, …
 
-`SecretsLoader` resolves in this order: `XOauthTokenVendor` → Rails credentials (`mcp_secrets`) →
-`ENV`.
+They resolve in this order: `XOauthTokenVendor` → Rails credentials (`mcp_secrets`) → `ENV`.
+Zimmer's secrets store is deliberately not in that list: agents never read it. See
+[Agents never read this store](/operate/secrets-parameter-store/#agents-never-read-this-store).
 
 ## Settings you change in the UI
 

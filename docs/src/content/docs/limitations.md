@@ -7157,6 +7157,30 @@ base64url behind that envelope, and the resolver refuses the value (or, for byte
 valid base64url, decodes them to the wrong value). If it was written in the Secrets Console, rotate
 it there.
 
+## Two store secrets still reach agent sessions
+
+[Agents never read the secrets store](/operate/secrets-parameter-store/#agents-never-read-this-store)
+is a production invariant. MCP configs, `air prepare` and the clone's `.env` keep to it. Two paths
+do not, and both are left in place on purpose, because cutting them today would break every session
+that relies on them, with nothing to replace them yet:
+
+- **GitHub tokens.** `GhTokenProvisioner` reads `GH_TOKEN` and `GH_TOKEN__<OWNER>` from the store and
+  publishes them into the worker's process environment. A session inherits its own owner's token
+  (`CliSpawnEnv#apply_github_token`). `air prepare` inherits the environment, and the agent-surface
+  interpolator's last link is the environment, so a `${GH_TOKEN}` in an MCP config resolves from it
+  too. Removing the store link breaks `gh` and `git push` in every
+  session. The fix is a short-lived token per session, for example a GitHub App installation token
+  minted by the backend.
+- **Pi's provider key.** `PiRuntimeAdapter#apply_provider_key` resolves `OPENROUTER_API_KEY` through
+  the full chain into the Pi process's environment. Pi calls OpenRouter itself, so the key has to be
+  in its process. The fix is a short-lived or proxied inference credential.
+
+The Connectors page also still resolves through the full chain. A server whose `${VAR}` lives only
+in the store reads as configured there, and a session that selects it fails with
+`air_secret_unresolvable`.
+
+---
+
 ## A store value that is not valid UTF-8 is refused
 
 `GcpClient` decodes a `base64url` envelope and then requires the result to be valid UTF-8, refusing
