@@ -35,6 +35,105 @@ class SlackServiceTest < ActiveSupport::TestCase
     assert_includes error.message, "SLACK_BOT_TOKEN is not configured"
   end
 
+  # Stands in for the Parameter Store link: answers from a hash, or raises the way
+  # ParameterStoreProvider does when the store cannot be reached.
+  class FakeStore
+    def initialize(values = {}, error: nil)
+      @values = values
+      @error = error
+    end
+
+    def name = "parameter_store"
+
+    def get(variable)
+      raise @error if @error
+
+      @values[variable].presence
+    end
+
+    def has?(variable) = !get(variable).nil?
+    def invalidate(_variable = nil) = nil
+  end
+
+  def use_chain(*links)
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new(links))
+  end
+
+  test "the bot token resolves from the Parameter Store when nothing else holds it" do
+    use_chain(FakeStore.new({ "SLACK_BOT_TOKEN" => "xoxb-from-store" }), SecretProviders::Env.new({}))
+
+    assert SlackService.configured?
+    assert_equal "xoxb-from-store", SlackService.client.token
+  end
+
+  test "the store wins over encrypted credentials and ENV, which still work as fallbacks" do
+    SecretsLoader.stubs(:get).with("SLACK_BOT_TOKEN").returns("xoxb-from-credentials")
+    env = SecretProviders::Env.new({ "SLACK_BOT_TOKEN" => "xoxb-from-env" })
+
+    use_chain(FakeStore.new({ "SLACK_BOT_TOKEN" => "xoxb-from-store" }), SecretProviders::RailsCredentials.new, env)
+    assert_equal "xoxb-from-store", SlackService.client.token
+
+    SlackService.reset!
+    use_chain(FakeStore.new, SecretProviders::RailsCredentials.new, env)
+    assert_equal "xoxb-from-credentials", SlackService.client.token
+
+    SlackService.reset!
+    SecretsLoader.stubs(:get).with("SLACK_BOT_TOKEN").returns(nil)
+    use_chain(FakeStore.new, SecretProviders::RailsCredentials.new, env)
+    assert_equal "xoxb-from-env", SlackService.client.token
+  end
+
+  test "an unreachable store reads as not configured, logging the error class and never a value" do
+    use_chain(FakeStore.new(error: ParameterStore::StoreError.new("boom", 503)), SecretProviders::Env.new({ "SLACK_BOT_TOKEN" => "xoxb-env" }))
+    log = StringIO.new
+    Rails.stubs(:logger).returns(ActiveSupport::Logger.new(log))
+
+    assert_not SlackService.configured?
+    assert_raises(SlackService::ConfigurationError) { SlackService.client }
+    assert_match(/could not resolve SLACK_BOT_TOKEN: ParameterStore::StoreError/, log.string)
+    assert_no_match(/xoxb/, log.string)
+  end
+
+  test "a rotated token also forgets the cached bot user id" do
+    values = { "SLACK_BOT_TOKEN" => "xoxb-old" }
+    use_chain(FakeStore.new(values))
+    SlackService.client
+    SlackService.instance_variable_set(:@bot_user_id, "U_OLD_BOT")
+
+    values["SLACK_BOT_TOKEN"] = "xoxb-new"
+    SlackService.client
+    assert_nil SlackService.instance_variable_get(:@bot_user_id)
+  end
+
+  test "a rotated token in the store rebuilds the client" do
+    values = { "SLACK_BOT_TOKEN" => "xoxb-old" }
+    use_chain(FakeStore.new(values))
+
+    first = SlackService.client
+    assert_same first, SlackService.client
+
+    values["SLACK_BOT_TOKEN"] = "xoxb-new"
+    second = SlackService.client
+    assert_not_same first, second
+    assert_equal "xoxb-new", second.token
+  end
+
+  test "resolving the token from the store does not publish it into the process environment" do
+    previous = ENV.delete("SLACK_BOT_TOKEN")
+    use_chain(FakeStore.new({ "SLACK_BOT_TOKEN" => "xoxb-from-store" }))
+
+    SlackService.client
+    assert_nil ENV["SLACK_BOT_TOKEN"], "agent sessions inherit ENV; the store-resolved token must stay out of it"
+  ensure
+    ENV["SLACK_BOT_TOKEN"] = previous if previous
+  end
+
+  test "the alert channel resolves from the Parameter Store" do
+    use_chain(FakeStore.new({ "ENG_ALERTS_SLACK_CHANNEL_ID" => "C0ALERTS" }))
+
+    assert_equal "C0ALERTS", SlackService.alert_channel_id
+  end
+
   test "client is configured with timeouts to fail fast" do
     SecretsLoader.stubs(:get).with("SLACK_BOT_TOKEN").returns("xoxb-test-token")
 
