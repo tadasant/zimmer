@@ -281,7 +281,8 @@ It works in two tiers:
   - Zimmer's own API keys: every `API_KEYS` entry, and the `ZIMMER_*_API_KEY` that
     `SelfSessionInjector` writes into every session's `zimmer-self-session` entry;
   - the Rails process's own credential-named environment variables (`SECRET_KEY_BASE`,
-    `RAILS_MASTER_KEY` and the like), which an agent's `env` prints because it inherits them. Only a
+    `RAILS_MASTER_KEY` and the like). `CliSpawnEnv` clears them from an agent's environment, but an
+    agent can still read them from the app's `/proc/<pid>/environ`, so they stay redacted. Only a
     value of 16 or more characters that mixes letters and digits is taken, and never a path, a plain
     URL, a list of other variables' names or a multi-line value;
   - the OAuth tokens Zimmer holds in its own database.

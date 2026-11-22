@@ -376,6 +376,11 @@ class BundleInstallJob < ApplicationJob
   # never see. Matching that environment is what lets the probe in
   # `discard_unusable_bundle_config` stand in for "what the agent's `bin/rails` would hit".
   #
+  # Zimmer's own secrets (CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS) are cleared as well.
+  # `bundle install` evaluates the clone's Gemfile and builds its native extensions, which
+  # is code from whatever branch the agent checked out, so it gets no more of the worker's
+  # secrets than the agent process does.
+  #
   # @param bundle_path [String, nil] where this invocation should resolve (and install)
   #   gems; nil leaves BUNDLE_PATH unset, so the clone's own `.bundle/config` decides
   def bundler_env(bundle_path)
@@ -383,6 +388,7 @@ class BundleInstallJob < ApplicationJob
     clean_env.each_key do |k|
       clean_env[k] = nil if k.start_with?("BUNDLE") || %w[RUBYOPT GEM_HOME GEM_PATH].include?(k)
     end
+    CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS.each_key { |name| clean_env[name] = nil }
     clean_env["BUNDLE_APP_CONFIG"] = File.join(working_directory, ".bundle")
     clean_env["BUNDLE_PATH"] = bundle_path
     # The image sets BUNDLE_DEPLOYMENT=1, which would make a clone refuse to install

@@ -509,7 +509,7 @@ Any other `Rails.env` — `test`, `development`, an ad-hoc one — drops events 
 belt-and-braces.
 
 Zimmer runs its agent sessions *inside the production container*. That is deliberate, but it
-means the production DSN is present in the environment of every agent-session shell. Without
+means the production DSN is one variable away from every agent-session shell. Without
 the allowlist, the first `bin/rails` command an agent runs in a repo clone — in any
 `RAILS_ENV` — initializes the SDK against the **production** GlitchTip project, and the
 clone's exceptions arrive as production errors on the production Slack alert channel. It is
@@ -522,9 +522,9 @@ environment gate holds. Two layers now enforce it:
 
 - **The initializer** refuses to send outside production/staging — the Rails-layer guarantee.
 - **The spawn env** (`CliSpawnEnv#clear_inherited_env_vars`) unsets `SENTRY_DSN_BACKEND` in
-  every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, and the operator SSH
-  key. The agent's shell never sees the production DSN at all, for any tool an agent session
-  spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
+  every agent-session child process, alongside `DATABASE_*`, `RAILS_ENV`, the OTLP endpoint
+  and token, and the rest of Zimmer's own secrets. The agent's shell never sees the production
+  DSN at all, for any tool an agent session spawns — not just Rails ones. A clone that wants its own DSN can still set one in its `.env`.
 
 ### The list is not autoloadable, and that is load-bearing
 

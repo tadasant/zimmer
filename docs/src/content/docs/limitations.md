@@ -649,20 +649,20 @@ realistic trigger is a probe rather than a user. It also reaches GlitchTip, one 
 request, with the URL and user agent the ERROR record lacks. The GoodJob dashboard at `/jobs`
 behaves the same way, for the same reason.
 
-### An agent session's shell still carries the OTLP ingest token
+### A `bin/rails` command in an agent's clone ships no logs
 
-`SENTRY_DSN_BACKEND` is scrubbed from agent-session child processes (`CliSpawnEnv`), but
-`OTEL_LOGS_EXPORTER_ENDPOINT` and `OTEL_LOGS_EXPORTER_BEARER_TOKEN` are not. Two consequences: the
-shared ingest token sits in every agent shell's environment, one `env` away from a transcript; and a
-`bin/rails` command an agent runs in a repo clone ships that clone's WARN/ERROR lines to the real obs
-stack. Neither pages anyone — the records are stamped `deployment.environment=test`, and production
-alert rules scope to `deployment.environment=production` — so this is noise and credential exposure,
-not false alerting. Scrubbing them too would stop agent-session log export outright, which is a
-bigger decision than it looks; it has not been made.
+`CliSpawnEnv` clears `SENTRY_DSN_BACKEND`, `OTEL_LOGS_EXPORTER_ENDPOINT` and
+`OTEL_LOGS_EXPORTER_BEARER_TOKEN` from every agent process, so the shared ingest token is not in an
+agent's shell. The cost is that a `bin/rails` command an agent runs in a repo clone exports nothing:
+its WARN/ERROR lines stay on its own stdout, and obs never sees them. That is what keeps a clone's
+records out of the [alert rule](/operate/background-jobs/#who-is-allowed-to-page), which pages on
+anything not stamped staging, and it also means they are not there as evidence. A clone that
+genuinely wants to export can set both variables in its own `.env`, which wins, and then those
+records do count toward the rule.
 
-`ZIMMER_GIT_SHA` is not scrubbed either, so those clone-run records carry a `service.version` that
-is true of the **image** and false of the code that emitted them: an agent session works in a clone
-at some other commit, and nothing in the record says so. `deployment.environment` is still the thing
+`ZIMMER_GIT_SHA` is not scrubbed, so a clone that does export carries a `service.version` that is
+true of the **image** and false of the code that emitted it: an agent session works in a clone at
+some other commit, and nothing in the record says so. `deployment.environment` is still the thing
 that tells them apart from a real deployment's records — read it before reading `service.version`.
 
 ### A real bug found from an interactive `rails runner` is not recorded anywhere
@@ -754,8 +754,15 @@ Three things that scope does **not** claim:
   *handed*, not what it can *reach*; the same-Unix-user boundary is the one described for elicitation
   tokens below, and closing it needs a per-session user or a filesystem namespace, which Zimmer does
   not have.
-- **`CliSpawnEnv`'s denylist is still a denylist.** Everything else in the worker's own environment is
-  inherited verbatim by an agent process. Narrowing the `.env` narrows one channel.
+- **`CliSpawnEnv`'s denylist is still a denylist.** It clears every secret the deployment hands the
+  worker (`SCRUBBED_SECRET_ENV_VARS`), and a test fails when a new `env.secret` lands in
+  `config/deploy*.yml` without a decision. Everything else in the worker's own environment is
+  inherited verbatim by an agent process. An allowlist would be stricter, but the worker's
+  environment is also written by the image, `bin/docker-entrypoint` (it exports `LD_PRELOAD`) and the
+  private deploy companion, none of which this repo can enumerate, so an allowlist would drop
+  variables sessions rely on without anything saying so. See
+  [agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host) for what is still inherited, and
+  why.
 
 What it does close is [#372](https://github.com/tadasant/zimmer/issues/372)'s worked case. An agent's
 shell has no `RAILS_ENV`, so a clone that boots Zimmer boots it as `development`; in
@@ -1466,8 +1473,9 @@ requests rather than one. The same exposure applies to every member of the tailn
 
 [Web sign-in](/auth/web-sign-in/), when a deployment turns it on, does not change this. A session's
 casual `curl` meets `/login`, but a session runs as the same user, in the same container, as the
-Rails app: it can read `SECRET_KEY_BASE` (from its own environment, or from the app's) and forge the
-encrypted sign-in cookie. Web sign-in keeps out the tailnet and the open internet. Keeping out the
+Rails app: it can read `SECRET_KEY_BASE` and forge the encrypted sign-in cookie. `CliSpawnEnv` keeps
+it out of the session's own environment, but the app's `/proc/<pid>/environ` is readable by the same
+user. Web sign-in keeps out the tailnet and the open internet. Keeping out the
 host's own sessions needs process isolation, which Zimmer does not have (see
 [agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host)). The rest of this section is
 what stays open either way.
@@ -1476,9 +1484,10 @@ The HTTP Basic password that used to guard these three surfaces closed this door
 one credential sessions did not hold: `CliSpawnEnv` cleared it from every process it spawned. It never
 closed the other two. The same `/health` capability is on `POST /api/v1/health/*` behind `API_KEYS`,
 and on `POST /mcp` behind `API_KEYS` plus a `tool_groups` value the *caller* supplies in the query
-string. An agent session holds a valid `API_KEYS` entry two ways: `API_KEYS` and
-`ZIMMER_PROD_API_KEY` are in its process environment, and its own `.mcp.json` carries one in an
-`X-API-Key` header for the self-session server. So tool-group gating keeps these actions out of the
+string. An agent session holds a valid `API_KEYS` entry two ways: `ZIMMER_PROD_API_KEY` is in its
+process environment, and its own `.mcp.json` carries the same key in an `X-API-Key` header for the
+self-session server. `API_KEYS` itself is cleared from the session's environment, and is still
+readable from the app's process by the same user. So tool-group gating keeps these actions out of the
 tools a session is handed, not out of its reach.
 
 Halting the demand-side queues stays loud and self-healing whoever fires it: entry, extension and
@@ -1776,9 +1785,9 @@ What the token does not do:
   in the clone's generated MCP config. The session's own agent can read both. Every session also
   runs as the same Unix user on the same filesystem, so any other session's agent that goes looking
   in another clone, or in `/proc`, can read them too. An agent can therefore raise an approval prompt
-  on its own session, and on a neighbour's if it reads the neighbour's config. An agent session's
-  environment also carries `SECRET_KEY_BASE` itself, and with that any agent can mint any session's
-  token outright. It cannot answer a prompt, because `respond` takes an API key. See
+  on its own session, and on a neighbour's if it reads the neighbour's config. `SECRET_KEY_BASE` is
+  cleared from an agent's environment, but the app's process environment is readable by the same
+  user, and with it any agent can mint any session's token outright. It cannot answer a prompt, because `respond` takes an API key. See
   [agents run unsandboxed on the app host](#agents-run-unsandboxed-on-the-app-host).
 - **It does not expire and cannot be revoked per session.** It is deterministic, so a session keeps
   the same URL for life. Rotating `SECRET_KEY_BASE` revokes every token at once. The deploy that
@@ -1811,9 +1820,9 @@ restart. What is still true:
   carry the deployment's self-session key, the first `API_KEYS` entry, so the log can say "the
   fleet's key did this" and not which session did it. Revoking that key disconnects every session
   from Zimmer at once, and replacing it for good means changing the deploy secret it comes from.
-  `CliSpawnEnv` does not clear `API_KEYS` either, so every session's environment holds every entry:
-  revoking one does not fence it off from agents, and may break a session-side script that reads
-  it. Only a minted key is out of an agent's reach.
+  `CliSpawnEnv` clears `API_KEYS` from every agent process, but sessions run as the app's Unix user
+  and can read the list from the app's process environment, so revoking an entry still does not
+  fence it off from an agent that goes looking. Only a minted key is out of an agent's reach.
 - **Revoking is not rotating.** A revoked `API_KEYS` entry stays in the variable until a deploy
   removes it, and nothing issues its replacement. A minted key has no expiry.
 - **The logs are the audit trail, and INFO is not shipped.** A successful request's line goes to the
@@ -1843,6 +1852,32 @@ trigger with no cap can start sessions as fast as it can call. Set a cap on any 
 Agents run as the app user, on the app host, with the app's git and `gh` credentials, spawned with
 `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`. There is no sandbox,
 and nothing in the product offers one.
+
+**What an agent process inherits.** Every runtime (Claude Code, Codex, Pi) and the warm process pool
+build the agent's environment in `CliSpawnEnv#clear_inherited_env_vars`, which unsets Zimmer's own
+secrets: `RAILS_MASTER_KEY`, `SECRET_KEY_BASE`, `API_KEYS`, `DATABASE_PASSWORD`, the operator SSH
+key, the Parameter Store service-account keys, the merge-attestation signing key, the Sentry DSN, the
+OTLP endpoint and token, the web sign-in and X OAuth client secrets, and `SLACK_BOT_TOKEN`. The full
+list, with a reason for each, is `CliSpawnEnv::SCRUBBED_SECRET_ENV_VARS`. A clone's `.env` still wins
+over the scrub, which is how a session given a Slack server keeps its `SLACK_BOT_TOKEN`.
+`BundleInstallJob` clears the same list before it runs a clone's `bundle install`, since that
+evaluates the agent's Gemfile. Two `claude` spawns do not go through the scrub, the headless-inference
+`claude -p` (`NativeClaudePrintRunner`) and Live mode's client. Both run with `--tools ""` (no shell,
+no file access) under `--strict-mcp-config`: the first with no MCP server at all, Live with only
+Zimmer's own endpoint. So neither model has a way to read its environment.
+
+One secret is still inherited on purpose: `ZIMMER_PROD_API_KEY` (`ZIMMER_STAGING_API_KEY` on
+staging), the key every session's Zimmer MCP servers share. Codex reads it from the environment: the
+AIR Codex adapter turns a catalog `X-API-Key: ${ZIMMER_PROD_API_KEY}` header into an
+`env_http_headers` rule, and Zimmer inlines that only when the name is in the encrypted
+`mcp_secrets`. Without the variable, such a server fails with `AuthRequired`. Per-session tokens are
+meant to replace it.
+
+What none of this closes: sessions run as the same Unix user as the Rails app. The worker's
+`/proc/<pid>/environ` (with every secret above in it) and every other session's clone, `.env` and
+MCP config included, are readable from any session. Clearing the spawn environment takes the secrets
+out of `env` and out of a transcript's easy reach. It is not isolation. Isolation needs a separate
+Unix user per session, which Zimmer does not have.
 
 Zimmer used to *say* otherwise. `Session::EXECUTION_PROVIDERS` accepted `remote_sandbox`, the MCP
 `start_session` tool listed it in its enum and described it as "runs in isolated sandbox," and the
