@@ -41,7 +41,14 @@ class SessionsController < ApplicationController
   # it is a two-section list (priority above, spot below, ranked) whose rows are
   # editable — this is where a queue is MANAGED rather than read.
   VIEW_MODE_RANKED = "ranked".freeze
-  VALID_VIEW_MODES = [ VIEW_MODE_USER, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED ].freeze
+  # Your board v2: the same filtered sessions, grouped into categories the
+  # operator creates and drags sessions into by hand, most recently touched
+  # first inside each. Offered beside "user", not instead of it. See
+  # Sessions::BoardV2 and BoardCategory.
+  VIEW_MODE_BOARD_V2 = "board_v2".freeze
+  VALID_VIEW_MODES = [
+    VIEW_MODE_USER, VIEW_MODE_BOARD_V2, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED
+  ].freeze
 
   # Cookie values a previous release wrote that no longer name a view. Remapped
   # rather than dropped, so an operator who had deliberately chosen the grid lands
@@ -1022,7 +1029,7 @@ class SessionsController < ApplicationController
     respond_with_flash(
       notice: "Session restored from trash.",
       location: @session,
-      streams: [ restored_card_stream(@session), restored_row_stream(@session) ]
+      streams: [ restored_card_stream(@session), restored_row_stream(@session), restored_board_v2_row_stream(@session) ]
     )
   end
 
@@ -1058,6 +1065,18 @@ class SessionsController < ApplicationController
     )
   end
   private :restored_row_stream
+
+  # The same restore for Your board v2: into the session's own category list,
+  # whose controller re-sorts by last touched when a row arrives. A no-op on any
+  # other page, and when that category is snoozed or backlogged (no list in the DOM).
+  def restored_board_v2_row_stream(session)
+    turbo_stream.prepend(
+      helpers.board_v2_list_dom_id(session.board_category_id),
+      partial: "sessions/user_view_row",
+      locals: { agent_session: session, board_v2: true }
+    )
+  end
+  private :restored_board_v2_row_stream
 
   # The two bits of session-page chrome that encode a session's status: the badge
   # and the header's action buttons (Restore vs Pause/Trash). Session#broadcast_
@@ -2822,8 +2841,18 @@ class SessionsController < ApplicationController
       return
     end
 
+    # Your board v2. The same filtered `sessions` the User view gets, grouped by
+    # the operator's categories; Sessions::BoardV2 owns the grouping, the
+    # last-touched order and the cap.
+    if @view_mode == VIEW_MODE_BOARD_V2
+      @board_v2 = Sessions::BoardV2.build(scope: sessions, limit: USER_VIEW_LIMIT)
+      @user_view_limit = USER_VIEW_LIMIT
+      @any_sessions = @board_v2.session_count.positive?
+      return
+    end
+
     # No view mode left. Every branch above returns, and VALID_VIEW_MODES has no
-    # fifth member — so reaching here means a mode was added without a branch, and
+    # other member — so reaching here means a mode was added without a branch, and
     # an empty dashboard would hide that rather than report it.
     raise "Unhandled dashboard view mode: #{@view_mode.inspect}"
   end

@@ -1,0 +1,83 @@
+<%# Your board v2 — the User view's rows, grouped into categories the operator
+    makes and drags sessions into by hand. Offered beside "Your board", which is
+    unchanged.
+
+    Top to bottom: Uncategorized (where every new session lands), then each
+    category in the order its header was dragged to, then the snoozed and
+    backlogged categories as headers only. Inside every group, most recently
+    touched first — see Sessions::BoardV2 for what "touched" means.
+
+    Nothing here assigns a category on its own. A session is in a category
+    because a person dragged it there.
+
+    Locals:
+      board             - a Sessions::BoardV2::Result
+      limit             - the row cap %>
+<section class="mb-8"
+         id="board_v2"
+         data-controller="board-v2"
+         data-board-v2-assign-url-template-value="<%= assign_board_category_session_path("__ID__") %>"
+         data-board-v2-reorder-url-value="<%= reorder_board_categories_path %>"
+         data-board-v2-category-url-template-value="<%= board_category_path("__ID__") %>">
+  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <div class="min-w-0 flex-1 basis-64">
+      <h2 class="text-lg font-semibold text-gray-800">Your board v2</h2>
+      <p class="mt-0.5 text-sm text-gray-500">
+        The same sessions as Your board, in categories you make. Drag a row by its handle into a
+        category. Inside each one the session you touched most recently is on top. Drag a
+        category's header to reorder categories. Snoozing a category takes it and everything in it
+        off this board until then; it never changes when a session runs.
+      </p>
+    </div>
+    <%= form_with url: board_categories_path, method: :post, class: "flex w-full min-w-0 items-center gap-2 sm:w-auto" do |form| %>
+      <%= form.label :name, "New category", class: "sr-only", for: "new_board_category_name" %>
+      <%= form.text_field :name, required: true, maxlength: BoardCategory::NAME_MAX_LENGTH,
+            id: "new_board_category_name", placeholder: "New category",
+            class: "min-w-0 flex-1 rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500 sm:w-48" %>
+      <%= form.submit "Add", class: "shrink-0 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1" %>
+    <% end %>
+  </div>
+
+  <div class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1">
+    <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600"
+          data-board-v2-target="total"><%= board.session_count %></span>
+    <span class="min-w-0 text-xs text-gray-400">rows on this board</span>
+  </div>
+
+  <%# Uncategorized: not draggable and not collapsible — it is the inbox, and it
+      has no row to keep either on. %>
+  <%= render "sessions/board_v2_group", category: nil, sessions: board.uncategorized %>
+
+  <div class="space-y-4" data-board-v2-target="categories">
+    <% board.sections.each do |section| %>
+      <%= render "sessions/board_v2_group", category: section.category, sessions: section.sessions %>
+    <% end %>
+  </div>
+
+  <% if board.tucked.any? %>
+    <div class="mt-6">
+      <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Snoozed &amp; backlogged categories</h3>
+      <ul class="divide-y divide-gray-100 rounded-md border border-dashed border-gray-300 bg-gray-50">
+        <% board.tucked.each do |tucked| %>
+          <li class="relative flex flex-wrap items-center gap-2 px-3 py-2.5" data-board-v2-tucked-category="<%= tucked.category.id %>">
+            <span class="min-w-[8rem] flex-1 truncate text-sm font-medium text-gray-700"><%= tucked.category.name %></span>
+            <span class="shrink-0 text-xs text-gray-500"><%= pluralize(tucked.count, "session") %></span>
+            <span class="inline-flex min-w-0 max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11px] font-medium <%= tucked.category.backlogged? ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700" %>"
+                  title="<%= tucked.category.visibility_summary %>">
+              <%= tucked.category.backlogged? ? "Backlogged" : "Snoozed · #{tucked.category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}" %>
+            </span>
+            <span class="shrink-0">
+              <%= render "sessions/board_category_visibility_menu", category: tucked.category %>
+            </span>
+          </li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <% if board.truncated %>
+    <p class="mt-2 text-xs text-gray-400">Showing the <%= limit %> most recently touched. Narrow the filters to see the rest.</p>
+  <% end %>
+
+  <p class="mt-3 hidden text-sm text-red-600" role="alert" data-board-v2-target="error"></p>
+</section>

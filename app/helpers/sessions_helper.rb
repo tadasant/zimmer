@@ -101,6 +101,13 @@ module SessionsHelper
     "user_view_row_#{session.id}"
   end
 
+  # The id of one Your board v2 group's row list: a category's, or
+  # Uncategorized's for nil. The undo-archive stream puts a restored row back
+  # into it, so the controller and the partial share this spelling.
+  def board_v2_list_dom_id(category_id)
+    "board_v2_list_#{category_id || "uncategorized"}"
+  end
+
   # Where a status summary stands against its session, for the freshness chip on
   # a User view row: :regenerating while a generation is in flight, :stale once
   # the session has written anything since the summary was, :current otherwise.

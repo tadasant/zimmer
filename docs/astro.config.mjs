@@ -77,6 +77,7 @@ export default defineConfig({
           label: "Sessions",
           items: [
             { label: "The User view", slug: "sessions/user-view" },
+            { label: "Your board v2", slug: "sessions/board-v2" },
             { label: "The session lifecycle", slug: "sessions/lifecycle" },
             { label: "Spawning and monitoring", slug: "sessions/spawning" },
             { label: "Runtimes", slug: "sessions/runtimes" },
