@@ -22,9 +22,10 @@ final class AppModel: ObservableObject {
     }
     /// The catalog's agent roots and geneses, for the filter sheet's pickers; read once.
     @Published private(set) var filterOptions: AppConfigs?
-    /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
-    /// remembers it in a cookie; "Last Touched" by default, the web UI's default on a phone.
-    @Published var view: BoardView = .lastTouched {
+    /// The board view: Your board v2, Your board, Last Touched, Created or Ranked. Remembered,
+    /// as the web UI remembers it in a cookie; Your board v2 (`BoardView.defaultView`) until
+    /// the person chooses another.
+    @Published var view: BoardView = BoardView.defaultView {
         didSet { UserDefaults.standard.set(view.rawValue, forKey: key("boardView")) }
     }
     /// The board-visibility filter; "On board" by default, as on the web UI's board.
@@ -52,6 +53,8 @@ final class AppModel: ObservableObject {
     /// discard, before it goes.
     @Published var queuedTrash: SessionSummary?
     @Published private(set) var sessions: [SessionSummary] = []
+    /// Your board v2's categories in board order, as the last read of that view listed them.
+    @Published private(set) var boardCategories: [BoardCategory] = []
     /// The row actions out to the server, laid over every read of the list until each is
     /// answered, so a read from before the action cannot put a trashed row back.
     private var pending = PendingBoardChanges()
@@ -240,7 +243,7 @@ final class AppModel: ObservableObject {
         deployment = environment.connection.deployment
         drafts = DraftStore(prefix: (deployment?.defaultsPrefix ?? "") + "draft.")
         filters = stored("boardFilters") ?? .default
-        view = BoardView(rawValue: UserDefaults.standard.string(forKey: key("boardView")) ?? "") ?? .lastTouched
+        view = BoardView(rawValue: UserDefaults.standard.string(forKey: key("boardView")) ?? "") ?? BoardView.defaultView
         board = BoardFilter(rawValue: UserDefaults.standard.string(forKey: key("boardVisibility")) ?? "") ?? .onBoard
     }
 
@@ -340,7 +343,9 @@ final class AppModel: ObservableObject {
             guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
             return arguments[index + 1]
         }
-        // Every fixture launch starts from the default view, whatever an earlier run chose.
+        // Every fixture launch starts from the same view, whatever an earlier run chose: Last
+        // Touched, the one view every UI test's row positions were written against, rather than
+        // the app's default (Your board v2), whose categories would fold rows away under them.
         view = value("-ZimmerFixtureView").flatMap(BoardView.init(rawValue:)) ?? .lastTouched
         // And from the default filters, whatever an earlier run remembered.
         let listFilter = value("-ZimmerFixtureFilter").flatMap(SessionFilter.init(rawValue:))
@@ -584,6 +589,7 @@ final class AppModel: ObservableObject {
                   freshness.finish(ticket) else { return }
             // The actions still out keep what they changed; the server's list is the rest.
             sessions = pending.overlay(result.sessions, admits: belongsOnList)
+            if let categories = result.categories { boardCategories = categories }
             if reordersInFlight == 0 { localOrder = nil }
             listIncomplete = !result.complete
             if !onItsOwn || errorIsReadFailure { error = nil }
@@ -887,7 +893,54 @@ final class AppModel: ObservableObject {
 
     /// The rows in the current view's order and sections — a drag's order first, until the
     /// server's read replaces it.
-    var sections: [BoardSection] { view.sections(sessions, order: localOrder) }
+    var sections: [BoardSection] { view.sections(sessions, order: localOrder, categories: boardCategories) }
+
+    /// Your board v2's categories that are snoozed or backlogged, for the tray at the board's foot.
+    var tuckedCategories: [BoardCategory] { boardCategories.filter { !$0.onBoard } }
+
+    /// Your board v2's *Move to category*: the row moves at the tap, as the web board's drag
+    /// moves it, and back if the server refuses. Nil is Uncategorized.
+    func move(_ session: SessionSummary, to category: BoardCategory?) async {
+        await perform("Moved to \(category?.name ?? BoardView.uncategorized)", on: session.id,
+                      optimistic: { $0.boardCategoryID = category?.id }) {
+            try await $0.assignBoardCategory(session.id, categoryID: category?.id)
+        }
+    }
+
+    /// Collapse a Your board v2 category to its header, or expand it, at the tap; the server
+    /// stores it on the category, so the web UI shows it the same way. A refusal puts it back.
+    func setCollapsed(_ category: BoardCategory, _ collapsed: Bool) async {
+        func apply(_ value: Bool) {
+            guard let index = boardCategories.firstIndex(where: { $0.id == category.id }) else { return }
+            withAnimation { boardCategories[index].collapsed = value }
+        }
+        apply(collapsed)
+        freshness.noteLocalChange()
+        Haptics.selection()
+        do {
+            _ = try await connection.api.setBoardCategoryCollapsed(category.id, collapsed: collapsed)
+        } catch {
+            apply(!collapsed)
+            handle(error)
+            Haptics.failure()
+        }
+    }
+
+    /// The tray's *Wake*: a snoozed or backlogged category comes back on the board with its rows.
+    func wake(_ category: BoardCategory) async {
+        notice = "\(category.name) is back on the board"
+        error = nil
+        do {
+            _ = try await connection.api.wakeBoardCategory(category.id)
+            Haptics.success()
+            freshness.noteLocalChange()
+            await refresh(silently: true)
+        } catch {
+            notice = nil
+            handle(error)
+            Haptics.failure()
+        }
+    }
 
     /// Trash one session as the web UI's Trash does: no question first, *Undo* after. The row
     /// goes at the tap, with Undo offered, and the server is asked after; a refusal puts the

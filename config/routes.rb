@@ -358,6 +358,12 @@ Rails.application.routes.draw do
         post :failure, on: :collection
       end
 
+      # Your board v2's writes from the iOS app; see Api::V1::BoardCategoriesController.
+      resources :board_categories, only: [ :update ] do
+        member { patch :visibility }
+      end
+      patch "sessions/:id/board_category", to: "board_categories#assign", as: :assign_board_category_session
+
       resources :sessions do
         collection do
           get :search
