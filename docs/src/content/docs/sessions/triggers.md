@@ -651,7 +651,8 @@ yet. It is how a dedicated Zimmer number hears from someone nobody made a trigge
 - It fires **once per chat**. A batch never mixes two chats, so one sender's words never reach the
   prompt that decides how to answer another. For the same reason, a trigger with an all-chats
   condition refuses `reuse_session`: each fire is a session of its own, and `{{chat_id}}` names the
-  chat to read and answer.
+  chat to read and answer. It refuses `skip_if_pending_session` too, since the pending session that
+  setting waits on belongs to the trigger, so one chat's session would hold every other chat.
 - Turning it on baselines the time, not a message. A chat first seen after that is read from the
   baseline, so the first message from someone new fires. Nothing from before the baseline does.
 - A person often appears in the chat list twice, under their `…@lid` id and their phone-number id.
@@ -660,8 +661,9 @@ yet. It is how a dedicated Zimmer number hears from someone nobody made a trigge
 - Anyone who has the number can write, so the template must fence what senders chose, as an email
   trigger must: `{{text|untrusted}}`, `{{author|untrusted}}` and `{{channel|untrusted}}`. A bare
   one is refused.
-- A fire the burst cap suppresses is held for the next tick rather than dropped, because the cap is
-  shared by every chat.
+- A chat that would fire while the trigger's burst is open is held for the next tick rather than
+  dropped, because the cap is shared by every chat. It is held without counting against the cap, so
+  held chats drain once the burst closes.
 - A chat that fails to read reports through the error reporter and does not stop the others.
 
 #### Where the messages come from

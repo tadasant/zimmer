@@ -1669,10 +1669,13 @@ class Trigger < ApplicationRecord
   # An all-chats condition fires one session per chat. Reusing a session would pour every chat —
   # a stranger's DM next to an operator's — into one conversation, so each chat's words could
   # steer the reply to another's.
+  # skip_if_pending_session is refused for the same reason: the pending session it waits on is the
+  # trigger's, not the chat's, so one chat's session in a turn would hold every other chat.
   def validate_whatsapp_all_chats_without_reuse_session
-    return unless reuse_session && whatsapp_all_chats_condition?
+    return unless whatsapp_all_chats_condition?
 
-    errors.add(:reuse_session, "cannot be enabled on a trigger that watches all WhatsApp chats: it fires one session per chat")
+    errors.add(:reuse_session, "cannot be enabled on a trigger that watches all WhatsApp chats: it fires one session per chat") if reuse_session
+    errors.add(:skip_if_pending_session, "cannot be enabled on a trigger that watches all WhatsApp chats: one chat's session would hold every other chat") if skip_if_pending_session
   end
 
   def whatsapp_all_chats_condition?

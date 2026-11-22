@@ -5836,6 +5836,14 @@ The cost is that WhatsApp's terms do not allow unofficial clients, so the number
 to can be banned. Link a number you can afford to lose, not your personal one. A protocol change on
 WhatsApp's side can also break the bridge until its library catches up.
 
+### An all-chats WhatsApp condition reads the 100 most active chats
+
+A [`whatsapp` condition with `chat_id` `*`](/sessions/triggers/#all-chats) lists the account's chats
+each tick, newest activity first, and reads at most 100 of them. If more than 100 chats have activity
+inside one minute, the rest are read on a later tick. Its per-chat cursors live in the condition's
+configuration and are never pruned, so the row grows with every chat the number has ever been in.
+That is fine for a personal assistant's number and would not be for a busy business line.
+
 ### A WhatsApp session sees only what the bridge has buffered
 
 WhatsApp has no server-side history. The bridge knows the history the phone synced to it when it was

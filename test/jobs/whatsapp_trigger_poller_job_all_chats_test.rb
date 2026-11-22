@@ -14,23 +14,29 @@ class WhatsappTriggerPollerJobAllChatsTest < ActiveJob::TestCase
   # the real bridge lists a person under both their `@lid` and their phone-number id and reads
   # either as the phone-number chat.
   class FakeBridge
-    attr_accessor :chats, :aliases, :failing, :calls
+    attr_accessor :chats, :aliases, :failing, :calls, :aliases_first, :iso_times
 
     def initialize
       @chats = {}
       @aliases = {}
       @failing = []
       @calls = []
+      @aliases_first = false
+      @iso_times = false
     end
 
     def ensure_ready!; end
 
     def list_chats(limit: 50, query: nil)
-      listed = chats.keys.flat_map { |id| [ id, *aliases.select { |_alias, target| target == id }.keys ] }
+      listed = chats.keys.flat_map do |id|
+        own_aliases = aliases.select { |_alias, target| target == id }.keys
+        aliases_first ? [ *own_aliases, id ] : [ id, *own_aliases ]
+      end
       listed.map do |id|
         target = aliases.fetch(id, id)
-        { "id" => id, "name" => target, "is_group" => target.end_with?("@g.us"),
-          "last_message_at" => chats[target].map(&:timestamp).max }
+        newest = chats[target].map(&:timestamp).max
+        newest = Time.at(newest).utc.iso8601 if newest && iso_times
+        { "id" => id, "name" => target, "is_group" => target.end_with?("@g.us"), "last_message_at" => newest }
       end.first(limit)
     end
 
@@ -142,6 +148,55 @@ class WhatsappTriggerPollerJobAllChatsTest < ActiveJob::TestCase
     end
   end
 
+  test "an alias listed before its chat is read once, before and after the chat has a cursor" do
+    baseline_at(1_000)
+    @bridge.aliases_first = true
+    @bridge.chats = { TADAS => [ wa_message("T1", TADAS, 1_010, text: "first") ] }
+    @bridge.aliases = { TADAS_LID => TADAS }
+
+    assert_difference -> { spawned_sessions.count }, 1 do
+      WhatsappTriggerPollerJob.perform_now
+    end
+    state = @condition.reload.whatsapp_chat_states
+    assert_equal [ TADAS ], state.keys
+    assert_equal [ TADAS_LID ], state[TADAS]["aliases"]
+
+    @bridge.chats[TADAS] << wa_message("T2", TADAS, 1_020, text: "second")
+    assert_difference -> { spawned_sessions.count }, 1 do
+      WhatsappTriggerPollerJob.perform_now
+    end
+    assert_includes spawned_sessions.order(:id).last.prompt, "second"
+    assert_not_includes spawned_sessions.order(:id).last.prompt, "first"
+  end
+
+  test "reads chats whose activity the bridge reports as an ISO time" do
+    baseline_at(1_000)
+    @bridge.iso_times = true
+    @bridge.chats = { GUEST => [ wa_message("G1", GUEST, 1_020, text: "iso") ] }
+
+    assert_difference -> { spawned_sessions.count }, 1 do
+      WhatsappTriggerPollerJob.perform_now
+    end
+  end
+
+  test "a chat that fires during a burst is held, not dropped, and does not take a burst slot" do
+    baseline_at(1_000)
+    @trigger.update_columns(max_sessions_per_minute: 1, burst_active_until: 5.minutes.from_now)
+    @bridge.chats = { GUEST => [ wa_message("G1", GUEST, 1_020, text: "held message") ] }
+
+    assert_no_difference -> { spawned_sessions.count } do
+      WhatsappTriggerPollerJob.perform_now
+    end
+    assert_nil @condition.reload.whatsapp_chat_states[GUEST]
+    assert_equal 0, @trigger.reload.burst_window_count.to_i
+
+    @trigger.update_columns(burst_active_until: nil)
+    assert_difference -> { spawned_sessions.count }, 1 do
+      WhatsappTriggerPollerJob.perform_now
+    end
+    assert_includes spawned_sessions.sole.prompt, "held message"
+  end
+
   test "Zimmer's own messages never fire" do
     baseline_at(1_000)
     @bridge.chats = { GUEST => [ wa_message("Z1", GUEST, 1_010, sender: SELF, from_me: true, sent_by_bridge: true) ] }
@@ -171,6 +226,13 @@ class WhatsappTriggerPollerJobAllChatsTest < ActiveJob::TestCase
 
     assert_not @trigger.valid?
     assert_includes @trigger.errors[:reuse_session].join, "all WhatsApp chats"
+  end
+
+  test "an all-chats trigger cannot skip while a session is pending" do
+    @trigger.skip_if_pending_session = true
+
+    assert_not @trigger.valid?
+    assert_includes @trigger.errors[:skip_if_pending_session].join, "all WhatsApp chats"
   end
 
   test "an all-chats trigger must fence what senders wrote" do
