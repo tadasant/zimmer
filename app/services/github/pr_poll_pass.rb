@@ -225,7 +225,7 @@ module Github
       end
 
       run_evaluator(session, "PrWebhookIngest.observe") do
-        PrWebhookIngest.observe(session, reading, refs, before: before, after: session.custom_metadata, stamps: stamps)
+        PrWebhookIngest.observe(session, reading, refs, before: before, after: session.custom_metadata, stamps: stamps, now: started_at)
       end
 
       PollBackoff.record_poll!(session, job_key: stamped_keys, at: started_at)

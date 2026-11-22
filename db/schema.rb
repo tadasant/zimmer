@@ -397,6 +397,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
     t.index ["writing_session_id"], name: "index_gate_decisions_on_writing_session_id"
   end
 
+  create_table "github_pr_shadow_observations", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.boolean "hit", null: false
+    t.string "kind", null: false
+    t.string "mode", null: false
+    t.string "pr_url", null: false
+    t.bigint "session_id", null: false
+    t.datetime "signaled_at"
+    t.index ["created_at"], name: "index_github_pr_shadow_observations_on_created_at"
+    t.index ["kind", "created_at"], name: "index_github_pr_shadow_observations_on_kind_and_created_at"
+    t.index ["session_id"], name: "index_github_pr_shadow_observations_on_session_id"
+  end
+
   create_table "github_pr_signals", force: :cascade do |t|
     t.string "kind", null: false
     t.datetime "signaled_at", null: false
