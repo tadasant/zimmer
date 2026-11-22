@@ -106,8 +106,8 @@
         601
       ],
       "file": "app/controllers/token_broker_controller.rb",
-      "fingerprint": "5e83f89763a9cfa13616420b760951e4455682112a0d601891d8b6e1e08b9fdb",
-      "line": 98,
+      "fingerprint": "befba2912c51606dd86f5139390dfc7076b26697b6bc4afbdb06ee5e1498f2a2",
+      "line": 102,
       "link": "https://brakemanscanner.org/docs/warning_types/redirect/",
       "location": {
         "type": "method",
