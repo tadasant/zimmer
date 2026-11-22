@@ -5975,7 +5975,9 @@ it does not cover yet:
   but not the `X-GitHub-Delivery` id, so a captured delivery replayed under fresh ids keeps its
   repository counted as covered after its hook has stopped. That leaves its sessions on the fallback
   cadence instead of the polled one, and announces nothing false. `GITHUB_PR_INGEST_MODE` is not on
-  `/health` yet; `/supervisor/github_pr_signals` is the no-shell view of what the webhook has said.
+  `/health` yet; `/supervisor/github_pr_signals` is the no-shell view of what the webhook has said,
+  and `compare_github_pr_webhook_shadow` (MCP) says whether it said it before the poll found the
+  change.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
 - **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
   pending session releases its claim so the poller can fire the event later, and on `/health` that

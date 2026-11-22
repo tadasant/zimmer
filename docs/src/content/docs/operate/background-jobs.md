@@ -90,7 +90,7 @@ From `config.good_job.cron`:
 | 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
-| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` and `trigger_shadow_observations` rows older than 30 — the dedup and comparison stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
+| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` and `trigger_shadow_observations` rows older than 30 — the dedup and comparison stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day, and `github_pr_shadow_observations` rows older than 30 days (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -1180,16 +1180,15 @@ The three modes:
 
 - **`poll`** (the default): no signals are written and the pass runs exactly as described above.
 - **`webhook_shadow`**: signals are written and the pass keeps its old cadence. When a poll on a
-  covered session finds a status, CI or comment change, it logs whether a signal came first:
-  `[Github::PrWebhookIngest] webhook_shadow hit` or `… miss`. Query those log lines before
-  switching modes.
+  covered session finds a change, it records whether a signal came first; see
+  [Reading the PR webhook shadow](#reading-the-pr-webhook-shadow). Read that before switching modes.
 - **`webhook_with_poll_fallback`**: signals drive the pass. A covered session with no new signal is
   polled no more often than every `FALLBACK_POLL_INTERVAL` (10 minutes), for the pass, comments and
   merge conflicts alike. That is a floor on top of the `PollBackoff` curve, not a replacement: an
   active session's missed delivery costs at most 10 minutes, an idle one's waits as long as the curve
   and the 30-minute awaiting-PR ceiling already made it. A fresh conflict suspicion keeps its
-  2-minute confirmation reading. Every change a fallback poll finds without a signal is logged as a
-  `webhook_with_poll_fallback miss`. `Github::OrphanedPrConflictSweep` follows the same rule, with an
+  2-minute confirmation reading. Every change a fallback poll finds without a signal is recorded as a
+  `webhook_with_poll_fallback` miss. `Github::OrphanedPrConflictSweep` follows the same rule, with an
   hour as its fallback instead of 15 minutes.
 
 **Coverage.** Signals decide a session's cadence only when every repository it tracks a PR in
@@ -1199,6 +1198,34 @@ full polling once the window passes. Switching the mode on means the operator sa
 subscribe to every event in the table above. A hook that subscribes only to `issues` and
 `pull_request` still counts as covered, and comments on its PRs then wait for the 10-minute
 fallback.
+
+#### Reading the PR webhook shadow
+
+In `webhook_shadow` and `webhook_with_poll_fallback`, every time a pass on a covered session finds a
+change, `Github::PrWebhookIngest.observe` writes a row to `github_pr_shadow_observations`: the
+session, the PR, the kind of change, the mode, and whether a signal for it was newer than that
+evaluator's last stamp. A PR's first reading is a baseline and records nothing.
+
+| Kind | The change the poll found | The signal that counts as announcing it |
+| --- | --- | --- |
+| `status` | the recorded PR state (open, merged, closed) moved. A PR leaving `open` is this one change, not also a CI or conflict change | `status` on the PR (a `pull_request` delivery, or a `check_suite` / `check_run` naming it) |
+| `ci` | the recorded CI status moved | `status` on the PR, or `ci` on the repository while CI was `pending` or unrecorded |
+| `comments` | a comment `CommentEvaluator` had not stored before | `comments` on the PR |
+| `merge_conflict` | a conflict appeared (the first conflicting reading), or a confirmed one cleared. A suspicion that clears unconfirmed is GitHub's stale reading after a push and is not counted | `merge_conflict` on the PR, or `base_push` on the repository |
+
+A row with a signal is a **hit**, and the time the pass started minus the signal's is the webhook's **lead**.
+`github_pr_signals` keeps only the newest time per PR and kind, so after a burst of deliveries the
+lead is the last delivery's, which understates the first's. A row without one is a **miss**: a hook
+missing an event type, a dropped delivery, or a change no delivery names (a fork PR's CI, a stacked
+PR's base). In `webhook_with_poll_fallback` every miss is a change only the fallback caught.
+
+`compare_github_pr_webhook_shadow` (MCP, `triggers` group, read-only) reads it: hits, misses, hit
+rate and lead (median, p90, max) per kind, over a window you choose, optionally narrowed to one kind
+or one mode, with the newest misses listed by session and PR. It is the PR-tracking sibling of
+`compare_github_webhook_shadow`, which compares trigger fires. Rows are kept 30 days and listed one
+by one at `/supervisor/github_pr_shadow_observations`. Each one is
+also logged at INFO as `[Github::PrWebhookIngest] <mode> hit|miss`, which production's log shipping
+does not carry; the tool is the reading to use.
 
 **A forged delivery reads, it does not tell.** A signal only makes an evaluator read GitHub sooner.
 A forged or replayed delivery can spend an extra read, but it cannot announce a merge, a green CI
