@@ -405,8 +405,8 @@ module WorkBacklog
       #      population around it is doing.
       #   2. MORE ROWS. The count's step on ALERT_ROW_BANDS is above the step of the
       #      rows a page already covers, so a pile of young rows arriving at once does
-      #      not wait a week to be mentioned. A row that left resolved takes its mark
-      #      with it, so a band re-crossed after triage pages again — but only when a
+      #      not wait a week to be mentioned. A row that resolved for good takes its
+      #      mark with it, so a band re-crossed after triage pages again — but only when a
       #      row arrives, so it is bounded by arrivals, never by passes.
       #   3. OLDER. The oldest row's age has climbed a rung of the doubling ladder
       #      (ALERT_LADDER_BASE) since the last page. This is the reminder for a
@@ -417,13 +417,25 @@ module WorkBacklog
       # another week, and every triage could only restate the same remedy.
       #
       # The memory is on the rows: `stranded_paged_at`, stamped on every stranded
-      # row a page goes out for. Every pass clears it from any row that has left
-      # the unresolved set — closed, PR in flight, superseded, re-queued — so a row
-      # that strands AGAIN is new again. A void clears it too
+      # row a page goes out for. Every pass clears it from any row that has
+      # resolved for good — closed, superseded, re-queued, awaiting recurrence, or
+      # taken out by a session that is live on it — so a row that strands AGAIN
+      # after that is new again. A void clears it too
       # (WorkBacklogItem#record_liveness!): the evidence a held decision stood on
       # changed, and the row needs looking at afresh. A hold does NOT clear it. A
       # held row is parked on a person, not resolved, and its lapse is not news
       # about the work (below).
+      #
+      # A MOVING OPEN PR does not clear it either; it SUSPENDS it, the way it
+      # suspends a hold (WorkBacklogItem::HOLD_DURATION). `pr_open` is the promise
+      # of a resolution, not one. A PR that only references the issue reads
+      # `pr_open` while it is open and changes nothing once it merges, and the row
+      # comes back with the `since` it always had, so it is overdue the moment it
+      # returns. Clearing the mark on the way through made that row look newly
+      # stranded and re-paged a population that had not changed (#1621: zimmer#217,
+      # paged on 2026-11-20, paged again on 2026-11-22 after a PR that mentioned
+      # it opened and merged in 22 minutes). A PR that does resolve it closes the
+      # issue, and `issue_closed` clears the mark like any other resolution.
       #
       # Nothing here depends on a cache. A throttle kept in a store that can stop
       # remembering would have to stay silent when it does, because an hourly page
@@ -504,10 +516,23 @@ module WorkBacklog
         end
       end
 
-      # A row that has left the unresolved set is no longer covered by anything,
-      # so if it strands again it is new again. Every pass, the empty one and an
+      # A row that has resolved for good is no longer covered by anything, so if
+      # it strands again it is new again. Every pass, the empty one and an
       # unreadable one included: a row can only leave on a verdict this pass or an
       # earlier one actually read, or by its status changing.
+      #
+      # A candidate reading `pr_open` keeps its mark: the PR has not resolved
+      # anything yet, and if it merges with the issue still open the row is back
+      # in the population it was paged for, at the same age (#1621). One that goes
+      # quiet (`pr_stalled`) brings it back the same way, still covered, and the
+      # ladder (rule 3) is what reminds a human of it from there. Everything
+      # else that takes a row out of the unresolved set clears it — a terminal
+      # verdict, a re-queue (the old row reads `superseded`), and a session live
+      # on the row, which is new work on it. A HELD row is the one exception the
+      # suspension does not cover: if the merged PR leaves it reading different
+      # evidence from the hold's, WorkBacklogItem#record_liveness! voids the hold
+      # and its mark together, and the row pages afresh because the decision it
+      # was parked on is about a row that no longer exists (#1420).
       #
       # With no GRACE. The grace keeps a row out until its session has been over
       # for six hours, and it is measured from the session's last write, so
@@ -515,8 +540,10 @@ module WorkBacklog
       # hours, clear its mark, and re-page it as new. Only a session that is live
       # again takes the row out here.
       def forget_resolved_marks(now)
+        candidates = WorkBacklogItem.liveness_candidates(grace: 0.seconds, now: now)
         WorkBacklogItem.where.not(stranded_paged_at: nil)
                        .where.not(id: WorkBacklogItem.unresolved(grace: 0.seconds, now: now).select(:id))
+                       .where.not(id: candidates.where(liveness_state: WorkBacklogItem::LIVENESS_PR_OPEN).select(:id))
                        .update_all(stranded_paged_at: nil)
       end
 
