@@ -336,9 +336,8 @@ class TriggerCondition < ApplicationRecord
   # Empty means unrestricted -- ask allow_all_users? rather than reading this as
   # "nobody", and see the DM caveat there.
   # Memoized: the poller asks this once per message and once per thread reply, and
-  # SecretsLoader deliberately does not memoize (it re-reads credentials on every
-  # call so a deploy's new secrets are picked up mid-process). A condition object
-  # lives for one poll, so caching here is safe and saves that work per message.
+  # each ask walks the secret chain. A condition object lives for one poll, so
+  # caching here is safe and saves that work per message.
   def allowed_user_ids
     @allowed_user_ids ||= begin
       ids = configuration["allowed_user_ids"]
@@ -923,6 +922,14 @@ class TriggerCondition < ApplicationRecord
     end
   end
 
+  # A listing must still render when the store cannot answer for the allow-list,
+  # so this one read rescues what the firing path deliberately lets raise.
+  def dm_description
+    allow_all_users? ? "Slack: DMs to Zimmer" : "Slack: DMs to Zimmer from #{allowed_user_ids.size} allowed user(s)"
+  rescue ParameterStore::StoreError, ParameterStore::AuthError
+    "Slack: DMs to Zimmer (allow-list unavailable)"
+  end
+
   # Human-readable description for any condition type
   def description
     case condition_type
@@ -935,7 +942,7 @@ class TriggerCondition < ApplicationRecord
           channel_name.present? ? "Slack: @mention in ##{channel_name} + DMs" : "Slack: @mention in all channels + DMs"
         end
       when "dm_message"
-        allow_all_users? ? "Slack: DMs to Zimmer" : "Slack: DMs to Zimmer from #{allowed_user_ids.size} allowed user(s)"
+        dm_description
       when "passive_listen_thread"
         scope = channel_name.present? ? "in ##{channel_name}" : "in all channels"
         "Slack: replies in threads Zimmer joined, #{scope}"

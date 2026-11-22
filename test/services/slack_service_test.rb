@@ -85,10 +85,24 @@ class SlackServiceTest < ActiveSupport::TestCase
 
   test "an unreachable store reads as not configured, logging the error class and never a value" do
     use_chain(FakeStore.new(error: ParameterStore::StoreError.new("boom", 503)), SecretProviders::Env.new({ "SLACK_BOT_TOKEN" => "xoxb-env" }))
-    Rails.logger.expects(:warn).with { |message| message.include?("SLACK_BOT_TOKEN") && message.include?("StoreError") && !message.include?("xoxb") }.at_least_once
+    log = StringIO.new
+    Rails.stubs(:logger).returns(ActiveSupport::Logger.new(log))
 
     assert_not SlackService.configured?
     assert_raises(SlackService::ConfigurationError) { SlackService.client }
+    assert_match(/could not resolve SLACK_BOT_TOKEN: ParameterStore::StoreError/, log.string)
+    assert_no_match(/xoxb/, log.string)
+  end
+
+  test "a rotated token also forgets the cached bot user id" do
+    values = { "SLACK_BOT_TOKEN" => "xoxb-old" }
+    use_chain(FakeStore.new(values))
+    SlackService.client
+    SlackService.instance_variable_set(:@bot_user_id, "U_OLD_BOT")
+
+    values["SLACK_BOT_TOKEN"] = "xoxb-new"
+    SlackService.client
+    assert_nil SlackService.instance_variable_get(:@bot_user_id)
   end
 
   test "a rotated token in the store rebuilds the client" do

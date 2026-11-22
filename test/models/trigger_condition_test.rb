@@ -1307,6 +1307,14 @@ class TriggerConditionTest < ActiveSupport::TestCase
     assert_raises(ParameterStore::StoreError) { TriggerCondition.default_allowed_user_ids(chain: chain) }
   end
 
+  test "a DM condition still describes itself when the store cannot answer for the allow-list" do
+    condition = trigger_conditions(:bot_mention_slack_condition)
+    condition.configuration = condition.configuration.except("allowed_user_ids").merge("event_type" => "dm_message")
+    TriggerCondition.stubs(:default_allowed_user_ids).raises(ParameterStore::StoreError.new("unreachable", 503))
+
+    assert_equal "Slack: DMs to Zimmer (allow-list unavailable)", condition.description
+  end
+
   test "SLACK_BOT_MENTION_ALLOWED_USER_IDS tolerates whitespace and empty entries" do
     condition = trigger_conditions(:bot_mention_slack_condition)
 

@@ -66,10 +66,10 @@ is named in its model's `filter_attributes`. `test/services/redacted_inspect_tes
 fails if a new `SecretProviders` class lacks the module, or if a
 credential-shaped column is missing from a model's filter.
 
-## Not only MCP secrets: `GH_TOKEN`
+## Not only MCP secrets: `GH_TOKEN` and Slack
 
 The chain exists for the `${VAR}` placeholders in MCP server configs, and that is still almost
-everything it serves. There are a few exceptions today, and they are the reason the
+everything it serves. The exceptions below are the reason the
 namespace is called `secrets` rather than `mcp` — see [The namespace
 rename](#the-namespace-rename-from-mcp-to-secrets).
 
@@ -101,9 +101,10 @@ Two consequences follow from that, both deliberate:
 `ENG_ALERTS_SLACK_CHANNEL_ID` and `SLACK_BOT_MENTION_ALLOWED_USER_IDS` from the chain inside Rails
 each time it needs them, and nothing writes them to ENV. So a token seeded at
 `/zimmer/{env}/secrets/static/SLACK_BOT_TOKEN` reaches the trigger pollers, the Slack health check,
-reactions and error replies, and the channel picker, but no agent session's environment. A session
-that was given a Slack server still gets the token only the way it always has, through
-`SessionSecretScope`. When the token rotates, the next call builds a new Slack
+reactions and error replies, and the channel picker, but no agent session's environment. The
+per-session secrets file a session given a Slack server receives is built from encrypted
+credentials only, so a token kept only in the store does not reach it; a Slack MCP server whose
+config names `${SLACK_BOT_TOKEN}` still resolves it through the chain. When the token rotates, the next call builds a new Slack
 client. If the store cannot be reached, Slack reads as not configured for that tick. The allow-list
 is the exception: it raises, because an empty allow-list means everyone.
 

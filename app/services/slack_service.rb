@@ -89,15 +89,16 @@ class SlackService
       raise ConfigurationError, "#{TOKEN_VARIABLE} is not configured" unless token.present?
 
       digest = Digest::SHA256.hexdigest(token)
-      if @client.nil? || @client_token_digest != digest
-        @client = Slack::Web::Client.new(
-          token: token,
-          open_timeout: OPEN_TIMEOUT,
-          timeout: TIMEOUT
-        )
-        @client_token_digest = digest
-      end
-      @client
+      current = @client_entry
+      return current.last if current&.first == digest
+
+      # One ivar holding [digest, client], so a concurrent reader never pairs one
+      # token's digest with another token's client. A new token may be a new bot,
+      # so the cached bot user id goes with the old client.
+      @bot_user_id = nil if current
+      client = Slack::Web::Client.new(token: token, open_timeout: OPEN_TIMEOUT, timeout: TIMEOUT)
+      @client_entry = [ digest, client ].freeze
+      client
     end
 
     # Test the Slack connection
@@ -141,7 +142,7 @@ class SlackService
     # @return [String, nil]
     def setting(key, chain: SecretProviders.chain)
       chain.get(key).presence
-    rescue StandardError => e
+    rescue ParameterStore::StoreError, ParameterStore::AuthError => e
       Rails.logger.warn("[slack] could not resolve #{key}: #{e.class}")
       nil
     end
@@ -433,8 +434,7 @@ class SlackService
 
     # Reset the client (useful for testing or after config changes)
     def reset!
-      @client = nil
-      @client_token_digest = nil
+      @client_entry = nil
       @bot_user_id = nil
     end
 

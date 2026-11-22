@@ -110,9 +110,9 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
       # every sweep for two chains in a row, which is the backstop this exists to be.
       threshold: 30.minutes,
       watched: -> { TriggerCondition.slack.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
-      # Offline — a token-presence check — so unlike `gh auth status` it cannot be failed by
-      # an outage. It still only decides seeding: a host with no Slack token never polls
-      # and must not be given a baseline to age.
+      # A token-presence check against the secret chain, with no call to Slack. A store
+      # that cannot be read answers false, which only skips seeding: a host with no
+      # Slack token never polls and must not be given a baseline to age.
       seedable: -> { SlackService.configured? },
       title: "Slack trigger polling stalled",
       details: lambda do |minutes, last_at|
