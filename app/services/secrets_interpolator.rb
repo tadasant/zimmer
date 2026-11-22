@@ -1,8 +1,22 @@
 # frozen_string_literal: true
 
 # Resolves ${VAR} and ${VAR:-default} interpolations inside an MCP server
-# entry, sourcing values from SecretsLoader (Rails encrypted credentials) first,
-# then process ENV.
+# entry, from a SecretProviders chain.
+#
+# ## Two chains, because two audiences
+#
+# - **Backend** (`SecretsInterpolator.new`): the full SecretProviders.chain —
+#   the Parameter Store, then encrypted credentials, then ENV. For Rails's own
+#   reads: connector status, readiness probes, Live Mode's server-side MCP
+#   calls.
+# - **Agent surface** (`SecretsInterpolator.for_agent_surface`): encrypted
+#   credentials, then ENV, and never the store. For everything written into a
+#   config an agent can read (`.mcp.json`, `.codex/config.toml`).
+#
+# The split is a production invariant: agents never get access to the secrets
+# store's secrets. A session reaches a store-held credential only through
+# something that hands it a short-lived token (the session token broker), or by
+# going through strad, which holds the credential itself.
 #
 # This is a runtime-agnostic helper: it operates on the `command`/`args`/`env`/
 # `headers`/`url` shape that both Claude's `.mcp.json` and Codex's
@@ -17,6 +31,21 @@
 class SecretsInterpolator
   # Raised when a ${VAR} pattern has no resolvable value and no default.
   class MissingVariableError < StandardError; end
+
+  # An interpolator for a config an agent can read: the store is not consulted.
+  # @return [SecretsInterpolator]
+  def self.for_agent_surface
+    new(chain: SecretProviders.agent_surface_chain, agent_surface: true)
+  end
+
+  # @param chain [SecretProviders::Chain, nil] nil means the process-wide
+  #   SecretProviders.chain, read on every lookup.
+  # @param agent_surface [Boolean] whether what this resolves lands where an
+  #   agent can read it; only changes what a missing-variable error says.
+  def initialize(chain: nil, agent_surface: false)
+    @chain = chain
+    @agent_surface = agent_surface
+  end
 
   # Environment variable interpolation pattern: ${VAR} or ${VAR:-default}
   ENV_VAR_PATTERN = /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/
@@ -65,7 +94,7 @@ class SecretsInterpolator
       elsif default_value
         default_value
       else
-        raise MissingVariableError, "Required environment variable '#{var_name}' not set"
+        raise MissingVariableError, missing_variable_message(var_name)
       end
     end
   end
@@ -136,7 +165,7 @@ class SecretsInterpolator
   def resolution(var_name)
     return Resolution.new(state: :found, source: X_OAUTH_SOURCE) if XOauthTokenVendor.configured?(var_name)
 
-    provider = SecretProviders.chain.provider_for(var_name)
+    provider = chain.provider_for(var_name)
     return Resolution.new(state: :found, source: provider) if provider
 
     Resolution.new(state: :absent)
@@ -156,16 +185,17 @@ class SecretsInterpolator
   #      X (Twitter) access tokens. Consulted first because these tokens rotate
   #      at runtime and must reflect the freshest minted value, not a static
   #      git-committed one. The vendor cheaply returns nil for any non-X var.
-  #   2. SecretProviders.chain — the Parameter Store (when configured), then
-  #      Rails encrypted credentials, then process ENV. See SecretProviders for
-  #      why the store goes first and why a store outage raises rather than
-  #      falling through.
+  #   2. This interpolator's chain. The backend one is the Parameter Store (when
+  #      configured), then Rails encrypted credentials, then process ENV — see
+  #      SecretProviders for why the store goes first and why a store outage
+  #      raises rather than falling through. The agent-surface one drops the
+  #      store.
   # Returns nil when no source defines it.
   def get_env_value(var_name)
     dynamic = XOauthTokenVendor.resolve(var_name)
     return dynamic if dynamic.present?
 
-    SecretProviders.chain.get(var_name)
+    chain.get(var_name)
   end
 
   # The one source that is not a chain provider. Given the same badge surface as
@@ -175,4 +205,26 @@ class SecretsInterpolator
     # special-case it.
     def badge_title(_variable = nil) = "Minted by Zimmer's X OAuth token store"
   end.new("Zimmer's X OAuth token store", "X OAuth").freeze
+
+  private
+
+  def chain
+    @chain || SecretProviders.chain
+  end
+
+  # On an agent surface, a name only the store holds is withheld on purpose, and
+  # the error says so: "not set" would send someone to set a secret that is set.
+  def missing_variable_message(var_name)
+    base = "Required environment variable '#{var_name}' not set"
+    return base unless @agent_surface && held_only_in_store?(var_name)
+
+    "#{base} for an agent: only Zimmer's secrets store holds it, and the store never fills a " \
+      "config an agent can read. Give the server brokered auth or route it through strad"
+  end
+
+  def held_only_in_store?(var_name)
+    SecretProviders.chain.provider_for(var_name).is_a?(SecretProviders::ParameterStoreProvider)
+  rescue StandardError
+    false
+  end
 end

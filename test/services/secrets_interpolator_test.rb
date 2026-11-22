@@ -156,4 +156,52 @@ class SecretsInterpolatorTest < ActiveSupport::TestCase
 
     assert @interpolator.resolvable?("X_OAUTH_ACCESS_TOKEN")
   end
+
+  # --- The agent surface never reads the secrets store ------------------------
+
+  def stub_chain_with_store(store)
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([
+      store.provider, SecretProviders::RailsCredentials.new, SecretProviders::Env.new({})
+    ]))
+  end
+
+  test "the backend interpolator still reads the store" do
+    store = FakeParameterStore.new
+    store.seed_secret("AGENT_SURFACE_TEST_KEY", "from-store")
+    stub_chain_with_store(store)
+
+    assert_equal "from-store", SecretsInterpolator.new.get_env_value("AGENT_SURFACE_TEST_KEY")
+  end
+
+  test "the agent-surface interpolator never returns a store-only value, and says why" do
+    store = FakeParameterStore.new
+    store.seed_secret("AGENT_SURFACE_TEST_KEY", "from-store")
+    stub_chain_with_store(store)
+    interpolator = SecretsInterpolator.for_agent_surface
+
+    assert_nil interpolator.get_env_value("AGENT_SURFACE_TEST_KEY")
+    error = assert_raises(SecretsInterpolator::MissingVariableError) do
+      interpolator.resolve("Bearer ${AGENT_SURFACE_TEST_KEY}")
+    end
+    assert_match(/only Zimmer's secrets store holds it/, error.message)
+    assert_no_match(/from-store/, error.message)
+  end
+
+  test "the agent-surface interpolator takes encrypted credentials over a store copy" do
+    store = FakeParameterStore.new
+    store.seed_secret("AGENT_SURFACE_TEST_KEY", "from-store")
+    stub_chain_with_store(store)
+    SecretsLoader.stubs(:all).returns("AGENT_SURFACE_TEST_KEY" => "from-credentials")
+
+    assert_equal "from-credentials", SecretsInterpolator.for_agent_surface.get_env_value("AGENT_SURFACE_TEST_KEY")
+  end
+
+  test "a name missing everywhere keeps the plain message on the agent surface" do
+    stub_chain_with_store(FakeParameterStore.new)
+
+    error = assert_raises(SecretsInterpolator::MissingVariableError) do
+      SecretsInterpolator.for_agent_surface.resolve("${AGENT_SURFACE_NOWHERE}")
+    end
+    assert_equal "Required environment variable 'AGENT_SURFACE_NOWHERE' not set", error.message
+  end
 end

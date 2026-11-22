@@ -12,6 +12,33 @@ the shape it claims to be.
 chain is exactly the two links it has always had, the Connectors page says so,
 and nothing raises. Wiring the store up is an upgrade, not a prerequisite.
 
+## Agents never read this store
+
+This is a production invariant: **no agent session gets access to the store's secrets.** The store is
+for Zimmer's backend. A session reaches what a store credential unlocks in one of two ways only:
+
+- **A short-lived token minted from it.** Zimmer's backend holds the long-lived grant and pushes each
+  session turn a short-lived, scoped token: the session token broker
+  ([#1610](https://github.com/tadasant/zimmer/pull/1610)).
+- **Going through strad**, which holds the credential and never hands it over.
+
+So the store is not a source for anything an agent can read:
+
+| Agent surface | Reads from |
+| --- | --- |
+| `air prepare`'s environment (what AIR resolves into `.mcp.json` / `.codex/config.toml`) | encrypted `mcp_secrets`, then process `ENV` |
+| `${VAR}`s Zimmer resolves after AIR (injected Zimmer servers, anything AIR left) | `SecretsInterpolator.for_agent_surface`: X tokens, encrypted `mcp_secrets`, then `ENV` |
+| The clone's `.env` | encrypted `mcp_secrets` only, narrowed by `SessionSecretScope` |
+
+The backend chain below keeps the store first. Connector status, readiness probes, Slack, email,
+WhatsApp, Live Mode and Zimmer's own settings all read it there. A catalog `${VAR}` kept **only** in
+the store therefore fails a session with `air_secret_unresolvable`, by design. Give that server
+brokered auth or route it through strad.
+
+Two paths still carry a store value into a session. Both are listed in
+[Limitations](/limitations/#two-store-secrets-still-reach-agent-sessions): the GitHub tokens below,
+and Pi's `OPENROUTER_API_KEY`.
+
 ## The chain, and its order
 
 | Order | Source | Where it lives |
@@ -68,8 +95,8 @@ credential-shaped column is missing from a model's filter.
 
 ## Not only MCP secrets: `GH_TOKEN` and Slack
 
-The chain exists for the `${VAR}` placeholders in MCP server configs, and that is still almost
-everything it serves. The exceptions below are the reason the
+The chain began as the source for the `${VAR}` placeholders in MCP server configs. Those now
+resolve for agents without it; see [Agents never read this store](#agents-never-read-this-store). The exceptions below are the reason the
 namespace is called `secrets` rather than `mcp` — see [The namespace
 rename](#the-namespace-rename-from-mcp-to-secrets).
 
@@ -101,10 +128,9 @@ Two consequences follow from that, both deliberate:
 `ENG_ALERTS_SLACK_CHANNEL_ID` and `SLACK_BOT_MENTION_ALLOWED_USER_IDS` from the chain inside Rails
 each time it needs them, and nothing writes them to ENV. So a token seeded at
 `/zimmer/{env}/secrets/static/SLACK_BOT_TOKEN` reaches the trigger pollers, the Slack health check,
-reactions and error replies, and the channel picker, but no agent session's environment. The
-per-session secrets file a session given a Slack server receives is built from encrypted
-credentials only, so a token kept only in the store does not reach it; a Slack MCP server whose
-config names `${SLACK_BOT_TOKEN}` still resolves it through the chain. When the token rotates, the next call builds a new Slack
+reactions and error replies, and the channel picker, but no agent session. A session given a Slack
+MCP server gets `${SLACK_BOT_TOKEN}` from encrypted `mcp_secrets` only. A token kept only in the
+store fails that session with `air_secret_unresolvable`. When the token rotates, the next call builds a new Slack
 client. If the store cannot be reached, Slack reads as not configured for that tick. The allow-list
 is the exception: it raises, because an empty allow-list means everyone.
 

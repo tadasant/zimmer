@@ -43,6 +43,23 @@ module SecretProviders
     @chain || @chain_mutex.synchronize { @chain ||= build }
   end
 
+  # The chain for anything written where an agent can read it: an MCP config,
+  # a clone's `.env`, a spawn environment. Encrypted credentials, then ENV, and
+  # never the Parameter Store.
+  #
+  # This is a production invariant, not a preference: agents never get access
+  # to the store's secrets. A long-lived store credential reaches a session only
+  # as a short-lived token Zimmer's backend mints from it (the session token
+  # broker), or not at all — the session goes through strad, which holds it.
+  #
+  # Built per call: neither link caches anything worth sharing.
+  #
+  # @param env [Hash]
+  # @return [SecretProviders::Chain]
+  def agent_surface_chain(env: ENV)
+    Chain.new([ RailsCredentials.new, Env.new(env) ])
+  end
+
   # Drop the memoized chain (and any cached values inside it). Used by tests and
   # by the catalog-refresh path.
   def reset!
