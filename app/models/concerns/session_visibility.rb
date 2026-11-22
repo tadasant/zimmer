@@ -28,6 +28,10 @@
 # no background writer that could collide with the lifecycle.
 module SessionVisibility
   extend ActiveSupport::Concern
+  # The row-level predicates (board_visible?, visibility_summary, ...) live in
+  # BoardVisibilityState, shared with BoardCategory so a snoozed category and a
+  # snoozed session end the same way: by being read.
+  include BoardVisibilityState
 
   VISIBLE = "visible"
   HIDDEN = "hidden"
@@ -120,54 +124,5 @@ module SessionVisibility
       else unset_means_all ? all : board_visible
       end
     }
-  end
-
-  def backlogged?
-    visibility == BACKLOGGED
-  end
-
-  # True while a snooze is still running. A `snoozed` row whose time has passed is
-  # simply visible again.
-  def snooze_active?(now = Time.current)
-    visibility == SNOOZED && snoozed_until.present? && snoozed_until > now
-  end
-
-  # Whether this session belongs on a board that is not revealing tucked-away
-  # sessions. The row-level counterpart of the `board_visible` scope; keep the two
-  # answering identically.
-  def board_visible?(now = Time.current)
-    return true if visibility == VISIBLE
-    return false if visibility == HIDDEN || visibility == BACKLOGGED
-
-    # SNOOZED. A snooze whose time has passed is over; one with no time at all is
-    # not a snooze that can end, so it stays off the board rather than being
-    # silently ignored. Written as the positive form of the `board_visible` scope's
-    # second clause on purpose — the dashboard filters with the scope and draws
-    # badges with this, and the two disagreeing is a card that is on screen while
-    # the page believes it is not.
-    snoozed_until.present? && snoozed_until <= now
-  end
-
-  # What the visibility column MEANS right now, with an expired snooze already
-  # resolved to "visible". This is the value every read surface reports — the raw
-  # column is reported alongside it where a caller needs to tell "snoozed, expired"
-  # from "never snoozed".
-  def effective_visibility(now = Time.current)
-    board_visible?(now) ? VISIBLE : visibility
-  end
-
-  # One line of English for the card badge, the API and the MCP listing. nil when
-  # the session is on the board, so callers can render it or not without a
-  # second predicate.
-  def visibility_summary(now = Time.current)
-    return nil if board_visible?(now)
-    return "Hidden from the board" if visibility == HIDDEN
-    return "Backlogged — parked as low priority, with no end time" if visibility == BACKLOGGED
-    # Only reachable for a row written before snoozed_until became required. It
-    # renders rather than raising, because the surfaces that call this are a card
-    # badge and two MCP listings — one such row must not take a whole page with it.
-    return "Snoozed with no end time" if snoozed_until.blank?
-
-    "Snoozed until #{snoozed_until.utc.iso8601}"
   end
 end

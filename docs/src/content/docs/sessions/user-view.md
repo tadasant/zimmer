@@ -229,5 +229,9 @@ auto-categorizer, the correction corpus and its tuning page, the `manage_categor
 `categories` and `category_feedback_events` tables and the `sessions.category_id` and
 `sessions.sort_order` columns stay in the database, unread, until a later two-phase drop.
 
+Manually managed categories came back later as their own tab, [Your board v2](/sessions/board-v2/),
+beside this one rather than in place of it, and without any of the auto-categorization. It uses new
+tables, not the ones above.
+
 A cookie that still says `categories` is remapped to `user`, so an operator who had chosen the grid
 lands on the view that replaced it rather than silently on the mobile default.

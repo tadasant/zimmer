@@ -165,6 +165,8 @@ module Mcp
       # itself, this one takes a whole ordering and is what the Reprioritize
       # button's session uses on the human's board.
       Definition.new(klass: "Mcp::Tools::ReorderUserView", group: "sessions", write: true),
+      # Your board v2's manually-managed categories, and putting a session in one.
+      Definition.new(klass: "Mcp::Tools::ManageBoardCategories", group: "sessions", write: true),
       # Beside get_configs, which lists the same catalog. Adding a model changes
       # what start_session accepts, which is a sessions concern; not in
       # self_session, because it changes what every session may run.

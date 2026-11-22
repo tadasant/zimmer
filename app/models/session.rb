@@ -80,6 +80,9 @@ class Session < ApplicationRecord
   has_one :cycle_time_analysis, foreign_key: :root_session_id, inverse_of: :root_session, dependent: :destroy
 
   belongs_to :parent_session, class_name: "Session", optional: true
+  # The Your board v2 category a person dragged this session into, or nil for
+  # Uncategorized. Presentation only. Written by BoardCategories::Assign alone.
+  belongs_to :board_category, optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 
   # The second lineage edge: seniors that queued or interrupted this session

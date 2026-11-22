@@ -821,6 +821,14 @@ Rails.application.routes.draw do
     query.present? ? "/?#{query}" : "/"
   }
 
+  # Your board v2's manually-managed categories. Presentation only: nothing here
+  # touches scheduling. See BoardCategory.
+  resources :board_categories, only: [ :create, :update, :destroy ] do
+    collection { patch :reorder }
+    member { patch :visibility }
+  end
+  patch "sessions/:id/board_category", to: "board_categories#assign", as: :assign_board_category_session
+
   resources :sessions, only: [ :new, :create, :show ] do
     member do
       post :archive

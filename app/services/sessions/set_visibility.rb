@@ -50,8 +50,8 @@ module Sessions
     attr_reader :session, :visibility, :timezone
 
     def call
-      unless SessionVisibility::VISIBILITIES.include?(visibility)
-        raise Error, "Unknown visibility \"#{visibility}\". Valid values: #{SessionVisibility::VISIBILITIES.join(', ')}."
+      unless allowed_visibilities.include?(visibility)
+        raise Error, "Unknown visibility \"#{visibility}\". Valid values: #{allowed_visibilities.join(', ')}."
       end
 
       if visibility == SessionVisibility::SNOOZED
@@ -68,8 +68,14 @@ module Sessions
 
     private
 
+    # The values this record accepts. BoardCategories::SetVisibility narrows it:
+    # a category is snoozed or backlogged as a unit, never "hidden".
+    def allowed_visibilities
+      SessionVisibility::VISIBILITIES
+    end
+
     def resolved_snooze_time
-      raise Error, "snoozed_until is required to snooze a session." if @snoozed_until.blank?
+      raise Error, "snoozed_until is required to snooze." if @snoozed_until.blank?
 
       at = @snoozed_until.is_a?(String) ? parse_naive(@snoozed_until.strip) : @snoozed_until.to_time
 
