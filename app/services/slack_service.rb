@@ -73,15 +73,31 @@ class SlackService
   ].freeze
 
   class << self
-    # Get a configured Slack client instance
-    def client
-      raise ConfigurationError, "SLACK_BOT_TOKEN is not configured" unless slack_bot_token.present?
+    # The `${VAR}` name of the bot token. It resolves through the same chain as
+    # every other `${VAR}` (SecretProviders: Parameter Store, then encrypted
+    # credentials, then process ENV), so a deployment that keeps its secrets in
+    # the store needs no second copy in credentials or the container env.
+    TOKEN_VARIABLE = "SLACK_BOT_TOKEN"
 
-      @client ||= Slack::Web::Client.new(
-        token: slack_bot_token,
-        open_timeout: OPEN_TIMEOUT,
-        timeout: TIMEOUT
-      )
+    # Get a configured Slack client instance.
+    #
+    # Rebuilt when the resolved token changes, so a rotation in the store reaches
+    # every Slack caller within the store's snapshot TTL rather than at the next
+    # restart. Only a digest of the token is kept to compare against.
+    def client
+      token = slack_bot_token
+      raise ConfigurationError, "#{TOKEN_VARIABLE} is not configured" unless token.present?
+
+      digest = Digest::SHA256.hexdigest(token)
+      if @client.nil? || @client_token_digest != digest
+        @client = Slack::Web::Client.new(
+          token: token,
+          open_timeout: OPEN_TIMEOUT,
+          timeout: TIMEOUT
+        )
+        @client_token_digest = digest
+      end
+      @client
     end
 
     # Test the Slack connection
@@ -93,7 +109,7 @@ class SlackService
     end
 
     # Check if Slack is configured
-    # @return [Boolean] true if SLACK_BOT_TOKEN is present
+    # @return [Boolean] true if SLACK_BOT_TOKEN resolves from any link of the chain
     def configured?
       slack_bot_token.present?
     end
@@ -108,7 +124,26 @@ class SlackService
     # not a conversation Zimmer should spawn a session per message about.
     # @return [String, nil]
     def alert_channel_id
-      SecretsLoader.get("ENG_ALERTS_SLACK_CHANNEL_ID") || ENV["ENG_ALERTS_SLACK_CHANNEL_ID"]
+      setting("ENG_ALERTS_SLACK_CHANNEL_ID")
+    end
+
+    # A Slack setting, resolved through SecretProviders.chain: Parameter Store
+    # first, then encrypted credentials, then process ENV.
+    #
+    # A store that cannot be reached RAISES out of the chain (see SecretProviders
+    # on miss-vs-error). Every Slack caller asks `configured?` once a tick, so
+    # this answers nil — "not configured right now" — and logs the error class,
+    # never a value: a poller tick that skips beats one that crashes, and it
+    # does not fall through to a possibly stale fallback copy.
+    #
+    # @param key [String]
+    # @param chain [SecretProviders::Chain]
+    # @return [String, nil]
+    def setting(key, chain: SecretProviders.chain)
+      chain.get(key).presence
+    rescue StandardError => e
+      Rails.logger.warn("[slack] could not resolve #{key}: #{e.class}")
+      nil
     end
 
     # Get the bot's own user ID (cached for the lifetime of the process)
@@ -399,13 +434,14 @@ class SlackService
     # Reset the client (useful for testing or after config changes)
     def reset!
       @client = nil
+      @client_token_digest = nil
       @bot_user_id = nil
     end
 
     private
 
     def slack_bot_token
-      SecretsLoader.get("SLACK_BOT_TOKEN") || ENV["SLACK_BOT_TOKEN"]
+      setting(TOKEN_VARIABLE)
     end
 
     # retry_server_errors: false hands a server-side error straight back as a

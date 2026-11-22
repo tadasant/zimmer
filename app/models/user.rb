@@ -26,7 +26,8 @@
 class User < ApplicationRecord
   # Names the human responsible for anything typed into the Zimmer web UI.
   # Deployment configuration, resolved through SecretsLoader first and process
-  # ENV second — the same order TriggerCondition.default_allowed_user_ids uses.
+  # ENV second. (TriggerCondition.default_allowed_user_ids also consults the
+  # Parameter Store first; this setting does not.)
   ADMIN_ENV_KEY = "ZIMMER_ADMIN_USER"
 
   # Who the admin is when the deployment says nothing. Hardcoded for now, which

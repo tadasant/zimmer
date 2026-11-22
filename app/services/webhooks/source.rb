@@ -4,8 +4,8 @@ module Webhooks
   # One provider's inbound switch: whether its events arrive by polling, by webhook, or both,
   # and the secret its webhook deliveries are signed with.
   #
-  # Both settings resolve from encrypted credentials first and process ENV second, the order
-  # every other Slack setting uses (see SlackService#slack_bot_token).
+  # Both settings resolve from encrypted credentials first and process ENV second. Unlike the
+  # Slack bot token (SlackService.setting), they are not read from the Parameter Store.
   #
   # The mode is per source so one provider can move without the other. Three values are accepted:
   #

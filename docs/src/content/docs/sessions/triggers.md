@@ -120,8 +120,9 @@ Three layers, most specific first:
 
 1. **The condition's own `allowed_user_ids`** (set from the triggers UI or the API), if present.
 2. **`SLACK_BOT_MENTION_ALLOWED_USER_IDS`** — a comma-separated list of Slack user IDs, read from
-   encrypted credentials (`mcp_secrets`) first and process ENV second. This is how a deployment
-   narrows the default.
+   the secret chain: the Parameter Store first, then encrypted credentials (`mcp_secrets`), then
+   process ENV. This is how a deployment narrows the default. A store that cannot be reached
+   raises instead of reading as unset, so an outage never widens the list to everyone.
 3. **Otherwise: everyone.** An unconfigured Zimmer lets any member of the workspace @mention or DM
    the bot.
 

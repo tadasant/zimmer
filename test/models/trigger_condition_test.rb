@@ -1291,6 +1291,22 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
+  test "the allow-list resolves from the Parameter Store ahead of credentials and ENV" do
+    store = SecretProviders::Env.new({ "SLACK_BOT_MENTION_ALLOWED_USER_IDS" => "U_STORE" })
+    chain = SecretProviders::Chain.new([ store, SecretProviders::Env.new({ "SLACK_BOT_MENTION_ALLOWED_USER_IDS" => "U_ENV" }) ])
+
+    assert_equal %w[U_STORE], TriggerCondition.default_allowed_user_ids(chain: chain)
+  end
+
+  # nil would mean "everyone may drive the bot", so an outage must fail closed.
+  test "an unreachable store raises out of the allow-list rather than unrestricting it" do
+    broken = Object.new
+    def broken.get(_variable) = raise(ParameterStore::StoreError.new("unreachable", 503))
+    chain = SecretProviders::Chain.new([ broken ])
+
+    assert_raises(ParameterStore::StoreError) { TriggerCondition.default_allowed_user_ids(chain: chain) }
+  end
+
   test "SLACK_BOT_MENTION_ALLOWED_USER_IDS tolerates whitespace and empty entries" do
     condition = trigger_conditions(:bot_mention_slack_condition)
 

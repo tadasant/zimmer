@@ -313,17 +313,20 @@ class TriggerCondition < ApplicationRecord
   end
 
   # The deployment-wide allow-list for bot_mention and passive-listening conditions: a comma-separated
-  # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved from
-  # encrypted credentials first and process ENV second (the same order
-  # SlackService#slack_bot_token and SlackService#alert_channel_id use).
+  # list of Slack user IDs in SLACK_BOT_MENTION_ALLOWED_USER_IDS, resolved through
+  # SecretProviders.chain (Parameter Store, then encrypted credentials, then process
+  # ENV) like the bot token and the alert channel.
+  #
+  # Unlike SlackService.setting, a store that cannot be reached RAISES here rather
+  # than answering nil: nil would mean "everyone", and an outage must not widen who
+  # can drive the bot.
   #
   # Blank or unset means EVERYONE, not nobody. An unconfigured Zimmer lets any
   # workspace member @mention or DM the bot; a deployment narrows it by setting
   # this. The bound on "everyone" is that the bot only ever sees channels it has
   # been invited to, and DMs people choose to open with it.
-  def self.default_allowed_user_ids
-    raw = SecretsLoader.get("SLACK_BOT_MENTION_ALLOWED_USER_IDS") ||
-      ENV["SLACK_BOT_MENTION_ALLOWED_USER_IDS"]
+  def self.default_allowed_user_ids(chain: SecretProviders.chain)
+    raw = chain.get("SLACK_BOT_MENTION_ALLOWED_USER_IDS")
 
     raw.to_s.split(",").filter_map { |id| id.strip.presence }
   end

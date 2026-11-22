@@ -1166,6 +1166,22 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_equal 50, json["channels"][0]["num_members"]
   end
 
+  # Not stubbing configured?: the token sits only in the store, the way a deployment
+  # that keeps its secrets in Parameter Manager has it.
+  test "channels endpoint lists channels when the bot token is only in the Parameter Store" do
+    store = SecretProviders::Env.new({ "SLACK_BOT_TOKEN" => "xoxb-from-store" })
+    SecretProviders.stubs(:chain).returns(SecretProviders::Chain.new([ store ]))
+    SlackService.reset!
+    SlackService.stubs(:list_channels).returns([ OpenStruct.new(id: "C123", name: "general", is_private: false, num_members: 5) ])
+
+    get channels_triggers_path
+
+    assert_response :success
+    assert_equal "C123", JSON.parse(response.body)["channels"][0]["id"]
+  ensure
+    SlackService.reset!
+  end
+
   test "channels endpoint handles Slack API errors" do
     SlackService.stubs(:configured?).returns(true)
     SlackService.stubs(:list_channels).raises(SlackService::ApiError.new("Rate limited"))
