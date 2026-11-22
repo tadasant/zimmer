@@ -136,6 +136,10 @@ module Mcp
           Messages from one poll (a minute) fire once, together; pair with `reuse_session: true` so one
           session owns the chat. search_triggers with include_whatsapp_chats lists chat ids. The
           template can name {{chat_id}} and {{message_id}} (the newest message in the batch).
+          `"chat_id": "*"` watches EVERY chat the account is in and fires once per chat, so a first
+          message from someone new fires too. It refuses `reuse_session: true`, and because anyone with
+          the number can write, its template must write `{{text|untrusted}}`, `{{author|untrusted}}` and
+          `{{channel|untrusted}}`.
         - **email**: Triggered by new mail in the mailbox Zimmer polls (EMAIL_MCP_URL, a Gmail-tool MCP
           server). `{"query": "in:inbox", "include_automated": false}` — both optional. `query` is a Gmail
           search narrowing what counts (default `in:inbox`); the mailbox's own mail never fires, and bulk,

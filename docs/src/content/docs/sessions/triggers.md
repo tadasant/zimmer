@@ -632,7 +632,7 @@ someone talks to it.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `chat_id` | yes | The chat's WhatsApp id: `…@g.us` for a group, `…@s.whatsapp.net` or `…@lid` for one person. The form's chat picker, `GET /api/v1/triggers/whatsapp_chats`, and `search_triggers` with `include_whatsapp_chats` all list them |
+| `chat_id` | yes | The chat's WhatsApp id: `…@g.us` for a group, `…@s.whatsapp.net` or `…@lid` for one person. The form's chat picker, `GET /api/v1/triggers/whatsapp_chats`, and `search_triggers` with `include_whatsapp_chats` all list them. `*` watches every chat (see [All chats](#all-chats)) |
 | `chat_name` | no | Display only |
 | `mode` | yes | `listen` fires on every new message. `addressed` fires only on a batch in which someone @mentions the linked account, replies to one of its messages, or writes one of `keywords` as a whole word |
 | `keywords` | no | For `addressed`. Defaults to `["zimmer"]` |
@@ -640,6 +640,29 @@ someone talks to it.
 
 `mode` has no default on purpose. A missing mode read as `listen` would quietly widen an `addressed`
 condition to every message.
+
+#### All chats
+
+`"chat_id": "*"` watches every chat the linked account is in, including chats that do not exist
+yet. It is how a dedicated Zimmer number hears from someone nobody made a trigger for.
+
+- Each tick lists the account's chats, newest activity first (up to 100), and reads each one with
+  activity under a cursor of its own, kept in the condition's `chats` configuration.
+- It fires **once per chat**. A batch never mixes two chats, so one sender's words never reach the
+  prompt that decides how to answer another. For the same reason, a trigger with an all-chats
+  condition refuses `reuse_session`: each fire is a session of its own, and `{{chat_id}}` names the
+  chat to read and answer.
+- Turning it on baselines the time, not a message. A chat first seen after that is read from the
+  baseline, so the first message from someone new fires. Nothing from before the baseline does.
+- A person often appears in the chat list twice, under their `…@lid` id and their phone-number id.
+  The bridge reads both as one chat, so the poller remembers the second id as an alias and reads
+  the chat once.
+- Anyone who has the number can write, so the template must fence what senders chose, as an email
+  trigger must: `{{text|untrusted}}`, `{{author|untrusted}}` and `{{channel|untrusted}}`. A bare
+  one is refused.
+- A fire the burst cap suppresses is held for the next tick rather than dropped, because the cap is
+  shared by every chat.
+- A chat that fails to read reports through the error reporter and does not stop the others.
 
 #### Where the messages come from
 

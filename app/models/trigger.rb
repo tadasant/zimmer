@@ -269,6 +269,8 @@ class Trigger < ApplicationRecord
   validate :validate_last_session_requires_reuse_session, on: :create
   validate :validate_watched_session_not_requester, on: :create
   validate :validate_email_template_fences_sender_content
+  validate :validate_whatsapp_all_chats_template_fences_sender_content
+  validate :validate_whatsapp_all_chats_without_reuse_session
   validate :validate_mcp_event_template_fences_payload
 
   # A change to the selector reaches the sessions this trigger already spawned
@@ -666,6 +668,12 @@ class Trigger < ApplicationRecord
   # trigger with an email condition must fence them (`{{text|untrusted}}`) wherever it names them
   # (#validate_email_template_fences_sender_content).
   EMAIL_SENDER_VARIABLES = %w[text author title].freeze
+
+  # The variables an all-chats `whatsapp` condition fills with what a SENDER chose: the messages,
+  # the authors' WhatsApp names, and the chat's name. An all-chats condition fires on a message from
+  # anyone who has the number, so it is fenced the way email is
+  # (#validate_whatsapp_all_chats_template_fences_sender_content).
+  WHATSAPP_ALL_CHATS_SENDER_VARIABLES = %w[text author channel].freeze
 
   # Variables that require user input during manual invocation
   # ({{time}} and {{date}} are auto-populated)
@@ -1645,6 +1653,30 @@ class Trigger < ApplicationRecord
 
     errors.add(:prompt_template, "must fence what an email's sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
                                  "instead of #{bare.map { |name| "{{#{name}}}" }.join(', ')}")
+  end
+
+  def validate_whatsapp_all_chats_template_fences_sender_content
+    return if workflow_backed?
+    return unless whatsapp_all_chats_condition?
+
+    bare = WHATSAPP_ALL_CHATS_SENDER_VARIABLES & bare_placeholder_names
+    return if bare.empty?
+
+    errors.add(:prompt_template, "must fence what a WhatsApp sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
+                                 "instead of #{bare.map { |name| "{{#{name}}}" }.join(', ')}")
+  end
+
+  # An all-chats condition fires one session per chat. Reusing a session would pour every chat —
+  # a stranger's DM next to an operator's — into one conversation, so each chat's words could
+  # steer the reply to another's.
+  def validate_whatsapp_all_chats_without_reuse_session
+    return unless reuse_session && whatsapp_all_chats_condition?
+
+    errors.add(:reuse_session, "cannot be enabled on a trigger that watches all WhatsApp chats: it fires one session per chat")
+  end
+
+  def whatsapp_all_chats_condition?
+    trigger_conditions.any? { |condition| !condition.marked_for_destruction? && condition.whatsapp_all_chats? }
   end
 
   def clear_resuscitate_archived_without_reuse_session

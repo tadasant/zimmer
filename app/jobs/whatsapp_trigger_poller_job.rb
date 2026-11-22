@@ -27,6 +27,12 @@
 # A condition the poller has never visited is baselined, not fired: its cursor is set to the
 # newest message in the chat, so turning a trigger on never replays the chat's history.
 #
+# A condition whose chat_id is `*` watches EVERY chat the linked account is in. Each tick lists the
+# chats and reads each one that has activity, under a cursor of its own, and fires once per chat:
+# one person's DM is one conversation, and a batch never carries two chats. Baselining such a
+# condition records only the time. A chat first seen after that is read from that time, so the
+# first message from someone new fires.
+#
 # Message text and author names are what people typed. They go into the prompt through
 # Trigger#interpolate_prompt, which fences them as untrusted wherever the template asks, and they
 # never go into a log line.
@@ -58,6 +64,10 @@ class WhatsappTriggerPollerJob < ApplicationJob
 
   # A message's text, cut to this in the prompt. A pasted contract is not what the prompt is for.
   MAX_TEXT_CHARS = 2_000
+
+  # Chats an all-chats condition lists per tick, newest activity first. A chat with activity this
+  # tick is near the top of the list.
+  MAX_CHATS = 100
 
   def perform
     return unless configured?
@@ -117,6 +127,8 @@ class WhatsappTriggerPollerJob < ApplicationJob
   end
 
   def process_condition(service, condition)
+    return process_all_chats(service, condition) if condition.whatsapp_all_chats?
+
     chat_id = condition.whatsapp_chat_id
     cursor = condition.last_message_ts.presence&.to_i
 
@@ -157,11 +169,147 @@ class WhatsappTriggerPollerJob < ApplicationJob
     log_outcome(condition, candidates.size, outcome) if fire
   end
 
+  def process_all_chats(service, condition)
+    baseline = condition.last_message_ts.presence&.to_i
+    if baseline.nil?
+      condition.update!(last_message_ts: Time.current.to_i.to_s, last_polled_at: Time.current,
+                        configuration: condition.configuration.merge("chats" => {}))
+      Rails.logger.info "[WhatsappTriggerPollerJob] Condition #{condition.id} baselined for all chats"
+      return
+    end
+
+    read = Set.new
+    service.list_chats(limit: MAX_CHATS).each do |chat|
+      listed_id = chat["id"].to_s
+      next if listed_id.blank?
+
+      key, state = chat_state_for(condition, listed_id)
+      next if read.include?(key)
+
+      cursor = state ? state["last_message_ts"].to_i : baseline
+      last_at = chat["last_message_at"].to_i
+      next if last_at.positive? && last_at < cursor - LOOKBACK.to_i
+
+      begin
+        process_chat(service, condition, listed_id, state, baseline, read)
+      rescue => e
+        # One chat failing must not starve the others; it reports every tick it fails.
+        Rails.logger.error "[WhatsappTriggerPollerJob] Error reading a chat for condition #{condition.id}: #{e.class}: #{e.message}"
+        ErrorReporter.report_exception(
+          e,
+          context: {
+            title: "WhatsApp trigger poller error",
+            source: "WhatsappTriggerPollerJob",
+            details: "A chat on all-chats condition #{condition.id} (trigger '#{condition.trigger&.name}', ID: #{condition.trigger_id}) failed.",
+            condition_id: condition.id,
+            trigger_id: condition.trigger_id
+          }
+        )
+      end
+    end
+
+    condition.mark_polled!
+  end
+
+  # The chat's key in `chats` and its state, looking through aliases. A chat not seen yet has no
+  # state and is keyed by the id it was listed under, until a read names it.
+  def chat_state_for(condition, listed_id)
+    states = condition.whatsapp_chat_states
+    return [ listed_id, states[listed_id] ] if states.key?(listed_id)
+
+    key, state = states.find { |_key, candidate| Array(candidate["aliases"]).include?(listed_id) }
+    key ? [ key, state ] : [ listed_id, nil ]
+  end
+
+  def process_chat(service, condition, listed_id, state, baseline, read)
+    from = state ? state["last_message_ts"].to_i - LOOKBACK.to_i : baseline
+    seen = state ? state["seen_messages"].to_h.transform_values(&:to_i) : {}
+    fetched, chat_name, chat_id = read_since(service, listed_id, from, seen)
+    chat_id = chat_id.presence || listed_id
+    # Nothing from before the condition was baselined is new, look-back window or not.
+    fetched = fetched.select { |message| message.timestamp >= baseline }
+
+    # The bridge reads an alias (a person's `@lid`) as the chat it stands for. When that chat
+    # already has a cursor, this read is judged against it instead, and the alias remembered.
+    if chat_id != listed_id && read.include?(chat_id)
+      remember_alias(condition, chat_id, listed_id)
+      return
+    elsif chat_id != listed_id && (canonical = condition.whatsapp_chat_states[chat_id])
+      state = canonical
+      cursor_floor = state["last_message_ts"].to_i - LOOKBACK.to_i
+      seen = state["seen_messages"].to_h.transform_values(&:to_i)
+      fetched = fetched.select { |message| message.timestamp >= cursor_floor && !seen.key?(message.id) }
+    end
+    read << chat_id
+
+    cursor = state ? state["last_message_ts"].to_i : baseline
+    aliases = Array(state&.dig("aliases")) | (chat_id == listed_id ? [] : [ listed_id ])
+    if fetched.empty?
+      # Record a chat seen for the first time, or an alias learned, so the next tick reads it under
+      # its own cursor.
+      if state.nil?
+        update_chat_state(condition, chat_id) { |current| current || { "last_message_ts" => cursor, "seen_messages" => seen, "aliases" => aliases } }
+      elsif aliases != Array(state["aliases"])
+        remember_alias(condition, chat_id, listed_id)
+      end
+      return
+    end
+
+    new_cursor, new_seen = advance(cursor, seen, fetched)
+    candidates = fetched.select { |message| fires?(condition, message) }
+    addressed = candidates.select { |message| addresses_zimmer?(condition, message) }
+    fire = candidates.any? && (!condition.whatsapp_addressed_only? || addressed.any?)
+
+    outcome = nil
+    ActiveRecord::Base.transaction do
+      # The same re-read under lock as a single-chat poll: an edit that took the condition off all
+      # chats, or re-baselined it, makes this batch moot.
+      condition.lock!
+      raise ActiveRecord::Rollback unless condition.whatsapp_all_chats? && condition.last_message_ts.to_i == baseline
+      raise ActiveRecord::Rollback if condition.whatsapp_chat_states[chat_id]&.dig("last_message_ts").to_i != (state ? cursor : 0)
+
+      outcome = fire ? fire!(condition, candidates, addressed, chat_id: chat_id, chat_name: chat_name) : :nothing_to_fire
+      # Held, and unlike a single chat, a burst-suppressed fire is held too: the cap is shared by
+      # every chat, so a busy tick in one chat would otherwise drop another chat's messages.
+      next if outcome == :held || outcome == :burst_suppressed
+
+      chats = condition.whatsapp_chat_states.merge(
+        chat_id => { "last_message_ts" => new_cursor, "seen_messages" => new_seen, "aliases" => aliases }
+      )
+      condition.update!(
+        last_triggered_at: outcome.is_a?(Session) ? Time.current : condition.last_triggered_at,
+        configuration: condition.configuration.merge("chats" => chats)
+      )
+    end
+
+    log_outcome(condition, candidates.size, outcome) if fire
+  end
+
+  # Rewrites one chat's state under the row lock, from the state as it is now — not as it was when
+  # this tick read it.
+  def update_chat_state(condition, chat_id)
+    condition.with_lock do
+      next unless condition.whatsapp_all_chats?
+
+      states = condition.whatsapp_chat_states
+      updated = yield(states[chat_id])
+      next if updated.nil? || updated == states[chat_id]
+
+      condition.update!(configuration: condition.configuration.merge("chats" => states.merge(chat_id => updated)))
+    end
+  end
+
+  def remember_alias(condition, chat_id, alias_id)
+    update_chat_state(condition, chat_id) do |current|
+      current&.merge("aliases" => Array(current["aliases"]) | [ alias_id ])
+    end
+  end
+
   def log_outcome(condition, count, outcome)
     said = case outcome
     when Session then "delivered to session #{outcome.id}"
     when :held then "not delivered yet (the session is busy or a session is still pending); held for the next tick"
-    when :burst_suppressed then "burst-suppressed, dropped"
+    when :burst_suppressed then condition.whatsapp_all_chats? ? "burst-suppressed; held for the next tick" : "burst-suppressed, dropped"
     else "rolled back (the condition was edited mid-poll)"
     end
     Rails.logger.info "[WhatsappTriggerPollerJob] Condition #{condition.id}: #{count} new message(s), #{said}"
@@ -183,16 +331,18 @@ class WhatsappTriggerPollerJob < ApplicationJob
   end
 
   # Every message at or after +from+ not already seen, oldest first, walking forward a page at a
-  # time. The bridge returns the OLDEST page when more match, so the walk never skips one.
+  # time, with the chat's name and the id the bridge read it under. The bridge returns the OLDEST page when more match, so the walk never skips one.
   def read_since(service, chat_id, from, seen_messages)
     seen = seen_messages.keys.to_set
     fetched = []
     chat_name = nil
+    chat_id_read = nil
     after = from
 
     MAX_PAGES.times do
       page = service.get_messages(chat_id, after: after, limit: PAGE_SIZE)
       chat_name ||= page.chat_name
+      chat_id_read ||= page.chat_id
       page.messages.each do |message|
         next if seen.include?(message.id)
 
@@ -209,7 +359,7 @@ class WhatsappTriggerPollerJob < ApplicationJob
       after = newest
     end
 
-    [ fetched.sort_by(&:timestamp), chat_name ]
+    [ fetched.sort_by(&:timestamp), chat_name, chat_id_read ]
   end
 
   # The cursor after this batch — the newest timestamp read — and the seen-set, trimmed to what
@@ -242,7 +392,7 @@ class WhatsappTriggerPollerJob < ApplicationJob
     prompt = trigger.interpolate_prompt(
       text: transcript(messages, addressed),
       author: messages.filter_map { |message| author_label(message) }.uniq.join(", "),
-      channel: chat_name.presence || condition.whatsapp_chat_name.presence || chat_id,
+      channel: chat_name.presence || (condition.whatsapp_all_chats? ? nil : condition.whatsapp_chat_name.presence) || chat_id,
       event: addressed.any? ? "addressed" : "message",
       chat_id: chat_id,
       message_id: newest.id

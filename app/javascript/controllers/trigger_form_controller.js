@@ -346,6 +346,13 @@ export default class extends Controller {
     this.whatsappChatsPromise
       .then((chats) => {
         const current = select.value
+        if (current !== "*") {
+          const all = document.createElement("option")
+          all.value = "*"
+          all.dataset.chatName = "All chats"
+          all.textContent = "All chats (one session per chat)"
+          select.appendChild(all)
+        }
         chats.forEach((chat) => {
           if (chat.id === current) return
           const option = document.createElement("option")
@@ -694,7 +701,7 @@ export default class extends Controller {
                    placeholder="Chat ID (e.g., 120363012345678901@g.us)"
                    class="mt-2 shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
             <input type="hidden" name="${name}[configuration][chat_name]" data-trigger-form-target="whatsappChatName" disabled>
-            <p class="mt-1 text-xs text-gray-500">The chat the WhatsApp bridge's account is in. Pick it from the list, or paste its id. Groups end in <code class="bg-gray-100 px-1 rounded">@g.us</code>.</p>
+            <p class="mt-1 text-xs text-gray-500">The chat the WhatsApp bridge's account is in. Pick it from the list, or paste its id. Groups end in <code class="bg-gray-100 px-1 rounded">@g.us</code>. <code class="bg-gray-100 px-1 rounded">*</code> watches every chat, one session per chat, and needs re-use session off.</p>
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Fire on <span class="text-red-500">*</span></label>
