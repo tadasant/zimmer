@@ -38,21 +38,22 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   app opens on Your board v2. The server orders each view
   (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
   500 by Last Touched or Created, or the top 500 of Your board, Your board v2 and Ranked; when more
-  match, the list says so.
-- **[Your board v2](/sessions/board-v2/)** draws Last Touched's compact rows under your own
-  categories: *Uncategorized* first, then each category in your order, most recently touched first
-  inside each. Tap a category's header to collapse or expand it (stored on the category, so the web
-  tab agrees). Press and hold a row for **Move to Category** — the same write as the web tab's drag
-  (`PATCH /api/v1/sessions/:id/board_category`); the row moves at the tap and moves back if the
-  server refuses. Snoozed and backlogged categories sit at the foot with their session counts and a
-  **Wake** button. Creating, renaming, deleting, reordering, snoozing and backlogging categories are
-  on the web tab and MCP. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
+  match, the list says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
   Your board, *Reorder Board* puts them on its spot rows. A drop tells the server the nearest spot
   rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
   dropped among the priority rows settles back into the spot block, since precedence cannot lift
   it out. Priority rows do not drag: the server places a drop by its spot neighbours only, so a
   priority row would lose its precedence. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
+- **[Your board v2](/sessions/board-v2/)** draws Last Touched's compact rows under your own
+  categories: *Uncategorized* first, then each category in your order, most recently touched first
+  inside each. Tap a category's header to collapse or expand it (stored on the category, so the web
+  tab agrees). Press and hold a row for **Move to Category** — the same write as the web tab's drag
+  (`PATCH /api/v1/sessions/:id/board_category`); the row moves at the tap and moves back if the
+  server refuses. Snoozed and backlogged categories sit at the foot with their session counts and a
+  **Wake** button. A search draws its hits flat, most recently touched first, so a hit in a
+  collapsed or tucked-away category is never hidden. Creating, renaming, deleting, reordering, snoozing and backlogging categories are
+  on the web tab and MCP.
 - **Filters** as the web UI's filter form does, every filter combining with every other. The
   chips are one-tap presets: *Needs input* (the default), *Active* (everything not archived),
   *Waiting*, *Running*, *Failed* and *Archived*. The *Filters* button opens the whole form: any

@@ -893,7 +893,14 @@ final class AppModel: ObservableObject {
 
     /// The rows in the current view's order and sections — a drag's order first, until the
     /// server's read replaces it.
-    var sections: [BoardSection] { view.sections(sessions, order: localOrder, categories: boardCategories) }
+    var sections: [BoardSection] {
+        // A search on Your board v2 is drawn flat, most recently touched first: the search
+        // reaches sessions in tucked-away and collapsed categories, and grouping would hide them.
+        if view == .boardV2, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return BoardView.lastTouched.sections(sessions)
+        }
+        return view.sections(sessions, order: localOrder, categories: boardCategories)
+    }
 
     /// Your board v2's categories that are snoozed or backlogged, for the tray at the board's foot.
     var tuckedCategories: [BoardCategory] { boardCategories.filter { !$0.onBoard } }

@@ -91,8 +91,9 @@ with Last Touched's compact rows rather than Your board's, read from
 | Collapse a category | Tap its header. Stored on the category, as on the web. |
 | Wake a snoozed or backlogged category | **Wake**, in *Snoozed & backlogged categories* at the foot. |
 
-Creating, renaming, deleting, reordering, snoozing and backlogging categories are on the web tab and
-MCP only.
+A search on the phone draws its hits flat, most recently touched first, so a hit in a collapsed or
+tucked-away category is never hidden. Creating, renaming, deleting, reordering, snoozing and
+backlogging categories are on the web tab and MCP only.
 
 ## Over REST
 

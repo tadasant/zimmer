@@ -128,6 +128,9 @@ class Api::V1::SessionsBoardV2Test < ActionDispatch::IntegrationTest
 
     patch "/api/v1/board_categories/#{category.id}", params: {}, headers: @headers, as: :json
     assert_response :unprocessable_entity
+
+    patch "/api/v1/board_categories/999999", params: { collapsed: true }, headers: @headers, as: :json
+    assert_response :not_found
   end
 
   test "visibility snoozes and wakes a category as a unit" do

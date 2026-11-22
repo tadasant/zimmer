@@ -416,8 +416,8 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     /// Your board v2's categories: *iOS app* first, *Ops* collapsed to its header, and
-    /// *Someday* backlogged, so the board draws each kind. Ids past any session's.
-    public static func sampleBoardCategories(now: Date = Date()) -> [BoardCategory] {
+    /// *Someday* backlogged, so the board draws each kind.
+    public static func sampleBoardCategories() -> [BoardCategory] {
         [
             BoardCategory(id: 1, name: "iOS app", position: 0),
             BoardCategory(id: 2, name: "Ops", position: 1, collapsed: true),
@@ -426,10 +426,10 @@ public actor FakeZimmerAPI: ZimmerAPI {
     }
 
     /// Who is in which sample category: the CarPlay scene and the parity audit in *iOS app*,
-    /// the deploy key and the sweep in *Ops*, the changelog in *Someday*. The two sessions
+    /// the deploy key in *Ops*, the sweep and the changelog in *Someday*. The two sessions
     /// waiting on a person stay Uncategorized, where a new session lands.
     private static func categorized(_ sessions: [SessionSummary]) -> [SessionSummary] {
-        let placed: [Int: Int] = [1042: 1, 1044: 1, 1027: 2, 1031: 2, 1029: 3]
+        let placed: [Int: Int] = [1042: 1, 1044: 1, 1027: 2, 1031: 3, 1029: 3]
         return sessions.map { session in
             var session = session
             session.boardCategoryID = placed[session.id]

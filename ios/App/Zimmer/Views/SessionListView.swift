@@ -182,7 +182,7 @@ struct SessionListView: View {
                     }
                 }
             }
-            if model.view == .boardV2, !model.sessions.isEmpty, !model.tuckedCategories.isEmpty {
+            if model.view == .boardV2, model.searchText.isEmpty, !model.tuckedCategories.isEmpty {
                 Section {
                     ForEach(model.tuckedCategories) { category in
                         TuckedCategoryRow(category: category)

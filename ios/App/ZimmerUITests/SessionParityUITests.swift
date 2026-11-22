@@ -268,7 +268,7 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertLessThan(ios.frame.minY, carplay.frame.minY, "the CarPlay scene is in iOS app")
         // Ops is collapsed: its header, not its rows. The backlogged Someday is in the tray.
         XCTAssertFalse(row(app, 1027).exists, "a collapsed category draws no rows")
-        XCTAssertTrue(app.descendants(matching: .any)["section.tucked"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["section.tucked"].waitForExistence(timeout: timeout))
         XCTAssertFalse(app.descendants(matching: .any)["section.Someday"].exists, "a backlogged category is not a section")
         photograph(app, named: "board-v2")
 
@@ -290,7 +290,10 @@ final class BoardViewUITests: XCTestCase {
 
         // Tap Ops open: its rows appear.
         ops.tap()
-        XCTAssertTrue(row(app, 1027).waitForExistence(timeout: timeout), "an expanded category draws its rows")
+        let deployKey = row(app, 1027)
+        // Near the foot of the list, so it may need bringing on screen before its cell exists.
+        for _ in 0..<3 where !deployKey.waitForExistence(timeout: 5) { app.swipeUp() }
+        XCTAssertTrue(deployKey.exists, "an expanded category draws its rows")
         photograph(app, named: "board-v2-moved")
     }
 
