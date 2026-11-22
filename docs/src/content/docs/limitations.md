@@ -3237,9 +3237,12 @@ Hardcoded: the command (`claude auth login --claudeai`), the authorize-URL host 
 prompt `/Paste code here/i`, and the binary path `/home/rails/.local/bin/claude`. Codex likewise, with a
 device-code regex tuned to an *observed* 4–5 character split.
 
-🔴 This has already fired once. The Claude CLI self-updates on the worker, and `2.1.232` started
+🔴 This has already fired twice. The Claude CLI self-updates on the worker, and `2.1.232` started
 rendering its authorization link as an OSC 8 hyperlink — which the parser mangled into a URL no
-browser could open, breaking UI logins with no Zimmer deploy and no failing test. What the parser
+browser could open, breaking UI logins with no Zimmer deploy and no failing test. Then `2.1.330`
+moved the link to `claude.ai`, a host the regex did not list, and the panel sat on
+*(waiting for link…)* until the attempt expired. A link the parser misses now fails the attempt and
+quotes the CLI's output, so the next drift shows up in the panel, not as a stuck spinner. What the parser
 now tolerates, and how to capture output when it drifts again, is in
 [Auth harness](/auth/harness/#the-screen-scrape-is-only-as-stable-as-the-clis-output).
 

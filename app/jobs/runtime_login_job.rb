@@ -64,6 +64,17 @@ class RuntimeLoginJob < ApplicationJob
   # RuntimeLoginAttempt::HEARTBEAT_TIMEOUT.
   HEARTBEAT_INTERVAL = 15.seconds
 
+  # How long the login CLI may run without printing a verification link Zimmer
+  # recognizes. Both CLIs print their link within a second or two of starting,
+  # so a minute of silence means the link is not coming — the CLI is wedged or
+  # its output changed shape — and the panel must say so rather than sit on
+  # "waiting for link…" until MAX_DURATION.
+  VERIFICATION_URL_TIMEOUT = 60.seconds
+
+  # How much of the CLI's cleaned output to quote in a "no link" failure, so the
+  # panel shows what the CLI actually printed.
+  OUTPUT_EXCERPT_LIMIT = 300
+
   def perform(attempt_id)
     warn_on_high_dispatch_latency(attempt_id)
 
@@ -127,7 +138,8 @@ class RuntimeLoginJob < ApplicationJob
     raw = +""
     surfaced_url = false
     awaiting_code = false
-    deadline = monotonic_now + MAX_DURATION
+    started_at = monotonic_now
+    deadline = started_at + MAX_DURATION
 
     loop do
       # Stop conditions driven by the UI side of the bus.
@@ -184,6 +196,18 @@ class RuntimeLoginJob < ApplicationJob
             status: "awaiting_user"
           )
           surfaced_url = true
+        end
+      end
+
+      # The link the user needs never arrived. Two shapes: the CLI has already
+      # moved on to its paste prompt (the link was printed before it, so it is in
+      # the buffer and the driver did not recognize it — the CLI's output format
+      # changed), or it has printed nothing usable for VERIFICATION_URL_TIMEOUT.
+      # Either way, waiting longer cannot help, so fail with what the CLI printed.
+      unless surfaced_url
+        prompt_without_link = driver.completion_mode == :paste && driver.paste_prompt && clean.match?(driver.paste_prompt)
+        if prompt_without_link || monotonic_now - started_at > verification_url_timeout
+          break finish(attempt, pid, "failed", no_link_message(clean, prompt_without_link))
         end
       end
 
@@ -301,6 +325,28 @@ class RuntimeLoginJob < ApplicationJob
   def enrich_error(message, driver, raw)
     hint = driver.login_failure_hint(driver.strip_ansi(raw.to_s))
     hint.present? ? "#{message} — CLI reported: #{hint}" : message
+  end
+
+  # The failure shown when the CLI never printed a recognizable verification
+  # link, quoting the tail of what it did print so the cause is visible in the
+  # panel (and in the log line) without anyone needing a worker shell.
+  def no_link_message(clean, prompt_without_link)
+    reason = if prompt_without_link
+      "The login CLI asked for an authorization code but printed no authorization link Zimmer recognizes " \
+        "(its output format may have changed)."
+    else
+      "The login CLI printed no authorization link within #{verification_url_timeout.inspect}."
+    end
+    excerpt = clean.to_s.squish
+    excerpt = "…#{excerpt[-OUTPUT_EXCERPT_LIMIT..]}" if excerpt.length > OUTPUT_EXCERPT_LIMIT
+    message = excerpt.present? ? "#{reason} CLI output: #{excerpt}" : "#{reason} The CLI printed nothing."
+    Rails.logger.warn "[RuntimeLoginJob] #{message}"
+    message
+  end
+
+  # A method rather than a bare constant read so a test can shorten the wait.
+  def verification_url_timeout
+    VERIFICATION_URL_TIMEOUT
   end
 
   def finish(attempt, pid, status, message)

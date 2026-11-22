@@ -27,6 +27,18 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     "\e]8;;#{CAPTURED_URL}\a#{CAPTURED_URL}\e]8;;\a\r\n" \
     "Paste code here if prompted > "
 
+  # The same command off CLI 2.1.330, which moved the link to claude.ai and
+  # shortened its query string. The old host-pinned URL_REGEX did not match it,
+  # while the paste prompt still did — so the panel went to awaiting_code with no
+  # link and showed "(waiting for link…)" for good. Byte-for-byte as captured.
+  CAPTURED_URL_2_1_330 = "https://claude.ai/oauth/authorize?z-oScAmtAxVAwSIZ-nYi-xdhxIrh7Fo-JF5RstGJeFEbg"
+
+  CAPTURED_LOGIN_OUTPUT_2_1_330 =
+    "Opening browser to sign in\u2026\r\n" \
+    "If the browser didn't open, visit:\r\n" \
+    "\e]8;;#{CAPTURED_URL_2_1_330}\a#{CAPTURED_URL_2_1_330}\e]8;;\a\r\n" \
+    "Paste code here if prompted > "
+
   setup do
     # capture! probes the freshly-minted token against Anthropic before the
     # account enters the pool. Default to a token Anthropic honours.
@@ -78,6 +90,33 @@ class ClaudeLoginDriverTest < ActiveSupport::TestCase
     raw = "visit: \x1b_unknown-sequence;https://claude.com/cai/oauth/authorize?state=abc\x07trailing"
     assert_equal "https://claude.com/cai/oauth/authorize?state=abc",
       @driver.parse_verification(@driver.strip_ansi(raw))[:url]
+  end
+
+  test "parse_verification extracts the claude.ai authorize URL CLI 2.1.330 prints" do
+    clean = @driver.strip_ansi(CAPTURED_LOGIN_OUTPUT_2_1_330.b)
+    assert_equal CAPTURED_URL_2_1_330, @driver.parse_verification(clean)[:url]
+    assert_match @driver.paste_prompt, clean
+  end
+
+  test "parse_verification accepts an authorize URL on any Anthropic-owned host" do
+    [
+      "https://claude.ai/oauth/authorize?a=1",
+      "https://console.anthropic.com/oauth/authorize?a=1",
+      "https://claude.com/cai/oauth/authorize?a=1",
+      "https://auth.claude.ai/v2/oauth/authorize?a=1"
+    ].each do |url|
+      assert_equal url, @driver.parse_verification("visit: #{url}\n")[:url], url
+    end
+  end
+
+  test "parse_verification rejects authorize URLs on hosts Anthropic does not own" do
+    [
+      "https://evil.example/oauth/authorize?a=1",
+      "https://claude.ai.evil.example/oauth/authorize?a=1",
+      "https://notclaude.ai/oauth/authorize?a=1"
+    ].each do |url|
+      assert_nil @driver.parse_verification("visit: #{url}\n")[:url], url
+    end
   end
 
   test "parse_verification matches the platform (console) authorize URL" do
