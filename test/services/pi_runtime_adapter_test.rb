@@ -335,6 +335,93 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     assert_nil @process_manager.spawned_processes.first[:env][PiAuthProvider::OPENROUTER_API_KEY]
   end
 
+  # --- PiSessionKeys: a short-lived key instead of the store's --------------
+
+  test "with session keys on, Pi gets a key minted for this spawn, never the store's long-lived one" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @adapter.zimmer_session_id = sessions(:running).id
+
+    with_session_keys("on") do |api|
+      with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+        @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+      end
+
+      value = spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
+      assert_equal api.keys.values.sole["key"], value
+      refute_equal "sk-or-v1-from-the-store", value
+      assert_equal sessions(:running).id, PiProviderKey.sole.session_id
+    end
+  end
+
+  test "with session keys on but no management key in the store, the long-lived key is used exactly as before" do
+    @file_system.mkdir_p(WORKING_DIR)
+
+    PiSessionKeys.stub(:mode, "on") do
+      PiSessionKeys.stub(:client, nil) do
+        with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+          @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+        end
+      end
+    end
+
+    assert_equal "sk-or-v1-from-the-store", spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
+    assert_equal 0, PiProviderKey.count
+  end
+
+  test "a key in the clone's own env file still wins and mints nothing" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @file_system.write(File.join(WORKING_DIR, EnvFile::FILENAME),
+      "#{PiAuthProvider::OPENROUTER_API_KEY}=sk-or-v1-this-repos-own-account")
+
+    with_session_keys("on") do |api|
+      @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+      assert_empty api.calls
+    end
+
+    assert_equal "sk-or-v1-this-repos-own-account", spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
+  end
+
+  test "with session keys on, a failed mint fails the spawn rather than hand over the long-lived key" do
+    @file_system.mkdir_p(WORKING_DIR)
+    @adapter.zimmer_session_id = sessions(:running).id
+
+    with_session_keys("on") do |api|
+      api.fail_next("POST", 402, message: "Insufficient credits")
+      error = assert_raises(PiRuntimeAdapter::PiCliError) do
+        with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+          @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+        end
+      end
+      assert_includes error.message, "short-lived OpenRouter key"
+      refute_includes error.message, "sk-or-v1-from-the-store"
+    end
+
+    assert_empty @process_manager.spawned_processes
+  end
+
+  test "on_with_fallback: a failed mint uses the long-lived key and says so on the session and in an error report" do
+    @file_system.mkdir_p(WORKING_DIR)
+    session = sessions(:running)
+    @adapter.zimmer_session_id = session.id
+    reported = []
+
+    with_session_keys("on_with_fallback") do |api|
+      api.fail_next("POST", 500)
+      ErrorReporter.stub(:report_message, ->(message, **) { reported << message }) do
+        with_chain_holding(PiAuthProvider::OPENROUTER_API_KEY => "sk-or-v1-from-the-store") do
+          @adapter.send(:spawn_process, [ "pi" ], working_dir: WORKING_DIR)
+        end
+      end
+    end
+
+    assert_equal "sk-or-v1-from-the-store", spawn_env[PiAuthProvider::OPENROUTER_API_KEY]
+    assert_equal 1, reported.size
+    assert_includes reported.first, "fell back to the long-lived"
+    warning = session.logs.where(level: "warning").last
+    assert_includes warning.content, "on_with_fallback"
+    refute_includes warning.content, "sk-or-v1-from-the-store"
+  end
+
   # zimmer#908: this probe used to sit under `Timeout.timeout { Open3.capture3 }`,
   # which bounds nothing — the call took as long as `pi --version` took. It runs
   # under the watchdog now, which SIGKILLs the process group on the deadline.
@@ -372,6 +459,14 @@ class PiRuntimeAdapterTest < ActiveSupport::TestCase
     end
   end
 
+  def with_session_keys(mode)
+    api = FakeOpenrouterKeysApi.start
+    PiSessionKeys.stub(:mode, mode) do
+      PiSessionKeys.stub(:client, api.client) { yield api }
+    end
+  ensure
+    api&.stop
+  end
 
   def with_chain_holding(values)
     chain = Object.new

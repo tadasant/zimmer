@@ -609,6 +609,26 @@ module SessionStateMachine
     # hierarchy that is not settled. Immediately, not after SETTLE — there is
     # no transcript to wait for.
     after_commit :enqueue_cycle_time_invalidation, if: -> { saved_change_to_status? && status_before_last_save == "archived" && !status_summary_fork? }
+
+    # A Pi turn is over the moment the session leaves `running`, and the
+    # short-lived OpenRouter key minted for it goes with it (PiSessionKeys). The
+    # cutoff keeps the job off a key minted for a turn that starts after this.
+    # An elicitation block is not the end of a turn — the process is alive and
+    # waiting on the approval — so it keeps its key. PiProviderKeySweepJob
+    # converges anything this misses.
+    after_commit :enqueue_pi_provider_key_revoke, if: -> {
+      saved_change_to_status? && status_before_last_save == "running" && !PiSessionKeys.session_live?(self)
+    }
+  end
+
+  # See the after_commit above. One indexed EXISTS for every session that is not
+  # holding a minted key, which is every session while the feature is off.
+  def enqueue_pi_provider_key_revoke
+    return unless PiProviderKey.active.where(session_id: id).exists?
+
+    PiSessionKeys.enqueue_revoke(id, cutoff: Time.current, reason: "session_at_rest")
+  rescue => e
+    Rails.logger.warn("[PiSessionKeys] could not enqueue the at-rest revoke for session #{id}: #{e.class}: #{e.message}")
   end
 
   # See the after_commit above.
