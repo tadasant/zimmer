@@ -34,6 +34,10 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
       "sk-proj-#{'aB3dE6gH9j' * 4}",
       "OPENAI_API_KEY"
     ],
+    "OpenRouter key (a PiSessionKeys minted key has the same shape)" => [
+      "sk-or-v1-#{'0a1b2c3d4e5f6a7b' * 4}",
+      "OPENROUTER_API_KEY"
+    ],
     "GitHub personal access token" => [
       "ghp_#{'a1B2c3D4e5' * 4}",
       "GITHUB_TOKEN"

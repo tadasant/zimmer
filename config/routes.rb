@@ -100,6 +100,8 @@ Rails.application.routes.draw do
     resources :github_pr_signals, only: [ :index, :show ]
     # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
     resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]
+    # Read-only: PiSessionKeys owns every row (see PiProviderKeyDashboard).
+    resources :pi_provider_keys, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
     # Read-only plus destroy: every row records what a remote MCP server answered

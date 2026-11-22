@@ -60,7 +60,9 @@ What Pi needs instead is one environment variable, `OPENROUTER_API_KEY`, in the 
 A human sets it in the secrets console the Inference page's Pi tab links; Zimmer does not write it.
 It lives in the store rather than in an account row, which is why setting it is a store write and
 not an account activation. `PiRuntimeAdapter#apply_provider_key`
-resolves it from the `${VAR}` chain into the spawn environment at each spawn. See
+resolves it from the `${VAR}` chain into the spawn environment at each spawn. With
+[short-lived keys for Pi](/operate/secrets-parameter-store/#short-lived-keys-for-pi) turned on, the
+spawn gets a spend-capped key minted for it instead, and the long-lived key stays with the backend. See
 [Runtimes](/sessions/runtimes/#credentials) and [How the key reaches a Pi
 session](/operate/secrets-parameter-store/#how-the-key-reaches-a-pi-session).
 

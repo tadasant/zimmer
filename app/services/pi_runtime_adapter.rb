@@ -363,9 +363,16 @@ class PiRuntimeAdapter
   #
   # An explicit value in the clone's `.env` still wins, like every other step
   # here — a repo pointing Pi at its own account is not something to override.
+  #
+  # With PiSessionKeys on, the value is a key minted for this spawn instead of
+  # the store's long-lived one (#mint_session_key), so the agent never holds a
+  # store secret.
   def apply_provider_key(env_vars)
     variable = PiAuthProvider::OPENROUTER_API_KEY
     return env_vars if env_vars[variable].present?
+
+    minted = mint_session_key
+    return env_vars.merge(variable => minted) if minted
 
     value = SecretProviders.chain.get(variable)
     return env_vars if value.blank?
@@ -380,6 +387,66 @@ class PiRuntimeAdapter
     # better failure than a session that never starts.
     @logger.warn "Could not resolve #{PiAuthProvider::OPENROUTER_API_KEY} for this Pi session: #{e.class}"
     env_vars
+  end
+
+  # A short-lived, spend-capped key minted for this spawn, or nil to take the
+  # long-lived path above. See PiSessionKeys for the policy.
+  #
+  # nil when the feature is off or the management key is not in the store —
+  # exactly the behaviour that predates it. With the feature on, a failed mint
+  # either fails the spawn (`on`), so the long-lived key never reaches the
+  # agent, or falls back to it (`on_with_fallback`) and says so where an operator
+  # will see it: an error report, and a warning on the session's own timeline.
+  def mint_session_key
+    mode = PiSessionKeys.mode
+    return nil if mode == "off"
+
+    client = PiSessionKeys.client
+    if client.nil?
+      # Enablement takes both the flag and the management key, so this is the
+      # pre-feature behaviour by design. But an operator who set the flag
+      # believes the invariant holds, so it is reported on every spawn, under
+      # one fingerprint, until the key is in the store or the flag is off.
+      report_management_key_missing(mode)
+      return nil
+    end
+
+    key = PiSessionKeys.mint_for_spawn!(session_id: zimmer_session_id, client: client)
+    # The key itself is never logged.
+    @logger.info "Set #{PiAuthProvider::OPENROUTER_API_KEY} for this Pi session (a short-lived key minted for this spawn)"
+    key
+  rescue PiSessionKeys::MintError => e
+    raise PiCliError, "Could not mint a short-lived OpenRouter key for this Pi session (#{e.message}). " \
+                      "#{PiSessionKeys::MODE_VARIABLE}=on does not fall back to the long-lived key." if mode == "on"
+
+    report_session_key_fallback(e)
+    nil
+  end
+
+  def report_management_key_missing(mode)
+    message = "#{PiSessionKeys::MODE_VARIABLE}=#{mode} but #{PiSessionKeys::MANAGEMENT_KEY_VARIABLE} could not be " \
+              "read from the Parameter Store; Pi session #{zimmer_session_id.inspect} runs on the long-lived " \
+              "#{PiAuthProvider::OPENROUTER_API_KEY}"
+    @logger.error message
+    ErrorReporter.report_message(message, level: :warning, fingerprint: [ "pi-session-key-not-configured" ],
+                                          context: { source: "PiRuntimeAdapter", session_id: zimmer_session_id })
+  rescue StandardError => e
+    @logger.warn "Could not report the missing management key: #{e.class}"
+  end
+
+  def report_session_key_fallback(error)
+    message = "Pi session #{zimmer_session_id.inspect} fell back to the long-lived #{PiAuthProvider::OPENROUTER_API_KEY}: " \
+              "minting a short-lived key failed (#{error.message})"
+    @logger.error message
+    ErrorReporter.report_message(message, level: :warning, fingerprint: [ "pi-session-key-fallback" ],
+                                          context: { source: "PiRuntimeAdapter", session_id: zimmer_session_id })
+    if zimmer_session_id
+      Log.create!(session_id: zimmer_session_id, level: "warning",
+                  content: "[Pi] Minting a short-lived OpenRouter key failed (#{error.message}); this turn runs on " \
+                           "the long-lived key because #{PiSessionKeys::MODE_VARIABLE}=on_with_fallback.")
+    end
+  rescue StandardError => e
+    @logger.warn "Could not record the Pi session-key fallback: #{e.class}"
   end
 
   def ensure_pi_home(env_vars)
