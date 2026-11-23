@@ -1143,6 +1143,18 @@ expect several in a day — chasing a cloud-init change, say — count them.
 [#403](https://github.com/tadasant/zimmer/issues/403) the nightly teardown destroys staging on the
 days nobody deploys to it, so **every teardown/deploy cycle is an issuance too** — see below.
 
+### Staging's size fallback trusts the catalog, and stays in one region
+
+[The droplet size is chosen](/operate/deploying/#the-droplet-size-is-chosen-before-the-apply) from
+DigitalOcean's size catalog just before the apply. Three edges are left. Stock that runs out in
+between, or a catalog that disagrees with the create call, still fails the deploy, and nothing retries
+it with the next size. The region is fixed, so a region selling none of the listed sizes fails the
+deploy too. And a droplet that landed on a fallback keeps it until it is torn down: the AMD and Intel
+fallbacks list at $28 to $32 a month against $24.
+
+Production has no such fallback. Its Terraform runs from the companion repo and asks for exactly one
+size.
+
 ### Staging's nightly teardown buys the idle bill back with a cold start
 
 `teardown-staging.yml` runs nightly and destroys the staging droplet on the days nobody deployed to it
