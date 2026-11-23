@@ -85,7 +85,7 @@ struct SignInView: View {
             if let error = shownError {
                 ErrorBanner(error: error)
                     // Whole, never cut to a line, where the header has made room for it.
-                    .fixedSize(horizontal: false, vertical: makesRoomForAppHost)
+                    .fixedSize(horizontal: false, vertical: compactHeader)
             }
 
             if case let .again(deployment) = mode {
@@ -123,13 +123,19 @@ struct SignInView: View {
     }
 
     /// The web origin's edge refused the app because no app host was given: the field that fixes
-    /// it comes out from under its collapsed row. Run after every failed attempt rather than on a
-    /// change of error, so a second identical refusal opens it again. Not focused: the keyboard
-    /// would cover the banner that says why the row opened.
+    /// it comes out from under its collapsed row, and the header makes room. Run after every failed
+    /// attempt rather than on a change of error, so a second identical refusal opens it again. Not
+    /// focused: the keyboard would cover the banner that says why the row opened.
     private func revealAppHostIfRefused() {
         guard workspaces.addError == .edgeNeedsAppHost else { return }
         showsAppHost = true
         makesRoomForAppHost = true
+    }
+
+    /// Signing in again has no App host row and its error stays until a sign-in works, so there the
+    /// error itself says when to make room.
+    private var compactHeader: Bool {
+        makesRoomForAppHost || (!asksForAddress && shownError == .edgeNeedsAppHost)
     }
 
     private var asksForAddress: Bool {
@@ -146,9 +152,11 @@ struct SignInView: View {
     private var header: some View {
         VStack(spacing: 18) {
             if case let .again(deployment) = mode {
-                DeploymentAvatar(deployment: deployment, size: 104)
-                    .accessibilityHidden(true)
-            } else if !makesRoomForAppHost {
+                if !compactHeader {
+                    DeploymentAvatar(deployment: deployment, size: 104)
+                        .accessibilityHidden(true)
+                }
+            } else if !compactHeader {
                 Image("ZimmerMark")
                     .resizable()
                     .frame(width: mode == .add ? 72 : 104, height: mode == .add ? 72 : 104)
@@ -165,7 +173,7 @@ struct SignInView: View {
                     .foregroundStyle(Theme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("signin.title")
-                if !makesRoomForAppHost {
+                if !compactHeader {
                     Text(subtitle)
                         .font(.body)
                         .foregroundStyle(Theme.inkSoft)

@@ -138,9 +138,9 @@ final class DeploymentSwitcherUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "no keyboard over the banner")
         attachScreenshot(app, named: "deployments-add-needs-app-host")
         // A label reads whole even when its text is drawn cut to one line, so measure what is drawn.
-        XCTAssertGreaterThan(message.frame.height, 60, "the message wraps, not cut to one line")
+        XCTAssertGreaterThan(message.frame.height, 90, "the message's five lines are drawn, not cut short")
         XCTAssertTrue(app.windows.firstMatch.frame.contains(message.frame), "the message is on screen")
-        XCTAssertGreaterThanOrEqual(message.frame.minY, app.buttons["signin.button"].frame.maxY, "under the button, over nothing")
+        XCTAssertGreaterThanOrEqual(message.frame.minY, app.buttons["signin.button"].frame.maxY, "below the button")
 
         appHost.tap()
         appHost.typeText("https://third-app.invalid")

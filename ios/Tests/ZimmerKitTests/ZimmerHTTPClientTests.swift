@@ -99,7 +99,7 @@ final class ZimmerHTTPClientTests: XCTestCase {
         XCTAssertNotNil(store.load())
     }
 
-    func testEveryShapeOfEdgeRefusalWithNoAppHostAsksForTheAppHost() async throws {
+    func testARedirectOrA403FromTheEdgeWithNoAppHostAsksForTheAppHost() async throws {
         let page403 = HTTPResponse(statusCode: 403, headers: ["cf-access-aud": "x", "content-type": "text/html"])
         for refusal in [Fixtures.accessRedirect, page403] {
             let transport = ScriptedTransport([{ _ in refusal }])
