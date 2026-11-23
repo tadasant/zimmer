@@ -124,6 +124,7 @@ class TranscriptRetentionJob < ApplicationJob
     after = [ Time.at(0), 0 ]
 
     failures = 0
+    TranscriptOffloadStore.prepare!
     swept = TranscriptOffloadStore.sweep_orphaned_temps
     Rails.logger.warn("[TranscriptRetentionJob] swept #{swept} orphaned temp file(s)") if swept.positive?
     loop do
@@ -151,6 +152,10 @@ class TranscriptRetentionJob < ApplicationJob
     end
 
     finish(result)
+  rescue TranscriptOffloadStore::Error => e
+    # The store will not act for this process at all; nothing was read or deleted.
+    Rails.logger.error("[TranscriptRetentionJob] #{e.class}: #{e.message}")
+    finish(result)
   end
 
   private
@@ -158,7 +163,6 @@ class TranscriptRetentionJob < ApplicationJob
   # Unknown free space is not a reason to stop: `df` failing says nothing about the
   # disk, and a write that hits ENOSPC fails before any chunk is deleted.
   def room_to_offload?
-    FileUtils.mkdir_p(TranscriptOffloadStore.root)
     free = CloneDiskGuard.available_bytes(TranscriptOffloadStore.root)
     return true if free.nil? || free >= MINIMUM_FREE_BYTES
 

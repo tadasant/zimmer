@@ -151,7 +151,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     assert_equal 1, result[:skipped]
     assert_predicate chunk_count(session), :positive?
     assert_not TranscriptOffloadStore.exist?(session.id)
-    assert_empty Dir.glob(File.join(TranscriptOffloadStore.root, "**", "*.tmp-*")), "the aborted write leaves no temp"
+    assert_empty Dir.glob(File.join(TranscriptOffloadStore.base, "**", "*.tmp-*")), "the aborted write leaves no temp"
   end
 
   test "a session skipped for a chunk mismatch is not re-read every tick, until its transcript changes" do
@@ -306,5 +306,32 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     Session.find(session.id).destroy!
 
     assert_not TranscriptOffloadStore.exist?(session.id)
+  end
+
+  test "offloads nothing from a process in another environment than the database's" do
+    session = archived_session(content: jsonl(5))
+    metadata = ActiveRecord::Base.connection_pool.internal_metadata
+    metadata[:environment] = "production"
+
+    assert_equal 0, TranscriptRetentionJob.perform_now[:offloaded]
+    assert_predicate chunk_count(session), :positive?
+    assert_nil session.reload.transcript_offloaded_at
+    assert_empty Dir.children(@root)
+  ensure
+    metadata[:environment] = "test"
+  end
+
+  test "destroying another database's session with the same id keeps this one's transcript" do
+    content = jsonl(5)
+    session = archived_session(content: content)
+    TranscriptRetentionJob.perform_now
+    metadata = ActiveRecord::Base.connection_pool.internal_metadata
+    mine = metadata[TranscriptOffloadStore::STORE_ID_KEY]
+
+    metadata[TranscriptOffloadStore::STORE_ID_KEY] = SecureRandom.uuid
+    Session.find(session.id).send(:reclaim_session_directories)
+    metadata[TranscriptOffloadStore::STORE_ID_KEY] = mine
+
+    assert_equal content, Session.find(session.id).transcript
   end
 end
