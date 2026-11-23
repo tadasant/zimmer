@@ -14,7 +14,8 @@
 # every ciphertext unreadable. For McpOauthCredential's twins that loses nothing
 # while the plaintext columns are still written (the expand phase, see
 # McpOauthCredential::SECRET_COLUMNS): reads take the plaintext, and an unreadable
-# twin is replaced the next time its token is written. Before the plaintext columns
+# twin reads as nil and is replaced the next time its token is written
+# (UnreadableTwinAsNil). Before the plaintext columns
 # stop being written, pin explicit keys (set them in the credentials block above to
 # the values derived here) if secret_key_base may ever rotate.
 #

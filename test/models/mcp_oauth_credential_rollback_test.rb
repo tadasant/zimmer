@@ -80,7 +80,7 @@ class McpOauthCredentialRollbackTest < ActiveSupport::TestCase
       { j: junk, id: @credential.id }
     ]))
     @credential = McpOauthCredential.find(@credential.id)
-    assert_raises(ActiveRecord::Encryption::Errors::Base) { @credential.access_token_ciphertext }
+    assert_nil @credential.access_token_ciphertext
     @credential = McpOauthCredential.find(@credential.id)
   end
 
@@ -127,7 +127,8 @@ class McpOauthCredentialRollbackTest < ActiveSupport::TestCase
         [ "UPDATE mcp_oauth_credentials SET #{column}_ciphertext = ? WHERE id = ?", ciphertext, @credential.id ]
       ))
     end
-    assert_raises(ActiveRecord::Encryption::Errors::Decryption) { McpOauthCredential.find(@credential.id).access_token_ciphertext }
+    assert_nil McpOauthCredential.find(@credential.id).access_token_ciphertext, "unreadable now, and the column is not empty"
+    assert raw("access_token_ciphertext").present?
     @credential = McpOauthCredential.find(@credential.id)
   end
 
@@ -217,19 +218,77 @@ class McpOauthCredentialRollbackTest < ActiveSupport::TestCase
   end
 
   test "an error that is not a decryption failure is not swallowed" do
-    @credential.stubs(:read_attribute).with("access_token_ciphertext").raises(ActiveRecord::StatementInvalid, "db")
-    assert_raises(ActiveRecord::StatementInvalid) { @credential.access_token = "x" }
+    ActiveRecord::Encryption::Cipher.any_instance.stubs(:decrypt).raises(RuntimeError, "something else")
+    assert_raises(RuntimeError) { McpOauthCredential.find(@credential.id).access_token_ciphertext }
   end
 
   test "a missing encryption key is a configuration fault, not an unreadable twin" do
-    @credential.stubs(:read_attribute).with("access_token_ciphertext").raises(ActiveRecord::Encryption::Errors::Configuration, "no key")
-    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { @credential.access_token = "x" }
+    ActiveRecord::Encryption::Cipher.any_instance.stubs(:decrypt).raises(ActiveRecord::Encryption::Errors::Configuration, "no key")
+    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { McpOauthCredential.find(@credential.id).access_token_ciphertext }
+    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { McpOauthCredential.find(@credential.id).mirror_plaintext_secrets! }
   end
 
-  test "the mirror does not swallow anything else either" do
-    @credential.stubs(:read_attribute).with("access_token").returns("at-before")
-    @credential.stubs(:read_attribute).with("access_token_ciphertext").raises(ActiveRecord::Encryption::Errors::Configuration, "no key").then.returns(nil)
-    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { @credential.mirror_plaintext_secrets! }
+  # A column that is the only copy of a value must still raise.
+  test "the broker's own encrypted columns are not tolerant" do
+    grant = McpBrokerGrant.create!(authorization_server: "https://strad.example.com", token_endpoint: "https://strad.example.com/t",
+      resource: "https://strad.example.com/mcp", client_id: "c", access_token: "a", refresh_token: "r")
+    other = ActiveRecord::Encryption::Encryptor.new.encrypt("a", key_provider: ActiveRecord::Encryption::DerivedSecretKeyProvider.new("other"))
+    McpBrokerGrant.connection.execute(McpBrokerGrant.sanitize_sql([ "UPDATE mcp_broker_grants SET access_token = ? WHERE id = ?", other, grant.id ]))
+    assert_raises(ActiveRecord::Encryption::Errors::Decryption) { McpBrokerGrant.find(grant.id).access_token }
+  end
+
+  # --- a save that fails must fail as itself, and a retry must really write ----------
+  #
+  # Rails reads every attribute when it restores a rolled-back record.
+
+  test "after the key changed, an invalid edit returns false with its errors" do
+    change_the_key_under_the_twins
+    refute @credential.update(server_name: "")
+    assert_includes @credential.errors[:server_name], "can't be blank"
+  end
+
+  test "after the key changed, database and readonly errors keep their class" do
+    change_the_key_under_the_twins
+    other = McpOauthCredential.where.not(id: @credential.id).first
+    assert_raises(ActiveRecord::RecordNotUnique) do
+      McpOauthCredential.transaction(requires_new: true) { @credential.tap { |c| c.credential_key = other.credential_key }.save!(validate: false) }
+    end
+    assert_raises(ActiveRecord::ReadOnlyRecord) { McpOauthCredential.find(@credential.id).tap(&:readonly!).update!(scopes: "x") }
+    assert_raises(ActiveRecord::Deadlocked) { McpOauthCredential.find(@credential.id).with_lock { raise ActiveRecord::Deadlocked, "d" } }
+  end
+
+  test "after the key changed, clearing a secret clears its twin even when the first attempt failed" do
+    change_the_key_under_the_twins
+    refute @credential.update(server_name: "", access_token: "B", refresh_token: "R2", client_secret: nil)
+    @credential.update!(server_name: "s2")
+
+    assert_equal [ "B", "R2", nil, nil ], [ raw("access_token"), raw("refresh_token"), raw("client_secret"), raw("client_secret_ciphertext") ]
+  end
+
+  test "after the key changed, inspecting, copying and serializing the record do not raise" do
+    change_the_key_under_the_twins
+    [ :inspect, :as_json, :dup, :clone, :attributes ].each { |m| assert_nothing_raised { McpOauthCredential.find(@credential.id).public_send(m) } }
+    assert_nothing_raised { Marshal.load(Marshal.dump(McpOauthCredential.find(@credential.id))) }
+  end
+
+  test "a secret the rolled-back version cleared leaves no twin behind after the next save, readable or not" do
+    rotate_on_the_rolled_back_version(refresh_token: nil)
+    assert raw("refresh_token_ciphertext").present?
+    @credential.update!(scopes: "x")
+    assert_nil raw("refresh_token_ciphertext"), "or the contract phase would bring a cleared token back"
+  end
+
+  test "the mirror clears the twin of a cleared secret" do
+    rotate_on_the_rolled_back_version(refresh_token: nil)
+    assert @credential.mirror_plaintext_secrets!
+    assert_nil raw("refresh_token_ciphertext")
+    assert_equal "at-before", McpOauthCredential.find(@credential.id).access_token_ciphertext
+  end
+
+  test "a record loaded without its twins can still be saved" do
+    partial = McpOauthCredential.select(:id, :server_name, :server_url, :credential_key, :client_id, :access_token, :token_endpoint, :scopes, :updated_at).find(@credential.id)
+    assert_nothing_raised { partial.update!(scopes: "z") }
+    assert_equal %w[at-before rt-before z], [ raw("access_token"), raw("refresh_token"), raw("scopes") ]
   end
 
   test "a save that validation refuses is still refused" do
@@ -237,5 +296,67 @@ class McpOauthCredentialRollbackTest < ActiveSupport::TestCase
     assert_raises(ActiveRecord::RecordInvalid) { @credential.update!(access_token: "") }
     assert_raises(ActiveRecord::RecordInvalid) { McpOauthCredential.find(@credential.id).update!(token_endpoint: "http://insecure.example.com/token") }
     assert_equal "at-before", raw("access_token")
+  end
+end
+
+# Real transactions: inside the test suite's own one, a rollback is to a savepoint,
+# and Rails loses a retry on the same object there whatever the twins hold.
+class McpOauthCredentialRolledBackSaveTest < ActiveSupport::TestCase
+  self.use_transactional_tests = false
+
+  setup do
+    @credential = McpOauthCredential.create!(server_name: "rolled-back", server_url: "https://rolled-back.example.com/mcp",
+      credential_key: "rolled-back|#{SecureRandom.hex(4)}", client_id: "c", access_token: "A", refresh_token: "R", client_secret: "S",
+      token_endpoint: "https://rolled-back.example.com/token")
+  end
+
+  teardown { McpOauthCredential.where(server_name: "rolled-back").delete_all }
+
+  def raw(column) = McpOauthCredential.connection.select_value("SELECT #{column} FROM mcp_oauth_credentials WHERE id = #{@credential.id}")
+
+  def make_unreadable
+    provider = ActiveRecord::Encryption::DerivedSecretKeyProvider.new("the key this deployment had before")
+    McpOauthCredential::SECRET_COLUMNS.each do |column|
+      ciphertext = ActiveRecord::Encryption::Encryptor.new.encrypt("x", key_provider: provider)
+      McpOauthCredential.connection.execute(McpOauthCredential.sanitize_sql([ "UPDATE mcp_oauth_credentials SET #{column}_ciphertext = ? WHERE id = ?", ciphertext, @credential.id ]))
+    end
+    @credential = McpOauthCredential.find(@credential.id)
+  end
+
+  # The readable case is the control: an unreadable twin must behave the same.
+  { "readable" => false, "unreadable" => true }.each do |label, unreadable|
+    test "#{label} twins: a rolled-back save raises its own error, and a retry that returns true has written" do
+      make_unreadable if unreadable
+      error = assert_raises(RuntimeError) { McpOauthCredential.transaction { @credential.update!(access_token: "B"); raise "orig" } }
+      assert_equal "orig", error.message
+      assert_equal "A", raw("access_token")
+
+      assert @credential.update(access_token: "B")
+      assert_equal "B", raw("access_token")
+      assert_equal "B", McpOauthCredential.find(@credential.id).access_token_ciphertext
+    end
+
+    test "#{label} twins: after a rolled-back save of something else, a later token is written" do
+      make_unreadable if unreadable
+      McpOauthCredential.transaction { @credential.update!(scopes: "x"); raise ActiveRecord::Rollback }
+      @credential.update!(access_token: "B", scopes: "y")
+      assert_equal %w[B y], [ raw("access_token"), raw("scopes") ]
+    end
+
+    test "#{label} twins: a token cleared in a rolled-back save and cleared again leaves no twin" do
+      make_unreadable if unreadable
+      McpOauthCredential.transaction { @credential.update!(refresh_token: nil); raise ActiveRecord::Rollback }
+      assert_equal "R", raw("refresh_token")
+      @credential.update!(refresh_token: nil)
+      assert_equal [ nil, nil ], [ raw("refresh_token"), raw("refresh_token_ciphertext") ]
+    end
+
+    test "#{label} twins: a rolled-back mirror can be run again on the same object" do
+      unreadable ? make_unreadable : McpOauthCredential.where(id: @credential.id).update_all(access_token: "A2")
+      @credential = McpOauthCredential.find(@credential.id)
+      McpOauthCredential.transaction { @credential.mirror_plaintext_secrets!; raise ActiveRecord::Rollback }
+      assert @credential.mirror_plaintext_secrets!
+      assert_equal raw("access_token"), McpOauthCredential.find(@credential.id).access_token_ciphertext
+    end
   end
 end

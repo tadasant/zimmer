@@ -77,14 +77,15 @@ class McpOauthCredential < ApplicationRecord
   # The keys come from config/initializers/active_record_encryption.rb.
   SECRET_COLUMNS = %w[access_token refresh_token client_secret].freeze
 
-  encrypts :access_token_ciphertext, :refresh_token_ciphertext, :client_secret_ciphertext
+  # A twin that cannot be decrypted reads as nil (UnreadableTwinAsNil), so to tell
+  # "unreadable" from "missing" look at the raw column.
+  encrypts :access_token_ciphertext, :refresh_token_ciphertext, :client_secret_ciphertext, encryptor: UnreadableTwinAsNil.new
 
   SECRET_COLUMNS.each do |column|
     twin = "#{column}_ciphertext"
 
     define_method("#{column}=") do |value|
       super(value)
-      discard_unreadable_twin(twin)
       public_send("#{twin}=", value)
     end
   end
@@ -92,8 +93,9 @@ class McpOauthCredential < ApplicationRecord
   # Any save fills a twin that is still missing, so a row written without one
   # (by an old container during the deploy cutover, after the post-deploy task
   # had already run) heals on its next refresh instead of waiting for the
-  # contract phase to find it.
-  before_save :fill_missing_secret_twins
+  # contract phase to find it. And a secret that is NULL keeps no twin: one left by
+  # a version that cleared only the plaintext must not bring the secret back.
+  before_save :bring_secret_twins_into_line
 
   # Copies each plaintext secret into its encrypted twin where the twin is
   # missing or differs, and saves just those columns. Skips validations so a
@@ -101,16 +103,13 @@ class McpOauthCredential < ApplicationRecord
   #
   # @return [Boolean] whether anything was written
   def mirror_plaintext_secrets!
-    changed = false
     SECRET_COLUMNS.each do |column|
       plaintext = read_attribute(column)
-      twin = "#{column}_ciphertext"
-      next if plaintext.nil? || decrypted_twin(twin) == plaintext
-
-      discard_unreadable_twin(twin)
-      write_attribute(twin, plaintext)
-      changed = true
+      plaintext.nil? ? clear_twin(column) : write_attribute("#{column}_ciphertext", plaintext)
     end
+    # Asked of Rails rather than remembered here, so a second call after the first
+    # one's transaction was rolled back writes again.
+    changed = SECRET_COLUMNS.any? { |column| will_save_change_to_attribute?("#{column}_ciphertext") }
     save!(validate: false, touch: false) if changed
     changed
   end
@@ -356,32 +355,27 @@ class McpOauthCredential < ApplicationRecord
 
   private
 
-  def fill_missing_secret_twins
+  def bring_secret_twins_into_line
     SECRET_COLUMNS.each do |column|
-      twin = "#{column}_ciphertext"
       plaintext = read_attribute(column)
-      # Whether it is stored at all, without decrypting it: a twin written under
-      # another key must not stop a save, least of all the one that stores a token
-      # the provider has just rotated.
-      write_attribute(twin, plaintext) if !plaintext.nil? && read_attribute_before_type_cast(twin).nil?
+      if plaintext.nil?
+        clear_twin(column)
+      elsif read_attribute_before_type_cast("#{column}_ciphertext").nil?
+        write_attribute("#{column}_ciphertext", plaintext)
+      end
     end
   end
 
-  # Rails decrypts an attribute's stored value to see whether an assignment changes
-  # it, so a twin written under another key would make the assignment raise. Treated
-  # as empty instead, and marked changed so the unreadable value is overwritten.
-  def discard_unreadable_twin(twin)
-    read_attribute(twin)
-  rescue ActiveRecord::Encryption::Errors::Decryption
-    @attributes.write_from_database(twin, nil)
-    attribute_will_change!(twin)
-  end
+  # NULL a twin, whether or not it can be read: an unreadable one already reads as
+  # nil, so assigning nil to it is not a change Rails would write. Asked of the raw
+  # value, and of the plaintext's own pending change, because the writer has already
+  # put nil over the raw value by then.
+  def clear_twin(column)
+    twin = "#{column}_ciphertext"
+    return if read_attribute_before_type_cast(twin).nil? && !will_save_change_to_attribute?(column)
 
-  # The twin's value, or nil when it cannot be decrypted.
-  def decrypted_twin(twin)
-    read_attribute(twin)
-  rescue ActiveRecord::Encryption::Errors::Decryption
-    nil
+    write_attribute(twin, nil)
+    attribute_will_change!(twin)
   end
 
   # False only for a credential issued to Zimmer's hosted client identity on a

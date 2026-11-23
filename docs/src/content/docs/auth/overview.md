@@ -319,8 +319,9 @@ on code that reads every row correctly.
 The keys come from `config/initializers/active_record_encryption.rb`: an `active_record_encryption`
 block in Rails credentials if there is one, otherwise three keys derived from `secret_key_base`.
 Rotating `secret_key_base` makes the twins unreadable. While the plaintext is still written that needs
-no step: every read takes the plaintext, saves and refreshes work, and a twin is re-encrypted under the
-new key the next time its token is written. Before the contract phase, pin the derived values as
+no step: every read takes the plaintext, an unreadable twin reads as empty (`UnreadableTwinAsNil`), so
+saves and refreshes work, and a twin is re-encrypted under the new key the next time its token is
+written. Before the contract phase, pin the derived values as
 explicit keys. The token broker's rows have no plaintext:
 [rotating with the broker in use](/auth/token-broker/#rotating-secret_key_base) does need a step.
 
