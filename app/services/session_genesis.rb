@@ -85,16 +85,17 @@ module SessionGenesis
       key: WHATSAPP,
       label: "WhatsApp trigger",
       default_class: PRIORITY,
-      description: "A WhatsApp trigger fired on new messages in a chat Zimmer is listening to. " \
-                   "People are talking in that chat right now."
+      description: "Retired. A native WhatsApp trigger fired on new messages in a chat Zimmer was " \
+                   "listening to. WhatsApp is watched with an MCP event trigger; this kind is kept " \
+                   "for the sessions those triggers fired."
     ),
     Kind.new(
       key: EMAIL,
       label: "Email trigger",
       default_class: SPOT,
-      description: "An email trigger fired on new mail in a watched mailbox. Anyone can send " \
-                   "mail, and nobody expects an answer to it within the minute, so it waits for " \
-                   "quota headroom like the other automated feeds."
+      description: "Retired. A native email trigger fired on new mail in a watched mailbox. Email " \
+                   "is watched with an MCP event trigger; this kind is kept for the sessions those " \
+                   "triggers fired."
     ),
     Kind.new(
       key: MCP_EVENT,

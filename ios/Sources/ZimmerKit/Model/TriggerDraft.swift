@@ -406,16 +406,6 @@ public enum LooseJSON: Hashable, Sendable, Decodable {
         default: return []
         }
     }
-
-    /// A flag as Rails casts one: true, "1", "true".
-    public var flag: Bool {
-        switch self {
-        case let .bool(flag): return flag
-        case let .string(text): return ["1", "true", "t", "yes", "on"].contains(text.lowercased())
-        case let .number(number): return number != 0
-        default: return false
-        }
-    }
 }
 
 /// The time zones the web form offers, by the names Rails stores (`ActiveSupport::TimeZone`):

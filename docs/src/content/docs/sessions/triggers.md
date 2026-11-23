@@ -49,6 +49,9 @@ flowchart LR
 
 Email and WhatsApp have no condition type of their own. A trigger watches them with an
 [`mcp_event`](#mcp_event) condition on the Gmail or WhatsApp MCP server's `message_received` event.
+A trigger that still held a native `email` or `whatsapp` condition when those types were removed
+is disabled once by the post-deploy task `DisableTriggersWithRetiredEmailAndWhatsappConditions`,
+which logs it and records its id in `post_deploy_task_runs`. Re-create it as an `mcp_event` trigger.
 
 ### `slack`
 

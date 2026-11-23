@@ -12,10 +12,13 @@
 #
 # Each trigger it disables is logged at WARN with its id and name.
 #
+# A `failed` trigger is disabled too, and sheds its failure state the way any move off `failed`
+# does (Trigger#clear_failure_state_when_leaving_failed, which update_columns skips).
+#
 # IDEMPOTENT. It only touches triggers that are not already disabled, so a second run changes
 # nothing. Its answer is in `post_deploy_task_runs` (on /health, in `GET /api/v1/health`, from
 # `get_system_health` and at /supervisor/post_deploy_task_runs): how many triggers it disabled and
-# their ids. Production had none left when this shipped; a non-zero count is the row to look at.
+# their ids.
 class DisableTriggersWithRetiredEmailAndWhatsappConditions < PostDeployTask
   RETIRED_CONDITION_TYPES = %w[email whatsapp].freeze
 
@@ -28,7 +31,7 @@ class DisableTriggersWithRetiredEmailAndWhatsappConditions < PostDeployTask
     disabled = []
     self.class.candidates.order(:id).find_each do |trigger|
       # update_columns, not disable!: the trigger's retired condition no longer validates.
-      trigger.update_columns(status: "disabled", updated_at: Time.current)
+      trigger.update_columns(status: "disabled", failed_at: nil, last_error: nil, updated_at: Time.current)
       logger.warn("[DisableTriggersWithRetiredEmailAndWhatsappConditions] Disabled trigger #{trigger.id} " \
                   "(#{trigger.name.inspect}): it has a retired email or whatsapp condition. " \
                   "Re-create it as an mcp_event trigger.")

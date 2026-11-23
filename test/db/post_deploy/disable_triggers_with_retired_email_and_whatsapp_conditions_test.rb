@@ -15,17 +15,23 @@ class DisableTriggersWithRetiredEmailAndWhatsappConditionsTest < ActiveSupport::
     email = trigger_with("Inbox triage", "email", { "query" => "in:inbox" })
     whatsapp = trigger_with("All chats", "whatsapp", { "chat_id" => "*", "mode" => "listen" })
     already_off = trigger_with("Old inbox", "email", { "query" => "in:inbox" }, status: "disabled")
+    failed = trigger_with("Broken listener", "whatsapp", { "chat_id" => "*", "mode" => "listen" })
+    failed.update_columns(status: "failed", failed_at: 1.hour.ago, last_error: "boom")
     schedule = trigger_with("Hourly", "schedule", { "unit" => "hours", "interval" => 1 })
 
     logger = ActiveSupport::Logger.new(io = StringIO.new)
     run, outcome = run_task(logger: logger)
 
     assert_nil outcome
-    assert_equal 2, run.stats["disabled"]
-    assert_equal [ email.id, whatsapp.id ].sort, run.stats["disabled_trigger_ids"]
+    assert_equal 3, run.stats["disabled"]
+    assert_equal [ email.id, whatsapp.id, failed.id ].sort, run.stats["disabled_trigger_ids"]
     assert_equal "disabled", email.reload.status
     assert_equal "disabled", whatsapp.reload.status
     assert_equal "disabled", already_off.reload.status
+    failed.reload
+    assert_equal "disabled", failed.status
+    assert_nil failed.failed_at, "leaving failed sheds the failure state"
+    assert_nil failed.last_error
     assert_equal "enabled", schedule.reload.status
     assert_equal %w[email], email.trigger_conditions.pluck(:condition_type), "the condition row is kept for reference"
     assert_match(/Disabled trigger #{email.id} \("Inbox triage"\)/, io.string)
