@@ -268,6 +268,16 @@ module ActiveSupport
     # test that measures cache behavior deserves a cold one.
     setup(prepend: true) { TranscriptRedactionCache.reset! }
 
+    # WebAuth::Configuration memoizes the sign-in gate's settings per process for
+    # CACHE_TTL, and the first web request of a cold process reads them through
+    # SecretProviders.chain — the same chain tests stub to make the secret store
+    # fail. Without this, whether a request 503s with "Sign-in is unavailable"
+    # depends on whether an earlier test in the worker warmed the memo, and
+    # WebAuth::ConfigurationTest's teardown cools it on purpose. Every test starts
+    # cold, so the gate's first read happens inside the test that set up the
+    # store, in every order.
+    setup(prepend: true) { WebAuth::Configuration.reset! }
+
     # BroadcastService's circuit breaker is class-level state that outlives a
     # test, and since #524 EVERY broadcast in the app can trip it — including the
     # ones on Session/Log commit callbacks, which fire in tests that are about
