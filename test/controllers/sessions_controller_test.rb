@@ -1897,8 +1897,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "unarchive turbo_stream puts the follow-up composer back" do
-    # The trash is the one status with no composer, so the restore has to bring
-    # it back itself — without this stream the composer only appeared on reload.
+    # The trash is the one status with no composer, so the restore brings it back
+    # itself rather than leaving it to a broadcast or a reload.
     session = Session.create!(
       git_root: "https://github.com/test/repo.git",
       prompt: "Investigate the flaky test",

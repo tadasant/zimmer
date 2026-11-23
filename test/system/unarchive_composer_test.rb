@@ -1,9 +1,9 @@
 require "application_system_test_case"
 
 # Restore a trashed session from its own page and the follow-up composer is there
-# straight away, the same as on any other session waiting on its human. It used to
-# appear only after a reload: the trashed page rendered no composer element at all,
-# so neither the Restore reply nor the status broadcast had anywhere to put it.
+# straight away, the same as on any other session waiting on its human. The trashed
+# page keeps an empty element under the composer's id for exactly this: without it,
+# neither the Restore reply nor the status broadcast has anywhere to put the composer.
 #
 # Run with forgery protection on, as production does, because Restore is a
 # turbo_method link that posts with the page's token.

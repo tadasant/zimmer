@@ -1087,7 +1087,9 @@ class SessionsController < ApplicationController
   private :restored_board_v2_row_stream
 
   # The composer for a session just restored from the trash. A no-op when the
-  # click came from a dashboard card, where the target is absent.
+  # click came from a dashboard card, where the target is absent — the render and
+  # skills lookup are still paid there, since the server cannot tell which page
+  # sent the click.
   def restored_follow_up_form_stream(session)
     turbo_stream.replace(
       "session_#{session.id}_follow_up_form",

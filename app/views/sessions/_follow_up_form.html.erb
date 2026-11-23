@@ -2,8 +2,8 @@
   <%# No composer in the trash, but the element stays. Restore swaps the composer
       in by replacing this id — from #unarchive's own reply, from
       Session#broadcast_follow_up_form, and from the live-region backfill — and a
-      replace whose target is missing is a silent no-op, so without this the
-      composer only appeared after a reload. %>
+      replace whose target is missing is a silent no-op, so this element is the
+      only thing that lets the composer appear without a reload. %>
   <div id="session_<%= agent_session.id %>_follow_up_form" data-live-region="replace" hidden></div>
 <% else %>
   <%# Whether the composer queues rather than sends. `Sessions::LiveTurn.underway?`

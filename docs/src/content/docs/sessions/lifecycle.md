@@ -2938,6 +2938,8 @@ dashboard card, where those streams are a no-op.
 That chrome is what makes trashing from the **drawer** work: the dashboard behind it keeps its
 place, the toast and its **Undo** arrive, and the button you just clicked turns into **Restore**.
 
+`#unarchive` also streams the follow-up composer, because the trash is the one status with no composer at all. While a session is archived, `_follow_up_form` renders a hidden, empty element under the composer's id (`session_<id>_follow_up_form`) and nothing else. That element is what Restore's reply, `Session#broadcast_follow_up_form` and the live-region backfill replace, so the composer appears the moment the restore lands rather than on the next reload. A replace whose target is missing does nothing, so the placeholder has to stay. The reply renders the composer even when the click came from a dashboard card, where it has no target, so every Restore pays for one composer render and skills lookup.
+
 A stream only happens if the client asks for one, and that is a client-side property, not a
 controller one. The card's Trash link carries `data-turbo-method`, so Turbo builds the request
 and sends `Accept: text/vnd.turbo-stream.html`. The detail header's Trash button — the one the
