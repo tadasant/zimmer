@@ -13,6 +13,8 @@ class SessionsControllerNotificationsTest < ActionDispatch::IntegrationTest
     # Stub Turbo Stream broadcasting to avoid missing partial errors in tests
     Log.any_instance.stubs(:broadcast_append_to_timeline)
     Session.any_instance.stubs(:broadcast_status_change)
+    # A view also tells open boards where the session sorts; not what is under test.
+    Session.any_instance.stubs(:broadcast_card_delivery)
     # Stub BroadcastService to avoid ActionCable issues in tests
     BroadcastService.any_instance.stubs(:notification_badge)
 

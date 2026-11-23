@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import { isPendingRemoval } from "lib/optimistic_actions"
+import { Departures, admitsUnseen, cardFilterValues, readCardDelivery, stillAdmitted } from "lib/card_delivery"
 
 // The dashboard's card grid (the Last Touched and Created views), kept true to
 // the filters it was rendered with while sessions change underneath it.
@@ -7,7 +8,8 @@ import { isPendingRemoval } from "lib/optimistic_actions"
 // The server broadcasts every card update on one stream, to every open
 // dashboard, and cannot know which of them is filtered to what. So a card comes
 // as an envelope — the session's filterable facts plus the card inside an inert
-// <template> (`_card_delivery`) — and this controller judges it:
+// <template> (`_card_delivery`) — and this controller judges it, by the filter
+// rules in lib/card_delivery that it shares with Your board:
 //
 //   * on the page and still admitted  -> replace the card in place
 //   * on the page and no longer admitted -> take it away (a session that left
@@ -22,28 +24,10 @@ import { isPendingRemoval } from "lib/optimistic_actions"
 // The "N sessions" badge and the empty state are kept in step by watching the
 // grid itself rather than every path that changes it, so a card taken away by
 // Trash, a snooze, a delivery or a reconnect backfill all move the count.
-// How long after someone on this page takes a card away that every delivery for
-// it is refused, whatever it says.
-const DEPARTURE_GRACE_MS = 5000
-
 export default class extends Controller {
   static targets = ["delivery", "grid", "card", "count", "section", "empty"]
   static values = {
-    // The statuses this page is showing. Empty means "every status".
-    statusFilter: Array,
-    // "spot", "priority", or "" for both.
-    priorityClassFilter: String,
-    // "on_board" (the default), "off_board", "backlogged", or "all".
-    visibilityFilter: String,
-    // "", "carplay_ok", "laptop_only", "untagged" or "not_laptop_only".
-    carplayFitFilter: String,
-    // A genesis key, or "".
-    genesisFilter: String,
-    // An agent root name, or "".
-    agentRootFilter: String,
-    // False under a text search, which only the server can evaluate for a
-    // session this page has never rendered.
-    liveInsert: Boolean,
+    ...cardFilterValues,
     // The card data attribute the server sorted on, descending.
     sortKey: String,
     page: Number,
@@ -57,16 +41,9 @@ export default class extends Controller {
     this.overflowed = new WeakSet()
     // Cards this controller itself took away or swapped out. Every OTHER removal
     // — the operator's Trash, a snooze, the archive response's stream — is a
-    // departure this page asked for, recorded in `departed`.
+    // departure this page asked for, recorded in `departures`.
     this.ownRemovals = new WeakSet()
-    // Session ids someone on this page took off the grid, and when. A page
-    // showing every status admits a trashed session, so without this the archive
-    // broadcast that follows a Trash click would put the card straight back,
-    // reading "Trashed". For a few seconds after the departure every delivery is
-    // refused, because one rendered before the archive committed can arrive after
-    // it; after that only an archived one is, so a session that comes back to
-    // life elsewhere may return.
-    this.departed = new Map()
+    this.departures = new Departures()
 
     if (this.hasGridTarget) {
       this.gridObserver = new MutationObserver((mutations) => this.gridChanged(mutations))
@@ -81,41 +58,18 @@ export default class extends Controller {
   // ---- Deliveries -----------------------------------------------------------
 
   deliveryTargetConnected(element) {
-    const envelope = this.readEnvelope(element)
+    const envelope = readCardDelivery(element)
     element.remove()
     if (!envelope || !this.hasGridTarget) return
 
     this.applyDelivery(envelope)
   }
 
-  readEnvelope(element) {
-    const id = element.dataset.sessionId
-    if (!id) return null
-
-    const template = element.querySelector("template")
-    const source = template ? template.content.firstElementChild : null
-
-    return {
-      id: id,
-      status: element.dataset.status,
-      schedulingClass: element.dataset.schedulingClass,
-      // The string "true"/"false" the server rendered.
-      onBoard: element.dataset.onBoard !== "false",
-      backlogged: element.dataset.backlogged === "true",
-      carplayFit: element.dataset.carplayFit,
-      genesis: element.dataset.genesis || "",
-      agentRoot: element.dataset.agentRoot || "",
-      // The Undo reply: the operator putting back a card this page took away.
-      restore: element.dataset.restore === "true",
-      card: source ? document.importNode(source, true) : null
-    }
-  }
-
   applyDelivery(envelope) {
     const existing = this.cardFor(envelope.id)
 
     if (existing) {
-      if (!this.stillAdmitted(envelope)) {
+      if (!stillAdmitted(envelope, this)) {
         this.ownRemovals.add(existing)
         existing.remove()
       } else if (envelope.card) {
@@ -126,7 +80,7 @@ export default class extends Controller {
     }
 
     if (!this.mayInsert(envelope)) return
-    if (!envelope.restore && this.refusedAsDeparted(envelope)) return
+    if (!envelope.restore && this.departures.refuses(envelope)) return
     // A card this page took away at the click (Trash, Snooze, Hide), whose
     // request the server has not answered yet: a broadcast queued before it
     // committed must not put it back.
@@ -134,53 +88,13 @@ export default class extends Controller {
     this.insertCard(envelope.card)
   }
 
-  // The filters a live update can move a session across. A card already on the
-  // page matched the rest (search, genesis, agent root) when it was rendered,
-  // and none of those three change under it.
-  stillAdmitted(envelope) {
-    if (this.statusFilterValue.length > 0 && !this.statusFilterValue.includes(envelope.status)) {
-      return false
-    }
-    if (this.priorityClassFilterValue && this.priorityClassFilterValue !== envelope.schedulingClass) {
-      return false
-    }
-    if (this.visibilityFilterValue === "on_board" && !envelope.onBoard) return false
-    // "off_board" is snoozed and hidden; the backlog is its own bucket, as in
-    // SessionVisibility's scopes.
-    if (this.visibilityFilterValue === "off_board" && (envelope.onBoard || envelope.backlogged)) return false
-    if (this.visibilityFilterValue === "backlogged" && !envelope.backlogged) return false
-    if (!this.carplayFitAdmits(envelope.carplayFit)) return false
-    return true
-  }
-
   // Every filter, for a session this page has never rendered. Only the first
   // page inserts: a later page cannot tell an arrival that belongs on it from
   // one that belongs on an earlier page.
   mayInsert(envelope) {
-    if (!envelope.card || !this.liveInsertValue) return false
+    if (!envelope.card) return false
     if (this.pageValue > 1 && !envelope.restore) return false
-    if (!this.stillAdmitted(envelope)) return false
-    if (this.genesisFilterValue && this.genesisFilterValue !== envelope.genesis) return false
-    if (this.agentRootFilterValue && this.agentRootFilterValue !== envelope.agentRoot) return false
-    return true
-  }
-
-  refusedAsDeparted(envelope) {
-    if (!this.departed.has(envelope.id)) return false
-    if (envelope.status === "archived") return true
-    return Date.now() - this.departed.get(envelope.id) < DEPARTURE_GRACE_MS
-  }
-
-  // Mirrors SessionCarplayFit's `carplay_fit_filter` scope over the bucket the
-  // envelope carries (`carplay_ok`, `laptop_only` or `untagged`).
-  carplayFitAdmits(bucket) {
-    switch (this.carplayFitFilterValue) {
-      case "carplay_ok": return bucket === "carplay_ok"
-      case "laptop_only": return bucket === "laptop_only"
-      case "untagged": return bucket === "untagged"
-      case "not_laptop_only": return bucket !== "laptop_only"
-      default: return true
-    }
+    return admitsUnseen(envelope, this)
   }
 
   // Where the server's ORDER BY would put it: the sort key descending, ties to
@@ -225,7 +139,7 @@ export default class extends Controller {
         if (this.ownRemovals.has(node)) {
           this.ownRemovals.delete(node)
         } else {
-          this.departed.set(node.dataset.sessionId, Date.now())
+          this.departures.note(node.dataset.sessionId)
         }
         if (this.overflowed.has(node)) {
           this.overflowed.delete(node)
@@ -235,7 +149,7 @@ export default class extends Controller {
       })
       mutation.addedNodes.forEach((node) => {
         if (!this.isCard(node)) return
-        this.departed.delete(node.dataset.sessionId)
+        this.departures.forget(node.dataset.sessionId)
         delta += 1
       })
     })

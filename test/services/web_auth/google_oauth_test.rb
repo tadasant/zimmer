@@ -59,6 +59,24 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
     assert_raises(WebAuth::GoogleOauth::ExchangeFailed) { @google.complete(code: "c", code_verifier: "v") }
   end
 
+  test "Google refusing the deployment's own client is told apart from a refused code" do
+    { "invalid_client" => true, "unauthorized_client" => true, "invalid_grant" => false }.each do |code, client_rejected|
+      stub_token_endpoint(Net::HTTPUnauthorized.new("1.1", "401", "Unauthorized"), { error: code }.to_json)
+      error = assert_raises(WebAuth::GoogleOauth::ExchangeFailed) { @google.complete(code: "c", code_verifier: "v") }
+      assert_equal client_rejected, error.is_a?(WebAuth::GoogleOauth::ClientRejected), code
+      assert_includes error.message, code
+    end
+  end
+
+  test "an error page that is not JSON is an ordinary exchange failure" do
+    [ "<html>502</html>", "[]", "" ].each do |body|
+      stub_token_endpoint(Net::HTTPBadGateway.new("1.1", "502", "Bad Gateway"), body)
+      error = assert_raises(WebAuth::GoogleOauth::ExchangeFailed) { @google.complete(code: "c", code_verifier: "v") }
+      assert_instance_of WebAuth::GoogleOauth::ExchangeFailed, error
+      assert_includes error.message, "502"
+    end
+  end
+
   test "the consent URL carries PKCE, the state, and the hd hint when there is one domain" do
     url = URI(@google.authorization_url(state: "st", code_verifier: "verifier"))
     query = Rack::Utils.parse_query(url.query)
@@ -73,5 +91,12 @@ class WebAuth::GoogleOauthTest < ActiveSupport::TestCase
 
     two_domains = WebAuth::GoogleOauth.new(web_auth_configuration_with(allowed_domains: "a.com,b.com"))
     assert_nil Rack::Utils.parse_query(URI(two_domains.authorization_url(state: "s", code_verifier: "v")).query)["hd"]
+  end
+
+  private
+
+  def stub_token_endpoint(response, body)
+    response.stubs(:body).returns(body)
+    Net::HTTP.stubs(:start).returns(response)
   end
 end

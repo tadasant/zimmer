@@ -103,8 +103,9 @@ it would have run otherwise.
 
 The board draws at most 500 sessions across all visible categories, chosen by last touched, so on a
 very large board it is the least recently touched sessions that drop off, wherever they sit. It
-says so when it has truncated. Sessions in snoozed and backlogged categories are only counted, not
-fetched, so a big parked category never crowds out the live ones.
+says so when it has truncated. A session that arrives live on a full board pushes out the least
+recently touched row. Of the sessions in snoozed and backlogged categories only the ids are read, to
+count them, so a big parked category never crowds out the live ones.
 
 ## On the iOS app
 
@@ -182,12 +183,51 @@ They are digest-stamped and cached for a year (see
 [Static files in `public/`](/operate/deploying/#static-files-in-public-are-not-digest-stamped)), so
 the board's fetch starts as soon as the shell arrives. The *tucked away* count in the Filters legend
 arrives with the board, because it is counted through every filter the board applies. After a
-phone wakes the page, the reconnect backfill re-fetches `/board` to bring its rows up to date.
+phone wakes the page, or a dropped connection comes back, the
+[reconnect backfill](/sessions/lifecycle/#the-reopen-backfill) re-fetches `/board` to bring its rows
+up to date.
+
+## The board follows its sessions live
+
+Your board keeps up with its sessions while it is open. Nothing that happens elsewhere needs a reload:
+
+| What happens | What the board does |
+| --- | --- |
+| A session stops matching the filters | Its whole row leaves, grip included |
+| A session starts matching, or is created | Its row arrives in its own category (Uncategorized when it has none), where last touched puts it |
+| A session changes and still matches | Its card is redrawn in place |
+| A session is touched, including by being opened | Its row moves to its new place in its category |
+| A session is filed from another tab, a phone or MCP | Its row moves to that category, or leaves if the category is snoozed or backlogged |
+| A category is made, renamed, reordered, snoozed, woken or deleted elsewhere | The board fetches itself again and reconciles |
+
+The counts, the row total, the snoozed and backlogged categories' counts and the *No sessions match*
+line follow.
+
+It works on the same deliveries the card views use (next section), judged by the same rules:
+`lib/card_delivery.js` holds them, and `board-v2` and `session-grid` both import it. An envelope also
+carries the session's category, its last-touched time and when its row was read. A session's card is
+rendered from the database at that moment rather than from the copy the broadcasting process holds,
+because an agent job can hold one from hours earlier that does not know the session has been filed
+since. Deliveries for one session can overtake each other, so the board keeps the newest facts and the
+newest card it has seen for each, whichever order they came in. Opening a session sends an envelope with no card in it, since all that
+changed is where it sorts. The wrapper with the grip is not in the envelope: the page builds one from a
+`<template>` of `_board_v2_row_shell`, the partial the server draws rows with.
+
+While a card or a category is in hand nothing on the board moves; what arrived is applied on the drop.
+A card whose title is being typed, or whose menu is open, is left alone until you are done. A card you
+drop stays where you dropped it while the save is in flight. One you trash or snooze does not come back
+from an update that was already on its way.
+
+A change to the categories is a signal, not content (`BoardCategories::AnnounceLayoutChange`): what
+each group holds depends on the filters of the page that hears it, and deleting a category moves its
+sessions by foreign key with no session write. The page re-fetches `/board` and reconciles what belongs
+where, keeping the cards it has. Collapsing a category is not announced, so one screen never folds a
+section shut on another.
 
 ## The card views follow their filters live
 
-The two card views (**Sort By Last Touched** and **Created**) update over one Turbo Stream,
-`sessions_index_individual`, that every open dashboard shares. The server cannot tell which page is
+The card views (**Sort By Last Touched** and **Created**), like Your board, update over one Turbo
+Stream, `sessions_index_individual`, that every open dashboard shares. The server cannot tell which page is
 filtered to what, so a changed or new session is not sent as a `replace` of its card. It goes out
 as an envelope (`_card_delivery`, from `Session#broadcast_update_to_sessions_index` and
 `#broadcast_create_to_sessions_index`). The envelope carries the session's filterable facts and its

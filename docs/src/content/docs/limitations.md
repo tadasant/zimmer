@@ -1567,7 +1567,9 @@ the trade for never putting Redis in front of a request.
 They also see only what reaches a controller. A request refused by middleware first (host
 authorization, a request Rack cannot parse) is not in `responses_by_surface_and_status_class`, and
 neither is anything Caddy, kamal-proxy or the edge refuses before Rails. An Action Cable connection
-refused for having no sign-in never reaches a controller either. A signed-out page load that the
+refused for having no sign-in never reaches a controller either, so it is not a response; it is
+counted under `web_cable` in the auth failures instead. One refused for its `Origin` header is
+refused by Action Cable before the sign-in check and is in neither. A signed-out page load that the
 sign-in wall redirects to `/login`, or answers with a bare 401, counts as a `web` response but not
 as an auth failure: having no cookie is not a wrong credential. The window is bucketed, so
 "the last hour" is 55 to 60 minutes depending on where in the current five-minute bucket the
@@ -6592,10 +6594,9 @@ Open issues:
 
 Also:
 
-- **[Your board](/sessions/board-v2/) does not follow sessions live.** A session that comes to
-  rest, or one you put in a category from another tab or over MCP, shows up on the board at the next reload
-  (or when a phone wakes the page). Trash, Snooze and Undo on a card update it in place. Its category
-  Snooze, Rename, Create and Delete reload the board. **Uncategorized** cannot be collapsed or
+- **[Your board](/sessions/board-v2/)'s own category controls reload it.** Snooze, Rename, Create and
+  Delete on a category reload the page you use them on; other open boards follow without a reload.
+  **Uncategorized** cannot be collapsed or
   reordered: it is always the first group. It is not paginated: it draws up to 500 Last Touched cards in one
   page, where Last Touched itself pages at 50, so a very large board is a heavy page.
 
@@ -6621,13 +6622,6 @@ Also:
   one is narrower than it looks, too: **Start now** resumes a spot-queue park but *refuses* a session
   asleep on a wall-clock wake (`Sessions::StartNow` treats an armed wake as outranking the queue),
   and **Restart** is offered only for a `failed` or `needs_input` session, which a sleeping (`waiting`) one is not. The route that works is cancelling the wake at **/triggers**; a **follow-up** sent from the session page is delivered but leaves the wake armed, so it adds to the wait rather than ending it.
-- **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
-  the server cannot know which statuses a given browser has ticked, so it only special-cases
-  `archived`. With the default `needs_input`-only view, a session that transitions out of
-  `needs_input` has its card replaced in place rather than removed, and a newly created `waiting`
-  session is prepended into a grid that filters it out. Both correct themselves on the next reload.
-  Fixing it properly means either per-filter stream names or a client that re-evaluates the filter
-  on each broadcast.
 - **The Ranked view inserts and removes rows live, but still never re-sorts them.** `/?view=ranked`
   sends two kinds of message. A status change replaces one element per row — the status pill — and
   nothing else, because the row also holds a precedence the user may be mid-edit on and a position
@@ -7708,8 +7702,9 @@ re-render it.
 
 The page does not freeze: ActionCable's own connection monitor treats the connection as stale
 after ~6s without a ping and reopens it, and `cable-reconnect` re-subscribes any stream source
-that stays dark, so live updates resume on their own. What is lost is the backfill — anything
-broadcast while the page was away is not recovered until the next navigation.
+that stays dark, so live updates resume on their own. Getting a dropped subscription back is itself
+a trigger for the [backfill](/sessions/lifecycle/#the-reopen-backfill), so what was broadcast while
+the page was away is recovered then. Until ActionCable notices, the page is behind.
 
 This is much smaller than it was. When the dead-socket branch ended in a full page reload, a
 false *positive* was the expensive mistake and the check had to be conservative:
@@ -9866,9 +9861,11 @@ run on a device or in the Simulator.
 
 ## The card grid's live filtering is approximate at the edges
 
-The dashboard's card views drop and add cards live as sessions move across the page's filters
+The dashboard's card views and [Your board](/sessions/board-v2/#the-board-follows-its-sessions-live)
+drop and add cards live as sessions move across the page's filters
 (see [The card views follow their filters live](/sessions/board-v2/#the-card-views-follow-their-filters-live)).
-A reload is always exact. The live page can be off in these places:
+A reload is always exact. The live page can be off in these places. Those about pages and re-sorting
+are the card views' alone: Your board has no pages, and it re-sorts.
 
 - **Only the first page inserts, and a text search inserts nothing.** A session that starts
   matching while you are on page 2, or while a search is narrowing the grid, appears on the next
@@ -9882,7 +9879,14 @@ A reload is always exact. The live page can be off in these places:
   on page 2.
 - **An expiring snooze brings nothing back.** A snooze ends by being read, not by a write. No
   broadcast goes out when it passes, so the card returns on the next load or the session's next
-  change.
+  change. The same goes for a snoozed category on Your board.
+- **The filters' *tucked away* count is the one the board loaded with.** Sessions snoozed or hidden
+  since are not added to it until the next load.
+- **A capped board does not refill.** When a row leaves a Your board that was at its 500-card cap, the
+  row below the cap arrives on the next load or its own next change. Deleting a session outright does
+  not lower a snoozed or backlogged category's count until then.
+- **A change during the page's own load can be missed.** A delivery that lands after the server has
+  rendered the board and before the page has it has nowhere to go.
 - **A CarPlay-fit mark that goes stale is re-judged at the next card update, not at once.** A mark
   goes stale as the transcript grows past it. The grid re-judges it when the card is next sent:
   a visible change, or the throttled activity update every 30 seconds.

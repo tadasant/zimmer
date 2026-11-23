@@ -1,5 +1,6 @@
-<%# One card delivery for the dashboard's card grid.
-    (See Session#broadcast_update_to_sessions_index and session_grid_controller.js.)
+<%# One card delivery for the dashboard's card grid and Your board.
+    (See Session#broadcast_update_to_sessions_index, lib/card_delivery.js,
+    session_grid_controller.js and board_v2_controller.js.)
 
     The grid broadcasts on ONE stream, `sessions_index_individual`, but every
     open page has its own filters. The server therefore cannot decide whether a
@@ -9,8 +10,8 @@
 
     The card travels inside a <template>. Its contents are inert and its ids are
     not in the document, so an envelope for a session the page filters out never
-    puts a second `session_<id>` on the page. `session-grid#deliveryTargetConnected`
-    reads the envelope, acts on it, and removes it.
+    puts a second `session_<id>` on the page. The page's controller
+    (`session-grid` or `board-v2`) reads the envelope, acts on it, and removes it.
 
     The facts mirror the dashboard's filters one for one: status, scheduling
     class, board visibility and CarPlay fit can change under an open page, so they
@@ -20,12 +21,20 @@
     filter resolves it: the recorded key, else the catalog root matching the
     session's repository and subdirectory.
 
+    `board-category-id` and `last-touched` are where Your board puts the card.
+    `read-at` is when the row was read, so a delivery that arrives late cannot
+    undo a newer one.
+
     Locals:
       agent_session - the session
       restore       - true for the Undo reply (SessionsController#unarchive):
                       the operator is putting back a card this page just took
-                      away, so it may return to whichever page it left %>
+                      away, so it may return to whichever page it left
+      read_at       - when the session was read (default now)
+      card          - false to send the facts alone, for a change that moves a
+                      card without redrawing it %>
 <div data-session-grid-target="delivery"
+     data-board-v2-target="delivery"
      hidden
      data-session-id="<%= agent_session.id %>"
      data-status="<%= agent_session.status %>"
@@ -35,8 +44,13 @@
      data-carplay-fit="<%= agent_session.carplay_fit_bucket %>"
      data-genesis="<%= agent_session.genesis %>"
      data-agent-root="<%= agent_session.agent_root_key %>"
+     data-board-category-id="<%= agent_session.board_category_id %>"
+     data-last-touched="<%= agent_session.last_user_activity_at.to_f %>"
+     data-read-at="<%= (local_assigns.fetch(:read_at) { Time.current }.to_f * 1000).round(3) %>"
      data-restore="<%= local_assigns.fetch(:restore, false) %>">
-  <template>
-    <%= render "sessions/session_card_frame", agent_session: agent_session %>
-  </template>
+  <% if local_assigns.fetch(:card, true) %>
+    <template>
+      <%= render "sessions/session_card_frame", agent_session: agent_session %>
+    </template>
+  <% end %>
 </div>

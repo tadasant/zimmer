@@ -46,5 +46,9 @@ class BoardCategory < ApplicationRecord
   # position, which only ties their order (broken by id) until the next drag.
   before_create { self.position = (self.class.order(position: :desc).pick(:position) || -1) + 1 }
 
+  # A reorder writes positions without callbacks and announces itself.
+  after_commit -> { BoardCategories::AnnounceLayoutChange.call },
+    if: -> { destroyed? || previously_new_record? || saved_change_to_name? || saved_change_to_visibility? || saved_change_to_snoozed_until? }
+
   scope :ordered, -> { order(:position, :id) }
 end

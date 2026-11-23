@@ -37,6 +37,13 @@ import { backfillLiveRegions } from "lib/live_region_backfill"
 //   - visibilitychange -> 'visible', after the page was hidden at least
 //     `staleAfter`. Shorter hides do not kill the socket.
 //   - pageshow with event.persisted === true (bfcache restore).
+//   - a stream source that lost its subscription getting it back, however that
+//     happened: a deploy replacing the server, a laptop waking, a network blip, a
+//     socket ActionCable only later noticed was dead. ActionCable reconnects on its
+//     own, so nothing looks wrong; what was broadcast in the gap is still missing.
+//     A hidden page waits until it is looked at.
+//
+// Dispatches `backfilling` before it fetches, then `recovered` or `failed`.
 export default class extends Controller {
   static values = {
     // Minimum hidden duration (ms) before the socket is worth checking at all.
@@ -48,7 +55,12 @@ export default class extends Controller {
     // How long (ms) to wait for the backfill's fetch. A phone that came back
     // before its network did would otherwise hold the recovery open with no
     // answer either way; past this the fallback visit takes over.
-    fetchTimeout: { type: Number, default: 10000 }
+    fetchTimeout: { type: Number, default: 10000 },
+    // How long (ms) to wait, once a dropped subscription is back, for the page's
+    // other subscriptions to come back too; and to wait before trying again.
+    resubscribeSettle: { type: Number, default: 500 },
+    resubscribeRetry: { type: Number, default: 5000 },
+    resubscribeAttempts: { type: Number, default: 5 }
   }
 
   connect() {
@@ -60,6 +72,11 @@ export default class extends Controller {
 
     document.addEventListener("visibilitychange", this.boundVisibilityChange)
     window.addEventListener("pageshow", this.boundPageShow)
+
+    this.dropped = false
+    this.failedAttempts = 0
+    this.sourceObserver = new MutationObserver((mutations) => this.sourcesChanged(mutations))
+    this.sourceObserver.observe(document.body, { subtree: true, attributes: true, attributeFilter: [ "connected" ] })
   }
 
   disconnect() {
@@ -67,6 +84,8 @@ export default class extends Controller {
     window.removeEventListener("pageshow", this.boundPageShow)
     clearTimeout(this.recoveryTimer)
     clearTimeout(this.releaseTimer)
+    clearTimeout(this.resubscribedTimer)
+    this.sourceObserver?.disconnect()
   }
 
   handleVisibilityChange() {
@@ -76,6 +95,7 @@ export default class extends Controller {
     }
 
     if (document.visibilityState !== "visible") return
+    if (this.dropped) this.resubscribedSoon(this.resubscribeSettleValue)
 
     const hiddenDuration = this.hiddenAt ? Date.now() - this.hiddenAt : 0
     this.hiddenAt = null
@@ -88,6 +108,50 @@ export default class extends Controller {
 
   handlePageShow(event) {
     if (event.persisted) this.recover()
+  }
+
+  // turbo-rails sets `connected` on a stream source while it is subscribed and
+  // removes it when the subscription drops. A source that left the document with
+  // what it was in (a closed drawer) has nothing to catch up on.
+  sourcesChanged(mutations) {
+    for (const { target } of mutations) {
+      if (target.tagName !== "TURBO-CABLE-STREAM-SOURCE" || !target.isConnected) continue
+      if (!target.hasAttribute("connected")) this.dropped = true
+      else if (this.dropped) this.resubscribedSoon(this.resubscribeSettleValue)
+    }
+  }
+
+  resubscribedSoon(delay) {
+    clearTimeout(this.resubscribedTimer)
+    this.resubscribedTimer = setTimeout(() => this.backfillAfterDrop(), delay)
+  }
+
+  // Nobody asked for this one, so it never falls back to a visit: a page being
+  // read is worth more than the rows it missed. It tries again instead, a few
+  // times, with the wait doubling.
+  async backfillAfterDrop() {
+    if (!this.dropped || document.visibilityState === "hidden") return
+    // `recover` is already on its way to the same backfill.
+    if (this.isRecovering) return this.resubscribedSoon(this.resubscribeRetryValue)
+    if (!this.streamSources.some((source) => source.hasAttribute("connected"))) return
+
+    this.isRecovering = true
+    // A source still down has a longer gap than this backfill covers; its coming
+    // back is a reason for another.
+    this.dropped = !this.subscribed
+    try {
+      if (await this.backfill({ fallback: false })) {
+        this.failedAttempts = 0
+      } else if (++this.failedAttempts < this.resubscribeAttemptsValue) {
+        this.dropped = true
+        this.resubscribedSoon(this.resubscribeRetryValue * 2 ** (this.failedAttempts - 1))
+      } else {
+        // Given up on this gap; the next drop starts over.
+        this.failedAttempts = 0
+      }
+    } finally {
+      this.isRecovering = false
+    }
   }
 
   // Restore live updates, and backfill only if something was missed.
@@ -122,6 +186,9 @@ export default class extends Controller {
 
       await this.settle(this.reconnectGraceValue)
 
+      // Subscribed again already: this backfill covers the gap, so the one that
+      // follows a reconnect is not owed as well.
+      if (this.subscribed) this.dropped = false
       await this.backfill()
     } finally {
       // Hold the guard past the backfill rather than releasing it here. A reopen
@@ -137,6 +204,10 @@ export default class extends Controller {
     return Array.from(document.querySelectorAll("turbo-cable-stream-source"))
   }
 
+  get subscribed() {
+    return this.streamSources.every((source) => source.hasAttribute("connected"))
+  }
+
   settle(delay) {
     return new Promise((resolve) => {
       this.recoveryTimer = setTimeout(resolve, delay)
@@ -149,11 +220,16 @@ export default class extends Controller {
   // Every failure inside this method — a fetch that never answers, HTML that
   // will not parse, a reconcile that throws part-way through — ends in the
   // fallback visit, because a page left half-recovered and quiet is worse than
-  // one that lost its scroll position.
-  async backfill() {
+  // one that lost its scroll position. With `fallback: false` it ends in a false
+  // return instead, for a caller that tries again.
+  async backfill({ fallback = true } = {}) {
+    this.dispatch("backfilling")
     try {
       const response = await fetch(window.location.href, {
-        headers: { Accept: "text/html" },
+        // A reopen is a person coming back; a reconnect happens to a page nobody may
+        // be looking at, and must not read as one (SessionsController#
+        // human_initiated_view?).
+        headers: fallback ? { Accept: "text/html" } : { Accept: "text/html", "X-Zimmer-Reconnect": "1" },
         credentials: "same-origin",
         cache: "no-store",
         signal: AbortSignal.timeout(this.fetchTimeoutValue)
@@ -161,15 +237,22 @@ export default class extends Controller {
 
       // A redirect means this URL is no longer the page it was — signed out, or
       // the record is gone. Let the browser follow it properly.
-      if (response.redirected || !response.ok) return this.reload()
+      if (response.redirected || !response.ok) return this.backfillFailed(fallback)
 
       const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
       let changed = backfillLiveRegions(fresh)
       changed += await this.backfillDeferredPanels()
       this.dispatch("recovered", { detail: { socketWasOpen: false, changed } })
+      return true
     } catch (_e) {
-      this.reload()
+      return this.backfillFailed(fallback)
     }
+  }
+
+  backfillFailed(fallback) {
+    this.dispatch("failed")
+    if (fallback) this.reload()
+    return false
   }
 
   // The live regions inside a deferred panel are not in the page just fetched.

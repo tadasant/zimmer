@@ -162,7 +162,7 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_not category.reload.collapsed
   end
 
-  test "Undo on a trashed session puts its row back in its own category list" do
+  test "Undo on a trashed session offers it back once, naming its own category" do
     category = BoardCategory.create!(name: "Infra")
     session = make_session("trashed then restored", category: category)
 
@@ -171,8 +171,10 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     post undo_archive_session_url(session), as: :turbo_stream
 
     assert_response :success
-    assert_match(/target="board_v2_list_#{category.id}"/, response.body)
-    assert_match(/id="board_v2_row_#{session.id}"/, response.body)
+    assert_match(/target="#{Session::CARD_DELIVERIES_TARGET}"/, response.body)
+    assert_match(/data-board-category-id="#{category.id}"/, response.body)
+    assert_match(/data-restore="true"/, response.body)
+    assert_equal 1, response.body.scan("id=\"session_#{session.id}\"").size
   end
 
   test "reorder persists" do

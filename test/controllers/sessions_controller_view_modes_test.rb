@@ -253,6 +253,20 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
       "a prefetch must not count as a human view"
   end
 
+  # The page's own backfill after its socket dropped: nobody need be looking at it.
+  test "a reconnect backfill bumps nothing and marks no notification read" do
+    session = make_session
+    session.update_column(:metadata, (session.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601))
+    before = session.reload.last_user_activity_at
+    notification = session.notifications.create!(notification_type: "session_needs_input")
+
+    get session_path(session), headers: { "User-Agent" => DESKTOP_UA, "X-Zimmer-Reconnect" => "1" }
+
+    assert_response :success
+    assert_equal before.to_i, session.reload.last_user_activity_at.to_i
+    assert_not notification.reload.read
+  end
+
   test "a native browser prefetch (Sec-Purpose header) does not bump last_user_activity_at" do
     session = make_session
     session.update_column(:metadata, (session.metadata || {}).merge("last_user_activity_at" => 2.days.ago.iso8601))

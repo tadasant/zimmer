@@ -24,9 +24,10 @@ module BoardCategories
         raise Error, "No board category with id #{unknown.join(', ')}." if unknown.any?
 
         ordered = ids.map { |id| by_id[id] } + all.reject { |c| ids.include?(c.id) }
-        ordered.each_with_index do |category, index|
+        moved = ordered.each_with_index.filter_map do |category, index|
           category.update_columns(position: index, updated_at: Time.current) if category.position != index
         end
+        ActiveRecord.after_all_transactions_commit { AnnounceLayoutChange.call } if moved.any?
         ordered
       end
     end

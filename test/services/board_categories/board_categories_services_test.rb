@@ -71,4 +71,28 @@ class BoardCategoriesServicesTest < ActiveSupport::TestCase
     BoardCategories::SetVisibility.call(category: @a, visibility: "backlogged")
     assert_equal SessionVisibility::VISIBLE, session.reload.visibility
   end
+
+  test "assign offers the session to open boards with its new category" do
+    session = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "p", title: "s")
+
+    captured = capture_turbo_broadcasts { BoardCategories::Assign.call(session: session, category_id: @a.id) }
+
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] }
+    assert_includes captured.first.html, "data-board-category-id=\"#{@a.id}\""
+  end
+
+  test "open boards are signalled when the categories change, and not when one is collapsed" do
+    signal = [ [ :append, "sessions_index_individual", "board_v2_signals" ] ]
+    layout = ->(&work) { capture_turbo_broadcasts(&work).map { |b| [ b.action, b.stream, b.target ] } }
+
+    made = nil
+    assert_equal signal, layout.call { made = BoardCategory.create!(name: "Made") }
+    assert_equal signal, layout.call { made.update!(name: "Renamed") }
+    assert_equal signal, layout.call { BoardCategories::SetVisibility.call(category: made, visibility: "backlogged") }
+    assert_equal signal, layout.call { BoardCategories::Reorder.call(ids: [ made.id, @a.id ]) }
+    assert_empty layout.call { BoardCategories::Reorder.call(ids: [ made.id, @a.id ]) }
+    assert_empty layout.call { made.update!(collapsed: true) }
+    assert_equal signal, layout.call { made.destroy! }
+  end
 end

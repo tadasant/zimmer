@@ -26,11 +26,18 @@ module Sessions
   # One query for every visible group together, capped at `limit` rows and
   # ordered by last touched, so when the board is truncated it is the least
   # recently touched sessions that drop off, wherever they sit. Sessions in a
-  # snoozed or backlogged category are excluded from that query and counted
-  # separately, so a large parked category never crowds the live ones out.
+  # snoozed or backlogged category are excluded from that query and only
+  # their ids read, so a large parked category never crowds the live ones out.
   class BoardV2
     Section = Struct.new(:category, :sessions, keyword_init: true)
-    TuckedSection = Struct.new(:category, :count, keyword_init: true)
+    # `session_ids`, not only their number: an open board is told about sessions
+    # one at a time, and to keep the count true it has to know which of them it
+    # has already counted.
+    TuckedSection = Struct.new(:category, :session_ids, keyword_init: true) do
+      def count
+        session_ids.size
+      end
+    end
     Result = Struct.new(:uncategorized, :sections, :tucked, :truncated, keyword_init: true) do
       def session_count
         uncategorized.size + sections.sum { |section| section.sessions.size }
@@ -65,12 +72,16 @@ module Sessions
       truncated = fetched.size > limit
       grouped = fetched.first(limit).group_by(&:board_category_id)
 
-      tucked_counts = tucked_ids.any? ? scope.where(board_category_id: tucked_ids).group(:board_category_id).count : {}
+      tucked_sessions = Hash.new { |hash, key| hash[key] = [] }
+      if tucked_ids.any?
+        scope.where(board_category_id: tucked_ids).reorder(nil).pluck("sessions.board_category_id", "sessions.id")
+          .each { |category_id, id| tucked_sessions[category_id] << id }
+      end
 
       Result.new(
         uncategorized: grouped.fetch(nil, []),
         sections: showing.map { |category| Section.new(category: category, sessions: grouped.fetch(category.id, [])) },
-        tucked: tucked.map { |category| TuckedSection.new(category: category, count: tucked_counts.fetch(category.id, 0)) },
+        tucked: tucked.map { |category| TuckedSection.new(category: category, session_ids: tucked_sessions[category.id]) },
         truncated: truncated
       )
     end
