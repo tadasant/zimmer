@@ -368,7 +368,11 @@ class HealthMonitorService
   #   from. Nil means "whatever `config.x.host_process_discovery` says" — the real
   #   `pgrep` scanner everywhere but the test environment, which configures `:none`
   #   so a test can never mistake the host's live agents for its own orphans (#1095).
-  def initialize(process_manager: nil, process_discovery: nil)
+  # @param raise_unreadable [Boolean] raise when a section cannot be read, in place of the
+  #   stand-in a page renders. A stand-in is shaped like an answer ("0 stale cron keys"),
+  #   which a page qualifies with its warning and a machine reader does not.
+  def initialize(process_manager: nil, process_discovery: nil, raise_unreadable: false)
+    @raise_unreadable = raise_unreadable
     @process_manager = process_manager || SystemProcessManager.new
     @logger = StructuredLogger.new({ service: "HealthMonitorService" })
     @process_discovery = process_discovery || configured_process_discovery
@@ -527,6 +531,8 @@ class HealthMonitorService
   def post_deploy_task_health
     PostDeployTaskRun.summary
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Post-deploy task health could not be read", error: e.message)
     {
       status: HealthStatus.new(status: :warning, message: "Post-deploy task status could not be read: #{e.message}"),
@@ -550,6 +556,8 @@ class HealthMonitorService
   def cron_health
     CronFreshness.new.report
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Cron freshness could not be read", error: e.message)
     {
       status: HealthStatus.new(status: :warning, message: "Cron freshness could not be read: #{e.message}"),
@@ -568,6 +576,8 @@ class HealthMonitorService
   def inbound_event_health
     Webhooks::IngestSummary.report
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Inbound event health could not be read", error: e.message)
     {
       window_seconds: Webhooks::IngestSummary::WINDOW.to_i,
@@ -604,6 +614,8 @@ class HealthMonitorService
       api_keys_created: ApiKey.where(source: ApiKey::MINTED_SOURCE, created_at: since..).count
     )
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Security health could not be read", error: e.class.name)
     # The class, not the message: this payload is served over the API and MCP,
     # and a database error's message can carry connection detail.
@@ -620,6 +632,8 @@ class HealthMonitorService
     report = WarmClonePool.report
     report.merge(status: warm_clone_pool_status(report))
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Warm clone pool health could not be read", error: e.message)
     {
       enabled: false, scope: nil, size: 0, max_clones: 0, window_days: 0, targets: [], passed_over: [],
@@ -659,6 +673,8 @@ class HealthMonitorService
   def trigger_poller_health
     TriggerPollerHealth.report
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Trigger poller health could not be read", error: e.message)
     {
       pollers: [], github_rate_limit: [],
@@ -676,6 +692,8 @@ class HealthMonitorService
     report = WarmProcessPool.report
     report.merge(status: warm_process_pool_status(report))
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Warm process pool health could not be read", error: e.message)
     {
       enabled: false, size: 0, max_age_minutes: 0, entries: [], last_pass: nil, published_at: nil,
@@ -766,6 +784,8 @@ class HealthMonitorService
       status: log_retention_status(oldest, oldest_verbose)
     }
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Log retention health could not be read", error: e.message)
     {
       estimated_rows: nil, total_bytes: 0, index_bytes: 0,
@@ -791,6 +811,8 @@ class HealthMonitorService
     { configured: storage.configured?, bucket: storage.bucket, copy_after_days: TranscriptCopyJob.copy_after_days,
       **counts, status: transcript_storage_status(storage, counts) }
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Transcript storage health could not be read", error: e.message)
     {
       configured: false, bucket: nil, **TRANSCRIPT_COUNTS_OFF,
@@ -850,6 +872,8 @@ class HealthMonitorService
       status: database_size_status(total, in_use, capacity)
     }
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Database size health could not be read", error: e.message)
     {
       total_bytes: nil, in_use_bytes: nil, capacity_bytes: capacity, largest_tables: [],
@@ -884,6 +908,8 @@ class HealthMonitorService
       status: root_data_status(usage, overdue, near_cap)
     }
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Root data health could not be read", error: e.message)
     {
       namespaces: [], total_records: 0, total_data_bytes: 0, overdue_expired_records: 0, near_cap: [],
@@ -911,6 +937,8 @@ class HealthMonitorService
       end
     { accounts: accounts, runs: runs.map(&:as_api_json), status: status }
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.warn("Operating costs health could not be read", error: e.message)
     { accounts: 0, runs: [], status: HealthStatus.new(status: :warning, message: "Operating costs status could not be read: #{e.message}") }
   end
@@ -1002,7 +1030,8 @@ class HealthMonitorService
     connection.transaction(requires_new: true) do
       # Last until the outer transaction ends, where there is one; no caller has one.
       connection.execute("SET LOCAL lock_timeout = '1s'")
-      connection.execute("SET LOCAL statement_timeout = '5s'")
+      # No longer than HealthDiagnostics::STATEMENT_TIMEOUT, which this overrides.
+      connection.execute("SET LOCAL statement_timeout = '4s'")
       total = connection.select_value(<<~SQL.squish).to_i
         SELECT SUM(pg_database_size(oid)) FROM pg_database
         WHERE datallowconn AND has_database_privilege(oid, 'CONNECT')
@@ -1130,9 +1159,14 @@ class HealthMonitorService
   # Get system health information
   # @return [Hash] System health data
   def system_health
+    queue_health.merge(recent_errors: recent_error_logs)
+  end
+
+  # The part of system_health that says whether work is being done: the queues and the
+  # workers' heartbeat. HealthDiagnostics reads this alone, ahead of everything else.
+  def queue_health
     queue_stats = queue_statistics
     worker_stats = worker_statistics
-    recent_errors = recent_error_logs
 
     {
       # Ready work, not every unfinished row — the number an operator means when they
@@ -1140,11 +1174,39 @@ class HealthMonitorService
       queue_depth: queue_stats[:ready_count],
       queue_stats: queue_stats,
       worker_stats: worker_stats,
-      recent_errors: recent_errors,
       database_status: database_health_status,
       queue_liveness_watchdog: queue_liveness_watchdog_status,
       status: system_health_status(queue_stats, active_workers: worker_stats[:active_workers])
     }
+  end
+
+  # Recent errors from every error stream Zimmer durably records, newest first.
+  #
+  # `Log belongs_to :session`, so the `logs` table can only ever hold errors that
+  # happened INSIDE an agent session. Reading it alone is why this field stayed `[]`
+  # through the ten hours of 2026-08-13 while the application log emitted a
+  # database-connection error about 36 times a minute (zimmer#428): an empty array
+  # reads as "no errors", and it was reporting the coverage of one table.
+  #
+  # The other stream Zimmer keeps is the job layer: `good_jobs` carries the error
+  # of every job that raised, retried or was discarded, and a fault in a background
+  # job is an application fault whether or not a session was attached to it. Both
+  # are folded together here, each entry naming its `source`.
+  #
+  # KNOWN BLIND SPOT, and it is why no health STATUS is derived from this field: an
+  # error that only ever reaches stdout — a connection failure inside GoodJob's own
+  # poller, anything raised before a job row could be written — is recorded by
+  # neither table. Zimmer has no queryable store of the Rails log; that is what the
+  # observability stack is for. So `[]` here means "no error was RECORDED", never
+  # "nothing is wrong", and `execution_stall` is the signal that catches the outage
+  # this field cannot see.
+  def recent_error_logs
+    since = 1.hour.ago
+
+    (session_error_logs(since) + job_error_records(since))
+      .sort_by { |entry| entry[:created_at] }
+      .reverse
+      .first(RECENT_ERROR_LIMIT)
   end
 
   # Is the out-of-band queue-liveness watchdog actually running in this process?
@@ -1265,6 +1327,8 @@ class HealthMonitorService
       checked_at: credentials.checked_at
     }
   rescue => e
+    raise if @raise_unreadable
+
     {
       status: HealthStatus.new(status: :warning, message: "Auth health could not be read: #{e.message}"),
       credentials_state: :unknown,
@@ -1464,6 +1528,8 @@ class HealthMonitorService
       }
     end
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.error("Failed to read recorded agent processes", error: e.message)
     []
   end
@@ -1862,35 +1928,6 @@ class HealthMonitorService
     }
   end
 
-  # Recent errors from every error stream Zimmer durably records, newest first.
-  #
-  # `Log belongs_to :session`, so the `logs` table can only ever hold errors that
-  # happened INSIDE an agent session. Reading it alone is why this field stayed `[]`
-  # through the ten hours of 2026-08-13 while the application log emitted a
-  # database-connection error about 36 times a minute (zimmer#428): an empty array
-  # reads as "no errors", and it was reporting the coverage of one table.
-  #
-  # The other stream Zimmer keeps is the job layer: `good_jobs` carries the error
-  # of every job that raised, retried or was discarded, and a fault in a background
-  # job is an application fault whether or not a session was attached to it. Both
-  # are folded together here, each entry naming its `source`.
-  #
-  # KNOWN BLIND SPOT, and it is why no health STATUS is derived from this field: an
-  # error that only ever reaches stdout — a connection failure inside GoodJob's own
-  # poller, anything raised before a job row could be written — is recorded by
-  # neither table. Zimmer has no queryable store of the Rails log; that is what the
-  # observability stack is for. So `[]` here means "no error was RECORDED", never
-  # "nothing is wrong", and `execution_stall` is the signal that catches the outage
-  # this field cannot see.
-  def recent_error_logs
-    since = 1.hour.ago
-
-    (session_error_logs(since) + job_error_records(since))
-      .sort_by { |entry| entry[:created_at] }
-      .reverse
-      .first(RECENT_ERROR_LIMIT)
-  end
-
   # Errors logged inside an agent session.
   def session_error_logs(since)
     Log.where(level: "error")
@@ -1906,9 +1943,6 @@ class HealthMonitorService
         created_at: log.created_at
       }
     end
-  rescue StandardError => e
-    @logger.warn("Failed to read recent session errors", error: e.message)
-    []
   end
 
   # Errors raised by background jobs, whether the job then retried or was discarded.
@@ -1932,6 +1966,8 @@ class HealthMonitorService
       }
     end
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.error("Failed to read recent job errors", error: e.message)
     []
   end
@@ -2049,6 +2085,13 @@ class HealthMonitorService
   # @param threshold [Time] how far back "recent" reaches
   # @return [Hash]
   def retry_budget_stats(budget, threshold: 24.hours.ago)
+    # Memoised because the SIGTERM and API-error panels each ask for theirs again. A
+    # HealthMonitorService is built per request, so it cannot go stale.
+    @retry_budget_stats ||= {}
+    @retry_budget_stats[budget] ||= compute_retry_budget_stats(budget, threshold: threshold)
+  end
+
+  def compute_retry_budget_stats(budget, threshold:)
     usage = retry_budget_usage.for(budget, since: threshold)
     shown = usage[:recent].first(RECENT_EVENTS_DISPLAY_LIMIT)
     sessions = shown.empty? ? {} : Session.where(id: shown).index_by(&:id)
@@ -2072,11 +2115,15 @@ class HealthMonitorService
     }
   end
 
-  # Memoised per service instance because `full_health_report` asks for it three times:
-  # the generic section, the SIGTERM panel and the API-error panel. A HealthMonitorService
-  # is built per request, so it cannot go stale.
+  # One scan per report, and one attempt: three sections ask for it, and a scan the
+  # database just cancelled would only be cancelled again.
   def retry_budget_usage
+    raise @retry_budget_usage_error if @retry_budget_usage_error
+
     @retry_budget_usage ||= RetryBudget::Usage.new
+  rescue StandardError => e
+    @retry_budget_usage_error = e
+    raise
   end
 
   # Create a summary of a session for retry-budget display
@@ -2439,6 +2486,8 @@ class HealthMonitorService
   def paused_queues
     QueueRecoveryMode.paused_queues
   rescue StandardError => e
+    raise if @raise_unreadable
+
     @logger.error("Failed to read paused queues", error: e.message)
     []
   end

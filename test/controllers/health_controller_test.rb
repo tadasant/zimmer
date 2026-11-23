@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../support/health_diagnostics_helpers"
 require "mocha/minitest"
 
 class HealthControllerTest < ActionDispatch::IntegrationTest
+  include HealthDiagnosticsHelpers
+
   def setup
     # Stub Turbo Stream broadcasting to avoid missing partial errors in tests
     Log.any_instance.stubs(:broadcast_append_to_timeline)
@@ -684,26 +687,33 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "export_diagnostics answers with the heartbeat while another section hangs" do
-    hang = Queue.new
-    HealthMonitorService.any_instance.stubs(:retry_budget_health).with { hang.pop || true }
-    diagnostics = HealthDiagnostics.new(budget: 0.5.seconds)
+    hang = HealthDiagnosticsHelpers::Hang.new
+    HealthMonitorService.class_eval do
+      alias_method :retry_budget_health_for_real, :retry_budget_health
+      define_method(:retry_budget_health) { hang.call }
+    end
+    diagnostics = HealthDiagnostics.new(budget: 1.second)
     HealthDiagnostics.stubs(:new).returns(diagnostics)
-    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-    get export_diagnostics_health_url(format: :json)
+    _response, seconds = monotonic_timed { get export_diagnostics_health_url(format: :json) }
 
-    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 5
+    assert_operator seconds, :<, 5
     assert_response :success
     report = JSON.parse(response.body)["health_report"]
     assert report["system_health"]["worker_stats"].key?("worker_details")
     assert report["system_health"]["queue_stats"].key?("ready_count")
     assert_includes report["unread_sections"], "retry_budget_health"
   ensure
-    hang << true
+    hang.release
+    wait_for_sections_thread
+    HealthMonitorService.class_eval do
+      alias_method :retry_budget_health, :retry_budget_health_for_real
+      remove_method :retry_budget_health_for_real
+    end
   end
 
   test "export_diagnostics is a 503 when the queue facts cannot be read" do
-    HealthMonitorService.any_instance.stubs(:system_health).raises(ActiveRecord::QueryCanceled)
+    HealthMonitorService.any_instance.stubs(:queue_health).raises(ActiveRecord::QueryCanceled)
 
     get export_diagnostics_health_url(format: :json)
 

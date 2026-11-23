@@ -331,6 +331,8 @@ module ConnectionBudget
   # checks a HealthMonitorService#system_health read out of the pool for a fraction of a
   # second once a minute (config/initializers/queue_liveness_watchdog.rb, #427). The web
   # runs no cron manager, so that slot is exactly the one the watchdog thread takes.
+  # HealthDiagnostics' section thread takes no slot of its own: there is one per process,
+  # and the request waiting on it gives its connection back first.
   PROCESS_OVERHEAD = 2
 
   # Tests need more slack: Rails' system-test Puma runs its own thread pool inside the

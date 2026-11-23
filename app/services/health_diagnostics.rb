@@ -8,51 +8,47 @@
 # is slow that must not cost the probes the heartbeat, because a probe that gets no
 # answer cannot tell a slow health page from a dead worker.
 #
-# So `system_health` is read first, on the request's own thread. It is never skipped and
-# never served from an earlier reading; if it cannot be read, the whole report is
-# Unreadable. Every other section is read after it, on a thread of its own, for
-# BUDGET at most. A section that is not back by then, or that raises, is reported as not
+# So those facts (HealthMonitorService#queue_health) are read first, on the request's own
+# thread. They are never skipped and never served from an earlier reading; if they cannot
+# be read, the whole report is Unreadable. Everything else is read after, on a thread of
+# its own, for BUDGET at most. What is not back by then, or raises, is reported as not
 # read, with an `unknown` status, rather than waited for.
 #
 # One section thread per process at a time. A read that outlives its budget keeps a
 # database connection until it ends, so a probe every thirty seconds could otherwise
-# stack them. While one is running, a report carries no section but the first.
+# stack them. A report that finds one running waits for it, inside its own budget.
 class HealthDiagnostics
   CORE = :system_health
+
+  # `system_health.recent_errors`, which no probe reads, so it is read like a section.
+  RECENT_ERRORS = :recent_errors
 
   # Read right after CORE: the monitoring plane scrapes it, and it is cheap.
   FIRST = %i[security_health cron_health].freeze
 
-  # How long a request waits for the sections after CORE, comfortably inside the
-  # probes' fifteen seconds.
+  # How long a request waits for what comes after CORE.
   BUDGET = 6.seconds
+
+  # How old a request may be and still wait, so that a slow CORE comes out of BUDGET
+  # rather than on top of it. Inside the probes' fifteen seconds.
+  TOTAL = 12.seconds
 
   # No statement a report makes may outlast this, so that an abandoned section ends.
   STATEMENT_TIMEOUT = 4.seconds
 
+  SECTIONS_THREAD = Concurrent::Semaphore.new(1)
+
   class Unreadable < StandardError; end
 
-  class << self
-    # @return [Boolean] whether the caller now owns this process's section thread
-    def claim_sections_thread = sections_thread_busy.make_true
-
-    def release_sections_thread = sections_thread_busy.make_false
-
-    private
-
-    def sections_thread_busy
-      @sections_thread_busy ||= Concurrent::AtomicBoolean.new(false)
-    end
-  end
-  # Built while the class loads, so two first requests cannot make two.
-  sections_thread_busy
-
-  def initialize(service: HealthMonitorService.new, budget: BUDGET, statement_timeout: STATEMENT_TIMEOUT)
+  def initialize(service: HealthMonitorService.new(raise_unreadable: true),
+                 budget: BUDGET, total: TOTAL, statement_timeout: STATEMENT_TIMEOUT)
     @service = service
-    @budget = budget
-    @statement_timeout = statement_timeout
+    @budget = budget.to_f
+    @total = total.to_f
+    @statement_timeout = statement_timeout.to_f
     @timings = Concurrent::Map.new
     @read = Concurrent::Map.new
+    @started = monotonic_now
   end
 
   # @return [Hash] HealthMonitorService's report, plus `unread_sections` and
@@ -62,22 +58,39 @@ class HealthDiagnostics
     core = read_core
     read_sections
     # Copied once: a section thread that outlived its budget may still be writing.
-    read = sections.index_with { |section| @read[section] || unread("Not read within #{@budget.to_i} seconds") }
-    unread_sections = read.select { |_section, value| value[:unread] }.keys
+    read = sections.index_with { |section| @read[section] || unread("Not read in time") }
+    unread_sections = read.select { |_section, value| unread?(value) }.keys
     warn_unread(unread_sections) if unread_sections.any?
 
-    ordered = HealthMonitorService::SECTIONS.index_with { |section| section == CORE ? core : read.fetch(section) }
-    @service.assemble_report(ordered).merge(unread_sections: unread_sections, section_timings_ms: timings)
+    assemble(core, read).merge(unread_sections: unread_sections, section_timings_ms: timings)
   end
 
   private
 
   def sections
-    FIRST | (HealthMonitorService::SECTIONS - [ CORE ])
+    FIRST | (HealthMonitorService::SECTIONS - [ CORE ]) | [ RECENT_ERRORS ]
+  end
+
+  def assemble(core, read)
+    errors = read.fetch(RECENT_ERRORS)
+    # Absent rather than empty: an empty list says no error was recorded.
+    core = core.merge(recent_errors: unread?(errors) ? nil : errors)
+    ordered = HealthMonitorService::SECTIONS.index_with { |section| section == CORE ? core : read.fetch(section) }
+    report = @service.assemble_report(ordered)
+
+    unread_checks = HealthMonitorService::OVERALL_STATUS_SECTIONS.count { |section| unread?(ordered[section]) }
+    return report if unread_checks.zero? || !report[:overall_status].healthy?
+
+    # `healthy` over checks that were not made would be a pass nobody gave.
+    report.merge(overall_status: HealthMonitorService::HealthStatus.new(
+      status: :unknown,
+      message: "No issues detected, but #{unread_checks} of " \
+               "#{HealthMonitorService::OVERALL_STATUS_SECTIONS.size} checks could not be read"
+    ))
   end
 
   def read_core
-    with_statement_timeout { timed(CORE) { @service.public_send(CORE) } }
+    with_statement_timeout { timed(CORE) { @service.queue_health } }
   rescue StandardError => e
     # The class and not the message, which can carry connection detail.
     Rails.logger.warn("[HealthDiagnostics] #{CORE} could not be read: #{e.class}")
@@ -85,27 +98,31 @@ class HealthDiagnostics
   end
 
   def read_sections
-    deadline = monotonic_now + @budget.to_f
-    thread = start_sections_thread(deadline)
-    return if thread.nil?
+    deadline = [ monotonic_now + @budget, @started + @total ].min
+    release_connection
+    if SECTIONS_THREAD.try_acquire(1, [ deadline - monotonic_now, 0 ].max)
+      start_sections_thread(deadline)&.join([ deadline - monotonic_now, 0 ].max)
+    else
+      sections.each { |section| @read[section] = unread("An earlier report is still reading its sections") }
+    end
+  end
 
-    ActiveSupport::Dependencies.interlock.permit_concurrent_loads { thread.join(@budget.to_f) }
+  # The section thread needs a connection, and this thread needs none while it waits.
+  def release_connection
+    pool = ActiveRecord::Base.connection_pool
+    pool.release_connection unless pool.active_connection? && pool.lease_connection.transaction_open?
   end
 
   def start_sections_thread(deadline)
-    unless self.class.claim_sections_thread
-      sections.each { |section| @read[section] = unread("An earlier report is still reading its sections") }
-      return
-    end
-
-    begin
-      Thread.new { read_each(deadline) }
-    rescue StandardError
-      self.class.release_sections_thread
-      raise
-    end
+    Thread.new { read_each(deadline) }
+  rescue StandardError => e
+    SECTIONS_THREAD.release
+    mark_rest_unread(e)
+    nil
   end
 
+  # Exception and not StandardError: what a thread dies of is re-raised in the request
+  # that joins it, and nothing in a section may cost the request its heartbeat.
   def read_each(deadline)
     Thread.current.report_on_exception = false
     Rails.application.executor.wrap do
@@ -116,17 +133,21 @@ class HealthDiagnostics
           @read[section] = read_section(section)
         end
       end
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      mark_rest_unread(e)
     end
-  rescue StandardError => e
-    Rails.logger.warn("[HealthDiagnostics] sections could not be read: #{e.class}")
   ensure
-    self.class.release_sections_thread
+    SECTIONS_THREAD.release
   end
 
   def read_section(section)
-    timed(section) { @service.public_send(section) }
-  rescue StandardError => e
+    timed(section) { @service.public_send(section == RECENT_ERRORS ? :recent_error_logs : section) }
+  rescue Exception => e # rubocop:disable Lint/RescueException
     unread("Could not be read: #{e.class}")
+  end
+
+  def mark_rest_unread(error)
+    sections.each { |section| @read[section] ||= unread("Could not be read: #{error.class}") }
   end
 
   # `error` is what the collector reads as "no counts" in security_health.
@@ -135,6 +156,10 @@ class HealthDiagnostics
       unread: true, error: reason,
       status: HealthMonitorService::HealthStatus.new(status: :unknown, message: reason)
     }
+  end
+
+  def unread?(value)
+    value.is_a?(Hash) && value[:unread] == true
   end
 
   def warn_unread(unread_sections)
@@ -157,8 +182,7 @@ class HealthDiagnostics
   # Per connection rather than per transaction: a section makes its own transactions, and
   # one that is cancelled must not abort the statements after it.
   def with_statement_timeout
-    pool = ActiveRecord::Base.connection_pool
-    pool.with_connection do |connection|
+    ActiveRecord::Base.connection_pool.with_connection do |connection|
       connection.execute("SET statement_timeout = #{Integer((@statement_timeout * 1000).ceil)}")
       yield
     ensure
@@ -166,7 +190,7 @@ class HealthDiagnostics
         connection.execute("SET statement_timeout = DEFAULT")
       rescue ActiveRecord::ActiveRecordError
         # A connection that cannot be reset must not go back to the pool with the limit on.
-        pool.remove(connection)
+        connection.throw_away!
       end
     end
   end

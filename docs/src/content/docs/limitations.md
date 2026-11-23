@@ -1573,7 +1573,7 @@ reading an API-key route.
 🟡 `/health/export_diagnostics` runs [one section thread per web
 process](/operate/observability/#the-health-report-the-probes-read). Statements are cancelled after four
 seconds, but something outside the database that never returns would hold that thread until the process
-restarts, and every report until then would carry `system_health` alone. The heartbeat and queue series
+restarts, and every report until then would wait out its six seconds and carry `system_health` alone. The heartbeat and queue series
 keep working; the security counts stop, and each report logs a WARN naming what it left out.
 
 ### Security counts undercount rather than block

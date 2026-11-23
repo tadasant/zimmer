@@ -270,7 +270,7 @@ class HealthController < ApplicationController
   # What the fleet-telemetry collector and the deploy's worker soak read, every thirty
   # seconds, giving up after fifteen. HealthDiagnostics bounds it: the queue and worker
   # heartbeat always, every other section if it can be read in time. Queue or heartbeat
-  # facts that cannot be read are a 503, never a report without them.
+  # facts that cannot be read are a 503.
   def export_diagnostics
     @health_report = HealthDiagnostics.new.report
 

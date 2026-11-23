@@ -6,10 +6,8 @@ class RetryBudget
   # What every session has spent of every budget, from ONE pass over `sessions`.
   #
   # The keys live in `sessions.metadata` with no index, so each question asked of the
-  # table is a sequential scan that de-TOASTs every row. Asked one budget and one count
-  # at a time that was 38 scans a health report, about 20 seconds in production, and the
-  # 15-second probe of /health/export_diagnostics failed deploys. Asked once, for the
-  # rows carrying any of the keys, it is one scan; the arithmetic is done in Ruby over
+  # table is a sequential scan that de-TOASTs every row, and there are four a budget. One
+  # scan fetches the rows carrying any of the keys; the arithmetic is done in Ruby over
   # what comes back. Pulling the keys out with `jsonb_each` reads each row's metadata
   # once rather than once per key.
   #
@@ -30,13 +28,13 @@ class RetryBudget
     #   :recent — the ids of sessions whose last attempt is newer than +since+, newest first
     def for(budget, since:)
       counted = @rows.reject { |row| row.values[budget.key].nil? }
-      ended, recovered = counted.partition { |row| row.status == budget.terminal_status.to_s }
+      ended, others = counted.partition { |row| row.status == budget.terminal_status.to_s }
       recent = attempts_since(budget.stamp, since)
 
       {
         total_sessions: counted.size,
         total_retries_attempted: counted.sum { |row| count_of(row, budget) },
-        recovered: recovered.size,
+        recovered: others.count { |row| row.status.present? },
         exhausted: ended.count { |row| count_of(row, budget) >= budget.max },
         recent: recent.sort_by { |_id, at| at }.reverse.map(&:first)
       }
