@@ -10,6 +10,13 @@ import { csrfHeaders } from "lib/csrf"
 //   * a row dragged into another group — writes the session's category
 //     (PATCH /sessions/:id/board_category). Within a group a drag does nothing:
 //     the order there is most recently touched first, and the row settles back.
+//     While a row is in hand the drop bar (`tray`) is shown, pinned to the
+//     bottom of the screen with one target (`dropZone`) per group, so a
+//     category three screens away is still one short drag away. The targets
+//     are plain elements, not SortableJS lists: this controller follows the
+//     pointer while a row is in hand, lights up the target under it, and on
+//     release moves the row into that group's real list. (SortableJS's own
+//     touch path never put a row into a list inside the fixed bar.)
 //   * a category header dragged — writes the order of every category
 //     (PATCH /board_categories/reorder).
 //   * a category's chevron — collapses or expands it, and stores that on the
@@ -25,7 +32,7 @@ import { csrfHeaders } from "lib/csrf"
 export default class extends Controller {
   // `row` and `handle` are declared for the row partial, which names them; the
   // controller reads them through selectors.
-  static targets = ["list", "categories", "category", "total", "error", "row", "handle"]
+  static targets = ["list", "categories", "category", "total", "error", "row", "handle", "tray", "dropZone"]
   static values = {
     assignUrlTemplate: String,
     reorderUrl: String,
@@ -51,6 +58,7 @@ export default class extends Controller {
 
   disconnect() {
     if (this.categorySortable) this.categorySortable.destroy()
+    this.showTray(false)
   }
 
   // One Sortable and one observer per group's list, set up as each list
@@ -68,14 +76,25 @@ export default class extends Controller {
       animation: 150,
       delay: 200,
       delayOnTouchOnly: true,
+      // A finger drifts a few pixels while it holds; without this the hold
+      // is cancelled and the touch becomes a scroll.
+      touchStartThreshold: 5,
       handle: "[data-board-v2-target='handle']",
       forceFallback: true,
+      fallbackClass: "board-v2-fallback",
       fallbackTolerance: 3,
       fallbackOnBody: true,
-      onStart: () => { this.dragging = true },
+      onChoose: (event) => this.rememberGrab(event),
+      onStart: () => {
+        this.dragging = true
+        this.centreGhost()
+        this.showTray(true)
+      },
       onEnd: (event) => {
         this.dragging = false
-        this.persistMove(event)
+        const drop = { zone: this.hoveredZone, overTray: this.overTray, cancelled: this.dragCancelled }
+        this.showTray(false)
+        this.persistMove(event, drop)
       }
     })
 
@@ -95,15 +114,119 @@ export default class extends Controller {
     if (list.boardV2Observer) list.boardV2Observer.disconnect()
   }
 
+  // ---- The drop bar --------------------------------------------------------
+
+  showTray(shown) {
+    if (!this.hasTrayTarget) return
+    this.trayTarget.classList.toggle("hidden", !shown)
+    if (shown) {
+      if (this.trackPointer) return
+      this.overTray = false
+      this.dragCancelled = false
+      this.trackPointer = (event) => this.hover(event)
+      this.cancelDrag = () => { this.dragCancelled = true }
+      for (const type of ["pointermove", "mousemove", "touchmove"]) {
+        document.addEventListener(type, this.trackPointer, { passive: true, capture: true })
+      }
+      // The system took the touch away (an edge swipe, an alert). SortableJS
+      // still ends the drag as a drop; this one must not be saved.
+      for (const type of ["pointercancel", "touchcancel"]) {
+        document.addEventListener(type, this.cancelDrag, { capture: true })
+      }
+    } else if (this.trackPointer) {
+      for (const type of ["pointermove", "mousemove", "touchmove"]) {
+        document.removeEventListener(type, this.trackPointer, { capture: true })
+      }
+      for (const type of ["pointercancel", "touchcancel"]) {
+        document.removeEventListener(type, this.cancelDrag, { capture: true })
+      }
+      this.trackPointer = null
+      this.cancelDrag = null
+      this.overTray = false
+      this.highlight(null)
+    }
+  }
+
+  // The target under the pointer, if any, lit up; remembered for the drop,
+  // along with whether the pointer is over the bar at all.
+  hover(event) {
+    const point = event.touches ? event.touches[0] : event
+    if (!point) return
+    const hit = document.elementFromPoint(point.clientX, point.clientY)
+    const zone = hit && hit.closest("[data-board-v2-drop-zone]")
+    this.overTray = !!(hit && this.trayTarget.contains(hit))
+    this.highlight(zone && this.element.contains(zone) ? zone : null)
+  }
+
+  // Where on the card the grip was pressed, for centreGhost.
+  rememberGrab(event) {
+    const original = event.originalEvent
+    const point = original && (original.touches ? original.touches[0] : original)
+    this.grab = point ? { y: point.clientY, top: event.item.getBoundingClientRect().top } : null
+  }
+
+  // SortableJS draws the card in hand at the card's own top and keeps that
+  // offset from the pointer. The grip runs the card's height and the card in
+  // hand is a small tab (.board-v2-fallback), so a grab halfway down a tall
+  // card would leave the tab floating far above the finger. Move it so the
+  // tab sits centred on the grab point. A shift of `top`, not an absolute
+  // value: SortableJS positions the tab `fixed` in most browsers and
+  // `absolute` on iOS, and the shift is right for both.
+  centreGhost() {
+    const ghost = Sortable.ghost
+    if (!ghost || !this.grab) return
+    const shift = this.grab.y - this.grab.top - ghost.offsetHeight / 2
+    if (shift > 0) ghost.style.top = `${parseFloat(ghost.style.top || "0") + shift}px`
+  }
+
+  highlight(zone) {
+    if (zone === this.hoveredZone) return
+    this.hoveredZone = zone
+    // Swapped in pairs rather than layered, so no two colours compete.
+    const pairs = [
+      ["border-dashed", "border-solid"],
+      ["border-gray-300", "border-indigo-500"],
+      ["bg-gray-50", "bg-indigo-50"],
+      ["text-gray-700", "text-indigo-800"]
+    ]
+    this.dropZoneTargets.forEach((target) => {
+      const on = target === zone
+      for (const [off, lit] of pairs) {
+        target.classList.toggle(off, !on)
+        target.classList.toggle(lit, on)
+      }
+    })
+  }
+
+  // The row list of a group: a category's, or Uncategorized's for "".
+  listFor(categoryId) {
+    return this.listTargets.find((list) => (list.dataset.categoryId || "") === (categoryId || ""))
+  }
+
   // ---- Moving a session between groups -------------------------------------
 
-  persistMove(event) {
+  persistMove(event, drop = {}) {
     const row = event.item
     const from = event.from
-    const to = event.to
+    let to = event.to
+    // Released over the drop bar: into that group's own list, wherever
+    // SortableJS had last put the row behind it. Released over the bar but on
+    // no target, or a drag the system cancelled: nobody chose a group, so the
+    // row goes back where it came from and nothing is saved — not into
+    // whichever list it last passed on the way down.
+    const zoneList = drop.zone && this.listFor(drop.zone.dataset.categoryId)
+    if (zoneList && !drop.cancelled) {
+      zoneList.appendChild(row)
+      to = zoneList
+    } else if (drop.cancelled || drop.overTray) {
+      from.appendChild(row)
+      to = from
+    }
     if (from === to) {
-      // A drag inside one group: put the row back where the order says.
+      // A drag inside one group: put the row back where the order says. The
+      // counts too, since on its way the row passed through other lists.
       this.sortList(to)
+      this.refreshCounts()
       return
     }
 

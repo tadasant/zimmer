@@ -87,6 +87,36 @@ class BoardV2Test < ApplicationSystemTestCase
     end
   end
 
+  # Press a card's grip, lift it far enough for SortableJS to start the drag
+  # (which is when the drop bar appears), then carry it to the bar's target for
+  # `category` (nil for Uncategorized) and release. The target's position is
+  # read only once the bar is on screen.
+  def drag_to_bar(handle_css, category)
+    drag_to_bar_point(handle_css, "[data-board-v2-drop-zone][data-category-id='#{category&.id}']")
+  end
+
+  # The same carry, released on whatever `onto_css` names inside the bar.
+  def drag_to_bar_point(handle_css, onto_css)
+    page.execute_script("document.querySelector(#{handle_css.to_json}).scrollIntoView({ block: 'center' })")
+    from = viewport_centre(handle_css)
+    driver = page.driver.browser
+    driver.action.move_to_location(from[0], from[1]).click_and_hold
+      .move_to_location(from[0] + 6, from[1] + 6)
+      .move_to_location(from[0] + 12, from[1] + 12)
+      .move_to_location(from[0] + 18, from[1] + 18)
+      .perform
+    assert_selector onto_css
+    to = viewport_centre(onto_css)
+    action = driver.action
+    steps = 10
+    (1..steps).each do |i|
+      fraction = i.to_f / steps
+      action = action.move_to_location((from[0] + 18 + ((to[0] - from[0] - 18) * fraction)).to_i,
+        (from[1] + 18 + ((to[1] - from[1] - 18) * fraction)).to_i)
+    end
+    action.pause(duration: 0.3).release.perform
+  end
+
   def viewport_centre(css)
     find(css)
     page.evaluate_script(<<~JS)
@@ -109,6 +139,46 @@ class BoardV2Test < ApplicationSystemTestCase
 
     assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
     assert wait_for { @loose.reload.board_category_id == @research.id }, "the drop was not saved"
+  end
+
+  # The drop bar is what makes a far-away category reachable: with a board of
+  # tall cards most categories are screens below the card in hand.
+  test "a card dropped on the drop bar moves to that category, and back out, and both survive a reload" do
+    visit_board
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+
+    drag_to_bar("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", @research)
+    assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+    assert wait_for { @loose.reload.board_category_id == @research.id }, "the drop on the bar was not saved"
+    visit_board
+    assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
+
+    drag_to_bar("#board_v2_row_#{@infra_row.id} [data-board-v2-target='handle']", nil)
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@infra_row.id}"
+    assert wait_for { @infra_row.reload.board_category_id.nil? }, "the move back to Uncategorized was not saved"
+    visit_board
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@infra_row.id}"
+  end
+
+  # On the way down to the bar the card passes over other categories' lists.
+  # Letting go on the bar but off every target must not file it in whichever
+  # of those it last crossed; nor does dropping it on its own category.
+  test "a card released on the drop bar off every target, or on its own category, stays where it was" do
+    visit_board
+
+    drag_to_bar_point("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']",
+      "[data-board-v2-target='tray'] p")
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@loose.id}"
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+
+    drag_to_bar("#board_v2_row_#{@infra_row.id} [data-board-v2-target='handle']", @infra)
+    assert_selector "#board_v2_list_#{@infra.id} #board_v2_row_#{@infra_row.id}"
+    assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-count]", text: "1"
+
+    sleep 0.5
+    assert_nil @loose.reload.board_category_id, "a release off every target was saved as a move"
+    assert_equal @infra.id, @infra_row.reload.board_category_id
   end
 
   test "dragging a category header reorders categories and survives a reload" do
