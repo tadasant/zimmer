@@ -37,6 +37,15 @@ class HealthMonitorService
   # first backlog, which really is behind.
   LOG_RETENTION_OVERDUE_GRACE = 7.days
 
+  # The database size database_size_health warns at. The app cannot see the managed
+  # cluster's disk, so this is a number an operator sets to a share of it:
+  # DATABASE_SIZE_WARNING_GIB, defaulting to 80% of production's 80 GiB cluster.
+  DATABASE_SIZE_WARNING_GIB_DEFAULT = 64
+  DATABASE_SIZE_WARNING_ENV = "DATABASE_SIZE_WARNING_GIB"
+
+  # How many of the largest tables database_size_health lists.
+  DATABASE_LARGEST_TABLES = 8
+
   # How far past `expires_at` a root data record may be before root_data_health
   # says RootDataRetentionJob is behind. The job runs hourly, so two hours is one
   # missed tick.
@@ -373,6 +382,8 @@ class HealthMonitorService
       # Absent from the status list below on purpose — see #log_retention_health
       # for why a draining backlog must not turn the whole report yellow.
       log_retention_health: log_retention_health,
+      # Also absent — see #database_size_health.
+      database_size_health: database_size_health,
       # Also absent from the status list — see #inbound_event_health.
       inbound_event_health: inbound_event_health,
       # Also absent — see #root_data_health.
@@ -766,6 +777,60 @@ class HealthMonitorService
     }
   end
 
+  # How big the database is, which tables make it that big, and how far
+  # TranscriptRetentionJob has got moving old transcripts out of it.
+  #
+  # Production's managed Postgres filled its disk with nothing in Zimmer saying so:
+  # `log_retention_health` measured `logs`, and the table that was actually growing,
+  # `session_transcript_chunks`, was measured nowhere. This reports the total and the
+  # largest tables, so the next table that grows without bound is visible on /health,
+  # `GET /api/v1/health` and `get_system_health` before the provider's disk alert.
+  #
+  # All catalog reads: `pg_database_size` and `pg_total_relation_size` stat files,
+  # they do not scan rows. The two transcript counts are index-only over partial
+  # indexes that hold only the rows being counted.
+  #
+  # Warns past DATABASE_SIZE_WARNING_GIB, and is deliberately not folded into
+  # `overall_status`: the fix is retention plus a one-time repack, neither of which an
+  # alert at 3am makes happen faster, and the provider already pages on the disk.
+  def database_size_health
+    connection = ActiveRecord::Base.connection
+    total = connection.select_value("SELECT pg_database_size(current_database())").to_i
+    tables = connection.select_all(<<~SQL.squish).to_a
+      SELECT c.relname AS name,
+             pg_total_relation_size(c.oid) AS total_bytes,
+             pg_indexes_size(c.oid) AS index_bytes,
+             c.reltuples::bigint AS estimated_rows
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('r', 'p', 'm') AND n.nspname = current_schema()
+      ORDER BY pg_total_relation_size(c.oid) DESC
+      LIMIT #{DATABASE_LARGEST_TABLES.to_i}
+    SQL
+
+    warning_bytes = database_size_warning_bytes
+    {
+      total_bytes: total,
+      warning_bytes: warning_bytes,
+      largest_tables: tables.map do |row|
+        {
+          name: row["name"],
+          total_bytes: row["total_bytes"].to_i,
+          index_bytes: row["index_bytes"].to_i,
+          estimated_rows: estimated_rows(row["estimated_rows"])
+        }
+      end,
+      transcript_retention: transcript_retention_reading,
+      status: database_size_status(total, warning_bytes)
+    }
+  rescue StandardError => e
+    @logger.warn("Database size health could not be read", error: e.message)
+    {
+      total_bytes: 0, warning_bytes: database_size_warning_bytes, largest_tables: [], transcript_retention: nil,
+      status: HealthStatus.new(status: :warning, message: "Database size could not be read: #{e.message}")
+    }
+  end
+
   # Per-namespace usage of the agent root data store (AgentRootRecord), read
   # from AgentRootRecordCounter so it never counts the records table, plus the
   # two things worth a warning: expired records the retention sweep has not
@@ -866,6 +931,36 @@ class HealthMonitorService
 
     count = reltuples.to_i
     count.negative? ? nil : count
+  end
+
+  def database_size_warning_bytes
+    gib = ENV[DATABASE_SIZE_WARNING_ENV].presence&.to_f
+    gib = DATABASE_SIZE_WARNING_GIB_DEFAULT unless gib&.positive?
+    (gib * 1.gigabyte).to_i
+  end
+
+  def database_size_status(total, warning_bytes)
+    size = ActiveSupport::NumberHelper.number_to_human_size(total)
+    if total >= warning_bytes
+      HealthStatus.new(
+        status: :warning,
+        message: "Database is #{size}, past the #{ActiveSupport::NumberHelper.number_to_human_size(warning_bytes)} " \
+                 "warning threshold (#{DATABASE_SIZE_WARNING_ENV}). Check the largest tables below."
+      )
+    else
+      HealthStatus.new(status: :healthy, message: "Database is #{size}")
+    end
+  end
+
+  # How many sessions have had their transcript moved out of Postgres, and how many
+  # are past the retention window and still waiting for TranscriptRetentionJob. A
+  # waiting count that does not fall tick over tick is the job not keeping up.
+  def transcript_retention_reading
+    {
+      retention_days: TranscriptRetentionJob.retention_days,
+      offloaded_sessions: Session.where.not(transcript_offloaded_at: nil).count,
+      awaiting_offload: TranscriptRetentionJob.candidates.count
+    }
   end
 
   def log_retention_status(oldest, oldest_verbose)

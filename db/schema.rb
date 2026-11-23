@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_010000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1316,6 +1316,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_010000) do
     t.integer "transcript_byte_size", default: 0, null: false
     t.string "transcript_digest"
     t.integer "transcript_line_count", default: 0, null: false
+    t.datetime "transcript_offloaded_at"
     t.datetime "trash_after"
     t.datetime "updated_at", null: false
     t.string "visibility", default: "visible", null: false
@@ -1327,6 +1328,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_010000) do
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
+    t.index ["archived_at", "id"], name: "index_sessions_on_transcript_offload_candidates", where: "((transcript_offloaded_at IS NULL) AND (transcript_byte_size > 0) AND (archived_at IS NOT NULL))"
     t.index ["board_category_id"], name: "index_sessions_on_board_category_id"
     t.index ["carplay_fit"], name: "index_sessions_on_carplay_fit", where: "(carplay_fit IS NOT NULL)"
     t.index ["category_id"], name: "index_sessions_on_category_id"
@@ -1335,6 +1337,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_010000) do
     t.index ["favorited"], name: "index_sessions_on_favorited"
     t.index ["genesis"], name: "index_sessions_on_genesis"
     t.index ["heartbeat_enabled"], name: "index_sessions_on_heartbeat_enabled", where: "heartbeat_enabled"
+    t.index ["id"], name: "index_sessions_on_id_where_transcript_offloaded", where: "(transcript_offloaded_at IS NOT NULL)"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_present", where: "(transcript IS NOT NULL)"
     t.index ["id"], name: "index_sessions_on_id_where_transcript_stored", where: "(transcript_byte_size > 0)"
     t.index ["id"], name: "index_sessions_on_pr_url_active_id", where: "((status <> ALL (ARRAY[3, 4])) AND ((custom_metadata ->> 'github_pull_request_urls'::text) IS NOT NULL))"

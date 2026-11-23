@@ -84,8 +84,49 @@ module ChunkedTranscript
     return @staged_transcript if defined?(@staged_transcript)
     return @chunked_transcript_text if defined?(@chunked_transcript_text)
     return legacy_transcript_column unless chunked_transcript?
+    return memoize_transcript_text(read_offloaded_transcript) if transcript_offloaded?
 
-    @chunked_transcript_text = transcript_chunk_contents.join
+    text = transcript_chunk_contents.join
+    # A row that vouches for bytes while holding no chunks is an offloaded session
+    # read through a partial `select` that left `transcript_offloaded_at` out.
+    text = read_offloaded_transcript if text.empty?
+    memoize_transcript_text(text)
+  end
+
+  # True when TranscriptRetentionJob has moved this transcript out of
+  # `session_transcript_chunks` into TranscriptOffloadStore. The row keeps the
+  # byte size, line count and digest, so everything that answers from the row
+  # still does; only the bytes are read from the store.
+  def transcript_offloaded?
+    has_attribute?(:transcript_offloaded_at) && read_attribute(:transcript_offloaded_at).present? &&
+      chunked_transcript?
+  end
+
+  # Moves an offloaded transcript back into the chunk table and clears the marker.
+  # Unarchive calls it before it resumes a session, so a resumed conversation is
+  # appended to chunks in the ordinary way. Returns true when the transcript is in
+  # the chunk table afterwards (including when it never left), false when the
+  # store could not produce a verified copy.
+  def restore_offloaded_transcript!
+    return true unless transcript_offloaded?
+
+    text = read_offloaded_transcript
+    return false if text.nil?
+
+    self.class.transaction do
+      row = self.class.lock.where(id: id)
+        .pick(:transcript_offloaded_at, :transcript_byte_size, :transcript_digest)
+      offloaded_at, byte_size, digest = row
+      if offloaded_at.present? && byte_size.to_i == text.bytesize && digest == read_attribute(:transcript_digest)
+        SessionTranscriptChunk.where(session_id: id).delete_all
+        rows = SessionTranscriptChunk.rows_for(session_id: id, content: text)
+        SessionTranscriptChunk.insert_all!(rows) if rows.any?
+        self.class.where(id: id).update_all(transcript_offloaded_at: nil)
+      end
+    end
+
+    reload
+    !transcript_offloaded?
   end
 
   def transcript=(value)
@@ -103,6 +144,7 @@ module ChunkedTranscript
     # authoritative. Clearing it here is what keeps "written empty" from reading back
     # as "never migrated, here is the stale column".
     self[:transcript] = nil if normalized.nil? && has_attribute?(:transcript)
+    self[:transcript_offloaded_at] = nil if normalized.nil? && has_attribute?(:transcript_offloaded_at)
 
     value
   end
@@ -201,7 +243,8 @@ module ChunkedTranscript
     return enum_for(__method__, from, to, reverse: reverse) unless block
 
     from = [ from.to_i, 0 ].max
-    if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript?
+    if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript? ||
+       transcript_offloaded?
       lines = transcript_document_lines
       yield_line_range(lines, 0, from, [ to.to_i, lines.size ].min, reverse, &block)
       return
@@ -236,7 +279,8 @@ module ChunkedTranscript
   # legacy value), or when the first line alone is longer than the prefix: the
   # caller then has to read the transcript the long way.
   def transcript_head_lines(chars)
-    return [] if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript?
+    return [] if defined?(@staged_transcript) || defined?(@chunked_transcript_text) || !chunked_transcript? ||
+                 transcript_offloaded?
 
     prefix = Arel::Nodes::NamedFunction.new(
       "substr", [ SessionTranscriptChunk.arel_table[:content], Arel::Nodes.build_quoted(1), Arel::Nodes.build_quoted(Integer(chars)) ]
@@ -306,6 +350,36 @@ module ChunkedTranscript
     return false unless has_attribute?(:transcript_byte_size)
 
     read_attribute(:transcript_byte_size).to_i.positive?
+  end
+
+  def memoize_transcript_text(text)
+    return nil if text.nil?
+
+    @chunked_transcript_text = text
+  end
+
+  # The offloaded copy, verified against the row's digest. nil (and an ERROR log)
+  # when the store cannot produce it: one unreadable transcript must not raise out
+  # of the session page, `get_session` or a sweep that reads many of them, and the
+  # row still says how big the missing transcript is. Not memoized, so a transient
+  # failure is retried by the next read.
+  def read_offloaded_transcript
+    TranscriptOffloadStore.read(id, digest: read_attribute(:transcript_digest))
+  rescue TranscriptOffloadStore::Error, SystemCallError => e
+    Rails.logger.error("[ChunkedTranscript] session #{id}: offloaded transcript unreadable: #{e.class}: #{e.message}")
+    nil
+  end
+
+  # Called when chunks are written for a session that had none. If the session was
+  # offloaded, the chunk table is the authority again from this write on. The
+  # in-memory flag cannot decide it — a record loaded before the offload has nil
+  # there — so this asks the row, by primary key, and only on this rare path.
+  def clear_transcript_offload_marker
+    return unless has_attribute?(:transcript_offloaded_at)
+
+    self.class.where(id: id).where.not(transcript_offloaded_at: nil).update_all(transcript_offloaded_at: nil)
+    write_attribute(:transcript_offloaded_at, nil)
+    clear_attribute_change(:transcript_offloaded_at)
   end
 
   # nil rather than raising on a partially-selected row: `StatusSummaryBackstopJob`
@@ -428,6 +502,7 @@ module ChunkedTranscript
 
     SessionTranscriptChunk.where(session_id: id).delete_all
     append_transcript_bytes(value)
+    clear_transcript_offload_marker if base_bytes.zero?
   end
 
   # Append +delta+ to the end of the chunk sequence, topping up the open tail chunk

@@ -88,6 +88,7 @@ From `config.good_job.cron`:
 | 15m | `PiProviderKeySweepJob` | Delete the [short-lived OpenRouter keys](/operate/secrets-parameter-store/#short-lived-keys-for-pi) minted for Pi spawns that should no longer exist: expired, session gone, or session no longer live (past a 10-minute grace), plus keys under this deployment's name prefix at OpenRouter that have no row. It is the retry for `PiProviderKeyRevokeJob`, which the session's leave-`running` hook enqueues. With the feature off and nothing minted it is one `EXISTS` query and no OpenRouter call. Runs on `default`, with `SingletonSweep`. |
 | 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `maintenance`, not `pollers` or `default`: it holds its thread for minutes and must not delay latency-sensitive pollers or control work. See [Token spend](/operate/costs/). |
 | 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
+| 10m | `TranscriptRetentionJob` | Move the transcripts of sessions archived more than `TRANSCRIPT_RETENTION_DAYS` (default 30) days ago out of `session_transcript_chunks` into a per-session gzip file under `~/.zimmer/transcript_offload`. Chunk rows are deleted only after the file is written and verified against the row's digest. Runs on `maintenance` with a 3-minute slice. See [Transcript retention](#transcript-retention) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
 | daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` rows older than 30 — the dedup stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
@@ -356,6 +357,71 @@ deployment working through its first backlog genuinely is. That status is delibe
 the report's `overall_status`, because `overall_status` is what `SystemHealthMonitorJob` and the
 alerting read, and turning the whole report yellow for a day while a backlog drains exactly on
 schedule is how people learn to ignore it.
+
+## Transcript retention
+
+`session_transcript_chunks` had no retention. Its rows went away only through the `ON DELETE
+CASCADE` from `sessions`, and nothing deletes sessions, so every transcript ever recorded stayed in
+Postgres. On production that took the managed cluster from about 32 GB of live data to near its
+60 GiB disk in two months. `TranscriptRetentionJob` bounds it.
+
+**What moves.** Sessions with status `archived` and `archived_at` more than
+`TRANSCRIPT_RETENTION_DAYS` days ago (default 30, floored at 1) that still hold chunks. That includes
+sessions in trash, which are archived. Running, waiting, needs-input and failed sessions are never
+touched, and neither is a session being unarchived at that moment (`Session.reap_protected?`).
+
+**Where it goes.** `TranscriptOffloadStore`: one file per session,
+`~/.zimmer/transcript_offload/<id % 1000>/<id>.jsonl.gz`, on the `zimmer_data` volume both roles
+mount. Override the root with `AGENT_TRANSCRIPT_OFFLOAD_DIR`, onto a path both roles share. Not the
+transcript archive zip: that file is rebuilt from the database every run and starts over when its
+sidecar says it is missing, so it cannot be the only copy of anything.
+
+**The order of operations is the safety argument.**
+
+1. Reassemble the transcript from its chunks and check it against the row's
+   `transcript_byte_size` and `transcript_digest`. A mismatch is skipped and logged, never offloaded.
+2. Write the gzip through a temp file and a rename, then read it back, decompress it and check the
+   digest again.
+3. In one transaction with the session row locked, re-check eligibility and that the digest has not
+   moved, then delete the chunks and set `sessions.transcript_offloaded_at`.
+
+A failure anywhere before step 3 leaves the chunks as they were, and the next tick retries. Step 3
+uses `update_all`, so `updated_at` does not move and `TranscriptArchiveJob` does not re-archive the
+session.
+
+**Reading an offloaded transcript.** The row keeps `transcript_byte_size`,
+`transcript_line_count` and `transcript_digest`, so size, presence and "is this unchanged" are still
+answered from the row. `Session#transcript` reads the file and checks it against the digest;
+`each_transcript_line` (and so `get_session`'s transcript slices) splits the file instead of
+reading chunks. A file that is missing or does not match reads as `nil` with an ERROR log, rather
+than raising out of the session page or a sweep.
+
+**Coming back.** `UnarchiveSessionService` calls `Session#restore_offloaded_transcript!` before it
+resumes anything, which writes the chunks back and clears the marker. An unarchive whose file cannot
+be read fails instead of resuming a session with no conversation. Any write of a whole transcript to
+an offloaded session also makes the chunk table the authority again. Offload files are never deleted.
+A re-offload replaces a file only with a verified copy of the same session's transcript.
+
+**Disk.** As with `logs`, deleting rows does not shrink Postgres's files. The space is reused by new
+transcripts, so the table stops growing. Giving it back to the filesystem is the same one-time
+`pg_repack` / `VACUUM FULL` described in [Deleting does not shrink the
+files](#deleting-does-not-shrink-the-files).
+
+**Is it running?** `HealthMonitorService#database_size_health` reports the total database size, the
+eight largest tables, and the transcript counts: sessions offloaded, and sessions past the window
+still waiting. A waiting count that does not fall from one tick to the next means the job is not
+keeping up. The section warns past `DATABASE_SIZE_WARNING_GIB` (default 64, 80% of production's
+80 GiB cluster). Like log retention it is not part of `overall_status`, and the provider already
+pages on the disk itself.
+
+| Surface | Where |
+| --- | --- |
+| **Web** | `/health` → the *Database Size* panel |
+| **REST** | `GET /api/v1/health` → `health_report.database_size_health` |
+| **MCP** | `get_system_health` → the *Database size* line |
+
+A tick that moved anything logs `[TranscriptRetentionJob] offloaded N transcript(s)` at WARN, so the
+drain is visible in the log store too.
 
 ## A deleted session takes its directories with it
 

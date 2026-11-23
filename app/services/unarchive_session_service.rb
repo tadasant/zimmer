@@ -95,6 +95,15 @@ class UnarchiveSessionService
     mark_unarchive_in_flight!
 
     begin
+      # A session archived long enough ago has had its transcript moved out of
+      # Postgres by TranscriptRetentionJob. Put it back before anything resumes,
+      # so the resumed conversation appends to chunks in the ordinary way. After
+      # the in-flight stamp, which is what stops the retention job offloading it
+      # again while this unarchive is still running.
+      unless session.restore_offloaded_transcript!
+        return Result.new(success?: false, error: "Offloaded transcript could not be restored from the transcript store")
+      end
+
       unarchive_with_clone
     ensure
       clear_unarchive_in_flight!

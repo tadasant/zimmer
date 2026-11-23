@@ -109,6 +109,51 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     assert_equal @transcript_content, @mock_fs.read(transcript_path)
   end
 
+  # A session archived past the retention window has had its transcript moved out
+  # of Postgres by TranscriptRetentionJob. Unarchive puts it back first, so the
+  # resumed session reads and appends to chunks like any other.
+  test "restores an offloaded transcript into the chunk table before resuming" do
+    root = Dir.mktmpdir("unarchive_offload_test")
+    previous = ENV[TranscriptOffloadStore::DIR_ENV]
+    ENV[TranscriptOffloadStore::DIR_ENV] = root
+    @session.update_columns(archived_at: 60.days.ago)
+    assert_equal 1, TranscriptRetentionJob.perform_now[:offloaded]
+    assert_equal 0, SessionTranscriptChunk.where(session_id: @session.id).count
+    @mock_fs.mkdir_p(@clone_path)
+
+    result = UnarchiveSessionService.call(session: Session.find(@session.id), file_system: @mock_fs)
+
+    assert result.success?
+    reloaded = Session.find(@session.id)
+    assert_nil reloaded.transcript_offloaded_at
+    assert_equal @transcript_content, SessionTranscriptChunk.where(session_id: @session.id).order(:seq).pluck(:content).join
+    sanitized_path = PathSanitizer.sanitize(@working_directory)
+    transcript_path = File.join(File.expand_path("~"), ".claude", "projects", sanitized_path, "#{@session.session_id}.jsonl")
+    assert_equal @transcript_content, @mock_fs.read(transcript_path)
+  ensure
+    ENV[TranscriptOffloadStore::DIR_ENV] = previous
+    FileUtils.rm_rf(root) if root
+  end
+
+  test "refuses to resume a session whose offloaded transcript cannot be read" do
+    root = Dir.mktmpdir("unarchive_offload_test")
+    previous = ENV[TranscriptOffloadStore::DIR_ENV]
+    ENV[TranscriptOffloadStore::DIR_ENV] = root
+    @session.update_columns(archived_at: 60.days.ago)
+    TranscriptRetentionJob.perform_now
+    File.delete(TranscriptOffloadStore.path_for(@session.id))
+    @mock_fs.mkdir_p(@clone_path)
+
+    result = UnarchiveSessionService.call(session: Session.find(@session.id), file_system: @mock_fs)
+
+    assert_not result.success?
+    assert_includes result.error, "Offloaded transcript could not be restored"
+    assert_equal "archived", @session.reload.status
+  ensure
+    ENV[TranscriptOffloadStore::DIR_ENV] = previous
+    FileUtils.rm_rf(root) if root
+  end
+
   # ---------------------------------------------------------------------------
   # The transcript already on disk can hold MORE than the stored copy
   # ---------------------------------------------------------------------------
