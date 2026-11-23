@@ -61,7 +61,11 @@ class WebSignInsController < ApplicationController
     SecurityTelemetry.record_auth_failure(:web_sign_in, :rejected)
     render_login_error(e.message, status: :forbidden)
   rescue WebAuth::GoogleOauth::ExchangeFailed => e
-    Rails.logger.warn("[web_auth] Google sign-in failed: #{e.message}")
+    # A refused client credential is the deployment's fault and locks everyone
+    # out, so it pages. Any other failed exchange is one attempt that a retry
+    # may fix.
+    severity = e.is_a?(WebAuth::GoogleOauth::ClientRejected) ? :error : :warn
+    Rails.logger.public_send(severity, "[web_auth] Google sign-in failed: #{e.message}")
     render_login_error("Google sign-in did not complete. Try again.", status: :bad_gateway)
   end
 

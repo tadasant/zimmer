@@ -66,11 +66,19 @@ module SecurityTelemetry
     # The Google sign-in callback. `provider_error` is Google itself saying no
     # (including a person pressing Cancel); `flow_mismatch` is a callback whose
     # state does not match a sign-in this browser started.
-    # A failed token exchange with Google is Google or the network failing,
-    # not the caller, so it is not counted.
+    # A failed token exchange is Google, the network, or this deployment's own
+    # client credential failing, not the caller, so it is not counted.
     "web_sign_in" => %w[provider_error flow_mismatch rejected],
     # The TOTP step after Google. A wrong code is the brute-forceable credential.
     "web_second_factor" => %w[wrong_code locked enrollment_wrong_code],
+    # A WebSocket refused by the web login wall, for any reason. Not a guess
+    # count: `no_cookie` is any signed-out browser, and a page that keeps
+    # retrying its subscription is counted each time. The last five log at
+    # ERROR (see ApplicationCable::Connection).
+    "web_cable" => %w[
+      no_cookie expired signed_out_everywhere second_factor_missing
+      unreadable_cookie identity_missing domain_not_allowed misconfigured configuration_unavailable
+    ],
     # Zimmer API keys, on /api and /mcp. `missing` includes an MCP client's
     # first, credential-less request, which is how OAuth discovery starts.
     "api_key" => %w[missing unknown revoked retired wrong_grant],

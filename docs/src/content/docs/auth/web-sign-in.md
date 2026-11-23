@@ -218,7 +218,7 @@ removing `ZIMMER_WEB_AUTH_GOOGLE_CLIENT_ID`, which takes the whole wall down.
 | Every page and form of the web UI, `/settings`, `/inference`, `/health` and its buttons | Sign-in required. A page load is redirected to `/login` and back afterwards. A form post, Turbo fetch or JSON request gets a bare `401` |
 | `/supervisor` (Administrate) | Sign-in required |
 | `/jobs` (GoodJob) | Sign-in required |
-| `/cable` (Turbo Streams) | The connection is refused without a valid sign-in cookie |
+| `/cable` (Turbo Streams) | The connection is refused without a valid sign-in cookie. [Each refusal is logged with its reason](/operate/observability/#a-refused-websocket-is-logged-by-what-an-operator-has-to-do-about-it) |
 | `/mcp_oauth/*`, `/supervisor/x_oauth/*` callbacks | Sign-in required. They are browser hops, and a signed-out browser comes back to the callback after signing in |
 | REST API `/api/v1/*` | **Unchanged.** `X-API-Key` |
 | `POST /mcp`, `/mcp/external_app` | **Unchanged.** Bearer API key, or on `/mcp` an OAuth access token |

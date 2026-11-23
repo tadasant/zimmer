@@ -1566,7 +1566,9 @@ the trade for never putting Redis in front of a request.
 They also see only what reaches a controller. A request refused by middleware first (host
 authorization, a request Rack cannot parse) is not in `responses_by_surface_and_status_class`, and
 neither is anything Caddy, kamal-proxy or the edge refuses before Rails. An Action Cable connection
-refused for having no sign-in never reaches a controller either. A signed-out page load that the
+refused for having no sign-in never reaches a controller either, so it is not a response; it is
+counted under `web_cable` in the auth failures instead. One refused for its `Origin` header is
+refused by Action Cable before the sign-in check and is in neither. A signed-out page load that the
 sign-in wall redirects to `/login`, or answers with a bare 401, counts as a `web` response but not
 as an auth failure: having no cookie is not a wrong credential. The window is bucketed, so
 "the last hour" is 55 to 60 minutes depending on where in the current five-minute bucket the
