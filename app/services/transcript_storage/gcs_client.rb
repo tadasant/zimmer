@@ -35,11 +35,11 @@ module TranscriptStorage
     # Looked for first, rather than left to the precondition: an account that may not
     # overwrite could be refused outright before the precondition is weighed. The
     # precondition still settles a race.
-    def create(name, path:, content_type:, metadata: {})
+    def create(name, path:, content_type:, labels: {})
       existing = generation(name)
       return existing if existing
 
-      session_uri = start_upload(name, path, content_type, metadata)
+      session_uri = start_upload(name, path, content_type, labels)
       created = upload(session_uri, name, path, content_type) if session_uri
       created || generation(name) || raise(RequestFailed, "#{name} was neither created nor found")
     end
@@ -121,7 +121,7 @@ module TranscriptStorage
 
     # The resumable session's URI, or nil when the object already exists. `md5Hash` makes
     # the store reject bytes that were damaged on the way.
-    def start_upload(name, path, content_type, metadata)
+    def start_upload(name, path, content_type, labels)
       uri = URI("#{@api_base}/upload/storage/v1/b/#{bucket}/o")
       uri.query = URI.encode_www_form(uploadType: "resumable", name: name, ifGenerationMatch: 0)
       request = authorized(Net::HTTP::Post.new(uri))
@@ -130,7 +130,7 @@ module TranscriptStorage
       request["X-Upload-Content-Length"] = File.size(path).to_s
       request.body = JSON.generate(
         name: name, contentType: content_type, md5Hash: Digest::MD5.file(path).base64digest,
-        metadata: metadata.transform_values(&:to_s)
+        "metadata" => labels.transform_values(&:to_s)
       )
       response = perform(uri, request)
       return nil if response.code.to_i == 412

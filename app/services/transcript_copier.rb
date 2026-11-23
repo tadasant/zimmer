@@ -75,7 +75,7 @@ class TranscriptCopier
       write_chunks(session, gz)
       finish.call
       store("#{@prefix}/transcript-#{session.transcript_digest}.jsonl.gz", gz_path: gz.path_on_disk,
-        digest: session.transcript_digest, metadata: { session_id: session.id, sha256: session.transcript_digest,
+        digest: session.transcript_digest, labels: { session_id: session.id, sha256: session.transcript_digest,
           bytes: session.transcript_byte_size, lines: session.transcript_line_count })
     end
   end
@@ -122,7 +122,7 @@ class TranscriptCopier
         gz.write(text)
         finish.call
         store("#{@prefix}/subagents/#{subagent.agent_id.to_s.gsub(/[^A-Za-z0-9_-]/, "_").first(100)}-#{digest}.jsonl.gz",
-          gz_path: gz.path_on_disk, digest: digest, metadata: { session_id: session.id, sha256: digest, bytes: text.bytesize })
+          gz_path: gz.path_on_disk, digest: digest, labels: { session_id: session.id, sha256: digest, bytes: text.bytesize })
       end
       entry.merge(stored).merge(sha256: digest, bytes: text.bytesize)
     end
@@ -149,13 +149,13 @@ class TranscriptCopier
       file.write(body)
       file.flush
       store("#{@prefix}/manifest-#{digest}.json", gz_path: file.path, digest: digest, gunzip: false,
-        content_type: "application/json", metadata: { session_id: session.id, sha256: digest })
+        content_type: "application/json", labels: { session_id: session.id, sha256: digest })
     end
   end
 
   # Uploads, then reads the object back and hashes what came out.
-  def store(name, gz_path:, digest:, metadata:, gunzip: true, content_type: "application/gzip")
-    generation = @client.create(name, path: gz_path, content_type: content_type, metadata: metadata)
+  def store(name, gz_path:, digest:, labels:, gunzip: true, content_type: "application/gzip")
+    generation = @client.create(name, path: gz_path, content_type: content_type, labels: labels)
     stored_digest, size = @client.digest(name, generation: generation, gunzip: gunzip)
     raise TranscriptStorage::VerificationFailed, "#{name} does not hold what was sent" unless stored_digest == digest
 
