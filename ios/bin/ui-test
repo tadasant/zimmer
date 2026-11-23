@@ -255,6 +255,9 @@ trap cleanup EXIT INT TERM
 signing=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
 if [ -n "$carplay" ]; then
   [ -n "$only" ] || fail "--carplay runs the CarPlay drill only; pass --only CarPlayDrillUITests"
+  # Before the build rather than twenty minutes after it.
+  [ -d "$(xcode-select -p)/Applications/Simulator.app" ] ||
+    fail "--carplay needs an Xcode with Simulator.app (Xcode 26; Xcode 27 has none)"
   signing=(CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES
            "CODE_SIGN_ENTITLEMENTS=$PWD/App/Zimmer/CarPlay.entitlements")
 fi
@@ -321,7 +324,7 @@ export TEST_RUNNER_ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
 # The Simulator draws a CarPlay head unit as a second display, and the only way to switch it
 # on is the Simulator app's own menu (I/O → External Displays → CarPlay): `simctl` has no
 # verb for it. Xcode 27 dropped that app (Device Hub shows no CarPlay for a simulator), so this
-# needs Xcode 26. So the app is opened on this device and the menu item clicked through System
+# needs Xcode 26, whose app is opened on this device and the menu item clicked through System
 # Events. GitHub's hosted macOS runners allow that without an Accessibility prompt; a
 # machine that does not refuses the click, and that is a failure rather than a skip, because
 # a drill that never saw the car proves nothing.

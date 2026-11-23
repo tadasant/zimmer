@@ -44,7 +44,7 @@ class IosUiTestShardsTest < ActiveSupport::TestCase
   def classes_by_other_job
     jobs = YAML.load_file(WORKFLOW, aliases: true).fetch("jobs").except("ui-test")
     jobs.transform_values do |other|
-      other.fetch("steps").flat_map { |step| step["run"].to_s.scan(/--only[ =]([\w,]+)/).flatten }
+      other.fetch("steps").flat_map { |step| step["run"].to_s.scan(/^\s*ios\/bin\/ui-test --carplay --only ([\w,]+)/).flatten }
         .flat_map { |list| list.split(",") }
     end
   end
@@ -63,7 +63,7 @@ class IosUiTestShardsTest < ActiveSupport::TestCase
       "#{missing.join(", ")} #{missing.one? ? "is" : "are"} under ios/App/ZimmerUITests but in no " \
       "shard of the ui-test job's matrix in #{WORKFLOW.relative_path_from(Rails.root)}, so the " \
       "post-merge suite never runs #{missing.one? ? "it" : "them"}. Add #{missing.one? ? "it" : "each"} " \
-      "to the lightest shard's `classes:`"
+      "to the lightest shard's `classes:` (the CarPlay drill has the `carplay` job)"
 
     twice = named.tally.select { |_, n| n > 1 }.keys
     assert_empty twice, "#{twice.join(", ")} named in more than one shard; each class runs once"

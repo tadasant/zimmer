@@ -1517,7 +1517,7 @@ alert is a silently broken alert and this is the only place it can surface.
 that waits about 15 minutes without a runner ends with the annotation "The job was not acquired
 by Runner of type hosted even after multiple attempts". GitHub gives it up, not this repo, and no
 setting here changes that. A shortage of macOS arm64 runners does this to the iOS jobs in
-`ci.yml`, the shards of `ios-ui-tests.yml` and the `upload` job in `testflight.yml`; GitHub marks
+`ci.yml`, the jobs of `ios-ui-tests.yml` and the `upload` job in `testflight.yml`; GitHub marks
 such a job "Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer
 queue times". It applies to any workflow, though. When a failed attempt-1 run has such a job,
 `.github/scripts/rerun-unacquired-jobs.sh` re-runs its failed jobs and waits for the result. If the

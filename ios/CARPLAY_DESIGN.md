@@ -605,7 +605,8 @@ nothing before the tap and opens no microphone. The design and the numbers are i
   is reached by saying so on a call. `LiveAPI.switchLiveConversation(nil, from:)` is what a tile
   would call: `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's read
   is where a reopenable conversation would keep the Continue tile up.
-- **iOS 27 overlay.** The voice control template as an overlay. CI builds with Xcode 27; the drill cannot run there (see Known limitations).
+- **iOS 27 overlay.** The voice control template as an overlay. CI builds with Xcode 27, but the drill
+  compiles the app with Xcode 26, so it needs a compile-time SDK check (see Known limitations).
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
 - **A nudge on the Lock Screen.** A Live Activity for a call handed to a locked phone, with no sound.

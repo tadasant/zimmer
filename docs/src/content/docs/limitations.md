@@ -9176,6 +9176,8 @@ TestFlight ships one made with the iOS 27 SDK. Xcode 27 has no Simulator app, an
 replaced it, [does not support CarPlay with simulators](https://developer.apple.com/forums/thread/834440).
 So the CarPlay code is compiled against the iOS 27 SDK on every pull request and driven only under the
 iOS 26 one: a behaviour CarPlay changes for apps linked against iOS 27 is first seen in a car.
+The drill's build also means the app must still compile with the iOS 26 SDK: an iOS 27-only symbol,
+even behind `if #available`, fails `ios_carplay` unless a compile-time check keeps it out.
 
 The car's home reads what is open when it connects and when you end a call, not while it sits there. A
 conversation started on the phone meanwhile leaves the home showing New alone until the next read,

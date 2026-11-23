@@ -60,8 +60,8 @@ name: iOS UI tests
 #
 # THE COST. It runs on GitHub-hosted macOS runners, which GitHub bills at roughly ten
 # times the Linux multiplier — free on a public repository, which this is, and not free on
-# a private one. A run is four jobs of 25 to 45 minutes each, in parallel: an Xcode build
-# apiece, then a quarter of the UI tests, and on one of them the photographs.
+# a private one. A run is five jobs of 25 to 45 minutes each, in parallel: an Xcode build
+# apiece, then a quarter of the UI tests or the CarPlay drill, and on one of them the photographs.
 
 on:
   # A push carries no inputs: it runs Staging against the reserved-by-RFC-2606
@@ -87,7 +87,7 @@ on:
           The NAME of a repository or environment variable holding the https base URL to
           build against. A name rather than a URL, so no deployment's host is ever typed
           into a public repository's Actions UI or its logs. Leave empty to build with no
-          default server.
+          default server. The CarPlay drill ignores it.
         type: string
         required: false
         default: ""
@@ -240,7 +240,7 @@ jobs:
       # user, and `::add-mask::` does nothing to file contents — while the run's video and
       # screenshot show the app's own build-target line, and the result bundle carries the
       # built `Info.plist`. So a run pointed at a real deployment keeps its evidence in the
-      # log (masked) and uploads nothing; a push run, like `ci.yml`'s, builds against a
+      # log (masked) and its shards upload nothing (the `carplay` job reads no server); a push run, like `ci.yml`'s, builds against a
       # reserved-by-RFC-2606 name that can never resolve and uploads everything.
       # One artifact per shard, named for it — four jobs uploading the same name would fail
       # the second onwards — and `shard.txt` inside says which classes it covers. The
