@@ -727,7 +727,15 @@ trigger keeps the cursor. That makes it safe to turn a shadow trigger into the r
 A session an `mcp_event` trigger spawns has genesis `mcp_event`, **spot** by default. The metadata
 carries `mcp_event_server`, `mcp_event_name` and `mcp_event_id`, and `mcp_event_folded_ids` when
 the fire coalesced a burst. A trigger whose events have a
-person waiting on them sets priority on its own row.
+person waiting on them sets priority on its own row. A failed session is reported as an
+orphaned fire (`OrphanedTriggerFire`), because the event is claimed and no other session will be started for it.
+
+An event from a server named in `MCP_EVENT_SLACK_SERVERS` is read back from Slack before the fire
+(`McpEvents::SlackMessage`). When Slack returns the message, the session gets what a native Slack fire
+gives it: the author on the [human-message record](/sessions/hierarchy-and-human-messages/#an-mcp-events-author)
+if the roster maps them, the `slack` turn source, and the `slack_channel_id` / `slack_message_ts` metadata
+that the [outage marker](#when-the-model-is-unreachable-the-outage-marker) and the error reply need. When
+Slack does not, the event still fires, and the session has none of them.
 
 #### Webhook delivery
 

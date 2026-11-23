@@ -925,7 +925,8 @@ per card:
 All five are unconditional on the show action. An empty `human_messages` means no human authored
 anything in this hierarchy — but **only when `human_message_capture_gaps` is also empty**. A
 non-empty gap array means a channel this hierarchy arrived over had nothing listening on it (chiefly
-Slack, whose user IDs are a per-deployment row edit at `/supervisor/users`), so the empty
+Slack, whose user IDs are a per-deployment row edit at `/supervisor/users`) or an MCP event whose
+author was not established (`channel` `mcp_event`), so the empty
 `human_messages` is "the check could not be established" rather than "no human spoke". Read them
 together; see [Hierarchy and human
 messages](/sessions/hierarchy-and-human-messages/#absence-is-only-an-answer-when-capture-could-have-fired)

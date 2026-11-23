@@ -340,6 +340,24 @@ class SlackService
       end
     end
 
+    # Get one message, by its ts
+    # @param channel_id [String] the channel ID
+    # @param ts [String] the message's timestamp
+    # @param thread_ts [String, nil] the parent's timestamp, for a reply; nil for a top-level message
+    # @return [Hash, nil] the message, or nil when Slack has no message with that ts there
+    def get_message(channel_id, ts, thread_ts: nil)
+      with_error_handling do
+        params = { channel: channel_id, oldest: ts, latest: ts, inclusive: true }
+        response = if thread_ts.present? && thread_ts != ts
+          # `limit` counts the parent, which Slack returns whatever `oldest` says.
+          client.conversations_replies(**params, ts: thread_ts, limit: 10)
+        else
+          client.conversations_history(**params, limit: 1)
+        end
+        (response.messages || []).find { |message| message.ts == ts }
+      end
+    end
+
     # Get new messages since a given timestamp
     # @param channel_id [String] the channel ID
     # @param since_ts [String] timestamp to get messages after

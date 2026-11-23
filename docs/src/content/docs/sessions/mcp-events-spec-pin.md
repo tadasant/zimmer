@@ -20,7 +20,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | --- | --- |
 | Proposal | SEP-3415, "Events Extension" (status Final, Extensions Track; merged 2026-11-19) |
 | Source | `seps/3415-events-extension.md` on `main` of `modelcontextprotocol/modelcontextprotocol`, with a docs copy that has the same body at `docs/seps/3415-events-extension.mdx`. Diff against the landed text from now on, not the closed PR |
-| Revision | `8a18b4b` (the SEP's merge commit, 2026-11-19) |
+| Revision | `bbc31f8` (2026-11-20). The normative text is also published at `specification/beta/events/events.mdx` in `modelcontextprotocol/ext-events`; check both |
 | Extension id | `io.modelcontextprotocol/events` |
 
 ## What is implemented
@@ -102,3 +102,8 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
   recorded as a deviation, not built). `events/list`, `events/poll`, the webhook mode, the capability
   shape, the extension id, cursor semantics and the other error codes are unchanged. Checked while
   adding `coalesce_key` to `mcp_event` conditions, a Zimmer-side change with no wire effect.
+- **2026-11-23, `8a18b4b` → `bbc31f8`.** Editorial: the working group's name, its maintainers, and where
+  the specification is published (`modelcontextprotocol/ext-events`, `specification/beta/events/`, at
+  Beta). That copy was compared at `c77b843`: the same normative text with the rationale removed and
+  links made absolute. Wire unchanged; no code change beyond `McpEvents::SPEC_REVISION`. Checked while
+  adding human-message capture for Slack events, a Zimmer-side change with no wire effect.
