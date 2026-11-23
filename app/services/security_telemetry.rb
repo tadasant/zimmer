@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Security-relevant counts for the monitoring plane: who is failing to
-# authenticate, how the machine surfaces are answering, and what was created.
+# authenticate, how many people are signing in, how the machine surfaces are
+# answering, and what was created.
 #
 # Most refusals log at INFO, which never leaves the container, and the WARN ones
 # are per-record lines with an IP in them, not a rate. "Someone is guessing API
@@ -106,6 +107,13 @@ module SecurityTelemetry
 
   AUTH_FAILURE_KINDS = AUTH_FAILURE_REASONS.keys.freeze
 
+  # How far a web sign-in got. Both are something a person did: a signed-out tab
+  # polling or retrying its WebSocket, and the daily re-issue of the sign-in
+  # cookie, move neither. `started` is a browser sent to Google; `completed` is
+  # one that passed Google, and the second factor where required, and was sent
+  # the sign-in cookie. Whether the browser kept the cookie is not in here.
+  WEB_SIGN_IN_STAGES = %w[started completed].freeze
+
   # Which surface a request was for, by path prefix. Prefix rather than
   # controller so an unrouted probe (`/api/v1/admin`, answered 404 by
   # ErrorsController) still lands on the surface it was aimed at.
@@ -138,6 +146,20 @@ module SecurityTelemetry
     reason = reason.to_s
     reason = OTHER unless reasons.include?(reason)
     increment("auth_failure", kind, reason)
+  end
+
+  # @param stage [String, Symbol] one of WEB_SIGN_IN_STAGES
+  def record_web_sign_in(stage)
+    stage = stage.to_s
+    unless WEB_SIGN_IN_STAGES.include?(stage)
+      # As above: loud where tests run, and never a failed sign-in in production.
+      raise ArgumentError, "unknown web sign-in stage #{stage.inspect}" if Rails.env.local?
+
+      Rails.logger.error("[SecurityTelemetry] unknown web sign-in stage #{stage.inspect}")
+      return nil
+    end
+
+    increment("web_sign_in", stage)
   end
 
   # @param path [String] the request path (a query string is ignored)
@@ -176,6 +198,7 @@ module SecurityTelemetry
     flush!
     series = []
     AUTH_FAILURE_REASONS.each { |kind, reasons| reasons.each { |reason| series << [ "auth_failure", kind, reason ] } }
+    WEB_SIGN_IN_STAGES.each { |stage| series << [ "web_sign_in", stage ] }
     SURFACES.each do |surface|
       STATUS_CLASSES.each { |klass| series << [ "response", surface, klass ] }
       CLIENT_ERROR_LABELS.each { |code| series << [ "client_error", surface, code ] }
@@ -191,6 +214,7 @@ module SecurityTelemetry
       window_seconds: WINDOW.to_i,
       auth_failures_by_kind: by_reason.transform_values { |counts| counts.values.sum },
       auth_failures_by_kind_and_reason: by_reason,
+      web_sign_ins_by_stage: WEB_SIGN_IN_STAGES.to_h { |stage| [ stage, totals[[ "web_sign_in", stage ]] ] },
       responses_by_surface_and_status_class: SURFACES.to_h do |surface|
         [ surface, STATUS_CLASSES.to_h { |klass| [ klass, totals[[ "response", surface, klass ]] ] } ]
       end,

@@ -583,4 +583,235 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_equal 1, report[:client_errors_by_surface_and_status]["api"]["404"], "an unrouted probe lands on the surface it aimed at"
     assert_equal 3, report[:client_errors_by_surface_and_status]["web"]["422"], "two wrong codes and the forged callback"
   end
+
+  test "the first sign-in is counted as completed when the authenticator is set up, not when Google answers" do
+    enable_web_auth
+
+    assert_equal({ "started" => 1, "completed" => 0 }, web_sign_ins { sign_in_with_google })
+    reset!
+    assert_equal({ "started" => 1, "completed" => 1 }, web_sign_ins { sign_in_and_enroll })
+  end
+
+  test "an enrolled account's sign-in is counted as completed on its code, and a wrong code is not one" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+    codes = css_select("[data-testid=recovery-codes] li").map { |li| li.text.strip }
+    reset!
+    travel 1.minute
+
+    counts = web_sign_ins do
+      sign_in_with_google
+      post second_factor_path, params: { code: "000000" }
+      assert_response :unprocessable_entity
+    end
+    assert_equal({ "started" => 1, "completed" => 0 }, counts)
+
+    counts = web_sign_ins do
+      post second_factor_path, params: { code: current_totp_code(identity.totp_secret) }
+      assert_redirected_to root_path
+    end
+    assert_equal({ "started" => 0, "completed" => 1 }, counts)
+    reset!
+
+    counts = web_sign_ins do
+      sign_in_with_google
+      post second_factor_path, params: { code: codes.first }
+      assert_redirected_to root_path
+    end
+    assert_equal({ "started" => 1, "completed" => 1 }, counts, "a recovery code is a completed sign-in")
+  end
+
+  test "a locked second factor completes nothing" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+    identity.update!(second_factor_locked_until: 10.minutes.from_now)
+    reset!
+    travel 1.minute
+
+    counts = web_sign_ins do
+      sign_in_with_google
+      post second_factor_path, params: { code: current_totp_code(identity.totp_secret) }
+      assert_response :too_many_requests
+    end
+    assert_equal({ "started" => 1, "completed" => 0 }, counts)
+  end
+
+  test "a trusted browser and a Google-only deployment complete at the callback" do
+    enable_web_auth
+    sign_in_and_enroll
+    delete logout_path
+    counts = web_sign_ins do
+      sign_in_with_google
+      assert_redirected_to root_path
+    end
+    assert_equal({ "started" => 1, "completed" => 1 }, counts)
+    reset!
+
+    enable_web_auth(second_factor: "google")
+    counts = web_sign_ins do
+      sign_in_with_google
+      assert_redirected_to root_path
+    end
+    assert_equal({ "started" => 1, "completed" => 1 }, counts)
+  end
+
+  test "a sign-in that Google or Zimmer turns away is counted as started and not completed" do
+    enable_web_auth
+
+    [ WebAuth::GoogleOauth::ClientRejected, WebAuth::GoogleOauth::ExchangeFailed ].each do |failure|
+      counts = web_sign_ins do
+        post google_sign_in_path
+        state = Rack::Utils.parse_query(URI(response.location).query).fetch("state")
+        WebAuth::GoogleOauth.any_instance.stubs(:fetch_id_token).raises(failure, "Google's token endpoint answered")
+        get google_sign_in_callback_path, params: { code: "c", state: state }
+        assert_response :bad_gateway
+      end
+      assert_equal({ "started" => 1, "completed" => 0 }, counts, failure.name)
+    end
+
+    counts = web_sign_ins { sign_in_with_google(google_claims(hd: "example.org", email: "someone@example.org")) }
+    assert_response :forbidden
+    assert_equal({ "started" => 1, "completed" => 0 }, counts, "refused domain")
+
+    counts = web_sign_ins do
+      post google_sign_in_path
+      get google_sign_in_callback_path, params: { error: "access_denied" }
+    end
+    assert_equal({ "started" => 1, "completed" => 0 }, counts, "cancelled at Google")
+
+    counts = web_sign_ins do
+      post google_sign_in_path
+      get google_sign_in_callback_path, params: { code: "c", state: "forged" }
+    end
+    assert_equal({ "started" => 1, "completed" => 0 }, counts, "forged state")
+  end
+
+  test "Google refusing on its own page, so the browser never comes back, is started and not completed" do
+    enable_web_auth
+
+    counts = web_sign_ins do
+      3.times do
+        get login_path
+        post google_sign_in_path
+        assert_response :redirect
+      end
+    end
+    assert_equal({ "started" => 3, "completed" => 0 }, counts)
+  end
+
+  test "a sign-in cookie that does not stick completes every time" do
+    enable_web_auth(second_factor: "google")
+
+    counts = web_sign_ins do
+      3.times do
+        sign_in_with_google
+        cookies.delete(WebAuth::Cookies::SIGN_IN.to_s)
+        get root_path
+        assert_redirected_to "/login"
+      end
+    end
+    assert_equal({ "started" => 3, "completed" => 3 }, counts)
+  end
+
+  test "re-issuing the sign-in cookie is neither started nor completed" do
+    enable_web_auth
+    sign_in_and_enroll
+    before = cookies[WebAuth::Cookies::SIGN_IN.to_s]
+    travel 2.days
+
+    counts = web_sign_ins do
+      get root_path
+      assert_response :success
+    end
+    refute_equal before, cookies[WebAuth::Cookies::SIGN_IN.to_s], "the cookie was re-issued"
+    assert_equal({ "started" => 0, "completed" => 0 }, counts)
+  end
+
+  test "a signed-out tab moves neither count, whatever it polls" do
+    enable_web_auth
+
+    counts = web_sign_ins do
+      20.times do
+        get live_updates_status_path
+        follow_redirect!
+        get root_path, headers: { "Turbo-Frame" => "sessions" }
+        get root_path, headers: { "Accept" => "application/json" }
+        get "/cable"
+      end
+      get second_factor_path
+      get second_factor_setup_path
+      get google_sign_in_callback_path, params: { code: "c", state: "s" }
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts)
+  end
+
+  test "an expired sign-in is signed out, and moves neither count" do
+    enable_web_auth
+    sign_in_and_enroll
+    travel 91.days
+
+    counts = web_sign_ins do
+      get root_path
+      assert_redirected_to "/login"
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts)
+  end
+
+  test "replacing the authenticator and signing out are not sign-ins" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+    before = cookies[WebAuth::Cookies::SIGN_IN.to_s]
+
+    counts = web_sign_ins do
+      get second_factor_setup_path
+      post second_factor_setup_path, params: { code: current_totp_code(identity.reload.totp_pending_secret) }
+      assert_response :success
+      refute_equal before, cookies[WebAuth::Cookies::SIGN_IN.to_s], "it does write a new sign-in cookie"
+      delete logout_path
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts)
+  end
+
+  test "a post that never reaches Google is not started" do
+    enable_web_auth(client_secret: nil)
+    counts = web_sign_ins do
+      post google_sign_in_path
+      assert_response :service_unavailable
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts, "nothing to sign in to")
+
+    enable_web_auth
+    ActionController::Base.allow_forgery_protection = true
+    counts = web_sign_ins do
+      post google_sign_in_path
+      assert_response :unprocessable_entity
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts, "no CSRF token")
+    ActionController::Base.allow_forgery_protection = false
+
+    WebAuth::Configuration.stubs(:current).returns(WebAuth::Configuration.new({}))
+    counts = web_sign_ins do
+      post google_sign_in_path
+      assert_redirected_to root_path
+    end
+    assert_equal({ "started" => 0, "completed" => 0 }, counts, "the gate is off")
+  ensure
+    ActionController::Base.allow_forgery_protection = false
+  end
+
+  test "a counter store that is down does not change a sign-in" do
+    enable_web_auth(second_factor: "google")
+    SecurityTelemetry.stubs(:pending).raises(StandardError, "down")
+
+    sign_in_with_google
+    assert_redirected_to root_path
+    get root_path
+    assert_response :success
+  end
+
+  private
+
+  def web_sign_ins(&block)
+    with_security_telemetry(&block)[:web_sign_ins_by_stage]
+  end
 end

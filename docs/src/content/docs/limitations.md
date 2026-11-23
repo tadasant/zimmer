@@ -1561,7 +1561,12 @@ Redis, buffered in each process's memory for up to ten seconds first. A Redis ou
 what it held, and a flush that fails during an outage drops its counts. A process that exits loses
 whatever it had not flushed, which on a deploy is at most ten seconds of counts. The report reads
 zeros for what it lost, and an alert on a rise in failures stays quiet for that stretch. That is
-the trade for never putting Redis in front of a request.
+the trade for never putting Redis in front of a request. The window's edge has the same effect: a
+sign-in started just before it and finished just inside it shows as completed with none started.
+
+`web_sign_ins_by_stage` `completed` counts the sign-in cookies Zimmer sent, and nothing records
+whether the browser kept one. One person signing in on several browsers reads the same as one browser
+that keeps losing its cookie, and an outage nobody tries to sign in during moves neither count.
 
 They also see only what reaches a controller. A request refused by middleware first (host
 authorization, a request Rack cannot parse) is not in `responses_by_surface_and_status_class`, and

@@ -63,7 +63,7 @@ class WebSecondFactorsController < ApplicationController
     end
 
     Rails.logger.info("[web_auth] #{@identity.email} set up an authenticator (web_identity_id=#{@identity.id})")
-    @return_to = finish_sign_in(@identity, factor: "totp", trust_device: true)
+    @return_to = finish_sign_in(@identity, factor: "totp", trust_device: true, new_sign_in: !@replacing)
     render :recovery_codes
   end
 

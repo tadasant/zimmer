@@ -593,14 +593,14 @@ class HealthMonitorService
   end
 
   # Security counts for the monitoring plane, over SecurityTelemetry::WINDOW:
-  # authentication failures by kind and reason, responses by surface and status,
-  # and what was created — sessions by genesis, OAuth grants and clients, API keys.
+  # authentication failures by kind and reason, web sign-ins started and
+  # completed, responses by surface and status, and what was created — sessions by genesis, OAuth grants and clients, API keys.
   # A burst of any of these is the rate an alert rule thresholds; none of it is a
   # judgement this report can make for itself, so the section carries no status and
   # is absent from `overall_status`. See SecurityTelemetry.
   #
   # Every label value is a constant (a genesis key, a reason in
-  # SecurityTelemetry::AUTH_FAILURE_REASONS), never an id, address or credential.
+  # SecurityTelemetry::AUTH_FAILURE_REASONS, a sign-in stage), never an id, address or credential.
   def security_health
     since = Time.current - SecurityTelemetry::WINDOW
     created = Session.where(created_at: since..).group(:genesis).count
