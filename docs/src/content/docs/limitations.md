@@ -4073,9 +4073,12 @@ resolves to nothing.
 
 `AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
 `(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through
-`create_from_agent_root!` (which includes every quick-router session) always carry the key, so this is
-latent rather than live; but a key-less session, or `Trigger#heal_stale_agent_root!`, will resolve any
-of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
+`create_from_agent_root!` (which includes every quick-router session) always carry the key, so for a
+root the catalog has this is latent rather than live; but a key-less session, a session whose root
+was since removed from the catalog (as `dashboard-reprioritizer` was), or
+`Trigger#heal_stale_agent_root!`, will resolve to `zimmer`. Only the display is ambiguous: resuming a
+session whose root is gone hands `air prepare` the stored key, and the session ends `failed` with an
+unresolvable-root error. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ---
 
