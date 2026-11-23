@@ -5409,10 +5409,12 @@ merge the person did not mean. It need not be steered by anything: a plain mista
 in the way: the yes is a person's, fresh, spent by one merge, in a conversation no agent wrote into;
 merging has to have come up aloud, though possibly from before the question or about another PR; an
 "okay" needs a recorded line asking to merge just before it; an offer of another action, or another PR's
-number after "merge", "ship", "land" or "approve", is recognised from a word list just before the yes; and
+number after "merge", "ship", "land" or "approve", or asking to merge at another time, is recognised from
+a word list just before the yes; and
 anything the person says after it that is not a yes, filler or moving on stops it. The word list has gaps:
-"want to merge the docs one?" names no number. It counts only when the model then confirms the
-wrong session.
+"want to merge the docs one?" names no number, which counts only when the model then confirms the wrong
+session. It can also err the other way and read an ordinary question as an offer of something else, which
+costs one more question and is reported.
 
 A yes before any question is bound by the last session Zimmer showed the model, not by a number the
 person heard. A model that opened one session and talked about another would merge the one it opened.

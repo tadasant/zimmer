@@ -682,11 +682,11 @@ merges when all of this holds:
   filler or moving on. Any other line takes it back, and a yes after that counts only as the answer to
   a recorded line asking again;
 - just before that yes the assistant had not offered something else ("also, want me to restart session
-  7?", "merge pull request 1491?", "merge it tomorrow?"), or said it would not merge. An "okay" or "sure"
-  also needs a recorded line that asks to merge just before it, because it answers anything;
+  7?", "merge pull request 1491?", "merge it tomorrow?"), unless the yes itself says to merge. An "okay"
+  or "sure" also needs a recorded line that asks to merge just before it, because it answers anything;
 - merging came up aloud, from either of you, around the question or since.
 
-**How the assistant worded its question is not checked** for a clear yes, and neither is whether its
+**How the assistant worded its question is not checked** for a clear yes, beyond those, and neither is whether its
 transcript spells the number, where its line was cut off, or what order its lines were recorded in. On a
 GPT-Live call the model that speaks is not the model that makes these calls, its lines break wherever you
 talk over it, and each line reaches Zimmer on a request of its own.

@@ -31,7 +31,8 @@ module LiveConversations
   #   the question is one signed-in person's;
   # * one of those lines is a clear yes, under CONFIRM_WINDOW old, that no merge
   #   sent since has used up, and that did not answer something else the
-  #   assistant had just offered. An "okay" counts only to a line about merging;
+  #   assistant had just offered. An "okay" counts only to a line that asks to
+  #   merge;
   # * none of them is a refusal, and everything after the yes is another yes,
   #   filler or moving on;
   # * merging came up aloud around then, so a question that was never spoken
@@ -267,8 +268,8 @@ module LiveConversations
     end
 
     def how_to_ask(arguments)
-      "Nothing is merged yet. If you have not just asked the person to merge this one, ask now, once, in your own words, " \
-        "naming the repository and the number, and stop there. When they answer yes, in any words, call #{NAME} with " \
+      "Nothing is merged yet, and no yes given so far counts. Ask the person now, once, in your own words, naming the " \
+        "repository and the number, and stop there. When they answer yes, in any words, call #{NAME} with " \
         "#{arguments} and confirm true, without asking again. If they say no, or change their mind, merge nothing."
     end
 
@@ -309,8 +310,9 @@ module LiveConversations
       said = lines.select(&:user?)
       if said.empty?
         return Unanswered.new(code: :silent, heard_yes: false,
-                              message: "the person has not answered since Zimmer gave you the question. If you have asked, do not ask " \
-                                       "again: wait for their answer, then call with confirm true. If you have not, ask now.")
+                              message: "the person has not answered since Zimmer gave you the question. If you have asked since then, do " \
+                                       "not ask again: wait for their answer, then call with confirm true. If you asked only " \
+                                       "before it, or not at all, ask once now.")
       end
       authors = said.map(&:author).uniq
       if authors.size != 1 || authors.first.blank?
@@ -407,13 +409,14 @@ module LiveConversations
     # (`clear_is_enough`) needs no more. Any other needs a line that asks, since
     # the person last said anything but filler.
     def answers_the_merge?(turn, lines, reader, readings, clear_is_enough)
+      clear = clear_is_enough && readings[turn].strong
       spoke = false
       lines.take_while { |line| line.id < turn.id }.reverse_each do |line|
         if line.user?
           break unless readings[line].unclear? || readings[line].neutral?
 
           spoke ||= readings[line].unclear?
-        elsif reader.changes_subject?(line.content)
+        elsif reader.changes_subject?(line.content, clear: clear, merging: MergeAnswer.says_merge?(turn.content))
           return false
         elsif reader.asks?(line.content)
           break if spoke
@@ -421,7 +424,7 @@ module LiveConversations
           return true
         end
       end
-      clear_is_enough && readings[turn].strong
+      clear
     end
 
     # Whether merging came up aloud, by either of them, around the question or

@@ -53,7 +53,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     read_back = prepared["output"][/\AREAD-BACK: (.*)$/, 1]
     assert_equal "Merge zimmer pull request 1490, \"Stop stranded paging\"? The merge gate held it for you.", read_back
     assert_includes prepared["output"], "Why the gate held it, only if they ask: Differential: after this diff"
-    assert_includes prepared["output"], "ask now, once, in your own words"
+    assert_includes prepared["output"], "Ask the person now, once, in your own words"
 
     say(conversation, phone, "assistant", read_back)
     say(conversation, phone, "user", "Yes.")

@@ -12,7 +12,8 @@ module LiveConversations
         "Yes, please", "Yep, approved", "Yeah, that's fine, go ahead", "I already said yes", "Yes Okay, what's next",
         "Yes merge zimmer PR 1,490", "yes, fourteen ninety", "Yes [inhale", "Yes, send it.", "Proceed", "Yes, yes, yes", "Yes, that one, 1490", "Yes, 1490, 1490", "Yes 100%", "Yes, 100 percent", "Yes, I want to merge it",
         "Yes, you can merge it", "Yes, go ahead and merge it into main", "Yes, get it merged", "Sure thing", "Fine by me", "That works, merge it",
-        "Yes, thank you very much", "No problem, merge it", "LGTM", "Yes sir", "Yes \u{1F44D}", "Merge the stranded paging one" ].each do |text|
+        "Yes, thank you very much", "No problem, merge it", "LGTM", "Yes. Next one.", "Yes, next PR", "Yeah merge it and move on to the next one",
+        "Yes, merge fourteen hundred ninety", "Merge it into main", "Yes sir", "Yes \u{1F44D}", "Merge the stranded paging one" ].each do |text|
         assert_equal :yes, kind(text), text
       end
     end
@@ -27,11 +28,12 @@ module LiveConversations
         "Okay, one sec.", "Ok so the tests failed", "Sure, tell me more", "ya know", "Yet proved", "Yeah, and what did the gate say",
         "Yes, restart session seven", "Okay, what else does it change?", "Let me think about it", "Give me a minute",
         "Is CI actually green?", "Ok \u{1F44E}", "Yes \u4E0D\u8981", "Yes?", "Is it ready to merge", "Can we merge it", "So do I want to merge this one",
-        "Is that approved", "Yes is it ready", "Okay let's look", "yes #{'okay, ' * 5000}" ].each { |text| assert_equal :unclear, kind(text), text }
+        "Is that approved", "Yes is it ready", "Okay let's look", "Merge main into it", "Okay, merge main into it", "Yes merge the base into the branch",
+        "Yeah, let's move on", "yes #{'okay, ' * 5000}" ].each { |text| assert_equal :unclear, kind(text), text }
     end
 
     test "filler and moving on say nothing about the merge" do
-      [ "", "Um", "Hmm", "thanks", "What's next?", "Great, what else is there", "[cough" ].each { |text| assert_equal :neutral, kind(text), text }
+      [ "", "Um", "Hmm", "thanks", "What's next?", "Great, what else is there", "Next one", "Thanks, bye", "[cough" ].each { |text| assert_equal :neutral, kind(text), text }
     end
 
     test "the person naming this PR by its spoken number is not a correction, whatever the number" do
@@ -49,7 +51,11 @@ module LiveConversations
         "I won't merge it without a yes.", "Merge pull requests 1490 and 1491?", "Checks are green, so want to land PR 1490?",
         "Everything's open and green, want to ship this one?", "Want to ship the one that updates the sweep?", "Should I send it through?",
         "Should I start the merge?", "Should I tell the session to merge it?", "Merge the PR that fixes issue 1200?",
-        "I'll merge it in 30 seconds, okay?", "It's been ready to merge since 10:30, so, yes?", "Do you want to see it merged?", "" ].each { |line| assert_not reader.changes_subject?(line), line }
+        "I'll merge it in 30 seconds, okay?", "It's been ready to merge since 10:30, so, yes?", "Do you want to see it merged?",
+        "Merge pull request 1490? I'll merge it once you say yes.", "If you say yes, I'll merge it.", "With this, the sweep won't page you twice. Merge pull request 1490?",
+        "Want to merge it, or leave it for now?", "Merge pull request fourteen hundred ninety?", "Want me to ask the session to merge it?",
+        "Ready to merge when you are.", "It's not going to change behavior. Want to merge it?", "I'll merge it when you say so.",
+        "Sorry. I'll merge pull request 1490 once you say yes. Yes?", "" ].each { |line| assert_not reader.changes_subject?(line), line }
       [ "Also, want me to restart session 7?", "Also, session 7 is stuck. Should I restart it.", "Or should I wait.", "Restart session seven too.",
         "And merge pull request 1491 as well. Say yes.", "Merge PR fourteen ninety one?", "Would you like to check the logs?", "Want me to check if it's safe to merge?",
         "Want more detail?", "Want to hear why before you merge it?", "Should we wait and merge it tomorrow?", "Merge 1491?", "Merge zimmer 1491?",
@@ -59,6 +65,8 @@ module LiveConversations
         assert reader.changes_subject?(line), line
       end
       assert reader.changes_subject?("Okay, I won't merge it then."), "a yes to a no"
+      assert_not reader.changes_subject?("Okay, I won't merge it then.", clear: true)
+      assert_not reader.changes_subject?("Also, want me to restart session 7?", merging: true), "a yes that says merge"
     end
 
     test "a title that reads like an order is not one" do
@@ -71,7 +79,7 @@ module LiveConversations
         "Merge pull request fourteen ninety: stop stranded paging. Say yes to merge it.", "Want me to go ahead and merge?", "Shall I land it?",
         "It didn't go through yet, sorry. So, merge pull request 1490 in zimmer?", "OK to merge zimmer 1,490?" ].each { |line| assert reader.asks?(line), line }
       [ "It's ready to merge. The gate held it.", "It changes how we merge transcripts. Does that make sense?", "Okay, I won't merge it then.",
-        "It's blocking the merge of 12.", "The merge gate held it.", "Say yes, and I'll do it." ].each { |line| assert_not reader.asks?(line), line }
+        "It's blocking the merge of 12.", "The merge gate held it.", "Merge checks are green. The gate held it.", "Say yes, and I'll do it." ].each { |line| assert_not reader.asks?(line), line }
     end
 
     test "a question that is merge it? and nothing else" do

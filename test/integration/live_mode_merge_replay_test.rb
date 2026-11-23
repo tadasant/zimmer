@@ -160,7 +160,9 @@ class LiveModeMergeReplayTest < ActiveSupport::TestCase
   [ "Shall I land it?", "So, merge the… sorry, the paging PR?", "Merge the one about paging. Yes?",
     "Just to confirm, should I", "Want me to go ahead and merge?", "Merge PR 14", "Merge pull request fourteen",
     "OK to merge zimmer 1,490? It follows up pull request 1480, which merged. Say yes and it's done.",
-    "I won't merge anything without your yes. Merge pull request 1490?" ].each do |line|
+    "I won't merge anything without your yes. Merge pull request 1490?", "Merge pull request 1490? I'll merge it once you say yes.",
+    "With this, the sweep won't page you twice. Merge pull request 1490?", "Want to merge it, or leave it for now?",
+    "Merge pull request fourteen hundred ninety?", "Want me to ask the session to merge it?" ].each do |line|
     test "the question may be worded or cut as #{line.inspect}" do
       said :assistant, "Next is a PR that stops stranded paging, ready to merge."
       prepare
@@ -408,6 +410,30 @@ class LiveModeMergeReplayTest < ActiveSupport::TestCase
     said :user, "Yes"
     assert_merges { confirm }
     assert_equal "Yes", sign_off.content
+  end
+
+  test "telling it to merge main into the PR merges nothing" do
+    looked_at(@session, PR)
+    said :assistant, "It's green, but it's behind main."
+    said :user, "Merge main into it"
+    assert_match(/\AREAD-BACK: /, prepare)
+    said :user, "Okay, merge main into it"
+    assert_refuses { confirm }
+  end
+
+  test "a yes from before the question that does not count is told to be asked about, not waited for" do
+    said :assistant, "Want to merge it?"
+    said :user, "Yes"
+    assert_match(/no yes given so far counts\. Ask the person now/, prepare)
+    assert_match(/If you asked only before it, or not at all, ask once now/, confirm)
+  end
+
+  test "moving on after a yes does not take it back" do
+    prepare
+    said :assistant, "Merge it?"
+    said :user, "Yes. Next one."
+    said :user, "Thanks, bye"
+    assert_merges { confirm }
   end
 
   test "their own question before any question asks for nothing" do
