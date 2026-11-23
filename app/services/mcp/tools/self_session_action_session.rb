@@ -165,7 +165,7 @@ module Mcp
         rest = if result.unconditional_sleep_reason
           "`waiting`, NOT needs_input — a sleep that does not depend on a wake is still set " \
             "(#{result.unconditional_sleep_reason}), and this action does not override it"
-        elsif session.running?
+        elsif Sessions::LiveTurn.in_progress?(session)
           "`needs_input` when this turn ends"
         else
           "`needs_input`"

@@ -5266,6 +5266,16 @@ next call does.
 
 ---
 
+### A watcher armed on a session whose turn is still queued does not sleep it
+
+A wake armed while a worker holds the session's turn is marked, and a turn that ends unmarked sleeps on
+any one-time schedule still armed. Between the two is a turn handed over but not yet on a worker: a
+`wake_me_up_when_session_changes_state` watcher armed on that session by somebody else, with no
+`wake_me_up_later` beside it, marks nothing, and the turn that follows ends in `needs_input` with the
+watcher armed. The watcher still resumes it. Pairing a watcher with a deadline avoids it.
+
+---
+
 ### A hand-back is answered by a human message, not by the turn that delivers it
 
 A `rest_in_needs_input` hand-back is released when a `HumanMessage` with an `occurred_at` after
