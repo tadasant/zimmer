@@ -33,6 +33,8 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     TranscriptArchiveJob.any_instance.unstub(:archive_dir)
     ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
 
+    Rails.env.stubs(:local?).returns(false)
+
     resolved = TranscriptArchiveJob.archive_dir.to_s
 
     assert_equal File.join(File.dirname(ClonesDirectory.base), "transcript_archives"), resolved,
@@ -804,19 +806,19 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     end
   end
 
-  # `write_buffer`, unlike `commit`, does not unlink the Tempfile rubyzip stages each new
-  # entry in, so the build has to — on success and when the build raises.
-  test "unlinks the staging tempfile of every new entry" do
-    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(2) # a session entry and manifest.json
-    TranscriptArchiveJob.perform_now
-  end
-
-  test "unlinks staging tempfiles when the build raises" do
-    Zip::StreamableStream.any_instance.expects(:clean_up).at_least(1)
-    Zip::File.any_instance.stubs(:write_buffer).raises(Errno::ENOSPC)
+  test "a merge that fails leaves no temp, keeps what was staged, and the next run finishes it" do
+    expected = Session.where.not(transcript: nil).pluck(:id).map(&:to_s).sort
+    TranscriptArchiveSplicer.stubs(:splice).raises(Errno::ENOSPC)
 
     assert_raises(Errno::ENOSPC) { TranscriptArchiveJob.perform_now }
-    assert_empty Dir.glob(@archive_dir.join("latest_*.zip.tmp*")), "the build's temp must not survive the failure"
+    assert_empty temp_files
+    assert_not File.exist?(@archive_path)
+    assert_equal expected, staged_ids
+
+    TranscriptArchiveSplicer.unstub(:splice)
+    assert_empty full_session_row_selects { TranscriptArchiveJob.perform_now }, "staged sessions must not be read again"
+    assert_equal expected, archived_ids
+    assert_empty staged_ids
   end
 
   # The fixed cost of a run is rewriting the archive, so it has to be paid once: no
@@ -1007,5 +1009,244 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
 
     assert File.directory?(decoy), "only files are unlinked"
     assert_not File.exist?(orphan), "one skipped entry must not end the sweep"
+  end
+
+  # ---------------------------------------------------------------------------
+  # Durable progress. The worker is replaced on every deploy, so a run that only
+  # recorded its work by rewriting a multi-gigabyte zip lost all of it, and left
+  # that much temp behind, whenever a deploy landed inside it. Production on
+  # 2026-11-22: 13 deploys and 15 sweeps of multi-GB orphans.
+  #
+  # A SIGKILL runs no `ensure`, so these set up the files it leaves behind.
+  # ---------------------------------------------------------------------------
+
+  def staged_dir = @archive_dir.join("staged")
+
+  def temp_files = Dir.glob(@archive_dir.join("**", "*.tmp*"))
+
+  def staged_ids = Dir.children(staged_dir).filter_map { |name| name[TranscriptArchiveStaging::FRAGMENT_PATTERN, 1] }.sort
+
+  def archived_ids
+    Zip::File.open(@archive_path) { |zip| zip.entries.filter_map { |e| e.name[%r{\Asessions/(\d+)\.json\z}, 1] }.sort }
+  end
+
+  def archived_json(session)
+    Zip::File.open(@archive_path) { |zip| JSON.parse(zip.read("sessions/#{session.id}.json")) }
+  end
+
+  def sessions_with_transcripts = Session.where.not(transcript: nil).order(:id).to_a
+
+  # Makes the archive read as too big to merge on every run.
+  def hold_merges!
+    TranscriptArchiveJob.any_instance.stubs(:merge_every_run_below).returns(0)
+  end
+
+  test "a large archive is merged on an interval, and what is staged in between is not read again" do
+    TranscriptArchiveJob.perform_now
+    before = File.binread(@archive_path)
+    changed = sessions_with_transcripts.first
+    changed.update_columns(title: "renamed", updated_at: 1.hour.from_now)
+    hold_merges!
+
+    reads = full_session_row_selects { TranscriptArchiveJob.perform_now }
+    assert_equal 1, reads.size
+    assert_equal before, File.binread(@archive_path), "a merge that is not due leaves latest.zip alone"
+    assert_equal [ changed.id.to_s ], staged_ids
+
+    assert_empty full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    # A quiet tick still merges once the interval has passed.
+    FileUtils.touch(@archive_path, mtime: (TranscriptArchiveJob::MERGE_INTERVAL + 1.minute).ago.to_time)
+    TranscriptArchiveJob.perform_now
+    assert_equal "renamed", archived_json(changed)["title"]
+    assert_empty staged_ids
+  end
+
+  test "a session staged twice before a merge keeps only its newest fragment" do
+    TranscriptArchiveJob.perform_now
+    hold_merges!
+    changed = sessions_with_transcripts.first
+    changed.update_columns(title: "first", updated_at: 1.hour.from_now)
+    TranscriptArchiveJob.perform_now
+    stale = Dir.children(staged_dir).sole
+    stale_bytes = File.binread(staged_dir.join(stale))
+    changed.update_columns(title: "second", updated_at: 2.hours.from_now)
+    TranscriptArchiveJob.perform_now
+    assert_equal 1, Dir.children(staged_dir).size
+
+    # A kill between the rename and the cleanup leaves both.
+    File.binwrite(staged_dir.join(stale), stale_bytes)
+    TranscriptArchiveJob.any_instance.unstub(:merge_every_run_below)
+    TranscriptArchiveJob.perform_now
+
+    assert_equal "second", archived_json(changed)["title"]
+    assert_empty staged_ids, "the superseded fragment goes too"
+  end
+
+  test "a run killed while staging keeps every session it finished" do
+    sessions = sessions_with_transcripts
+    assert_operator sessions.size, :>, 2
+    TranscriptArchiveJob.any_instance.stubs(:merge_due?).returns(false)
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(2)
+    TranscriptArchiveJob.perform_now
+    File.write(staged_dir.join("fragment.zip.tmp"), "half a fragment")
+    TranscriptArchiveJob.any_instance.unstub(:merge_due?)
+    TranscriptArchiveJob.any_instance.unstub(:max_sessions_per_run)
+
+    reads = full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_equal sessions.size - 2, reads.size
+    assert_equal sessions.map { |s| s.id.to_s }.sort, archived_ids
+    assert_empty temp_files
+  end
+
+  test "a run that raises while staging leaves no partial fragment" do
+    TranscriptArchiveJob.any_instance.stubs(:add_subagent_transcripts_to_zip).raises(Errno::ENOSPC)
+    assert_raises(Errno::ENOSPC) { TranscriptArchiveJob.perform_now }
+    assert_empty temp_files
+    assert_empty staged_ids
+  end
+
+  test "a run killed mid-merge leaves one temp, gone on the next run however young it is" do
+    TranscriptArchiveJob.perform_now
+    File.write(@archive_dir.join("latest.zip.tmp"), "half an archive")
+    File.write(@archive_dir.join("manifest.zip.tmp"), "half a manifest")
+    File.write(@archive_dir.join("latest_metadata.json.tmp"), "{")
+
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/swept 3 orphaned temp file/)).once
+    TranscriptArchiveJob.perform_now
+
+    assert_empty temp_files
+    assert_operator archived_ids.size, :>, 0
+  end
+
+  test "a run killed between the rename and the sidecar merges the same fragments again" do
+    TranscriptArchiveJob.perform_now
+    sidecar = File.binread(@metadata_path)
+    changed = sessions_with_transcripts.first
+    changed.update_columns(title: "renamed", updated_at: 1.hour.from_now)
+    TranscriptArchiveStaging.any_instance.stubs(:delete)
+    TranscriptArchiveJob.perform_now
+    TranscriptArchiveStaging.any_instance.unstub(:delete)
+    File.binwrite(@metadata_path, sidecar)
+    ids = archived_ids
+
+    assert_empty full_session_row_selects { TranscriptArchiveJob.perform_now }
+
+    assert_equal ids, archived_ids
+    assert_equal "renamed", archived_json(changed)["title"]
+    assert_empty staged_ids
+    assert_not_equal sidecar, File.binread(@metadata_path)
+  end
+
+  test "staged work survives the archive itself going missing" do
+    TranscriptArchiveJob.any_instance.stubs(:merge_due?).returns(false)
+    TranscriptArchiveJob.perform_now
+    ids = staged_ids
+    TranscriptArchiveJob.any_instance.unstub(:merge_due?)
+
+    assert_empty full_session_row_selects { TranscriptArchiveJob.perform_now }
+    assert_equal ids, archived_ids
+  end
+
+  test "an unreadable fragment is discarded and its session read again, without wedging the job" do
+    TranscriptArchiveJob.perform_now
+    ids = archived_ids
+    changed = sessions_with_transcripts.first
+    changed.update_columns(title: "renamed", updated_at: 1.hour.from_now)
+    stamp = TranscriptArchiveJob.new.send(:archive_stamp, changed.reload.updated_at, nil)
+    File.write(staged_dir.join("#{changed.id}@#{stamp}.zip"), "not a zip")
+
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/discarding unreadable fragment/)).once
+    TranscriptArchiveJob.perform_now
+    assert_equal ids, archived_ids, "the entry the archive already had is kept"
+    assert_equal false, JSON.parse(File.read(@metadata_path))["complete"]
+
+    TranscriptArchiveJob.perform_now
+    assert_equal "renamed", archived_json(changed)["title"]
+    assert JSON.parse(File.read(@metadata_path))["complete"]
+  end
+
+  # An archive this cannot read is not an archive it may replace: it may hold entries
+  # nothing else does.
+  test "an unreadable archive is left alone rather than rebuilt over" do
+    TranscriptArchiveJob.perform_now
+    File.binwrite(@archive_path, "x" * 4096)
+    sessions_with_transcripts.first.update_columns(updated_at: 1.hour.from_now)
+
+    assert_raises(TranscriptArchiveSplicer::Invalid) { TranscriptArchiveJob.perform_now }
+
+    assert_equal "x" * 4096, File.binread(@archive_path)
+    assert_equal 1, staged_ids.size
+    assert_empty temp_files
+  end
+
+  test "a session removed while staged does not reach the archive" do
+    TranscriptArchiveJob.perform_now
+    hold_merges!
+    removed = sessions_with_transcripts.last
+    removed.update_columns(updated_at: 1.hour.from_now)
+    TranscriptArchiveJob.perform_now
+    assert_equal [ removed.id.to_s ], staged_ids
+    removed.update_column(:transcript, nil)
+
+    TranscriptArchiveJob.perform_now
+    assert_empty staged_ids
+    TranscriptArchiveJob.any_instance.unstub(:merge_every_run_below)
+    TranscriptArchiveJob.perform_now
+
+    assert_not_includes archived_ids, removed.id.to_s
+    assert_not_includes JSON.parse(File.read(@metadata_path))["sessions"].keys, removed.id.to_s
+  end
+
+  test "does not merge onto a volume without room, and keeps what it staged" do
+    TranscriptArchiveJob.perform_now
+    before = File.binread(@archive_path)
+    changed = sessions_with_transcripts.first
+    changed.update_columns(updated_at: 1.hour.from_now)
+    CloneDiskGuard.stubs(:available_bytes).returns(TranscriptArchiveJob::MERGE_HEADROOM)
+
+    Rails.logger.stubs(:warn)
+    Rails.logger.expects(:warn).with(regexp_matches(/not merging: .* bytes free/)).once
+    TranscriptArchiveJob.perform_now
+
+    assert_equal before, File.binread(@archive_path)
+    assert_equal [ changed.id.to_s ], staged_ids
+  end
+
+  test "a run that finds another build in progress touches nothing" do
+    temp = @archive_dir.join("latest.zip.tmp")
+    File.write(temp, "another build's")
+    File.open(@archive_dir.join("build.lock"), File::RDWR | File::CREAT) do |lock|
+      assert lock.flock(File::LOCK_EX | File::LOCK_NB)
+      Rails.logger.stubs(:warn)
+      Rails.logger.expects(:warn).with(regexp_matches(/another build holds build.lock/)).once
+      TranscriptArchiveJob.perform_now
+    end
+    assert_equal "another build's", File.read(temp)
+    assert_not File.exist?(@archive_path)
+
+    TranscriptArchiveJob.perform_now
+    assert File.exist?(@archive_path), "the lock is free once its holder is gone"
+  end
+
+  # 2026-11-19 and 2026-11-23: a development server started on the production worker ran
+  # this cron against the same directory, read every session as removed, and replaced the
+  # 13.9 GB archive with an empty one.
+  test "a local environment never shares production's archive directory" do
+    ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
+    in_env = lambda do |name|
+      Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new(name))
+      TranscriptArchiveJob.archive_dir.to_s
+    end
+
+    production = in_env.("production")
+    assert_not_equal production, in_env.("development")
+    assert_not_equal in_env.("test"), in_env.("development")
+    assert_equal production, in_env.("staging")
+  ensure
+    Rails.unstub(:env)
   end
 end

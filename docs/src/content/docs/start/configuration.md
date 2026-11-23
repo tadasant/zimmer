@@ -95,7 +95,7 @@ not in Terraform — Terraform only provisions the host.
 | Var | Default |
 | --- | --- |
 | `AGENT_CLONES_DIR` | `~/.zimmer/clones` |
-| `AGENT_TRANSCRIPT_ARCHIVE_DIR` | `~/.zimmer/transcript_archives` — where `TranscriptArchiveJob` writes `latest.zip`. A sibling of the clones dir, and on the same `zimmer_data` volume, because the job runs in the `worker` container and every reader of the archive is an HTTP route in `web`. Point it somewhere both roles mount, or the reader stops seeing the writer |
+| `AGENT_TRANSCRIPT_ARCHIVE_DIR` | `~/.zimmer/transcript_archives` (`…-development` / `…-test` in those environments) — where `TranscriptArchiveJob` writes `latest.zip`. A sibling of the clones dir, and on the same `zimmer_data` volume, because the job runs in the `worker` container and every reader of the archive is an HTTP route in `web`. Point it somewhere both roles mount, or the reader stops seeing the writer |
 | `AGENT_SCRATCH_DIR` | per-session durable scratch |
 | `REPO_BASE_PATH` | `tmp/repos` (bare repos) |
 

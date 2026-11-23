@@ -1004,30 +1004,41 @@ a different claim from "not there", and both surfaces say which one it is. See
 
 ## Archive and download
 
-`TranscriptArchiveJob` rebuilds a `latest.zip` of all transcripts every 10 minutes (temp file +
-atomic rename). It's served by `GET /api/v1/transcript_archive/download`.
+`TranscriptArchiveJob` keeps a `latest.zip` of all transcripts, served by
+`GET /api/v1/transcript_archive/download`. It runs every 10 minutes, in two steps:
 
-The rebuild is incremental in both directions. It reads sessions one at a time rather than loading
-every changed session at once — a transcript is a single large payload, so holding a whole corpus of
-them is what used to run the worker out of memory
-([#719](https://github.com/tadasant/zimmer/issues/719)) — and it archives at most
-`MAX_SESSIONS_PER_RUN` sessions per tick, recording what it finished before it stops. A backlog
-therefore drains over several ticks instead of being retried whole. Steady state is a handful of
-changed sessions per tick, where neither bound is reached.
+1. **Stage.** Each new or changed session is read and written to its own small zip under `staged/`,
+   which appears by rename once it is whole. The file name carries the stamp it was built at, so the
+   next run knows not to read that session again.
+2. **Merge.** Everything staged is joined with the previous `latest.zip` into `latest.zip.tmp`, which
+   is renamed into place. Then the sidecar is written and the staged files are deleted.
 
-A run is bounded in time as well as memory. Between sessions it checks a `RUN_DEADLINE` of ten
-minutes, one cron interval, and once that has passed it stops, writes the archive with what it did,
-and defers the rest the same way the cap does. It always archives at least one session, so the
-frontier keeps moving. The deadline exists because `SingletonSweep` refuses every tick while a run
-is in progress, so a run with no bound stops the schedule: on 2026-10-09 one held the slot for over
-two hours, past the maintenance lane's 90-minute ceiling, and `transcript_archive` paged as a stale
-cron ([#1264](https://github.com/tadasant/zimmer/issues/1264)).
+The worker is replaced on every deploy, so a run can be killed at any point. What it finished
+staging is kept, and only the session in flight is lost. A merge can also be killed anywhere: before
+the rename nothing has changed, and after it the same staged files are merged again, which replaces
+each entry with itself. Recording progress only in the final rewrite of a multi-gigabyte zip is what
+the job did before, and a deploy landing inside a run threw the whole run away.
 
-Each run writes the archive once. The old `latest.zip` is opened read-only, the changed sessions,
-removals and manifest are applied in memory, and the result is streamed into the temp file, with
-unchanged entries copied still compressed. The job does not copy `latest.zip` first and does not
-commit through rubyzip, which would rewrite the whole file again. A removed session costs nothing
-extra: its entries are simply not copied.
+An archive under 1 GiB is merged on every run. A larger one is merged every 30 minutes, because a
+merge copies all of it. `TranscriptArchiveSplicer` does that copy without rubyzip, which on a large
+archive seeks to every entry to open it and then writes it 128 KiB at a time, waiting for Ruby's
+global lock on each piece. The splicer reads the central directory in one go, copies runs of
+unchanged entries inside the kernel still compressed, and rewrites only their offsets. An archive it
+cannot parse is left alone and the run fails, rather than being rebuilt over. A merge that would
+leave less than 2 GiB free on the volume is skipped with a WARN, and what is staged waits.
+
+Staging reads sessions one at a time rather than loading every changed session at once. A
+transcript is a single large payload, so holding a whole corpus of them is what used to run the
+worker out of memory ([#719](https://github.com/tadasant/zimmer/issues/719)). It stages at most
+`MAX_SESSIONS_PER_RUN` sessions per tick, and stops between sessions once a ten-minute
+`RUN_DEADLINE` has passed. It always stages at least one, so a backlog drains over several ticks.
+The deadline exists because `SingletonSweep` refuses every tick while a run is in progress: on
+2026-10-09 one run held the slot for over two hours and `transcript_archive` paged as a stale cron
+([#1264](https://github.com/tadasant/zimmer/issues/1264)).
+
+A run holds `build.lock` (flock) throughout. The kernel releases it when the holder dies, so a run
+that has it knows that any temp file on the volume is an orphan and deletes it at once. The temps
+have fixed names, so a kill leaves at most one archive-sized file, for at most one tick.
 
 That makes the job's peak a function of the largest single transcript rather than of the corpus. Not
 one copy of it: reassembling a transcript from its chunks holds the chunk contents and the joined
@@ -1043,15 +1054,21 @@ subagent transcript written after its session's last archive never reached `late
 unrelated write happened to bump the session row
 ([#720](https://github.com/tadasant/zimmer/issues/720)).
 
-A draining backlog is visible in two places, and it has to be, because a catching-up archive is
-rewritten on every tick and so is never *stale* — staleness and completeness are different
+A draining backlog is visible in two places, and it has to be, because a catching-up archive keeps
+being rewritten and so is never *stale* — staleness and completeness are different
 questions. The job logs a `deferred to the next tick` line at WARN, the severity production ships to
 its log store; and the metadata sidecar records `deferred_count`, which surfaces as `complete`,
 `deferred_count` and `incomplete_reason` on `GET /api/v1/transcript_archive/status` and as a
 **Complete:** line in the `get_transcript_archive` MCP tool. A reader that must not mistake a partial
 export for the whole corpus should check that rather than the age.
 
-It writes under `~/.zimmer/transcript_archives` — the `zimmer_data` named volume, mounted at the
+In development and test the directory is `~/.zimmer/transcript_archives-<environment>` instead. An
+agent session on the production worker shares production's home directory, and a development server
+it starts runs this cron too. Pointed at production's directory with a near-empty database, it read
+every archived session as removed and replaced the 13.9 GB archive with an empty one, on 2026-11-19
+and again on 2026-11-23.
+
+Elsewhere it writes under `~/.zimmer/transcript_archives` — the `zimmer_data` named volume, mounted at the
 same path in both the `web` and `worker` containers. That matters because the writer and the readers
 are in different containers: cron runs only in `worker` (GoodJob starts a cron capsule only in an
 `:async` webserver process, and production is `:external`), while `/api/v1/transcript_archive/*` and
@@ -1060,28 +1077,14 @@ the `get_transcript_archive` MCP tool are served by Puma in `web`. While the arc
 own empty copy and could never succeed, and every deploy destroyed the writer's copy too
 ([#714](https://github.com/tadasant/zimmer/issues/714)).
 
-Every tick starts by reclaiming the temp files earlier runs were killed before they could delete.
-`build_archive` removes its own temp in an `ensure`, which covers an exception but not a `SIGKILL` —
-and this job is killed routinely, by the OOM killer and by the container swap on every deploy. Each
-run picks a fresh random name, so nothing ever reclaimed the previous run's file: production
-accumulated 219 orphans holding 233.3 GiB, which took the 309 GB root filesystem to 100% and stopped
-`CloneDiskGuard` letting the fleet clone ([#1160](https://github.com/tadasant/zimmer/issues/1160)).
-The sweep matches `latest_<hex>.zip.tmp` **and anything suffixed onto it** — rubyzip's
-`Zip::File#commit` writes its own same-sized temp beside the job's, so one killed run leaks up to two
-multi-GB files rather than one — and it takes only what nothing has written to for an hour, the same
-bar the archive is judged stale by, so a build in flight keeps its own. `latest.zip` and
-`latest_metadata.json` cannot match that pattern at all. A tick that reclaims something logs it at
-WARN; a tick that finds nothing is silent. The sweep runs before the change detection, so it happens
-on a quiet tick that rebuilds nothing too.
+Each run also reclaims `latest_<hex>.zip.tmp*` files that nothing has written to for an hour. Workers
+that gave every temp a random name left those behind, and by 2026-09-11 production held 219 of them
+at 233.3 GiB, which took the root filesystem to 100%
+([#1160](https://github.com/tadasant/zimmer/issues/1160)). `latest.zip` and `latest_metadata.json`
+cannot match that pattern. Reclaiming something logs at WARN, and finding nothing is silent.
 
-The sweep covers the archive directory and nothing else. rubyzip also stages each entry it writes in
-its own temp file under the container's `/tmp` until the zip is committed, so a killed run leaves up
-to `MAX_SESSIONS_PER_RUN` of those behind as well. Those sit on the container's overlay layer, which
-every deploy recreates, not on the `zimmer_data` volume — a different footprint with a different
-lifetime, and out of this sweep's reach on purpose.
-
-The archive is a bulk export, not a search index: it is hundreds of megabytes and up to ten minutes
-stale. To find a session by something said in it, use the content search above.
+The archive is a bulk export, not a search index: it is many gigabytes on a busy deployment and up to
+about forty minutes stale. To find a session by something said in it, use the content search above.
 
 ## Rendering to plain text
 

@@ -9312,13 +9312,19 @@ The [Costs](/operate/operating-costs/) page is honest about what it knows and no
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
 ([#1264](https://github.com/tadasant/zimmer/issues/1264)). The check runs only between sessions, so
 it bounds a run that is slow, not one that is stuck. Three things are outside it: the session in
-flight, the final write of the archive (one sequential copy of `latest.zip`, which grows with the
+flight, the merge (one sequential copy of `latest.zip`, which grows with the
 corpus), and any call that blocks forever, such as a wedged disk read or a lock that never comes
 back. If a run does hang there, it still holds the `SingletonSweep` slot until the worker container
 is replaced. Every deploy replaces it, but nothing in the app can. CronFreshness still pages when
 that happens, which is the intended signal. Killing a thread from inside the job is not a safe
 alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
 there to survive, not something to cause on purpose.
+
+A merge of an archive over 1 GiB runs every 30 minutes, so `latest.zip` can be up to about 40
+minutes behind what the job has already staged. Nothing shows the staged count on its own:
+`deferred_count` is as of the last merge. A staged file that will not parse is discarded and its
+session read again, but an unparseable `latest.zip` stops the job until someone removes or replaces
+it, because it may hold entries nothing else does.
 
 ## Root data isolation is a scoping boundary, not an authorization one
 
