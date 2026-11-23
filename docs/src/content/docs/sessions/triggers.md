@@ -3395,7 +3395,9 @@ and "wake me up when that other session changes state." Four mechanisms make thi
 
 **Auto-sleep.** `Trigger#sleep_target_session_if_applicable` runs on trigger creation. If the
 target session is `needs_input`, it sleeps immediately (`needs_input → waiting`). If it's
-`running`, it sets `metadata["pending_sleep"] = true` and the sleep happens on the next `pause`.
+`running`, or `waiting` with a worker already holding its turn, it sets
+`metadata["pending_sleep"] = true` and the sleep happens on the next `pause`. A turn that ends with a
+schedule armed and no mark [sleeps on it anyway](/sessions/lifecycle/#a-wake-armed-before-start-is-recorded).
 So an agent can say "wake me in an hour" mid-turn without stranding itself.
 
 It also clears a stale `paused_by: "user"` from a session it is arming a wake on. That marker means

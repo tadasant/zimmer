@@ -126,7 +126,8 @@ module Sessions
     # The park itself. `needs_input` sleeps immediately; a `running` session gets
     # `pending_sleep`, which the pause callback reads to carry it needs_input →
     # waiting once the turn ends. A `waiting` session is already dormant and only
-    # needs the record.
+    # needs the record — unless a worker holds a turn for it whose `start!` is not
+    # recorded yet, which is marked the way a `running` one is.
     #
     # Whether that turn is allowed to end is the CALLER's choice, not this
     # service's: `action_session` with "halt": true stops it immediately
@@ -148,7 +149,7 @@ module Sessions
         "paused_by" => SpotSessionPause::PAUSED_BY
       }
       updates[SpotSessionPause::QUEUED_PROMPT] = prompt if prompt.present?
-      updates.merge!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)) if session.running?
+      updates.merge!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SPOT_PAUSE)) if LiveTurn.in_progress?(session)
 
       # PENDING_SLEEP_REQUIRES_WAKE goes, and it is not housekeeping: it means
       # "sleep only if something is still armed to wake you", and this park has

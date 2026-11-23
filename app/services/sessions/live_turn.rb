@@ -91,6 +91,20 @@ module Sessions
       true
     end
 
+    # Whether the session is inside a turn: `running`, or `waiting` while a worker
+    # already holds its turn.
+    #
+    # `start!` is recorded after the runtime process is spawned, so a live agent's
+    # own calls can reach Zimmer while its row still reads `waiting`. Ask this, not
+    # `running?`, where a call means "when this turn ends".
+    #
+    # @return [Boolean]
+    def in_progress?(session)
+      return false if session.nil?
+
+      session.running? || (session.waiting? && in_flight?(session))
+    end
+
     # Is a turn underway for this session — on a worker thread right now, or
     # ready in the `agents` queue with a worker coming for it?
     #

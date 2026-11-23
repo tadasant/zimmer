@@ -1744,7 +1744,13 @@ class Trigger < ApplicationRecord
   # - needs_input → waiting (immediate sleep via state machine)
   # - running     → pending_sleep metadata flag; the pause callback transitions
   #                 the session to waiting when the current turn completes
-  # - waiting/failed/archived → no-op (session is already dormant or terminal)
+  # - waiting     → the same pending_sleep flag when a worker holds a turn for it;
+  #                 otherwise no-op (the session is already dormant)
+  # - failed/archived → no-op (terminal)
+  #
+  # `waiting` is not only dormancy. `AgentSessionJob` records `start!` after the
+  # runtime process is spawned, so until that write lands a live agent is arming
+  # wakes against a `waiting` row — and a short turn can end inside that window.
   #
   # Failures are logged but never raised — the trigger itself has already been
   # persisted by the time this callback runs, and losing the auto-sleep shouldn't
@@ -1765,7 +1771,11 @@ class Trigger < ApplicationRecord
     # the conditions are persisted at this point.
     return unless trigger_conditions.any? { |c| c.one_time_schedule? || c.session_scoped_ao_event? }
 
-    session = Session.find_by(id: last_session_id)
+    # Locked, so the status this branches on cannot move under it: without the
+    # lock a `pause!` committing between the read and the mark leaves the mark on
+    # a session already at rest. NO KEY UPDATE, so the log rows the running job
+    # inserts (a KEY SHARE through their foreign key) are not held up behind it.
+    session = Session.lock("FOR NO KEY UPDATE").find_by(id: last_session_id)
     return unless session
 
     if session.needs_input?
@@ -1774,7 +1784,7 @@ class Trigger < ApplicationRecord
         content: "[Trigger##{id}] Session transitioned to waiting for scheduled wake-up",
         level: "info"
       )
-    elsif session.running?
+    elsif Sessions::LiveTurn.in_progress?(session)
       # Never over-stamp an intent already on the row. Since #1172 the
       # `pending_sleep_reason` is a control signal and not only a record:
       # SessionStateMachine#pending_sleep_requires_wake? reads it to decide whether
@@ -1799,9 +1809,12 @@ class Trigger < ApplicationRecord
         )
       end
     else
-      Rails.logger.info(
-        "[Trigger#sleep_target_session_if_applicable] Skipping auto-sleep for trigger #{id} — " \
-        "target session #{session.id} is in #{session.status} state"
+      # A session log row rather than a Rails line: production ships only WARN and
+      # above off the box, and this is the line a reader needs when asking why a
+      # session holding a wake did not sleep.
+      session.logs.create!(
+        content: "[Trigger##{id}] No auto-sleep to arrange — the session is #{session.status} with no turn in progress",
+        level: "info"
       )
     end
 

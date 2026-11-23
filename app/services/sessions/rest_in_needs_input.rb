@@ -63,8 +63,10 @@ module Sessions
   # a poller notice, a router's follow-up — answers nothing and releases
   # nothing. See SessionStateMachine::HANDED_BACK_TO_HUMAN.
   #
-  # Refused on a session already asleep: a `waiting` session is not in a turn, so
-  # there is nothing to come to rest, and a self-session caller is never there.
+  # Refused on a session already asleep: it is not in a turn, so there is nothing
+  # to come to rest. A `waiting` session a worker holds a turn for is not asleep —
+  # `start!` is recorded after the process spawns, so a self-session caller can be
+  # there for the first seconds of a turn.
   class RestInNeedsInput
     class Error < StandardError; end
 
@@ -87,7 +89,7 @@ module Sessions
     attr_reader :session
 
     def call
-      raise Error, refusal_message unless RESTABLE_STATUSES.include?(session.status)
+      raise Error, refusal_message unless restable?
 
       cancelled = []
       dropped = nil
@@ -120,6 +122,10 @@ module Sessions
     end
 
     private
+
+    def restable?
+      RESTABLE_STATUSES.include?(session.status) || LiveTurn.in_progress?(session)
+    end
 
     # preload, not includes, for the reason SupersedePendingWakes gives: an
     # eager-loading join filtered on condition columns would truncate the

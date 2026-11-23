@@ -424,8 +424,10 @@ transition, and it does nine things beyond changing status:
    count: it took its snapshot when it started, and the fresh enqueue is answered cheaply by its
    claim. The checks exist because a session sleeping and waking on a short self-wake pauses once
    per wake, and without them each pause stacks one more of each job behind the ones already waiting.
-8. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
-   sleep was deferred to here; now it fires.
+8. `arrange_sleep_on_armed_schedule`, then `execute_pending_sleep` — if a wake-up was scheduled
+   while the session was *running*, the sleep was deferred to here; now it fires. The first of the
+   two covers a turn that reached its end with a wake armed and no sleep marked — see
+   [A wake armed before `start!` is recorded](#a-wake-armed-before-start-is-recorded).
 9. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
    queued for it, schedule the delivery. See [below](#a-session-does-not-idle-on-its-own-queue).
    Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind. It
@@ -883,7 +885,9 @@ self-session surface only, because it is a statement about the turn the caller i
   - **Arming a new wake** (`Trigger#sleep_target_session_if_applicable`), which is the session
     deciding to wait again — and is also why a wake armed after the call in the same turn puts it
     back to sleep, so the tool tells the caller to call it last.
-- It is refused on a `waiting` session, which is not in a turn and has nothing to come to rest.
+- It is refused on a `waiting` session that is not in a turn and so has nothing to come to rest. A
+  `waiting` session whose turn a worker already holds is accepted: `start!` is recorded after the
+  process spawns, so the agent can make this call first.
 
 The workaround it replaces is a short dummy wake armed so that its firing destroys the real
 backstop (sibling-destroy). Session 20141 did that on 2026-10-08 after a recovery re-sleep would
@@ -1571,6 +1575,36 @@ silently end up in `needs_input` with none.
 The "wake me up later" path. The session goes dormant and a one-time schedule trigger will
 resume it. If the wake-up is scheduled while the session is *running*,
 `metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
+
+#### A wake armed before `start!` is recorded
+
+`AgentSessionJob` records `start!` after it has spawned the runtime process and stored its pid, so a
+live agent acts against a `waiting` row until that write lands. On a loaded worker that took over ten
+seconds for session 30564, whose whole turn fitted inside it: it armed a watcher and a deadline, ended
+its turn, and only then did the row become `running`. The arming read `waiting` as "already dormant"
+and left no mark, so the next `pause` rested the session in `needs_input`, on the human's action
+queue, with both wakes armed.
+
+Two things keep that from deciding where a session rests:
+
+- **`waiting` with a turn in flight is treated as `running`.** `Trigger#sleep_target_session_if_applicable`,
+  `rest_in_needs_input`, a spot-queue park and `POST /api/v1/sessions/:id/sleep` all ask
+  `Sessions::LiveTurn.in_progress?` before reading `waiting` as "not executing". The arming reads the
+  status under a row lock, so a `pause` cannot land between the read and the mark. An arming that
+  arranges no sleep writes a session log line saying so.
+- **`pause` derives the sleep from the trigger rows.** `arrange_sleep_on_armed_schedule` writes the
+  `scheduled_wake` intent itself when nothing has marked the turn and a one-time schedule aimed at the
+  session can still fire, with a session log line naming the trigger. It does nothing after a hand-back, on
+  any `paused_by` pause, on a turn that never ran, for a status-summary fork, or for a wake held from
+  the wait that just ended; and a watcher alone does not qualify, for the reason
+  [#648](https://github.com/tadasant/zimmer/issues/648) gives. `pause` decides all of this from the
+  row's metadata, re-read at that point, because the agent's calls are written by another process than
+  the job that pauses it.
+
+There is no sweep for the same contradiction at rest. `pause` is the transition that ends a turn, so
+it is where the armed wakes are read; a session that reaches `needs_input` by another route (a
+recovery that gave up, a restore from the trash) is there for a human, and a sweep that slept it would
+hide it.
 
 A park that passes `"halt": true` does not wait for that next `pause` — it stops the turn itself
 (`Sessions::HaltRunningTurn` terminates the process and pauses the session), so the session is

@@ -7,8 +7,10 @@ require "aasm"
 # invalid state changes that could lead to data corruption or orphaned processes.
 #
 # State Definitions:
-# - waiting: Not executing. Either dormant, or a turn has been handed over and is
-#   queued for one of the `agents` lane's worker threads.
+# - waiting: No turn recorded as started. Either dormant, or a turn has been handed
+#   over and is queued for one of the `agents` lane's worker threads — or a worker
+#   has it and has not recorded `start!` yet, with the process already live. Ask
+#   `Sessions::LiveTurn.in_progress?` before reading `waiting` as "not executing".
 # - running: An `agents`-lane worker thread is executing a turn for this session.
 # - needs_input: Agent has paused and is waiting for user input (follow-up prompt)
 # - failed: Session encountered an error and cannot proceed
@@ -356,6 +358,9 @@ module SessionStateMachine
             enqueue_session_inference_if_needed
             enqueue_status_summary_refresh
           end
+          # Everything below decides where the session rests, from marks that other
+          # processes write while the turn runs.
+          refresh_metadata_at_turn_end
           # Before execute_pending_sleep, which asks #armed_one_time_wake? whether
           # a preserved re-sleep still has something to undo it. A wake this turn
           # was woken by must not answer that question — it belongs to the wait
@@ -372,6 +377,9 @@ module SessionStateMachine
           # run, so it has not answered anyone, and a recovery sweep is owed it
           # in needs_input.
           release_hand_back_at_turn_end unless turn_stood_down_before_it_ran?
+          # After both, for the same reason: it reads what is still armed and
+          # whether the hand-back still stands.
+          arrange_sleep_on_armed_schedule
           execute_pending_sleep
           # Last, and after execute_pending_sleep, so the check below reads the
           # state the sleep left behind rather than the one it replaced. It no
@@ -1598,6 +1606,62 @@ module SessionStateMachine
   rescue => e
     # Alert: the failure mode is the bug this exists to fix — a session that has
     # been answered left sitting in the human's action queue.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Take the row's metadata over the caller's copy of it.
+  #
+  # The agent arms a wake or calls `rest_in_needs_input` through a web process while
+  # the job that will pause the session holds its own instance. A copy older than
+  # either call would rest a sleeping session in `needs_input`, or sleep one that had
+  # just handed back to a human. Nothing unsaved is lost: the transition saved the row.
+  def refresh_metadata_at_turn_end
+    self.class.transaction(requires_new: true) do
+      write_attribute(:metadata, self.class.where(id: id).pick(:metadata))
+      clear_attribute_change("metadata")
+    end
+  rescue => e
+    # Alert: the rest is then decided from a copy that may be stale.
+    report_swallowed_side_effect(__method__, e, alert: true)
+  end
+
+  # Derive the turn-end sleep from the wakes that are armed, when nothing marked it.
+  #
+  # `pending_sleep` is a note some writer had to leave at the right moment, and a
+  # turn can end without one: the wake was armed while the row did not yet read
+  # `running`, or a resume in between cleared the note. Session 30564 came to rest
+  # in the human's action queue that way, holding a deadline it had armed itself.
+  # The trigger rows are the durable record of the same decision, so they are read
+  # here, once, at the only transition that ends a turn.
+  #
+  # Only a still-fireable one-time schedule counts, as on every other re-sleep
+  # path (#648), and never one held from the wait that just ended. A pause that is
+  # somebody else's decision is left where it is: any `paused_by`, a turn that never
+  # ran, and a hand-back to a human.
+  def arrange_sleep_on_armed_schedule
+    self.class.transaction(requires_new: true) do
+      next if metadata&.dig("pending_sleep") == true || handed_back_to_human?
+      next if metadata&.dig("paused_by").present? || status_summary_fork? || turn_stood_down_before_it_ran?
+
+      wake = pending_one_time_wake_conditions
+        .where(condition_type: "schedule", triggers: { wake_held_at: nil })
+        .find { |condition| self.class.one_time_wake_pending?(condition) }
+      next unless wake
+
+      merge_metadata!(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE).merge(
+          PENDING_SLEEP_REQUIRES_WAKE => true
+        )
+      )
+      logs.create!(
+        content: "[Trigger##{wake.trigger_id}] This turn ended with no sleep arranged and this wake-up still " \
+          "armed — going back to sleep on it",
+        level: "info"
+      )
+    end
+  rescue => e
+    # Alert: the session rests in the human's action queue with a wake armed and
+    # nothing for a human to do.
     report_swallowed_side_effect(__method__, e, alert: true)
   end
 
