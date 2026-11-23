@@ -49,9 +49,85 @@ class TranscriptCopyJobTest < ActiveJob::TestCase
     Session.where(id: session.id).update_all([ "metadata = metadata - ?::text", TranscriptCopyJob::RETRY_AT_KEY ])
   end
 
+  def with_memory_cache
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    yield
+  ensure
+    Rails.cache = original
+  end
+
   def gunzip(bytes) = Zlib::GzipReader.new(StringIO.new(bytes)).read.force_encoding("UTF-8")
 
   def object(name) = @gcs.objects.fetch(name)
+
+  test "a tick records what it resolved for the health report, off or on, and never the key" do
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    assert_nil TranscriptStorage.recorded_configuration
+
+    TranscriptCopyJob.perform_now
+    on = TranscriptStorage.recorded_configuration
+    assert on.configured?
+    assert_equal "zimmer-transcripts", on.bucket
+    assert_no_match(/PRIVATE KEY|private_key/, Rails.cache.read(TranscriptStorage::RECORDED_KEY).inspect)
+
+    configure({})
+    TranscriptCopyJob.perform_now
+    assert TranscriptStorage.recorded_configuration.off?
+
+    configure(TranscriptStorage::BUCKET => "zimmer-transcripts")
+    TranscriptCopyJob.perform_now
+    half = TranscriptStorage.recorded_configuration
+    assert_not half.off?
+    assert_includes half.problem, TranscriptStorage::KEY_JSON
+
+    travel TranscriptStorage::RECORDED_TTL + 1.minute
+    assert_nil TranscriptStorage.recorded_configuration, "a job that stopped recording is not still off"
+  ensure
+    Rails.cache = original
+  end
+
+  test "a tick that cannot reach the secret store keeps the last record, and its own problem if there is none" do
+    with_memory_cache do
+      unread = TranscriptStorage::Configuration.new(problem: "the secret store could not be read (X)", unread: true)
+      TranscriptStorage.stubs(:configuration).returns(unread)
+      TranscriptCopyJob.perform_now
+      assert_includes TranscriptStorage.recorded_configuration.problem, "could not be read"
+
+      configure(TranscriptStorage::BUCKET => "zimmer-transcripts", TranscriptStorage::KEY_JSON => FakeGcs.key_json)
+      TranscriptCopyJob.perform_now
+      TranscriptStorage.stubs(:configuration).returns(unread)
+      TranscriptCopyJob.perform_now
+      assert TranscriptStorage.recorded_configuration.configured?
+    end
+  end
+
+  test "a key pasted into the bucket's name is recorded nowhere" do
+    with_memory_cache do
+      configure(TranscriptStorage::BUCKET => FakeGcs.key_json)
+      TranscriptCopyJob.perform_now
+
+      assert_includes TranscriptStorage.recorded_configuration.problem, "is not a bucket name"
+      assert_nil TranscriptStorage.recorded_configuration.bucket
+      assert_no_match(/private_key/, Rails.cache.read(TranscriptStorage::RECORDED_KEY).inspect)
+    end
+  end
+
+  test "a record another version wrote is read for the fields this one knows" do
+    with_memory_cache do
+      Rails.cache.write(TranscriptStorage::RECORDED_KEY, { configured: true, bucket: "b", later: 1 })
+
+      assert_equal [ true, "b", nil ], TranscriptStorage.recorded_configuration.to_h.values
+    end
+  end
+
+  test "a cache that cannot be written does not stop the copy" do
+    Rails.cache.stubs(:write).raises(RuntimeError)
+    archived_session
+
+    assert_equal 1, TranscriptCopyJob.new.perform[:copied]
+  end
 
   test "copies a transcript and its subagents, readable without Zimmer, and records where" do
     content = jsonl(1_500)

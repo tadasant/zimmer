@@ -26,11 +26,17 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     Rails.cache = @original_cache
   end
 
-  test "the Transcript Storage panel renders off, and with copies" do
+  test "the Transcript Storage panel renders unrecorded, off, and with copies" do
+    get "/health"
+    assert_includes response.body, "has not recorded the configuration"
+
+    TranscriptStorage.stubs(:recorded_configuration)
+      .returns(TranscriptStorage::Recorded.new(configured: false, bucket: nil, problem: nil))
     get "/health"
     assert_includes response.body, "Off: no transcript storage bucket is configured"
 
-    TranscriptStorage.stubs(:configuration).returns(TranscriptStorage::Configuration.new(bucket: "zimmer-transcripts", client: Object.new))
+    TranscriptStorage.stubs(:recorded_configuration)
+      .returns(TranscriptStorage::Recorded.new(configured: true, bucket: "zimmer-transcripts", problem: nil))
     TranscriptCopy.create!(session_id: 1, bucket: "zimmer-transcripts", manifest_object: "m", manifest_generation: 1, transcript_object: "t",
       transcript_generation: 1, transcript_digest: "d", transcript_byte_size: 1_000, transcript_line_count: 1,
       transcript_compressed_bytes: 200, conversation_byte_size: 40, subagents_fingerprint: "", verified_at: 10.minutes.ago)

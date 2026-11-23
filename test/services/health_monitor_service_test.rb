@@ -337,8 +337,9 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     end
   end
 
-  def transcript_storage(**values)
-    TranscriptStorage.stubs(:configuration).returns(TranscriptStorage::Configuration.new(**values))
+  def transcript_storage(bucket: nil, client: nil, problem: nil)
+    TranscriptStorage.stubs(:recorded_configuration)
+      .returns(TranscriptStorage::Recorded.new(configured: client.present?, bucket: bucket, problem: problem))
     @service.full_health_report[:transcript_storage_health]
   end
 
@@ -393,6 +394,27 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     TranscriptCopyJob.expects(:skipped).never
 
     assert_equal 0, transcript_storage[:awaiting_copy]
+  end
+
+  test "transcript_storage_health counts nothing with no bucket to count against" do
+    TranscriptCopyJob.expects(:candidates).never
+
+    storage = transcript_storage(problem: "the secret store could not be read (X)")
+
+    assert storage[:status].warning?
+    assert_equal 0, storage[:awaiting_copy]
+  end
+
+  test "transcript_storage_health never resolves the configuration, recorded or not" do
+    TranscriptStorage.expects(:configuration).never
+    SecretProviders.expects(:chain).never
+
+    transcript_storage
+    TranscriptStorage.unstub(:recorded_configuration)
+    storage = @service.transcript_storage_health
+
+    assert storage[:status].unknown?
+    assert_equal 0, storage[:awaiting_copy]
   end
 
   test "transcript_storage_health reports a failed read instead of raising" do
