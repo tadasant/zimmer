@@ -1015,7 +1015,7 @@ a different claim from "not there", and both surfaces say which one it is. See
 
 The worker is replaced on every deploy, so a run can be killed at any point. What it finished
 staging is kept, and only the session in flight is lost. A merge can also be killed anywhere: before
-the rename nothing has changed, and after it the same staged files are merged again, which replaces
+the rename `latest.zip` has not changed, and after it the same staged files are merged again, which replaces
 each entry with itself. Recording progress only in the final rewrite of a multi-gigabyte zip is what
 the job did before, and a deploy landing inside a run threw the whole run away.
 
@@ -1023,15 +1023,20 @@ An archive under 1 GiB is merged on every run. A larger one is merged every 30 m
 merge copies all of it. `TranscriptArchiveSplicer` does that copy without rubyzip, which on a large
 archive seeks to every entry to open it and then writes it 128 KiB at a time, waiting for Ruby's
 global lock on each piece. The splicer reads the central directory in one go, copies runs of
-unchanged entries inside the kernel still compressed, and rewrites only their offsets. An archive it
-cannot parse is left alone and the run fails, rather than being rebuilt over. A merge that would
-leave less than 2 GiB free on the volume is skipped with a WARN, and what is staged waits.
+unchanged entries inside the kernel still compressed, and rewrites only their offsets. It checks each
+entry's size against the space it occupies, and where the directory is wrong (rubyzip leaves stale
+offsets when a rewrite moves an entry below 4 GiB) it finds the entries by their own headers. An
+archive it still cannot read is kept as `latest.unreadable.zip` and rebuilt from the database. A tick
+that could not merge with 2 GiB to spare on the volume stages nothing either, and says so at WARN.
+
+A merge also checks the sidecar against the archive. A stamp with no entry behind it is dropped, so
+that session is read again, and an entry nothing lists is dropped if its session no longer exists.
 
 Staging reads sessions one at a time rather than loading every changed session at once. A
 transcript is a single large payload, so holding a whole corpus of them is what used to run the
 worker out of memory ([#719](https://github.com/tadasant/zimmer/issues/719)). It stages at most
 `MAX_SESSIONS_PER_RUN` sessions per tick, and stops between sessions once a ten-minute
-`RUN_DEADLINE` has passed. It always stages at least one, so a backlog drains over several ticks.
+`RUN_DEADLINE` (three minutes when a merge is due) has passed. It always stages at least one, so a backlog drains over several ticks.
 The deadline exists because `SingletonSweep` refuses every tick while a run is in progress: on
 2026-10-09 one run held the slot for over two hours and `transcript_archive` paged as a stale cron
 ([#1264](https://github.com/tadasant/zimmer/issues/1264)).

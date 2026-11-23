@@ -91,6 +91,27 @@ class TranscriptArchiveSplicerTest < ActiveSupport::TestCase
     end
   end
 
+  # What rubyzip leaves when a rewrite moves an entry from above 4 GiB to below it: the
+  # bytes are right and the directory still holds the old offset.
+  test "entries whose directory offset is stale are found by their local headers" do
+    files = (1..6).to_h { |n| [ "#{n}.json", SecureRandom.random_bytes(n * 700) ] }
+    [ buffered("a.zip", files), streamed("b.zip", files) ].each do |source|
+      good = TranscriptArchiveSplicer.entries_at(source)
+      { "inside" => good[1].offset + 5, "past the end" => 0xFFFFFFFE }.each do |label, stale|
+        bytes = File.binread(source)
+        at = bytes.rindex(good[3].record)
+        moved = TranscriptArchiveSplicer.relocate(good[3].record, stale)
+        assert_equal good[3].record.bytesize, moved.bytesize
+        bytes[at, moved.bytesize] = moved
+        File.binwrite(path("stale.zip"), bytes)
+        assert contents(splice(all(path("stale.zip")))) == files.transform_values(&:b), label
+
+        kept = TranscriptArchiveSplicer.entries_at(path("stale.zip")).reject { |e| e.name == "3.json" }
+        assert contents(splice([ path("stale.zip"), kept ])) == files.except("3.json").transform_values(&:b), label
+      end
+    end
+  end
+
   test "refuses a file that is not a whole zip" do
     good = File.binread(streamed("good.zip", "a" => "A" * 1000, "b" => "B"))
     {

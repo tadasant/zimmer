@@ -21,7 +21,11 @@
 #
 # An entry's bytes are taken as everything from its local header to the next entry's, so
 # this reads archives whose entries are packed back to back: what rubyzip writes and what
-# this writes. Anything that does not add up raises Invalid before a byte is copied.
+# this writes. Every slot is checked against the entry's own sizes. When one does not fit,
+# the entries are found by walking the local headers instead, which rubyzip keeps right
+# when its directory is wrong: moving an entry from above 4 GiB to below it leaves the old
+# 64-bit offset in the directory. Anything that still does not add up raises Invalid before
+# a byte is copied.
 class TranscriptArchiveSplicer
   class Invalid < StandardError; end
 
@@ -35,13 +39,16 @@ class TranscriptArchiveSplicer
   LOCATOR_SIG = 0x07064b50
   LOCATOR_SIZE = 20
   MAX_COMMENT = 0xFFFF
+  LOCAL_SIG = 0x04034b50
+  # The most a local header's extra field adds to an entry: a ZIP64 block and a timestamp.
+  LOCAL_EXTRA_MAX = 64
   ZIP64_ID = 0x0001
   ZIP64_VERSION = 45
   U16 = 0xFFFF
   U32 = 0xFFFFFFFF
 
   # One central-directory record: its raw bytes, and where its entry lives in the source.
-  Entry = Struct.new(:name, :record, :offset, :length)
+  Entry = Struct.new(:name, :record, :offset, :length, :compressed)
 
   class << self
     # The entries of the zip open at +io+, in file order.
@@ -53,10 +60,9 @@ class TranscriptArchiveSplicer
       parsed.each_with_index do |entry, index|
         ends_at = parsed[index + 1]&.offset || directory_offset
         entry.length = ends_at - entry.offset
-        raise Invalid, "entry #{entry.name} has no room at offset #{entry.offset}" if entry.length < LOCAL_HEADER_SIZE
       end
-      parsed
-    rescue EOFError, TypeError, ArgumentError => e
+      parsed.all? { |entry| fits?(entry) } ? parsed : relocate_by_walking(io, parsed, directory_offset)
+    rescue EOFError, TypeError, ArgumentError, RangeError, NoMethodError, Errno::EINVAL => e
       raise Invalid, "unreadable zip: #{e.message}"
     end
 
@@ -166,7 +172,7 @@ class TranscriptArchiveSplicer
         raise Invalid, "truncated central-directory record at #{at}" unless record.bytesize == length
 
         name = record.byteslice(RECORD_SIZE, name_length).force_encoding(Encoding::UTF_8)
-        entries << Entry.new(name, record, offset_of(record, name_length, extra_length))
+        entries << entry_for(name, record, extra_length)
         at += length
       end
       raise Invalid, "expected #{count} entries, found #{entries.size}" unless entries.size == count
@@ -174,13 +180,51 @@ class TranscriptArchiveSplicer
       entries
     end
 
-    def offset_of(record, name_length, extra_length)
+    def entry_for(name, record, extra_length)
       compressed, size = record.unpack("@20VV")
       offset = record.unpack1("@42V")
-      return offset unless offset == U32
+      wide, = split_zip64(record.byteslice(RECORD_SIZE + name.bytesize, extra_length))
+      wide.shift if size == U32
+      compressed = wide.shift if compressed == U32
+      offset = wide.shift if offset == U32
+      raise Invalid, "a ZIP64 record is missing a value" if compressed.nil? || offset.nil?
 
-      wide, = split_zip64(record.byteslice(RECORD_SIZE + name_length, extra_length))
-      wide[[ size, compressed ].count(U32)] || raise(Invalid, "a ZIP64 record is missing its offset")
+      Entry.new(name, record, offset, nil, compressed)
+    end
+
+    # The slack above the minimum is the local header's extra field.
+    def fits?(entry)
+      least = LOCAL_HEADER_SIZE + entry.name.bytesize + entry.compressed
+      entry.length.between?(least, least + LOCAL_EXTRA_MAX)
+    end
+
+    # Takes each entry's place from the local headers, read one after another from the
+    # start of the file. One small read per entry, so it is the fallback, not the rule.
+    def relocate_by_walking(io, entries, directory_offset)
+      found = {}
+      at = 0
+      while at < directory_offset
+        header = io.pread(LOCAL_HEADER_SIZE, at)
+        raise Invalid, "no entry where one was expected, at #{at}" unless header.unpack1("V") == LOCAL_SIG
+
+        compressed, size, name_length, extra_length = header.unpack("@18VVvv")
+        rest = io.pread(name_length + extra_length, at + LOCAL_HEADER_SIZE)
+        if compressed == U32
+          wide, = split_zip64(rest.byteslice(name_length, extra_length))
+          compressed = wide[size == U32 ? 1 : 0] || raise(Invalid, "a ZIP64 entry at #{at} is missing its size")
+        end
+        length = LOCAL_HEADER_SIZE + name_length + extra_length + compressed
+        name = rest.byteslice(0, name_length).force_encoding(Encoding::UTF_8)
+        found[name] = [ at, length, compressed ]
+        at += length
+      end
+      raise Invalid, "the last entry runs into the central directory" unless at == directory_offset
+
+      entries.each do |entry|
+        entry.offset, entry.length, compressed = found[entry.name]
+        raise Invalid, "#{entry.name} is not where its size says" unless compressed == entry.compressed
+      end
+      entries.sort_by(&:offset)
     end
 
     # [the ZIP64 block's 64-bit values, every other extra block's bytes]

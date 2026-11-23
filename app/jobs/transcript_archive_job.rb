@@ -104,6 +104,10 @@ class TranscriptArchiveJob < ApplicationJob
   MERGE_INTERVAL = 30.minutes
   MERGE_EVERY_RUN_BELOW = 1.gigabyte
 
+  # How long a run with a merge to do may stage first. Shorter than RUN_DEADLINE so that
+  # through a long catch-up the merge is not always the part a deploy kills.
+  MERGE_RUN_DEADLINE = 3.minutes
+
   # Free space a merge must leave on the volume, which also holds every clone.
   MERGE_HEADROOM = 2.gigabytes
 
@@ -154,6 +158,7 @@ class TranscriptArchiveJob < ApplicationJob
   OWN_TEMP_NAMES = [ MERGE_TEMP_NAME, METADATA_TEMP_NAME, MANIFEST_TEMP_NAME ].freeze
 
   STAGING_SUBDIR = "staged"
+  UNREADABLE_NAME = "latest.unreadable.zip"
 
   class << self
     # Resolved at call time (never memoized) so tests that stub HOME and ops that
@@ -172,7 +177,7 @@ class TranscriptArchiveJob < ApplicationJob
   end
 
   def perform
-    @deadline = monotonic_now + run_deadline.to_f
+    started = monotonic_now
     FileUtils.mkdir_p(archive_dir)
     unless acquire_build_lock
       Rails.logger.warn "[TranscriptArchiveJob] another build holds #{LOCK_NAME}; skipping this tick"
@@ -181,6 +186,10 @@ class TranscriptArchiveJob < ApplicationJob
 
     sweep_orphaned_temp_files
     staging = TranscriptArchiveStaging.new(archive_dir.join(STAGING_SUBDIR))
+    return unless room_to_merge?(staging)
+
+    @run_budget = merge_due? ? [ run_deadline, MERGE_RUN_DEADLINE ].min : run_deadline
+    @deadline = started + @run_budget.to_f
 
     previous_metadata = load_metadata
 
@@ -193,7 +202,7 @@ class TranscriptArchiveJob < ApplicationJob
     # changed since, while manifest.json goes on reporting the full count. Discarding the
     # sidecar re-detects the corpus instead, which MAX_SESSIONS_PER_RUN is what makes
     # affordable.
-    previous_sessions = if File.exist?(archive_path)
+    previous_sessions = if File.size?(archive_path)
       previous_metadata["sessions"] || {}
     else
       {}
@@ -466,12 +475,12 @@ class TranscriptArchiveJob < ApplicationJob
         # WARN for the same reason as the cap's deferral line: production ships only WARN
         # and above, and this is the line that says a run hit the deadline rather than hung.
         Rails.logger.warn "[TranscriptArchiveJob] stopped after #{attempted} of #{changed_ids.size} sessions " \
-                          "at the #{run_deadline.inspect} run deadline; #{cut_short} deferred to the next tick"
+                          "at the #{@run_budget.inspect} run deadline; #{cut_short} deferred to the next tick"
       end
 
       vanished_ids = changed_ids.first(attempted).map(&:to_s).reject { |id| all_sessions_metadata.key?(id) }
       prune_session_entries(zip, removed_session_ids.to_set | vanished_ids)
-      merge(zip, all_sessions_metadata, deferred_count: deferred_count) if merge_due?(zip)
+      merge(zip, all_sessions_metadata, deferred_count: deferred_count) if merge_due?
     ensure
       zip.discard_open_fragment
     end
@@ -479,16 +488,20 @@ class TranscriptArchiveJob < ApplicationJob
 
   # Whether this run rewrites `latest.zip`, or leaves what it staged for a later one.
   # The archive's own mtime is when it was last merged, so this holds no state of its own.
-  def merge_due?(staging)
+  def merge_due?
     return true unless (size = File.size?(archive_path))
-    return false unless size < merge_every_run_below || File.mtime(archive_path) < MERGE_INTERVAL.ago
 
-    needed = size + staging.bytes + MERGE_HEADROOM
+    size < merge_every_run_below || File.mtime(archive_path) < MERGE_INTERVAL.ago
+  end
+
+  # Checked before staging, not before merging: staging into a volume that cannot take the
+  # merge would grow a second copy of the corpus on the disk that is already short.
+  def room_to_merge?(staging)
+    needed = (File.size?(archive_path) || 0) + staging.bytes + MERGE_HEADROOM
     free = CloneDiskGuard.available_bytes(archive_dir)
     return true if free.nil? || free >= needed
 
-    Rails.logger.warn "[TranscriptArchiveJob] not merging: #{free} bytes free, #{needed} needed; " \
-                      "staged sessions are kept for a later tick"
+    Rails.logger.warn "[TranscriptArchiveJob] skipping this tick: #{free} bytes free, #{needed} needed to merge"
     false
   end
 
@@ -514,14 +527,27 @@ class TranscriptArchiveJob < ApplicationJob
       deferred_count += 1
       nil
     end
+
+    base = File.open(archive_path, "rb") if File.size?(archive_path)
+    begin
+      archived = base ? TranscriptArchiveSplicer.entries(base) : []
+    rescue TranscriptArchiveSplicer::Invalid => e
+      return set_aside_unreadable_archive(e)
+    end
+    archived_ids = archived.filter_map { |entry| extract_session_id_from_path(entry.name) }.to_set
+    gone = staging.pruned_ids | ids_without_a_row(archived_ids - all_sessions_metadata.keys)
+
+    # A stamp with no entry behind it would never be archived again.
+    held = archived.map(&:name).to_set | merged.map { |fragment| "sessions/#{fragment.session_id}.json" }
+    unheld = all_sessions_metadata.keys.reject { |id| held.include?("sessions/#{id}.json") }
+    unheld.each { |id| all_sessions_metadata.delete(id) }
+    deferred_count += unheld.size
+
     manifest = write_manifest(all_sessions_metadata)
     additions = fragments << [ manifest, TranscriptArchiveSplicer.entries_at(manifest) ]
     replaced = additions.flat_map { |_, entries| entries.map(&:name) }.to_set
-
-    base = File.open(archive_path, "rb") if File.size?(archive_path)
-    kept = base ? TranscriptArchiveSplicer.entries(base) : []
-    kept = kept.reject do |entry|
-      replaced.include?(entry.name) || staging.pruned_ids.include?(extract_session_id_from_path(entry.name))
+    kept = archived.reject do |entry|
+      replaced.include?(entry.name) || gone.include?(extract_session_id_from_path(entry.name))
     end
 
     File.open(temp_path, "wb") do |out|
@@ -540,6 +566,25 @@ class TranscriptArchiveJob < ApplicationJob
     FileUtils.rm_f([ temp_path, manifest_temp_path ].compact)
   end
 
+  # An archive that cannot be read may hold entries nothing else does, so it is kept, out of
+  # the way. The next run finds no archive and rebuilds one from the database and whatever
+  # is staged. A second unreadable archive is left where it is: two is not bad luck.
+  def set_aside_unreadable_archive(error)
+    aside = archive_dir.join(UNREADABLE_NAME)
+    raise error if File.exist?(aside)
+
+    Rails.logger.error "[TranscriptArchiveJob] #{archive_path} is unreadable (#{error.message}); " \
+                       "keeping it as #{UNREADABLE_NAME} and rebuilding"
+    File.rename(archive_path, aside)
+  end
+
+  # Archived ids the sidecar does not list. Usually it was lost and they are still good, so
+  # only the ones whose session is really gone are dropped.
+  def ids_without_a_row(ids)
+    existing = ids.each_slice(BIND_SLICE_SIZE).flat_map { |slice| with_db_retry { Session.where(id: slice).pluck(:id) } }
+    ids - existing.map(&:to_s)
+  end
+
   # Yields each changed session, one resident at a time, until the run's deadline.
   #
   # This is the whole of #719. The caller used to be handed
@@ -554,8 +599,9 @@ class TranscriptArchiveJob < ApplicationJob
   # Not one copy of it, and the difference is worth stating rather than rounding away —
   # this is exactly the kind of number someone later budgets a memory cap against.
   # `transcript` is a `json` column, so a loaded row holds both the raw database string
-  # and the type-cast value, and `JSON.generate` builds a third copy before the write.
-  # Budget about three times the largest transcript.
+  # and the type-cast value, and `JSON.generate` builds a third copy before the write,
+  # and compressing it in one call adds the compressed copy. Budget about three and a half
+  # times the largest transcript.
   #
   # `uncached` is the other half. Rails runs a job inside the executor's query cache, and
   # each `find_by(id: n)` is a distinct cache key, so without it the result sets stay live

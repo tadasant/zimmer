@@ -9323,8 +9323,13 @@ there to survive, not something to cause on purpose.
 A merge of an archive over 1 GiB runs every 30 minutes, so `latest.zip` can be up to about 40
 minutes behind what the job has already staged. Nothing shows the staged count on its own:
 `deferred_count` is as of the last merge. A staged file that will not parse is discarded and its
-session read again, but an unparseable `latest.zip` stops the job until someone removes or replaces
-it, because it may hold entries nothing else does.
+session read again. An unparseable `latest.zip` is kept as `latest.unreadable.zip`, which nothing
+deletes; a second one, while the first is still there, stops the job.
+
+The per-environment directory protects the archive from a development server running current code. A
+clone made before that change, a server started with `RAILS_ENV=production`, or one that inherits
+`AGENT_TRANSCRIPT_ARCHIVE_DIR` still resolves production's directory. The archive is rebuilt from the
+database if that happens, over about a day.
 
 ## Root data isolation is a scoping boundary, not an authorization one
 

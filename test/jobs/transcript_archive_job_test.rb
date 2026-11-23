@@ -1169,18 +1169,92 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     assert JSON.parse(File.read(@metadata_path))["complete"]
   end
 
-  # An archive this cannot read is not an archive it may replace: it may hold entries
-  # nothing else does.
-  test "an unreadable archive is left alone rather than rebuilt over" do
+  # It may hold entries nothing else does, so it is kept; and the job must not stop for it.
+  test "an unreadable archive is set aside and rebuilt" do
     TranscriptArchiveJob.perform_now
+    ids = archived_ids
     File.binwrite(@archive_path, "x" * 4096)
     sessions_with_transcripts.first.update_columns(updated_at: 1.hour.from_now)
 
-    assert_raises(TranscriptArchiveSplicer::Invalid) { TranscriptArchiveJob.perform_now }
+    Rails.logger.stubs(:error)
+    Rails.logger.expects(:error).with(regexp_matches(/is unreadable .* keeping it as latest.unreadable.zip/)).once
+    TranscriptArchiveJob.perform_now
+    aside = @archive_dir.join("latest.unreadable.zip")
+    assert_equal "x" * 4096, File.binread(aside)
 
-    assert_equal "x" * 4096, File.binread(@archive_path)
-    assert_equal 1, staged_ids.size
+    TranscriptArchiveJob.perform_now
+    assert_equal ids, archived_ids
+    assert File.exist?(aside)
     assert_empty temp_files
+
+    # A second one is left alone rather than overwriting the first.
+    File.binwrite(@archive_path, "y" * 4096)
+    sessions_with_transcripts.first.update_columns(updated_at: 2.hours.from_now)
+    assert_raises(TranscriptArchiveSplicer::Invalid) { TranscriptArchiveJob.perform_now }
+    assert_equal "x" * 4096, File.binread(aside)
+    assert_equal "y" * 4096, File.binread(@archive_path)
+  end
+
+  test "a sidecar that claims more than the archive holds is corrected" do
+    TranscriptArchiveJob.perform_now
+    ids = archived_ids
+    Zip::File.open(@archive_path) { |zip| zip.remove("sessions/#{ids.first}.json") }
+    Session.find(ids.last).update_columns(updated_at: 1.hour.from_now)
+
+    TranscriptArchiveJob.perform_now
+    assert_equal false, JSON.parse(File.read(@metadata_path))["complete"]
+    TranscriptArchiveJob.perform_now
+    assert_equal ids, archived_ids
+
+    File.truncate(@archive_path, 0)
+    TranscriptArchiveJob.perform_now
+    assert_equal ids, archived_ids, "an empty archive is not believed either"
+  end
+
+  test "an archived session the sidecar does not list is dropped once its row is gone" do
+    TranscriptArchiveJob.perform_now
+    changed, orphan = sessions_with_transcripts.first(2)
+    orphan_entry = { "sessions/999999999999.json" => "{}" }
+    Zip::File.open(@archive_path) { |zip| orphan_entry.each { |name, json| zip.get_output_stream(name) { |os| os.write(json) } } }
+    sidecar = JSON.parse(File.read(@metadata_path))
+    sidecar["sessions"].delete(orphan.id.to_s)
+    File.write(@metadata_path, JSON.generate(sidecar))
+    TranscriptArchiveJob.any_instance.stubs(:max_sessions_per_run).returns(1)
+    changed.update_columns(updated_at: 1.hour.from_now)
+
+    TranscriptArchiveJob.perform_now
+
+    assert_not_includes archived_ids, "999999999999"
+    assert_includes archived_ids, orphan.id.to_s, "its row is still there, so its entry is too"
+  end
+
+  test "a changed subagent transcript replaces its entry through a merge, and a retried read adds it once" do
+    session = sessions_with_transcripts.first
+    staging = TranscriptArchiveStaging.new(staged_dir)
+    2.times { staging.put("sessions/#{session.id}.json", "{}") }
+    staging.commit(session.id, "2026-01-01T00:00:00.000000Z")
+    fragment = Dir.glob(staged_dir.join("*.zip")).sole
+    assert_equal 1, TranscriptArchiveSplicer.entries_at(fragment).size
+
+    subagent = SubagentTranscript.create!(session: session, agent_id: "agent-#{SecureRandom.hex(4)}", transcript: '{"text":"one"}', status: "completed")
+    TranscriptArchiveJob.perform_now
+    subagent.update_columns(transcript: '{"text":"two"}', updated_at: 1.hour.from_now)
+    TranscriptArchiveJob.perform_now
+
+    name = "sessions/#{session.id}/subagent_transcripts/#{subagent.agent_id}.json"
+    Zip::File.open(@archive_path) do |zip|
+      assert_equal 1, zip.entries.count { |e| e.name == name }
+      assert_includes zip.read(name), "two"
+    end
+  end
+
+  test "a run with a merge to do gives staging less time" do
+    hold_merges!
+    TranscriptArchiveJob.perform_now
+    budget = -> { TranscriptArchiveJob.new.tap(&:perform).instance_variable_get(:@run_budget) }
+    assert_equal TranscriptArchiveJob::RUN_DEADLINE, budget.call
+    FileUtils.touch(@archive_path, mtime: 2.hours.ago.to_time)
+    assert_equal TranscriptArchiveJob::MERGE_RUN_DEADLINE, budget.call
   end
 
   test "a session removed while staged does not reach the archive" do
@@ -1201,19 +1275,18 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     assert_not_includes JSON.parse(File.read(@metadata_path))["sessions"].keys, removed.id.to_s
   end
 
-  test "does not merge onto a volume without room, and keeps what it staged" do
+  test "neither stages nor merges on a volume without room for the merge" do
     TranscriptArchiveJob.perform_now
     before = File.binread(@archive_path)
-    changed = sessions_with_transcripts.first
-    changed.update_columns(updated_at: 1.hour.from_now)
+    sessions_with_transcripts.first.update_columns(updated_at: 1.hour.from_now)
     CloneDiskGuard.stubs(:available_bytes).returns(TranscriptArchiveJob::MERGE_HEADROOM)
 
     Rails.logger.stubs(:warn)
-    Rails.logger.expects(:warn).with(regexp_matches(/not merging: .* bytes free/)).once
+    Rails.logger.expects(:warn).with(regexp_matches(/skipping this tick: .* bytes free/)).once
     TranscriptArchiveJob.perform_now
 
     assert_equal before, File.binread(@archive_path)
-    assert_equal [ changed.id.to_s ], staged_ids
+    assert_empty staged_ids
   end
 
   test "a run that finds another build in progress touches nothing" do

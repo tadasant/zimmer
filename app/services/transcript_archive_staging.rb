@@ -40,8 +40,11 @@ class TranscriptArchiveStaging
 
   # Adds one entry to the fragment being written. Compressed in a single call, so the
   # deflate runs outside the interpreter lock instead of fighting for it per chunk.
+  # A retried read puts the same names again; the first copy is kept.
   def put(name, data)
     @open ||= ::Zip::OutputStream.open(temp_path)
+    return unless (@names ||= Set.new).add?(name)
+
     @open.put_next_entry(name)
     @open.write(data)
   end
@@ -49,7 +52,7 @@ class TranscriptArchiveStaging
   # Makes the fragment being written durable as +session_id+'s, and returns +stamp+.
   def commit(session_id, stamp)
     @open.close
-    @open = nil
+    @open = @names = nil
     File.open(temp_path) { |file| file.fsync }
     path = File.join(@dir, "#{session_id}@#{stamp}.zip")
     File.rename(temp_path, path)
@@ -73,7 +76,7 @@ class TranscriptArchiveStaging
   rescue StandardError
     nil
   ensure
-    @open = nil
+    @open = @names = nil
     FileUtils.rm_f(temp_path)
   end
 
