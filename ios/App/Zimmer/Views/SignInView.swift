@@ -27,6 +27,10 @@ struct SignInView: View {
     @State private var appHost = ""
     /// The App host row, opened by hand or by an edge refusal that an app host would fix.
     @State private var showsAppHost = false
+    /// Set by such a refusal, for as long as this screen is up: the mark and the subtitle give up
+    /// their room to the message and the field it is about, since the screen does not scroll. Not
+    /// read off the error, which each attempt clears: the header would come and go on every try.
+    @State private var makesRoomForAppHost = false
     /// Whether an address field holds the keyboard. Let go on Sign in, so the keyboard does not
     /// sit over an error banner that comes back without a sign-in sheet in between.
     @FocusState private var editing: AddressField?
@@ -80,8 +84,8 @@ struct SignInView: View {
 
             if let error = shownError {
                 ErrorBanner(error: error)
-                    // Whole, never cut to a line: the fix is at the end of the message.
-                    .fixedSize(horizontal: false, vertical: true)
+                    // Whole, never cut to a line, where the header has made room for it.
+                    .fixedSize(horizontal: false, vertical: makesRoomForAppHost)
             }
 
             if case let .again(deployment) = mode {
@@ -125,16 +129,13 @@ struct SignInView: View {
     private func revealAppHostIfRefused() {
         guard workspaces.addError == .edgeNeedsAppHost else { return }
         showsAppHost = true
+        makesRoomForAppHost = true
     }
 
     private var asksForAddress: Bool {
         if case .again = mode { return false }
         return true
     }
-
-    /// With the App host row open and its banner up, the mark and the subtitle give up their room:
-    /// the sheet does not scroll, and the message and the field it is about come first.
-    private var makesRoomForAppHost: Bool { asksForAddress && shownError == .edgeNeedsAppHost }
 
     private var shownError: ZimmerError? {
         if case .again = mode { return model.error }

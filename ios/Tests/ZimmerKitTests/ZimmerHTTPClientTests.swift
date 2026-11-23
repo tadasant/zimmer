@@ -99,6 +99,20 @@ final class ZimmerHTTPClientTests: XCTestCase {
         XCTAssertNotNil(store.load())
     }
 
+    func testEveryShapeOfEdgeRefusalWithNoAppHostAsksForTheAppHost() async throws {
+        let page403 = HTTPResponse(statusCode: 403, headers: ["cf-access-aud": "x", "content-type": "text/html"])
+        for refusal in [Fixtures.accessRedirect, page403] {
+            let transport = ScriptedTransport([{ _ in refusal }])
+            let client = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
+            do {
+                _ = try await client.sessions(.active)
+                XCTFail("expected edgeNeedsAppHost for \(refusal.statusCode)")
+            } catch {
+                XCTAssertEqual(error as? ZimmerError, .edgeNeedsAppHost)
+            }
+        }
+    }
+
     func testTheEdgeRefusalClassification() {
         XCTAssertEqual(ZimmerError.edgeRefusal(for: ServerOrigins(web: Fixtures.base)), .edgeNeedsAppHost)
         XCTAssertEqual(ZimmerError.edgeRefusal(for: Fixtures.split), .edgeRefused)

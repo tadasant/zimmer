@@ -214,9 +214,8 @@ final class OAuthSignInTests: XCTestCase {
         XCTAssertNotNil(store.load(), "an edge refusal says nothing about Zimmer's grant")
     }
 
-    /// The case that hid for two days: a deployment behind Cloudflare Access, added with the
-    /// App host row left collapsed and empty. The code exchange goes to the web origin, which
-    /// answers 401 with `cf-access-aud` — and "sign in to the edge again" could not help.
+    /// A deployment behind Cloudflare Access, added with the App host row left empty: the code
+    /// exchange goes to the web origin, which answers 401 with `cf-access-aud`.
     func testSigningInWithNoAppHostToAWebOriginBehindTheEdgeAsksForTheAppHost() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
         let store = InMemoryTokenStore()
