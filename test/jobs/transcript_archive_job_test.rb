@@ -71,13 +71,13 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
 
-    File.delete(TranscriptOffloadStore.path_for(session.id))
+    File.delete(TranscriptOffloadStore.paths_for(session.id).first)
     File.delete(@metadata_path)
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
 
     # Present but corrupt takes the other path: read, refused, kept, reported incomplete.
-    File.write(TranscriptOffloadStore.path_for(session.id), "not gzip")
+    File.write(TranscriptOffloadStore.paths_for(session.id).first, "not gzip")
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
     assert_equal false, JSON.parse(File.read(@metadata_path))["complete"]

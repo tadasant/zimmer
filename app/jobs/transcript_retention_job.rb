@@ -124,12 +124,9 @@ class TranscriptRetentionJob < ApplicationJob
     after = [ Time.at(0), 0 ]
 
     failures = 0
-    TranscriptOffloadStore.prepare!
-    swept = TranscriptOffloadStore.sweep_orphaned_temps
-    Rails.logger.warn("[TranscriptRetentionJob] swept #{swept} orphaned temp file(s)") if swept.positive?
-    loop do
-      return finish(result) unless room_to_offload?
+    prepared = false
 
+    loop do
       batch = with_db_retry do
         self.class.candidates(now: now)
           .where("(sessions.archived_at, sessions.id) > (?, ?)", *after)
@@ -138,6 +135,10 @@ class TranscriptRetentionJob < ApplicationJob
           .pluck(:archived_at, :id)
       end
       break if batch.empty?
+
+      # Only once there is work, so a database with none leaves nothing on the volume.
+      prepared ||= prepare_store
+      return finish(result) unless room_to_offload?
 
       batch.each do |archived_at, id|
         return finish(result) if monotonic_now >= deadline
@@ -152,13 +153,20 @@ class TranscriptRetentionJob < ApplicationJob
     end
 
     finish(result)
-  rescue TranscriptOffloadStore::Error => e
+  rescue TranscriptOffloadStore::Error, SystemCallError => e
     # The store will not act for this process at all; nothing was read or deleted.
     Rails.logger.error("[TranscriptRetentionJob] #{e.class}: #{e.message}")
     finish(result)
   end
 
   private
+
+  def prepare_store
+    with_db_retry { TranscriptOffloadStore.prepare! }
+    swept = TranscriptOffloadStore.sweep_orphaned_temps
+    Rails.logger.warn("[TranscriptRetentionJob] swept #{swept} orphaned temp file(s)") if swept.positive?
+    true
+  end
 
   # Unknown free space is not a reason to stop: `df` failing says nothing about the
   # disk, and a write that hits ENOSPC fails before any chunk is deleted.

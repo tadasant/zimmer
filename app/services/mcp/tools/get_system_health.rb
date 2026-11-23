@@ -231,7 +231,8 @@ module Mcp
           *Array(database[:largest_tables]).map { |t| "  - `#{t[:name]}`: #{human.call(t[:total_bytes])}" },
           *(offload ? [ "  - Transcripts older than #{offload[:retention_days]} days after archive: " \
                         "#{offload[:offloaded_sessions]} session(s) offloaded, #{offload[:awaiting_offload]} awaiting offload, " \
-                        "#{offload[:skipped_for_mismatch].to_i} set aside (chunks disagree with the row)" ] : [])
+                        "#{offload[:skipped_for_mismatch].to_i} set aside (chunks disagree with the row)" \
+                        "#{"; refused: #{offload[:refusal]}" if offload[:refusal]}" ] : [])
         ]
       end
 

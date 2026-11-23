@@ -143,7 +143,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     CloneDiskGuard.stubs(:available_bytes).returns(nil)
     @session.update_columns(archived_at: 60.days.ago)
     TranscriptRetentionJob.perform_now
-    File.delete(TranscriptOffloadStore.path_for(@session.id))
+    File.delete(TranscriptOffloadStore.paths_for(@session.id).first)
     @mock_fs.mkdir_p(@clone_path)
 
     result = UnarchiveSessionService.call(session: Session.find(@session.id), file_system: @mock_fs)

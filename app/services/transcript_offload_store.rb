@@ -5,7 +5,9 @@ require "fileutils"
 
 # Where a session's transcript lives once TranscriptRetentionJob has moved it out of
 # Postgres: one gzip file per session,
-# `<base>/<store id>/<database location>/<id % 1000>/<id>.jsonl.gz`.
+# `<base>/<store id>/<database location>/<id % 1000>/<id>-<sha256>.jsonl.gz`. The digest
+# is in the name, so a write can only ever replace identical bytes: an overlapping run, a
+# re-offload or a database restored to an earlier point cannot overwrite another version.
 #
 # WHY ONE FILE PER SESSION, AND NOT THE TRANSCRIPT ARCHIVE ZIP
 #
@@ -44,9 +46,11 @@ require "fileutils"
 # host does not strand its files. Every read is checked against the row's digest, so a
 # fallback can only return the exact bytes that row vouches for.
 #
-# A process whose Rails.env is not the environment recorded in the database writes and
-# deletes nothing (Refused): a development process connected to production must not put
-# production's transcripts anywhere.
+# The id is stored with the environment that created it, once. A process in any other
+# environment writes, sweeps and deletes nothing (Refused): a development process connected
+# to production must not put production's transcripts anywhere. Also Refused: creating an id
+# when sessions are already marked offloaded (the id was lost), and writing when they are
+# but the store's directory is absent (the volume is not mounted, or is another machine's).
 #
 # VERIFICATION
 #
@@ -60,6 +64,7 @@ class TranscriptOffloadStore
   class Refused < Error; end
 
   STORE_ID_KEY = "transcript_offload_store_id"
+  STORE_ENVIRONMENT_KEY = "transcript_offload_store_environment"
   STORE_ID_PATTERN = /\A\h{8}(-\h{4}){3}-\h{12}\z/
 
   SUBDIR = "transcript_offload"
@@ -69,7 +74,7 @@ class TranscriptOffloadStore
   # A temp file this old belongs to a writer that was killed before its `ensure` ran.
   # A live write touches its temp continuously and takes seconds.
   TEMP_FILE_MIN_AGE = 1.hour
-  TEMP_FILE_PATTERN = /\A\d+\.jsonl\.gz\.tmp-\h+\z/
+  TEMP_FILE_PATTERN = /\A\d+-\h{64}\.jsonl\.gz\.tmp-\h+\z/
 
   class << self
     # The directory every store shares. Resolved at call time, never memoized, so the env
@@ -86,21 +91,36 @@ class TranscriptOffloadStore
       id && File.join(base, id, database_location)
     end
 
-    # Where this process would write +session_id+, or nil (see .root).
-    def path_for(session_id)
-      dir = root
-      dir && path_in(dir, session_id)
-    end
-
     # Claims and returns this process's own directory. Raises Refused when this process may
     # not write here. Call outside a transaction: the id has to outlive a rollback.
     def prepare!
       refuse_foreign_environment!
+      if Session.where.not(transcript_offloaded_at: nil).exists?
+        raise Refused, "sessions are marked offloaded but this database has no transcript store id" unless store_id
+        raise Refused, "sessions are marked offloaded but #{store_dir} is absent; is the volume mounted?" unless File.directory?(store_dir)
+      end
       create_store_id unless store_id
       root.tap { |dir| FileUtils.mkdir_p(dir) }
     end
 
-    def exist?(session_id) = candidate_paths(session_id).any?
+    # Why this process may not write, or nil. For the health report.
+    def refusal
+      refuse_foreign_environment!
+      nil
+    rescue Refused => e
+      e.message
+    end
+
+    # Every version of +session_id+'s transcript under this database's store id, own
+    # location first.
+    def paths_for(session_id)
+      id = Integer(session_id)
+      directories.flat_map { |dir| Dir.glob(File.join(shard_dir(dir, id), "#{id}-*.jsonl.gz")).sort }
+    rescue Refused
+      []
+    end
+
+    def exist?(session_id) = paths_for(session_id).any?
 
     # Writes +content+ for +session_id+ and proves it: the file on disk is read back,
     # decompressed and hashed, and must equal +digest+ (SHA-256 hex of +content+).
@@ -114,7 +134,7 @@ class TranscriptOffloadStore
     # The digest is checked on the decompressed file, not on what was yielded, so it
     # proves what is actually on disk. Returns the compressed size in bytes.
     def write_stream(session_id, digest:)
-      path = path_in(prepare!, session_id)
+      path = version_path(prepare!, session_id, digest)
       FileUtils.mkdir_p(File.dirname(path))
       temp = "#{path}.tmp-#{SecureRandom.hex(6)}"
 
@@ -148,13 +168,14 @@ class TranscriptOffloadStore
     # Removes a destroyed session's file. Called from Session#reclaim_session_directories
     # and from the job for a session destroyed mid-copy: while the row exists its file may
     # be the only copy. Never touches a directory other than this process's own.
+    # Files an earlier database location left are not reached, and stay.
     def delete(session_id)
-      path = path_for(session_id)
-      return if path.nil?
+      own = root
+      return if own.nil?
 
       refuse_foreign_environment!
-      File.delete(path)
-    rescue Errno::ENOENT
+      id = Integer(session_id)
+      Dir.glob(File.join(shard_dir(own, id), "#{id}-*.jsonl.gz")).each { |path| FileUtils.rm_f(path) }
       nil
     end
 
@@ -163,6 +184,8 @@ class TranscriptOffloadStore
     def sweep_orphaned_temps(now: Time.current)
       own = root
       return 0 unless own && File.directory?(own)
+
+      refuse_foreign_environment!
 
       Dir.children(own).sum do |shard|
         dir = File.join(own, shard)
@@ -182,11 +205,13 @@ class TranscriptOffloadStore
       end
     end
 
-    # The transcript text for +session_id+, verified against +digest+. The first candidate
-    # that verifies wins: after the database moves and moves back, either may be stale.
+    # The transcript text for +session_id+, verified against +digest+.
     def read(session_id, digest:)
       failure = Missing.new("no offloaded transcript for session #{session_id} under #{base}")
-      candidate_paths(session_id).each do |path|
+      directories.each do |dir|
+        path = version_path(dir, session_id, digest)
+        next unless File.file?(path)
+
         text = decompress(path)
         verify!(session_id, text, digest, path)
         return text
@@ -198,19 +223,24 @@ class TranscriptOffloadStore
 
     private
 
-    def path_in(dir, session_id)
+    def shard_dir(dir, id) = File.join(dir, (id % SHARDS).to_s)
+
+    def version_path(dir, session_id, digest)
+      raise Corrupt, "session #{session_id} has no transcript digest" unless digest.to_s.match?(/\A\h{64}\z/)
+
       id = Integer(session_id)
-      File.join(dir, (id % SHARDS).to_s, "#{id}.jsonl.gz")
+      File.join(shard_dir(dir, id), "#{id}-#{digest}.jsonl.gz")
     end
 
-    # Existing files for +session_id+ under this database's store id, own location first.
-    def candidate_paths(session_id)
+    def store_dir = File.join(base, store_id)
+
+    # This process's own directory first, then the other locations of the same store.
+    def directories
       own = root
       return [] if own.nil?
 
-      store = File.dirname(own)
-      siblings = File.directory?(store) ? Dir.children(store).sort.map { |name| File.join(store, name) } : []
-      [ own, *siblings ].uniq.map { |dir| path_in(dir, session_id) }.select { |path| File.file?(path) }
+      siblings = File.directory?(store_dir) ? Dir.children(store_dir).sort.map { |name| File.join(store_dir, name) } : []
+      [ own, *siblings ].uniq
     end
 
     def metadata = ActiveRecord::Base.connection_pool.internal_metadata
@@ -223,13 +253,14 @@ class TranscriptOffloadStore
       id
     end
 
-    # Two processes may race to create it; the first insert wins and both read that one.
+    # Both rows in one statement. Two processes may race; the first insert wins.
     def create_store_id
       connection = ActiveRecord::Base.connection
+      rows = { STORE_ID_KEY => SecureRandom.uuid, STORE_ENVIRONMENT_KEY => Rails.env.to_s }
+        .map { |key, value| "(#{connection.quote(key)}, #{connection.quote(value)}, NOW(), NOW())" }.join(", ")
       connection.execute(<<~SQL.squish)
         INSERT INTO #{connection.quote_table_name(metadata.table_name)} (key, value, created_at, updated_at)
-        VALUES (#{connection.quote(STORE_ID_KEY)}, #{connection.quote(SecureRandom.uuid)}, NOW(), NOW())
-        ON CONFLICT (key) DO NOTHING
+        VALUES #{rows} ON CONFLICT (key) DO NOTHING
       SQL
       raise Refused, "could not record a transcript store id" if store_id.nil?
     end
@@ -239,8 +270,10 @@ class TranscriptOffloadStore
       Digest::SHA256.hexdigest(config.values_at(:host, :port, :database).join("|").downcase).first(16)
     end
 
+    # The environment that created the store, or before there is one, the one Rails
+    # recorded for the database. Every migration rewrites Rails's; nothing rewrites ours.
     def refuse_foreign_environment!
-      recorded = metadata[:environment]
+      recorded = metadata[STORE_ENVIRONMENT_KEY] || metadata[:environment]
       return if recorded == Rails.env.to_s
 
       raise Refused, "database belongs to #{recorded.inspect}, this process is #{Rails.env.inspect}; not touching offloaded transcripts"

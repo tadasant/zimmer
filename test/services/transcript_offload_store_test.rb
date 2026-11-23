@@ -29,8 +29,8 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
   test "writes compressed, sharded by id, and reads back byte for byte" do
     size = TranscriptOffloadStore.write(12_345, @content, digest: @digest)
 
-    path = TranscriptOffloadStore.path_for(12_345)
-    assert path.end_with?("/345/12345.jsonl.gz")
+    path = TranscriptOffloadStore.paths_for(12_345).first
+    assert path.end_with?("/345/12345-#{@digest}.jsonl.gz")
     assert_equal File.size(path), size
     assert_operator size, :<, @content.bytesize
     assert_equal @content, TranscriptOffloadStore.read(12_345, digest: @digest)
@@ -59,7 +59,7 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
     TranscriptOffloadStore.write(9, @content, digest: @digest)
     assert_raises(TranscriptOffloadStore::Corrupt) { TranscriptOffloadStore.read(9, digest: "0" * 64) }
 
-    File.binwrite(TranscriptOffloadStore.path_for(9), "not gzip")
+    File.binwrite(TranscriptOffloadStore.paths_for(9).first, "not gzip")
     assert_raises(TranscriptOffloadStore::Corrupt) { TranscriptOffloadStore.read(9, digest: @digest) }
   end
 
@@ -86,16 +86,16 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
 
   def as_environment(name)
     metadata = ActiveRecord::Base.connection_pool.internal_metadata
-    recorded = metadata[:environment]
-    metadata[:environment] = name
+    recorded = metadata[TranscriptOffloadStore::STORE_ENVIRONMENT_KEY]
+    metadata[TranscriptOffloadStore::STORE_ENVIRONMENT_KEY] = name
     yield
   ensure
-    metadata[:environment] = recorded
+    metadata[TranscriptOffloadStore::STORE_ENVIRONMENT_KEY] = recorded
   end
 
   test "another database on the same volume cannot read, overwrite, delete or sweep these files" do
     TranscriptOffloadStore.write(1, @content, digest: @digest)
-    path = TranscriptOffloadStore.path_for(1)
+    path = TranscriptOffloadStore.paths_for(1).first
     temp = "#{path}.tmp-abc123"
     File.write(temp, "x")
     File.utime(2.hours.ago.to_time, 2.hours.ago.to_time, temp)
@@ -105,7 +105,7 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
       assert_raises(TranscriptOffloadStore::Missing) { TranscriptOffloadStore.read(1, digest: @digest) }
       TranscriptOffloadStore.delete(1)
       TranscriptOffloadStore.write(1, "other\n", digest: Digest::SHA256.hexdigest("other\n"))
-      assert_not_equal path, TranscriptOffloadStore.path_for(1)
+      assert_not_equal path, TranscriptOffloadStore.paths_for(1).first
       assert_equal 0, TranscriptOffloadStore.sweep_orphaned_temps
       TranscriptOffloadStore.delete(1)
     end
@@ -141,7 +141,7 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
     TranscriptOffloadStore.write(4, @content, digest: @digest)
     other = "other\n"
 
-    [ "production", nil ].each do |recorded|
+    [ "production", "development" ].each do |recorded|
       as_environment(recorded) do
         assert_raises(TranscriptOffloadStore::Refused) do
           TranscriptOffloadStore.write(4, other, digest: Digest::SHA256.hexdigest(other))
@@ -154,8 +154,7 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
 
   test "the store id is created once, only by a write, and never used as a path unvalidated" do
     metadata = ActiveRecord::Base.connection_pool.internal_metadata
-    metadata[TranscriptOffloadStore::STORE_ID_KEY] = nil
-    ActiveRecord::Base.connection.execute("DELETE FROM #{metadata.table_name} WHERE key = '#{TranscriptOffloadStore::STORE_ID_KEY}'")
+    ActiveRecord::Base.connection.execute("DELETE FROM #{metadata.table_name} WHERE key LIKE 'transcript_offload_%'")
 
     assert_nil TranscriptOffloadStore.root
     assert_not TranscriptOffloadStore.exist?(5)
@@ -168,5 +167,45 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
 
     metadata[TranscriptOffloadStore::STORE_ID_KEY] = "../../clones"
     assert_raises(TranscriptOffloadStore::Refused) { TranscriptOffloadStore.root }
+    assert_not TranscriptOffloadStore.exist?(5)
+  end
+
+  test "versions never overwrite each other, and destroying the session removes them all" do
+    newer = "newer\n"
+    TranscriptOffloadStore.write(6, @content, digest: @digest)
+    TranscriptOffloadStore.write(6, newer, digest: Digest::SHA256.hexdigest(newer))
+
+    assert_equal @content, TranscriptOffloadStore.read(6, digest: @digest)
+    assert_equal newer, TranscriptOffloadStore.read(6, digest: Digest::SHA256.hexdigest(newer))
+    TranscriptOffloadStore.write(66, @content, digest: @digest)
+    TranscriptOffloadStore.delete(6)
+    assert_empty TranscriptOffloadStore.paths_for(6)
+    assert TranscriptOffloadStore.exist?(66)
+  end
+
+  test "refuses a lost store id or an absent volume while sessions are marked offloaded" do
+    TranscriptOffloadStore.prepare!
+    create_session(prompt: "offloaded").update_columns(transcript_offloaded_at: Time.current, transcript_byte_size: 1)
+    TranscriptOffloadStore.prepare!
+
+    FileUtils.rm_rf(@root)
+    assert_raises(TranscriptOffloadStore::Refused) { TranscriptOffloadStore.prepare! }
+    assert_not File.directory?(@root)
+
+    metadata = ActiveRecord::Base.connection_pool.internal_metadata
+    ActiveRecord::Base.connection.execute("DELETE FROM #{metadata.table_name} WHERE key LIKE 'transcript_offload_%'")
+    assert_raises(TranscriptOffloadStore::Refused) { TranscriptOffloadStore.prepare! }
+    assert_nil metadata[TranscriptOffloadStore::STORE_ID_KEY]
+  end
+
+  test "before there is a store, the environment Rails recorded for the database decides" do
+    metadata = ActiveRecord::Base.connection_pool.internal_metadata
+    ActiveRecord::Base.connection.execute("DELETE FROM #{metadata.table_name} WHERE key LIKE 'transcript_offload_%'")
+    metadata[:environment] = "production"
+
+    assert_raises(TranscriptOffloadStore::Refused) { TranscriptOffloadStore.prepare! }
+    assert_includes TranscriptOffloadStore.refusal, "production"
+  ensure
+    metadata[:environment] = "test"
   end
 end

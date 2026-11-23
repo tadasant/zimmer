@@ -371,10 +371,26 @@ sessions in trash, which are archived. Running, waiting, needs-input and failed 
 touched, and neither is a session being unarchived at that moment (`Session.reap_protected?`).
 
 **Where it goes.** `TranscriptOffloadStore`: one file per session,
-`~/.zimmer/transcript_offload/<id % 1000>/<id>.jsonl.gz`, on the `zimmer_data` volume both roles
-mount. Override the root with `AGENT_TRANSCRIPT_OFFLOAD_DIR`, onto a path both roles share. Not the
+`~/.zimmer/transcript_offload/<store id>/<database location>/<id % 1000>/<id>-<sha256>.jsonl.gz`, on
+the `zimmer_data` volume both roles mount. The digest in the name means a write can only replace
+identical bytes. Override the root with `AGENT_TRANSCRIPT_OFFLOAD_DIR`, onto a path both roles share. Not the
 transcript archive zip: that file is rebuilt from the database every run and starts over when its
 sidecar says it is missing, so it cannot be the only copy of anything.
+
+**Whose files.** The volume is shared by more than one database: a development server in an agent
+session on the worker resolves production's `~/.zimmer`, and its session ids start at 1. So the path
+never depends on the session id alone. The *store id* is a UUID in the database's own
+`ar_internal_metadata`, created with the first offload, so another database resolves another
+directory. The *database location* is a hash of the host, port and database name, so a copy of a
+database, which carries the store id with it, writes and deletes in another directory. Writes,
+deletes and sweeps touch only the process's own directory. Reads fall back to other locations of the
+same store id, always checked against the row's digest, so moving the database to a new host does not
+strand its files. A full restore needs the volume and that metadata row.
+
+The store refuses to act (`TranscriptOffloadStore::Refused`, shown on `/health` when it is the
+environment) in a process whose `Rails.env` is not the one that created the store, when sessions are
+marked offloaded but the store id is gone, and when they are but the store's directory is absent. A
+refusal leaves the chunks where they are.
 
 **The order of operations is the safety argument.**
 
@@ -402,9 +418,9 @@ than raising out of the session page or a sweep.
 **Coming back.** `UnarchiveSessionService` calls `Session#restore_offloaded_transcript!` before it
 resumes anything, which writes the chunks back and clears the marker. An unarchive whose file cannot
 be read fails instead of resuming a session with no conversation. Any write of a whole transcript to
-an offloaded session also makes the chunk table the authority again. A file is deleted only when its
-session is destroyed (`Session#reclaim_session_directories`). A re-offload replaces a file only with
-a verified copy of the same session's transcript. `TranscriptArchiveJob` keeps a session's existing
+an offloaded session also makes the chunk table the authority again. Files are deleted only when their
+session is destroyed (`Session#reclaim_session_directories`), and then every version of it; a
+re-offload adds a version and leaves the old one. Files at an earlier database location stay. `TranscriptArchiveJob` keeps a session's existing
 zip entry when its offload file cannot be read, rather than replacing it with `null`.
 
 **The host's disk.** The job does nothing while the store's volume has less than

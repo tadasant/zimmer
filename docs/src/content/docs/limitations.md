@@ -9827,6 +9827,12 @@ matches its text: content search is an `EXISTS` over `session_transcript_chunks`
 gone. Titles, prompts and everything else on the row still match. Unarchiving the session brings it
 back into search.
 
+Destroying a session removes its files at the database's current location only: after the database
+moves to another host, files written before the move stay on disk. A copy of the database answering
+at the same host, port and name, on a machine that shares the volume, shares the directory; it can
+add versions, and destroying a session there removes that session's files. If the store's directory
+is lost, offloading stops until a deploy changes that.
+
 The offloaded files are on the droplet's `zimmer_data` volume, not in the managed database, so the
 provider's database backups no longer cover them. Losing that volume loses those transcripts. The
 transcript archive zip is on the same volume, so it is not a second copy. Subagent transcripts

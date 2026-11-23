@@ -246,7 +246,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
   test "a missing offload file reads as nil rather than raising" do
     session = archived_session(content: jsonl(5))
     TranscriptRetentionJob.perform_now
-    File.delete(TranscriptOffloadStore.path_for(session.id))
+    File.delete(TranscriptOffloadStore.paths_for(session.id).first)
 
     reloaded = Session.find(session.id)
     assert_nil reloaded.transcript
@@ -265,7 +265,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
   test "sweeps temps a killed run left, and spares fresh ones and finished files" do
     session = archived_session(content: jsonl(5))
     TranscriptRetentionJob.perform_now
-    finished = TranscriptOffloadStore.path_for(session.id)
+    finished = TranscriptOffloadStore.paths_for(session.id).first
     old = "#{finished}.tmp-abc123"
     fresh = "#{finished}.tmp-def456"
     [ old, fresh ].each { |path| File.write(path, "x") }
@@ -311,14 +311,13 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
   test "offloads nothing from a process in another environment than the database's" do
     session = archived_session(content: jsonl(5))
     metadata = ActiveRecord::Base.connection_pool.internal_metadata
-    metadata[:environment] = "production"
+    TranscriptOffloadStore.prepare!
+    metadata[TranscriptOffloadStore::STORE_ENVIRONMENT_KEY] = "production"
 
     assert_equal 0, TranscriptRetentionJob.perform_now[:offloaded]
     assert_predicate chunk_count(session), :positive?
     assert_nil session.reload.transcript_offloaded_at
-    assert_empty Dir.children(@root)
-  ensure
-    metadata[:environment] = "test"
+    assert_empty Dir.glob(File.join(@root, "**", "*.gz*"))
   end
 
   test "destroying another database's session with the same id keeps this one's transcript" do
@@ -333,5 +332,11 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     metadata[TranscriptOffloadStore::STORE_ID_KEY] = mine
 
     assert_equal content, Session.find(session.id).transcript
+  end
+
+  test "a database with nothing to offload leaves nothing on the volume" do
+    TranscriptRetentionJob.perform_now
+
+    assert_empty Dir.children(@root)
   end
 end
