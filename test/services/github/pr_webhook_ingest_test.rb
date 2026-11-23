@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 
 class Github::PrWebhookIngestTest < ActiveSupport::TestCase
   REPO = { "full_name" => "Tadasant/Zimmer", "default_branch" => "main" }.freeze
