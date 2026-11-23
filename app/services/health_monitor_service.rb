@@ -810,7 +810,7 @@ class HealthMonitorService
     storage = TranscriptStorage.recorded_configuration
     return transcript_storage_unrecorded if storage.nil?
 
-    counts = storage.off? ? TRANSCRIPT_COUNTS_OFF : transcript_copy_counts(storage.bucket)
+    counts = storage.bucket.nil? ? TRANSCRIPT_COUNTS_OFF : transcript_copy_counts(storage.bucket)
     { configured: storage.configured?, bucket: storage.bucket, copy_after_days: TranscriptCopyJob.copy_after_days,
       **counts, status: transcript_storage_status(storage, counts) }
   rescue StandardError => e
@@ -1015,7 +1015,7 @@ class HealthMonitorService
   def transcript_storage_unrecorded
     {
       configured: false, bucket: nil, copy_after_days: TranscriptCopyJob.copy_after_days, **TRANSCRIPT_COUNTS_OFF,
-      status: HealthStatus.new(status: :unknown, message: "TranscriptCopyJob has not recorded the configuration in the last hour")
+      status: HealthStatus.new(status: :unknown, message: "TranscriptCopyJob has not recorded the configuration in the last day")
     }
   end
 

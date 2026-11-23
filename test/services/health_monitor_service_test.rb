@@ -396,6 +396,15 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_equal 0, transcript_storage[:awaiting_copy]
   end
 
+  test "transcript_storage_health counts nothing with no bucket to count against" do
+    TranscriptCopyJob.expects(:candidates).never
+
+    storage = transcript_storage(problem: "the secret store could not be read (X)")
+
+    assert storage[:status].warning?
+    assert_equal 0, storage[:awaiting_copy]
+  end
+
   test "transcript_storage_health never resolves the configuration, recorded or not" do
     TranscriptStorage.expects(:configuration).never
     SecretProviders.expects(:chain).never

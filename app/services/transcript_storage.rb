@@ -31,7 +31,8 @@ module TranscriptStorage
   BUCKET_PATTERN = /\A[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]\z/
 
   # `problem` is a sentence for a human and never contains a value of the key.
-  Configuration = Struct.new(:bucket, :client, :problem, keyword_init: true) do
+  # `unread` is that the secret store could not be asked, so nothing is known.
+  Configuration = Struct.new(:bucket, :client, :problem, :unread, keyword_init: true) do
     include RedactedInspect
 
     def redacted_inspect_fields = { bucket: bucket, problem: problem }
@@ -46,8 +47,9 @@ module TranscriptStorage
   end
 
   RECORDED_KEY = "transcript_storage:recorded_configuration"
-  # Six ticks of TranscriptCopyJob, which records it.
-  RECORDED_TTL = 1.hour
+  # Outlives a stopped job by enough that the health report's stalled-backlog warning,
+  # which needs the bucket, still fires.
+  RECORDED_TTL = 1.day
 
   module_function
 
@@ -58,14 +60,19 @@ module TranscriptStorage
   # store again over the network, which takes seconds. The health report is polled.
   def recorded_configuration
     values = Rails.cache.read(RECORDED_KEY)
-    values && Recorded.new(**values)
+    values && Recorded.new(**Recorded.members.index_with(nil), **values.slice(*Recorded.members))
   end
 
   # Resolves the configuration and leaves it where #recorded_configuration reads it.
   def record_configuration
     configuration.tap do |current|
+      # A store that could not be asked says nothing about what is configured.
+      next if current.unread && recorded_configuration
+
       Rails.cache.write(RECORDED_KEY,
         { configured: current.configured?, bucket: current.bucket, problem: current.problem }, expires_in: RECORDED_TTL)
+    rescue StandardError => e
+      Rails.logger.warn("[TranscriptStorage] could not record the configuration: #{e.class}")
     end
   end
 
@@ -74,8 +81,9 @@ module TranscriptStorage
     key = chain.get(KEY_JSON).presence
     return Configuration.new if bucket.nil? && key.nil?
     return Configuration.new(problem: "#{KEY_JSON} is set but #{BUCKET} is not") if bucket.nil?
-    return Configuration.new(bucket: bucket, problem: "#{BUCKET} is set but #{KEY_JSON} is not") if key.nil?
+    # Ahead of anything that repeats the value: a key pasted into the wrong variable is not one.
     return Configuration.new(problem: "#{BUCKET} is not a bucket name") unless bucket.match?(BUCKET_PATTERN)
+    return Configuration.new(bucket: bucket, problem: "#{BUCKET} is set but #{KEY_JSON} is not") if key.nil?
 
     account, reason = ParameterStore::ServiceAccount.parse(key, token_url: env[TOKEN_URL])
     return Configuration.new(bucket: bucket, problem: "#{KEY_JSON} #{reason}") if account.nil?
@@ -85,6 +93,6 @@ module TranscriptStorage
     Configuration.new(bucket: bucket, client: client)
   rescue StandardError => e
     # A provider that cannot be reached raises. That is not "off".
-    Configuration.new(problem: "the secret store could not be read (#{e.class})")
+    Configuration.new(problem: "the secret store could not be read (#{e.class})", unread: true)
   end
 end
