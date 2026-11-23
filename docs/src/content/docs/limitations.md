@@ -346,6 +346,19 @@ the link-menu tests in `TranscriptParityUITests` and `InAppLinksUITests` use it.
 place still have one try, so the same loss there still fails its test, and a menu that never came
 behind a press that succeeded means a re-run first.
 
+### A wait in the iOS UI tests slows the app it waits on
+
+`waitForExistence` queries the app's accessibility tree again and again until it finds its element,
+and the app's own timers run late while a query is answered. On a loaded runner one query can take
+seconds. On [run 45092022457](https://github.com/tadasant/zimmer/actions/runs/45092022457) (board
+shard), queries in `test_a_flap_lands_once_for_the_last_disconnect` averaged 2.3 seconds, against
+about 0.8 on most runs, and the phone landed on the call about two seconds after the 20-second wait
+ran out. So in `LiveHandoverUITests`, the tests that wait out a car script leave the app alone until
+the landing is due (`letTheScriptPlay`), and only then look. The script also times every move from
+launch, so one late move does not push back the rest. Other tests that wait on an app timer still
+query throughout, so a timeout there with slow queries in the log can mean the app was late only
+because it was being asked.
+
 ### Dragging the iOS trigger form back up can stall
 
 In the iOS trigger form, a drag toward the top of the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.

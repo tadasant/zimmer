@@ -9,6 +9,9 @@ final class LiveHandoverUITests: XCTestCase {
     private let timeout: TimeInterval = 20
     /// Long enough for any landing to have happened: the settle, a turn of the watch, and a sheet.
     private let wellPastTheSettle: TimeInterval = 7
+    /// A landing that `letTheScriptPlay` has left time for is there already, so what is left is the
+    /// looking.
+    private let lookTimeout: TimeInterval = 10
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -16,7 +19,8 @@ final class LiveHandoverUITests: XCTestCase {
 
     func test_with_the_app_open_the_phone_lands_on_the_call() {
         let app = launch(["-ZimmerFixtureCarScript", "left@2"])
-        XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "the phone goes to the call")
+        letTheScriptPlay(through: 2)
+        XCTAssertTrue(callState(app).waitForExistence(timeout: lookTimeout), "the phone goes to the call")
         XCTAssertTrue(app.buttons["live.talk"].exists, "with its Hang up to hand")
         XCTAssertTrue(app.buttons["live.mute"].exists, "and Mute")
         attachScreenshot(app, named: "live-handover-landed")
@@ -49,7 +53,8 @@ final class LiveHandoverUITests: XCTestCase {
 
     func test_a_flap_lands_once_for_the_last_disconnect() {
         let app = launch(["-ZimmerFixtureCarScript", "left@2,back@3,left@4,back@5,left@6"])
-        XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "the car stayed gone, so the phone goes to the call")
+        letTheScriptPlay(through: 6)
+        XCTAssertTrue(callState(app).waitForExistence(timeout: lookTimeout), "the car stayed gone, so the phone goes to the call")
         XCTAssertEqual(app.navigationBars.matching(identifier: "Live Mode").count, 1, "one thread, not one for each disconnect")
     }
 
@@ -84,7 +89,8 @@ final class LiveHandoverUITests: XCTestCase {
         let oldThread = app.descendants(matching: .any)["live.turn.401"].firstMatch
         XCTAssertTrue(oldThread.waitForExistence(timeout: timeout), "the thread opens while it is open")
         XCTAssertFalse(callState(app).exists, "with no call on it")
-        XCTAssertTrue(callState(app).waitForExistence(timeout: timeout), "ended elsewhere, the screen goes to where Live Mode is now")
+        letTheScriptPlay(through: 10)
+        XCTAssertTrue(callState(app).waitForExistence(timeout: lookTimeout), "ended elsewhere, the screen goes to where Live Mode is now")
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: oldThread)
         XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "and leaves the old thread")
     }
@@ -113,6 +119,14 @@ final class LiveHandoverUITests: XCTestCase {
         XCTAssertFalse(callState(app).exists, why)
         XCTAssertFalse(app.buttons["live.done"].exists, why)
         XCTAssertTrue(board(app).isHittable, why)
+    }
+
+    /// Leaves the app alone while its script plays. Every look at the screen is answered on the
+    /// app's main thread, which the script, the settle and the landing need too. On a loaded runner
+    /// a look takes seconds and a wait looks again at once, so waiting here would hold up the
+    /// landing it waits for.
+    private func letTheScriptPlay(through lastMove: TimeInterval) {
+        Thread.sleep(forTimeInterval: lastMove + wellPastTheSettle)
     }
 
     private func launch(_ arguments: [String]) -> XCUIApplication {

@@ -696,6 +696,8 @@ final class AppModel: ObservableObject {
     /// `other` puts the call on a new conversation, which ends the one before it. `other@0` is done
     /// before `thread` opens, so the thread reads as ended from its first read; any later and it
     /// ends with the thread on screen, with no call at all until then. Moves are in time order.
+    /// Each waits for its own time on one clock, so a main thread that is late to one move does not
+    /// make every move after it later.
     private func runFixtureCarScript(_ script: String, thread: Int?) {
         let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
             let parts = move.split(separator: "@")
@@ -707,6 +709,7 @@ final class AppModel: ObservableObject {
         let running = UIApplication.shared.beginBackgroundTask(withName: "fixture-car-script")
         Task {
             defer { UIApplication.shared.endBackgroundTask(running) }
+            let launched = ContinuousClock.now
             let call = LiveCall.shared
             let other = moves.first { $0.name == "other" }
             if let other, other.at == 0 {
@@ -715,10 +718,8 @@ final class AppModel: ObservableObject {
                 Task { await call.start(21, from: .carplay) }
             }
             if let thread { openFixtureLiveThread(thread) }
-            var elapsed = 0.0
             for move in moves {
-                try? await Task.sleep(for: .seconds(move.at - elapsed))
-                elapsed = move.at
+                try? await Task.sleep(until: launched + .seconds(move.at), clock: .continuous)
                 switch move.name {
                 case "left": call.carLeft()
                 case "back":
