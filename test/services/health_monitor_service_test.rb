@@ -256,6 +256,87 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_empty pool[:entries]
   end
 
+  def with_database_capacity(value)
+    previous = ENV[HealthMonitorService::DATABASE_CAPACITY_ENV]
+    ENV[HealthMonitorService::DATABASE_CAPACITY_ENV] = value
+    yield
+  ensure
+    ENV[HealthMonitorService::DATABASE_CAPACITY_ENV] = previous
+  end
+
+  def database_sizes(total, *tables)
+    rows = tables.map { |name, size, reusable| { "name" => name, "total_bytes" => size, "reusable_bytes" => reusable, "index_bytes" => 0, "estimated_rows" => -1 } }
+    @service.stubs(:read_database_sizes).returns([ total, rows ])
+    @service.send(:database_size_health)
+  end
+
+  test "database_size_health reads real sizes, largest first, and never warns without a capacity" do
+    with_database_capacity(nil) do
+      database = @service.full_health_report[:database_size_health]
+
+      assert_operator database[:total_bytes], :>, 0
+      assert_operator database[:in_use_bytes], :<=, database[:total_bytes]
+      assert_nil database[:capacity_bytes]
+      sizes = database[:largest_tables].map { |table| table[:total_bytes] }
+      assert_equal sizes.sort.reverse, sizes
+      assert_operator sizes.size, :<=, HealthMonitorService::DATABASE_LARGEST_TABLES
+      assert database[:status].healthy?
+    end
+  end
+
+  test "the space in use leaves out every table's reusable space, listed or not" do
+    small = (1..10).map { |n| [ "t#{n}", 1.megabyte, 1.megabyte / 2 ] }
+
+    database = database_sizes(100.gigabytes, [ "chunks", 60.gigabytes, 20.gigabytes ], *small)
+
+    assert_equal 100.gigabytes - 20.gigabytes - 5.megabytes, database[:in_use_bytes]
+    assert_equal 20.gigabytes, database[:largest_tables].first[:reusable_bytes]
+  end
+
+  test "database_size_health warns at its share of capacity in use, and on disk" do
+    with_database_capacity("100") do
+      assert database_sizes(64.9.gigabytes.to_i)[:status].healthy?
+      assert_includes database_sizes(64.9.gigabytes.to_i)[:status].message, "(64% and 64% of 100 GB)"
+
+      in_use = database_sizes(65.gigabytes)[:status]
+      assert in_use.warning?
+      assert_includes in_use.message, "in use is past 65%"
+      assert_not_includes in_use.message, "on disk is past"
+
+      assert database_sizes(89.gigabytes, [ "chunks", 60.gigabytes, 40.gigabytes ])[:status].healthy?
+      on_disk = database_sizes(90.gigabytes, [ "chunks", 60.gigabytes, 40.gigabytes ])[:status]
+      assert on_disk.warning?
+      assert_includes on_disk.message, "on disk is past 90%"
+    end
+  end
+
+  test "a database size warning does not move overall_status" do
+    baseline = with_database_capacity(nil) { @service.full_health_report[:overall_status].status }
+    with_database_capacity("0.0001") do
+      report = @service.full_health_report
+      assert report[:database_size_health][:status].warning?
+      assert_equal baseline, report[:overall_status].status
+    end
+  end
+
+  test "a capacity that is not a positive finite number counts as unset" do
+    [ "eighty", "80GB", "0", "-5", "1e999", "" ].each do |value|
+      with_database_capacity(value) { assert_nil @service.send(:database_capacity_bytes), value.inspect }
+    end
+    with_database_capacity("80") { assert_equal 80.gigabytes, @service.send(:database_capacity_bytes) }
+  end
+
+  test "database_size_health reports a failed read instead of raising, and keeps the capacity" do
+    with_database_capacity("80") do
+      @service.stubs(:read_database_sizes).raises(ActiveRecord::LockWaitTimeout, "nope")
+      database = @service.send(:database_size_health)
+
+      assert database[:status].warning?
+      assert_nil database[:total_bytes]
+      assert_equal 80.gigabytes, database[:capacity_bytes]
+    end
+  end
+
   test "log_retention_health reports the size of the logs table and the policy in force" do
     retention = @service.full_health_report[:log_retention_health]
 
