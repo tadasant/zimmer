@@ -538,10 +538,17 @@ final class LiveAudioEngine {
     }
 
     /// A cue with no call up to carry it: the car giving up on a call, which may never have got
-    /// its engine started. The engine exists for the cue and the audio session for as long as
-    /// it sounds. Skipped while the audio is someone else's, or while an engine is out on
-    /// `queue`, stuck or not: a failure cue that sounds minutes late is worse than none. Says
-    /// whether it was asked for: once on `queue`, a failure is only logged.
+    /// its engine started. The audio session is held for as long as the cue sounds. Skipped while
+    /// the audio is someone else's, or while an engine is out on `queue`, stuck or not: a failure
+    /// cue that sounds minutes late is worse than none. Says whether it was asked for: once on
+    /// `queue`, a failure is only logged.
+    ///
+    /// Played by an `AVAudioPlayer`, never an engine. An engine's output unit is in the app, and
+    /// each step of its life (initialize, start, stop, dispose) asks the audio server and aborts
+    /// the process when the answer takes too long (`_ReportRPCTimeout`), which nothing can catch.
+    /// A sound this incidental must not be able to end the app:
+    /// [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) died that way
+    /// in the engine's dealloc. With the server stopped under it a player only waits.
     ///
     /// It never touches the input: no microphone opens, and no permission prompt comes up, so it
     /// can sound before a call (and its CarPlay screen) exists. `sounding` runs on `queue` once
@@ -552,22 +559,20 @@ final class LiveAudioEngine {
     /// twice; the falling notes that end a press leading nowhere hand it back.
     func playAlone(_ cue: LiveCue, handBack: Bool = true, sounding: (@Sendable () -> Void)? = nil) -> Bool {
         guard engine == nil, farewell == nil, bringingUp == 0, !interrupted else { return false }
-        let samples = cue.samples()
+        let sound = RealtimeAudio.wav(from: cue.samples())
         Self.queue.async {
-            guard let buffer = Self.buffer(samples) else { return }
-            let engine = AVAudioEngine()
-            let player = AVAudioPlayerNode()
             do {
                 try Self.activateSession()
-                engine.attach(player)
-                engine.connect(player, to: engine.mainMixerNode, format: Self.replyFormat)
-                try engine.start()
-                player.scheduleBuffer(buffer, completionHandler: nil)
-                player.play()
-                sounding?()
-                Thread.sleep(forTimeInterval: cue.duration + 0.05)
-                player.stop()
-                engine.stop()
+                let player = try AVAudioPlayer(data: sound, fileTypeHint: AVFileType.wav.rawValue)
+                if player.play() {
+                    sounding?()
+                    Thread.sleep(forTimeInterval: cue.duration + 0.05)
+                    // The player starts a moment after `play()`: let the last note finish, briefly.
+                    for _ in 0..<20 where player.isPlaying { Thread.sleep(forTimeInterval: 0.01) }
+                    player.stop()
+                } else {
+                    Self.log.error("cue with no call could not play")
+                }
             } catch {
                 Self.log.error("cue with no call could not play: \(error.localizedDescription, privacy: .public)")
             }

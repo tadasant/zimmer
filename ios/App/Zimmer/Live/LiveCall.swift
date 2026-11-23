@@ -669,7 +669,7 @@ final class LiveCall: ObservableObject {
 
     /// Talk was pressed: *pressed* sounds now, before the conversation is found, voice turned on or
     /// the secret minted, so the press is heard seconds before the call connects. It plays alone,
-    /// on an engine that never opens the microphone (`LiveAudioEngine.playAlone`): nothing records
+    /// on a player that never opens the microphone (`LiveAudioEngine.playAlone`): nothing records
     /// before the call's screen is up, and no permission prompt comes with it. Not while a call
     /// is up, nor over a goodbye still sounding.
     func pressed() {
