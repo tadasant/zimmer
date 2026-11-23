@@ -194,8 +194,10 @@ class LiveModeMergeReplayTest < ActiveSupport::TestCase
 
   test "an answer still on its way when the model acts on it is waited for" do
     prepare
-    said :assistant, "Merge zimmer pull request 1490?"
-    late = -> { said(:user, "Yes") if @conversation.turns.where(role: "user").none? }
+    said :assistant, "Want to know what it does?"
+    said :user, "What does it change?"
+    said :assistant, "It keeps the sweep from paging twice. Merge it?"
+    late = -> { said(:user, "Yes") if @conversation.turns.where(role: "user", content: "Yes").none? }
     LiveConversations::AuthorizeMerge.any_instance.unstub(:pause)
     LiveConversations::AuthorizeMerge.class_eval { alias_method :real_pause, :pause }
     LiveConversations::AuthorizeMerge.define_method(:pause) { late.call }
@@ -264,6 +266,12 @@ class LiveModeMergeReplayTest < ActiveSupport::TestCase
     "an okay to filler" => [ [ :assistant, "One moment." ], [ :user, "Okay" ] ],
     "a yes to more detail" => [ [ :assistant, "Want more detail?" ], [ :user, "Yes" ] ],
     "a yes to hearing why" => [ [ :assistant, "Want to hear why before you merge it?" ], [ :user, "Yes" ] ],
+    "an okay to being ready to merge" => [ [ :assistant, "It's ready to merge. The gate held it." ], [ :user, "Okay, thanks." ] ],
+    "an okay to an answer after the question" => [ [ :assistant, "Merge zimmer pull request 1490?" ], [ :user, "What does it change?" ],
+                                                   [ :assistant, "It keeps the sweep from paging twice." ], [ :user, "Okay" ] ],
+    "a retraction and then an okay" => [ [ :user, "Yes" ], [ :user, "after the deploy though" ], [ :assistant, "Got it, after the deploy." ], [ :user, "Okay thanks" ] ],
+    "a retraction on no list and then a yeah" => [ [ :user, "Yes" ], [ :user, "Let me look at it myself" ], [ :assistant, "Sure, take your time." ], [ :user, "Yeah" ] ],
+    "their own question" => [ [ :user, "Is it ready to merge" ] ],
     "a yes to nothing recorded" => [ [ :user, "Yes" ] ] }.each do |label, lines|
     test "#{label} does not merge on a call that claims no yes" do
       said :user, "Is the paging PR ready to merge"
@@ -388,6 +396,24 @@ class LiveModeMergeReplayTest < ActiveSupport::TestCase
     said :assistant, "It's green. Want to merge it?"
     said :user, "Actually the docs one"
     said :user, "Yes"
+    assert_match(/\AREAD-BACK: /, prepare)
+  end
+
+  test "a yes taken back and given again to the question asked again merges" do
+    prepare
+    said :assistant, "Merge zimmer pull request 1490?"
+    said :user, "Yes"
+    said :user, "Is CI actually green?"
+    said :assistant, "It is. Merge it?"
+    said :user, "Yes"
+    assert_merges { confirm }
+    assert_equal "Yes", sign_off.content
+  end
+
+  test "their own question before any question asks for nothing" do
+    looked_at(@session, PR)
+    said :assistant, "That one is green."
+    said :user, "Can we merge it"
     assert_match(/\AREAD-BACK: /, prepare)
   end
 

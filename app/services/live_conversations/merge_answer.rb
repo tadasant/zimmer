@@ -26,16 +26,16 @@ module LiveConversations
   # something else (#changes_subject?): an offer to do another thing, or
   # another PR's number. What is not recognised there counts for nothing: half a
   # question, "Say yes, and I'll do it.", "Okay, merging." And it is read for the
-  # merge being asked about (.asks?) where that is the stricter side: an "okay",
+  # merge being asked about (#asks?) where that is the stricter side: an "okay",
   # which answers anything, and a yes nobody has called a confirmation.
   class MergeAnswer
     ASSENT = /\b(yes|yeah|yea|yep|yup|yah|correct|confirm|confirmed|affirmative|absolutely|definitely|of\ course|do\ it|
                  do\ that|go\ ahead|go\ for\ it|please\ do|that's\ right|thats\ right|approve|approved|merge|ship\ it|land\ it|
-                 sounds\ good|send\ it|proceed|fine\ by\ me|works\ for\ me|that\ works|sure|ok|okay)\b/x
+                 sounds\ good|send\ it|proceed|fine\ by\ me|works\ for\ me|that\ works|lgtm|sure|ok|okay)\b/x
     # An assent that does not also answer "I'll leave it, then" or "here's what
     # it changes".
     STRONG_ASSENT = /\b(yes|yeah|yea|yep|yup|correct|confirm|confirmed|affirmative|absolutely|definitely|do\ it|go\ ahead|
-                        go\ for\ it|approve|approved|merge|ship\ it|land\ it|send\ it|proceed)\b/x
+                        go\ for\ it|approve|approved|merge|ship\ it|land\ it|send\ it|proceed|lgtm)\b/x
     REFUSAL = /\b(no|nope|nah|naw|not|never|none|stop|wait|cancel|cannot|cant|hold|hang\ on|abort|skip|dont|pause|
                   nevermind|forget|scratch|leave|unable|[a-z]+n't)\b/x
     # Not refusals, whatever word they start with.
@@ -48,11 +48,17 @@ module LiveConversations
     MOVING_ON = /\b((and|so|okay|ok|now|then)[\s,]+)*
                  (what('s|s|\ is)\ (up\ )?next|what\ else(\ (is\ there|do\ you\ have|have\ you\ got|do\ we\ have|do\ i\ have|needs\ me))?)
                  [\s?.!,]*\z/x
+    # The person asking, whether or not the transcript kept the "?".
+    QUESTION = /\b(is|are|was|can|could|does|did|should|will|would|has|have)\ (it|this|that|we|you|i|the|they)\b|
+                \bdo\ (we|you|i|they)\b|\b(what|why|how|where|who|which)\b/x
+    # Longer than any answer to a yes or no question.
+    ANSWER_LIMIT = 200
     ALL_OF_IT = /\b(100|a hundred|one hundred|hundred) ?(%|percent\b)/
     # Sounds a transcript writes down. Any other bracket is words.
     NOISE = /\[(tongue click|inhale|exhale|breath\w*|cough\w*|hum\w*|laugh\w*|sigh\w*|noise|music|silence|sniff\w*|beep\w*)\]?/
     # A transcript's own typography. Any other character beyond ASCII is
     # something said that this does not read.
+    THUMBS_UP = /\u{1F44D}[\u{1F3FB}-\u{1F3FF}]?/
     UNREAD = /[^\u0000-\u007F‘’ʼ“”–—… �]/
     NEUTRAL = %w[uh uhh um umm er erm hm hmm mm mhm oh ah so well and then now please great perfect cool nice awesome good
                  alright all right thanks thank you very much got it zimmer].to_set.freeze
@@ -60,20 +66,19 @@ module LiveConversations
     FILLER = (NEUTRAL + %w[
       just fine lets let's let us we i i'm im i'd it's its this that that's thats the a one pr prs p r by me my mine
       pull request number merge merging merged approve approved approval already said say saying told is am i've ive go ahead
-      do for to with in into on be been happy totally exactly yo hey sounds looks look like ready green ship land main want wanna
+      do for to with in into on be been happy totally exactly yo hey sounds looks like ready lgtm sir green ship land main want wanna
       can get works thing percent sure ok okay yes yeah yea yep yup yah correct confirm confirmed affirmative absolutely
       definitely of course send proceed
     ]).to_set.freeze
 
     # What makes their talk about merging at all.
     ABOUT_MERGING = /\b(merg\w*|ship(ping|s|ped)?|land(ing|s|ed)?|approv\w*|pull requests?|prs?|p r)\b/i
-    # "Merge" as something to do, not "the merge", "the merge gate", "merge conflicts".
-    MERGE_VERB = /(?<!the )(?<!a )(?<!its )\bmerge\b(?! gate| queue| of\b| conflict)|\b(ship|land) (it|this|that|the|pr|pull)\b/
-
     OFFER = /\b(?:(?:do\ you\ |would\ you\ |you\ )?(?:(?:want|like)(?:\ me)?\ to|wanna)|should\ (?:i|we)|shall\ (?:i|we)|can\ i|could\ i|how\ about|what\ about)/x
-    ACTION = /(?:restart|re-?run|retry|archive|unarchive|start|stop|close|delete|remove|send\ (?!it)|reply|email|deploy|roll\ back|revert|
-                 skip|wait|hold|ask|check|look|open|update|schedule|remind|pause|resume|cancel|move\ on|show|read|tell|create|run|
-                 hear|know|see|explain|review|dig|walk|go\ (?:through|over)|find|fix)(?:ing)?\b(?!\ (?:the\ |that\ )?merg)/x
+    ACTION = /(?:(?:restart|re-?run|retry|archive|unarchive|stop|close|delete|remove|send\ (?!it)|reply|email|deploy|roll\ back|
+                    revert|skip|wait|hold|ask|check|look|open|update|schedule|remind|pause|resume|cancel|move\ on|show|read|create|
+                    hear|know|explain|review|dig|walk|go\ (?:through|over)|find|fix|see(?!\ it\ merged)|
+                    tell(?!\ (?:\w+\ ){1,3}to\ merge))|
+                  (?:start|run)(?!(?:ing)?\ (?:the\ |that\ )?merg))(?:ing)?\b/x
     # An offer to do another thing, whatever that thing would let them merge.
     OTHER_OFFER = /#{OFFER}(?:\ (?:just|also|quickly|first|go\ ahead\ and))*\ #{ACTION}|
                    \b(?:want|like)\ (?:some\ |any\ |the\ )?(?:more|details?|context|summary|background)\b|
@@ -81,8 +86,17 @@ module LiveConversations
     # An order the assistant proposes without asking ("Restart session seven too.").
     OTHER_ORDER = /\A(?:(?:also|and|or|then|so|okay|ok)[\ ,]+)*(restart|rerun|re-run|retry|archive|unarchive|close|delete|remove|
                    send|reply|email|deploy|revert|cancel|pause|resume)\b/x
-    # The assistant saying it will not: an "okay" to that is not a yes.
-    DECLINES = /\b(won't|wont|will not|not going to|not gonna|hold off|holding off|leave it|leaving it|not merging)\b/
+    # The assistant saying it will not, rather than that it is waiting for a yes.
+    DECLINES = /\b(won't|wont|will not|not going to|not gonna|hold off|holding off|leave it|leaving it|not merging)\b(?!.*\b(without|until|unless)\b)/
+    # Asking to merge, as something to do: "want me to go ahead and merge", "so,
+    # merge zimmer …", "say yes to merge it". Not "it's ready to merge", "I
+    # won't merge", "how we merge".
+    MERGE = /(?:merge\b(?!\ (?:gate|queue|of\b|conflict))|(?:ship|land)\ (?:it|this|that|the|pr|pull)\b)/x
+    LEAD = /(?:(?:so|okay|ok|now|well|alright|and|to|just\ to\ confirm|to\ confirm|sorry)[\ ,]+)*/x
+    ASK = /#{OFFER}(?:\ \w+){0,3}\ #{MERGE}|(?:\A|[,:]\ )#{LEAD}(?:go\ ahead\ and\ )?#{MERGE}|\bsay\ yes\ (?:to|and\ i'll)\ #{MERGE}/x
+    # A merge for another time, or after something else: not this one, now.
+    DEFERS = /#{MERGE}(?:\ (?:it|this|that|one|pr|pull\ request|\d+))*\ (?:tomorrow|tonight|later|after|once|when|until|if)\b|
+              \A(?:after|once|when|if)\b.*\bmerge\b|\band\ then\ merge\b/x
     # "Want to merge it?", and nothing else in the sentence.
     BARE_ASK = /(?:\A|,\ )(?:(?:so|okay|ok|now|well|alright)[\ ,]+)*(?:#{OFFER}\ )?(?:just\ |go\ ahead\ and\ )?
                 (?:merge|ship|land)\ (?:it|this|that)(?:\ (?:one|pr|pull\ request))?(?:\ now|\ then)?\?\z/x
@@ -96,6 +110,7 @@ module LiveConversations
       def no? = kind == :no
       def takes_back? = kind == :takes_back
       def neutral? = kind == :neutral
+      def unclear? = kind == :unclear
     end
 
     # @param number [String] the PR's number
@@ -113,8 +128,10 @@ module LiveConversations
       return Reading.new(kind: :no, strong: false) if line.match?(REFUSAL)
       return Reading.new(kind: :takes_back, strong: false) if line.match?(TAKES_BACK) || other_number?(line)
 
+      return Reading.new(kind: :unclear, strong: false) if line.length > ANSWER_LIMIT || text.to_s.gsub(THUMBS_UP, "").match?(UNREAD)
+
       said = line.sub(MOVING_ON, " ")
-      return Reading.new(kind: :unclear, strong: false) if said.include?("?") || text.to_s.match?(UNREAD)
+      return Reading.new(kind: :unclear, strong: false) if said.include?("?") || said.match?(QUESTION)
 
       rest = phrases(said).flat_map { |phrase| without_number(phrase) }
       if said.match?(ASSENT)
@@ -125,22 +142,21 @@ module LiveConversations
     end
 
     # Whether an assistant line gives a yes after it something else to be about.
-    # @param answer [Reading] that yes
-    def changes_subject?(text, answer)
+    def changes_subject?(text)
       sentences(text).any? do |sentence|
-        (sentence.match?(DECLINES) && !answer.strong) || other_pr?(sentence) || sentence.match?(OTHER_OFFER) || other_order?(sentence)
+        sentence.match?(DECLINES) || sentence.match?(DEFERS) || other_pr?(sentence) || sentence.match?(OTHER_OFFER) || other_order?(sentence)
       end
     end
 
-    # Whether an assistant line says to merge, as something to do.
-    def self.asks?(text) = text.to_s.downcase.match?(MERGE_VERB)
+    # Whether an assistant line asks to merge.
+    def asks?(text) = sentences(text).any? { |sentence| sentence.match?(ASK) }
 
     # Whether the last thing an assistant asked is, in so many words, "merge
     # it?". Read only to spare a question (AuthorizeMerge#already_said_yes), so
     # it is strict.
     def self.asks_only_to_merge?(text)
       question = text.to_s.downcase.squish.split(/(?<=[.?!;])\s+/).reverse.find { |sentence| sentence.include?("?") }
-      question.to_s.match?(BARE_ASK)
+      question.to_s.match?(BARE_ASK) && !question.match?(TAKES_BACK)
     end
 
     # Whether the person told it to merge, rather than answering.
@@ -152,6 +168,7 @@ module LiveConversations
 
     def plain(text)
       text.to_s.tr("‘’ʼ", "'").downcase.gsub(NOISE, " ").gsub(ALL_OF_IT, " ").gsub(NO_OBJECTION, " ")
+          .gsub(THUMBS_UP, " yes ")
           .gsub(/[^a-z0-9'?,.]+/, " ").squish
     end
 
@@ -174,14 +191,17 @@ module LiveConversations
       !words(sentence).all? { |word| @name_words.include?(word) || FILLER.include?(word) }
     end
 
-    # A sentence that names a number right after merging, and it is not this PR's
-    # nor the start of it where the line was cut. Only after the verb: "it
-    # follows up pull request 12, want to merge it?" is this PR's question.
+    # A sentence that names a pull request by number as the thing to merge, and it
+    # is not this PR's nor the start of it where the line was cut. Only the
+    # verb's own object: "it follows up pull request 12, want to merge it?" and
+    # "merge the one that fixes issue 12" are this PR's question.
     def other_pr?(sentence)
       named = phrases(sentence).flat_map do |tokens|
         tokens.each_index.filter_map do |i|
           next unless number_word?(tokens[i]) && (i.zero? || !number_word?(tokens[i - 1]))
-          next unless tokens[[ i - 6, 0 ].max...i].any? { |word| word.match?(/\A(merg(e|ing)|ship(ping)?|land(ing)?|approv(e|ing))\z/) }
+
+          verb = tokens.take(i).rindex { |word| word.match?(/\A(merg(e|ing)|ship(ping)?|land(ing)?|approv(e|ing))\z/) }
+          next unless verb && tokens[(verb + 1)...i].all? { |word| @name_words.include?(word) || %w[the pull request requests pr prs p r number].include?(word) }
 
           run = tokens.drop(i).take_while { |word| number_word?(word) }
           run if run.size > 1 || run.first.match?(/\A\d{2,}\z/)

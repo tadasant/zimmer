@@ -337,7 +337,11 @@ module LiveConversations
                                        "merged now, call #{NAME} again without confirm and ask once.")
       end
 
-      answers = yeses.select { |turn| answers_the_merge?(turn, lines, reader, readings, confirming) }
+      # What they said between two yeses may have taken the first back, so only
+      # what came after it counts, and only as the answer to being asked again.
+      undone = said.reverse.find { |turn| turn.id < yeses.last.id && (readings[turn].takes_back? || (readings[turn].unclear? && yeses.first.id < turn.id)) }
+      standing = undone ? yeses.select { |turn| turn.id > undone.id } : yeses
+      answers = standing.select { |turn| answers_the_merge?(turn, lines, reader, readings, confirming && undone.nil?) }
       if answers.empty?
         return Unanswered.new(code: :other_question, heard_yes: true,
                               message: "what you said just before their yes was not asking to merge, so it may answer that. Ask once " \
@@ -383,7 +387,7 @@ module LiveConversations
       return nil unless yes&.last&.strong && readings.all? { |reading| reading.yes? || reading.neutral? }
 
       aloud = heard.map(&:content).join(" ")
-      return nil if reader.changes_subject?(aloud, yes.last)
+      return nil if reader.changes_subject?(aloud)
       return nil unless MergeAnswer.asks_only_to_merge?(aloud) || MergeAnswer.says_merge?(yes.first.content)
 
       confirmation([ yes.first ], earlier, question: nil)
@@ -397,22 +401,27 @@ module LiveConversations
                        answer: answers.map(&:content).join(" ").squish)
     end
 
-    # Whether this yes is to the merge, going by the assistant's lines before it:
-    # back to the newest that is about the merge or about something else, and no
-    # further than the person's last plain answer. A clear yes needs only that
-    # none is about something else. An "okay", or a yes the model is not calling
-    # a confirmation, needs one that asks.
-    def answers_the_merge?(turn, lines, reader, readings, confirming)
+    # Whether this yes is to the merge, going by the assistant's lines before it,
+    # newest first: none may be about something else, back to one that asks or to
+    # the person's last plain answer. A clear yes the model calls a confirmation
+    # (`clear_is_enough`) needs no more. Any other needs a line that asks, since
+    # the person last said anything but filler.
+    def answers_the_merge?(turn, lines, reader, readings, clear_is_enough)
+      spoke = false
       lines.take_while { |line| line.id < turn.id }.reverse_each do |line|
         if line.user?
-          break unless %i[unclear neutral].include?(readings[line].kind)
-        elsif reader.changes_subject?(line.content, readings[turn])
+          break unless readings[line].unclear? || readings[line].neutral?
+
+          spoke ||= readings[line].unclear?
+        elsif reader.changes_subject?(line.content)
           return false
-        elsif MergeAnswer.asks?(line.content)
+        elsif reader.asks?(line.content)
+          break if spoke
+
           return true
         end
       end
-      confirming && readings[turn].strong
+      clear_is_enough && readings[turn].strong
     end
 
     # Whether merging came up aloud, by either of them, around the question or
@@ -422,13 +431,20 @@ module LiveConversations
       spoken.where("created_at >= ?", question.created_at - TALK_BEFORE).pluck(:content).any? { |text| MergeAnswer.about_merging?(text) }
     end
 
-    # The answer may still be on its way to Zimmer when the model acts on it.
+    # The answer may still be on its way to Zimmer when the model acts on it: no
+    # yes is there, and nothing they said came after the newest line that asks.
     def let_an_answer_land(session, pr_url)
       return unless @conversation.voice?
 
+      reader = MergeAnswer.new(number: self.class.pr_number(pr_url))
       (ANSWER_GRACE / ANSWER_POLL).to_i.times do
         asked = questions(session, pr_url)
-        break if asked.empty? || lines_after(start_of(asked)).any?(&:user?)
+        break if asked.empty?
+
+        lines = lines_after(start_of(asked))
+        said = lines.select(&:user?)
+        break if said.any? { |turn| reader.answer(turn.content).yes? }
+        break if said.any? && lines.none? { |turn| turn.id > said.last.id && reader.asks?(turn.content) }
 
         pause
       end
@@ -695,13 +711,14 @@ module LiveConversations
         run.unshift(turn)
       end
       # A merge was sent since: whatever was asked before it is settled.
-      run.reject { |turn| turn.id < last_merged_id }
+      settled = last_merged_id
+      run.reject { |turn| turn.id < settled }
     end
 
     def undone_between?(earlier, later, pr_url)
       reader = MergeAnswer.new(number: self.class.pr_number(pr_url))
-      spoken.where(role: "user").where(id: (earlier.id + 1)...later.id).pluck(:content)
-            .map { |content| reader.answer(content) }.any? { |reading| reading.no? || reading.takes_back? }
+      readings = spoken.where(role: "user").where(id: (earlier.id + 1)...later.id).reorder(:id).pluck(:content).map { |content| reader.answer(content) }
+      readings.any? { |reading| reading.no? || reading.takes_back? } || readings.drop_while { |reading| !reading.yes? }.any?(&:unclear?)
     end
 
     def question?(turn) = turn.tool_output.to_s.start_with?("READ-BACK: ")
