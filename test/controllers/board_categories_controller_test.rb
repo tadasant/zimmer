@@ -45,6 +45,16 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_select "#board_v2_list_#{infra.id} #board_v2_row_#{session.id}"
   end
 
+  test "a snoozed category with no end time still renders, in the strip and the drop bar" do
+    parked = BoardCategory.create!(name: "Parked", visibility: "snoozed", snoozed_until: 1.day.from_now)
+    parked.update_columns(snoozed_until: nil)
+
+    get dashboard_board_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
+    assert_response :success
+    assert_select "[data-board-v2-tucked-category='#{parked.id}']", text: /Snoozed/
+    assert_select "[data-board-v2-tucked-zone][data-category-id='#{parked.id}']", text: /Snoozed/
+  end
+
   test "renders Uncategorized, each category in order, and tucked-away categories as headers only" do
     infra = BoardCategory.create!(name: "Infra")
     ui = BoardCategory.create!(name: "UI", collapsed: true)

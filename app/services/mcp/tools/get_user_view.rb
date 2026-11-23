@@ -216,10 +216,12 @@ module Mcp
 
         parts = tucked.map do |section|
           category = section.category
+          # A snooze with no end time (a row written before it was required) is
+          # off the board too, and must not take the whole read down.
           state =
             if category.backlogged? then "backlogged"
             elsif category.snoozed_until then "snoozed until #{category.snoozed_until.utc.iso8601}"
-            else "snoozed"
+            else "snoozed with no end time"
             end
           "#{category.name} (#{state}): #{section.count}"
         end

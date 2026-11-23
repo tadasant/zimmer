@@ -78,6 +78,23 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_not_includes output, "the board is empty"
   end
 
+  test "a snoozed category with no end time is reported, not raised on" do
+    parked = BoardCategory.create!(name: "Parked", visibility: SessionVisibility::SNOOZED, snoozed_until: 1.day.from_now)
+    parked.update_columns(snoozed_until: nil)
+    make_session(title: "parked row").update_columns(board_category_id: parked.id)
+
+    assert_includes @read.call({}), "Parked (snoozed with no end time): 1"
+  end
+
+  test "a board the cap cut short says so" do
+    row = make_session(title: "kept row")
+    Sessions::BoardV2.stubs(:build).returns(
+      Sessions::BoardV2::Result.new(uncategorized: [ row ], sections: [], tucked: [], truncated: true)
+    )
+
+    assert_includes @read.call({}), "1 row(s) — capped at #{Mcp::Tools::GetUserView::MAX_ROWS}"
+  end
+
   # The three facts a decision on this board turns on that a plain session
   # listing does not carry.
   test "a row carries the agent root, the generated status and the PR with its CI verdict" do

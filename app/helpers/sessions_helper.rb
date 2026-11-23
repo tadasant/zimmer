@@ -111,6 +111,15 @@ module SessionsHelper
     "grid min-h-[2.75rem] gap-4 rounded-b-md bg-gray-50 px-1 py-3 sm:p-3 grid-cols-[repeat(auto-fill,minmax(min(344px,100%),428px))]"
   end
 
+  # Why a category is off Your board. A snooze with no end time (a row written
+  # before it was required) is off the board as well, so it has a label too.
+  def board_category_tucked_label(category, joiner:)
+    return "Backlogged" if category.backlogged?
+    return "Snoozed" if category.snoozed_until.blank?
+
+    "Snoozed#{joiner}#{category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}"
+  end
+
   # Extract PR number from a GitHub PR URL for display
   def extract_pr_number(url)
     match = url.to_s.match(%r{/pull/(\d+)})

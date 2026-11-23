@@ -2,7 +2,7 @@
 
 require "application_system_test_case"
 
-# Your board v2 in a real browser. The drags are the part an integration test
+# Your board in a real browser. The drags are the part an integration test
 # cannot prove: SortableJS is driven by its own pointer events, so these press,
 # move and release through the driver and then read the database.
 class BoardV2Test < ApplicationSystemTestCase
@@ -44,7 +44,7 @@ class BoardV2Test < ApplicationSystemTestCase
         })()
       JS
       return if armed
-      raise "Your board v2's drag-and-drop never armed within #{timeout}s" if
+      raise "Your board's drag-and-drop never armed within #{timeout}s" if
         Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
       sleep 0.1
@@ -258,7 +258,7 @@ class BoardV2Test < ApplicationSystemTestCase
     visit_board
 
     assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"),
-      "Your board v2 is wider than a 375px screen"
+      "Your board is wider than a 375px screen"
     sticking_out = page.evaluate_script(<<~JS)
       (function () {
         const limit = document.documentElement.clientWidth;
@@ -277,6 +277,30 @@ class BoardV2Test < ApplicationSystemTestCase
       })()
     JS
     assert_operator handle[1], :>=, 100, "the phone handle should run the card's height"
+  end
+
+  # The bar is fixed, so the document's width says nothing about it: every element
+  # in it is measured, with the longest name a category may have.
+  test "at 375px the drop bar fits the screen, snoozed and backlogged targets included" do
+    long = "#{TAG} " + ("W" * (BoardCategory::NAME_MAX_LENGTH - TAG.length - 1))
+    BoardCategory.create!(name: long, visibility: "snoozed", snoozed_until: 2.days.from_now)
+    BoardCategory.create!(name: "#{TAG} Later", visibility: "backlogged")
+    page.driver.browser.manage.window.resize_to(375, 812)
+    visit_board
+    page.execute_script("document.querySelector(\"[data-board-v2-target='tray']\").classList.remove('hidden')")
+    assert_selector "[data-board-v2-tucked-zone]", count: 2
+
+    sticking_out = page.evaluate_script(<<~JS)
+      (function () {
+        const limit = document.documentElement.clientWidth;
+        return Array.from(document.querySelectorAll("#board_v2 *"))
+          .filter((el) => el.getBoundingClientRect().right > limit + 1)
+          .slice(0, 20)
+          .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value} @ ${Math.round(el.getBoundingClientRect().right)}px`);
+      })()
+    JS
+    assert_empty sticking_out
+    assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1")
   end
 
   # Trash detaches the card's frame and then the wrapper around it; a refusal

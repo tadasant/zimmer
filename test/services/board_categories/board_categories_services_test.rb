@@ -3,7 +3,7 @@
 require "test_helper"
 require "mocha/minitest"
 
-# BoardCategories::Reorder / Assign / SetVisibility — the writes Your board v2
+# BoardCategories::Reorder / Assign / SetVisibility — the writes Your board
 # and `manage_board_categories` share.
 class BoardCategoriesServicesTest < ActiveSupport::TestCase
   setup do

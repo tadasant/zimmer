@@ -99,7 +99,7 @@
               data-snoozed-until="<%= tucked.category.snoozed_until&.iso8601 unless tucked.category.backlogged? %>"
               data-category-id="<%= tucked.category.id %>">
             <span class="truncate"><%= tucked.category.name %></span>
-            <span class="truncate text-[11px] font-normal text-gray-500"><%= tucked.category.backlogged? ? "Backlogged" : "Snoozed until #{tucked.category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}" %></span>
+            <span class="truncate text-[11px] font-normal text-gray-500"><%= board_category_tucked_label(tucked.category, joiner: " until ") %></span>
           </div>
         <% end %>
       </div>
@@ -116,7 +116,7 @@
             <span class="shrink-0 text-xs text-gray-500" data-board-v2-tucked-count="<%= tucked.count %>"><%= pluralize(tucked.count, "session") %></span>
             <span class="inline-flex min-w-0 max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11px] font-medium <%= tucked.category.backlogged? ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700" %>"
                   title="<%= tucked.category.visibility_summary %>">
-              <%= tucked.category.backlogged? ? "Backlogged" : "Snoozed · #{tucked.category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}" %>
+              <%= board_category_tucked_label(tucked.category, joiner: " · ") %>
             </span>
             <span class="shrink-0">
               <%= render "sessions/board_category_visibility_menu", category: tucked.category %>
