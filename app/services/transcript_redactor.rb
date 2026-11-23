@@ -304,26 +304,48 @@ module TranscriptRedactor
   # constrain them that way. A credential is the opposite — one opaque run, or a
   # mixed-case/base64 blob, or hex.
   #
-  # Three conditions, all required, each closing a specific hole:
+  # One exception to "lowercase": a name may END in a single UPPER_SNAKE run,
+  # because the common convention is to name a secret after the environment
+  # variable it feeds — `strad-staging-ADMIN_BOOTSTRAP_TOKEN`,
+  # `prod/DATABASE_URL`, or plain `STRAD_ADMIN_BOOTSTRAP_TOKEN`. That run is
+  # held to env-var spelling: every segment is one case, its segments are joined
+  # by `_` and nothing else, there is only one of it, and it comes last. So
+  # `Prod-Api-Key` (mixed case inside a segment), `ABCD-EFGH-IJKL-MNOP` (a
+  # licence-key-style group joined by hyphens) and `prod-KEY-store` (an upper
+  # run that is not last) all still redact. The name that prompted this came
+  # back as `--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` (session 29971).
   #
-  #   * SHAPE — lowercase and digits only, in at least three separator-joined
-  #     segments. The all-lowercase half is what keeps every base64, base62 and
-  #     mixed-case key out; the three-segment floor is what keeps a two-part
-  #     opaque value (`abcdefghij-klmnopqrst`) out.
+  # Four conditions, all required, each closing a specific hole:
+  #
+  #   * SHAPE — lowercase and digits, optionally ending in that one UPPER_SNAKE
+  #     run. No segment mixes cases, which is what keeps every base64, base62 and
+  #     mixed-case key out.
+  #   * SEGMENT FLOOR — at least three separator-joined segments, which keeps a
+  #     two-part opaque value (`abcdefghij-klmnopqrst`) out.
   #   * MAX_SEGMENT — no segment longer than 12 characters. A `prefix-<20 opaque
   #     chars>` key is a real credential format and has to stay redacted.
   #   * Wordiness — more than half the segments must carry a letter outside the
-  #     hex alphabet. A UUID (`550e8400-e29b-41d4-a716-446655440000`) and a
-  #     hyphen-grouped hex key satisfy the first two conditions and are genuine
-  #     session-token formats; neither has a single letter in `[g-z]`.
+  #     hex alphabet, in either case. A UUID
+  #     (`550e8400-e29b-41d4-a716-446655440000`) and a hyphen- or
+  #     underscore-grouped hex key (`DEAD_BEEF_CAFE`) satisfy the other
+  #     conditions and are genuine session-token formats; neither has a single
+  #     letter in `[g-z]`.
   #
   # This is a deny-list of known-public *shapes*, not an entropy heuristic. The
-  # residual risk it accepts is a lowercase diceware passphrase sitting after a
-  # bare `secret=` or `token=` — documented in limitations.md.
-  PUBLIC_IDENTIFIER_SHAPE = bounded(%r{\A[a-z0-9]+(?:[-._/][a-z0-9]+){2,}\z})
+  # residual risk it accepts is a lowercase diceware passphrase, or an
+  # UPPER_SNAKE run of short words, sitting after a bare `secret=` or `token=` —
+  # documented in limitations.md.
+  #
+  # The lowercase run and the upper run overlap only on digit-only segments, so
+  # the one place the regexp can backtrack is choosing where a run of digits
+  # belongs; with PUBLIC_IDENTIFIER_MAX_LENGTH checked first, that is bounded.
+  PUBLIC_IDENTIFIER_SHAPE = bounded(
+    %r{\A(?:[a-z0-9]+(?:[-._/][a-z0-9]+)*(?:[-._/][A-Z0-9]+(?:_[A-Z0-9]+)*)?|[A-Z0-9]+(?:_[A-Z0-9]+)*)\z}
+  )
   PUBLIC_IDENTIFIER_SEPARATOR = bounded(%r{[-._/]})
+  PUBLIC_IDENTIFIER_MIN_SEGMENTS = 3
   PUBLIC_IDENTIFIER_MAX_SEGMENT = 12
-  NON_HEX_LETTER = bounded(/[g-z]/)
+  NON_HEX_LETTER = bounded(/[g-zG-Z]/)
 
   # Checked BEFORE the shape regexp. The value handed to this test is whatever
   # ENV_SECRET captured, and the pathological transcript this file is otherwise
@@ -978,6 +1000,7 @@ module TranscriptRedactor
       return false unless value.match?(PUBLIC_IDENTIFIER_SHAPE)
 
       segments = value.split(PUBLIC_IDENTIFIER_SEPARATOR)
+      return false if segments.length < PUBLIC_IDENTIFIER_MIN_SEGMENTS
       return false if segments.any? { |segment| segment.length > PUBLIC_IDENTIFIER_MAX_SEGMENT }
 
       wordy = segments.count { |segment| segment.match?(NON_HEX_LETTER) }

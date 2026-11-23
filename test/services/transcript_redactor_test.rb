@@ -386,8 +386,29 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     %(https://console.cloud.google.com/security/secret-manager?secret=strad-prod-mcp-google-sheets),
     %(vault kv get -format=json secret=strad-prod-google-sheets-ro),
     %(  secret: zimmer-production-tls-certificate),
-    %({"token": "github-actions-deploy-workflow"})
+    %({"token": "github-actions-deploy-workflow"}),
+    # Secrets named after the environment variable they feed: a lowercase
+    # prefix and one trailing UPPER_SNAKE run, or the UPPER_SNAKE name alone.
+    %(--secret=projects/example-project/secrets/STRAD_STAGING_TOKENS),
+    %(gcloud secrets versions access latest --secret=STRAD_ADMIN_BOOTSTRAP_TOKEN),
+    %(  secret: prod/DATABASE_URL_READONLY)
   ].freeze
+
+  # The command from the incident, as written in a walkthrough handed to a
+  # human: the bootstrap token's Secret Manager name came back as
+  # `--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` (session 29971). Strad names
+  # its staging secrets `strad-staging-<ENV_VAR_NAME>`, so the value is a
+  # lowercase prefix ending in the variable's UPPER_SNAKE name.
+  ENV_NAMED_SECRET_COMMAND =
+    "gcloud secrets versions access latest --secret=strad-staging-ADMIN_BOOTSTRAP_TOKEN --project=example-project | pbcopy"
+
+  test "leaves a secret named after its environment variable runnable" do
+    assert_equal 35, "strad-staging-ADMIN_BOOTSTRAP_TOKEN".length
+
+    TranscriptRedactor.stub(:known_secrets, []) do
+      assert_equal ENV_NAMED_SECRET_COMMAND, TranscriptRedactor.redact(ENV_NAMED_SECRET_COMMAND)
+    end
+  end
 
   PUBLIC_IDENTIFIERS.each_with_index do |line, index|
     test "leaves public identifier ##{index} untouched" do
@@ -428,7 +449,24 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     # Isolates the three-segment floor: lowercase, short, wordy.
     "isolates the segment floor: two segments" => "secret=alphabet-charlies",
     # Isolates MAX_SEGMENT: lowercase, 3 segments, wordy, one segment over 12.
-    "isolates max segment: a long opaque tail" => "secret=prod-api-abcdefghijklmnopqrst"
+    "isolates max segment: a long opaque tail" => "secret=prod-api-abcdefghijklmnopqrst",
+    # The UPPER_SNAKE tail is a carve-out for env-var names, not for upper case.
+    # A value noun still never reaches the shape test, whatever the case.
+    "a value noun is never excused: client_secret with an env-var-shaped value" => "client_secret=STRAD_ADMIN_BOOTSTRAP_TOKEN",
+    "a compound ending in secret, env-var-shaped value: WEBHOOK_SECRET" => "WEBHOOK_SECRET=STRAD_ADMIN_BOOTSTRAP_TOKEN",
+    # Each of these fails exactly one condition and satisfies the rest.
+    # Isolates env-var spelling: upper segments joined by hyphens, licence-key style.
+    "isolates env-var spelling: an upper group joined by hyphens" => "secret=ABCD-EFGH-IJKL-MNOP",
+    # Isolates position: the upper run must come last.
+    "isolates position: an upper run before a lowercase segment" => "secret=prod-KEYS-store-name",
+    # Isolates case within a segment: mixed case inside the upper run.
+    "isolates case: a mixed-case segment in the upper run" => "secret=strad-staging-ADMIN_Bootstrap_TOKEN",
+    # Isolates wordiness, upper case: underscore-grouped hex has no letter in [G-Z].
+    "isolates wordiness: an underscore-grouped upper hex key" => "secret=DEAD_BEEF_CAFE_F00D",
+    # Isolates the segment floor, upper case: two segments, short, wordy.
+    "isolates the segment floor: two upper segments" => "secret=ADMINISTRATOR_TOKENS",
+    # Isolates MAX_SEGMENT, upper case: one segment over 12.
+    "isolates max segment: a long opaque upper tail" => "secret=prod-api-ABCDEFGHIJKLMNOPQRST"
   }.freeze
 
   STILL_REDACTED.each do |description, line|

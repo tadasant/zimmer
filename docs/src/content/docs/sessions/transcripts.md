@@ -383,11 +383,20 @@ That cost a human a runnable command: an orchestrator session handed over
 `gcloud secrets list` prints to anyone with read access; the credential is the version's payload,
 which was never in the message.
 
-After those two nouns only, the rule now declines a value that is shaped like a public identifier:
+After those two nouns only, the rule declines a value that is shaped like a public identifier:
 lowercase and digits, in at least three separator-joined segments, no segment longer than 12
 characters, and more than half the segments carrying a letter outside the hex alphabet. That last
 condition is what keeps a UUID (`550e8400-e29b-41d4-a716-446655440000`) and a hyphen-grouped hex key
-redacted — both are real session-token formats and neither has a letter in `[g-z]`. Compound names
+redacted — both are real session-token formats and neither has a letter in `[g-z]`.
+
+The identifier may also end in one UPPER_SNAKE run, because secrets are commonly named after the
+environment variable they feed. `--secret=strad-staging-ADMIN_BOOTSTRAP_TOKEN` came back as
+`--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` in a walkthrough a human had to follow
+([session 29971](https://zimmer.tadasant.com/sessions/29971)). The run is held to env-var spelling:
+every segment in it is upper case, its segments are joined by `_` only, and it comes last. A bare
+`STRAD_ADMIN_BOOTSTRAP_TOKEN` and `prod/DATABASE_URL` pass. `ABCD-EFGH-IJKL-MNOP` (upper-case groups
+joined by hyphens), `prod-KEYS-store` (an upper run in the middle), `ADMIN_Bootstrap_TOKEN` (mixed
+case in a segment) and `DEAD_BEEF_CAFE` (upper-case hex) still redact. Compound names
 (`client_secret`, `api_key`, `password`, `passphrase`) are untouched by any of this, so
 `password=correct-horse-battery-staple` still redacts.
 
