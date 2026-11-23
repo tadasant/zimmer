@@ -64,7 +64,7 @@ final class TriggerEditorUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureTrigger", "5"])
         XCTAssertTrue(app.navigationBars["Nightly dependency sweep"].waitForExistence(timeout: timeout))
         app.buttons["trigger.detail.actions"].tap()
-        app.buttons["trigger.edit"].firstMatch.tap()
+        app.buttons["Edit"].firstMatch.tap()
         let name = app.textFields["trigger.form.name"]
         XCTAssertTrue(name.waitForExistence(timeout: timeout))
         XCTAssertEqual(name.value as? String, "Nightly dependency sweep", "the form opens on the stored settings")
@@ -134,7 +134,7 @@ final class TriggerEditorUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureTrigger", "6"])
         XCTAssertTrue(app.navigationBars["Slack #zimmer mentions"].waitForExistence(timeout: timeout))
         app.buttons["trigger.detail.actions"].tap()
-        app.buttons["trigger.delete"].firstMatch.tap()
+        app.buttons["Delete"].firstMatch.tap()
         // The web page's confirmation, word for word. In the sheet, by its label: a
         // confirmation's identifier does not reach the sheet.
         let confirm = app.sheets.buttons["Delete"].firstMatch

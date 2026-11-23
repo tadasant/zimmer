@@ -374,6 +374,18 @@ In the iOS trigger form, a drag toward the top of the form can move the whole sh
 
 A refusal does not depend on it, because the form scrolls to the refusal itself. Somebody scrolling a long form by hand can still meet it, and so can the other upward `reveal`s in `TriggerEditorUITests`, which are short and have not failed this way. A failed save that is not a refusal, such as a network error, still shows its banner at the top of the form with no scroll, so it can appear off screen.
 
+### A menu item's identifier can be missing on iOS 27
+
+On iOS 27.0, built with Xcode 27.1, XCUITest does not see the accessibility identifier of an item in the session page's actions menu or the board's view options menu. The items are there by label and work, and both menus are unchanged on screen. The trigger page's menu kept its identifiers in the same run. The two that lost them use `Section`s and it does not, which fits but was not tested ([run 45119344553](https://github.com/tadasant/zimmer/actions/runs/45119344553), both attempts).
+
+So no menu item in the app sets an identifier, and a UI test finds one by its label. An item whose label is ambiguous on its screen needs a narrower query. VoiceOver reads the label, so nobody using the app is affected.
+
+### No UI test sees the Allow Paste prompt
+
+An iOS 27.0 simulator cannot show *Allow Paste*, the prompt iOS puts up when an app reads what another app copied. Its pasteboard daemon logs `Paste requires user authorization. Prompting...`, SpringBoard refuses the alert (`Entitlement "com.apple.springboard.CFUserNotification" is required to access this resource`), and the read comes back empty. *Paste Image* then says *Paste not allowed.*, as it does for a person who refuses. In [run 45136122476](https://github.com/tadasant/zimmer/actions/runs/45136122476) the paste test failed 2 of 2 without the permission, passed 3 of 3 with it, and failed 2 of 2 once it was taken away.
+
+So `ios/bin/ui-test` sets *Paste from Other Apps* to Allow for Zimmer, in the simulator's TCC database, before any test. The test drives the paste itself, and no test drives the prompt, nor a refusal. Nothing here was measured on a real device: that an iOS 27 phone shows the prompt is inferred from the simulator trying to.
+
 ### A switch on iOS 26 can lose a very short touch
 
 iOS 26's `UISwitch` flips through a long-press recognizer that begins a moment after the touch lands. If touch-down and touch-up reach the app together, it usually never begins: the app gets the touch, the switch does not move, and nothing is logged. XCUITest's `tap()` holds for 67 ms, and on a loaded runner the first touch of a screen reached the app 46 to 97 ms late, measured with touch logging on. With nothing logging, 1 plain tap in 53 failed the way [run 41951747877](https://github.com/tadasant/zimmer/actions/runs/41951747877) did. That run had no touch logging, so its cause is inferred from the matching failure.

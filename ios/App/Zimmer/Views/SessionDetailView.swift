@@ -1359,7 +1359,6 @@ struct SessionDetailView: View {
                 }
                 Button { editing = .goal } label: { Label("Modify Goal", systemImage: "flag") }
                 Button { choosingModel = true } label: { Label("Model: \(session.model ?? "default")", systemImage: "cpu") }
-                    .accessibilityIdentifier("detail.model")
                 // One submenu, so the menu stays short enough that its last items show; each
                 // item named as the web page's editors are. The page's rows are the main way in.
                 Menu {
@@ -1367,7 +1366,6 @@ struct SessionDetailView: View {
                         Button { editingCatalog = kind } label: {
                             Label("Modify \(kind.label) (\(kind.selection(in: session).count))", systemImage: kind.symbol)
                         }
-                        .accessibilityIdentifier("menu.catalog.\(kind.rawValue)")
                     }
                 } label: {
                     Label("Modify MCP Servers, Skills, Hooks, Plugins", systemImage: "puzzlepiece.extension")
@@ -1566,7 +1564,6 @@ struct SessionDetailView: View {
                             Button { forking = message } label: {
                                 Label("Fork from Here", systemImage: "arrow.triangle.branch")
                             }
-                            .accessibilityIdentifier("message.fork")
                         }
                     }
                     .id(ReadingPosition.anchor(message.id))
@@ -1638,7 +1635,6 @@ struct SessionDetailView: View {
                         } label: {
                             Label("Send Now — ends the current turn", systemImage: "bolt.fill")
                         }
-                        .accessibilityIdentifier("followup.sendnow")
                     }
                 }
             }

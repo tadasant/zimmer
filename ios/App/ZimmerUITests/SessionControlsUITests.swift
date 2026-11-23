@@ -136,9 +136,11 @@ final class SessionControlsUITests: XCTestCase {
         XCTAssertFalse(app.sheets.buttons["Restart"].exists, "no confirmation for a failed session")
     }
 
-    /// The web composer takes a pasted image. The test runner puts one on the pasteboard, and
-    /// iOS asks whether Zimmer may paste from another app: that prompt is answered *Allow Paste*
-    /// wherever it is drawn (SpringBoard, or the app's own window on some runtimes).
+    /// The web composer takes a pasted image. The test runner puts one on the pasteboard, which
+    /// to the app is an image copied in another app. `ios/bin/ui-test` sets Zimmer's *Paste from
+    /// Other Apps* to Allow first, because an iOS 27 simulator cannot show the prompt that asks:
+    /// it refuses the read at once, and the app says *Paste not allowed.* So this drives the
+    /// paste and what becomes of it, not Apple's prompt.
     func test_an_image_on_the_clipboard_is_pasted_into_the_composer() throws {
         let image = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 48)).image { context in
             UIColor.systemTeal.setFill()
@@ -146,42 +148,11 @@ final class SessionControlsUITests: XCTestCase {
         }
         UIPasteboard.general.image = image
 
-        let allowPaste = addUIInterruptionMonitor(withDescription: "Allow Paste") { alert in
-            let allow = alert.buttons["Allow Paste"]
-            guard allow.exists else { return false }
-            allow.tap()
-            return true
-        }
-        defer { removeUIInterruptionMonitor(allowPaste) }
-
         let app = launch(["-ZimmerFixtureOpenSession", "1035"])
         let attach = app.buttons["composer.attach"]
         XCTAssertTrue(attach.waitForExistence(timeout: timeout))
         attach.tap()
         tapMenuItem(app, "Paste Image")
-
-        // The app's main thread waits on the answer, so SpringBoard is asked first: a query of
-        // the app while the prompt is up times out as a failed test, not as a false. A tap on
-        // *Allow Paste* does not always take, so it is tapped again until the prompt is gone,
-        // within a deadline that leaves room for a few retries.
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let springboardAllow = springboard.alerts.buttons["Allow Paste"].firstMatch
-        let deadline = Date().addingTimeInterval(timeout * 2)
-        while Date() < deadline {
-            if springboardAllow.exists {
-                // Hittable, so a prompt that went away late is not tapped after it has gone.
-                if springboardAllow.isHittable { springboardAllow.tap() }
-                let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: springboardAllow)
-                if XCTWaiter().wait(for: [gone], timeout: 5) == .completed { break }
-                continue
-            }
-            let fromApp = app.alerts.buttons["Allow Paste"].firstMatch
-            if fromApp.exists { fromApp.tap(); break }
-            let chip = pastedChip(app)
-            if chip.exists { break }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
-        }
-        XCTAssertFalse(springboardAllow.exists, "SpringBoard's Allow Paste prompt never went away")
 
         XCTAssertTrue(pastedChip(app).waitForExistence(timeout: timeout), "the pasted image is attached, as a library photo is")
         attachScreenshot(app, named: "pasted-image")
