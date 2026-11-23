@@ -164,13 +164,13 @@ TurnSource = Data.define(:surface, :modality, :client_version, :live_conversatio
     end
 
     # A turn a trigger delivers, keyed off the genesis its condition type maps to.
-    # Slack, email and WhatsApp are people writing on another surface, relayed;
-    # everything else a trigger fires on is automation.
+    # Slack is people writing on another surface, relayed; everything else a
+    # trigger fires on is automation. (The `email` and `whatsapp` surfaces are the
+    # retired native conditions' — SessionGenesis::RETIRED_TRIGGER_KEYS — and stay
+    # labelled for the turns they already delivered.)
     def for_genesis(genesis)
       case genesis.to_s
       when SessionGenesis::SLACK then new(surface: "slack", modality: "text")
-      when SessionGenesis::EMAIL then new(surface: "email", modality: "text")
-      when SessionGenesis::WHATSAPP then new(surface: "whatsapp", modality: "text")
       else new(surface: "trigger")
       end
     end

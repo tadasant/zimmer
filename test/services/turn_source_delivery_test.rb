@@ -65,10 +65,8 @@ class TurnSourceDeliveryTest < ActiveJob::TestCase
 
   # --- triggers -----------------------------------------------------------------
 
-  test "a trigger relays Slack, email and WhatsApp as people on those surfaces, and anything else as automation" do
+  test "a trigger relays Slack as people on that surface, and anything else as automation" do
     assert_equal({ "surface" => "slack", "modality" => "text" }, TurnSource.for_genesis(SessionGenesis::SLACK).to_h)
-    assert_equal({ "surface" => "email", "modality" => "text" }, TurnSource.for_genesis(SessionGenesis::EMAIL).to_h)
-    assert_equal({ "surface" => "whatsapp", "modality" => "text" }, TurnSource.for_genesis(SessionGenesis::WHATSAPP).to_h)
     assert TurnSource.for_genesis(SessionGenesis::GITHUB_ISSUE).machine?
     assert TurnSource.for_genesis(SessionGenesis::SCHEDULE).machine?
   end

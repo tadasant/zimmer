@@ -29,8 +29,6 @@ public protocol OperationsAPI: Sendable {
     func deleteTrigger(_ id: Int) async throws
     /// The Slack channels a Slack condition can pick from. A 503 says Slack is not configured.
     func triggerChannels() async throws -> [SlackChannel]
-    /// The WhatsApp chats a WhatsApp condition can pick from. A 503 says WhatsApp is not configured.
-    func whatsappChats() async throws -> [WhatsAppChat]
     /// The Costs page over `window`, narrowed to `scope`.
     func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot
     func health() async throws -> HealthReport
@@ -142,11 +140,6 @@ extension ZimmerHTTPClient {
     public func triggerChannels() async throws -> [SlackChannel] {
         let response: SlackChannelsResponse = try await get("/api/v1/triggers/channels")
         return response.channels
-    }
-
-    public func whatsappChats() async throws -> [WhatsAppChat] {
-        let response: WhatsAppChatsResponse = try await get("/api/v1/triggers/whatsapp_chats")
-        return response.chats
     }
 
     public func costs(_ window: CostWindow, scope: CostScope) async throws -> CostSnapshot {

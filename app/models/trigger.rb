@@ -270,9 +270,6 @@ class Trigger < ApplicationRecord
   validate :validate_resuscitate_archived_requires_reuse_session
   validate :validate_last_session_requires_reuse_session, on: :create
   validate :validate_watched_session_not_requester, on: :create
-  validate :validate_email_template_fences_sender_content
-  validate :validate_whatsapp_all_chats_template_fences_sender_content
-  validate :validate_whatsapp_all_chats_without_reuse_session
   validate :validate_mcp_event_template_fences_payload
 
   # A change to the selector reaches the sessions this trigger already spawned
@@ -643,13 +640,6 @@ class Trigger < ApplicationRecord
     "message_ts" => /\A\d+\.\d+\z/,
     "thread_ts" => /\A\d+\.\d+\z/,
     "author_id" => /\A[UW][A-Z0-9]+\z/,
-    # WhatsApp conditions: the chat the poller read, and the id of the newest message in the
-    # batch — both read off the bridge's own fields, like the Slack four above. Email conditions
-    # fill message_id too, with the Gmail id of the newest new message in the thread.
-    "chat_id" => TriggerCondition::WHATSAPP_CHAT_ID_FORMAT,
-    "message_id" => /\A[0-9A-Za-z]{1,128}\z/,
-    # Email conditions: the Gmail thread the fire is about, as the mailbox server printed it.
-    "thread_id" => EmailService::ID_FORMAT,
     # MCP event conditions: the event's `eventId`, as the server sent it — the key the fire is
     # deduplicated on. A strad Slack event's is `slack:<channel>:<ts>`.
     "event_id" => McpEvents::Client::EVENT_ID_FORMAT
@@ -666,18 +656,6 @@ class Trigger < ApplicationRecord
   # (`…@g.us`) — never prose. `@` never first, so a payload value cannot render as an `@path`
   # file mention.
   MCP_EVENT_ID_FIELD_FORMAT = /\A[A-Za-z0-9._:-][A-Za-z0-9._:@-]{0,127}\z/
-
-  # The variables an `email` condition fills with what the SENDER wrote: the message, the From
-  # header, the subject. Anyone on the internet can write all three, and From is spoofable, so a
-  # trigger with an email condition must fence them (`{{text|untrusted}}`) wherever it names them
-  # (#validate_email_template_fences_sender_content).
-  EMAIL_SENDER_VARIABLES = %w[text author title].freeze
-
-  # The variables an all-chats `whatsapp` condition fills with what a SENDER chose: the messages,
-  # the authors' WhatsApp names, and the chat's name. An all-chats condition fires on a message from
-  # anyone who has the number, so it is fenced the way email is
-  # (#validate_whatsapp_all_chats_template_fences_sender_content).
-  WHATSAPP_ALL_CHATS_SENDER_VARIABLES = %w[text author channel].freeze
 
   # Variables that require user input during manual invocation
   # ({{time}} and {{date}} are auto-populated)
@@ -712,11 +690,6 @@ class Trigger < ApplicationRecord
     USER_INPUT_VARIABLES.select { |var| named.include?(var) }
   end
 
-  # The variables an email's sender fills (EMAIL_SENDER_VARIABLES) that this template writes bare.
-  def unfenced_email_sender_variables
-    EMAIL_SENDER_VARIABLES & bare_placeholder_names
-  end
-
   # The MCP event payload fields this template writes as `{{event.<field>}}`, with neither
   # `|untrusted` nor `|id`.
   def unfenced_mcp_event_fields
@@ -732,8 +705,7 @@ class Trigger < ApplicationRecord
   # Supported variables: {{link}}, {{text}}, {{author}}, {{channel}}, {{time}}, {{date}},
   # {{event}}; for GitHub conditions {{repo}}, {{number}}, {{title}}, {{labels}}; and for
   # Slack conditions the trusted identifiers {{channel_id}}, {{message_ts}}, {{thread_ts}}
-  # and {{author_id}}, for WhatsApp conditions {{chat_id}} and {{message_id}}, and for email
-  # conditions {{message_id}} and {{thread_id}}, and for MCP event conditions {{event_id}}
+  # and {{author_id}}, and for MCP event conditions {{event_id}}
   # (TRUSTED_IDENTIFIER_FORMATS). Any of them may be written {{name|untrusted}} to render fenced off
   # as untrusted input (#fence_untrusted). An MCP event's payload fields render as
   # {{event.<field>|untrusted}} or {{event.<field>|id}} (EVENT_FIELD_PATTERN), from +event_data+.
@@ -750,7 +722,6 @@ class Trigger < ApplicationRecord
   def interpolate_prompt(link: nil, text: nil, author: nil, channel: nil, event: nil,
                          repo: nil, number: nil, title: nil, labels: nil,
                          channel_id: nil, message_ts: nil, thread_ts: nil, author_id: nil,
-                         chat_id: nil, message_id: nil, thread_id: nil,
                          event_id: nil, event_data: nil)
     raise ArgumentError, workflow_fire_mismatch_message if workflow_backed?
 
@@ -763,7 +734,6 @@ class Trigger < ApplicationRecord
     }
     { "channel_id" => channel_id, "message_ts" => message_ts,
       "thread_ts" => thread_ts, "author_id" => author_id,
-      "chat_id" => chat_id, "message_id" => message_id, "thread_id" => thread_id,
       "event_id" => event_id }.each do |name, value|
       value = value.to_s.strip
       values[name] = value.match?(TRUSTED_IDENTIFIER_FORMATS.fetch(name)) ? value : ""
@@ -826,10 +796,10 @@ class Trigger < ApplicationRecord
   end
 
   # Where the turns this trigger delivers came from, for the turn-source note:
-  # Slack, email or WhatsApp when a person wrote on one of those and the trigger
-  # relayed it, and `trigger` — machine-written — for everything else. Keyed off
-  # the condition types, not #session_genesis, because an Invoke from the web app
-  # still delivers the trigger's own prompt, not words the person typed.
+  # Slack when a person wrote there and the trigger relayed it, and `trigger` —
+  # machine-written — for everything else. Keyed off the condition types, not
+  # #session_genesis, because an Invoke from the web app still delivers the
+  # trigger's own prompt, not words the person typed.
   #
   # nil — no note — for a one-time reuse trigger: that is a wake-up a session set
   # for itself (or a watch on another session), and its prompt is the session's
@@ -1636,10 +1606,6 @@ class Trigger < ApplicationRecord
     end
   end
 
-  # An email condition hands the template mail from anyone. Writing the sender's words bare would
-  # put them in the prompt as if whoever configured the trigger had written them, so it is refused
-  # at save rather than trusted to the template author's care. The trusted identifiers
-  # ({{message_id}}, {{thread_id}}) and {{link}} may be bare.
   # An MCP event's payload is whatever the server relayed — for strad's Slack events, what somebody
   # typed into Slack. A trigger with an `mcp_event` condition must therefore fence every payload
   # field it names, or ask for it as an identifier; a bare one is refused at save.
@@ -1659,44 +1625,6 @@ class Trigger < ApplicationRecord
     errors.add(:prompt_template, "must fence what an MCP event's payload carries: write " \
                                  "#{bare.map { |field| "{{event.#{field}|untrusted}}" }.join(', ')} " \
                                  "(or |id for an identifier) instead of #{bare.map { |field| "{{event.#{field}}}" }.join(', ')}")
-  end
-
-  def validate_email_template_fences_sender_content
-    return if workflow_backed?
-    return unless trigger_conditions.any? { |condition| condition.condition_type == "email" && !condition.marked_for_destruction? }
-
-    bare = unfenced_email_sender_variables
-    return if bare.empty?
-
-    errors.add(:prompt_template, "must fence what an email's sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
-                                 "instead of #{bare.map { |name| "{{#{name}}}" }.join(', ')}")
-  end
-
-  def validate_whatsapp_all_chats_template_fences_sender_content
-    return if workflow_backed?
-    return unless whatsapp_all_chats_condition?
-
-    bare = WHATSAPP_ALL_CHATS_SENDER_VARIABLES & bare_placeholder_names
-    return if bare.empty?
-
-    errors.add(:prompt_template, "must fence what a WhatsApp sender wrote: write #{bare.map { |name| "{{#{name}|untrusted}}" }.join(', ')} " \
-                                 "instead of #{bare.map { |name| "{{#{name}}}" }.join(', ')}")
-  end
-
-  # An all-chats condition fires one session per chat. Reusing a session would pour every chat —
-  # a stranger's DM next to an operator's — into one conversation, so each chat's words could
-  # steer the reply to another's.
-  # skip_if_pending_session is refused for the same reason: the pending session it waits on is the
-  # trigger's, not the chat's, so one chat's session in a turn would hold every other chat.
-  def validate_whatsapp_all_chats_without_reuse_session
-    return unless whatsapp_all_chats_condition?
-
-    errors.add(:reuse_session, "cannot be enabled on a trigger that watches all WhatsApp chats: it fires one session per chat") if reuse_session
-    errors.add(:skip_if_pending_session, "cannot be enabled on a trigger that watches all WhatsApp chats: one chat's session would hold every other chat") if skip_if_pending_session
-  end
-
-  def whatsapp_all_chats_condition?
-    trigger_conditions.any? { |condition| !condition.marked_for_destruction? && condition.whatsapp_all_chats? }
   end
 
   def clear_resuscitate_archived_without_reuse_session

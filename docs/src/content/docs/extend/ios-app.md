@@ -424,8 +424,8 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   typed (`variables` on `POST /api/v1/triggers/:id/invoke`); a template without any asks for a
   confirmation. The plus on the list and *Edit* on a trigger's page open the web form as a
   sheet (`POST /api/v1/triggers`, `PATCH /api/v1/triggers/:id`): the name, the conditions —
-  each card's fields by its type, with the Slack channel and WhatsApp chat pickers fed by
-  `GET /api/v1/triggers/channels` and `/whatsapp_chats` and a typed id when they cannot be —
+  each card's fields by its type, with the Slack channel picker fed by
+  `GET /api/v1/triggers/channels` and a typed id when it cannot be —
   the agent root, the four catalog lists, the goal, session re-use, scheduling class,
   precedence, the burst cap, the coalescing window, skip while pending and the prompt
   template, in the web form's order and words. A refusal (422) is listed at the top of the

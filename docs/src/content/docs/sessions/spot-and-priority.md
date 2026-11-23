@@ -98,8 +98,8 @@ the row. It is a column on `sessions`, assigned once at creation.
 | --- | --- | --- | --- |
 | `web_ui` | A human typed it into the Zimmer web app: the new-session form, the dashboard quick prompt, the chat bubble, or the **Invoke** button on a trigger. | priority | `/inference` |
 | `slack` | A Slack trigger fired on a DM or a channel message. | priority | the trigger |
-| `whatsapp` | A `whatsapp` trigger fired on new messages in a chat Zimmer is listening to. | priority | the trigger |
-| `email` | An `email` trigger fired on new mail in the polled mailbox. | spot | the trigger |
+| `whatsapp` | Retired. The native `whatsapp` trigger condition fired it on new messages in a watched chat. No trigger produces it, and the sessions that condition fired carry it. | priority | the trigger |
+| `email` | Retired. The native `email` trigger condition fired it on new mail in a polled mailbox. No trigger produces it, and the sessions that condition fired carry it. | spot | the trigger |
 | `mcp_event` | An `mcp_event` trigger fired on an event a catalog MCP server published. | spot | the trigger |
 | `github_issue` | A `github_issue` trigger fired — the feed the issue-work gate reads. | spot | the trigger |
 | `github_label` | A `github_label` trigger fired — the `ready to merge` feed the PR merge gate reads. | spot | the trigger |
@@ -108,9 +108,12 @@ the row. It is a column on `sessions`, assigned once at creation.
 | `api` | Created over `POST /api/v1/sessions` or MCP `start_session` **with no parent session**, or fired by hand over `POST /api/v1/triggers/:id/invoke` / `action_trigger`'s `invoke`. | spot | `/inference` |
 | `unknown` | Origin could not be established — chiefly rows created before genesis was recorded. | priority | `/inference` |
 
-Nine of the twelve kinds restate a trigger condition type, so their class lives on the **trigger**, not
-in a global per-kind setting: one noisy Slack trigger can be spot without demoting the eleven other
-Slack triggers that have a human waiting on the answer. The three that no trigger produces keep a
+Nine of the twelve kinds are trigger-backed: seven restate a trigger condition type, and `whatsapp`
+and `email` are retired kinds (`SessionGenesis::RETIRED_TRIGGER_KEYS`) that stay valid because
+historical sessions carry them. A trigger that watches Gmail or WhatsApp is an `mcp_event` trigger.
+The class of a trigger-backed kind lives on the **trigger**, not in a global per-kind setting: one
+noisy Slack trigger can be spot without demoting the eleven other Slack triggers that have a human
+waiting on the answer. The three that no trigger produces keep a
 per-kind setting on `/inference`.
 
 Two of the defaults are policy calls worth stating plainly:
