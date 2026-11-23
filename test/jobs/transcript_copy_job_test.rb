@@ -353,4 +353,43 @@ class TranscriptCopyJobTest < ActiveJob::TestCase
 
     assert_equal "", SessionConversationText.new(session).line("my private words\n", 0)
   end
+
+  test "a connection dropped during the read-back is the store's failure, not the session's" do
+    archived_session(content: jsonl(50))
+    @gcs.cut_short = true
+
+    assert_equal 1, TranscriptCopyJob.perform_now[:store_failed]
+    assert_equal 0, TranscriptCopyJob.failing.count
+    assert_equal 0, TranscriptCopy.count
+  end
+
+  test "a run of sessions failing alike ends the tick, so a full disk does not mark them all" do
+    12.times { archived_session(content: jsonl(1)) }
+    TranscriptCopier.any_instance.stubs(:copy).raises(Errno::ENOSPC)
+
+    assert_equal TranscriptCopyJob::MAX_SESSION_FAILURES, TranscriptCopyJob.perform_now[:failed]
+    assert_equal TranscriptCopyJob::MAX_SESSION_FAILURES, TranscriptCopyJob.failing.count
+  end
+
+  test "a name the store will not take is that session's trouble" do
+    archived_session(content: jsonl(1))
+    @gcs.refuse = 400
+
+    assert_equal 1, TranscriptCopyJob.perform_now[:failed]
+  end
+
+  test "several subagents are one fingerprint, the same in Ruby and in SQL" do
+    session = archived_session(content: jsonl(3))
+    3.times { |n| add_subagent(session, "sub #{n}\n", agent_id: "agent-#{n}") }
+
+    assert_equal 1, TranscriptCopyJob.perform_now[:copied]
+    assert_equal 0, TranscriptCopyJob.candidates(bucket: "zimmer-transcripts").count
+    assert_equal 3, TranscriptCopy.sole.subagents.size
+  end
+
+  test "an age that is not a number is the default" do
+    ENV[TranscriptCopyJob::COPY_AFTER_DAYS_ENV] = "soon"
+
+    assert_equal TranscriptCopyJob::DEFAULT_COPY_AFTER_DAYS, TranscriptCopyJob.copy_after_days
+  end
 end

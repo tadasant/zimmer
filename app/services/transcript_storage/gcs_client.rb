@@ -162,7 +162,7 @@ module TranscriptStorage
 
     def perform(uri, request)
       http(uri) { |connection| connection.request(request) }
-    rescue *NETWORK_ERRORS => e
+    rescue Zlib::Error, *NETWORK_ERRORS => e
       raise RequestFailed, "#{request.method} failed: #{e.class}"
     end
 
@@ -173,13 +173,17 @@ module TranscriptStorage
       connection.read_timeout = connection.write_timeout = IO_TIMEOUT
       # A retried upload would send the rest of a half-read file as if it were the whole.
       connection.max_retries = 0
+      # A body cut short of its Content-Length is an error, not a short answer.
+      connection.ignore_eof = false
       connection.start(&block)
     end
 
     def expect_success!(response, what)
       return if response.is_a?(Net::HTTPSuccess)
 
-      raise RequestFailed, "#{what}: HTTP #{response.code}"
+      # 400 is what the store says about one request's name or bytes. The rest are about
+      # the bucket, the credential or the service.
+      raise (response.code.to_i == 400 ? VerificationFailed : RequestFailed), "#{what}: HTTP #{response.code}"
     end
   end
 end

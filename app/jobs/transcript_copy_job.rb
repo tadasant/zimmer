@@ -26,6 +26,11 @@ class TranscriptCopyJob < ApplicationJob
   # A tick ends after this many failures of the store in a row.
   MAX_STORE_FAILURES = 3
 
+  # And after this many sessions in a row have failed for what looks like their own reason,
+  # because then it is not: a full disk, say. Each of them still waits RETRY_AFTER, so a
+  # run of bad sessions at the head of the queue clears itself over a few ticks.
+  MAX_SESSION_FAILURES = 10
+
   # How long a session that failed for its own reasons waits before it is tried again.
   RETRY_AFTER = 1.day
 
@@ -34,7 +39,7 @@ class TranscriptCopyJob < ApplicationJob
 
   class << self
     def copy_after_days
-      [ ENV[COPY_AFTER_DAYS_ENV].presence&.to_i || DEFAULT_COPY_AFTER_DAYS, 1 ].max
+      [ Integer(ENV[COPY_AFTER_DAYS_ENV].to_s, exception: false) || DEFAULT_COPY_AFTER_DAYS, 1 ].max
     end
 
     # Archived long enough ago, with a transcript, and no copy in +bucket+ of what it and
@@ -82,15 +87,16 @@ class TranscriptCopyJob < ApplicationJob
 
     deadline = monotonic_now + budget.to_f
     copier = TranscriptCopier.new(storage.client)
-    failures = 0
+    store_failures = session_failures = 0
     each_candidate(storage.bucket, now) do |session_id|
       break if monotonic_now >= deadline
 
       outcome, bytes = copy(copier, session_id)
       result[outcome] += 1
       result[:bytes] += bytes
-      failures = outcome == :store_failed ? failures + 1 : 0
-      break if failures >= MAX_STORE_FAILURES
+      store_failures = outcome == :store_failed ? store_failures + 1 : 0
+      session_failures = outcome == :failed ? session_failures + 1 : 0
+      break if store_failures >= MAX_STORE_FAILURES || session_failures >= MAX_SESSION_FAILURES
     end
     finish(result)
   end

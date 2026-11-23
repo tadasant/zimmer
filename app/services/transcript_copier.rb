@@ -31,7 +31,8 @@ class TranscriptCopier
 
   # What a set of subagent transcripts was when it was copied, as SQL over
   # `subagent_transcripts` for one session. Equality, not "newer than": `updated_at` is
-  # stamped before the write commits, so a write can land with a time already past.
+  # stamped before the write commits, so a write can land with a time already past. Any
+  # write of a subagent's transcript has to move `updated_at`.
   SUBAGENTS_FINGERPRINT_SQL = <<~SQL.squish
     COALESCE(md5(string_agg(st.id || '@' || to_char(st.updated_at, 'YYYYMMDDHH24MISSUS'), ',' ORDER BY st.id)), '')
   SQL
@@ -120,7 +121,7 @@ class TranscriptCopier
       stored = gzip_file do |gz, finish|
         gz.write(text)
         finish.call
-        store("#{@prefix}/subagents/#{subagent.agent_id.to_s.gsub(/[^A-Za-z0-9_-]/, "_")}-#{digest}.jsonl.gz",
+        store("#{@prefix}/subagents/#{subagent.agent_id.to_s.gsub(/[^A-Za-z0-9_-]/, "_").first(100)}-#{digest}.jsonl.gz",
           gz_path: gz.path_on_disk, digest: digest, metadata: { session_id: session.id, sha256: digest, bytes: text.bytesize })
       end
       entry.merge(stored).merge(sha256: digest, bytes: text.bytesize)

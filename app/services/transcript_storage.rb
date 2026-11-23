@@ -17,7 +17,8 @@ module TranscriptStorage
   # The store could not be reached, refused, or answered something unusable: it is the
   # store's trouble, not one session's. Never carries a response body.
   class RequestFailed < Error; end
-  # What the store holds under one name is not what was sent: that session's trouble.
+  # What the store holds under one name is not what was sent, or it would not take it:
+  # that session's trouble.
   class VerificationFailed < Error; end
 
   BUCKET = "TRANSCRIPT_STORAGE_BUCKET"

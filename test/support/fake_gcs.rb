@@ -13,6 +13,8 @@ class FakeGcs
   attr_accessor :refuse
   # A lambda given the stored bytes; what it returns is served instead.
   attr_accessor :tamper
+  # Serve media with its Content-Length but not all of its bytes.
+  attr_accessor :cut_short
   # Called with (name, body) as an upload completes, before it is checked.
   attr_accessor :before_finish
   # What the upload's Location header is built from; a test points it elsewhere.
@@ -66,7 +68,7 @@ class FakeGcs
     socket.write("HTTP/1.1 #{status} X\r\nContent-Length: #{out.bytesize}\r\nConnection: close\r\n")
     (extra || {}).each { |k, v| socket.write("#{k}: #{v}\r\n") }
     socket.write("\r\n")
-    socket.write(out)
+    socket.write(cut_short && query["alt"] == "media" ? out.byteslice(0, out.bytesize / 2) : out)
   rescue IOError, SystemCallError
     nil
   ensure

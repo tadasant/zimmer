@@ -143,7 +143,7 @@ module ParameterStore
       end
 
       body = JSON.parse(response.body.to_s)
-      token = body["access_token"]
+      token = body["access_token"] if body.is_a?(Hash)
       raise AuthError.new("token exchange returned no access_token", 502) if token.blank?
 
       [ token, Time.current + (body["expires_in"] || 3600).to_i.seconds ]
