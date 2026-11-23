@@ -57,7 +57,8 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
     assert_raises(TranscriptOffloadStore::Missing) { TranscriptOffloadStore.read(9, digest: @digest) }
 
     TranscriptOffloadStore.write(9, @content, digest: @digest)
-    assert_raises(TranscriptOffloadStore::Corrupt) { TranscriptOffloadStore.read(9, digest: "0" * 64) }
+    assert_raises(TranscriptOffloadStore::Missing) { TranscriptOffloadStore.read(9, digest: "0" * 64) }
+    assert_raises(TranscriptOffloadStore::Corrupt) { TranscriptOffloadStore.read(9, digest: nil) }
 
     File.binwrite(TranscriptOffloadStore.paths_for(9).first, "not gzip")
     assert_raises(TranscriptOffloadStore::Corrupt) { TranscriptOffloadStore.read(9, digest: @digest) }

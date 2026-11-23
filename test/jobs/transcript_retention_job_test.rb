@@ -271,6 +271,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     [ old, fresh ].each { |path| File.write(path, "x") }
     [ old, finished ].each { |path| File.utime(2.hours.ago.to_time, 2.hours.ago.to_time, path) }
 
+    archived_session(content: jsonl(3)) # the sweep runs with the next offload
     TranscriptRetentionJob.perform_now
 
     assert_not File.exist?(old)

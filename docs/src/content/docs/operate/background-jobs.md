@@ -425,7 +425,7 @@ zip entry when its offload file cannot be read, rather than replacing it with `n
 
 **The host's disk.** The job does nothing while the store's volume has less than
 `TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES` free (default 20 GiB), because that volume also holds every
-clone. Each tick first removes temp files more than an hour old, which a killed run leaves behind, and
+clone. A tick with work first removes temp files more than an hour old, which a killed run leaves behind, and
 ends after three failures in a row, because that means the store is broken rather than one session.
 
 **Disk.** As with `logs`, deleting rows does not shrink Postgres's files. The space is reused by new
