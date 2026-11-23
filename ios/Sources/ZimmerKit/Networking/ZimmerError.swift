@@ -65,7 +65,7 @@ public enum ZimmerError: Error, Equatable, Sendable {
         case .edgeNeedsAppHost:
             return "This deployment's network edge refused the app. It likely needs an app host: "
                 + "enter the address your operator gave you under \"App host\". "
-                + "A deployment already on this phone has to be removed and added again with it."
+                + "If it is already on this phone, remove it and add it again."
         case let .edgeNotRouted(path):
             return "The app host does not serve \(path). This is a bug in the app or its edge."
         case let .http(status, message): return message ?? "Zimmer answered \(status)."

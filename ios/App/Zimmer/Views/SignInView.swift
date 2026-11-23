@@ -80,6 +80,8 @@ struct SignInView: View {
 
             if let error = shownError {
                 ErrorBanner(error: error)
+                    // Whole, never cut to a line: the fix is at the end of the message.
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if case let .again(deployment) = mode {
@@ -130,6 +132,10 @@ struct SignInView: View {
         return true
     }
 
+    /// With the App host row open and its banner up, the mark and the subtitle give up their room:
+    /// the sheet does not scroll, and the message and the field it is about come first.
+    private var makesRoomForAppHost: Bool { asksForAddress && shownError == .edgeNeedsAppHost }
+
     private var shownError: ZimmerError? {
         if case .again = mode { return model.error }
         return workspaces.addError
@@ -141,7 +147,7 @@ struct SignInView: View {
             if case let .again(deployment) = mode {
                 DeploymentAvatar(deployment: deployment, size: 104)
                     .accessibilityHidden(true)
-            } else {
+            } else if !makesRoomForAppHost {
                 Image("ZimmerMark")
                     .resizable()
                     .frame(width: mode == .add ? 72 : 104, height: mode == .add ? 72 : 104)
@@ -158,12 +164,14 @@ struct SignInView: View {
                     .foregroundStyle(Theme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("signin.title")
-                Text(subtitle)
-                    .font(.body)
-                    .foregroundStyle(Theme.inkSoft)
-                    .multilineTextAlignment(.center)
-                    // Wrapped, never truncated: the add sheet's line is two lines on a phone.
-                    .fixedSize(horizontal: false, vertical: true)
+                if !makesRoomForAppHost {
+                    Text(subtitle)
+                        .font(.body)
+                        .foregroundStyle(Theme.inkSoft)
+                        .multilineTextAlignment(.center)
+                        // Wrapped, never truncated: the add sheet's line is two lines on a phone.
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

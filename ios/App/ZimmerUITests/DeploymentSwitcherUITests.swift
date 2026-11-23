@@ -130,16 +130,16 @@ final class DeploymentSwitcherUITests: XCTestCase {
 
         let banner = app.descendants(matching: .any)["error.edge"]
         XCTAssertTrue(banner.waitForExistence(timeout: timeout))
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "needs an app host")).firstMatch.exists,
-                      "the banner names the missing app host")
+        let message = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "needs an app host")).firstMatch
+        XCTAssertTrue(message.exists, "the banner names the missing app host")
         let appHost = app.textFields["signin.apphost"]
         XCTAssertTrue(appHost.waitForExistence(timeout: timeout), "the App host row opens")
         // The keyboard the server field raised goes away on Sign in; wait out its animation.
         XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "no keyboard over the banner")
-        let onScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: banner)
-        let bannerShown = XCTWaiter().wait(for: [onScreen], timeout: timeout) == .completed
         attachScreenshot(app, named: "deployments-add-needs-app-host")
-        XCTAssertTrue(bannerShown, "the banner is on screen")
+        // A label reads whole even when its text is drawn cut to one line, so measure what is drawn.
+        XCTAssertGreaterThan(message.frame.height, 60, "the message wraps in full, not cut to one line")
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(message.frame), "the whole message is on screen")
 
         appHost.tap()
         appHost.typeText("https://third-app.invalid")
