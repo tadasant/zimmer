@@ -247,7 +247,6 @@ struct SettingsView: View {
                     Button("Copy full SHA", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = deployment.git.commitSha
                     }
-                    .accessibilityIdentifier("settings.deployment.sha.copy")
                 }
                 LabeledContent("Branch") {
                     Text(verbatim: deployment.git.branch).font(Theme.mono)

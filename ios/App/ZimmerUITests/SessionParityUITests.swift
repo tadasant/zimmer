@@ -355,7 +355,7 @@ final class RankedUITests: XCTestCase {
     func test_the_spot_queue_is_reordered_by_dragging() throws {
         let app = launch()
         app.buttons["board.menu"].tap()
-        let reorder = app.buttons["ranked.reorder"]
+        let reorder = app.buttons["Reorder Spot Queue"].firstMatch
         XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
         reorder.tap()
 

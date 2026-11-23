@@ -37,7 +37,7 @@ final class CatalogUITests: XCTestCase {
         XCTAssertTrue(actions.waitForExistence(timeout: timeout))
 
         actions.tap()
-        app.buttons["detail.model"].tap()
+        app.buttons["Model: opus"].firstMatch.tap()
         let sonnet = app.buttons["model.sonnet"]
         XCTAssertTrue(sonnet.waitForExistence(timeout: timeout))
         sonnet.tap()
@@ -46,9 +46,8 @@ final class CatalogUITests: XCTestCase {
         // From the session menu's submenu, an item a kind.
         actions.tap()
         app.buttons["Modify MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
-        let skills = app.buttons["menu.catalog.skills"].firstMatch
+        let skills = app.buttons["Modify Skills (0)"].firstMatch
         XCTAssertTrue(skills.waitForExistence(timeout: timeout))
-        XCTAssertTrue(skills.label.contains("Modify Skills (0)"))
         skills.tap()
         let skill = app.buttons["catalog.item.open-pr"]
         XCTAssertTrue(skill.waitForExistence(timeout: timeout))
@@ -58,9 +57,7 @@ final class CatalogUITests: XCTestCase {
 
         actions.tap()
         app.buttons["Modify MCP Servers, Skills, Hooks, Plugins"].firstMatch.tap()
-        let after = app.buttons["menu.catalog.skills"].firstMatch
-        XCTAssertTrue(after.waitForExistence(timeout: timeout))
-        XCTAssertTrue(after.label.contains("Modify Skills (1)"))
+        XCTAssertTrue(app.buttons["Modify Skills (1)"].firstMatch.waitForExistence(timeout: timeout))
     }
 
     private func launch(_ arguments: [String]) -> XCUIApplication {

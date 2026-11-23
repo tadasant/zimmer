@@ -360,10 +360,8 @@ struct TriggerDetailView: View {
                 }
                 Divider()
                 Button { editing = true } label: { Label("Edit", systemImage: "pencil") }
-                    .accessibilityIdentifier("trigger.edit")
                 Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete", systemImage: "trash") }
                     .disabled(deleting)
-                    .accessibilityIdentifier("trigger.delete")
             }
             // The two re-use switches are on its web page.
             if let url = app.webURL(path: "/triggers/\(id)") {
