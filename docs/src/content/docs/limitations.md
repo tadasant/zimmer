@@ -1674,9 +1674,12 @@ gap is worth naming precisely:
   (`strad-staging-ADMIN_BOOTSTRAP_TOKEN`), and redacting that name made a walkthrough's
   `gcloud secrets versions access` command unrunnable
   ([session 29971](https://zimmer.tadasant.com/sessions/29971)). So a public identifier may end in
-  one UPPER_SNAKE run, joined by `_` only. A credential written as `SECRET=WORD_WORD_WORD` would slip
-  through. Hyphen-joined upper-case groups (`ABCD-EFGH-IJKL-MNOP`), upper-case hex
-  (`DEAD_BEEF_CAFE`), and an upper-case run anywhere but the end still redact.
+  one UPPER_SNAKE run, joined by `_` only, of all-capital or all-digit segments where every capitals
+  segment of four or more letters has a vowel. A credential made of such words after a bare noun
+  (`SECRET=WORD_WORD_WORD`, or a random letters-only group that happens to have vowels) would slip
+  through. A base32 or alphanumeric key grouped with `_` (`JBSE_Y3DP_EHPK_3PXP`), hyphen-joined
+  capital groups (`ABCD-EFGH-IJKL-MNOP`), upper-case hex (`DEAD_BEEF_CAFE_FACE`), and an upper-case
+  run anywhere but the end still redact.
 - **A password shaped like a placeholder is not redacted.** A value-capturing rule skips a value that
   is wholly a name in placeholder delimiters (`<…>`, `${VAR}`, a single-case `$VAR`, `{{var}}`,
   uppercase `%VAR%`) or one repeated character, because agents write those as fill-in-the-blanks for

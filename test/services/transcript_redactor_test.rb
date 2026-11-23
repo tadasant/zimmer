@@ -443,7 +443,7 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     "a camelCase compound: apiToken" => %({"apiToken": "my-service-account-token"}),
     # Isolates the wordiness condition: lowercase, 5 segments, all short.
     "isolates wordiness: a UUID session token" => "token=550e8400-e29b-41d4-a716-446655440000",
-    "isolates wordiness: a hyphen-grouped hex key" => "secret=deadbeef-cafe-f00d-babe-0ff1ce5deadbe",
+    "isolates wordiness: a hyphen-grouped hex key" => "secret=deadbeef-cafe-f00d-babe-0ff1ce5dead",
     # Isolates the lowercase condition: 4 segments, all short, all wordy.
     "isolates case: an uppercase segment" => "secret=Prod-Api-Key-Store",
     # Isolates the three-segment floor: lowercase, short, wordy.
@@ -462,11 +462,18 @@ class TranscriptRedactorTest < ActiveSupport::TestCase
     # Isolates case within a segment: mixed case inside the upper run.
     "isolates case: a mixed-case segment in the upper run" => "secret=strad-staging-ADMIN_Bootstrap_TOKEN",
     # Isolates wordiness, upper case: underscore-grouped hex has no letter in [G-Z].
-    "isolates wordiness: an underscore-grouped upper hex key" => "secret=DEAD_BEEF_CAFE_F00D",
+    "isolates wordiness: an underscore-grouped upper hex key" => "secret=DEAD_BEEF_CAFE_FACE",
     # Isolates the segment floor, upper case: two segments, short, wordy.
-    "isolates the segment floor: two upper segments" => "secret=ADMINISTRATOR_TOKENS",
+    "isolates the segment floor: two upper segments" => "secret=ADMIN_BOOTSTRAPS",
     # Isolates MAX_SEGMENT, upper case: one segment over 12.
-    "isolates max segment: a long opaque upper tail" => "secret=prod-api-ABCDEFGHIJKLMNOPQRST"
+    "isolates max segment: a long opaque upper tail" => "secret=prod-api-ABCDEFGHIJKLMNOPQRST",
+    # Isolates letters-or-digits: a base32 TOTP secret grouped with `_`. Every
+    # group but the first mixes letters and digits; nothing else fails.
+    "isolates letters-or-digits: an underscore-grouped base32 secret" => "secret=JBSE_Y3DP_EHPK_3PXP",
+    "isolates letters-or-digits: an underscore-grouped alphanumeric key" => "SECRET=K7QW_M3ZP_X9RT_V2LN",
+    # Isolates pronounceable: letter-only random groups, wordy, short, one with
+    # no vowel.
+    "isolates pronounceable: a vowelless letter group" => "token=QWRT_BAKE_LOVE_MANE"
   }.freeze
 
   STILL_REDACTED.each do |description, line|

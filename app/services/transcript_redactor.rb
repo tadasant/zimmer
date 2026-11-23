@@ -308,18 +308,24 @@ module TranscriptRedactor
   # because the common convention is to name a secret after the environment
   # variable it feeds — `strad-staging-ADMIN_BOOTSTRAP_TOKEN`,
   # `prod/DATABASE_URL`, or plain `STRAD_ADMIN_BOOTSTRAP_TOKEN`. That run is
-  # held to env-var spelling: every segment is one case, its segments are joined
-  # by `_` and nothing else, there is only one of it, and it comes last. So
-  # `Prod-Api-Key` (mixed case inside a segment), `ABCD-EFGH-IJKL-MNOP` (a
-  # licence-key-style group joined by hyphens) and `prod-KEY-store` (an upper
-  # run that is not last) all still redact. The name that prompted this came
-  # back as `--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` (session 29971).
+  # held to env-var spelling: its segments are joined by `_` and nothing else,
+  # there is only one of it, and it comes last. So `Prod-Api-Key-Store` (mixed
+  # case inside a segment), `ABCD-EFGH-IJKL-MNOP` (a licence-key-style group
+  # joined by hyphens) and `prod-KEYS-store-name` (an upper run that is not
+  # last) all still redact. The name that prompted this came back as
+  # `--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` (session 29971).
   #
-  # Four conditions, all required, each closing a specific hole:
+  # Five conditions, all required, each closing a specific hole:
   #
   #   * SHAPE — lowercase and digits, optionally ending in that one UPPER_SNAKE
   #     run. No segment mixes cases, which is what keeps every base64, base62 and
-  #     mixed-case key out.
+  #     mixed-case key out. An upper segment is also all letters or all digits,
+  #     never a mix: a base32 TOTP secret or a random alphanumeric key grouped
+  #     with `_` (`JBSW_Y3DP_EHPK_3PXP`, `K7QW_M3ZP_X9RT`) mixes them in almost
+  #     every group, and an env-var name almost never does.
+  #   * PRONOUNCEABLE — an upper letter segment of four or more characters
+  #     contains a vowel (`Y` counts). Words do; a random letter group often does
+  #     not. Shorter segments are exempt so acronyms (`GCS`, `KMS`, `URL`) pass.
   #   * SEGMENT FLOOR — at least three separator-joined segments, which keeps a
   #     two-part opaque value (`abcdefghij-klmnopqrst`) out.
   #   * MAX_SEGMENT — no segment longer than 12 characters. A `prefix-<20 opaque
@@ -327,36 +333,34 @@ module TranscriptRedactor
   #   * Wordiness — more than half the segments must carry a letter outside the
   #     hex alphabet, in either case. A UUID
   #     (`550e8400-e29b-41d4-a716-446655440000`) and a hyphen- or
-  #     underscore-grouped hex key (`DEAD_BEEF_CAFE`) satisfy the other
+  #     underscore-grouped hex key (`DEAD_BEEF_CAFE_FACE`) satisfy the other
   #     conditions and are genuine session-token formats; neither has a single
   #     letter in `[g-z]`.
   #
   # This is a deny-list of known-public *shapes*, not an entropy heuristic. The
   # residual risk it accepts is a lowercase diceware passphrase, or an
-  # UPPER_SNAKE run of short words, sitting after a bare `secret=` or `token=` —
-  # documented in limitations.md.
-  #
-  # The lowercase run and the upper run overlap only on digit-only segments, so
-  # the one place the regexp can backtrack is choosing where a run of digits
-  # belongs; with PUBLIC_IDENTIFIER_MAX_LENGTH checked first, that is bounded.
+  # UPPER_SNAKE run of letter-only words, sitting after a bare `secret=` or
+  # `token=` — documented in limitations.md.
   PUBLIC_IDENTIFIER_SHAPE = bounded(
-    %r{\A(?:[a-z0-9]+(?:[-._/][a-z0-9]+)*(?:[-._/][A-Z0-9]+(?:_[A-Z0-9]+)*)?|[A-Z0-9]+(?:_[A-Z0-9]+)*)\z}
+    %r{\A(?:[a-z0-9]+(?:[-._/][a-z0-9]+)*(?:[-._/](?:[A-Z]+|[0-9]+)(?:_(?:[A-Z]+|[0-9]+))*)?|(?:[A-Z]+|[0-9]+)(?:_(?:[A-Z]+|[0-9]+))*)\z}
   )
   PUBLIC_IDENTIFIER_SEPARATOR = bounded(%r{[-._/]})
   PUBLIC_IDENTIFIER_MIN_SEGMENTS = 3
   PUBLIC_IDENTIFIER_MAX_SEGMENT = 12
   NON_HEX_LETTER = bounded(/[g-zG-Z]/)
+  UNPRONOUNCEABLE_UPPER_SEGMENT = bounded(/\A[B-DF-HJ-NP-TV-XZ]{4,}\z/)
 
   # Checked BEFORE the shape regexp. The value handed to this test is whatever
   # ENV_SECRET captured, and the pathological transcript this file is otherwise
   # built around — a single line carrying a multi-megabyte base64 tool result —
   # can put megabytes of it after a `token=`.
   #
-  # PUBLIC_IDENTIFIER_SHAPE is linear even so: its two character classes are
-  # disjoint, so no iteration is ambiguous with the next and there is nothing to
-  # backtrack into. The cap is a bound on constant-factor work over a
-  # transcript-scale string, not a ReDoS guard, and it is also the semantically
-  # right answer: no real resource name is this long — Secret Manager caps a
+  # PUBLIC_IDENTIFIER_SHAPE is close to linear even so. Its lowercase run and
+  # its upper run overlap only on digit-only segments joined by `_`, so the one
+  # thing it can backtrack over is where a run of those belongs — quadratic at
+  # worst, and a fraction of a millisecond at this cap. The cap is a bound on
+  # that work over a transcript-scale string, not a ReDoS guard, and it is also
+  # the semantically right answer: no real resource name is this long — Secret Manager caps a
   # secret name at 255 characters — so a longer value is opaque by any reading.
   #
   # Bytes rather than characters: the quantity is "how much text is this", and
@@ -1002,6 +1006,7 @@ module TranscriptRedactor
       segments = value.split(PUBLIC_IDENTIFIER_SEPARATOR)
       return false if segments.length < PUBLIC_IDENTIFIER_MIN_SEGMENTS
       return false if segments.any? { |segment| segment.length > PUBLIC_IDENTIFIER_MAX_SEGMENT }
+      return false if segments.any? { |segment| segment.match?(UNPRONOUNCEABLE_UPPER_SEGMENT) }
 
       wordy = segments.count { |segment| segment.match?(NON_HEX_LETTER) }
       wordy * 2 > segments.length

@@ -393,10 +393,13 @@ The identifier may also end in one UPPER_SNAKE run, because secrets are commonly
 environment variable they feed. `--secret=strad-staging-ADMIN_BOOTSTRAP_TOKEN` came back as
 `--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` in a walkthrough a human had to follow
 ([session 29971](https://zimmer.tadasant.com/sessions/29971)). The run is held to env-var spelling:
-every segment in it is upper case, its segments are joined by `_` only, and it comes last. A bare
-`STRAD_ADMIN_BOOTSTRAP_TOKEN` and `prod/DATABASE_URL` pass. `ABCD-EFGH-IJKL-MNOP` (upper-case groups
-joined by hyphens), `prod-KEYS-store` (an upper run in the middle), `ADMIN_Bootstrap_TOKEN` (mixed
-case in a segment) and `DEAD_BEEF_CAFE` (upper-case hex) still redact. Compound names
+its segments are joined by `_` only, it comes last, each segment is all capitals or all digits, and
+a capitals segment of four or more letters has a vowel (`Y` counts). A bare
+`STRAD_ADMIN_BOOTSTRAP_TOKEN` and `prod/DATABASE_URL` pass. These still redact:
+`ABCD-EFGH-IJKL-MNOP` (groups joined by hyphens), `prod-KEYS-store-name` (an upper run in the
+middle), `ADMIN_Bootstrap_TOKEN` (mixed case in a segment), `JBSE_Y3DP_EHPK_3PXP` (a base32 secret
+grouped with `_`), `QWRT_BAKE_LOVE_MANE` (a group with no vowel) and `DEAD_BEEF_CAFE_FACE`
+(upper-case hex). Compound names
 (`client_secret`, `api_key`, `password`, `passphrase`) are untouched by any of this, so
 `password=correct-horse-battery-staple` still redacts.
 
