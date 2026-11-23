@@ -3,7 +3,8 @@ title: Your board v2
 description: The dashboard's category tab — the same sessions as Your board, drawn as Last Touched cards and grouped into flat categories you make and drag sessions into by hand, most recently touched first inside each.
 ---
 
-`/?view=board_v2` is the **Your board v2** tab, beside [Your board](/sessions/user-view/). It shows
+`/?view=board_v2` is the **Your board v2** tab, beside [Your board](/sessions/user-view/), and the
+iOS app's default view (see [On the iOS app](#on-the-ios-app)). It shows
 the same sessions — every filter the dashboard applies narrows it exactly as it narrows Your board —
 grouped into **categories you make yourself**. Your board is unchanged; v2 is there to try, side by
 side.
@@ -92,6 +93,32 @@ The tab draws at most 500 sessions across all visible categories, chosen by last
 very large board it is the least recently touched sessions that drop off, wherever they sit. It
 says so when it has truncated. Sessions in snoozed and backlogged categories are only counted, not
 fetched, so a big parked category never crowds out the live ones.
+
+## On the iOS app
+
+Your board v2 is the [iOS app](/extend/ios-app/)'s **default view** — the one it opens on until you
+pick another from the view menu, which it then remembers. It draws the same groups in the same order,
+with Last Touched's compact rows rather than Your board's, read from
+`GET /api/v1/sessions?view=board_v2`, which answers the rows and the categories together.
+
+| Do | How, on the phone |
+| --- | --- |
+| Put a session in a category | Press and hold the row, then **Move to Category**, and pick one (or Uncategorized). |
+| Collapse a category | Tap its header. Stored on the category, as on the web. |
+| Wake a snoozed or backlogged category | **Wake**, in *Snoozed & backlogged categories* at the foot. |
+
+A search on the phone draws its hits flat, most recently touched first, so a hit in a collapsed or
+tucked-away category is never hidden. Creating, renaming, deleting, reordering, snoozing and
+backlogging categories are on the web tab and MCP only.
+
+## Over REST
+
+`GET /api/v1/sessions?view=board_v2` answers the rows the tab draws, in its order, each with its
+`board_category_id`, plus `board_categories`: every category in board order, the ones off the board
+last with `on_board: false` and a `session_count`. One page, capped at 500, with `truncated`, as the
+User view. The writes are `PATCH /api/v1/sessions/:id/board_category`,
+`PATCH /api/v1/board_categories/:id` (`collapsed`) and `PATCH /api/v1/board_categories/:id/visibility`.
+See the [REST API](/extend/rest-api/).
 
 ## Over MCP
 

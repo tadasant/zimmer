@@ -109,7 +109,11 @@ class Api::V1::SessionsController < Api::BaseController
   #     page as usual. "user" and "ranked" are Sessions::UserView — priority above spot,
   #     then precedence, then oldest — which is not one ORDER BY, so they answer the top
   #     SessionsController::USER_VIEW_LIMIT rows in a single page, with `truncated` when
-  #     more matched, as the dashboard's board caps itself. Any other value is a 422.
+  #     more matched, as the dashboard's board caps itself. "board_v2" is Your board
+  #     v2 (Sessions::BoardV2): the same single capped page, the rows Uncategorized
+  #     first and then category by category, each most recently touched first, with
+  #     a `board_categories` sibling listing every category in board order (see
+  #     #render_board_v2). Any other value is a 422.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -128,13 +132,14 @@ class Api::V1::SessionsController < Api::BaseController
     when SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED
       render_user_view(scope)
       return
+    when SessionsController::VIEW_MODE_BOARD_V2
+      render_board_v2(scope)
+      return
     else
-      # The list views this endpoint orders by. Your board v2 is a grouping, not
-      # an order, so it is not one of them; its categories are read over MCP
-      # (`manage_board_categories`).
       api_views = [
         SessionsController::VIEW_MODE_CREATED_DESC, SessionsController::VIEW_MODE_LAST_TOUCHED,
-        SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED
+        SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED,
+        SessionsController::VIEW_MODE_BOARD_V2
       ]
       render_api_error("Invalid parameter", "view must be one of: #{api_views.join(', ')}", status: :unprocessable_entity)
       return
@@ -1548,6 +1553,33 @@ class Api::V1::SessionsController < Api::BaseController
       sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
       pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
       truncated: fetched.size > limit,
+      **board_rows(rows)
+    }
+  end
+
+  # Your board v2 for a client that draws it itself (the iOS app): the rows
+  # Sessions::BoardV2 shows, in its order — Uncategorized, then each category on
+  # the board — each carrying its `board_category_id`, plus every category in
+  # board order. A category that is snoozed or backlogged comes last with
+  # `on_board: false` and a count, and none of its rows, as the web board's tray
+  # draws it. Capped and single-page like the User view.
+  def render_board_v2(scope)
+    if pagination_params[:page] > 1
+      render_api_error("Invalid parameter", "view=#{params[:view]} answers a single page; it has no page #{pagination_params[:page]}", status: :unprocessable_entity)
+      return
+    end
+
+    limit = user_view_limit
+    board = Sessions::BoardV2.build(scope: scope.reorder(nil), limit: limit)
+    rows = board.uncategorized + board.sections.flat_map(&:sessions)
+    delegates = goal_check_delegates_for(rows)
+
+    render json: {
+      sessions: rows.map { |s| session_json(s, goal_check_delegates: delegates.fetch(s.id, [])) },
+      board_categories: board.sections.map { |section| board_category_json(section.category, on_board: true, session_count: section.sessions.size) } +
+        board.tucked.map { |tucked| board_category_json(tucked.category, on_board: false, session_count: tucked.count) },
+      pagination: { page: 1, per_page: limit, total_count: scope.count, total_pages: 1 },
+      truncated: board.truncated,
       **board_rows(rows)
     }
   end

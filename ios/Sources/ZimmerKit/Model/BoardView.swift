@@ -1,25 +1,35 @@
 import Foundation
 
-/// The web UI's four board views (`?view=` on the dashboard), as orderings of the rows the
-/// list already has. Each is the server's own rule, restated:
+/// The web UI's board views (`?view=` on the dashboard), as orderings of the rows the list
+/// already has. Each is the server's own rule, restated:
 ///
+/// - **Your board v2** (`Sessions::BoardV2`): the person's own categories. Uncategorized
+///   first, then each category in the person's order, each most recently touched first, as
+///   Last Touched orders them. A collapsed category is its header alone; a snoozed or
+///   backlogged one is off the board with its rows and listed at the foot. The app's default.
 /// - **Your board** (`Sessions::UserView`): priority above spot, then precedence descending,
 ///   then oldest first. One list.
 /// - **Last touched** (`LAST_TOUCHED_ORDER`): the last time a person acted on the session,
-///   else when it was created, newest first. The web UI's default on a phone, and so here.
+///   else when it was created, newest first.
 /// - **Created**: newest first.
 /// - **Ranked**: the same order as Your board, as two sections — *Priority*, then the
 ///   *Spot queue* in the order it will be worked.
 public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
+    case boardV2 = "board_v2"
     case yourBoard = "user"
     case lastTouched = "last_touched"
     case created = "created_desc"
     case ranked
 
+    /// The view the board opens on when the person has not chosen one: Your board v2, Last
+    /// Touched's compact rows under the person's own categories. A choice once made is kept.
+    public static let defaultView: BoardView = .boardV2
+
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
+        case .boardV2: return "Your board v2"
         case .yourBoard: return "Your board"
         case .lastTouched: return "Last Touched"
         case .created: return "Created"
@@ -27,17 +37,26 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    /// The rows in this view's order, in sections. Only Ranked has more than one; the
-    /// others are a single untitled section.
+    /// The title of Your board v2's first section, where every session nobody has put in a
+    /// category lands.
+    public static let uncategorized = "Uncategorized"
+
+    /// The rows in this view's order, in sections. Ranked has two and Your board v2 one per
+    /// category; the others are a single untitled section.
     ///
     /// `order` is where a drag just left the rows, by id, before the server has answered with
     /// the precedence it worked out: the reorderable views show that order until the list is
     /// read again, so a dropped row does not snap back while the server is asked. Rows it does
     /// not name keep their place behind the ones it does.
-    public func sections(_ sessions: [SessionSummary], order: [Int]? = nil) -> [BoardSection] {
+    ///
+    /// `categories` is Your board v2's categories in board order, as the server last listed
+    /// them; the other views do not read it.
+    public func sections(_ sessions: [SessionSummary], order: [Int]? = nil, categories: [BoardCategory] = []) -> [BoardSection] {
         switch self {
+        case .boardV2:
+            return Self.categorized(sessions, categories: categories)
         case .lastTouched:
-            return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) })]
+            return [BoardSection(title: nil, sessions: Self.lastTouchedFirst(sessions))]
         case .created:
             return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) })]
         case .yourBoard:
@@ -46,6 +65,33 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         case .ranked:
             let (priority, spot) = Self.halves(sessions)
             return [BoardSection(title: "Priority", sessions: Self.arranged(priority, by: order)), BoardSection(title: "Spot queue", sessions: Self.arranged(spot, by: order))]
+        }
+    }
+
+    /// Most recently touched first: the last time a person acted on the session, else when it
+    /// was created.
+    static func lastTouchedFirst(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        sorted(sessions, newestFirst: true) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) }
+    }
+
+    /// Your board v2: Uncategorized, then every category on the board in the order given, each
+    /// most recently touched first. A row whose category is not listed (deleted since) is
+    /// Uncategorized, as the server's `ON DELETE SET NULL` makes it; one in a category that is
+    /// tucked away is not drawn, as the server does not list it. A collapsed category keeps
+    /// its count and draws no rows.
+    static func categorized(_ sessions: [SessionSummary], categories: [BoardCategory]) -> [BoardSection] {
+        let known = Dictionary(categories.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var grouped: [Int?: [SessionSummary]] = [:]
+        for session in lastTouchedFirst(sessions) {
+            let key = session.boardCategoryID.flatMap { known[$0] == nil ? nil : $0 }
+            if let key, known[key]?.onBoard == false { continue }
+            grouped[key, default: []].append(session)
+        }
+        let loose = BoardSection(title: uncategorized, sessions: grouped[nil] ?? [], key: "uncategorized")
+        return [loose] + categories.filter(\.onBoard).map { category in
+            let rows = grouped[category.id] ?? []
+            return BoardSection(title: category.name, sessions: category.collapsed ? [] : rows, key: "category.\(category.id)",
+                                category: category, count: rows.count)
         }
     }
 
@@ -97,12 +143,26 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
 
 public struct BoardSection: Hashable, Sendable, Identifiable {
     public var title: String?
+    /// The rows drawn: none for a collapsed Your board v2 category.
     public var sessions: [SessionSummary]
+    /// What tells this section from the others: its title, unless it says otherwise. Your
+    /// board v2's are keyed by category, since a person could name one "Uncategorized".
+    public var key: String?
+    /// The Your board v2 category this section draws; nil for Uncategorized and other views.
+    public var category: BoardCategory?
+    /// How many rows the section holds, drawn or not.
+    public var count: Int
 
-    public var id: String { title ?? "" }
+    public var id: String { key ?? title ?? "" }
 
-    public init(title: String?, sessions: [SessionSummary]) {
+    /// The section is a category's header alone.
+    public var isCollapsed: Bool { category?.collapsed ?? false }
+
+    public init(title: String?, sessions: [SessionSummary], key: String? = nil, category: BoardCategory? = nil, count: Int? = nil) {
         self.title = title
         self.sessions = sessions
+        self.key = key
+        self.category = category
+        self.count = count ?? sessions.count
     }
 }

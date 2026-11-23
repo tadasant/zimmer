@@ -11,6 +11,8 @@ import Foundation
 /// every `waiting` session.
 public actor FakeZimmerAPI: ZimmerAPI {
     public internal(set) var all: [SessionSummary]
+    /// Your board v2's categories, in board order.
+    public internal(set) var boardCategories: [BoardCategory] = FakeZimmerAPI.sampleBoardCategories()
     var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
     private var nextID: Int
@@ -60,7 +62,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     public static let refusableWrites: Set<String> = [
         "follow_up", "trash", "unarchive", "visibility", "quick_router", "create_session", "elicitation", "notification", "trigger", "fork",
         "restart", "pause", "notes", "rename", "goal", "effort", "scheduling_class", "precedence", "heartbeat", "bulk_archive", "reorder",
-        "queue", "model", "catalog",
+        "queue", "model", "catalog", "board_category",
     ]
     private var conversationReads: [Int: Int] = [:]
     /// Made once, from the `now` the fake starts with: a session read twice is the same session,
@@ -360,7 +362,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// one finished. Times are relative to `now` so a screenshot never shows a stale date.
     public static func sampleSessions(now: Date = Date()) -> [SessionSummary] {
         func ago(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
-        return carplayMarked(now, wired(ran(trashed([
+        return categorized(carplayMarked(now, wired(ran(trashed([
             SessionSummary(id: 1042, title: "Add a CarPlay scene to the iOS app", status: .running,
                            agentRuntime: "claude_code", createdAt: ago(90), updatedAt: ago(2),
                            priorityClass: "spot", precedence: 30, lastUserActivityAt: ago(70)),
@@ -410,7 +412,29 @@ public actor FakeZimmerAPI: ZimmerAPI {
             SessionSummary(id: 1019, title: "Fix the flaky transcript poller test", status: .archived,
                            agentRuntime: "claude_code", createdAt: ago(2_000), updatedAt: ago(1_400),
                            archivedAt: ago(1_400)),
-        ]))))
+        ])))))
+    }
+
+    /// Your board v2's categories: *iOS app* first, *Ops* collapsed to its header, and
+    /// *Someday* backlogged, so the board draws each kind.
+    public static func sampleBoardCategories() -> [BoardCategory] {
+        [
+            BoardCategory(id: 1, name: "iOS app", position: 0),
+            BoardCategory(id: 2, name: "Ops", position: 1, collapsed: true),
+            BoardCategory(id: 3, name: "Someday", position: 2, visibility: .backlogged, onBoard: false),
+        ]
+    }
+
+    /// Who is in which sample category: the CarPlay scene and the parity audit in *iOS app*,
+    /// the deploy key in *Ops*, the sweep and the changelog in *Someday*. The two sessions
+    /// waiting on a person stay Uncategorized, where a new session lands.
+    private static func categorized(_ sessions: [SessionSummary]) -> [SessionSummary] {
+        let placed: [Int: Int] = [1042: 1, 1044: 1, 1027: 2, 1031: 3, 1029: 3]
+        return sessions.map { session in
+            var session = session
+            session.boardCategoryID = placed[session.id]
+            return session
+        }
     }
 
     /// The MCP servers the web UI draws a connection chip for: 1038's chosen server, the one
@@ -950,7 +974,52 @@ extension FakeZimmerAPI {
                 return session
             }
         }
-        return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions))
+        guard view == .boardV2 else { return SessionSearchResult(sessions: view.sections(rows).flatMap(\.sessions)) }
+        // As the server: a tucked-away category's rows are counted, not listed.
+        let tucked = Set(boardCategories.filter { !$0.onBoard }.map(\.id))
+        let listed = rows.filter { $0.boardCategoryID.map { !tucked.contains($0) } ?? true }
+        let categories = boardCategories.filter(\.onBoard) + boardCategories.filter { !$0.onBoard }
+        return SessionSearchResult(
+            sessions: BoardView.lastTouchedFirst(listed),
+            categories: categories.map { category in
+                var category = category
+                category.sessionCount = rows.filter { $0.boardCategoryID == category.id }.count
+                return category
+            })
+    }
+
+    public func assignBoardCategory(_ id: Int, categoryID: Int?) async throws -> SessionSummary {
+        try await write("board_category")
+        if let categoryID, !boardCategories.contains(where: { $0.id == categoryID }) {
+            throw ZimmerError.http(status: 422, message: "No board category with id \(categoryID).")
+        }
+        // As the server's `update_columns`: the move is not a touch, so `updatedAt` stays.
+        var session = try find(id)
+        session.boardCategoryID = categoryID
+        replace(session)
+        return session
+    }
+
+    public func setBoardCategoryCollapsed(_ id: Int, collapsed: Bool) async throws -> BoardCategory {
+        try await write("board_category")
+        return try changeCategory(id) { $0.collapsed = collapsed }
+    }
+
+    public func wakeBoardCategory(_ id: Int) async throws -> BoardCategory {
+        try await write("board_category")
+        return try changeCategory(id) { category in
+            category.visibility = .visible
+            category.snoozedUntil = nil
+            category.onBoard = true
+        }
+    }
+
+    private func changeCategory(_ id: Int, _ edit: (inout BoardCategory) -> Void) throws -> BoardCategory {
+        guard let index = boardCategories.firstIndex(where: { $0.id == id }) else {
+            throw ZimmerError.http(status: 404, message: "The requested resource was not found")
+        }
+        edit(&boardCategories[index])
+        return boardCategories[index]
     }
 
     public func startNow(_ id: Int) async throws -> String {

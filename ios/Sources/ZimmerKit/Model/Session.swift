@@ -96,6 +96,9 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// That choice with an expired snooze already resolved back to visible — what a board draws.
     public var effectiveVisibility: SessionVisibility?
     public var snoozedUntil: Date?
+    /// The Your board v2 category a person put the session in (`BoardCategory.id`), or nil for
+    /// Uncategorized. Presentation only, like visibility.
+    public var boardCategoryID: Int?
     /// The stored CarPlay-fit mark, `carplay_ok` or `laptop_only` (see `CarplayFit`), current
     /// or stale. Raw, so a value from a later server decodes rather than failing the row.
     public var carplayFit: String?
@@ -156,6 +159,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         case notes = "session_notes"
         case effectiveVisibility = "effective_visibility"
         case snoozedUntil = "snoozed_until"
+        case boardCategoryID = "board_category_id"
         case carplayFit = "carplay_fit"
         case effectiveCarplayFit = "effective_carplay_fit"
         case carplayFitReason = "carplay_fit_reason"
@@ -186,7 +190,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         visibility: SessionVisibility? = nil, snoozedUntil: Date? = nil,
         priorityClass: String? = nil, precedence: Int? = nil, effort: EffortSummary? = nil, model: String? = nil,
         agentRoot: String? = nil, lastUserActivityAt: Date? = nil, pullRequests: [PullRequestLink] = [],
-        genesis: String? = nil, autoCompactWindow: Int? = nil
+        genesis: String? = nil, autoCompactWindow: Int? = nil, boardCategoryID: Int? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -206,6 +210,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
         self.genesis = genesis
         self.precedence = precedence
         self.autoCompactWindow = autoCompactWindow
+        self.boardCategoryID = boardCategoryID
         self.effort = effort
         self.config = model.map { SessionConfig(model: $0) }
         self.metadata = (agentRoot != nil || lastUserActivityAt != nil)
@@ -522,6 +527,8 @@ struct SessionListResponse: Decodable {
     let truncated: Bool?
     /// `include=board_row`, keyed by session id.
     let board_rows: [String: BoardRow]?
+    /// `view=board_v2`: every category, in board order.
+    let board_categories: [BoardCategory]?
 
     /// The sessions, each with its board row when the server sent one.
     var rows: [SessionSummary] { BoardRow.attach(board_rows, to: sessions) }

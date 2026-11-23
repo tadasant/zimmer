@@ -494,7 +494,12 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| index.html.erb:641–646 view mode links: **Your board / Last Touched / Created / Ranked** (persisted in cookie `sessions_view`, `?view=`) | Switch view, keep filters | SessionListView.swift:274 Picker "View" in the view menu; `boardView` UserDefaults | present |  |
+| index.html.erb:641–646 view mode links: **Your board / Your board v2 / Last Touched / Created / Ranked** (persisted in cookie `sessions_view`, `?view=`) | Switch view, keep filters | SessionListView.swift Picker "View" in the view menu; `boardView` UserDefaults, Your board v2 when unset | present |  |
+| _board_v2.html.erb **Your board v2** (`?view=board_v2`): Uncategorized, then the person's categories in order, most recently touched first in each | The category board | BoardView.swift `.boardV2` (`categorized`), the app's default view (`BoardView.defaultView`); Last Touched's compact rows under category headers | present | Rows are Last Touched's, not the Your board row partial the web tab draws |
+| _board_v2_group.html.erb row drag handle → `PATCH /sessions/:id/board_category` | Put a session in a category | Row long press → **Move to Category** (`PATCH /api/v1/sessions/:id/board_category`) | present | A menu, not a drag |
+| _board_v2_group.html.erb header chevron (collapse, stored on the category) | Collapse a category | Tap the category header (`PATCH /api/v1/board_categories/:id`) | present |  |
+| _board_v2.html.erb tray: snoozed & backlogged categories with count and **Wake** | Bring a category back | Tray section at the foot with **Wake** (`PATCH /api/v1/board_categories/:id/visibility`) | present |  |
+| _board_v2.html.erb New category, rename, delete, header drag to reorder, category Snooze / backlog | Manage categories | — | missing | Web tab and `manage_board_categories` MCP only |
 | sessions#index:76 Ranked default status filter = waiting+running+needs_input+failed | Ranked opens on live work | BoardFilters.ranked (SessionFilter.swift:81) | present |  |
 | _flat_sessions.html.erb:12–15 heading "Sorted by last touched" + total count badge | Title and count | — | partial | iOS shows no total count for flat views (API pagination `total_count` is available; not rendered). Your board has a count on web (`_user_view_sessions:43`) — iOS has none |
 | _flat_sessions.html.erb:31 Kaminari `paginate` (50/page, `?page=`) | Page through flat views | SessionActionsAPI.swift:174 reads up to 5×100 then says "Showing the first 500" | present | Different mechanism, same reach |

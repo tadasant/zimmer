@@ -13,7 +13,8 @@ public protocol SessionActionsAPI: Sendable {
     func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult
     /// The list in a board view's order, as the server orders it (`view=`): Last Touched and
     /// Created page through the newest-touched or newest-created first; Your board and Ranked
-    /// are the User view's top 500 in one page. `complete` is false when more matched.
+    /// are the User view's top 500 in one page, and Your board v2 is its own top 500, grouped,
+    /// with the categories in `categories`. `complete` is false when more matched.
     func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult
     /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
     /// has no turn queued (restart it instead) or is asleep on a wake.
@@ -26,6 +27,15 @@ public protocol SessionActionsAPI: Sendable {
     /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
     /// nil at an end); the server works out the precedence.
     func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
+    /// Your board v2: put a session in one of the person's categories, or back in Uncategorized
+    /// (nil), as the web board's drag does. Does not count as touching the session.
+    func assignBoardCategory(_ id: Int, categoryID: Int?) async throws -> SessionSummary
+    /// Your board v2: collapse a category to its header, or expand it. Stored on the category,
+    /// so the web UI shows it the same way.
+    func setBoardCategoryCollapsed(_ id: Int, collapsed: Bool) async throws -> BoardCategory
+    /// Your board v2: put a snoozed or backlogged category back on the board, as the web
+    /// board's tray's *Wake* does.
+    func wakeBoardCategory(_ id: Int) async throws -> BoardCategory
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
     /// `contents`, transcripts are searched too — one bounded scan, its first page.
     func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult
@@ -216,6 +226,14 @@ extension ZimmerHTTPClient {
             query["include"] = "board_row"
             let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
             return SessionSearchResult(sessions: response.rows, complete: !(response.truncated ?? false))
+        case .boardV2:
+            // Last Touched's rows under the person's categories: no board summaries to carry.
+            var query = filters.query.merging(board.query) { a, _ in a }
+            query["view"] = view.rawValue
+            query["per_page"] = nil
+            let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
+            return SessionSearchResult(sessions: response.rows, complete: !(response.truncated ?? false),
+                                       categories: response.board_categories ?? [])
         }
     }
 
@@ -240,6 +258,25 @@ extension ZimmerHTTPClient {
         if let below { body["below_id"] = below }
         let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/reorder_precedence", json: body)
         return response.session
+    }
+
+    public func assignBoardCategory(_ id: Int, categoryID: Int?) async throws -> SessionSummary {
+        let segment = ZimmerPathComponent(String(id))
+        let body: [String: Any] = ["board_category_id": categoryID.map { $0 as Any } ?? NSNull()]
+        let response: SessionEnvelope = try await patch("/api/v1/sessions/\(segment)/board_category", json: body)
+        return response.session
+    }
+
+    public func setBoardCategoryCollapsed(_ id: Int, collapsed: Bool) async throws -> BoardCategory {
+        let segment = ZimmerPathComponent(String(id))
+        let response: BoardCategoryEnvelope = try await patch("/api/v1/board_categories/\(segment)", json: ["collapsed": collapsed])
+        return response.board_category
+    }
+
+    public func wakeBoardCategory(_ id: Int) async throws -> BoardCategory {
+        let segment = ZimmerPathComponent(String(id))
+        let response: BoardCategoryEnvelope = try await patch("/api/v1/board_categories/\(segment)/visibility", json: ["visibility": "visible"])
+        return response.board_category
     }
 
     public func search(_ query: String, contents: Bool, filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult {
@@ -425,10 +462,14 @@ extension ZimmerHTTPClient {
 public struct SessionSearchResult: Hashable, Sendable {
     public var sessions: [SessionSummary]
     public var complete: Bool
+    /// Your board v2's categories, in board order, when the read was of that view; nil for
+    /// any other read, which says nothing about them.
+    public var categories: [BoardCategory]?
 
-    public init(sessions: [SessionSummary], complete: Bool = true) {
+    public init(sessions: [SessionSummary], complete: Bool = true, categories: [BoardCategory]? = nil) {
         self.sessions = sessions
         self.complete = complete
+        self.categories = categories
     }
 }
 
