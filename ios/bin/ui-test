@@ -281,18 +281,21 @@ xcrun simctl bootstatus "$udid" -b
 # ---------------------------------------------------------------------------------------
 # Paste from Other Apps: Allow.
 #
-# An app that reads what another app copied makes iOS ask, and an iOS 27 simulator cannot ask:
+# An app that reads what another app copied makes iOS ask, and an iOS 27.0 simulator cannot ask:
 # its pasteboard daemon, `pasted`, starts to, and SpringBoard refuses the alert (`Entitlement
 # "com.apple.springboard.CFUserNotification" is required`). The read comes back empty at once,
 # and the app says "Paste not allowed." `simctl privacy` has no pasteboard service, so the
-# answer is written to the simulator's TCC database: 2 is Allow.
+# answer is written to the simulator's TCC database: 2 is Allow. It stays there after the run.
+# Not for the CarPlay drill, which pastes nothing.
 # ---------------------------------------------------------------------------------------
-tcc="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
-[ -f "$tcc" ] || fail "no TCC database at $tcc"
-sqlite3 -cmd '.timeout 10000' "$tcc" \
-  "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags)
-   VALUES ('kTCCServicePasteboard', '$BUNDLE_ID', 0, 2, 4, 2, 0);" \
-  || fail "could not set Paste from Other Apps to Allow for $BUNDLE_ID"
+if [ -z "$carplay" ]; then
+  tcc="$HOME/Library/Developer/CoreSimulator/Devices/$udid/data/Library/TCC/TCC.db"
+  [ -f "$tcc" ] || fail "no TCC database at $tcc"
+  sqlite3 -init /dev/null -cmd '.timeout 10000' "$tcc" \
+    "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags)
+     VALUES ('kTCCServicePasteboard', '$BUNDLE_ID', 0, 2, 4, 2, 0);" \
+    || fail "could not set Paste from Other Apps to Allow for $BUNDLE_ID"
+fi
 
 # The substitution, proven from the artifact rather than from the command line.
 #

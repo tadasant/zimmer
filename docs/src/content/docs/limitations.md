@@ -376,15 +376,15 @@ A refusal does not depend on it, because the form scrolls to the refusal itself.
 
 ### A menu item's identifier can be missing on iOS 27
 
-On iOS 27.0, built with Xcode 27.1, XCUITest does not see the accessibility identifier of an item in the session page's actions menu or the board's view options menu. The items are there by label and work, and both menus are unchanged on screen. The trigger page's menu kept its identifiers in the same run. The two that lost them use `Section`s and it does not, which fits but was not tested ([run 45119344553](https://github.com/tadasant/zimmer/actions/runs/45119344553), both attempts).
+On iOS 27.0, built with Xcode 27.1, XCUITest does not see the accessibility identifier of an item in the session page's actions menu: its dump of the open menu has every item by label and none with an identifier. An item in the board's view options menu is not found by its identifier either, with the item on screen, and is found by its label. Both failed on both attempts of [run 45119344553](https://github.com/tadasant/zimmer/actions/runs/45119344553). The trigger page's menu kept its identifiers in that run's operations shard. The two that lost them use `Section`s and it does not, which fits but was not tested. The items work.
 
-So no menu item in the app sets an identifier, and a UI test finds one by its label. An item whose label is ambiguous on its screen needs a narrower query. VoiceOver reads the label, so nobody using the app is affected.
+So no menu item in the app sets an identifier, and a UI test finds one by its label. Nothing enforces that: a new identifier works on iOS 26 and may not on iOS 27. An item whose label is ambiguous on its screen needs a narrower query. VoiceOver reads the label, so nobody using the app is affected.
 
 ### No UI test sees the Allow Paste prompt
 
 An iOS 27.0 simulator cannot show *Allow Paste*, the prompt iOS puts up when an app reads what another app copied. Its pasteboard daemon logs `Paste requires user authorization. Prompting...`, SpringBoard refuses the alert (`Entitlement "com.apple.springboard.CFUserNotification" is required to access this resource`), and the read comes back empty. *Paste Image* then says *Paste not allowed.*, as it does for a person who refuses. In [run 45136122476](https://github.com/tadasant/zimmer/actions/runs/45136122476) the paste test failed 2 of 2 without the permission, passed 3 of 3 with it, and failed 2 of 2 once it was taken away.
 
-So `ios/bin/ui-test` sets *Paste from Other Apps* to Allow for Zimmer, in the simulator's TCC database, before any test. The test drives the paste itself, and no test drives the prompt, nor a refusal. Nothing here was measured on a real device: that an iOS 27 phone shows the prompt is inferred from the simulator trying to.
+So `ios/bin/ui-test` sets *Paste from Other Apps* to Allow for Zimmer, in the simulator's TCC database, before any test (not for the CarPlay drill, which pastes nothing). The test drives the paste itself, and no test drives the prompt, nor a refusal. Nothing here was measured on a real device: that an iOS 27 phone shows the prompt is inferred from the simulator trying to.
 
 ### A switch on iOS 26 can lose a very short touch
 

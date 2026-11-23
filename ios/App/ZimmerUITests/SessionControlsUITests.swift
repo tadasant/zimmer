@@ -138,7 +138,7 @@ final class SessionControlsUITests: XCTestCase {
 
     /// The web composer takes a pasted image. The test runner puts one on the pasteboard, which
     /// to the app is an image copied in another app. `ios/bin/ui-test` sets Zimmer's *Paste from
-    /// Other Apps* to Allow first, because an iOS 27 simulator cannot show the prompt that asks:
+    /// Other Apps* to Allow first, because an iOS 27.0 simulator cannot show the prompt that asks:
     /// it refuses the read at once, and the app says *Paste not allowed.* So this drives the
     /// paste and what becomes of it, not Apple's prompt.
     func test_an_image_on_the_clipboard_is_pasted_into_the_composer() throws {
