@@ -92,4 +92,15 @@ class Sessions::BoardV2Test < ActiveSupport::TestCase
     assert board.truncated
     assert_equal [ newest ], board.sections.flat_map(&:sessions)
   end
+
+  test "a tucked-away category names the matching sessions it holds" do
+    @infra.update!(visibility: "backlogged")
+    held = make("held", category: @infra)
+    make("filtered out", category: @infra, status: :waiting)
+    make("on the board", category: @ui)
+
+    board = Sessions::BoardV2.build(scope: Session.where(status: :needs_input).order(:id), limit: 50)
+
+    assert_equal [ [ @infra, [ held.id ], 1 ] ], board.tucked.map { |t| [ t.category, t.session_ids, t.count ] }
+  end
 end

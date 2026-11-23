@@ -3108,13 +3108,18 @@ five-second timing window whether or not the cable had actually dropped — and,
 top-level navigation, dismissed the session drawer along with the user's place in it.
 `Session#recently_recovered?` now only decides whether to *show* the recovery banner.
 
-It does not replace `stream-visibility-recovery` — the two answer different failures. A socket
-that dies while the page stays visible has missed nothing, so cable-reconnect re-subscribes that
-source in place. A page that was hidden (backgrounded PWA, bfcache restore) and came back with a
-dead socket has also *missed content*, and re-subscribing would not bring it back, so
-`stream-visibility-recovery` handles that case in two steps: reopen the ActionCable consumer,
-which re-subscribes every subscription on the connection and restores live updates without
-rendering anything, then **backfill** the gap.
+It does not replace `stream-visibility-recovery` — the two answer different failures.
+cable-reconnect gets a subscription back; whatever was broadcast while it was down is still missing,
+and re-subscribing does not bring it back. `stream-visibility-recovery` does. A page that was hidden
+(backgrounded PWA, bfcache restore) and came back with a dead socket is handled in two steps: reopen
+the ActionCable consumer, which re-subscribes every subscription on the connection and restores live
+updates without rendering anything, then **backfill** the gap. A page that lost its subscription any
+other way (a deploy, a laptop asleep with the tab in front, a network blip) is put back on its feet by
+ActionCable itself, so nothing looks wrong. The controller watches for a stream source losing its
+`connected` attribute and getting it back, and backfills then. That one never falls back to a visit,
+since nobody asked for it: a failed fetch is tried again, five times in all with the wait doubling. Its
+request carries `X-Zimmer-Reconnect`, so a session page left open does not count as viewed, or have
+its notifications marked read, because the network blinked.
 
 ### The drawer loads its own URL
 
@@ -3281,7 +3286,11 @@ mirror what `BroadcastService` does to them:
 | --- | --- | --- | --- |
 | `append` | append children | append children the page lacks, by id | the timeline |
 | `replace` | replace the element | replace it when the server's copy differs | status badge, header actions, metadata, provenance, enqueued messages, the composer |
-| `sync` | add, replace and remove children | reconcile children by id, in the server's order | the dashboard's session grids, elicitation banners |
+| `sync` | add, replace and remove children | reconcile children by id, in the server's order | the dashboard's session grids, Your board's lists, elicitation banners |
+| `members` | nothing directly | as `sync`, but a child on both sides is kept untouched, because it holds regions of its own | Your board's categories |
+
+A region inside an element marked `data-live-hold` is skipped. Your board sets it while something is
+being dragged, and fetches itself again after the drop.
 
 The strategy has to match what the broadcasts actually do, and getting it wrong is silent in one
 direction: elicitation banners are appended when raised *and removed when answered*, so marking

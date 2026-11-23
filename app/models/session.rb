@@ -2169,12 +2169,14 @@ class Session < ApplicationRecord
   # Unlike touch_user_activity!, this writes via update_column so a mere view
   # does NOT fire the after_update_commit callbacks (should_broadcast_to_index?
   # treats any metadata change as broadcast-worthy). Without this, every page
-  # view would rebroadcast the session card to every connected dashboard. This
-  # mirrors how last_broadcast_to_index_at is written via update_column.
+  # view would render the session's card again for every connected dashboard. All
+  # a view changes is where the session sorts, so all it sends is a delivery with
+  # no card in it.
   def touch_user_view!
     update_column(
       :metadata, (metadata || {}).merge("last_user_activity_at" => Time.current.iso8601)
     )
+    broadcast_card_delivery(card: false) unless status_summary_fork?
   end
 
   # Returns true if the session failed before the initial prompt was ever
@@ -2979,8 +2981,8 @@ class Session < ApplicationRecord
   # Minimum interval between broadcasts triggered by last_timeline_entry_at changes
   BROADCAST_THROTTLE_INTERVAL = 30.seconds
 
-  # The Turbo Stream the dashboard's card grid (the two flat sort views) listens
-  # on, and the hidden element its card envelopes are appended to. See
+  # The Turbo Stream the dashboard's card views (the two flat sort views and Your
+  # board) listen on, and the hidden element its card envelopes are appended to. See
   # #broadcast_update_to_sessions_index.
   SESSIONS_INDEX_STREAM = "sessions_index_individual".freeze
   CARD_DELIVERIES_TARGET = "sessions_grid_deliveries".freeze
@@ -3416,7 +3418,7 @@ class Session < ApplicationRecord
     SessionTitleJob.set(wait: 2.minutes).perform_later(id)
   end
 
-  # Offer this session's card to every open dashboard card grid.
+  # Offer this session's card to every open dashboard card grid and Your board.
   #
   # The grid broadcasts on ONE stream, `sessions_index_individual`, and every
   # open page has its own filters — the operator watching only `needs_input` and
@@ -3426,9 +3428,9 @@ class Session < ApplicationRecord
   # that asked to see it. Neither is the server's call.
   #
   # So it ships an envelope (`_card_delivery`): the session's filterable facts and
-  # the card rendered inside an inert <template>, and `session-grid` judges it
-  # against the filters THAT page was rendered with — replace the card, take it
-  # away, insert it in sort order, or ignore it. The Ranked view does the same
+  # the card rendered inside an inert <template>, and `session-grid` (or, on Your
+  # board, `board-v2`) judges it against the filters THAT page was rendered with —
+  # replace the card, take it away, insert it in sort order, or ignore it. The Ranked view does the same
   # thing on its own stream; see #broadcast_ranked_membership.
   def broadcast_update_to_sessions_index
     delivered = broadcast_card_delivery
@@ -3458,17 +3460,34 @@ class Session < ApplicationRecord
     broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: "board_v2_row_#{id}")
   end
 
-  def broadcast_card_delivery
+  # Rendered from the row, not from this instance. A long-running job broadcasts
+  # from a copy it loaded hours ago, and the columns written with `update_columns`
+  # elsewhere since — the Your board category above all — are not on it: its next
+  # status change would put a filed session back where it was.
+  #
+  # @param card [Boolean] false for a delivery that carries only the facts
+  def broadcast_card_delivery(card: true)
     broadcaster.broadcast_html(
       action: :append,
       stream: SESSIONS_INDEX_STREAM,
       target: CARD_DELIVERIES_TARGET
     ) do
+      # Taken before the read, so nothing committed by then is missing from it. A
+      # page that drops the older of two deliveries cannot lose a write: each write
+      # is followed by a delivery of its own.
+      read_at = Time.current
+      current = self.class.select(self.class.column_names - [ "transcript" ]).find_by(id: id)
+      # Destroyed since: there is nothing to offer.
+      next unless current
+
       # Through SessionsController: the card is full of route helpers and this
       # runs from background jobs.
-      SessionsController.render(partial: "sessions/card_delivery", locals: { agent_session: self })
+      SessionsController.render(partial: "sessions/card_delivery",
+        locals: { agent_session: current, read_at: read_at, card: card })
     end
   end
+  # BoardCategories::Assign writes its one column without callbacks.
+  public :broadcast_card_delivery
 
   def broadcast_status_change
     # First, and not through BroadcastService: this is not UI. It wakes an MCP
