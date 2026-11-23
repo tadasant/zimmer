@@ -123,6 +123,13 @@ module ParameterStore
       end
     end
 
+    # Whether the private key can sign. `parse` checks only that there is one.
+    def usable_key?
+      OpenSSL::PKey::RSA.new(pem).private?
+    rescue OpenSSL::PKey::PKeyError
+      false
+    end
+
     private
 
     def mint(scope)

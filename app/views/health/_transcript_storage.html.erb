@@ -1,0 +1,54 @@
+<%# Copies of old transcripts in object storage: how many, how big, and what is waiting. %>
+<% storage = health_report[:transcript_storage_health] %>
+<% if storage %>
+<div class="mt-6 bg-white rounded-lg shadow">
+  <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <h3 class="text-lg font-medium text-gray-900">Transcript Storage</h3>
+        <p class="mt-1 text-sm text-gray-500">
+          Transcripts of sessions archived more than
+          <%= pluralize(storage[:copy_after_days] || TranscriptCopyJob.copy_after_days, "day") %> ago are copied to
+          object storage and read back. Nothing is deleted from Postgres.
+        </p>
+      </div>
+      <div class="sm:flex-shrink-0">
+        <%= status_badge(storage[:status]) %>
+      </div>
+    </div>
+  </div>
+
+  <div class="px-4 py-5 sm:p-6">
+    <% if storage[:configured] || storage[:copied_sessions].to_i.positive? %>
+      <dl class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Copied</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_with_delimiter(storage[:copied_sessions]) %></dd>
+        </div>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Waiting</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_with_delimiter(storage[:awaiting_copy]) %></dd>
+        </div>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Compressed to</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_to_human_size(storage[:compressed_bytes]) %></dd>
+          <dd class="text-xs text-gray-500">of <%= number_to_human_size(storage[:copied_bytes]) %></dd>
+        </div>
+        <div class="text-center">
+          <dt class="text-sm font-medium text-gray-500">Conversation only</dt>
+          <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words">
+            <%= storage[:conversation_measured_bytes].to_i.positive? ? number_to_percentage(100.0 * storage[:conversation_bytes] / storage[:conversation_measured_bytes], precision: 1) : "—" %>
+          </dd>
+          <dd class="text-xs text-gray-500">of the transcript text</dd>
+        </div>
+      </dl>
+    <% end %>
+    <p class="mt-4 text-sm text-gray-500">
+      <%= storage[:status].message %>.
+      <% if storage[:last_verified_at] %>Last verified <%= time_ago_in_words(storage[:last_verified_at]) %> ago.<% end %>
+      <% if storage[:set_aside].to_i.positive? %><%= pluralize(storage[:set_aside], "transcript") %> set aside: chunks disagree with the session row.<% end %>
+      <% if storage[:failing].to_i.positive? %><%= pluralize(storage[:failing], "transcript") %> failed and will be retried within a day.<% end %>
+    </p>
+  </div>
+</div>
+<% end %>

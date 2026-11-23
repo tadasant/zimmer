@@ -51,6 +51,7 @@ module Mcp
           *trigger_poller_lines(report),
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
+          *transcript_storage_lines(report),
           *database_size_lines(report),
           *root_data_lines(report),
           *operating_costs_lines(report),
@@ -215,6 +216,16 @@ module Mcp
           "- **Webhook ingest:** #{status.message}",
           *enabled.map { |s| inbound_source_line(s) }
         ]
+      end
+
+      # Copies of old transcripts in object storage. Silent while it is off.
+      def transcript_storage_lines(report)
+        storage = report[:transcript_storage_health] || {}
+        status = storage[:status]
+        return [] if status.nil? || (!storage[:configured] && status.status == :healthy)
+
+        [ "- **Transcript storage:** #{status.message} (#{storage[:copied_sessions].to_i} session(s) copied, " \
+          "#{storage[:set_aside].to_i} set aside because their chunks disagree with the row, #{storage[:failing].to_i} failing)" ]
       end
 
       # Size on disk, space in use, and the largest tables, so "what is filling the

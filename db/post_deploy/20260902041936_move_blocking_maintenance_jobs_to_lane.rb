@@ -18,6 +18,7 @@ class MoveBlockingMaintenanceJobsToLane < PostDeployTask
     StaleCloneCleanupJob
     TokenUsageBackfillJob
     TranscriptArchiveJob
+    TranscriptCopyJob
     TriggerPromotionReleaseJob
     WarmClonePoolReplenishJob
     WarmProcessPoolReplenishJob
