@@ -5755,6 +5755,20 @@ makes it before anything fires — so **a channel whose recent history a poll ca
 whole for that poll**, including top-level @mentions it had already fetched. Those fire on the
 deferred poll. Later, rather than never.
 
+### The mention that invites the bot can still be missed
+
+The Slack poller [looks back](/sessions/triggers/#a-channel-the-bot-was-just-added-to) when it meets a
+channel the bot has just joined, so the @mention that got it invited fires. Three cases remain:
+
+- **No join notice.** The join is read off the channel's own `channel_join` message. A workspace that
+  hides join notices gives the poller nothing to tell a new channel from an old one, so it baselines.
+- **Nothing polled for 30 minutes after the join**, or the mention came more than 10 minutes before
+  the invite. Those are past the window on purpose.
+- **An `mcp_event` trigger on its own.** It fires on what the server publishes. Slack sends the
+  inviting mention as an `app_mention`, not a `message` event, because the bot was not yet a member
+  when it was posted. A server that publishes only `message` events never sees it, and Zimmer has no
+  poll of Slack behind that trigger to catch it.
+
 ### Coalescing groups a burst within one poll pass, so a burst can straddle a tick
 
 Slack messages that land close together are folded into [one
