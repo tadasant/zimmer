@@ -196,6 +196,22 @@ class SelectStagingDropletSizeTest < ActiveSupport::TestCase
     assert_includes result.calls, "/v2/sizes?per_page=200&page=2"
   end
 
+  test "a catalog far larger than one command-line argument is still read" do
+    filler = Array.new(1500) { |i| { "slug" => "filler-#{i}", "memory" => 1024, "available" => true, "regions" => AMD_REGIONS } }
+    result = select_size(sizes: [ filler, filler, CATALOG ])
+
+    assert_operator JSON.dump(filler).bytesize, :>, 128 * 1024
+    assert_selected "s-2vcpu-4gb-amd", result
+    assert_no_match(/Could not read/, result.log)
+  end
+
+  test "a later page that fails makes the whole catalog unreadable" do
+    result = select_size(sizes: [ CATALOG, CATALOG ], responses: { "/v2/sizes?per_page=200&page=2" => [ 500, "" ] })
+
+    assert_selected "s-2vcpu-4gb", result
+    assert_match(/Could not read DigitalOcean's size catalog \(HTTP 500\)/, result.log)
+  end
+
   test "the region comes from the tfvars" do
     result = select_size(tfvars: %(region = "sfo2"\ndroplet_size = "s-2vcpu-4gb"\n))
 
@@ -241,6 +257,7 @@ class SelectStagingDropletSizeTest < ActiveSupport::TestCase
     assert_refused select_size(state: existing), /HTTP 000/
     assert_refused select_size(state: existing, responses: { DROPLET_PATH => [ 200, "{}" ] }), /carries no size/
     assert_refused select_size(state: existing, responses: { DROPLET_PATH => [ 200, "<html>" ] }), /carries no size/
+    assert_refused select_size(state: existing, responses: droplet_answer("a\nsize=b")), /carries no size/
   end
 
   test "a droplet deleted out of band is a creation, so the catalog decides" do
@@ -260,7 +277,7 @@ class SelectStagingDropletSizeTest < ActiveSupport::TestCase
     unreadable = { "/v2/sizes?per_page=200&page=1" => [ 500, "" ] }
     existing = state(droplet: "s-2vcpu-4gb")
 
-    assert_refused select_size(state: existing, recreate: "true", responses: unreadable), /Refusing to destroy/
+    assert_refused select_size(state: existing, recreate: "true", responses: unreadable), /Refusing to replace/
     assert_refused select_size(state: existing, recreate: "true", sizes: catalog(unsold: all_4gb)), /no acceptable/
   end
 
@@ -318,7 +335,8 @@ class SelectStagingDropletSizeTest < ActiveSupport::TestCase
   end
 
   test "the script runs from the workflow's own commit and reads terraform's raw output" do
-    assert_match(/scripts\/select-staging-droplet-size\.sh/, steps.first(3).map { |s| s["run"] }.join)
+    checked_out_ref = steps.index { |s| s.dig("with", "ref") == "${{ steps.ref.outputs.ref }}" }
+    assert_match(/scripts\/select-staging-droplet-size\.sh/, steps[0...checked_out_ref].map { |s| s["run"] }.join)
     assert_match(/\$RUNNER_TEMP\/ci-scripts\/select-staging-droplet-size\.sh/,
       steps[index("Choose the droplet size")]["run"])
     setup = steps.find { |s| s["uses"].to_s.start_with?("hashicorp/setup-terraform") }

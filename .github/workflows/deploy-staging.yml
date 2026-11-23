@@ -271,8 +271,11 @@ jobs:
           # droplet the key goes unused, so a Tailscale API blip there is a warning, not a
           # failed app deploy.
           creating=false
+          # Captured first, never piped: grep -q exits on its match, and under pipefail a
+          # terraform still printing would take SIGPIPE and read as "no droplet".
+          state_list=$(terraform state list 2>/dev/null) || state_list=""
           if [ "${{ inputs.recreate_droplet }}" = "true" ] \
-             || ! terraform state list 2>/dev/null | grep -qx 'digitalocean_droplet.zimmer'; then
+             || ! grep -qxF 'digitalocean_droplet.zimmer' <<<"$state_list"; then
             creating=true
           fi
           if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then

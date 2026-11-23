@@ -2,7 +2,7 @@
 # Choose the droplet size a staging `terraform apply` should ask for, and print it.
 #
 # DigitalOcean's stock is per size AND per region, and it moves: nyc3 sold `s-2vcpu-4gb` at
-# 00:46 UTC on 2026-11-23 and refused it at 18:43 the same day, while still selling the AMD
+# 00:50 UTC on 2026-11-23 and refused it at 18:43 the same day, while still selling the AMD
 # and Intel variants of the same 2 vCPU / 4 GB / 80 GB shape. Staging is torn down between
 # uses, so most deploys create a droplet and are exposed to that. This asks the size
 # catalog first and, when the preferred size is not sold in the region, takes the first
@@ -40,6 +40,7 @@ RECREATE="${RECREATE:-false}"
 TFVARS="${TFVARS:-staging.tfvars}"
 DO_API_URL="${DO_API_URL:-https://api.digitalocean.com}"
 DROPLET_ADDRESS="digitalocean_droplet.zimmer"
+SLUG='^[a-z0-9_-]+$'
 
 log() { echo "$*" >&2; }
 die() {
@@ -51,7 +52,7 @@ die() {
 tfvar() {
   local value
   value="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" "$TFVARS")"
-  if ! [[ "$value" =~ ^[a-z0-9_-]+$ ]]; then
+  if ! [[ "$value" =~ $SLUG ]]; then
     die "${TFVARS} must assign $1 exactly once, as a quoted slug (read '${value}')."
   fi
   printf '%s' "$value"
@@ -67,7 +68,7 @@ trap 'rm -f "$body"' EXIT
 # The token goes through a file descriptor, so it is never on a command line.
 code=""
 api_get() {
-  code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 20 --retry 3 --retry-delay 2 \
+  code="$(curl -sS -o "$body" -w '%{http_code}' --max-time 20 --retry 3 --retry-delay 2 --retry-max-time 60 \
     -H @<(printf 'Authorization: Bearer %s' "$DO_TOKEN") \
     "${DO_API_URL}$1" || true)"
   code="${code:-000}"
@@ -95,8 +96,8 @@ if [ -n "$droplet_id" ] && [ "$RECREATE" != "true" ] && [ "$tainted" != "true" ]
   case "$code" in
     200)
       current="$(jq -r '.droplet.size_slug // empty' < "$body")" || current=""
-      if [ -z "$current" ]; then
-        die "The staging droplet exists but DigitalOcean's answer carries no size, so this apply could resize it." \
+      if ! [[ "$current" =~ $SLUG ]]; then
+        die "The staging droplet exists but DigitalOcean's answer carries no size slug, so this apply could resize it." \
             "Nothing was changed."
       fi
       log "✅ droplet_size: ${current} -- the size the existing staging droplet already has, kept as it is."
@@ -129,10 +130,12 @@ while :; do
     break
   fi
   # An empty page is as unreadable as a malformed one: jq reads `[] + null` as [], which
-  # would report every size as retired.
-  if ! sizes="$(jq -ce --argjson seen "$sizes" \
-    'if (.sizes | type) == "array" and (.sizes | length) > 0 then $seen + .sizes else error("no sizes") end' \
-    < "$body" 2>/dev/null)"; then
+  # would report every size as retired. The pages so far go through a file descriptor: one
+  # command-line argument holds 128 KiB, which a few pages would overrun.
+  if ! sizes="$(jq -ces \
+    'if (.[1].sizes | type) == "array" and (.[1].sizes | length) > 0
+     then .[0] + (.[1].sizes | map({slug, memory, available, regions})) else error("no sizes") end' \
+    <(printf '%s' "$sizes") "$body" 2>/dev/null)"; then
     catalog_error="an unreadable response"
     break
   fi
@@ -149,7 +152,7 @@ done
 if [ -n "$catalog_error" ]; then
   if [ -n "$droplet_id" ]; then
     die "Could not read DigitalOcean's size catalog (${catalog_error}), so it is unknown whether a replacement" \
-        "droplet can be created. Refusing to destroy the existing staging droplet first."
+        "droplet can be created. Refusing to replace the staging droplet."
   fi
   # Nothing to lose: ask for the preferred size, and let a refusal fail the apply.
   log "::warning::Could not read DigitalOcean's size catalog (${catalog_error}), so no fallback was considered:"
