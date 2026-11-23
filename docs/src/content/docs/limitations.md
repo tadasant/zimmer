@@ -5266,6 +5266,16 @@ next call does.
 
 ---
 
+### A watcher armed on a session whose turn is still queued does not sleep it
+
+A wake armed while a worker holds the session's turn is marked, and a turn that ends unmarked sleeps on
+any one-time schedule still armed. Between the two is a turn handed over but not yet on a worker: a
+`wake_me_up_when_session_changes_state` watcher armed on that session by somebody else, with no
+`wake_me_up_later` beside it, marks nothing, and the turn that follows ends in `needs_input` with the
+watcher armed. The watcher still resumes it. Pairing a watcher with a deadline avoids it.
+
+---
+
 ### A hand-back is answered by a human message, not by the turn that delivers it
 
 A `rest_in_needs_input` hand-back is released when a `HumanMessage` with an `occurred_at` after
@@ -9325,13 +9335,24 @@ The [Costs](/operate/operating-costs/) page is honest about what it knows and no
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
 ([#1264](https://github.com/tadasant/zimmer/issues/1264)). The check runs only between sessions, so
 it bounds a run that is slow, not one that is stuck. Three things are outside it: the session in
-flight, the final write of the archive (one sequential copy of `latest.zip`, which grows with the
+flight, the merge (one sequential copy of `latest.zip`, which grows with the
 corpus), and any call that blocks forever, such as a wedged disk read or a lock that never comes
 back. If a run does hang there, it still holds the `SingletonSweep` slot until the worker container
 is replaced. Every deploy replaces it, but nothing in the app can. CronFreshness still pages when
 that happens, which is the intended signal. Killing a thread from inside the job is not a safe
 alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
 there to survive, not something to cause on purpose.
+
+A merge of an archive over 1 GiB runs every 30 minutes, so `latest.zip` can be up to about 40
+minutes behind what the job has already staged. Nothing shows the staged count on its own:
+`deferred_count` is as of the last merge. A staged file that will not parse is discarded and its
+session read again. An unparseable `latest.zip` is kept as `latest.unreadable.zip`, which nothing
+deletes; a second one, while the first is still there, stops the job.
+
+The per-environment directory protects the archive from a development server running current code. A
+clone made before that change, a server started with `RAILS_ENV=production`, or one that inherits
+`AGENT_TRANSCRIPT_ARCHIVE_DIR` still resolves production's directory. The archive is rebuilt from the
+database if that happens, over about a day.
 
 ## Root data isolation is a scoping boundary, not an authorization one
 

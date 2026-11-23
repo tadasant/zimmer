@@ -762,11 +762,16 @@ class Api::V1::SessionsController < Api::BaseController
   # Used by the "wake me up later" workflow — the session becomes dormant
   # and a one-time schedule trigger will resume it at the specified time.
   #
-  # Accepts both needs_input (immediate sleep) and running (deferred sleep).
-  # When called from running state, sets a pending_sleep flag in metadata.
+  # Accepts needs_input (immediate sleep) and a session with a turn in progress
+  # (deferred sleep): running, or waiting while a worker holds its turn.
+  # A deferred sleep sets a pending_sleep flag in metadata.
   # The pause callback executes the sleep after the agent's turn completes.
   def sleep_session
-    unless @session.needs_input? || @session.running?
+    # `start!` is recorded after the process spawns, so a live agent can call this
+    # while its row still reads `waiting`.
+    turn_in_progress = Sessions::LiveTurn.in_progress?(@session)
+
+    unless @session.needs_input? || turn_in_progress
       render_api_error("Cannot sleep", "Session must be in needs_input or running state to sleep (current: #{@session.status})", status: :unprocessable_entity)
       return
     end

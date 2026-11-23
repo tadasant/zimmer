@@ -305,7 +305,7 @@ archived sessions and matches every word, and has no transcript scan
 ([Finding an earlier session](/sessions/live/#finding-an-earlier-session)); every other caller gets
 the defaults above. An empty result that says "scan incomplete" means
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
-hundreds of megabytes and up to ten minutes stale.
+many gigabytes on a busy deployment and up to about forty minutes stale.
 
 The JSON columns are matched in Postgres's canonical spelling, so `"key":"value"` and `"key": "value"`
 find the same sessions and neither depends on which of Zimmer's two metadata writers last touched the

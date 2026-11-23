@@ -91,6 +91,43 @@ module Sessions
       true
     end
 
+    # Whether the session is inside a turn: `running`, or `waiting` while a worker
+    # already holds its turn.
+    #
+    # `start!` is recorded after the runtime process is spawned, so a live agent's
+    # own calls can reach Zimmer while its row still reads `waiting`. Ask this, not
+    # `running?`, where a call means "when this turn ends".
+    #
+    # Narrower than #in_flight? on two rows that hold a worker and no turn: a
+    # clone-only job, and a job still finishing up after its turn's pause already put
+    # the session to sleep. The stop record is what tells the second from a turn that
+    # is starting: the sleep it describes is later than the job's own start.
+    #
+    # @return [Boolean]
+    def in_progress?(session)
+      return false if session.nil?
+      return true if session.running?
+      return false unless session.waiting?
+      return false if slept_this_turn?(session)
+
+      unfinished_turns(session).reject { |job| AgentJobIntent.clone_only?(job) }
+        .any? { |job| JobLiveness.status(job) == :running }
+    rescue StandardError => e
+      # Unlike #in_flight?, this answers for callers deciding what a turn's end does,
+      # where the safe reading of an unreadable queue is the row's own status.
+      Rails.logger.warn("[Sessions::LiveTurn] Could not read the agents queue for session #{session&.id} " \
+                        "(#{e.class}: #{e.message}) — reading its status alone")
+      false
+    end
+
+    def slept_this_turn?(session)
+      stopped_at = session.metadata&.dig(Sessions::StopRecord::AT)
+      return false if stopped_at.blank?
+
+      started_at = session.metadata["job_started_at"]
+      started_at.blank? || Time.iso8601(stopped_at) >= Time.iso8601(started_at)
+    end
+
     # Is a turn underway for this session — on a worker thread right now, or
     # ready in the `agents` queue with a worker coming for it?
     #
