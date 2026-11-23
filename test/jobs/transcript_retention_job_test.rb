@@ -12,6 +12,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     @root = Dir.mktmpdir("transcript_offload_test")
     @previous_dir = ENV[TranscriptOffloadStore::DIR_ENV]
     ENV[TranscriptOffloadStore::DIR_ENV] = @root
+    CloneDiskGuard.stubs(:available_bytes).returns(nil)
   end
 
   teardown do
@@ -275,6 +276,26 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     assert_not File.exist?(old)
     assert File.exist?(fresh)
     assert File.exist?(finished)
+  end
+
+  test "a broken store ends the tick instead of failing every candidate" do
+    5.times { archived_session(content: jsonl(2)) }
+    TranscriptOffloadStore.stubs(:write_stream).raises(Errno::EROFS)
+
+    assert_equal TranscriptRetentionJob::MAX_CONSECUTIVE_FAILURES, TranscriptRetentionJob.perform_now[:failed]
+  end
+
+  test "a session set aside for a mismatch is counted, and repairing its chunks brings it back" do
+    content = jsonl(5)
+    session = archived_session(content: content)
+    SessionTranscriptChunk.where(session_id: session.id).order(:seq).last.update_columns(content: "bad\n", byte_size: 4)
+    TranscriptRetentionJob.perform_now
+    assert_equal 1, TranscriptRetentionJob.skipped_for_mismatch.count
+
+    Session.find(session.id).update!(transcript: content)
+
+    assert_equal 0, TranscriptRetentionJob.skipped_for_mismatch.count
+    assert_equal 1, TranscriptRetentionJob.perform_now[:offloaded]
   end
 
   test "destroying a session removes its offloaded transcript" do

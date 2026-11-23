@@ -960,7 +960,8 @@ class HealthMonitorService
     {
       retention_days: TranscriptRetentionJob.retention_days,
       offloaded_sessions: Session.where.not(transcript_offloaded_at: nil).count,
-      awaiting_offload: TranscriptRetentionJob.candidates.count
+      awaiting_offload: TranscriptRetentionJob.candidates.count,
+      skipped_for_mismatch: TranscriptRetentionJob.skipped_for_mismatch.count
     }
   end
 

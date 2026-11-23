@@ -409,7 +409,8 @@ zip entry when its offload file cannot be read, rather than replacing it with `n
 
 **The host's disk.** The job does nothing while the store's volume has less than
 `TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES` free (default 20 GiB), because that volume also holds every
-clone. Each tick first removes temp files more than an hour old, which a killed run leaves behind.
+clone. Each tick first removes temp files more than an hour old, which a killed run leaves behind, and
+ends after three failures in a row, because that means the store is broken rather than one session.
 
 **Disk.** As with `logs`, deleting rows does not shrink Postgres's files. The space is reused by new
 transcripts, so the table stops growing. Giving it back to the filesystem is the same one-time
@@ -417,8 +418,8 @@ transcripts, so the table stops growing. Giving it back to the filesystem is the
 files](#deleting-does-not-shrink-the-files).
 
 **Is it running?** `HealthMonitorService#database_size_health` reports the total database size, the
-eight largest tables, and the transcript counts: sessions offloaded, and sessions past the window
-still waiting. A waiting count that does not fall from one tick to the next means the job is not
+eight largest tables, and the transcript counts: sessions offloaded, sessions past the window still
+waiting, and sessions set aside because their chunks disagree with their row. A waiting count that does not fall from one tick to the next means the job is not
 keeping up. The section warns past `DATABASE_SIZE_WARNING_GIB` (default 64, 80% of production's
 80 GiB cluster). Like log retention it is not part of `overall_status`, and the provider already
 pages on the disk itself.

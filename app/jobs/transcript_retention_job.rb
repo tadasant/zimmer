@@ -92,6 +92,12 @@ class TranscriptRetentionJob < ApplicationJob
   # row says; it aborts the write, and the temp file goes with it.
   class ChunkMismatch < StandardError; end
 
+  # A chunk disappeared mid-read: a concurrent rewrite, not corruption. Never marked.
+  class ChunksMoved < StandardError; end
+
+  # A tick ends after this many failures in a row: the store is broken, not a session.
+  MAX_CONSECUTIVE_FAILURES = 3
+
   # Archived long enough ago, still holding chunks, and not already skipped at this
   # digest. The partial index `index_sessions_on_transcript_offload_candidates`
   # narrows it to archived rows still holding chunks; `status` and the skip marker
@@ -105,16 +111,24 @@ class TranscriptRetentionJob < ApplicationJob
       .where("(sessions.metadata ->> '#{SKIPPED_DIGEST_KEY}') IS DISTINCT FROM sessions.transcript_digest")
   end
 
+  # Sessions set aside because their chunks disagree with their row.
+  def self.skipped_for_mismatch
+    Session.archived.where(transcript_offloaded_at: nil)
+      .where("sessions.transcript_byte_size > 0 AND sessions.archived_at IS NOT NULL")
+      .where("(sessions.metadata ->> '#{SKIPPED_DIGEST_KEY}') = sessions.transcript_digest")
+  end
+
   def perform(budget: SLICE_BUDGET, now: Time.current)
     deadline = monotonic_now + budget.to_f
     result = { offloaded: 0, skipped: 0, failed: 0, bytes: 0 }
     after = [ Time.at(0), 0 ]
 
+    failures = 0
     swept = TranscriptOffloadStore.sweep_orphaned_temps
     Rails.logger.warn("[TranscriptRetentionJob] swept #{swept} orphaned temp file(s)") if swept.positive?
-    return finish(result) unless room_to_offload?
-
     loop do
+      return finish(result) unless room_to_offload?
+
       batch = with_db_retry do
         self.class.candidates(now: now)
           .where("(sessions.archived_at, sessions.id) > (?, ?)", *after)
@@ -131,6 +145,8 @@ class TranscriptRetentionJob < ApplicationJob
         outcome, bytes = offload(id, now: now)
         result[outcome] += 1
         result[:bytes] += bytes.to_i
+        failures = outcome == :failed ? failures + 1 : 0
+        return finish(result) if failures >= MAX_CONSECUTIVE_FAILURES
       end
     end
 
@@ -180,9 +196,13 @@ class TranscriptRetentionJob < ApplicationJob
       stream_chunks_to_store(session_id, byte_size, digest)
     rescue ChunkMismatch => e
       Rails.logger.warn("[TranscriptRetentionJob] session #{session_id}: #{e.message}; not offloading, and not retrying at this digest")
-      Session.where(id: session_id).update_all(
-        [ "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(?::text, ?::text)", SKIPPED_DIGEST_KEY, digest ]
-      )
+      with_db_retry do
+        Session.where(id: session_id, transcript_digest: digest, transcript_offloaded_at: nil).update_all(
+          [ "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(?::text, ?::text)", SKIPPED_DIGEST_KEY, digest ]
+        )
+      end
+      return [ :skipped, 0 ]
+    rescue ChunksMoved
       return [ :skipped, 0 ]
     end
 
@@ -190,6 +210,8 @@ class TranscriptRetentionJob < ApplicationJob
       Session.transaction do
         locked = Session.lock.where(id: session_id)
           .pick(:status, :archived_at, :transcript_offloaded_at, :transcript_byte_size, :transcript_digest)
+        # Destroyed while it was being copied: its cleanup ran before this file existed.
+        TranscriptOffloadStore.delete(session_id) if locked.nil?
         current_status, current_archived_at, current_offloaded_at, current_size, current_digest = locked
 
         if locked && eligible?(current_status, current_archived_at, current_offloaded_at, current_size, now) &&
@@ -223,7 +245,7 @@ class TranscriptRetentionJob < ApplicationJob
         content = with_db_retry do
           SessionTranscriptChunk.uncached { SessionTranscriptChunk.where(session_id: session_id, seq: seq).pick(:content) }
         end
-        raise ChunkMismatch, "chunk #{seq} vanished while being read" if content.nil?
+        raise ChunksMoved if content.nil?
 
         sha.update(content)
         bytes += content.bytesize

@@ -90,7 +90,9 @@ class TranscriptOffloadStore
         end
 
         File.rename(temp, path)
-        fsync_dir(File.dirname(path))
+        # The file's entry, its shard's entry and the root's: the chunk delete that follows
+        # commits on another machine, so none of these may still be only in page cache.
+        [ File.dirname(path), root, File.dirname(root) ].each { |dir| fsync_dir(dir) }
       ensure
         File.delete(temp) if File.exist?(temp)
       end
@@ -167,10 +169,11 @@ class TranscriptOffloadStore
       raise Corrupt, "offloaded transcript #{path} for session #{session_id} does not match its recorded digest"
     end
 
-    # The rename is only durable once the directory entry is.
+    # The rename is only durable once the directory entry is. A filesystem that does not
+    # support fsync on a directory is tolerated; an I/O error is not.
     def fsync_dir(dir)
       File.open(dir) { |d| d.fsync }
-    rescue SystemCallError
+    rescue Errno::EINVAL, Errno::ENOTSUP
       nil
     end
   end

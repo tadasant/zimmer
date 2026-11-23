@@ -116,6 +116,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     root = Dir.mktmpdir("unarchive_offload_test")
     previous = ENV[TranscriptOffloadStore::DIR_ENV]
     ENV[TranscriptOffloadStore::DIR_ENV] = root
+    CloneDiskGuard.stubs(:available_bytes).returns(nil)
     @session.update_columns(archived_at: 60.days.ago)
     assert_equal 1, TranscriptRetentionJob.perform_now[:offloaded]
     assert_equal 0, SessionTranscriptChunk.where(session_id: @session.id).count
@@ -139,6 +140,7 @@ class UnarchiveSessionServiceTest < ActiveSupport::TestCase
     root = Dir.mktmpdir("unarchive_offload_test")
     previous = ENV[TranscriptOffloadStore::DIR_ENV]
     ENV[TranscriptOffloadStore::DIR_ENV] = root
+    CloneDiskGuard.stubs(:available_bytes).returns(nil)
     @session.update_columns(archived_at: 60.days.ago)
     TranscriptRetentionJob.perform_now
     File.delete(TranscriptOffloadStore.path_for(@session.id))

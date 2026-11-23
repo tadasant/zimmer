@@ -57,6 +57,9 @@
       </ul>
     <% end %>
 
+    <% if offload && offload[:skipped_for_mismatch].to_i.positive? %>
+      <p class="mt-4 text-sm text-gray-500"><%= pluralize(offload[:skipped_for_mismatch], "transcript") %> set aside: chunks disagree with the session row.</p>
+    <% end %>
     <p class="mt-4 text-sm text-gray-500"><%= database[:status].message %></p>
   </div>
 </div>

@@ -57,6 +57,7 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     root = Dir.mktmpdir("archive_offload_test")
     previous = ENV[TranscriptOffloadStore::DIR_ENV]
     ENV[TranscriptOffloadStore::DIR_ENV] = root
+    CloneDiskGuard.stubs(:available_bytes).returns(nil)
     content = "{\"type\":\"user\"}\n"
     session = create_session(prompt: "archive then offload")
     session.update!(transcript: content)
@@ -74,6 +75,12 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     File.delete(@metadata_path)
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
+
+    # Present but corrupt takes the other path: read, refused, kept, reported incomplete.
+    File.write(TranscriptOffloadStore.path_for(session.id), "not gzip")
+    TranscriptArchiveJob.perform_now
+    assert_equal content, entry.call
+    assert_equal false, JSON.parse(File.read(@metadata_path))["complete"]
   ensure
     ENV[TranscriptOffloadStore::DIR_ENV] = previous
     FileUtils.rm_rf(root) if root

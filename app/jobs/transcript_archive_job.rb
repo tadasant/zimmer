@@ -273,10 +273,19 @@ class TranscriptArchiveJob < ApplicationJob
     # Ordered so a capped run is a prefix and the next run resumes after it, rather
     # than re-picking an arbitrary subset of the same backlog.
     changed_ids = session_ids_to_archive.to_a.sort
+    # An offloaded transcript whose file is gone cannot be archived. Set aside before the
+    # cap, so a block of them neither starves newer sessions nor forces a rewrite a tick.
+    missing_ids = changed_ids.each_slice(BIND_SLICE_SIZE).flat_map do |slice|
+      with_db_retry { Session.where(id: slice).where.not(transcript_offloaded_at: nil).pluck(:id) }
+    end.reject { |id| TranscriptOffloadStore.exist?(id) }
+    if missing_ids.any?
+      Rails.logger.error "[TranscriptArchiveJob] #{missing_ids.size} offloaded transcript file(s) missing; keeping their existing entries"
+      changed_ids -= missing_ids
+    end
     # Floored at 1 at the point of use, not at the reader: a cap of zero would archive
     # nothing on every run while still reporting success — a silent, permanent no-op.
     cap = [ max_sessions_per_run.to_i, 1 ].max
-    deferred_count = [ changed_ids.size - cap, 0 ].max
+    deferred_count = [ changed_ids.size - cap, 0 ].max + missing_ids.size
     changed_ids = changed_ids.first(cap)
 
     if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path)
@@ -457,7 +466,7 @@ class TranscriptArchiveJob < ApplicationJob
 
       attempted = archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima: subagent_maxima)
       cut_short = changed_ids.size - attempted
-      deferred_count += cut_short
+      deferred_count += cut_short + unreadable_ids.size
 
       if cut_short.positive?
         # WARN for the same reason as the cap's deferral line: production ships only WARN
