@@ -411,7 +411,8 @@ session.
 answered from the row. `Session#transcript` reads the file and checks it against the digest;
 `each_transcript_line` (and so `get_session`'s transcript slices) splits the file instead of
 reading chunks. A file that is missing or does not match reads as `nil` with an ERROR log, rather
-than raising out of the session page or a sweep.
+than raising out of the session page or a sweep, unless the chunk table holds bytes matching the
+row's digest, as it can after a rollback to a release without the marker.
 
 **Coming back.** `UnarchiveSessionService` calls `Session#restore_offloaded_transcript!` before it
 resumes anything, which writes the chunks back and clears the marker. An unarchive whose file cannot

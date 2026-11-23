@@ -9782,6 +9782,10 @@ at the same host, port and name, on a machine that shares the volume, shares the
 add versions, and destroying a session there removes that session's files. If the store's directory
 is lost, offloading stops until a deploy changes that.
 
+A release that predates offloading reads an offloaded transcript as empty, because it looks only in
+the chunk table. After a rollback those transcripts look blank until the newer release is back; the
+files are untouched. Unarchive an important session before rolling back.
+
 The offloaded files are on the droplet's `zimmer_data` volume, not in the managed database, so the
 provider's database backups no longer cover them. Losing that volume loses those transcripts. The
 transcript archive zip is on the same volume, so it is not a second copy. Subagent transcripts

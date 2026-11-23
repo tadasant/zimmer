@@ -365,4 +365,26 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     assert Session.find(session.id).restore_offloaded_transcript!
     assert_equal newer, Session.find(session.id).transcript
   end
+
+  test "chunks the row does not vouch for are never read as the transcript, nor touched" do
+    session = archived_session(content: jsonl(5))
+    TranscriptRetentionJob.perform_now
+    FileUtils.rm_rf(@root)
+    SessionTranscriptChunk.insert_all!(SessionTranscriptChunk.rows_for(session_id: session.id, content: jsonl(2)))
+
+    assert_nil Session.find(session.id).transcript
+    assert_equal false, Session.find(session.id).restore_offloaded_transcript!
+    assert_equal jsonl(2), SessionTranscriptChunk.where(session_id: session.id).order(:seq).pluck(:content).join
+  end
+
+  test "an append beside a leftover marker clears it" do
+    session = archived_session(content: jsonl(5))
+    session.update_columns(transcript_offloaded_at: Time.current)
+    longer = jsonl(9)
+
+    Session.find(session.id).update!(transcript: longer)
+
+    assert_nil Session.find(session.id).transcript_offloaded_at
+    assert_equal longer, Session.find(session.id).transcript
+  end
 end

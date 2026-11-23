@@ -392,7 +392,7 @@ module ChunkedTranscript
     # A release that predates the marker can write chunks without clearing it. If they
     # are what the row vouches for, they are the transcript.
     chunks = SessionTranscriptChunk.where(session_id: id).order(:seq).pluck(:content).join
-    return chunks if digest.present? && chunks.present? && Digest::SHA256.hexdigest(chunks) == digest
+    return chunks if digest.present? && !chunks.empty? && Digest::SHA256.hexdigest(chunks) == digest
 
     Rails.logger.error("[ChunkedTranscript] session #{id}: offloaded transcript unreadable: #{e.class}: #{e.message}")
     nil
@@ -477,6 +477,8 @@ module ChunkedTranscript
         extending: value, extended_bytes: base_bytes
       )
       replace_transcript_chunks(value, base_bytes: stored_bytes, base_is_chunked: true) unless appended
+      # Chunks beside a marker: written by a release that predates the marker.
+      clear_transcript_offload_marker if transcript_offloaded?
     elsif base_is_chunked && value.bytesize == base_bytes &&
           base_digest.present? && Digest::SHA256.hexdigest(value) == base_digest
       # Byte-identical to what is stored. Every poll that finds nothing new lands

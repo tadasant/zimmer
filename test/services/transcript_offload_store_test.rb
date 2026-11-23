@@ -191,6 +191,7 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
 
     FileUtils.rm_rf(@root)
     assert_raises(TranscriptOffloadStore::Refused) { TranscriptOffloadStore.prepare! }
+    assert_includes TranscriptOffloadStore.refusal, "absent"
     assert_not File.directory?(@root)
 
     metadata = ActiveRecord::Base.connection_pool.internal_metadata

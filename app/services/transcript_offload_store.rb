@@ -171,12 +171,13 @@ class TranscriptOffloadStore
 
       refuse_foreign_environment!
       id = Integer(session_id)
-      Dir.glob(File.join(shard_dir(own, id), "#{id}-*.jsonl.gz")).each do |path|
+      Dir.glob(File.join(shard_dir(own, id), "#{id}-*.jsonl.gz")).each_with_object([]) do |path, failures|
         File.delete(path)
       rescue Errno::ENOENT
-        nil
-      end
-      nil
+        next
+      rescue SystemCallError => e
+        failures << e
+      end.then { |failures| raise failures.first if failures.any? }
     end
 
     # Reclaims temps a SIGKILL left behind; `ensure` does not survive one. The pattern
