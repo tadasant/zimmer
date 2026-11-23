@@ -39,7 +39,35 @@ module TranscriptStorage
     def off? = client.nil? && problem.nil?
   end
 
+  # What the health report needs to know of a Configuration: no client, no key.
+  Recorded = Data.define(:configured, :bucket, :problem) do
+    def configured? = configured
+    def off? = !configured && problem.nil?
+  end
+
+  RECORDED_KEY = "transcript_storage:recorded_configuration"
+  # Six ticks of TranscriptCopyJob, which records it.
+  RECORDED_TTL = 1.hour
+
   module_function
+
+  # The configuration as TranscriptCopyJob last resolved it, or nil when it has not lately.
+  #
+  # For a reader that must not resolve it. These two names are unset by design on most
+  # deployments, and SecretProviders answers a name it does not hold by reading the whole
+  # store again over the network, which takes seconds. The health report is polled.
+  def recorded_configuration
+    values = Rails.cache.read(RECORDED_KEY)
+    values && Recorded.new(**values)
+  end
+
+  # Resolves the configuration and leaves it where #recorded_configuration reads it.
+  def record_configuration
+    configuration.tap do |current|
+      Rails.cache.write(RECORDED_KEY,
+        { configured: current.configured?, bucket: current.bucket, problem: current.problem }, expires_in: RECORDED_TTL)
+    end
+  end
 
   def configuration(chain: SecretProviders.chain, env: ENV)
     bucket = chain.get(BUCKET).to_s.strip.presence

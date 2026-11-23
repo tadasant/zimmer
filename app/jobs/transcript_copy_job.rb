@@ -79,7 +79,7 @@ class TranscriptCopyJob < ApplicationJob
 
   def perform(budget: SLICE_BUDGET, now: Time.current)
     result = { copied: 0, skipped: 0, failed: 0, store_failed: 0, bytes: 0 }
-    storage = TranscriptStorage.configuration
+    storage = TranscriptStorage.record_configuration
     unless storage.configured?
       Rails.logger.warn("[TranscriptCopyJob] not copying: #{storage.problem}") if storage.problem
       return result

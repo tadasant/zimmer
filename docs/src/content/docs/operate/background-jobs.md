@@ -408,6 +408,9 @@ sessions never receive the key.
 aside, compressed size, when a copy was last verified, and how much of the transcripts is
 conversation text alone. It warns when a session has waited over an hour with nothing verified in
 that time, and when one keeps failing. The counts are up to three minutes old.
+The configuration shown is the one the job resolved on its last tick, so a change to either value
+reaches the panel within ten minutes, and the panel says it does not know when the job has recorded
+nothing for an hour. A report never reads the secret store.
 It is on `/health` (*Transcript Storage*), in `GET /api/v1/health`, in `get_system_health`, and every
 row is at `/supervisor/transcript_copies`.
 

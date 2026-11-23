@@ -53,6 +53,33 @@ class TranscriptCopyJobTest < ActiveJob::TestCase
 
   def object(name) = @gcs.objects.fetch(name)
 
+  test "a tick records what it resolved for the health report, off or on, and never the key" do
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    assert_nil TranscriptStorage.recorded_configuration
+
+    TranscriptCopyJob.perform_now
+    on = TranscriptStorage.recorded_configuration
+    assert on.configured?
+    assert_equal "zimmer-transcripts", on.bucket
+    assert_no_match(/PRIVATE KEY|private_key/, Rails.cache.read(TranscriptStorage::RECORDED_KEY).inspect)
+
+    configure({})
+    TranscriptCopyJob.perform_now
+    assert TranscriptStorage.recorded_configuration.off?
+
+    configure(TranscriptStorage::BUCKET => "zimmer-transcripts")
+    TranscriptCopyJob.perform_now
+    half = TranscriptStorage.recorded_configuration
+    assert_not half.off?
+    assert_includes half.problem, TranscriptStorage::KEY_JSON
+
+    travel TranscriptStorage::RECORDED_TTL + 1.minute
+    assert_nil TranscriptStorage.recorded_configuration, "a job that stopped recording is not still off"
+  ensure
+    Rails.cache = original
+  end
+
   test "copies a transcript and its subagents, readable without Zimmer, and records where" do
     content = jsonl(1_500)
     session = archived_session(content: content)

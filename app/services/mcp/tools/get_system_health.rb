@@ -222,7 +222,7 @@ module Mcp
       def transcript_storage_lines(report)
         storage = report[:transcript_storage_health] || {}
         status = storage[:status]
-        return [] if status.nil? || (!storage[:configured] && status.status == :healthy)
+        return [] if status.nil? || (!storage[:configured] && %i[healthy unknown].include?(status.status))
 
         [ "- **Transcript storage:** #{status.message} (#{storage[:copied_sessions].to_i} session(s) copied, " \
           "#{storage[:set_aside].to_i} set aside because their chunks disagree with the row, #{storage[:failing].to_i} failing)" ]

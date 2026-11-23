@@ -804,9 +804,12 @@ class HealthMonitorService
   # affected, and nothing is deleted on the strength of these copies.
   #
   # The counts are held for a few minutes. They walk every archived session and this is
-  # read every thirty seconds for as long as a health page is open.
+  # read every thirty seconds for as long as a health page is open. The configuration is
+  # the one the job recorded, so a report never waits on the secret store.
   def transcript_storage_health
-    storage = TranscriptStorage.configuration
+    storage = TranscriptStorage.recorded_configuration
+    return transcript_storage_unrecorded if storage.nil?
+
     counts = storage.off? ? TRANSCRIPT_COUNTS_OFF : transcript_copy_counts(storage.bucket)
     { configured: storage.configured?, bucket: storage.bucket, copy_after_days: TranscriptCopyJob.copy_after_days,
       **counts, status: transcript_storage_status(storage, counts) }
@@ -1005,6 +1008,15 @@ class HealthMonitorService
         last_verified_at: copies.maximum(:verified_at)
       }
     end
+  end
+
+  # Not a warning: a deployment whose cache was just cleared has nothing wrong with it, and
+  # a job that has stopped is cron_health's to say.
+  def transcript_storage_unrecorded
+    {
+      configured: false, bucket: nil, copy_after_days: TranscriptCopyJob.copy_after_days, **TRANSCRIPT_COUNTS_OFF,
+      status: HealthStatus.new(status: :unknown, message: "TranscriptCopyJob has not recorded the configuration in the last hour")
+    }
   end
 
   def transcript_storage_status(storage, counts)
