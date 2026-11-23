@@ -131,29 +131,29 @@ nothing is impossible.
 | `ios/bin/ci-swift` | `swift build && swift test` on the package | Swift (Linux or Mac) |
 | `ios/bin/install-swift-toolchain [dir]` | Swift 6.2 for Linux into `dir` (default `~/.zimmer-ios/swift`), once; prints the shim path | Linux |
 | `ios/bin/build-app [--configuration …] [--api-base-url https://…]` | Simulator build, unsigned | Xcode |
-| `ios/bin/testflight check` | Ad hoc signed Release archive + assertions on the archived app (including a purpose string for every protected API its binaries reference), its signed entitlements, and the entitlements guard | Xcode |
+| `ios/bin/testflight check` | Ad hoc signed Release archive + assertions on the archived app (including the iOS SDK it was built with and a purpose string for every protected API its binaries reference), its signed entitlements, and the entitlements guard | Xcode |
 | `ios/bin/testflight upload` | The same archive, signed at export, uploaded, processing awaited | Xcode + ASC key |
-| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON, records video, photographs every key screen in both appearances | Xcode + simulator |
+| `ios/bin/ui-test [--configuration Debug\|Staging] [--api-base-url …] [--artifacts dir]` | Runs `ZimmerUITests` on a simulator it picks by `simctl` JSON (an iPhone that is not the Duo, on the newest runtime no newer than the selected SDK), records video, photographs every key screen in both appearances | Xcode + simulator |
 | `ios/bin/ui-test --smoke [--also ios/App/ZimmerUITests/X.swift …]` | The per-PR subset: the session list, the build's server, a session started from a sentence and opened, plus every class in each `--also` file. No photographs | Xcode + simulator |
 | `ios/bin/ui-test --only A,B [--no-photos]` | One shard of the suite: the named `ZimmerUITests` classes only, each checked against the sources before the build; `--no-photos` skips the photograph pass. `ios-ui-tests.yml` runs five of these at once | Xcode + simulator |
-| `ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos` | The CarPlay drill: builds signed ad hoc with the CarPlay entitlement, opens the Simulator's CarPlay window from its I/O menu (System Events), and drives Zimmer in it; any crash report fails the run, and the Mac's screen, with the CarPlay window on it, is kept as `mac-screen.png` | Xcode + simulator + the Simulator app's GUI |
+| `ios/bin/ui-test --carplay --only CarPlayDrillUITests --no-photos` | The CarPlay drill: builds signed ad hoc with the CarPlay entitlement, opens the Simulator's CarPlay window from its I/O menu (System Events), and drives Zimmer in it; any crash report fails the run, and the Mac's screen, with the CarPlay window on it, is kept as `mac-screen.png` | Xcode 26 + simulator + the Simulator app's GUI (Xcode 27 has none) |
 
 On Linux: `ZIMMER_SWIFT_SHIM=$(ios/bin/install-swift-toolchain)/swift ios/bin/ci-swift`.
 
 CI (`.github/workflows/ci.yml`): `ios-changes` (no checkout, `ubuntu-latest`) decides whether
 anything under `ios/**` or the three iOS workflows moved, and fails open to "build". `ios`
-(GitHub-hosted `macos-latest`, free on a public repo) runs `testflight check`, `ci-swift` and
+(GitHub-hosted `xcode-27`, free on a public repo) runs `testflight check`, `ci-swift` and
 `ui-test --smoke --configuration Staging --api-base-url https://ui-test.invalid`, adding an
 `--also` for each UI test file the change touches, and keeps the `ios-ui-test` artifact (video,
 result bundle, and the app's crash reports in `crashes/`, whose crashed thread is also printed in
 the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
-`ios_carplay` (`macos-latest`, in parallel with `ios`) runs `ui-test --carplay --only
+`ios_carplay` (`macos-26`, since Xcode 27 has no Simulator app to show CarPlay, in parallel with `ios`) runs `ui-test --carplay --only
 CarPlayDrillUITests`: Zimmer in the Simulator's CarPlay window, through a Live call that cannot
 connect, its retries and giving up, and a tap that tries again, failing on any crash. It keeps the
-`ios-carplay-drill` artifact. `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All four
+`ios-carplay-drill` artifact. `ios_swift_linux` (`ubuntu-24.04`) runs `ci-swift` on Linux. All four
 carry the fork-PR guard and are in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, as
-five shards on five simulators (`--only` a share of the classes each, the `photos` shard taking
-the screenshots, the `carplay` shard running the drill with `--carplay`; `test/config/ios_ui_test_shards_test.rb` holds every class to one shard), on
+four shards and the CarPlay drill on five simulators (`--only` a share of the classes each, the `photos` shard taking
+the screenshots, the `carplay` job running the drill with `--carplay`; `test/config/ios_ui_test_shards_test.rb` holds every class to one of them), on
 each push to `main` that touches `ios/**`, and on demand: against a branch
 (`gh workflow run ios-ui-tests.yml --ref <branch>`) or against a server named by the *name* of a
 repository variable.

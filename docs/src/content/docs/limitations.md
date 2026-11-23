@@ -1253,8 +1253,8 @@ job.
 
 ### A hosted macOS runner shortage reddens `main` for up to three hours
 
-The `ios` and `ios_carplay` jobs, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on
-GitHub-hosted `macos-latest`, and GitHub is sometimes short of macOS arm64 capacity. A job that
+The `ios` job, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on GitHub-hosted
+`xcode-27`, and the CarPlay drill on `macos-26` (both macOS arm64), and GitHub is sometimes short of macOS arm64 capacity. A job that
 waits about 15 minutes without a runner is given up by GitHub, and nothing in this repo can change
 that wait. The run concludes `failure` even though no code is wrong. The job itself shows as
 `cancelled`, like a superseded one; the annotation "The job was not acquired by Runner of type
@@ -1272,6 +1272,14 @@ that ([CI failure alerts](/operate/deploying/#ci-failure-alerts)). Until a re-ru
 shows red, and for TestFlight no build ships. On a pull request nothing re-runs automatically:
 `gh run rerun <id> --failed`. A flaky real failure that happens to sit beside a lost runner gets
 one free retry and may never page.
+
+### An `xcode-27` image can lose its simulator runtime
+
+Image `20261112.0361` unmounted the iOS simulator runtime while a simulator booted
+([runner-images#15334](https://github.com/actions/runner-images/issues/15334)); GitHub rolled it back
+on 2026-11-16. The same host OS is back in `20261119.0378`, which GitHub expects to be fixed. For an
+`ios` job or UI shard that dies at boot with a missing runtime, check the `Image:` version in its log
+first: `alert-ci-failure.yml` re-runs only jobs that never got a runner.
 
 ### The trigger-poll liveness alarm depends on Redis, and fails quiet
 
@@ -9160,6 +9168,14 @@ gear crashing the app: the cause is inferred from the call log, not seen on a he
 settles it: `carplay.off_main` says CarPlay called off the main thread, and `last_mark` on an
 `abandoned` call says how far a tap got. CarPlay's own Back on the
 panel is not driven either.
+
+The drill runs a build made with the iOS 26 SDK, on the iOS 26 Simulator (`macos-26`, Xcode 26), while
+TestFlight ships one made with the iOS 27 SDK. Xcode 27 has no Simulator app, and Device Hub, which
+replaced it, [does not support CarPlay with simulators](https://developer.apple.com/forums/thread/834440).
+So the CarPlay code is compiled against the iOS 27 SDK on every pull request and driven only under the
+iOS 26 one: a behaviour CarPlay changes for apps linked against iOS 27 is first seen in a car.
+The drill's build also means the app must still compile with the iOS 26 SDK: an iOS 27-only symbol,
+even behind `if #available`, fails `ios_carplay` unless a compile-time check keeps it out.
 
 The car's home reads what is open when it connects and when you end a call, not while it sits there. A
 conversation started on the phone meanwhile leaves the home showing New alone until the next read,

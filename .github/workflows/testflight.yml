@@ -74,7 +74,9 @@ concurrency:
 jobs:
   upload:
     if: ${{ github.ref == 'refs/heads/main' && github.repository == 'tadasant/zimmer' }}
-    runs-on: macos-latest
+    # The image whose Xcode has the iOS 27 SDK; the `ios` job and the UI
+    # tests use it too, so they test the SDK this uploads. `ios/bin/testflight` fails an older SDK (ITMS-90725).
+    runs-on: xcode-27
     environment: testflight
     # The archive, up to three export attempts with their backoff (ios/tools/app_store_connect.py
     # `export`), and up to 45 minutes of processing. A job cancelled at this limit is not red
