@@ -256,6 +256,46 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_empty pool[:entries]
   end
 
+  test "database_size_health reports the size on disk, the space in use and the largest tables" do
+    database = @service.full_health_report[:database_size_health]
+
+    assert_operator database[:total_bytes], :>, 0
+    assert_operator database[:in_use_bytes], :>, 0
+    assert_operator database[:in_use_bytes], :<=, database[:total_bytes]
+    assert_nil database[:capacity_bytes]
+    sizes = database[:largest_tables].map { |table| table[:total_bytes] }
+    assert_equal sizes.sort.reverse, sizes, "largest first"
+    assert_operator sizes.size, :<=, HealthMonitorService::DATABASE_LARGEST_TABLES
+    assert database[:status].healthy?, "no capacity stated means no warning"
+  end
+
+  test "database_size_health warns past its share of the stated capacity, and not in overall_status" do
+    ENV[HealthMonitorService::DATABASE_CAPACITY_ENV] = "0.001"
+    report = @service.full_health_report
+
+    assert report[:database_size_health][:status].warning?
+    assert_includes report[:database_size_health][:status].message, "past 65%"
+
+    ENV[HealthMonitorService::DATABASE_CAPACITY_ENV] = "1000"
+    assert @service.full_health_report[:database_size_health][:status].healthy?
+
+    ENV[HealthMonitorService::DATABASE_CAPACITY_ENV] = "eighty"
+    assert_nil @service.full_health_report[:database_size_health][:capacity_bytes]
+  ensure
+    ENV.delete(HealthMonitorService::DATABASE_CAPACITY_ENV)
+  end
+
+  test "database_size_health reports a failed read instead of raising" do
+    ActiveRecord::Base.connection.stubs(:select_value).raises(ActiveRecord::StatementInvalid, "nope")
+
+    database = @service.send(:database_size_health)
+
+    assert database[:status].warning?
+    assert_empty database[:largest_tables]
+  ensure
+    ActiveRecord::Base.connection.unstub(:select_value)
+  end
+
   test "log_retention_health reports the size of the logs table and the policy in force" do
     retention = @service.full_health_report[:log_retention_health]
 

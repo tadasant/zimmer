@@ -162,6 +162,9 @@ ssh:
 env:
   clear:
     RAILS_ENV: production
+    # The managed Postgres cluster's disk, which Zimmer cannot read. /health warns on the
+    # share of it in use; keep it in step with the cluster's storage.
+    DATABASE_CAPACITY_GIB: "80"
     # Armed only when the worker is running under sysbox (see the role's options
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.

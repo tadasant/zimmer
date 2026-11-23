@@ -37,6 +37,16 @@ class HealthMonitorService
   # first backlog, which really is behind.
   LOG_RETENTION_OVERDUE_GRACE = 7.days
 
+  # The database's disk, which the app cannot see on a managed cluster, so a deploy
+  # states it. Unset means database_size_health reports sizes and never warns.
+  DATABASE_CAPACITY_ENV = "DATABASE_CAPACITY_GIB"
+
+  # The share of that capacity, in space in use, at which database_size_health warns.
+  DATABASE_WARNING_SHARE = 0.65
+
+  # How many of the largest tables database_size_health lists.
+  DATABASE_LARGEST_TABLES = 8
+
   # How far past `expires_at` a root data record may be before root_data_health
   # says RootDataRetentionJob is behind. The job runs hourly, so two hours is one
   # missed tick.
@@ -373,6 +383,8 @@ class HealthMonitorService
       # Absent from the status list below on purpose — see #log_retention_health
       # for why a draining backlog must not turn the whole report yellow.
       log_retention_health: log_retention_health,
+      # Also absent — see #database_size_health.
+      database_size_health: database_size_health,
       # Also absent from the status list — see #inbound_event_health.
       inbound_event_health: inbound_event_health,
       # Also absent — see #root_data_health.
@@ -766,6 +778,70 @@ class HealthMonitorService
     }
   end
 
+  # How big the database is, how much of that is in use, and which tables make it so.
+  #
+  # Production's managed Postgres ran low on disk with nothing in Zimmer saying so:
+  # `log_retention_health` measured `logs`, and the table that was growing,
+  # `session_transcript_chunks`, was measured nowhere.
+  #
+  # TWO SIZES, because Postgres does not give deleted rows' space back to the disk. The
+  # size on disk only ever grows; what a retention job can change is the space in use.
+  # Both are catalog and statistics reads, and nothing here scans a table.
+  #
+  # The space in use is the size on disk less the reusable space in TOAST, where
+  # Zimmer's large values live. A TOAST chunk is a quarter of a block at most, so a
+  # table's live chunks times that is what its TOAST would occupy with nothing to reuse.
+  # Measured against Postgres 16 it reads within 4% of the true size, and it follows a
+  # DELETE at once. Statistics that have never been collected count as no reusable space.
+  # Reusable space in the main heap and in indexes is not estimated.
+  #
+  # Warns on the space in use, past DATABASE_WARNING_SHARE of DATABASE_CAPACITY_GIB. Not
+  # folded into `overall_status`: the provider already pages on the disk.
+  def database_size_health
+    connection = ActiveRecord::Base.connection
+    total = connection.select_value("SELECT pg_database_size(current_database())").to_i
+    tables = connection.select_all(<<~SQL.squish).to_a
+      SELECT c.relname AS name,
+             pg_total_relation_size(c.oid) AS total_bytes,
+             pg_indexes_size(c.oid) AS index_bytes,
+             c.reltuples::bigint AS estimated_rows,
+             CASE WHEN s.n_live_tup > 0 THEN
+               GREATEST(pg_relation_size(c.reltoastrelid)
+                 - s.n_live_tup * (current_setting('block_size')::bigint / 4), 0)
+             ELSE 0 END AS reusable_bytes
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_stat_all_tables s ON s.relid = c.reltoastrelid
+      WHERE c.relkind IN ('r', 'm') AND n.nspname = current_schema()
+      ORDER BY pg_total_relation_size(c.oid) DESC
+    SQL
+
+    in_use = [ total - tables.sum { |row| row["reusable_bytes"].to_i }, 0 ].max
+    capacity = database_capacity_bytes
+    {
+      total_bytes: total,
+      in_use_bytes: in_use,
+      capacity_bytes: capacity,
+      warning_share: DATABASE_WARNING_SHARE,
+      largest_tables: tables.first(DATABASE_LARGEST_TABLES).map do |row|
+        {
+          name: row["name"],
+          total_bytes: row["total_bytes"].to_i,
+          reusable_bytes: row["reusable_bytes"].to_i,
+          index_bytes: row["index_bytes"].to_i,
+          estimated_rows: estimated_rows(row["estimated_rows"])
+        }
+      end,
+      status: database_size_status(total, in_use, capacity)
+    }
+  rescue StandardError => e
+    @logger.warn("Database size health could not be read", error: e.message)
+    {
+      total_bytes: 0, in_use_bytes: 0, capacity_bytes: nil, warning_share: DATABASE_WARNING_SHARE, largest_tables: [],
+      status: HealthStatus.new(status: :warning, message: "Database size could not be read: #{e.message}")
+    }
+  end
+
   # Per-namespace usage of the agent root data store (AgentRootRecord), read
   # from AgentRootRecordCounter so it never counts the records table, plus the
   # two things worth a warning: expired records the retention sweep has not
@@ -866,6 +942,27 @@ class HealthMonitorService
 
     count = reltuples.to_i
     count.negative? ? nil : count
+  end
+
+  # nil when the deployment has not said. A value that is not a positive number is the
+  # same as not having said: this is a health read and must not raise over a typo.
+  def database_capacity_bytes
+    gib = ENV[DATABASE_CAPACITY_ENV].to_s.to_f
+    gib.positive? ? (gib * 1.gigabyte).to_i : nil
+  end
+
+  def database_size_status(total, in_use, capacity)
+    human = ->(bytes) { ActiveSupport::NumberHelper.number_to_human_size(bytes) }
+    message = "Database is #{human.call(total)} on disk, about #{human.call(in_use)} in use"
+    return HealthStatus.new(status: :healthy, message: message) if capacity.nil?
+
+    share = in_use.to_f / capacity
+    message += " (#{(share * 100).round}% of #{human.call(capacity)})"
+    if share >= DATABASE_WARNING_SHARE
+      HealthStatus.new(status: :warning, message: "#{message}, past #{(DATABASE_WARNING_SHARE * 100).round}%. Check the largest tables.")
+    else
+      HealthStatus.new(status: :healthy, message: message)
+    end
   end
 
   def log_retention_status(oldest, oldest_verbose)

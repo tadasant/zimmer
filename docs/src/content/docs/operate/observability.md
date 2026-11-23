@@ -925,3 +925,30 @@ batch**. Exports never block a job or a log call: they happen on a separate thre
 bounded queue (1,000 records, ~1 MB), and a full queue drops rather than blocks. Telemetry
 loss is always preferred over application stalls — so treat the log stream as best-effort, not
 as an audit trail.
+
+## Database size on the health surface
+
+`HealthMonitorService#database_size_health` reports the size of Zimmer's database on disk, the space
+in use, and the eight largest tables. It exists because production's managed Postgres ran low on disk
+while nothing in Zimmer measured the table that was growing, `session_transcript_chunks`.
+
+There are two sizes because Postgres does not shrink a file when rows are deleted. The space becomes
+reusable and the size on disk stays where it was until a `VACUUM FULL` or `pg_repack`. So the size on
+disk cannot tell you whether retention is working, and the space in use can.
+
+The space in use is an estimate: the size on disk less the reusable space in TOAST, which is where
+Zimmer's large values live. A table's live TOAST chunks, at a quarter of a block each, are what its
+TOAST would occupy with nothing to reuse. On Postgres 16 it read within 4% of the true size and
+dropped as soon as rows were deleted. Reusable space in main heaps and indexes is not estimated, and
+a table whose statistics have never been collected counts as having none. Nothing here scans a table.
+
+Zimmer cannot read a managed cluster's disk size, so the deployment states it:
+`DATABASE_CAPACITY_GIB` (80 in `config/deploy.production.yml`; keep it in step with the cluster). The
+section warns when the space in use passes 65% of that, and never warns when it is unset. It is not
+part of `overall_status`, because the provider already pages on the disk.
+
+| Surface | Where |
+| --- | --- |
+| **Web** | `/health` → the *Database Size* panel |
+| **REST** | `GET /api/v1/health` → `health_report.database_size_health` |
+| **MCP** | `get_system_health` → the *Database size* line |

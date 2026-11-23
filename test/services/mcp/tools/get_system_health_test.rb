@@ -38,6 +38,26 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "`zimmer`: 7 record(s) in 2 collection(s), 2 KB"
   end
 
+  test "names the database size and its largest tables" do
+    assert_not_includes @tool.call({}), "Database size"
+
+    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+      { overall_status: "healthy",
+        database_size_health: {
+          largest_tables: [
+            { name: "session_transcript_chunks", total_bytes: 40.gigabytes, reusable_bytes: 10.gigabytes },
+            { name: "logs", total_bytes: 14.gigabytes, reusable_bytes: 0 }
+          ],
+          status: HealthMonitorService::HealthStatus.new(status: :healthy, message: "Database is 60 GB on disk")
+        } }
+    )
+    result = @tool.call({})
+
+    assert_includes result, "- **Database size:** Database is 60 GB on disk"
+    assert_includes result, "`session_transcript_chunks`: 40 GB, about 10 GB of it reusable"
+    assert_match(/`logs`: 14 GB$/, result)
+  end
+
   test "names each pooled warm clone key and the claim counts" do
     HealthMonitorService.any_instance.stubs(:full_health_report).returns(
       { overall_status: "healthy",
