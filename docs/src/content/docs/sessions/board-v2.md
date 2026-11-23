@@ -11,7 +11,7 @@ cookie.
 
 The URL value is `board_v2` because the iOS app and `GET /api/v1/sessions?view=board_v2` already
 use it. Older values that named a board are remapped rather than rejected: a bookmarked `?view=user`
-or `?view=categories` gets a 301 to `?view=board_v2` with every other parameter kept, and a view
+or `?view=categories` gets a 302 to `?view=board_v2` with every other parameter kept, and a view
 cookie holding `user` or `categories` resolves to this board (`LEGACY_VIEW_MODES` in
 `SessionsController`).
 
