@@ -1015,7 +1015,7 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
   # Durable progress. The worker is replaced on every deploy, so a run that only
   # recorded its work by rewriting a multi-gigabyte zip lost all of it, and left
   # that much temp behind, whenever a deploy landed inside it. Production on
-  # 2026-11-22: 13 deploys and 15 sweeps of multi-GB orphans.
+  # 2026-11-22: at least 10 deploys and 15 sweeps of orphaned temps.
   #
   # A SIGKILL runs no `ensure`, so these set up the files it leaves behind.
   # ---------------------------------------------------------------------------
