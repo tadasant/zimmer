@@ -13,9 +13,12 @@
   <% if @view_mode == SessionsController::VIEW_MODE_BOARD_V2 %>
     <%# Your board: the filtered rows, grouped into the operator's own
         categories. Search narrows it exactly as the status and visibility
-        filters do. See Sessions::BoardV2. %>
+        filters do. See Sessions::BoardV2. The rows follow their sessions live:
+        `board-v2` judges each card delivery against the filters it is given
+        here, by the same rules the card views use. %>
     <%= render "sessions/content_scan_notice", scan: @content_scan %>
-    <%= render "sessions/board_v2", board: @board_v2, limit: @board_limit %>
+    <%= render "sessions/board_v2", board: @board_v2, limit: @board_limit,
+          filter_data: dashboard_card_filter_data(:board_v2) %>
   <% elsif @view_mode == SessionsController::VIEW_MODE_RANKED %>
     <%# The Ranked view: priority above, the spot queue below it in precedence
         order, both editable in place. Honors the same filters as every other
@@ -46,13 +49,7 @@
         under a text search — the one filter the client cannot evaluate for a
         session it has never rendered. %>
     <div data-controller="session-grid"
-         data-session-grid-status-filter-value="<%= @status_filter.to_json %>"
-         data-session-grid-priority-class-filter-value="<%= @priority_class_filter %>"
-         data-session-grid-visibility-filter-value="<%= @visibility_filter %>"
-         data-session-grid-carplay-fit-filter-value="<%= @carplay_fit_filter %>"
-         data-session-grid-genesis-filter-value="<%= @genesis_filter %>"
-         data-session-grid-agent-root-filter-value="<%= dashboard_agent_root_filter_name(@agent_root_filter) %>"
-         data-session-grid-live-insert-value="<%= dashboard_card_live_insert?(@search_query, @agent_root_filter) %>"
+         <%= tag.attributes(data: dashboard_card_filter_data(:session_grid)) %>
          data-session-grid-sort-key-value="<%= @view_mode == SessionsController::VIEW_MODE_LAST_TOUCHED ? "lastTouchedAt" : "createdAt" %>"
          data-session-grid-page-value="<%= @flat_sessions.current_page %>"
          data-session-grid-per-page-value="<%= @flat_sessions.limit_value %>">

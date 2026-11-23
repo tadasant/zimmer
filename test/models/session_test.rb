@@ -783,6 +783,41 @@ class SessionTest < ActiveSupport::TestCase
     assert_equal "zimmer", envelope["data-agent-root"]
   end
 
+  test "the card delivery says where Your board puts the card, and when the row was read" do
+    category = BoardCategory.create!(name: "Infra")
+    session = sessions(:needs_input)
+    session.update_columns(board_category_id: category.id)
+
+    freeze_time do
+      envelope = Nokogiri::HTML.fragment(card_delivery_html(session)).at_css("[data-board-v2-target='delivery']")
+
+      assert_equal category.id.to_s, envelope["data-board-category-id"]
+      assert_in_delta session.reload.last_user_activity_at.to_f, envelope["data-last-touched"].to_f, 0.001
+      assert_in_delta Time.current.to_f * 1000, envelope["data-read-at"].to_f, 1
+    end
+  end
+
+  # A job broadcasts from a copy it loaded hours ago; the category was written with
+  # update_columns since, and a delivery rendered from the copy would undo it.
+  test "the card delivery is rendered from the row, not from this copy of it" do
+    category = BoardCategory.create!(name: "Infra")
+    session = sessions(:needs_input)
+    stale = Session.find(session.id)
+    session.update_columns(board_category_id: category.id, visibility: "hidden")
+
+    envelope = Nokogiri::HTML.fragment(card_delivery_html(stale)).at_css("[data-session-grid-target='delivery']")
+
+    assert_equal category.id.to_s, envelope["data-board-category-id"]
+    assert_equal "false", envelope["data-on-board"]
+  end
+
+  test "a delivery for a session destroyed since offers nothing" do
+    session = sessions(:needs_input)
+    Session.where(id: session.id).delete_all
+
+    assert_equal "", card_delivery_html(session).to_s
+  end
+
   test "broadcast_update delivers the card to the grid's deliveries on the individual channel" do
     session = sessions(:running)
 
@@ -4154,6 +4189,18 @@ class SessionTest < ActiveSupport::TestCase
     session.update!(metadata: (session.metadata || {}).merge("some_other_key" => "preserved"))
     session.touch_user_view!
     assert_equal "preserved", session.reload.metadata["some_other_key"]
+  end
+
+  test "touch_user_view! tells open boards where the session sorts, without its card" do
+    session = sessions(:running)
+
+    captured = capture_turbo_broadcasts { session.touch_user_view! }
+
+    assert_equal [ [ :append, "sessions_index_individual", "sessions_grid_deliveries" ] ],
+                 captured.map { |b| [ b.action, b.stream, b.target ] }
+    envelope = Nokogiri::HTML.fragment(captured.first.html).at_css("[data-session-grid-target='delivery']")
+    assert_in_delta session.reload.last_user_activity_at.to_f, envelope["data-last-touched"].to_f, 1
+    assert_nil envelope.at_css("template")
   end
 
   test "touch_user_view! does not bump updated_at (uses update_column to avoid rebroadcast)" do

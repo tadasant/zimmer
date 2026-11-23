@@ -9,14 +9,25 @@
     Nothing here assigns a category on its own. A session is in a category
     because a person dragged it there.
 
+    The board follows its sessions while it is open. Each card delivery
+    (`_card_delivery`) is judged by `board-v2` against the filters in
+    `filter_data` and placed, moved, redrawn or dropped. A change to the
+    categories themselves arrives as a signal, and the page fetches the board
+    again and reconciles the regions marked `data-live-region` below, which are
+    also what the reconnect backfill brings up to date.
+
     Locals:
       board             - a Sessions::BoardV2::Result
-      limit             - the row cap %>
+      limit             - the row cap
+      filter_data       - SessionsHelper#dashboard_card_filter_data for board-v2 %>
 <%# One grouped query for every card's cost badge, as Last Touched does. %>
 <% preload_session_costs(board.uncategorized + board.sections.flat_map(&:sessions)) %>
 <section class="mb-8"
          id="board_v2"
          data-controller="board-v2"
+         data-action="stream-visibility-recovery:backfilling@document->board-v2#backfilling stream-visibility-recovery:recovered@document->board-v2#backfilled stream-visibility-recovery:failed@document->board-v2#backfilled"
+         <%= tag.attributes(data: filter_data) %>
+         data-board-v2-limit-value="<%= limit %>"
          data-board-v2-assign-url-template-value="<%= assign_board_category_session_path("__ID__") %>"
          data-board-v2-reorder-url-value="<%= reorder_board_categories_path %>"
          data-board-v2-category-url-template-value="<%= board_category_path("__ID__") %>">
@@ -46,19 +57,26 @@
           data-board-v2-target="total"><%= board.session_count %></span>
     <span class="min-w-0 text-xs text-gray-400">rows on this board</span>
   </div>
+  <div id="<%= Session::CARD_DELIVERIES_TARGET %>" hidden></div>
+  <div id="<%= BoardCategories::AnnounceLayoutChange::TARGET %>" hidden></div>
+  <%# The wrapper a session that arrives live is put in: a row with no card. %>
+  <template data-board-v2-target="rowTemplate">
+    <%= render "sessions/board_v2_row_shell", row_id: nil, session_id: nil, last_touched: nil do %><% end %>
+  </template>
   <%# Said once, above the groups, when the filters matched nothing on the board:
-      every group's own "nothing here" line is true but does not say why. %>
-  <% if board.session_count.zero? %>
-    <p class="mb-3 text-sm text-gray-500" data-board-v2-no-match>
-      <%= board.tucked.sum(&:count).zero? ? "No sessions match these filters." : "Nothing on the board matches these filters; the snoozed and backlogged categories below hold some." %>
-    </p>
-  <% end %>
+      every group's own "nothing here" line is true but does not say why. One of
+      the two lines, whichever is true; board-v2 switches between them. %>
+  <% tucked_total = board.tucked.sum(&:count) %>
+  <p class="mb-3 text-sm text-gray-500" data-board-v2-target="noMatch" data-board-v2-no-match="none"
+     <%= "hidden" unless board.session_count.zero? && tucked_total.zero? %>>No sessions match these filters.</p>
+  <p class="mb-3 text-sm text-gray-500" data-board-v2-target="noMatch" data-board-v2-no-match="tucked"
+     <%= "hidden" unless board.session_count.zero? && tucked_total.positive? %>>Nothing on the board matches these filters; the snoozed and backlogged categories below hold some.</p>
 
   <%# Uncategorized: not draggable and not collapsible — it is the inbox, and it
       has no row to keep either on. %>
   <%= render "sessions/board_v2_group", category: nil, sessions: board.uncategorized %>
 
-  <div class="space-y-4" data-board-v2-target="categories">
+  <div class="space-y-4" id="board_v2_categories" data-live-region="members" data-board-v2-target="categories">
     <% board.sections.each do |section| %>
       <%= render "sessions/board_v2_group", category: section.category, sessions: section.sessions %>
     <% end %>
@@ -80,7 +98,7 @@
        data-board-v2-target="tray">
     <div class="pointer-events-auto mx-auto max-w-4xl rounded-lg border border-indigo-200 bg-white p-3 shadow-xl">
       <p class="mb-2 text-xs font-semibold text-gray-600">Drop on a category</p>
-      <div class="flex max-h-[40vh] flex-wrap gap-2 overflow-y-auto">
+      <div id="board_v2_drop_zones" data-live-region="replace" class="flex max-h-[40vh] flex-wrap gap-2 overflow-y-auto">
         <% [ nil, *board.sections.map(&:category) ].each do |category| %>
           <div class="relative flex min-h-[2.75rem] min-w-[7rem] max-w-full items-center rounded-md border-2 border-dashed border-gray-300 bg-gray-50 px-3 text-sm font-medium text-gray-700"
               data-board-v2-target="dropZone"
@@ -106,14 +124,19 @@
     </div>
   </div>
 
+  <div id="board_v2_tucked" data-live-region="replace">
   <% if board.tucked.any? %>
     <div class="mt-6">
       <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Snoozed &amp; backlogged categories</h3>
       <ul class="divide-y divide-gray-100 rounded-md border border-dashed border-gray-300 bg-gray-50">
         <% board.tucked.each do |tucked| %>
-          <li class="relative flex flex-wrap items-center gap-2 px-3 py-2.5" data-board-v2-tucked-category="<%= tucked.category.id %>">
+          <li class="relative flex flex-wrap items-center gap-2 px-3 py-2.5"
+              data-board-v2-target="tucked"
+              data-board-v2-tucked-category="<%= tucked.category.id %>"
+              data-session-ids="<%= tucked.session_ids.sort.join(" ") %>"
+              data-snoozed-until="<%= tucked.category.snoozed_until&.iso8601 unless tucked.category.backlogged? %>">
             <span class="min-w-[8rem] flex-1 truncate text-sm font-medium text-gray-700"><%= tucked.category.name %></span>
-            <span class="shrink-0 text-xs text-gray-500" data-board-v2-tucked-count="<%= tucked.count %>"><%= pluralize(tucked.count, "session") %></span>
+            <span class="shrink-0 text-xs text-gray-500" data-board-v2-tucked-count><%= pluralize(tucked.count, "session") %></span>
             <span class="inline-flex min-w-0 max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11px] font-medium <%= tucked.category.backlogged? ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700" %>"
                   title="<%= tucked.category.visibility_summary %>">
               <%= board_category_tucked_label(tucked.category, joiner: " · ") %>
@@ -126,10 +149,10 @@
       </ul>
     </div>
   <% end %>
+  </div>
 
-  <% if board.truncated %>
-    <p class="mt-2 text-xs text-gray-400">Showing the <%= limit %> most recently touched. Narrow the filters to see the rest.</p>
-  <% end %>
+  <p class="mt-2 text-xs text-gray-400" id="board_v2_truncated" data-live-region="replace" data-board-v2-target="truncated"
+     <%= "hidden" unless board.truncated %>>Showing the <%= limit %> most recently touched. Narrow the filters to see the rest.</p>
 
   <p class="mt-3 hidden text-sm text-red-600" role="alert" data-board-v2-target="error"></p>
 </section>

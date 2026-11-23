@@ -90,8 +90,8 @@ module SessionsHelper
   end
 
   # The id of one Your board group's row list: a category's, or
-  # Uncategorized's for nil. The undo-archive stream puts a restored row back
-  # into it, so the controller and the partial share this spelling.
+  # Uncategorized's for nil. board-v2 finds a group's list by it when it
+  # reconciles a fresh copy of the board.
   def board_v2_list_dom_id(category_id)
     "board_v2_list_#{category_id || "uncategorized"}"
   end
@@ -183,6 +183,21 @@ module SessionsHelper
     return "" if agent_root_filter.blank?
 
     AgentRootsConfig.find(agent_root_filter)&.name.to_s
+  end
+
+  # The page's filters, as the Stimulus values `lib/card_delivery` judges a live
+  # card by. Rendered onto whichever controller owns the cards: `session-grid` on
+  # the card views, `board-v2` on Your board.
+  def dashboard_card_filter_data(controller)
+    {
+      status_filter: @status_filter,
+      priority_class_filter: @priority_class_filter,
+      visibility_filter: @visibility_filter,
+      carplay_fit_filter: @carplay_fit_filter,
+      genesis_filter: @genesis_filter,
+      agent_root_filter: dashboard_agent_root_filter_name(@agent_root_filter),
+      live_insert: dashboard_card_live_insert?(@search_query, @agent_root_filter)
+    }.to_h { |name, value| [ :"#{controller}_#{name}_value", value.is_a?(Array) ? value.to_json : value.to_s ] }
   end
 
   # Whether the card grid may insert a session it has never rendered. Off under

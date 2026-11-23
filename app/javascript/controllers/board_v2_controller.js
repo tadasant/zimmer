@@ -1,11 +1,22 @@
 import { Controller } from "@hotwired/stimulus"
 import Sortable from "sortablejs"
 import { csrfHeaders } from "lib/csrf"
+import { Departures, admitsUnseen, cardFilterValues, readCardDelivery, stillAdmitted } from "lib/card_delivery"
+import { backfillLiveRegions } from "lib/live_region_backfill"
+import { isPendingRemoval } from "lib/optimistic_actions"
+
+// How long to gather layout signals before fetching the board, so a burst of
+// category changes costs one fetch.
+const REFRESH_DELAY_MS = 250
+const REFRESH_TIMEOUT_MS = 10000
+// How long to leave a card that is being worked in before looking again.
+const CARD_IN_USE_RETRY_MS = 1000
 
 // Connects to data-controller="board-v2"
 //
 // Your board: sessions grouped into categories the operator makes by hand.
-// This controller owns three drags and one toggle:
+// This controller owns three drags, one toggle, and keeping the board true to its
+// sessions while it is open:
 //
 //   * a row dragged into another group — writes the session's category
 //     (PATCH /sessions/:id/board_category). Within a group a drag does nothing:
@@ -29,16 +40,53 @@ import { csrfHeaders } from "lib/csrf"
 // exactly as on Last Touched. A row that leaves (Trash, Snooze) or arrives (Undo) is seen
 // by each list's MutationObserver, which keeps the counts and the order true.
 //
+// Following sessions: every session change is broadcast to every dashboard as a
+// card delivery (`sessions/_card_delivery`), judged here against this page's own
+// filters by the rules in lib/card_delivery, which the card grid shares:
+//
+//   * no longer admitted            -> the whole row leaves, handle included
+//   * admitted, its group is shown  -> the card is redrawn (or inserted), in its
+//     own group, where last touched puts it
+//   * admitted, its category is tucked away -> the row leaves, and the tucked
+//     category's count includes it
+//   * its category is one this page has never drawn -> the board is fetched again
+//
+// The categories themselves changing (made, renamed, reordered, snoozed, woken,
+// deleted) arrives as a signal, and the board is fetched again and reconciled.
+// While anything is being dragged, or a fetched copy of the board is on its way,
+// deliveries wait and are applied after.
+//
 // Every Sortable forces the pointer-based fallback, for the reason the User
 // view's does: native HTML5 drag and drop does not work on a phone.
 export default class extends Controller {
   // `row` and `handle` are declared for the row partial, which names them; the
   // controller reads them through selectors.
-  static targets = ["list", "categories", "category", "total", "error", "row", "handle", "tray", "dropZone"]
+  static targets = [
+    "list", "categories", "category", "total", "error", "row", "handle", "tray", "dropZone",
+    "delivery", "signal", "rowTemplate", "tucked", "noMatch", "truncated"
+  ]
   static values = {
+    ...cardFilterValues,
+    // The most rows the board draws, least recently touched dropped first.
+    limit: Number,
     assignUrlTemplate: String,
     reorderUrl: String,
     categoryUrlTemplate: String
+  }
+
+  initialize() {
+    // Here, not in connect(): Stimulus reports the targets already in the markup
+    // before it connects the controller.
+    this.departures = new Departures()
+    // Why deliveries are waiting ("drag", "fetch"), and the deliveries.
+    this.holds = new Set()
+    this.heldDeliveries = []
+    // When the newest delivery applied for each session read its row.
+    this.lastRead = new Map()
+    // Drops this page has sent and not had answered: session id -> category id.
+    this.pendingMoves = new Map()
+    // Newer cards for sessions whose card on screen is being worked in.
+    this.waitingCards = new Map()
   }
 
   connect() {
@@ -52,6 +100,8 @@ export default class extends Controller {
         forceFallback: true,
         fallbackTolerance: 3,
         fallbackOnBody: true,
+        onChoose: () => this.pickUp(),
+        onUnchoose: () => this.putDown(),
         onEnd: (event) => this.persistCategoryOrder(event)
       })
       this.categoriesTarget.sortableInstance = this.categorySortable
@@ -61,6 +111,12 @@ export default class extends Controller {
   disconnect() {
     if (this.categorySortable) this.categorySortable.destroy()
     this.showTray(false)
+    clearTimeout(this.refreshTimer)
+    clearTimeout(this.waitingCardsTimer)
+    this.waitingCards.clear()
+    this.heldDeliveries = []
+    this.holds.clear()
+    this.element.removeAttribute("data-live-hold")
   }
 
   // One Sortable and one observer per group's list, set up as each list
@@ -86,7 +142,12 @@ export default class extends Controller {
       fallbackClass: "board-v2-fallback",
       fallbackTolerance: 3,
       fallbackOnBody: true,
-      onChoose: (event) => this.rememberGrab(event),
+      onChoose: (event) => {
+        this.pickUp()
+        this.rememberGrab(event)
+      },
+      // Before onEnd when a drag happened, alone when the grip was only pressed.
+      onUnchoose: () => this.putDown(),
       onStart: () => {
         this.dragging = true
         this.centreGhost()
@@ -240,9 +301,20 @@ export default class extends Controller {
     this.refreshCounts()
     this.clearError()
 
-    const url = this.assignUrlTemplateValue.replace("__ID__", row.dataset.sessionId)
-    this.request("PATCH", url, { board_category_id: to.dataset.categoryId || null })
+    this.saveMove(row.dataset.sessionId, to.dataset.categoryId || "")
       .catch((error) => this.rollback(error))
+  }
+
+  // Until the server has answered, a delivery still carrying the old category
+  // must not carry the card back to it.
+  saveMove(sessionId, categoryId) {
+    this.pendingMoves.set(sessionId, categoryId)
+    const url = this.assignUrlTemplateValue.replace("__ID__", sessionId)
+    return this.request("PATCH", url, { board_category_id: categoryId || null })
+      .finally(() => {
+        // Not if the card has been dropped somewhere else since.
+        if (this.pendingMoves.get(sessionId) === categoryId) this.pendingMoves.delete(sessionId)
+      })
   }
 
   // Dropped on a snoozed or backlogged category: the category is off the board,
@@ -255,19 +327,277 @@ export default class extends Controller {
     const until = zone.dataset.snoozedUntil
     const woken = !!until && Date.parse(until) <= Date.now()
     row.remove()
-    this.refreshCounts()
     this.clearError()
-    const count = this.element.querySelector(`[data-board-v2-tucked-category="${categoryId}"] [data-board-v2-tucked-count]`)
-    if (count) {
-      const next = Number(count.dataset.boardV2TuckedCount || "0") + 1
-      count.dataset.boardV2TuckedCount = String(next)
-      count.textContent = `${next} ${next === 1 ? "session" : "sessions"}`
-    }
+    this.countTucked(row.dataset.sessionId, categoryId)
+    this.refreshCounts()
 
-    const url = this.assignUrlTemplateValue.replace("__ID__", row.dataset.sessionId)
-    this.request("PATCH", url, { board_category_id: categoryId })
+    this.saveMove(row.dataset.sessionId, categoryId)
       .then(() => { if (woken) window.location.reload() })
       .catch((error) => this.rollback(error))
+  }
+
+  // ---- Following sessions --------------------------------------------------
+
+  deliveryTargetConnected(element) {
+    const delivery = readCardDelivery(element)
+    element.remove()
+    if (!delivery) return
+
+    if (this.holds.size > 0) this.heldDeliveries.push(delivery)
+    else this.applyDelivery(delivery)
+  }
+
+  applyDelivery(delivery) {
+    const { id } = delivery
+    // Deliveries come from several processes and can overtake each other.
+    if (delivery.readAt < (this.lastRead.get(id) || 0)) return
+    this.lastRead.set(id, delivery.readAt)
+
+    const row = this.rowFor(id)
+    // A session this page is showing, is counting, or has just taken away already
+    // matched the filters only the server can evaluate.
+    const known = row || this.tuckedTargets.some((target) => this.tuckedIds(target).includes(id)) ||
+      (delivery.restore && this.departures.has(id))
+    const admitted = known ? stillAdmitted(delivery, this) : admitsUnseen(delivery, this)
+    if (!admitted) {
+      if (row) row.remove()
+      this.countTucked(id, null)
+      return this.refreshCounts()
+    }
+
+    const categoryId = this.pendingMoves.has(id) ? this.pendingMoves.get(id) : delivery.boardCategoryId
+    const list = this.listFor(categoryId)
+    if (list) {
+      this.countTucked(id, null)
+      if (row) this.redraw(row, list, delivery)
+      else this.insert(list, delivery)
+      return this.refreshCounts()
+    }
+
+    // Gone from the board either way; with its category, if that is tucked away.
+    const tucked = this.tuckedTargets.find((target) => target.dataset.boardV2TuckedCategory === categoryId)
+    if (!tucked || this.snoozeElapsed(tucked)) return this.refreshSoon()
+    if (row) row.remove()
+    this.departures.forget(id)
+    this.countTucked(id, categoryId)
+    this.refreshCounts()
+  }
+
+  redraw(row, list, delivery) {
+    if (delivery.card) this.redrawCard(row, delivery.card)
+    row.dataset.lastTouched = String(delivery.lastTouched)
+    if (!this.cardInUse(row)) return this.place(row, list)
+    // Moving the row would take the focus out of it just as surely.
+    if (row.parentElement !== list) this.place(row, list)
+  }
+
+  // A title being typed, or an open menu, is not replaced under the person using
+  // it: the newest card waits until they are done.
+  redrawCard(row, card) {
+    const id = row.dataset.sessionId
+    if (this.cardInUse(row)) {
+      this.waitingCards.set(id, card)
+      clearTimeout(this.waitingCardsTimer)
+      this.waitingCardsTimer = setTimeout(() => this.redrawWaitingCards(), CARD_IN_USE_RETRY_MS)
+      return
+    }
+    this.waitingCards.delete(id)
+    row.querySelector(":scope > [data-board-v2-card-slot] > turbo-frame")?.replaceWith(card)
+  }
+
+  redrawWaitingCards() {
+    Array.from(this.waitingCards).forEach(([ id, card ]) => {
+      const row = this.rowFor(id)
+      this.waitingCards.delete(id)
+      if (!row) return
+      this.redrawCard(row, card)
+      if (!this.waitingCards.has(id) && row.parentElement) this.place(row, row.parentElement)
+    })
+  }
+
+  cardInUse(row) {
+    const active = document.activeElement
+    if (row.contains(active) && active.matches("input, textarea, select")) return true
+    return row.querySelector("[aria-expanded='true']") !== null
+  }
+
+  insert(list, delivery) {
+    if (!delivery.card || !this.hasRowTemplateTarget) return
+    if (!delivery.restore && this.departures.refuses(delivery)) return
+    // A card this page took away at the click (Trash, Snooze), whose request the
+    // server has not answered yet.
+    if (isPendingRemoval("session", delivery.id)) return
+
+    const row = document.importNode(this.rowTemplateTarget.content.firstElementChild, true)
+    row.id = `board_v2_row_${delivery.id}`
+    row.dataset.sessionId = delivery.id
+    row.dataset.lastTouched = String(delivery.lastTouched)
+    if (!this.makeRoomFor(row)) return
+
+    row.querySelector("[data-board-v2-card-slot]").appendChild(delivery.card)
+    this.departures.forget(delivery.id)
+    this.place(row, list)
+  }
+
+  // The server draws the `limit` most recently touched rows and says so when that
+  // is not all of them; an arrival on a full board pushes out the least recently
+  // touched, or is the one left out.
+  makeRoomFor(row) {
+    const rows = this.listTargets.flatMap((list) => Array.from(list.children))
+    if (!this.limitValue || rows.length < this.limitValue) return true
+
+    if (this.hasTruncatedTarget) this.truncatedTarget.hidden = false
+    const last = rows.reduce((least, other) => (this.compareRows(other, least) > 0 ? other : least))
+    if (this.compareRows(row, last) > 0) return false
+    last.remove()
+    return true
+  }
+
+  // Into the list at the position last touched gives it, without touching a row
+  // that is already there.
+  place(row, list) {
+    const follower = Array.from(list.children).find((other) => other !== row && this.compareRows(row, other) < 0) || null
+    if (row.parentElement === list && row.nextElementSibling === follower) return
+    list.insertBefore(row, follower)
+  }
+
+  rowFor(sessionId) {
+    return this.element.querySelector(`#board_v2_row_${CSS.escape(String(sessionId))}`)
+  }
+
+  // Cards someone on this page took off it (Trash, Snooze, Hide): the removals
+  // marked pending at the click. A row a delivery or a fetched copy of the board
+  // took away is free to come back with the next one.
+  noteDepartures(records) {
+    records.forEach((record) => {
+      record.removedNodes.forEach((node) => {
+        const id = node.dataset?.sessionId
+        if (id && !node.isConnected && isPendingRemoval("session", id)) this.departures.note(id)
+      })
+      record.addedNodes.forEach((node) => {
+        if (node.dataset?.sessionId) this.departures.forget(node.dataset.sessionId)
+      })
+    })
+  }
+
+  // ---- Tucked-away categories ----------------------------------------------
+
+  tuckedIds(target) {
+    return (target.dataset.sessionIds || "").split(" ").filter(Boolean)
+  }
+
+  snoozeElapsed(target) {
+    const until = target.dataset.snoozedUntil
+    return !!until && Date.parse(until) <= Date.now()
+  }
+
+  // Count a session in one tucked-away category and no other; null for none.
+  countTucked(sessionId, categoryId) {
+    this.tuckedTargets.forEach((target) => {
+      const before = this.tuckedIds(target)
+      const ids = before.filter((id) => id !== sessionId)
+      if (target.dataset.boardV2TuckedCategory === categoryId) ids.push(sessionId)
+      if (ids.length === before.length) return
+
+      ids.sort((a, b) => Number(a) - Number(b))
+      target.dataset.sessionIds = ids.join(" ")
+      const count = target.querySelector("[data-board-v2-tucked-count]")
+      if (count) count.textContent = `${ids.length} ${ids.length === 1 ? "session" : "sessions"}`
+    })
+  }
+
+  // ---- Waiting out a drag or a fetch ---------------------------------------
+
+  hold(reason) {
+    this.holds.add(reason)
+  }
+
+  release(reason) {
+    this.holds.delete(reason)
+    if (this.holds.size > 0) return
+
+    const held = this.heldDeliveries
+    this.heldDeliveries = []
+    held.forEach((delivery) => this.applyDelivery(delivery))
+  }
+
+  pickUp() {
+    this.hold("drag")
+    this.element.setAttribute("data-live-hold", "")
+  }
+
+  // SortableJS reports the drop (`onEnd`) right after this, and the drop decides
+  // where the card is; what waited is applied on top of that.
+  putDown() {
+    queueMicrotask(() => {
+      this.element.removeAttribute("data-live-hold")
+      this.release("drag")
+      if (this.refreshAfterDrag) {
+        this.refreshAfterDrag = false
+        this.refreshSoon()
+      }
+    })
+  }
+
+  // ---- The board, fetched again --------------------------------------------
+
+  signalTargetConnected(element) {
+    element.remove()
+    this.refreshSoon()
+  }
+
+  refreshSoon() {
+    clearTimeout(this.refreshTimer)
+    this.refreshTimer = setTimeout(() => this.refresh(), REFRESH_DELAY_MS)
+  }
+
+  // The regions are reconciled without redrawing the cards: this page's socket is
+  // up, so they are current, and only what belongs where has changed.
+  async refresh() {
+    const frame = this.element.closest("turbo-frame[src]")
+    if (!frame) return
+    if (this.refreshing) {
+      this.refreshAgain = true
+      return
+    }
+
+    this.refreshing = true
+    this.hold("fetch")
+    try {
+      const response = await fetch(frame.src, {
+        headers: { Accept: "text/html" },
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS)
+      })
+      if (!response.ok || response.redirected) throw new Error(`Request failed (${response.status})`)
+      const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
+      if (this.holds.has("drag")) this.refreshAfterDrag = true
+      else backfillLiveRegions(fresh, { within: this.element, redraw: false })
+    } catch (error) {
+      // The next signal, or a reload, brings it up to date.
+      console.warn("Your board could not be refreshed:", error)
+    } finally {
+      this.refreshing = false
+      this.release("fetch")
+      this.refreshCounts()
+      if (this.refreshAgain) {
+        this.refreshAgain = false
+        this.refreshSoon()
+      }
+    }
+  }
+
+  // The reconnect backfill is about to fetch the board, and has reconciled it.
+  // Deliveries that arrive in between are newer than its copy.
+  backfilling() {
+    this.hold("backfill")
+  }
+
+  backfilled() {
+    if (this.holds.has("drag")) this.refreshAfterDrag = true
+    this.release("backfill")
+    this.refreshCounts()
   }
 
   // ---- Reordering categories -----------------------------------------------
@@ -310,18 +640,25 @@ export default class extends Controller {
   // Most recently touched first, newest id breaking ties — the server's
   // LAST_TOUCHED_ORDER, id desc.
   sortList(list) {
-    const rows = Array.from(list.children)
-    rows.sort((a, b) => {
-      const delta = Number(b.dataset.lastTouched) - Number(a.dataset.lastTouched)
-      if (delta !== 0) return delta
-      return Number(b.dataset.sessionId) - Number(a.dataset.sessionId)
-    })
     this.reconciling = true
-    rows.forEach((row) => list.appendChild(row))
+    // Only the rows out of place are moved: moving one that is not would
+    // disconnect and reconnect everything in its card.
+    let slot = list.firstElementChild
+    for (const row of Array.from(list.children).sort((a, b) => this.compareRows(a, b))) {
+      if (row === slot) slot = slot.nextElementSibling
+      else list.insertBefore(row, slot)
+    }
     queueMicrotask(() => { this.reconciling = false })
   }
 
+  compareRows(a, b) {
+    const delta = Number(b.dataset.lastTouched) - Number(a.dataset.lastTouched)
+    if (delta !== 0) return delta
+    return Number(b.dataset.sessionId) - Number(a.dataset.sessionId)
+  }
+
   reconcile(list, records) {
+    this.noteDepartures(records)
     if (this.dragging || this.reconciling) return
     if (records.some((record) => record.addedNodes.length > 0)) this.sortList(list)
     this.refreshCounts()
@@ -340,6 +677,11 @@ export default class extends Controller {
       if (empty) empty.classList.toggle("hidden", count > 0)
     })
     if (this.hasTotalTarget) this.totalTarget.textContent = String(total)
+
+    const tucked = this.tuckedTargets.some((target) => this.tuckedIds(target).length > 0)
+    this.noMatchTargets.forEach((line) => {
+      line.hidden = total > 0 || (line.dataset.boardV2NoMatch === "tucked") !== tucked
+    })
   }
 
   // ---- Requests ------------------------------------------------------------

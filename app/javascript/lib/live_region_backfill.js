@@ -27,6 +27,12 @@
 //   sync     Broadcasts add, replace AND remove children — the dashboard's
 //            session grids, the elicitation banners. Reconciled by id, in the
 //            server's order.
+//   members  As `sync`, but a child on both sides is kept exactly as it is: each
+//            holds live regions of its own that reconcile themselves. Your
+//            board's categories.
+//
+// A region inside an element marked `data-live-hold` is left alone: something is
+// being dragged there, and the controller that set the mark catches up after.
 //
 // Two things are never taken away from the reader: a region they are working in
 // (see `inUse`), and a `sync` region showing a different page from the one the
@@ -39,6 +45,7 @@ import { isPendingRemoval } from "lib/optimistic_actions"
 
 function inUse(element) {
   if (element.contains(document.activeElement)) return true
+  if (element.matches("input, textarea") && isDirty(element)) return true
 
   return Array.from(element.querySelectorAll("input, textarea")).some(isDirty)
 }
@@ -85,10 +92,16 @@ function pendingRemoval(id) {
   return match ? isPendingRemoval("session", match[1]) : false
 }
 
+// The same goes for the members of any region inside it: a category that has
+// just come into view brings rows the page may still be showing elsewhere.
 function adopt(sourceChild) {
-  const existing = document.getElementById(sourceChild.id)
-  if (existing) existing.remove()
-  return document.importNode(sourceChild, true)
+  document.getElementById(sourceChild.id)?.remove()
+  const node = document.importNode(sourceChild, true)
+  for (const member of node.querySelectorAll("[data-live-region] > [id]")) {
+    if (pendingRemoval(member.id)) member.remove()
+    else document.getElementById(member.id)?.remove()
+  }
+  return node
 }
 
 function appendMissing(live, source) {
@@ -146,7 +159,7 @@ function replaceElement(live, source) {
   return replacement
 }
 
-function syncChildren(live, source) {
+function syncChildren(live, source, { redraw }) {
   if (paginatedElsewhere(live, source)) return 0
 
   let changed = 0
@@ -174,7 +187,7 @@ function syncChildren(live, source) {
       if (pendingRemoval(sourceChild.id)) continue
       node = adopt(sourceChild)
       changed += 1
-    } else {
+    } else if (redraw) {
       const replacement = replaceElement(existing, sourceChild)
       if (replacement) {
         node = replacement
@@ -196,13 +209,19 @@ function syncChildren(live, source) {
 // `within` narrows that to the regions inside one element. The drawer passes its
 // detail body: the fresh copy is a drawer body, and a dashboard region that
 // happens to share an id with something in it is not the drawer's to rewrite.
-export function backfillLiveRegions(freshDocument, { within = document } = {}) {
+//
+// `redraw: false` keeps the children a `sync` region already has instead of
+// swapping in the server's copies, for a page whose socket never dropped: it
+// missed no redraw, only a change in what belongs where.
+export function backfillLiveRegions(freshDocument, { within = document, redraw = true } = {}) {
   let changed = 0
 
   for (const live of within.querySelectorAll("[data-live-region][id]")) {
     // A region nested inside one that was just replaced is already current, and
     // its node is no longer in the document.
     if (!live.isConnected) continue
+
+    if (live.closest("[data-live-hold]")) continue
 
     const source = freshDocument.getElementById(live.id)
     if (!source) continue
@@ -212,7 +231,10 @@ export function backfillLiveRegions(freshDocument, { within = document } = {}) {
         changed += appendMissing(live, source) > 0 ? 1 : 0
         break
       case "sync":
-        changed += syncChildren(live, source) > 0 ? 1 : 0
+        changed += syncChildren(live, source, { redraw }) > 0 ? 1 : 0
+        break
+      case "members":
+        changed += syncChildren(live, source, { redraw: false }) > 0 ? 1 : 0
         break
       default:
         changed += replaceElement(live, source) ? 1 : 0

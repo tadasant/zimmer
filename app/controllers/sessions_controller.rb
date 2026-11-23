@@ -1027,13 +1027,14 @@ class SessionsController < ApplicationController
     respond_with_flash(
       notice: "Session restored from trash.",
       location: @session,
-      streams: [ restored_card_stream(@session), restored_board_v2_row_stream(@session) ]
+      streams: [ restored_card_stream(@session) ]
     )
   end
 
-  # Offers the restored card to the grid the same way a live update does: as a
-  # card delivery, which the page's `session-grid` controller inserts in sort
-  # order if its filters admit the restored session and ignores if they do not.
+  # Offers the restored card to the page the same way a live update does: as a
+  # card delivery, which the card views' `session-grid` and Your board's `board-v2`
+  # insert in sort order if the page's filters admit the restored session and
+  # ignore if they do not.
   # A plain prepend would put the card on top of any page, filtered or not.
   # `restore: true` lets it back onto the page it was trashed from even when that
   # is not the first page, which a live arrival may not do. On
@@ -1047,18 +1048,6 @@ class SessionsController < ApplicationController
     )
   end
   private :restored_card_stream
-
-  # The same restore for Your board: into the session's own category list,
-  # whose controller re-sorts by last touched when a card arrives. A no-op on any
-  # other page, and when that category is snoozed or backlogged (no list in the DOM).
-  def restored_board_v2_row_stream(session)
-    turbo_stream.prepend(
-      helpers.board_v2_list_dom_id(session.board_category_id),
-      partial: "sessions/board_v2_row",
-      locals: { agent_session: session }
-    )
-  end
-  private :restored_board_v2_row_stream
 
   # The composer for a session just restored from the trash. A no-op when the
   # click came from a dashboard card, where the target is absent — the render and

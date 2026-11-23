@@ -7,7 +7,8 @@ module BoardCategories
   # MCP tool agree. A person's decision, never inferred: nothing in Zimmer calls
   # this on its own. It writes one column with `update_columns`, so it does not
   # touch `updated_at` and does not count as the session being "touched" — moving
-  # a card does not reshuffle the category it lands in.
+  # a card does not reshuffle the category it lands in. With no callbacks to do
+  # it, the new category is sent to the open boards from here.
   class Assign
     class Error < StandardError; end
 
@@ -23,6 +24,7 @@ module BoardCategories
         end
 
       session.update_columns(board_category_id: category&.id)
+      session.broadcast_card_delivery unless session.status_summary_fork?
       category
     end
   end
