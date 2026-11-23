@@ -134,9 +134,10 @@ final class DeploymentSwitcherUITests: XCTestCase {
                       "the banner names the missing app host")
         let appHost = app.textFields["signin.apphost"]
         XCTAssertTrue(appHost.waitForExistence(timeout: timeout), "the App host row opens")
+        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: appHost)
+        XCTAssertEqual(XCTWaiter().wait(for: [focused], timeout: timeout), .completed, "its field takes the keyboard")
         attachScreenshot(app, named: "deployments-add-needs-app-host")
 
-        appHost.tap()
         appHost.typeText("https://third-app.invalid")
         app.buttons["signin.button"].tap()
         XCTAssertTrue(waitForLabel(app.buttons["deployments.open"], "Deployment: third.invalid"), "with an app host the sign-in goes through")

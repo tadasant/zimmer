@@ -56,8 +56,10 @@ struct SignInView: View {
                     isSigningIn = true
                     if case .again = mode {
                         await model.signInAgain()
-                    } else if await workspaces.add(web: server, api: appHost), mode == .add {
-                        dismiss()
+                    } else if await workspaces.add(web: server, api: appHost) {
+                        if mode == .add { dismiss() }
+                    } else {
+                        await revealAppHostIfRefused()
                     }
                     isSigningIn = false
                 }
@@ -107,13 +109,17 @@ struct SignInView: View {
             server = origins.web.absoluteString
             appHost = origins.isSplit ? origins.api.absoluteString : ""
         }
-        // The web origin's edge refused the app because no app host was given: the field that
-        // fixes it comes out from under its collapsed row, ready to type into.
-        .onChange(of: workspaces.addError) { _, error in
-            guard error == .edgeNeedsAppHost, asksForAddress else { return }
-            showsAppHost = true
-            appHostFocused = true
-        }
+    }
+
+    /// The web origin's edge refused the app because no app host was given: the field that fixes
+    /// it comes out from under its collapsed row, ready to type into. Run after every failed
+    /// attempt rather than on a change of error, so a second identical refusal opens it again.
+    /// Focus waits for the row to open: a field that is not in the hierarchy yet cannot take it.
+    private func revealAppHostIfRefused() async {
+        guard workspaces.addError == .edgeNeedsAppHost else { return }
+        showsAppHost = true
+        try? await Task.sleep(for: .milliseconds(350))
+        appHostFocused = true
     }
 
     private var asksForAddress: Bool {

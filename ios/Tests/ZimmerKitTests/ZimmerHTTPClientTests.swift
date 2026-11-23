@@ -103,6 +103,8 @@ final class ZimmerHTTPClientTests: XCTestCase {
         XCTAssertEqual(ZimmerError.edgeRefusal(for: ServerOrigins(web: Fixtures.base)), .edgeNeedsAppHost)
         XCTAssertEqual(ZimmerError.edgeRefusal(for: Fixtures.split), .edgeRefused)
         XCTAssertEqual(ZimmerError.edgeRefusal(for: nil), .edgeRefused, "with no addresses to go on, the edge's own advice")
+        let sameAddressTwice = try? ServerOrigins.parse(web: "https://zimmer.example.test", api: "https://zimmer.example.test/").get()
+        XCTAssertEqual(ZimmerError.edgeRefusal(for: sameAddressTwice), .edgeNeedsAppHost, "an app host equal to the server is no app host")
         XCTAssertTrue(ZimmerError.edgeRefused.isEdgeRefusal)
         XCTAssertTrue(ZimmerError.edgeNeedsAppHost.isEdgeRefusal)
         XCTAssertFalse(ZimmerError.unauthorized.isEdgeRefusal)

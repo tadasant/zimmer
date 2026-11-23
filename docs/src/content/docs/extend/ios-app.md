@@ -695,10 +695,11 @@ A deployment without an app host uses one origin for both, and there is no edge 
 The App host field sits under a collapsed row on the sign-in and Add a deployment screens, so it is
 easy to leave empty on a deployment that needs one. When that happens, the token call goes to the web
 origin, and its Access application refuses it with a 401 carrying `cf-access-aud`. With no app host
-set there is no edge sign-in to redo, so the app says so: the deployment likely needs an app host. On
-the sign-in and Add a deployment screens the App host row opens with its field focused. The "sign in
-to the edge again" message is kept for a deployment that has an app host whose edge credential was
-refused.
+set there is no edge sign-in to redo, so the app (on the token calls and on every API call) says the
+deployment likely needs an app host. After a refused sign-in or add, the App host row opens with its
+field focused. The "sign in to the edge again" message is kept for a deployment that has an app host
+whose edge credential was refused. A deployment already on the phone can't take an app host in place;
+see [Limitations](/limitations/#an-ios-deployments-app-host-cant-be-added-after-the-fact).
 
 ## Signing in
 
