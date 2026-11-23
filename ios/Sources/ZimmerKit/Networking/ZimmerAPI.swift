@@ -184,7 +184,8 @@ public struct ZimmerHTTPClient: ZimmerAPI {
     /// `source` overrides the client's own `ClientSource` for this one call.
     func perform(method: String, path: String, query: [String: String], body: Data?, accepting: Set<Int> = [],
                  source: ClientSource? = nil) async throws -> HTTPResponse {
-        guard let baseURL = await auth.signIn?.origins.api else { throw ZimmerError.unauthorized }
+        guard let origins = await auth.signIn?.origins else { throw ZimmerError.unauthorized }
+        let baseURL = origins.api
         guard let url = HTTPEndpoint(method: method, path: path, query: query).url(relativeTo: baseURL) else {
             throw ZimmerError.notConfigured
         }
@@ -206,7 +207,7 @@ public struct ZimmerHTTPClient: ZimmerAPI {
 
             if EdgeRefusal.isEdgeRefusal(response) {
                 if !retriedEdge, await edge.reauthenticate() { retriedEdge = true; continue }
-                throw ZimmerError.edgeRefused
+                throw ZimmerError.edgeRefusal(for: origins)
             }
             if EdgeRefusal.isEdgeNotRouted(response) { throw ZimmerError.edgeNotRouted(path) }
             if response.statusCode == 401 {

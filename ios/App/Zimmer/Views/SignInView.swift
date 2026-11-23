@@ -25,6 +25,17 @@ struct SignInView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var server = ""
     @State private var appHost = ""
+    /// The App host row, opened by hand or by an edge refusal that an app host would fix.
+    @State private var showsAppHost = false
+    /// Set by such a refusal, for as long as this screen is up: the mark and the subtitle give up
+    /// their room to the message and the field it is about, since the screen does not scroll. Not
+    /// read off the error, which each attempt clears: the header would come and go on every try.
+    @State private var makesRoomForAppHost = false
+    /// Whether an address field holds the keyboard. Let go on Sign in, so the keyboard does not
+    /// sit over an error banner that comes back without a sign-in sheet in between.
+    @FocusState private var editing: AddressField?
+
+    private enum AddressField: Hashable { case server, appHost }
     @State private var isSigningIn = false
     @State private var confirmingRemove = false
 
@@ -49,12 +60,15 @@ struct SignInView: View {
             }
 
             Button {
+                editing = nil
                 Task {
                     isSigningIn = true
                     if case .again = mode {
                         await model.signInAgain()
-                    } else if await workspaces.add(web: server, api: appHost), mode == .add {
-                        dismiss()
+                    } else if await workspaces.add(web: server, api: appHost) {
+                        if mode == .add { dismiss() }
+                    } else {
+                        revealAppHostIfRefused()
                     }
                     isSigningIn = false
                 }
@@ -70,6 +84,8 @@ struct SignInView: View {
 
             if let error = shownError {
                 ErrorBanner(error: error)
+                    // Whole, never cut to a line, where the header has made room for it.
+                    .fixedSize(horizontal: false, vertical: compactHeader)
             }
 
             if case let .again(deployment) = mode {
@@ -106,6 +122,22 @@ struct SignInView: View {
         }
     }
 
+    /// The web origin's edge refused the app because no app host was given: the field that fixes
+    /// it comes out from under its collapsed row, and the header makes room. Run after every failed
+    /// attempt rather than on a change of error, so a second identical refusal opens it again. Not
+    /// focused: the keyboard would cover the banner that says why the row opened.
+    private func revealAppHostIfRefused() {
+        guard workspaces.addError == .edgeNeedsAppHost else { return }
+        showsAppHost = true
+        makesRoomForAppHost = true
+    }
+
+    /// Signing in again has no App host row and its error stays until a sign-in works, so there the
+    /// error itself says when to make room.
+    private var compactHeader: Bool {
+        makesRoomForAppHost || (!asksForAddress && shownError == .edgeNeedsAppHost)
+    }
+
     private var asksForAddress: Bool {
         if case .again = mode { return false }
         return true
@@ -120,9 +152,11 @@ struct SignInView: View {
     private var header: some View {
         VStack(spacing: 18) {
             if case let .again(deployment) = mode {
-                DeploymentAvatar(deployment: deployment, size: 104)
-                    .accessibilityHidden(true)
-            } else {
+                if !compactHeader {
+                    DeploymentAvatar(deployment: deployment, size: 104)
+                        .accessibilityHidden(true)
+                }
+            } else if !compactHeader {
                 Image("ZimmerMark")
                     .resizable()
                     .frame(width: mode == .add ? 72 : 104, height: mode == .add ? 72 : 104)
@@ -139,12 +173,14 @@ struct SignInView: View {
                     .foregroundStyle(Theme.ink)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("signin.title")
-                Text(subtitle)
-                    .font(.body)
-                    .foregroundStyle(Theme.inkSoft)
-                    .multilineTextAlignment(.center)
-                    // Wrapped, never truncated: the add sheet's line is two lines on a phone.
-                    .fixedSize(horizontal: false, vertical: true)
+                if !compactHeader {
+                    Text(subtitle)
+                        .font(.body)
+                        .foregroundStyle(Theme.inkSoft)
+                        .multilineTextAlignment(.center)
+                        // Wrapped, never truncated: the add sheet's line is two lines on a phone.
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -174,8 +210,9 @@ struct SignInView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .modifier(SignInField())
+                .focused($editing, equals: .server)
                 .accessibilityIdentifier("signin.server")
-            DisclosureGroup {
+            DisclosureGroup(isExpanded: $showsAppHost) {
                 VStack(alignment: .leading, spacing: 6) {
                     TextField("Same as the server", text: $appHost)
                         .textContentType(.URL)
@@ -183,6 +220,7 @@ struct SignInView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .modifier(SignInField())
+                        .focused($editing, equals: .appHost)
                         .accessibilityIdentifier("signin.apphost")
                     Text("Only for a deployment that serves the app from its own hostname.")
                         .font(.caption)
@@ -239,11 +277,11 @@ struct ErrorBanner: View {
     let error: ZimmerError
 
     var body: some View {
-        let tone = error == .edgeRefused ? Theme.status(.waiting).text : Theme.danger
+        let tone = error.isEdgeRefusal ? Theme.status(.waiting).text : Theme.danger
         Label {
             Text(error.userMessage).foregroundStyle(Theme.ink)
         } icon: {
-            Image(systemName: error == .edgeRefused ? "network.slash" : "exclamationmark.triangle.fill")
+            Image(systemName: error.isEdgeRefusal ? "network.slash" : "exclamationmark.triangle.fill")
                 .foregroundStyle(tone)
         }
         .font(.callout)
@@ -251,6 +289,6 @@ struct ErrorBanner: View {
         .padding(14)
         .themeCard(radius: Theme.smallRadius)
         .overlay(alignment: .leading) { tone.frame(width: 3).padding(.vertical, 12) }
-        .accessibilityIdentifier(error == .edgeRefused ? "error.edge" : "error.banner")
+        .accessibilityIdentifier(error.isEdgeRefusal ? "error.edge" : "error.banner")
     }
 }

@@ -110,6 +110,44 @@ final class DeploymentSwitcherUITests: XCTestCase {
         XCTAssertEqual(rows.count, 2, "nothing was added")
     }
 
+    /// A deployment behind Cloudflare Access added with the App host left empty: the web origin's
+    /// edge refuses the token call (`-ZimmerFixtureEdgeNeedsAppHost`). The banner says an app host
+    /// is likely missing, not "sign in to the edge again", and the collapsed App host row opens,
+    /// with the banner still in view: no keyboard comes up over it.
+    func test_an_edge_refusal_with_no_app_host_asks_for_one_and_opens_the_app_host_row() throws {
+        let app = launch(["-ZimmerFixtureEdgeNeedsAppHost"])
+        XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.open"].tap()
+        XCTAssertTrue(app.buttons["deployments.add"].waitForExistence(timeout: timeout))
+        app.buttons["deployments.add"].tap()
+
+        let server = app.textFields["signin.server"]
+        XCTAssertTrue(server.waitForExistence(timeout: timeout))
+        XCTAssertFalse(app.textFields["signin.apphost"].exists, "the App host row starts collapsed")
+        replaceText(in: server)
+        server.typeText("https://third.invalid")
+        app.buttons["signin.button"].tap()
+
+        let banner = app.descendants(matching: .any)["error.edge"]
+        XCTAssertTrue(banner.waitForExistence(timeout: timeout))
+        let message = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "needs an app host")).firstMatch
+        XCTAssertTrue(message.exists, "the banner names the missing app host")
+        let appHost = app.textFields["signin.apphost"]
+        XCTAssertTrue(appHost.waitForExistence(timeout: timeout), "the App host row opens")
+        // The keyboard the server field raised goes away on Sign in; wait out its animation.
+        XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "no keyboard over the banner")
+        attachScreenshot(app, named: "deployments-add-needs-app-host")
+        // A label reads whole even when its text is drawn cut to one line, so measure what is drawn.
+        XCTAssertGreaterThan(message.frame.height, 90, "the message's five lines are drawn, not cut short")
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(message.frame), "the message is on screen")
+        XCTAssertGreaterThanOrEqual(message.frame.minY, app.buttons["signin.button"].frame.maxY, "below the button")
+
+        appHost.tap()
+        appHost.typeText("https://third-app.invalid")
+        app.buttons["signin.button"].tap()
+        XCTAssertTrue(waitForLabel(app.buttons["deployments.open"], "Deployment: third.invalid"), "with an app host the sign-in goes through")
+    }
+
     func test_an_address_already_on_the_list_switches_to_it_instead_of_adding_it_again() throws {
         let app = launch()
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))

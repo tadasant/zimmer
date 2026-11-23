@@ -286,6 +286,15 @@ stop until it is opened again.
 A push also reaches the phone only from a deployment whose APNs key belongs to the team that signs
 the app. Every deployment the app adds must be configured with such a key, or it sends nothing.
 
+### An iOS deployment's app host can't be added after the fact
+
+The iOS app matches a deployment by its server address alone. Adding a server that is already on the
+phone switches to it, keeping the addresses it was added with. So a deployment added without an app
+host, whose web origin later goes behind Cloudflare Access, keeps showing "It likely needs an app
+host". The only way to give it one is to remove it and add it again with the App host filled in,
+which drops its drafts and settings on the phone. A first add that is refused this way is never put
+on the list, so trying again with the App host works.
+
 ### An iOS build older than the backlog reads a backlogged session as on the board
 
 The iOS app decodes a board-visibility value it does not know as `visible`. A build installed before
