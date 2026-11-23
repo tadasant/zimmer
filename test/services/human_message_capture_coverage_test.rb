@@ -72,7 +72,7 @@ class HumanMessageCaptureCoverageTest < ActiveSupport::TestCase
   test "genesis kinds with no human input boundary are never a gap" do
     User.update_all(slack_user_ids: [])
 
-    (SessionGenesis::KEYS - HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.keys).each do |genesis|
+    (SessionGenesis::KEYS - HumanMessageCaptureCoverage::CHANNEL_BY_GENESIS.keys - [ SessionGenesis::MCP_EVENT ]).each do |genesis|
       session = spawn_session(genesis: genesis)
       assert_empty coverage_for(session).gaps, "#{genesis} should not report a capture gap"
     end
@@ -88,6 +88,67 @@ class HumanMessageCaptureCoverageTest < ActiveSupport::TestCase
     assert_equal 1, gaps.size
     assert_equal [ router.id, worker.id ].sort, gaps.first.session_ids.sort
     assert_equal 2, gaps.first.session_count
+  end
+
+  # ── MCP events: answered per session, and "not established" by default ──────
+
+  def event_session(marker: nil, genesis: SessionGenesis::MCP_EVENT, parent: nil)
+    spawn_session(genesis: genesis, parent: parent).tap do |session|
+      session.merge_metadata!({ "mcp_event_server" => "slack-zimmer", McpEvents::HumanCapture::METADATA_KEY => marker }.compact)
+    end
+  end
+
+  test "a session an MCP event started is a gap, however complete the Slack roster is" do
+    users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
+    session = event_session
+
+    gap = coverage_for(session).gaps.sole
+    assert_equal HumanMessageCaptureCoverage::MCP_EVENT, gap.channel
+    assert_equal SessionGenesis::MCP_EVENT, gap.genesis
+    assert_equal "MCP events", gap.channel_label
+    assert_equal [ session.id ], gap.session_ids
+    assert_match McpEvents::SlackMessage::SERVERS_ENV, gap.reason
+    assert_not session.human_message_record.capture_complete?
+  end
+
+  test "an event-started session is a gap under every marker but complete" do
+    assert_empty coverage_for(event_session(marker: McpEvents::HumanCapture::COMPLETE)).gaps
+    assert_not_empty coverage_for(event_session(marker: McpEvents::HumanCapture::INCOMPLETE)).gaps
+    assert_not_empty coverage_for(event_session(marker: "anything else")).gaps
+  end
+
+  test "a trigger with a second condition type does not hide the event behind its genesis" do
+    users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
+
+    assert_equal [ HumanMessageCaptureCoverage::MCP_EVENT ], coverage_for(event_session(genesis: SessionGenesis::SLACK)).gaps.map(&:channel)
+  end
+
+  test "an event delivered into a session something else started is a gap when it was not attributed" do
+    session = spawn_session(genesis: SessionGenesis::WEB_UI)
+    session.merge_metadata!(McpEvents::HumanCapture::METADATA_KEY => McpEvents::HumanCapture::INCOMPLETE)
+
+    assert_equal [ session.id ], coverage_for(session).gaps.sole.session_ids
+  end
+
+  test "a child that inherited the genesis is answered by the event session above it" do
+    attributed = event_session(marker: McpEvents::HumanCapture::COMPLETE)
+    assert_empty coverage_for(spawn_session(genesis: SessionGenesis::MCP_EVENT, parent: attributed)).gaps
+
+    unattributed = event_session
+    child = spawn_session(genesis: SessionGenesis::MCP_EVENT, parent: unattributed)
+    assert_equal [ unattributed.id ], coverage_for(child).gaps.sole.session_ids
+  end
+
+  test "an mcp_event genesis with no event session above it is a gap itself" do
+    session = spawn_session(genesis: SessionGenesis::MCP_EVENT)
+
+    assert_equal [ session.id ], coverage_for(session).gaps.sole.session_ids
+  end
+
+  test "the mcp_event gap has a reason and remedy of its own and is never configured deployment-wide" do
+    assert_not HumanMessageCaptureCoverage.configured?(HumanMessageCaptureCoverage::MCP_EVENT)
+    assert_not_equal HumanMessageCaptureCoverage.reason("no-such-channel"), HumanMessageCaptureCoverage.reason(HumanMessageCaptureCoverage::MCP_EVENT)
+    assert_not_equal HumanMessageCaptureCoverage.remedy("no-such-channel"), HumanMessageCaptureCoverage.remedy(HumanMessageCaptureCoverage::MCP_EVENT)
   end
 
   # `configured?` reports an unrecognised channel as a GAP rather than as

@@ -19,14 +19,14 @@
 # per-subscription HMAC is checked behind it (see limitations.md and triggers.md).
 #
 # SEP-3415 merged as Final on 2026-11-19. SPEC_REVISION is the commit this implementation was
-# checked against, the SEP's merge commit; docs/src/content/docs/sessions/mcp-events-spec-pin.md records what it covers and
+# checked against; docs/src/content/docs/sessions/mcp-events-spec-pin.md records what it covers and
 # where it deliberately deviates. Bring both up to date whenever the SEP moves.
 module McpEvents
   # The extension's identifier, under `capabilities.extensions` in what a server declares.
   EXTENSION_ID = "io.modelcontextprotocol/events"
 
-  # The SEP-3415 revision this implementation follows: its merge commit.
-  SPEC_REVISION = "8a18b4b3292b9f9b3aee73f6325f9f62f19a89f9"
+  # The SEP-3415 revision this implementation follows.
+  SPEC_REVISION = "bbc31f8ded5762eae4df115b93942f5e71c8b3a7"
 
   # The extension's error codes, by name. The SEP calls the numbers provisional, so nothing else
   # names them.

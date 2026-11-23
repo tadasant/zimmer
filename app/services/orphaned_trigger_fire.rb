@@ -6,9 +6,10 @@
 #
 # A trigger fire is a one-shot event. `GithubTriggerPollerJob` records the item
 # key in `seen_items` the moment a session exists for it, `SlackTriggerPollerJob`
-# advances its cursor, `AoEventTriggerJob` spends the wake — all of them
-# deliberately, because the alternative is the double dispatch of #704. From that
-# point the session IS the work item, and there is exactly one of it.
+# advances its cursor, `McpEvents::Firing` claims the event, `AoEventTriggerJob`
+# spends the wake — all of them deliberately, because the alternative is the double
+# dispatch of #704. From that point the session IS the work item, and there is
+# exactly one of it.
 #
 # So when that session reaches terminal `failed`, the fire is spent and nothing
 # is carrying its subject any more. Nothing said so. `failed` is terminal —
@@ -99,6 +100,7 @@ class OrphanedTriggerFire
     SessionGenesis::GITHUB_LABEL,
     SessionGenesis::GITHUB_ISSUE,
     SessionGenesis::SLACK,
+    SessionGenesis::MCP_EVENT,
     SessionGenesis::AO_EVENT
   ].freeze
 

@@ -331,13 +331,14 @@ The bullet is rendered on a non-empty record too: a hierarchy can hold web-UI me
 blind to the Slack half of itself, and the counts are then a floor for that channel rather than a
 total.
 
-Only the two genesis kinds that map to a channel in `HumanMessage::CHANNELS` — `web_ui` and `slack` —
-can be a gap. A GitHub issue or label, a schedule, a session-state or system event, an API spawn:
+Three genesis kinds can be a gap: `web_ui` and `slack`, which map to a channel in
+`HumanMessage::CHANNELS`, and `mcp_event`, which is answered per session (see
+[An MCP event's author](#an-mcp-events-author)). A GitHub issue or label, a schedule, a session-state or system event, an API spawn:
 none has a human actor at its boundary by construction, so an empty record there is the correct
 answer and not a gap. Widening it to those kinds would replace an affirmative absence with "cannot
 say" on nearly every hierarchy in the fleet, which destroys the signal the record exists to carry.
 
-**The check is deployment-wide, not per-human**, and deliberately so — the message Zimmer did not
+For `web_ui` and `slack` **the check is deployment-wide, not per-human**, and deliberately so — the message Zimmer did not
 record is the one that cannot be consulted, so the question has to be answerable without it. It asks
 "could *any* Slack message have resolved to *anybody*", not "was *this* actor mapped". Two residual
 blind spots follow, and both are on
@@ -346,6 +347,40 @@ a roster with some Slack IDs filled in and not others, and a session whose genes
 
 The web panel shows the same gap as an amber block above the messages, linking to
 `/supervisor/users`, and `GET /api/v1/sessions/:id` carries it as `human_message_capture_gaps`.
+
+### An MCP event's author
+
+An [`mcp_event`](/sessions/triggers/#mcp_event) trigger relays whatever a catalog MCP server publishes,
+and some of it a person wrote. The payload's word for who is not evidence: any server in the catalog can
+publish any `user_id`. So Zimmer records an event's author only when all of these hold, and records
+nothing otherwise:
+
+1. The condition's server is named in `MCP_EVENT_SLACK_SERVERS`, and the event is its `message_posted`.
+2. The payload's `channel_id` and `ts` are well-formed and make exactly the event's `eventId`
+   (`slack:<channel>:<ts>`).
+3. **Slack itself returns that message** to Zimmer, over Zimmer's own `SLACK_BOT_TOKEN`
+   (`conversations.history`, or `conversations.replies` for a reply).
+4. Slack's answer carries no `bot_id` or `app_id`, and its `subtype` is one a person's own message can
+   have. Software posting with a person's user token carries that person in `user`, and so does a
+   system line such as a join or a topic change, so `user` alone does not say who typed it.
+5. Slack's `user` is mapped on the roster.
+
+The record is a `slack` one with entry point `mcp_event.slack_channel_message` or `mcp_event.slack_dm`,
+and its words, author and link are Slack's answer. The payload supplies nothing but the pointer. Step 1
+is there because steps 2 to 5 prove who wrote the message and not that the message is what the event is
+about: a server could point at some other real message and have it recorded against a session of its
+choosing. Naming a server trusts it not to.
+
+Mail and WhatsApp events are never attributed. A Gmail event's `from` is a header the sender writes, and
+a WhatsApp event's `sender_jid` is the bridge's account of a sender Zimmer has no way to ask about.
+
+Coverage follows the same rule, per session and not per deployment. `McpEvents::HumanCapture` marks a
+session `mcp_event_human_capture: complete` when every event that started it was recorded, and
+`incomplete` as soon as any event delivered into it was not. Anything but `complete` is a gap, including
+no marker at all (a session from before the marker). A burst notice quotes an event and a fork of an event's
+session carries its conversation without its records, so both are marked `incomplete`. So an event-started session with
+an empty record reads *"the check could not be established"*. A bot's alert reads that way too, which is
+overcautious. A child that inherited the `mcp_event` genesis is answered by the event session above it.
 
 ### Who counts as a human
 
@@ -428,6 +463,8 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A follow-up typed in the browser | ✅ `web_ui.follow_up` | same |
 | A message enqueued in the browser | ✅ `web_ui.enqueued_message` | recorded when typed, not when delivered |
 | A Slack message from a mapped human | ✅ `slack.channel_message` / `slack.dm` | resolved from the Slack user ID |
+| A Slack message an MCP event announced, from a server named in `MCP_EVENT_SLACK_SERVERS` | ✅ `mcp_event.slack_channel_message` / `mcp_event.slack_dm` | read back from Slack, then resolved from the Slack user ID |
+| Any other MCP event (mail, WhatsApp, another server's) | ❌ | the author is the server's or the sender's claim, so it is a gap and not an absence |
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | A follow-up, Quick Router request or Merge from [Zimmer's iOS app](/extend/ios-app/) | ✅ `ios_app.follow_up` / `ios_app.quick_router` / `ios_app.authorize_merge`, when the app's connection acts on its approver's behalf | recorded on the [`assistant` channel](#the-assistant-channel) with the same fences as any OAuth client: the author is the approver's roster row, the grant is in the provenance, and a relay-only connection records nothing. The app sends exactly what was typed, a quick reply included |

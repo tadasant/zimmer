@@ -98,6 +98,16 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
   # first dash segment turned tadasant-internal-main-… into tadasant-main-…: a
   # directory claiming a repository the fork does not hold. The name comes from
   # the git root now, exactly as GitCloneService derives it.
+  test "a fork of a session an MCP event reached is marked as one whose author was not established" do
+    plain = ForkSessionService.call(source_session: @source_session, message_index: 1, file_system: @mock_fs).forked_session
+    assert_nil plain.metadata[McpEvents::HumanCapture::METADATA_KEY]
+
+    @source_session.merge_metadata!("mcp_event_server" => "slack-zimmer", McpEvents::HumanCapture::METADATA_KEY => McpEvents::HumanCapture::COMPLETE)
+    fork = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs).forked_session
+    assert_equal McpEvents::HumanCapture::INCOMPLETE, fork.metadata[McpEvents::HumanCapture::METADATA_KEY]
+    assert_equal [ "mcp_event" ], fork.human_message_record.capture_gaps.map(&:channel)
+  end
+
   test "fork clone directory names the repository the fork actually holds" do
     source_clone = "/home/test/.zimmer/clones/tadasant-internal-main-1786519477-ad273769"
     @mock_fs.mkdir_p(source_clone)

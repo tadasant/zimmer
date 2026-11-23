@@ -18,6 +18,10 @@
 #         deployment config, not from anything in the request.
 #   * SlackTriggerPollerJob (a real Slack message)
 #       → User.for_slack_user_id(message.user).
+#   * McpEvents::HumanCapture (a Slack message an MCP server's event announced)
+#       → the same, for a message read back from Slack with Zimmer's own token
+#         (McpEvents::SlackMessage). Never from the event's payload, so every
+#         other event — mail, WhatsApp, any other server's — records nothing.
 #   * Api::V1::QuickRouterController (the browser extension)
 #       → User.admin, the same way as the web UI. It is an API controller, but
 #         the credential it takes is not the fleet's: a `quick_router` ApiKey is
@@ -100,7 +104,7 @@ class HumanMessageCapture
     # name: an unmapped ID (another workspace member, a bot, an app posting with
     # a bot token) yields nil and records nothing.
     def record_slack_message(session:, slack_user_id:, content:, entry_point:,
-                             slack_channel: nil, slack_permalink: nil, occurred_at: Time.current)
+                             slack_channel: nil, slack_permalink: nil, occurred_at: Time.current, provenance: {})
       record(
         session: session,
         author: User.for_slack_user_id(slack_user_id),
@@ -112,7 +116,7 @@ class HumanMessageCapture
           "slack_user_id" => slack_user_id,
           "slack_channel" => slack_channel,
           "slack_permalink" => slack_permalink
-        }.compact
+        }.merge(provenance).compact
       )
     end
 
