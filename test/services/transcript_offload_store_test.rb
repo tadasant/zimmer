@@ -182,6 +182,12 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
     TranscriptOffloadStore.delete(6)
     assert_empty TranscriptOffloadStore.paths_for(6)
     assert TranscriptOffloadStore.exist?(66)
+    assert TranscriptOffloadStore.exist?(66, digest: @digest)
+    assert_not TranscriptOffloadStore.exist?(66, digest: Digest::SHA256.hexdigest(newer))
+    Dir.stubs(:children).raises(Errno::EACCES)
+    assert_not TranscriptOffloadStore.exist?(66)
+  ensure
+    Dir.unstub(:children)
   end
 
   test "refuses a lost store id or an absent volume while sessions are marked offloaded" do

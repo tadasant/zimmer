@@ -291,8 +291,10 @@ class TranscriptArchiveJob < ApplicationJob
     # An offloaded transcript whose file is gone cannot be archived. Set aside before the
     # cap, so a block of them neither starves newer sessions nor forces a rewrite a tick.
     missing_ids = changed_ids.each_slice(BIND_SLICE_SIZE).flat_map do |slice|
-      with_db_retry { Session.where(id: slice).where.not(transcript_offloaded_at: nil).pluck(:id) }
-    end.reject { |id| TranscriptOffloadStore.exist?(id) }
+      with_db_retry { Session.where(id: slice).where.not(transcript_offloaded_at: nil).pluck(:id, :transcript_digest) }
+    end.filter_map do |id, digest|
+      id unless TranscriptOffloadStore.exist?(id, digest: digest) || SessionTranscriptChunk.where(session_id: id).exists?
+    end
     if missing_ids.any?
       Rails.logger.error "[TranscriptArchiveJob] #{missing_ids.size} offloaded transcript file(s) missing; keeping their existing entries"
       changed_ids -= missing_ids
@@ -305,6 +307,10 @@ class TranscriptArchiveJob < ApplicationJob
 
     if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path) && !staging.any?
       Rails.logger.info "[TranscriptArchiveJob] No changes detected, skipping rebuild"
+      # Nothing to rewrite, but a missing file still makes the archive incomplete.
+      if previous_metadata["deferred_count"].to_i != deferred_count
+        write_sidecar(previous_metadata.merge("deferred_count" => deferred_count, "complete" => deferred_count.zero?))
+      end
       return
     end
 
@@ -765,7 +771,10 @@ class TranscriptArchiveJob < ApplicationJob
       "file_size_bytes" => File.exist?(archive_path) ? File.size(archive_path) : 0,
       "sessions" => all_sessions_metadata
     }
+    write_sidecar(metadata)
+  end
 
+  def write_sidecar(metadata)
     # Renamed into place: a kill part-way through a plain write leaves a sidecar that does
     # not parse, which reads as "nothing is archived" and re-archives the whole corpus.
     temp_path = archive_dir.join(METADATA_TEMP_NAME)

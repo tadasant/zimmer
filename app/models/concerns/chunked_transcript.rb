@@ -532,7 +532,7 @@ module ChunkedTranscript
 
     SessionTranscriptChunk.where(session_id: id).delete_all
     append_transcript_bytes(value)
-    clear_transcript_offload_marker if base_bytes.zero?
+    clear_transcript_offload_marker if base_bytes.zero? || transcript_offloaded?
     # A rewrite can repair chunks to the digest they were skipped at.
     self.class.where(id: id).where("metadata ->> ? IS NOT NULL", TranscriptRetentionJob::SKIPPED_DIGEST_KEY)
       .update_all([ "metadata = metadata - ?::text", TranscriptRetentionJob::SKIPPED_DIGEST_KEY ])

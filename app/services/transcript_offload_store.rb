@@ -116,7 +116,15 @@ class TranscriptOffloadStore
       []
     end
 
-    def exist?(session_id) = paths_for(session_id).any?
+    # Whether a readable file is there: any version, or the one +digest+ names. False, not
+    # an error, when the store cannot be looked at.
+    def exist?(session_id, digest: nil)
+      paths = paths_for(session_id)
+      paths = paths.select { |path| path.end_with?("-#{digest}.jsonl.gz") } if digest
+      paths.any? { |path| File.readable?(path) }
+    rescue SystemCallError
+      false
+    end
 
     # Writes +content+ for +session_id+ and proves it: the file on disk is read back,
     # decompressed and hashed, and must equal +digest+ (SHA-256 hex of +content+).

@@ -75,6 +75,17 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
 
     path = TranscriptOffloadStore.paths_for(session.id).first
     File.delete(path)
+
+    # Nothing else changed, so nothing is rebuilt, and the sidecar still says incomplete.
+    complete = -> { JSON.parse(File.read(@metadata_path))["complete"] }
+    TranscriptArchiveJob.perform_now
+    stamps = JSON.parse(File.read(@metadata_path))["sessions"]
+    Session.find(session.id).touch
+    TranscriptArchiveJob.perform_now
+    assert_equal false, complete.call
+    assert_equal stamps, JSON.parse(File.read(@metadata_path))["sessions"]
+    assert_equal content, entry.call
+
     File.delete(@metadata_path)
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
@@ -83,7 +94,7 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     File.write(path, "not gzip")
     TranscriptArchiveJob.perform_now
     assert_equal content, entry.call
-    assert_equal false, JSON.parse(File.read(@metadata_path))["complete"]
+    assert_equal false, complete.call
   ensure
     ENV[TranscriptOffloadStore::DIR_ENV] = previous
     FileUtils.rm_rf(root) if root
