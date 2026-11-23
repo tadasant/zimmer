@@ -57,4 +57,36 @@ class AgentSessionJobTokenBrokerTest < ActiveSupport::TestCase
 
     assert_equal :reprepared, @job.send(:remint_brokered_tokens_for_reused_clone, @session, Dir.tmpdir, @log_buffer)
   end
+
+  # A brokered server carries no static credential, so naming the catalog's
+  # variable would send the operator to the wrong secret.
+  test "a rejected brokered token points at the grant, not at the static variable" do
+    turn_token_broker_on
+    stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff"))
+    text = rejected_credentials_log
+    assert_match(/Token broker page/, text)
+    assert_no_match(/static token, not OAuth/, text)
+    assert_no_match(/STRAD_API_KEY/, text)
+  end
+
+  test "off, a rejected declaring server is explained as the static credential it carried" do
+    turn_token_broker_off
+    stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff"))
+    text = rejected_credentials_log
+    assert_match(/static token, not OAuth/, text)
+    assert_match(/STRAD_API_KEY/, text)
+  end
+
+  def rejected_credentials_log
+    @session.update!(status: :running, custom_metadata: {
+      "should_fail_session" => true, "mcp_failure_reason" => "MCP server(s) failed to connect: image-diff",
+      "mcp_failed_servers" => [ { "name" => "image-diff", "status" => "failed", "error" => "Error POSTing to endpoint (HTTP 401): unauthorized" } ]
+    })
+    @job.process_manager = MockProcessManager.new
+    @job.broadcast_service = BroadcastService.new
+    log_buffer = LogBuffer.new(@session)
+    @job.send(:check_and_handle_mcp_failure, @session, 12345, log_buffer)
+    log_buffer.flush
+    @session.logs.pluck(:content).join("\n")
+  end
 end

@@ -180,24 +180,45 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
 
   # --- on, then off: no trace of the broker is left -------------------------
 
+  # Through AirPrepareService, with an AIR that does what its adapters do: it writes
+  # the entries the command line names, removes the ones it wrote before and is no
+  # longer given, and touches nothing else. So a broker that kept an entry from AIR
+  # after it was turned off, or left its own entry behind, shows up here.
   RUNTIMES.each_key do |runtime|
-    test "on then off, #{runtime}: a file the broker wrote becomes the undeclared entry's file again" do
-      today = with_catalog(declared: false) { prepared(runtime, true) }
-      fs = MockFileSystemAdapter.new
+    test "on then off, #{runtime}: the session's next prepare gives the undeclared entry's config again" do
+      air = FakeAir.new(runtime, File.join(@dir, RUNTIMES[runtime].last))
+      today = with_catalog(declared: false) { prepare_with(air) }
 
-      with_oauth_client_identity do
-        @strad.create_grant!
-        with_catalog(declared: true) do
-          turn_token_broker_on
-          assert_includes prepared(runtime, true, fs: fs), "strad_oat_"
-          assert_equal [ "image-diff" ], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
+      air = FakeAir.new(runtime, File.join(@dir, RUNTIMES[runtime].last))
+      with_grant do
+        on = prepare_with(air)
+        assert_includes on, "strad_oat_", runtime
+        refute_includes on, "STRAD_API_KEY", runtime
+        assert_equal [ "image-diff" ], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
 
-          turn_token_broker_off
-          # Content, not bytes: a rewritten entry can move within its table.
-          assert_equal parsed(runtime, today), parsed(runtime, prepared(runtime, true, fs: fs))
-          refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY), "the record is cleared once nothing of the broker's is left"
-        end
+        turn_token_broker_off
+        off = prepare_with(air)
+        refute_includes off, "strad_oat_", runtime
+        # Content, not bytes: a rewritten entry can move within its table.
+        assert_equal parsed(runtime, today), parsed(runtime, off)
+        refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY), "the record is cleared once nothing of the broker's is left"
+
+        turn_token_broker_on
+        again = prepare_with(air)
+        assert_includes again, "strad_oat_", runtime
+        refute_includes again, STATIC_KEY, runtime
+        refute_includes again, "STRAD_API_KEY", runtime
+        assert_not_equal on, again
       end
+    end
+
+    # The path Hans was on: never on, catalog already declaring.
+    test "never on, #{runtime}: through the whole prepare, a declaring entry's config is byte-identical to an undeclared one's" do
+      path = File.join(@dir, RUNTIMES[runtime].last)
+      undeclared = with_catalog(declared: false) { prepare_with(FakeAir.new(runtime, path)) }
+      declared = with_catalog(declared: true) { prepare_with(FakeAir.new(runtime, path)) }
+      assert_equal undeclared, declared
+      refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY)
     end
   end
 
@@ -563,9 +584,11 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
         write_entries(runtime, fs, "svg-tracer" => { "url" => "#{FakeStrad::ORIGIN}/mcp?servers=svg-tracer" })
         table = server_table(runtime, prepared(runtime, true, fs: fs, keep: true))
 
+        scopes = McpBrokeredToken.pluck(:scope).flat_map(&:split).uniq
+        refute_includes scopes, "slug:svg-tracer", "#{runtime}: a child reaches only the servers the session selected"
         refute table.key?("svg-tracer"), runtime
         assert table.key?("image-diff"), runtime
-        assert_equal "slug:image-diff", McpBrokeredToken.order(:id).last.scope, runtime
+        assert_equal %w[slug:image-diff], scopes, runtime
         refute @processor.brokered_token_result.failures.key?("svg-tracer"), "not selected, so not a degradation"
       end
       McpBrokerGrant.destroy_all
@@ -607,6 +630,7 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     template = Session.new(mcp_servers: %w[image-diff], agent_runtime: "claude_code", metadata: {})
     with_grant do
       fs = MockFileSystemAdapter.new
+      write_entries(:claude, fs, "image-diff" => { "url" => catalog_url, "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" } })
       processor = ClaudeMcpConfigPostProcessor.new(session: template, working_directory: @dir, file_system: fs)
       processor.post_process!
       refute_includes fs.read(File.join(@dir, RUNTIMES[:claude].last)), STATIC_KEY
@@ -694,6 +718,32 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
       @session.update_columns(mcp_servers: %w[image-diff])
       McpBrokerGrant.destroy_all
     end
+  end
+
+  test "the record grows across prepares, so nothing an earlier one touched is forgotten" do
+    fs = MockFileSystemAdapter.new
+    with_grant { prepared(:pi, true, fs: fs) }
+    @session.update_columns(mcp_servers: %w[svg-tracer])
+    with_grant(entry: static_strad_entry("image-diff"), extra: { "svg-tracer" => brokered_strad_entry("svg-tracer") }) { prepared(:pi, true, fs: fs) }
+    assert_equal %w[image-diff svg-tracer], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
+  end
+
+  test "the baseline path writes the file when all it did was remove a brokered entry" do
+    fs = MockFileSystemAdapter.new
+    with_catalog(declared: true) { prepared(:claude, true, fs: fs) }
+    @session.update_columns(mcp_servers: [])
+    turn_token_broker_on
+    with_catalog(declared: true) do
+      ClaudeMcpConfigPostProcessor.any_instance.stubs(:inject_self_session_server!)
+      refute_includes prepared(:claude, true, fs: fs, baseline: true), STATIC_KEY
+    end
+  end
+
+  test "a resource keeps its userinfo, port and path, so it never equals a different one" do
+    base = TokenBroker.normalize_resource("https://strad.example.com/mcp")
+    %w[https://user@strad.example.com/mcp https://strad.example.com:8443/mcp https://strad.example.com/mcp2 https://strad.example.com/mcp/x
+       https://strad.example.com.evil.example/mcp http://strad.example.com/mcp].each { |url| assert_not_equal base, TokenBroker.normalize_resource(url), url }
+    assert_equal base, TokenBroker.normalize_resource("https://strad.example.com/mcp/?servers=x#y")
   end
 
   test "on then off: a refused entry, not only a served one, is put back on Pi" do
@@ -855,6 +905,50 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
       stub_mcp_catalog({ "image-diff" => entry }.merge(extra))
       yield ServersConfig.find("image-diff")
     end
+  end
+
+  class FakeAir
+    attr_reader :fs, :runtime
+
+    def initialize(runtime, path)
+      @runtime = runtime
+      @path = path
+      @fs = MockFileSystemAdapter.new
+      @managed = []
+    end
+
+    def run(cmd)
+      return if @runtime == :pi # its adapter writes no MCP config at all
+
+      key = @runtime == :codex ? "mcp_servers" : "mcpServers"
+      config = @fs.exists?(@path) ? (@runtime == :codex ? TomlRB.parse(@fs.read(@path)) : JSON.parse(@fs.read(@path))) : {}
+      named = cmd.each_cons(2).filter_map { |flag, id| id if flag == "--mcp-server" }
+      table = (config[key] || {}).except(*(@managed - named))
+      named.each do |id|
+        url = "#{FakeStrad::ORIGIN}/mcp?servers=#{id}"
+        table[id] = @runtime == :codex ? { "url" => url, "bearer_token_env_var" => "STRAD_API_KEY" } :
+          { "type" => "http", "url" => url, "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" } }
+      end
+      @managed = named
+      config[key] = table
+      @fs.write(@path, @runtime == :codex ? TomlRB.dump(config) : JSON.generate(config))
+    end
+
+    def read = @fs.read(@path)
+  end
+
+  # One turn's real AirPrepareService#prepare!, with only what is not the MCP
+  # config stubbed out.
+  def prepare_with(air)
+    runtime = air.runtime
+    session = @session.reload
+    session.stubs(:runtime).returns(RuntimeRegistry.for({ claude: "claude_code", codex: "codex", pi: "pi" }.fetch(runtime)))
+    service = AirPrepareService.new(session: session, working_directory: @dir, file_system: air.fs, mint_brokered_tokens: true)
+    %i[guard_injected_files! write_env_file! write_system_prompt_file! catch_up_catalog_cache!].each { |step| service.stubs(step) }
+    service.stubs(:artifact_bridge).returns(stub(write!: true))
+    service.define_singleton_method(:run_air_prepare_command!) { |cmd, _env| air.run(cmd) }
+    service.prepare!
+    air.read
   end
 
   def remint(mint: true)
