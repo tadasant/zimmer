@@ -386,7 +386,8 @@ class RuntimeConfigPostProcessor
   def inject_brokered_credentials!(servers, mint: mint_brokered_tokens)
     @brokered_token_result = TokenBroker::MintResult.empty
     @brokered_entry_names = []
-    return discard_brokered_leftovers!(servers) unless TokenBroker.enabled?
+    discarded = discard_brokered_leftovers!(servers)
+    return discarded unless TokenBroker.enabled?
 
     owned = servers.keys.map(&:to_s) - zimmer_injected_keys
     plan = begin
@@ -395,7 +396,7 @@ class RuntimeConfigPostProcessor
       cause = "the catalog could not be read (#{e.class}), so Zimmer cannot tell whether it is brokered"
       TokenBroker::ConfigPlan.new(serve: {}, remove: owned, refused: (owned | selected_mcp_servers.map(&:to_s)).index_with { cause })
     end
-    return false if plan.empty?
+    return discarded if plan.empty?
 
     # What the session selected, which a later prepare has to put back. A key it did
     # not select is not recorded: the broker never wrote it, so once off there is
@@ -447,15 +448,17 @@ class RuntimeConfigPostProcessor
     entry
   end
 
-  # With the broker off, remove what it left that nothing else will rewrite: a key
-  # the session no longer selects, and a selected one still carrying one of the
-  # session's child tokens, which AIR was not given (it has gone from the catalog).
+  # Remove what the broker left that nothing else will rewrite, off or on: a key the
+  # session no longer selects, and a selected one still carrying one of the session's
+  # child tokens, which neither AIR nor the broker handles (it has gone from the catalog).
   # Anything else selected is AIR's to write back, or Pi's seeding, which reads the
   # same record. Never a server Zimmer injected.
   def discard_brokered_leftovers!(servers)
-    record = brokered_entries_on_record - zimmer_injected_keys
-    return false if record.empty?
+    # Nothing on record, which is every session of a deployment that never turned
+    # the broker on: nothing below is even evaluated.
+    return false if brokered_entries_on_record.empty?
 
+    record = brokered_entries_on_record - zimmer_injected_keys
     keep = selected_config_keys
     tokens = nil
     record.count do |key|

@@ -748,6 +748,18 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     expect_reprepare { remint }
   end
 
+  test "never on: the off step reads nothing but the (empty) record" do
+    with_catalog(declared: true) do
+      processor = ClaudeMcpConfigPostProcessor.new(session: @session, working_directory: @dir, file_system: MockFileSystemAdapter.new)
+      @session.expects(:user_selected_mcp_servers).never
+      ServersConfig.expects(:all!).never
+      McpBrokeredToken.expects(:for_sessions).never
+      table = { "image-diff" => { "url" => catalog_url } }
+      refute processor.send(:inject_brokered_credentials!, table)
+      assert_equal({ "image-diff" => { "url" => catalog_url } }, table)
+    end
+  end
+
   # --- what the off switch must not take with it -------------------------------
 
   test "on then off: a server Zimmer injects is never removed, even after a turn on which the catalog could not be read" do
@@ -804,6 +816,8 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     fs = MockFileSystemAdapter.new
     with_grant { assert_includes prepared(:pi, true, fs: fs), "strad_oat_" }
     turn_token_broker_off
+    # The rows are deleted a week after they close; the key alone has to be enough.
+    McpBrokeredToken.delete_all
     with_contested(local: false, other: false, selected: [ OTHER_X ]) { refute_includes prepared(:pi, true, fs: fs), "strad_oat_" }
   end
 
@@ -864,6 +878,28 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
       turn_token_broker_off
       stub_mcp_catalog(catalog)
       refute_includes prepared(:pi, true, fs: fs), "strad_oat_"
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "pi: the same with the token rows long gone, off and on" do
+    [ {}, { "image-diff" => { "type" => "streamable-http" } } ].product([ true, false ]).each do |catalog, on|
+      fs = MockFileSystemAdapter.new
+      with_grant { prepared(:pi, true, fs: fs) }
+      McpBrokeredToken.delete_all
+      turn_token_broker_off unless on
+      stub_mcp_catalog(catalog)
+      refute_includes prepared(:pi, true, fs: fs), "strad_oat_", "on=#{on} #{catalog.keys}"
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "on: a selected server that has gone from the catalog does not keep its old token" do
+    RUNTIMES.each_key do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant { prepared(runtime, true, fs: fs) }
+      stub_mcp_catalog("other" => brokered_strad_entry("other"))
+      refute_includes prepared(runtime, true, fs: fs, keep: true), "strad_oat_", runtime
       McpBrokerGrant.destroy_all
     end
   end
