@@ -105,7 +105,7 @@ Two things are deliberately outside that rule:
 | `zimmer-router` | ❌ | `tadasant/zimmer` | Deprecated alias of `zimmer-orchestrator`, kept so sessions created before the rename still resolve their root ([how](#the-router-roots-two-names)). Nothing new is created against it. |
 | `general-agent` | ✅ | `tadasant/zimmer` | The catch-all. `AgentRootsConfig::DEFAULT_ROOT`. |
 | `fleet-maintenance` | ❌ | `tadasant/zimmer` | The deployment's own scheduler. The `quota_available` trigger dispatches it; it runs `awaken-waiting-sessions` and starts parked spot work in precedence order. Defaults to the `zimmer-fleet` server, which is the only thing that gives it the tools that skill calls. |
-| `dashboard-reprioritizer` | ❌ | `tadasant/zimmer` | In the catalog, but nothing in Zimmer starts a session as it: no button, trigger or job dispatches it, and the migration `20261123030000_delete_dashboard_reprioritizer_triggers` deletes the `Dashboard reprioritizer` trigger rows that did. Defaults to the `zimmer-sessions` server. |
+| `dashboard-reprioritizer` | ❌ | `tadasant/zimmer` | In the catalog, but nothing in Zimmer starts a session as it: no button, trigger or job dispatches it, and the migration `20261123031000_delete_dashboard_reprioritizer_triggers` deletes the `Dashboard reprioritizer` trigger rows that did. Defaults to the `zimmer-sessions` server. |
 | `catalog-management` | ❌ | `tadasant/zimmer` | Lead root; fans out to the four below. Maintains this repo's own AIR catalog, and is the catalog's worked example of `default_subagent_roots`. |
 | `catalog-mgmt-research` | ❌ | ↳ subagent phase | `default_in_roots: [catalog-management]`, model `sonnet` |
 | `catalog-mgmt-configs` | ❌ | ↳ subagent phase | same |

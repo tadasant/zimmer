@@ -6,7 +6,7 @@ require "test_helper"
 # disabled once, and logged; nothing else is touched.
 class DisableTriggersWithRetiredEmailAndWhatsappConditionsTest < ActiveSupport::TestCase
   setup do
-    @entry = PostDeployTask::Registry.find("20261123030000")
+    @entry = PostDeployTask::Registry.find("20261123020000")
     assert @entry, "the task file must ship in db/post_deploy"
     @task_class = @entry.task_class
   end
