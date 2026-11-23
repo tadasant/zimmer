@@ -2009,19 +2009,25 @@ uid of its own. Such a session can't read the worker's `/proc/<pid>/environ`, th
 session's clone, config, scratch or HOME. It also can't signal the worker or regain a capability.
 It is off by default. Here is what it does not do.
 
-- **It has never run on a real deployment.** The boundary test runs the real capability set and the
-  real handover and spawn argv as root in a Debian container. It does not run the Zimmer image, Claude
-  Code or Rails across the boundary. Staging deploys were broken when this shipped, so the first live
-  run is meant to be a production canary on one throwaway root (`ZIMMER_SESSION_UID_ROOTS`).
+- **No real Claude Code session has run across it.** On staging (2026-11-23, under sysbox) the app
+  booted with the flag on, the shipped code isolated throwaway session rows on the real image, a probe
+  from inside them found nothing it should not reach, and rolling back returned every file to uid
+  1000. Staging had no Claude login, so a spawned Claude session, its transcript and MCP-log polling, a
+  follow-up turn and an unarchive have not been exercised with the flag on. A production canary on one
+  throwaway root (`ZIMMER_SESSION_UID_ROOTS`) is still the first end-to-end run.
 - **Only Claude Code.** Codex keeps one `CODEX_HOME` for every session: `auth.json`, which the account
   pool and the CLI both rotate, and every rollout. Pi keeps one `PI_CODING_AGENT_DIR`. Splitting those
   per session is its own change. Until then Codex and Pi sessions run as uid 1000 even with the flag
   on, minus the app's capabilities.
 - **The boundary holds only if every session on the worker is in scope.** A session still running as
-  uid 1000 (Codex, Pi, or a root outside `ZIMMER_SESSION_UID_ROOTS`) can read the worker's
-  environment and, with it, everything. That includes isolated sessions' files, which the app (and so
-  uid 1000, by path) can reach. A canary protects the canary from nothing on the same worker. It
-  proves the mechanism works.
+  uid 1000 (Codex, Pi, or a root outside `ZIMMER_SESSION_UID_ROOTS`) reads every file uid 1000 owns:
+  the stored `gh` login, the runtime auth files, the operator SSH key, other uid-1000 sessions'
+  clones. Where nested Docker is on it also has the Docker socket, which reaches everything,
+  isolated sessions included. Measured on staging with the flag on, such a process without
+  capabilities could not read the worker's own `/proc/<pid>/environ` (the worker holds capabilities
+  it lacks) or an isolated session's 0700 directories. Whether every other uid-1000 process of the
+  app is as closed was not established. A canary protects the canary from nothing on the same worker
+  that has Docker. It proves the mechanism works.
 - **Nested Docker voids it.** The inner daemon bind-mounts any path in the container into a container
   of the caller's choosing. So isolated sessions get no Docker socket unless
   `ZIMMER_SESSION_UID_DOCKER=1`, and with it they can reach everything again. Real isolation with

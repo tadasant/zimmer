@@ -33,10 +33,10 @@ require "set"
 # A session OUT of scope still runs as uid 1000, as today, but through
 # #strip_capabilities so it never inherits the app's ambient set. Out of scope means:
 # a root not listed in ZIMMER_SESSION_UID_ROOTS (when that is set), or a runtime this
-# does not cover yet (ISOLATED_RUNTIMES). Such a session can still read everything
-# uid 1000 can — including isolated sessions' files — so the boundary only holds on a
-# deployment where every session is in scope. docs/src/content/docs/limitations.md
-# says so.
+# does not cover yet (ISOLATED_RUNTIMES). Such a session can still read every file uid
+# 1000 owns, and with nested Docker on it has the socket, which reaches everything. So
+# the boundary only holds on a deployment where every session is in scope.
+# docs/src/content/docs/limitations.md says so.
 #
 # With the flag unset nothing here runs: #wrap is never reached, #confine returns its
 # argument unchanged, and no file is chowned or chmodded. That is the posture every
