@@ -273,7 +273,9 @@ final class AppEnvironment {
         // `-ZimmerFixtureVoiceTurnedUp`: the CarPlay drill's break-glass. The Live settings are
         // as voice calls left them on the call that broke (a cap of 180, eagerness low, a
         // threshold Semantic ignores, plus a gated Listening), and the first call holds on
-        // Connecting… so the call screen stays up to be driven.
+        // Connecting… so the call screen stays up to be driven. The drill ends that call itself,
+        // with the gear, so the hold is the drill's whole time allowance (`ios/bin/ui-test`): a
+        // hold that runs out first fails the call under the steps still driving it.
         let voiceTurnedUp = arguments.contains("-ZimmerFixtureVoiceTurnedUp")
         // `-ZimmerFixtureCarScript`: a call held on Connecting… for as long as a test needs it.
         let carScript = arguments.contains("-ZimmerFixtureCarScript")
@@ -294,7 +296,7 @@ final class AppEnvironment {
                 trashedElsewhere: trashedElsewhere,
                 refuses: refuses, writeDelay: writeDelay, readDelay: readDelay,
                 liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
-                liveSecretHold: voiceTurnedUp ? .seconds(120) : carScript ? .seconds(600) : nil,
+                liveSecretHold: voiceTurnedUp || carScript ? .seconds(600) : nil,
                 web: deployment.origins.web)
             return Connection(deployment: deployment, auth: auth, api: api, edge: nil)
         }

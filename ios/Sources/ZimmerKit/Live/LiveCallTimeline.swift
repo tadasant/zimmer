@@ -154,7 +154,7 @@ public extension LiveEvent {
     }
 
     /// The press was heard: *pressed* started playing this long after Talk was pressed (or, for a
-    /// call nobody pressed for, after it started), on its own engine. The route may take a moment
+    /// call nobody pressed for, after it started), on its own player. The route may take a moment
     /// more to make it audible. Compare `call.connected`'s `since_start_ms`.
     static func acknowledged(sincePress: TimeInterval) -> LiveEvent {
         LiveEvent(.info, "call.acknowledged") { ["since_press_ms": .ms(sincePress)] }

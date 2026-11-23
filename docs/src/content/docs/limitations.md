@@ -407,6 +407,8 @@ The host can also drop a tap without stalling. In [run 44225446120](https://gith
 
 The car can also stay connected after the drill unplugs it. In [run 44560053511, attempt 1](https://github.com/tadasant/zimmer/actions/runs/44560053511/attempts/1) the External Displays menu was clicked to Disabled with the call up, but the app logged no `carplay scene disconnected` and the phone stayed on the session list, so `the phone goes to the call` failed. The host had logged nothing since 16 seconds before the click, and logged nothing again until after the test ended, so whether the Simulator ignored the click or the host stalled through it is not known. A phone not on the call 20 seconds after the unplug gets the menu clicked again. The host can also hold up a disconnect the click did make: in [run 44939231478](https://github.com/tadasant/zimmer/actions/runs/44939231478) the host logged nothing after the drill asked for the first unplug, the app logged `carplay scene disconnected` about 65 seconds after that click went in, and the phone landed on the call `LiveHandover.settle` (3 seconds) and one half-second look later, about a second after the drill had stopped waiting. So the drill gives the phone 90 seconds from asking for the first unplug to land, whichever click took. A stall longer than that still fails the drill.
 
+The fixture holds the drill's first call on Connecting… for 600 seconds, the drill's whole time allowance, and the gear is what ends it. With a hold of 120 seconds a slow unplug and replug outlasted it: in [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) the call failed at 03:31:49, some 10 seconds before the gear was due. The drill then failed on the gear's panel with an empty car, because Zimmer had aborted playing the cue for that failure ("A stalled audio server can end the app during a call", below). A failure message that shows the car says when Zimmer is not running.
+
 The other steps wait 20 seconds or less, apart from the retries' 30 and 90. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
@@ -9523,6 +9525,29 @@ because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing
 accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## A stalled audio server can end the app during a call
+
+An `AVAudioEngine`'s output unit lives in the app. As it is initialized, stopped or disposed of it
+asks the audio server, and Apple's code aborts the process when the answer takes too long
+(`_ReportRPCTimeout`). An abort is not an error the app can catch. A player node started on a
+stalled engine can also raise an Objective-C exception, which Swift cannot catch either.
+
+A cue with no call up does not use an engine, for this reason: `LiveAudioEngine.playAlone` uses an
+`AVAudioPlayer`. With the Mac's `coreaudiod` stopped for 40 seconds while a cue sounded in the
+simulator, the app with an engine per cue aborted in 5 runs of 5, about 10 seconds in. With the
+player it aborted in none of 5, and the next cue played. In a small probe app stopped at each of
+six points of a cue's life, a throwaway engine died at three, an engine kept and reused died at the
+same three, and a player died at none. Those deaths were in the engine's stop and in starting its
+player node. The dealloc that ended
+[run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) was not reproduced;
+a lone cue has no engine left to dealloc.
+
+A call's own engine (`LiveAudioEngine.Graph`) keeps the exposure: voice processing, the
+microphone tap and the echo canceller need it. So an audio server that stalls while a call starts
+or ends can still end the app. Unforced, this has been seen only on GitHub's macOS
+runners, where the audio server is the Mac's. Nothing was measured on a real phone. The player has
+not been heard on one either, and neither has the car's music resuming after it.
 
 ## The phone's voice call has not run on a device
 

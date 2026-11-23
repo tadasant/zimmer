@@ -63,6 +63,9 @@ final class LiveAudioEngine {
     /// Where the audio calls that can block run, one at a time.
     private nonisolated static let queue = DispatchQueue(label: "com.tadasant.zimmer.live-audio", qos: .userInitiated)
 
+    /// How late a cue with no call may start (`playAlone`).
+    private nonisolated static let cueLateness: TimeInterval = 3
+
     /// Where the tap sends the microphone's frames, and when a cue closes them to silence: the
     /// one thing the audio thread touches.
     final class FrameSink: @unchecked Sendable {
@@ -538,10 +541,18 @@ final class LiveAudioEngine {
     }
 
     /// A cue with no call up to carry it: the car giving up on a call, which may never have got
-    /// its engine started. The engine exists for the cue and the audio session for as long as
-    /// it sounds. Skipped while the audio is someone else's, or while an engine is out on
-    /// `queue`, stuck or not: a failure cue that sounds minutes late is worse than none. Says
+    /// its engine started. The audio session is held for as long as the cue sounds. Skipped while
+    /// the audio is someone else's, or while an engine is out on `queue`, stuck or not, and dropped
+    /// when `queue` reaches it more than `cueLateness` after it was asked for, as behind a cue the
+    /// audio server has stalled: a failure cue that sounds minutes late is worse than none. Says
     /// whether it was asked for: once on `queue`, a failure is only logged.
+    ///
+    /// Played by an `AVAudioPlayer`, never an engine. An engine's output unit is in the app, and
+    /// aborts the process when the audio server takes too long to answer it (`_ReportRPCTimeout`),
+    /// which nothing can catch: seen as it initialized, stopped and was disposed of.
+    /// A sound this incidental must not be able to end the app:
+    /// [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) died that way
+    /// in the engine's dealloc. With the server stopped under it a player only waits.
     ///
     /// It never touches the input: no microphone opens, and no permission prompt comes up, so it
     /// can sound before a call (and its CarPlay screen) exists. `sounding` runs on `queue` once
@@ -552,26 +563,34 @@ final class LiveAudioEngine {
     /// twice; the falling notes that end a press leading nowhere hand it back.
     func playAlone(_ cue: LiveCue, handBack: Bool = true, sounding: (@Sendable () -> Void)? = nil) -> Bool {
         guard engine == nil, farewell == nil, bringingUp == 0, !interrupted else { return false }
-        let samples = cue.samples()
+        let sound = RealtimeAudio.wav(from: cue.samples())
+        let asked = ProcessInfo.processInfo.systemUptime
         Self.queue.async {
-            guard let buffer = Self.buffer(samples) else { return }
-            let engine = AVAudioEngine()
-            let player = AVAudioPlayerNode()
+            guard ProcessInfo.processInfo.systemUptime - asked <= Self.cueLateness else {
+                Self.log.notice("cue with no call dropped: its turn came too late")
+                return
+            }
             do {
                 try Self.activateSession()
-                engine.attach(player)
-                engine.connect(player, to: engine.mainMixerNode, format: Self.replyFormat)
-                try engine.start()
-                player.scheduleBuffer(buffer, completionHandler: nil)
-                player.play()
-                sounding?()
-                Thread.sleep(forTimeInterval: cue.duration + 0.05)
-                player.stop()
-                engine.stop()
+                let player = try AVAudioPlayer(data: sound, fileTypeHint: AVFileType.wav.rawValue)
+                if player.play() {
+                    sounding?()
+                    Thread.sleep(forTimeInterval: cue.duration + 0.05)
+                    // The player starts a moment after `play()`: let the last note finish, briefly.
+                    let latest = ProcessInfo.processInfo.systemUptime + 0.2
+                    while player.isPlaying, ProcessInfo.processInfo.systemUptime < latest { Thread.sleep(forTimeInterval: 0.01) }
+                    player.stop()
+                } else {
+                    Self.log.error("cue with no call could not play")
+                }
             } catch {
                 Self.log.error("cue with no call could not play: \(error.localizedDescription, privacy: .public)")
             }
-            try? AVAudioSession.sharedInstance().setActive(false, options: handBack ? .notifyOthersOnDeactivation : [])
+            do {
+                try AVAudioSession.sharedInstance().setActive(false, options: handBack ? .notifyOthersOnDeactivation : [])
+            } catch {
+                Self.log.error("audio session not given up after a cue with no call: \(error.localizedDescription, privacy: .public)")
+            }
         }
         return true
     }

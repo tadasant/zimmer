@@ -826,6 +826,25 @@ final class RealtimeConductorTests: XCTestCase {
         XCTAssertEqual(append["audio"]?.string, "AQI=")
     }
 
+    /// What `LiveAudioEngine.playAlone` hands its player: a header that says what the bytes after
+    /// it are, and the cue's own samples.
+    func testACueAsAWavFile() throws {
+        let file = RealtimeAudio.wav(from: [2, -2])
+        XCTAssertEqual(file, Data([
+            0x52, 0x49, 0x46, 0x46, 40, 0, 0, 0, 0x57, 0x41, 0x56, 0x45, // RIFF, 36 + the data, WAVE
+            0x66, 0x6D, 0x74, 0x20, 16, 0, 0, 0, 1, 0, 1, 0,             // fmt, PCM, one channel
+            0xC0, 0x5D, 0, 0, 0x80, 0xBB, 0, 0, 2, 0, 16, 0,             // 24,000 a second, 48,000 bytes, 16-bit
+            0x64, 0x61, 0x74, 0x61, 4, 0, 0, 0, 0xFF, 0x7F, 0x01, 0x80,  // data
+        ]))
+        for cue in LiveCue.allCases {
+            let samples = cue.samples()
+            let wav = RealtimeAudio.wav(from: samples)
+            XCTAssertEqual(wav.count, 44 + samples.count * 2, cue.rawValue)
+            let back = RealtimeAudio.floats(fromPCM16: wav.dropFirst(44))
+            for (sample, played) in zip(samples, back) { XCTAssertEqual(sample, played, accuracy: 0.0001, cue.rawValue) }
+        }
+    }
+
     func testAMutedMicrophoneSendsSilenceSoTheTurnCanEnd() {
         let muted = RealtimeConductor.appendAudio(Data([1, 2, 3, 4]), muted: true)
         XCTAssertEqual(muted["type"]?.string, "input_audio_buffer.append", "still sent: sending nothing leaves the server's turn open")

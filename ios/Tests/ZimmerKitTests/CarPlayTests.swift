@@ -671,7 +671,7 @@ final class CarPlayTests: XCTestCase {
         let press = try body("Live/LiveCall.swift", from: "func pressed()")
         let end = try XCTUnwrap(press.range(of: "\n    }\n"))
         let pressBody = String(press[..<end.upperBound])
-        XCTAssertTrue(pressBody.contains("audio.playAlone(.pressed"), "on the engine that has no input")
+        XCTAssertTrue(pressBody.contains("audio.playAlone(.pressed"), "on the player that has no input")
         XCTAssertFalse(pressBody.contains("audio.start("), "never the call's engine, which opens the microphone")
         let alone = try body("Live/LiveAudioEngine.swift", from: "func playAlone(")
         let aloneEnd = try XCTUnwrap(alone.range(of: "\n    }\n"))
@@ -679,6 +679,11 @@ final class CarPlayTests: XCTestCase {
         for input in ["inputNode", "requestRecordPermission", "installTap"] {
             XCTAssertFalse(aloneBody.contains(input), "playAlone touches no input: \(input)")
         }
+        // An engine's output unit aborts the app when the audio server stalls under it.
+        for unit in ["AVAudioEngine", "AVAudioPlayerNode", "engine.start"] {
+            XCTAssertFalse(aloneBody.contains(unit), "playAlone has no engine: \(unit)")
+        }
+        XCTAssertTrue(aloneBody.contains("AVAudioPlayer(data:"), "it has a player")
     }
 
     /// `bda7cf2e` sat 770 s inside the engine's start with the main thread waiting on it, so no
@@ -708,7 +713,7 @@ final class CarPlayTests: XCTestCase {
         let activate = try XCTUnwrap(outsideGraph.range(of: "private nonisolated static func activateSession"))
         let afterActivate = try XCTUnwrap(outsideGraph.range(of: "private let sink = FrameSink()", range: activate.upperBound..<outsideGraph.endIndex))
         outsideGraph.removeSubrange(activate.lowerBound..<afterActivate.lowerBound)
-        for blocking in ["engine.start()", "engine?.start()", "setActive(", "setVoiceProcessingEnabled", ".configure(sink:", "engine.stop()", "tearDown(deactivate"] {
+        for blocking in ["engine.start()", "engine?.start()", "setActive(", "setVoiceProcessingEnabled", ".configure(sink:", "engine.stop()", "tearDown(deactivate", "AVAudioPlayer(", "setCategory("] {
             XCTAssertFalse(outsideGraph.contains(blocking), "\(blocking) on the main actor")
         }
     }
