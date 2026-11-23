@@ -134,9 +134,12 @@ final class DeploymentSwitcherUITests: XCTestCase {
                       "the banner names the missing app host")
         let appHost = app.textFields["signin.apphost"]
         XCTAssertTrue(appHost.waitForExistence(timeout: timeout), "the App host row opens")
-        XCTAssertFalse(app.keyboards.firstMatch.exists, "no keyboard over the banner")
-        XCTAssertTrue(banner.isHittable, "the banner is on screen")
+        // The keyboard the server field raised goes away on Sign in; wait out its animation.
+        XCTAssertTrue(waitForDisappearance(app.keyboards.firstMatch), "no keyboard over the banner")
+        let onScreen = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: banner)
+        let bannerShown = XCTWaiter().wait(for: [onScreen], timeout: timeout) == .completed
         attachScreenshot(app, named: "deployments-add-needs-app-host")
+        XCTAssertTrue(bannerShown, "the banner is on screen")
 
         appHost.tap()
         appHost.typeText("https://third-app.invalid")
