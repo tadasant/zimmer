@@ -105,6 +105,20 @@ A deployment that shares a catalog which already declares entries has step 2 don
 turns the switch on, it must connect **every** authorization server its catalog names, with a grant
 that covers every declared slug.
 
+## Rotating `SECRET_KEY_BASE`
+
+The broker's grants and tokens are encrypted with a key derived from `SECRET_KEY_BASE` (unless the
+credentials file pins one) and have no plaintext copy. **Before rotating it, Disconnect every
+authorization server on `/token-broker`. After the deploy, Connect them again.** While nothing is
+connected, declaring entries are left out of sessions if the switch is on.
+
+:::danger[If the key was rotated without disconnecting]
+The grant cannot be decrypted. Sessions run without the brokered entries, never on their static header,
+but Connect, Disconnect, the supervisor pages and the sweep all raise, so there is no way to recover
+from the UI: the rows have to be deleted. Live child tokens cannot be revoked and expire on their own,
+within six hours. This must be fixed before a deployment turns the broker on.
+:::
+
 ## Opting an entry in
 
 A top-level `brokered_auth` object on the catalog entry:

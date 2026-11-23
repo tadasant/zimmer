@@ -10,12 +10,17 @@
 # SECRET_KEY_BASE, and rotating it is already a planned event (it signs every
 # session cookie).
 #
-# The derivation is the price of that convenience: rotating secret_key_base
-# makes these ciphertexts unreadable. While the plaintext columns are still
-# written (the expand phase, see McpOauthCredential::SECRET_COLUMNS) that loses
-# nothing. Before the plaintext columns stop being written, pin explicit keys —
-# set them in the credentials block above to the values derived here, so the
-# ciphertext stays readable — if secret_key_base may ever rotate.
+# The derivation is the price of that convenience: rotating secret_key_base makes
+# every ciphertext unreadable. For McpOauthCredential's twins that loses nothing
+# while the plaintext columns are still written (the expand phase, see
+# McpOauthCredential::SECRET_COLUMNS): reads take the plaintext, and an unreadable
+# twin is replaced the next time its token is written. Before the plaintext columns
+# stop being written, pin explicit keys (set them in the credentials block above to
+# the values derived here) if secret_key_base may ever rotate.
+#
+# The token broker's rows (McpBrokerGrant, McpBrokeredToken) have no plaintext, so
+# rotating it makes them unusable: see "Rotating SECRET_KEY_BASE" in
+# docs/src/content/docs/auth/token-broker.md.
 encryption = Rails.application.config.active_record.encryption
 explicit = begin
   Rails.application.credentials.dig(:active_record_encryption, :primary_key)

@@ -3460,6 +3460,10 @@ declaring entries go back to their static header until the catalog stops carryin
 resolution is degraded to its last good snapshot, an entry declared *since* that snapshot is not yet
 known to be brokered, and `air prepare`, which reads the disk, writes its static header.
 
+Rotating `SECRET_KEY_BASE` without first disconnecting every server on `/token-broker` leaves grants that
+nothing in the UI can repair ([Rotating](/auth/token-broker/#rotating-secret_key_base)). To be fixed before
+a deployment turns the broker on.
+
 The broker governs the entries it knows. A config entry under any **other** name that uses
 `${STRAD_API_KEY}`, written by the repository or the agent, is resolved like any entry, to whatever URL
 it names, with the switch on or off. Only retiring the static key closes that.

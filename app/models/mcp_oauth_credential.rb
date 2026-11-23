@@ -84,6 +84,7 @@ class McpOauthCredential < ApplicationRecord
 
     define_method("#{column}=") do |value|
       super(value)
+      discard_unreadable_twin(twin)
       public_send("#{twin}=", value)
     end
   end
@@ -104,8 +105,9 @@ class McpOauthCredential < ApplicationRecord
     SECRET_COLUMNS.each do |column|
       plaintext = read_attribute(column)
       twin = "#{column}_ciphertext"
-      next if plaintext.nil? || read_attribute(twin) == plaintext
+      next if plaintext.nil? || decrypted_twin(twin) == plaintext
 
+      discard_unreadable_twin(twin)
       write_attribute(twin, plaintext)
       changed = true
     end
@@ -358,8 +360,28 @@ class McpOauthCredential < ApplicationRecord
     SECRET_COLUMNS.each do |column|
       twin = "#{column}_ciphertext"
       plaintext = read_attribute(column)
-      write_attribute(twin, plaintext) if !plaintext.nil? && read_attribute(twin).nil?
+      # Whether it is stored at all, without decrypting it: a twin written under
+      # another key must not stop a save, least of all the one that stores a token
+      # the provider has just rotated.
+      write_attribute(twin, plaintext) if !plaintext.nil? && read_attribute_before_type_cast(twin).nil?
     end
+  end
+
+  # Rails decrypts an attribute's stored value to see whether an assignment changes
+  # it, so a twin written under another key would make the assignment raise. Treated
+  # as empty instead, and marked changed so the unreadable value is overwritten.
+  def discard_unreadable_twin(twin)
+    read_attribute(twin)
+  rescue ActiveRecord::Encryption::Errors::Decryption
+    @attributes.write_from_database(twin, nil)
+    attribute_will_change!(twin)
+  end
+
+  # The twin's value, or nil when it cannot be decrypted.
+  def decrypted_twin(twin)
+    read_attribute(twin)
+  rescue ActiveRecord::Encryption::Errors::Decryption
+    nil
   end
 
   # False only for a credential issued to Zimmer's hosted client identity on a
