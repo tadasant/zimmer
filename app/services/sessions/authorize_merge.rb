@@ -88,11 +88,11 @@ module Sessions
     #   button press (see AutomatedPrompts.merge_authorization_message)
     # @param head_sha [String, nil] the one commit the sign-off covers, when it
     #   covers only one (a signed approval from another Zimmer)
-    def self.call(session:, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
+    def self.call(session:, surface: "the Zimmer iOS app", act: nil, head_sha: nil)
       new(session: session, surface: surface, act: act, head_sha: head_sha).call
     end
 
-    def initialize(session:, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
+    def initialize(session:, surface: "the Zimmer iOS app", act: nil, head_sha: nil)
       @session = session
       @surface = surface
       @act = act

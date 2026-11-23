@@ -11,7 +11,7 @@ import Foundation
 /// - **Last touched** (`LAST_TOUCHED_ORDER`): the last time a person acted on the session,
 ///   else when it was created, newest first.
 /// - **Created**: newest first.
-/// - **Ranked** (`Sessions::UserView`): priority above spot, then precedence descending, then
+/// - **Ranked** (`Sessions::RankedOrder`): priority above spot, then precedence descending, then
 ///   oldest first, as two sections — *Priority*, then the *Spot queue* in the order it will
 ///   be worked.
 public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {

@@ -2762,7 +2762,9 @@ class SessionsController < ApplicationController
     replacement = LEGACY_VIEW_MODES[params[:view].to_s]
     return false unless replacement
 
-    redirect_to root_path(request.query_parameters.merge("view" => replacement)), status: :moved_permanently
+    # A 302, not a 301: a browser caches a permanent redirect for good, and
+    # these names are free to mean something again later.
+    redirect_to root_path(request.query_parameters.merge("view" => replacement))
     true
   end
 

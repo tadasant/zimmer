@@ -457,14 +457,14 @@ module AutomatedPrompts
   #
   # So the authorization has to be unmistakable in the text itself, because the
   # text is all the merging session sees. Three things carry it: the marker line
-  # below, the named surface ("the Merge button ... in the Zimmer dashboard"), and
+  # below, the named surface ("the Merge button ... in the Zimmer iOS app"), and
   # the explicit statement that the click IS the sign-off.
   #
   # The marker is what the MERGING SESSION reads; it is not what an AUDIT trusts.
   # Any caller of `action_session` → `follow_up` can type this text. The record an
-  # auditor keys on is the HumanMessage with entry_point `web_ui.authorize_merge`
-  # (the browser) or `ios_app.authorize_merge` (the iOS app, on a sign-in that acts
-  # as its approver) — see Sessions::AuthorizeMerge.
+  # auditor keys on is the HumanMessage with entry_point `ios_app.authorize_merge`
+  # (the iOS app, on a sign-in that acts as its approver) or Live Mode's spoken
+  # yes — see Sessions::AuthorizeMerge.
   #
   # The conditions are NOT advisory. A green PR can still be un-mergeable — a base
   # branch that moved under it is the common case — so the message spends most of
@@ -508,8 +508,8 @@ module AutomatedPrompts
   #
   # @param pr_url [String] the full GitHub PR URL the human clicked Merge on
   # @return [String]
-  # @param surface [String] where the button was pressed ("the Zimmer dashboard",
-  #   "the Zimmer iOS app")
+  # @param surface [String] where the button was pressed ("the Zimmer iOS app",
+  #   or a Live Mode surface)
   # @param act [String, nil] how the human signed off, completing "The user …".
   #   Defaults to pressing the Merge button in `surface`; Live Mode passes the
   #   spoken read-back it confirmed (LiveConversations::AuthorizeMerge).
@@ -528,7 +528,7 @@ module AutomatedPrompts
   STEPS
   MERGE_AUTHORIZATION_UNPINNED_STEPS = /^2\. Confirm there are no merge conflicts.*?^3\. Merge the PR\.$/m
 
-  def self.merge_authorization_message(pr_url, surface: "the Zimmer dashboard", act: nil, head_sha: nil)
+  def self.merge_authorization_message(pr_url, surface: "the Zimmer iOS app", act: nil, head_sha: nil)
     message = format(MERGE_AUTHORIZATION_TEMPLATE, pr_url: pr_url, act: act.presence || "has hit the Merge button on this PR in #{surface}")
     return message if head_sha.blank?
 

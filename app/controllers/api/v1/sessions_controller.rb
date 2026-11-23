@@ -41,6 +41,10 @@ class Api::V1::SessionsController < Api::BaseController
   # code Sessions::UpdateCatalogSelection returns. The titles are this surface's
   # vocabulary; the detail sentence under them is the service's, so it now reads
   # the same as the web UI's and the MCP tool's.
+  # The `view` an app build from before Your board was the only board asks for.
+  # It answers what `board_v2` does; see #index.
+  LEGACY_BOARD_VIEW = "user"
+
   CATALOG_SELECTION_ERROR_TITLES = {
     too_many: "Too many entries",
     invalid_entries: "Invalid entries",
@@ -114,7 +118,8 @@ class Api::V1::SessionsController < Api::BaseController
   #     most recently touched first, with a `board_categories` sibling listing every
   #     category in board order (see #render_board_v2). "user" names the board an
   #     older release drew and answers exactly what "board_v2" does, so an app build
-  #     that still asks for it gets today's board. Any other value is a 422.
+  #     that still asks for it gets today's board (LEGACY_BOARD_VIEW). Any other
+  #     value is a 422.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -133,7 +138,7 @@ class Api::V1::SessionsController < Api::BaseController
     when SessionsController::VIEW_MODE_RANKED
       render_ranked(scope)
       return
-    when SessionsController::VIEW_MODE_BOARD_V2, *SessionsController::LEGACY_VIEW_MODES.keys
+    when SessionsController::VIEW_MODE_BOARD_V2, LEGACY_BOARD_VIEW
       render_board_v2(scope)
       return
     else

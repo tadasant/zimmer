@@ -96,7 +96,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     %w[user categories].each do |legacy|
       get root_path(view: legacy, q: "deploy"), headers: { "User-Agent" => DESKTOP_UA }
 
-      assert_response :moved_permanently
+      assert_response :found
       assert_redirected_to root_path(view: "board_v2", q: "deploy")
     end
 

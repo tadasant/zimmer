@@ -1,6 +1,6 @@
 import Foundation
 
-/// The web UI's Merge button: the sign-off that lets a session merge its own PR. It is a
+/// The Merge button: the sign-off that lets a session merge its own PR. It is a
 /// person's sign-off, so the server takes it only from the app, and only on a sign-in that
 /// acts as you; a relay-only one gets a 403 that says so.
 public protocol DecisionsAPI: Sendable {

@@ -89,6 +89,10 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_match(/last_touched/, JSON.parse(response.body)["message"])
 
+    # The web UI's other retired name is not an API view.
+    get "/api/v1/sessions", params: { view: "categories" }, headers: @headers
+    assert_response :unprocessable_entity
+
     get "/api/v1/sessions", params: { view: "ranked", page: 2 }, headers: @headers
     assert_response :unprocessable_entity
     assert_match(/single page/, JSON.parse(response.body)["message"])

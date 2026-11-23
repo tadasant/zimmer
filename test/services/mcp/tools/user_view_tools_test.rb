@@ -67,6 +67,17 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     end
   end
 
+  test "a board whose every row is in a tucked-away category says where they are, not that it is empty" do
+    parked = BoardCategory.create!(name: "Parked", visibility: SessionVisibility::BACKLOGGED)
+    make_session(title: "parked row").update_columns(board_category_id: parked.id)
+
+    output = @read.call({})
+
+    assert_includes output, "Nothing is on the board."
+    assert_includes output, "Parked (backlogged): 1"
+    assert_not_includes output, "the board is empty"
+  end
+
   # The three facts a decision on this board turns on that a plain session
   # listing does not carry.
   test "a row carries the agent root, the generated status and the PR with its CI verdict" do

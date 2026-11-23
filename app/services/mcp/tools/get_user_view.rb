@@ -119,8 +119,6 @@ module Mcp
       })
 
       def call(args)
-        # One more than the cap, so "capped" is only claimed when a row was actually
-        # cut off rather than whenever exactly MAX_ROWS sessions match.
         order = requested_order(args)
         rows, capped, tucked = ordered_rows(filtered_scope(args), order)
 
@@ -133,7 +131,13 @@ module Mcp
           # say it has: the rows it dropped are the whole answer. A filter that
           # dropped nothing has, and says so plainly.
           dropped = carplay_dropped(args)
-          return "No sessions match these filters — the board is empty." if dropped.nil? || dropped.count(:all).zero?
+          if dropped.nil? || dropped.count(:all).zero?
+            # Rows filed in a snoozed or backlogged category are off the board,
+            # not absent; an empty board that holds them says where they are.
+            return [ "Nothing is on the board.", tucked_line(tucked) ].join("\n\n") if tucked.any?
+
+            return "No sessions match these filters — the board is empty."
+          end
 
           return "No row passes the carplay_fit filter, but the board is NOT empty.\n\n#{carplay_hidden_line(args, dropped)}"
         end
@@ -212,8 +216,12 @@ module Mcp
 
         parts = tucked.map do |section|
           category = section.category
-          state = category.backlogged? ? "backlogged" : "snoozed until #{category.snoozed_until.utc.iso8601}"
-          "#{section.category.name} (#{state}): #{section.count}"
+          state =
+            if category.backlogged? then "backlogged"
+            elsif category.snoozed_until then "snoozed until #{category.snoozed_until.utc.iso8601}"
+            else "snoozed"
+            end
+          "#{category.name} (#{state}): #{section.count}"
         end
         "Not listed — in categories the person has taken off the board: #{parts.join('; ')}."
       end
