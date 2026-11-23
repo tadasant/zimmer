@@ -16,7 +16,7 @@ module McpEvents
   #
   # Everything here fails closed. A server not named, a payload whose pointer is malformed or
   # disagrees with its `eventId`, a message Slack does not return, or a Slack that does not answer
-  # all come back nil, and the session is marked as one whose author was not established
+  # (or not in time) all come back nil, and the session is marked as one whose author was not established
   # (McpEvents::HumanCapture).
   class SlackMessage
     # Comma-separated catalog names of the MCP servers whose `message_posted` events announce Slack
@@ -26,7 +26,34 @@ module McpEvents
     # The bare event name. A gateway prefixes it with the server's slug.
     EVENT_NAME = "message_posted"
 
+    # The subtypes a person's own message can have. Every other one (a join, a topic change, a pin,
+    # a reminder, a huddle) is Slack's wording with the person it is about in `user`.
+    AUTHORED_SUBTYPES = [ nil, "file_share", "me_message", "thread_broadcast" ].freeze
+
+    # What one fire may spend reading messages back. A coalesced burst can hold a whole poll page,
+    # each message costs up to three calls, and the poller holds a `pollers` thread throughout.
+    MAX_READS = 25
+    READ_BUDGET = 30.seconds
+
     class << self
+      # What Slack says of each of +occurrences+, by event id, nil for one it did not establish.
+      # Stops at the limits above, and once a read fails: a Slack that is down or rate limiting is
+      # not asked again for the same fire. Whatever was not read is simply not attributed.
+      #
+      # @return [Hash{String => SlackMessage, nil}]
+      def read_all(condition, occurrences)
+        deadline = monotonic_now + READ_BUDGET.to_i
+        channel_names = {}
+        occurrences.first(MAX_READS).each_with_object({}) do |occurrence, found|
+          break found if monotonic_now > deadline
+
+          found[occurrence.event_id] = read!(condition, occurrence, channel_names)
+        rescue => e
+          Rails.logger.warn "[McpEvents::SlackMessage] Could not read back #{occurrence.event_id} from Slack: #{e.class}: #{e.message}"
+          break found
+        end
+      end
+
       def servers
         ENV[SERVERS_ENV].to_s.split(",").map(&:strip).reject(&:blank?)
       end
@@ -35,25 +62,20 @@ module McpEvents
         servers.include?(server.to_s) && [ EVENT_NAME, "#{server}__#{EVENT_NAME}" ].include?(event_name.to_s)
       end
 
-      # Makes Slack API calls, so call it outside any transaction. Never raises.
-      #
-      # @return [SlackMessage, nil]
-      def read(condition, occurrence)
+      private
+
+      # Makes Slack API calls, so it is only ever called outside a transaction.
+      def read!(condition, occurrence, channel_names)
         return nil unless source?(condition.mcp_event_server, condition.mcp_event_name)
 
         channel_id, ts, thread_ts = pointer(occurrence)
         return nil if channel_id.nil?
 
         raw = SlackService.get_message(channel_id, ts, thread_ts: thread_ts)
-        return nil if raw.nil?
-
-        new(channel_id: channel_id, raw: raw, bot_user_id: SlackService.bot_user_id).tap(&:resolve_labels)
-      rescue => e
-        Rails.logger.warn "[McpEvents::SlackMessage] Could not read back #{occurrence.event_id} from Slack: #{e.class}: #{e.message}"
-        nil
+        raw && new(channel_id: channel_id, raw: raw).tap { |message| message.resolve_labels(channel_names) }
       end
 
-      private
+      def monotonic_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       # The channel, ts and parent ts the payload names, or nil unless all are well-formed Slack
       # identifiers and the event's id is the one that channel and ts make.
@@ -72,10 +94,9 @@ module McpEvents
 
     attr_reader :channel_id, :permalink, :channel_name
 
-    def initialize(channel_id:, raw:, bot_user_id: nil)
+    def initialize(channel_id:, raw:)
       @channel_id = channel_id
       @raw = raw
-      @bot_user_id = bot_user_id
     end
 
     def ts = @raw.ts.to_s
@@ -88,6 +109,7 @@ module McpEvents
     # `user` as well, so a `bot_id` means software wrote it whatever `user` says.
     def author_id
       return nil if @raw.bot_id.present? || @raw.app_id.present?
+      return nil unless AUTHORED_SUBTYPES.include?(@raw.subtype.presence)
 
       @raw.user.presence
     end
@@ -95,23 +117,31 @@ module McpEvents
     def occurred_at = Time.zone.at(ts.to_r)
 
     # What a native Slack condition would have called this fire. SlackErrorReply answers only the
-    # two that are addressed to Zimmer.
+    # two that are addressed to Zimmer, and software addresses nobody: Zimmer's own error reply,
+    # come back as an event, must not be one it replies to.
     def event_type
+      return "new_message" if author_id.nil?
       return "dm_message" if dm?
 
-      @bot_user_id.present? && text.include?("<@#{@bot_user_id}>") ? "bot_mention" : "new_message"
+      mentions_bot? ? "bot_mention" : "new_message"
     end
 
-    # Display details for the record, best-effort: only a message from somebody on the roster is
-    # ever recorded, so nobody else's costs the two calls.
-    def resolve_labels
+    # Display details, best-effort, and the last of the Slack calls. Only a message from somebody on
+    # the roster is ever recorded, so nobody else's costs the first two. +channel_names+ is shared
+    # by one fire's messages.
+    def resolve_labels(channel_names = {})
+      @bot_user_id = label { SlackService.bot_user_id } if author_id
       return if author_id.nil? || User.for_slack_user_id(author_id).nil?
 
       @permalink = label { SlackService.get_message_permalink(channel_id, ts) }
-      @channel_name = dm? ? "DM" : label { SlackService.get_channel(channel_id)&.name }
+      @channel_name = dm? ? "DM" : channel_names.fetch(channel_id) { channel_names[channel_id] = label { SlackService.get_channel(channel_id)&.name } }
     end
 
     private
+
+    def mentions_bot?
+      @bot_user_id.present? && text.include?("<@#{@bot_user_id}>")
+    end
 
     def label
       yield

@@ -697,6 +697,8 @@ class ForkSessionService
           "runtime_started" => resumable_transcript?(truncated_transcript) # --resume mode on first follow-up
         }.merge(extra_metadata)
 
+        new_metadata[McpEvents::HumanCapture::METADATA_KEY] = McpEvents::HumanCapture::INCOMPLETE if McpEvents::HumanCapture.reached?(source_session)
+
         # An empty clone is a deliberate state, not a half-finished copy — say so
         # on the record, so anyone who finds the directory (or the fork) can tell
         # the two apart without reading this service.

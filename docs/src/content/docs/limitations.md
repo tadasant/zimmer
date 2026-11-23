@@ -9026,8 +9026,16 @@ no trace anywhere in Zimmer, which is exactly the property being worked around.
 An [`mcp_event`](/sessions/triggers/#mcp_event) session errs the other way. It is answered per session
 and reads as "could not be established" unless every event that started it was attributed, so an alert
 bot's event, a mail and a WhatsApp message all leave that gap though nobody on the roster spoke. A Slack
-message edited or deleted before Zimmer reads it back is recorded as edited, or not recorded. Sessions
-fired before attribution shipped stay gaps; nothing is backfilled.
+message edited or deleted before Zimmer reads it back is recorded as edited, or not recorded. One fire
+reads back at most 25 messages, for at most about 30 seconds, and stops at Slack's first failure; the
+rest of a larger burst is not attributed. An event the other delivery path had claimed and then gave
+back is fired without a read-back, so it stays a gap. Sessions an event started before attribution
+shipped stay gaps; nothing is backfilled. A session something else started, into which a re-use trigger
+delivered an event before then, carries no marker and reports none.
+
+The check for software posting as a person is Slack's `bot_id` and `app_id`. A tool driving Slack with a
+person's browser session token may leave neither, and would read as the person, on this path and on the
+native one alike. The native Slack path does not check either field.
 
 ## "In flight" still counts two dormant populations it does not name
 

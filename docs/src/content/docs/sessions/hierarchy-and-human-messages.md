@@ -360,8 +360,9 @@ nothing otherwise:
    (`slack:<channel>:<ts>`).
 3. **Slack itself returns that message** to Zimmer, over Zimmer's own `SLACK_BOT_TOKEN`
    (`conversations.history`, or `conversations.replies` for a reply).
-4. Slack's answer carries no `bot_id` or `app_id`. Software posting with a person's user token carries
-   that person in `user`, so `user` alone does not say who typed it.
+4. Slack's answer carries no `bot_id` or `app_id`, and its `subtype` is one a person's own message can
+   have. Software posting with a person's user token carries that person in `user`, and so does a
+   system line such as a join or a topic change, so `user` alone does not say who typed it.
 5. Slack's `user` is mapped on the roster.
 
 The record is a `slack` one with entry point `mcp_event.slack_channel_message` or `mcp_event.slack_dm`,
@@ -376,7 +377,8 @@ a WhatsApp event's `sender_jid` is the bridge's account of a sender Zimmer has n
 Coverage follows the same rule, per session and not per deployment. `McpEvents::HumanCapture` marks a
 session `mcp_event_human_capture: complete` when every event that started it was recorded, and
 `incomplete` as soon as any event delivered into it was not. Anything but `complete` is a gap, including
-no marker at all (a session from before the marker, or a burst notice), so an event-started session with
+no marker at all (a session from before the marker). A burst notice quotes an event and a fork of an event's
+session carries its conversation without its records, so both are marked `incomplete`. So an event-started session with
 an empty record reads *"the check could not be established"*. A bot's alert reads that way too, which is
 overcautious. A child that inherited the `mcp_event` genesis is answered by the event session above it.
 

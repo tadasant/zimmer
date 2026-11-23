@@ -31,10 +31,21 @@ module McpEvents
       complete = occurrences.map { |occurrence| record_one(session, condition, occurrence, slack_messages[occurrence.event_id]) }.all?
 
       if !complete
-        session.merge_metadata!(METADATA_KEY => INCOMPLETE)
+        mark_incomplete!(session)
       elsif started
         session.merge_metadata!(METADATA_KEY => COMPLETE)
       end
+    end
+
+    def mark_incomplete!(session)
+      session.merge_metadata!(METADATA_KEY => INCOMPLETE)
+    end
+
+    # Whether an event's words are in +session+'s conversation, or may be. A fork of such a session
+    # carries the conversation and none of the records, so ForkSessionService marks it incomplete.
+    def reached?(session)
+      metadata = session.metadata.to_h
+      metadata.key?("mcp_event_server") || metadata.key?(METADATA_KEY) || session.genesis == SessionGenesis::MCP_EVENT
     end
 
     def record_one(session, condition, occurrence, message)

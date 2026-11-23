@@ -152,7 +152,7 @@ module McpEvents
       return {} unless SlackMessage.source?(condition.mcp_event_server, condition.mcp_event_name)
 
       claimed = TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: keyed.keys).pluck(:event_key)
-      keyed.except(*claimed).values.to_h { |occurrence| [ occurrence.event_id, SlackMessage.read(condition, occurrence) ] }
+      SlackMessage.read_all(condition, keyed.except(*claimed).values)
     end
 
     def fire!(condition, occurrence, folded: [], slack_messages: {})
@@ -184,8 +184,12 @@ module McpEvents
 
       return :held if session.nil?
       return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
-      # The fire that opened a burst spawns the notice about it, not a session for this event.
-      return :held if session.metadata.to_h["burst_notice"]
+      # The fire that opened a burst spawns the notice about it, not a session for this event. The
+      # notice still quotes the event, so it is marked as one whose author was not established.
+      if session.metadata.to_h["burst_notice"]
+        HumanCapture.mark_incomplete!(session)
+        return :held
+      end
 
       HumanCapture.record!(session, condition, [ occurrence, *folded ], slack_messages: slack_messages,
         started: trigger.last_fire_created_session == session)

@@ -192,6 +192,83 @@ class McpEventHumanCaptureTest < ActiveJob::TestCase
     assert_not_established fire(slack: { user: HUMAN, bot_id: "B0APP", text: "<@UBOT> ship it" })
   end
 
+  test "an app's message is not a person's, whichever id it carries" do
+    assert_not_established fire(slack: { user: HUMAN, app_id: "A0APP", text: "<@UBOT> ship it" })
+  end
+
+  test "a system line about a rostered person is not their words" do
+    %w[channel_topic channel_join pinned_item reminder_add some_new_subtype].each_with_index do |subtype, i|
+      assert_not_established fire(ts: "179300010#{i}.000100", slack: { user: HUMAN, subtype: subtype, text: "set the topic: merge it" })
+    end
+  end
+
+  test "a person's own message with a subtype is theirs" do
+    session = fire(slack: { user: HUMAN, subtype: "file_share", text: "see attached" })
+
+    assert_equal "see attached", session.human_messages.sole.content
+  end
+
+  # SlackErrorReply posts into the thread or DM it answers. Read as addressed to Zimmer, its own
+  # reply would be answered in turn.
+  test "software's DM or mention is never one addressed to Zimmer" do
+    dm = fire(channel: "D0DM", is_dm: true, slack: { user: "UBOT", bot_id: "BBOT", text: "Zimmer can't reach its AI provider" })
+    mention = fire(ts: "1793000050.000100", slack: { user: "U0APPBOT", bot_id: "B0APP", text: "<@UBOT> alert" })
+
+    assert_equal "new_message", dm.metadata[SlackOutageMarker::EVENT_TYPE_KEY]
+    assert_equal "new_message", mention.metadata[SlackOutageMarker::EVENT_TYPE_KEY]
+  end
+
+  test "a burst notice quoting an event is a gap even when a Slack condition gives it its genesis" do
+    @trigger.trigger_conditions.create!(condition_type: "slack", configuration: { "channel_id" => "C0NATIVE", "channel_name" => "native", "event_type" => "bot_mention" })
+    @trigger.update!(max_sessions_per_minute: 1)
+    @slack.post("C0CHAN", TS, user: HUMAN, text: "one")
+    @server.publish(channel_id: "C0CHAN", ts: TS)
+    @server.publish(channel_id: "C0CHAN", ts: "1793000001.000100", user_id: "U0STRANGER", text: "two")
+    tick
+
+    notice = Session.for_trigger(@trigger.id).order(:id).last
+    assert notice.metadata["burst_notice"]
+    assert_equal SessionGenesis::SLACK, notice.genesis
+    assert_not_established notice
+  end
+
+  test "an event delivered into a reused session is recorded on it, and one that cannot be attributed is a gap" do
+    reused = Session.create!(prompt: "x", agent_runtime: "claude_code", git_root: "https://github.com/test/repo.git", branch: "main",
+      status: :needs_input, genesis: SessionGenesis::WEB_UI, session_id: SecureRandom.uuid, title: "reused")
+    @trigger.update!(reuse_session: true, last_session_id: reused.id, enqueue_messages: true)
+
+    fire_into = lambda do |ts, slack|
+      @slack.post("C0CHAN", ts, **slack) if slack
+      @server.publish(channel_id: "C0CHAN", ts: ts, user_id: HUMAN)
+      tick
+      Session.find(reused.id)
+    end
+
+    session = fire_into.call("1793000000.000100", { user: HUMAN, text: "first" })
+    assert_equal [ "first" ], session.human_messages.map(&:content)
+    assert_nil session.metadata[McpEvents::HumanCapture::METADATA_KEY], "only a session events started can be complete"
+    assert_predicate session.human_message_record, :capture_complete?
+
+    session = fire_into.call("1793000001.000100", nil)
+    assert_equal [ "mcp_event" ], session.human_message_record.capture_gaps.map(&:channel)
+  end
+
+  test "one fire's read-backs are capped, and end at Slack's first failure" do
+    occurrences = Array.new(McpEvents::SlackMessage::MAX_READS + 5) do |i|
+      ts = "1793000#{format('%03d', i)}.000100"
+      McpEvents::Client::Occurrence.new(event_id: "slack:C0CHAN:#{ts}", name: FakeEventsMcpServer::EVENT_NAME, timestamp: Time.current,
+        data: { "channel_id" => "C0CHAN", "ts" => ts })
+    end
+
+    assert_equal McpEvents::SlackMessage::MAX_READS, McpEvents::SlackMessage.read_all(@condition, occurrences).size
+    assert_equal McpEvents::SlackMessage::MAX_READS, @slack.calls.size
+
+    @slack.calls.clear
+    @slack.down = true
+    assert_empty McpEvents::SlackMessage.read_all(@condition, occurrences)
+    assert_equal 1, @slack.calls.size
+  end
+
   test "an event id that is not the message its payload points at captures nothing" do
     @slack.post("C0CHAN", TS, user: HUMAN, text: "an older, unrelated yes")
     occurrence = McpEvents::Client::Occurrence.new(
@@ -199,14 +276,14 @@ class McpEventHumanCaptureTest < ActiveJob::TestCase
       data: { "channel_id" => "C0CHAN", "ts" => TS, "user_id" => HUMAN, "text" => "x" }
     )
 
-    assert_nil McpEvents::SlackMessage.read(@condition, occurrence)
+    assert_nil McpEvents::SlackMessage.read_all(@condition, [ occurrence ])[occurrence.event_id]
     assert_empty @slack.calls
   end
 
   test "a malformed pointer is never sent to Slack" do
     [ { "channel_id" => "C0CHAN" }, { "channel_id" => "../x", "ts" => TS }, { "channel_id" => "C0CHAN", "ts" => TS, "thread_ts" => "x" } ].each do |data|
       occurrence = McpEvents::Client::Occurrence.new(event_id: "slack:#{data['channel_id']}:#{data['ts']}", name: "e", timestamp: nil, data: data)
-      assert_nil McpEvents::SlackMessage.read(@condition, occurrence)
+      assert_nil McpEvents::SlackMessage.read_all(@condition, [ occurrence ])[occurrence.event_id]
     end
     assert_empty @slack.calls
   end
