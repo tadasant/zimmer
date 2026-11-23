@@ -928,8 +928,8 @@ as an audit trail.
 
 ## Database size on the health surface
 
-`HealthMonitorService#database_size_health` reports the size of Zimmer's database on disk, the space
-in use, and the eight largest tables. It exists because production's managed Postgres ran low on disk
+`HealthMonitorService#database_size_health` reports the size on disk of the databases on Zimmer's
+cluster, the space in use, and the eight largest tables in Zimmer's own. It exists because production's managed Postgres ran low on disk
 while nothing in Zimmer measured the table that was growing, `session_transcript_chunks`.
 
 There are two sizes because deleting rows leaves a table's files about as big as they were and frees
@@ -939,7 +939,7 @@ retention job did, and the space in use does.
 The space in use is an estimate: the size on disk less the deleted or reusable space in TOAST, which
 is where transcripts and Zimmer's other large values live. A table's live TOAST chunks, at a quarter
 of a block each, are the most its live TOAST can occupy. On Postgres 16 it read within 4% of the true
-size and followed a delete at once. Three limits:
+size, before and after one large delete. Four limits:
 
 - Main heaps and indexes are not estimated. `logs` is mostly heap, so `LogRetentionJob` does not move
   this number.
@@ -947,10 +947,13 @@ size and followed a delete at once. Three limits:
 - Postgres discards the running count on a crash, a failover or a statistics reset. The estimate is
   used for a table only when a vacuum has set the count since, and until then that table counts as
   having no reusable space.
+- A vacuum that skips pages sets the count partly from the density it last saw, so a table that has
+  been purged and refilled reads emptier than it is, and the in-use warning comes late. The on-disk
+  warning is the backstop. Do not use this number to decide what to delete.
 
 Both sizes add up every database on the cluster that Zimmer's role can connect to, because they share
-the disk. WAL and temporary files are not counted. The read gives up after a one-second lock wait, so
-a `VACUUM FULL` elsewhere does not hang the health page.
+the disk. WAL and temporary files are not counted. This read gives up after a one-second lock wait, so
+a `VACUUM FULL` does not hang it (the log retention panel has no such limit for `logs`).
 
 Zimmer cannot read a managed cluster's disk size, so the deployment states it:
 `DATABASE_CAPACITY_GIB` (80 in `config/deploy.production.yml`; keep it in step with the cluster). The

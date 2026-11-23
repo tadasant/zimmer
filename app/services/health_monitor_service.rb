@@ -796,15 +796,19 @@ class HealthMonitorService
   #
   # WHEN THE ESTIMATE IS TRUSTED. `pg_stat_get_live_tuples` is a running count, and
   # Postgres discards it on a crash, a failover or a reset. It then counts up from zero,
-  # which would read a full table as empty. A vacuum sets it from the table itself, and
+  # which would read a full table as empty. A vacuum sets it again, and
   # its timestamp is discarded with the count, so the estimate is used only when there is
   # one. Until then a table counts as having no reusable space.
+  #
+  # A vacuum that skips pages sets the count partly from the density it last saw, so a
+  # table purged and then refilled reads emptier than it is. Good enough for a panel with
+  # an on-disk warning beside it. Not good enough to decide what to delete.
   #
   # The sizes add up every database on the cluster this role can connect to, because they
   # share the disk. WAL and temporary files are not in them.
   #
-  # `pg_total_relation_size` waits for a lock on each table, so a `VACUUM FULL` would hang
-  # every health read without the timeout.
+  # `pg_total_relation_size` waits for a lock on each table, so this read would hang
+  # behind a `VACUUM FULL` without the timeout.
   #
   # Warns on either size, as a share of DATABASE_CAPACITY_GIB. Not folded into
   # `overall_status`: the provider already pages on the disk.
@@ -941,6 +945,7 @@ class HealthMonitorService
   def read_database_sizes
     connection = ActiveRecord::Base.connection
     connection.transaction(requires_new: true) do
+      # Last until the outer transaction ends, where there is one; no caller has one.
       connection.execute("SET LOCAL lock_timeout = '1s'")
       connection.execute("SET LOCAL statement_timeout = '5s'")
       total = connection.select_value(<<~SQL.squish).to_i
@@ -976,7 +981,7 @@ class HealthMonitorService
 
   def database_size_status(total, in_use, capacity)
     human = ->(bytes) { ActiveSupport::NumberHelper.number_to_human_size(bytes) }
-    message = "Database is #{human.call(total)} on disk, about #{human.call(in_use)} in use"
+    message = "Databases are #{human.call(total)} on disk, about #{human.call(in_use)} in use"
     return HealthStatus.new(status: :healthy, message: message) if capacity.nil?
 
     percent = ->(share) { (share * 100).floor }

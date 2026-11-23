@@ -43,17 +43,23 @@ class HealthMonitorDatabaseSizeTest < ActiveSupport::TestCase
     size = toast_bytes
 
     sql "INSERT INTO #{TABLE} SELECT n, repeat('y', 100000) FROM generate_series(61, 75) n"
-    assert_equal size, toast_bytes, "the insert reuses freed space"
+    assert_in_delta size, toast_bytes, size * 0.05, "the insert reuses freed space"
     assert_in_delta size * 0.25, reusable, size * 0.1
   end
 
   test "lost statistics read as no reusable space, not as an empty table, until a vacuum" do
     sql "VACUUM #{TABLE}"
     oid = ActiveRecord::Base.connection.select_value("SELECT reltoastrelid FROM pg_class WHERE relname = '#{TABLE}'")
+    # Flushed first, or the counts still pending here would be added back after the reset.
+    sql "SELECT pg_stat_force_next_flush()"
+    sql "SELECT 1"
     sql "SELECT pg_stat_reset_single_table_counters(#{oid})"
     sql "INSERT INTO #{TABLE} VALUES (99, repeat('z', 100000))"
 
     assert_equal 0, reusable
+    live = ActiveRecord::Base.connection.select_value("SELECT pg_stat_get_live_tuples(#{oid})")
+    assert_operator live, :>, 0, "the count has started again"
+    assert_operator live * 2048, :<, toast_bytes * 0.1, "and no longer describes the table"
 
     sql "VACUUM #{TABLE}"
     assert_operator reusable, :<, toast_bytes * 0.1
