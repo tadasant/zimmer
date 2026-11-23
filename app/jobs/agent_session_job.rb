@@ -5212,9 +5212,14 @@ class AgentSessionJob < ApplicationJob
         # rejection keeps reporting its full error, which is where its detail lives.
         detail = server_rejected_credentials?(server["error"]) ? credential_rejection_detail(server["error"]) : nil
 
+        explanation = if server_config&.brokered?
+          "It carried this turn's token from the token broker, not a static credential: check the grant on the Token broker page."
+        else
+          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}"
+        end
+
         log_buffer.add(
-          "MCP server '#{server['name']}' rejected its credentials (#{detail || server['error']}). " \
-          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
+          "MCP server '#{server['name']}' rejected its credentials (#{detail || server['error']}). #{explanation}",
           level: "error"
         )
       end
@@ -6639,6 +6644,7 @@ class AgentSessionJob < ApplicationJob
   # brokered entry.
   def report_brokered_tokens(session, air_service, log_buffer)
     result = air_service.brokered_token_result
+    forget_resolved_broker_degradations(session, result)
     return unless result.any?
 
     if result.tokens.any?
@@ -6666,15 +6672,30 @@ class AgentSessionJob < ApplicationJob
     log_buffer.add("Warning: could not record the token broker's outcome: #{e.class}", level: "warning")
   end
 
+  # A server the broker left out on an earlier turn and not on this one is no
+  # longer degraded, whether it got a token or the broker was turned off. Without
+  # this the record would outlive its cause: the agent's next prompt would say the
+  # tools are gone, and a real connection failure would get no retries.
+  def forget_resolved_broker_degradations(session, result)
+    entries = session.degraded_mcp_servers
+    kept = entries.reject { |entry| entry["error"] == "token_broker_unavailable" && !result.failures.key?(entry["name"]) }
+    session.merge_metadata!("mcp_degraded_servers" => kept) if kept.size != entries.size
+  end
+
   # The reused-clone spawn path runs no prepare, so a session with a brokered
   # entry would start with the previous attempt's (revoked) token. Re-prepare
   # just those sessions, minting this turn's. A session with no brokered entry
   # returns at once and takes the path exactly as it always has.
   #
+  # "With a brokered entry" includes one whose config the broker shaped before it
+  # was turned off: that file holds a revoked token, or is missing the entry, and
+  # nothing but a prepare puts the entry's own credential back.
+  #
   # @return [Symbol, nil] :failed when the prepare failed the session (the
   #   caller must return), :reprepared, or nil when there was nothing to do
   def remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer)
-    return nil if TokenBroker.brokered_among(session.user_selected_mcp_servers).empty?
+    broker_shaped = Array(session.metadata&.dig(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY)).any?
+    return nil if !broker_shaped && TokenBroker.brokered_among(session.user_selected_mcp_servers).empty?
 
     air_service = AirPrepareService.new(
       session: session,

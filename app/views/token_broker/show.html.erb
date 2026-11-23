@@ -10,8 +10,8 @@
         <h1 class="text-2xl sm:text-3xl font-bold text-gray-900">Token broker</h1>
       </div>
       <p class="text-sm text-gray-600">
-        For catalog entries that opt in with <code>brokered_auth</code>, Zimmer holds one grant per
-        authorization server and gives every session turn its own short-lived token, scoped to the
+        When the broker is on, for catalog entries that opt in with <code>brokered_auth</code>, Zimmer holds one
+        grant per authorization server and gives every session turn its own short-lived token, scoped to the
         servers that session has. The token is revoked when the turn ends. Sessions never see the grant.
       </p>
     </div>
@@ -33,13 +33,13 @@
       <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 break-words" data-broker-state="off">
         The token broker is <strong>off</strong> for this deployment (<code><%= TokenBroker::ENABLED_ENV %></code>).
         <% if declaring.positive? %>
-          <%= pluralize(declaring, "catalog entry", plural: "catalog entries") %> declared for it, and
-          <%= declaring == 1 ? "its declaration does" : "their declarations do" %> nothing here: sessions use each entry's
-          own credential. If the broker should be on, the variable is missing from this deployment.
-        <% else %>
-          Sessions use each entry's own credential.
+          <%= pluralize(declaring, "catalog entry", plural: "catalog entries") %>
+          <%= declaring == 1 ? "declares" : "declare" %> <code>brokered_auth</code>, which does nothing here:
+          <%= declaring == 1 ? "it is" : "they are" %> authenticated as if <%= declaring == 1 ? "it" : "they" %> did not. If the broker should be on, that variable is unset or false on this deployment.
         <% end %>
-        Connecting below is safe while it is off: it stores the grant and gives no session a token.
+        <% if @identity_enabled && @servers.any? %>
+          Connecting below is safe while it is off: it stores the grant and gives no session a token.
+        <% end %>
       </div>
     <% end %>
 

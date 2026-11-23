@@ -36,17 +36,17 @@ module TokenBroker
     # @param server [ServersConfig::Server]
     # @return [Declaration, nil] nil when the entry does not opt in
     def self.for(server)
-      return nil if server.nil?
+      return nil if server.nil? || !server.declares_brokered_auth?
 
-      raw = server.brokered_auth
-      return nil if raw.nil?
-
-      new(server_name: server.name, url: server.url, raw: raw)
+      new(server_name: server.name, url: server.url, raw: server.brokered_auth, remote: server.remote?, headers: server.headers.to_h)
     end
 
-    def initialize(server_name:, url:, raw:)
+    def initialize(server_name:, url:, raw:, remote: true, headers: {})
       @server_name = server_name
       @url = url
+      @remote = remote
+      @headers = headers
+      @scopes = []
       @error = nil
       parse!(raw)
     end
@@ -71,16 +71,32 @@ module TokenBroker
       scopes = raw["scopes"]
       unless scopes.is_a?(Array) && scopes.any? && scopes.all? { |s| s.is_a?(String) && s.match?(SCOPE_TOKEN) }
         @error = "`#{CATALOG_KEY}.scopes` must be a non-empty list of scope tokens (for strad, `slug:<name>`)"
-        @scopes = []
         return
       end
       @scopes = scopes.uniq.sort
 
       declared = raw["authorization_server"]
       @authorization_server = TokenBroker.normalize_origin(declared.presence || url)
-      return if @authorization_server
+      if @authorization_server
+        @error = unservable_reason
+        return
+      end
 
       @error = declared.present? ? "`#{CATALOG_KEY}.authorization_server` is not an https origin" : "the entry has no https `url` to take an authorization server from"
+    end
+
+    # Why a well-formed declaration still cannot be served. The broker replaces
+    # exactly one thing, a remote entry's `Authorization` header, so an entry that
+    # carries a credential anywhere else would keep it beside the child token.
+    def unservable_reason
+      return "the entry is not a remote server, so there is no Authorization header to broker" unless @remote
+      return "the entry's `url` cannot be used as a resource" if resource.nil?
+
+      extra = @headers.keys.map(&:to_s).reject { |key| key.casecmp?("Authorization") }
+        .grep(McpOauthCredentialInjector::CREDENTIAL_HEADER_PATTERN)
+      return if extra.empty?
+
+      "the entry carries a credential in #{extra.to_sentence}, which the broker does not replace; only `Authorization` may carry one"
     end
   end
 end

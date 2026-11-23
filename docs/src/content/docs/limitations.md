@@ -3445,7 +3445,9 @@ strad staging's OAuth is not configured, Zimmer's KMS key does not exist yet, an
 production catalog declares `brokered_auth`. The broker is also
 [off by default](/auth/token-broker/#the-switch) on every deployment, and while it is off a
 declaration does nothing. A deploy that loses `ZIMMER_TOKEN_BROKER_ENABLED` turns it off, and
-declaring entries go back to their static header until the catalog stops carrying one.
+declaring entries go back to their static header until the catalog stops carrying one. While catalog
+resolution is degraded to its last good snapshot, an entry declared *since* that snapshot is not yet
+known to be brokered, and `air prepare`, which reads the disk, writes its static header.
 
 Four known edges:
 

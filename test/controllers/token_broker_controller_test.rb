@@ -101,7 +101,7 @@ class TokenBrokerControllerTest < ActionDispatch::IntegrationTest
     get token_broker_path
 
     assert_response :success
-    assert_select "[data-broker-state=off]", text: /1 catalog entry declared for it.*nothing here.*variable is missing from this deployment/m
+    assert_select "[data-broker-state=off]", text: /1 catalog entry\s+declares brokered_auth, which does nothing here.*unset or false on this deployment/m
     assert_select "[data-authorization-server=?]", FakeStrad::ORIGIN
     assert_includes response.body, "Connect it before turning the broker on"
   end
@@ -112,7 +112,7 @@ class TokenBrokerControllerTest < ActionDispatch::IntegrationTest
     get token_broker_path
 
     assert_select "[data-broker-state=off]"
-    assert_not_includes response.body, "variable is missing"
+    assert_not_includes response.body, "unset or false"
   end
 
   test "on, the page says declaring entries never fall back" do

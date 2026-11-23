@@ -231,7 +231,7 @@ class SecretsInterpolator
 
     "#{base} for an agent: only Zimmer's secrets store holds it, and the store never fills a " \
       "config an agent can read. Route the server through strad, or give it brokered auth " \
-      "(the session token broker, pending in tadasant/zimmer#1610)"
+      "(the session token broker, on a deployment that turns it on)"
   end
 
   def held_only_in_store?(var_name)

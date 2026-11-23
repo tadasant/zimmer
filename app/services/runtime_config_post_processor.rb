@@ -61,6 +61,12 @@ class RuntimeConfigPostProcessor
   # starting) or only leaves brokered entries out. See AirPrepareService.
   attr_accessor :mint_brokered_tokens
 
+  # Session metadata naming the config entries the broker wrote or removed. It is
+  # what lets a later prepare know that a file already on the clone is not what
+  # AIR (or the seeding a runtime does in its place) would have written, including
+  # after the broker was turned off.
+  BROKERED_ENTRIES_KEY = "brokered_config_entries"
+
   # @return [TokenBroker::MintResult] what the broker step did on the last run
   def brokered_token_result
     @brokered_token_result || TokenBroker::MintResult.empty
@@ -105,6 +111,7 @@ class RuntimeConfigPostProcessor
     apply_startup_timeouts!(servers)
 
     persist_config!(config)
+    forget_brokered_entries!
   end
 
   # Ensure a baseline MCP config exists for sessions without explicit MCP
@@ -126,6 +133,11 @@ class RuntimeConfigPostProcessor
 
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
+    # A session that had MCP servers and no longer does reaches here with the
+    # previous run's entries still on the clone, possibly written before the
+    # broker was turned on. No turn's token is minted on this path, so a brokered
+    # entry is only ever removed.
+    removed = inject_brokered_credentials!(servers, mint: false)
 
     # Nothing injected means no Zimmer entry needs retarget/secret resolution: this
     # path runs only for a session with blank mcp_servers/skills/hooks/plugins, so
@@ -133,7 +145,7 @@ class RuntimeConfigPostProcessor
     # post_process! branch) can be present for inject_subagent_server! to skip over.
     # A catalog entry that DID reach here would be left un-retargeted by this early
     # return — but by construction one cannot.
-    return if injected_mcp_servers.empty?
+    return if injected_mcp_servers.empty? && !removed
 
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
@@ -358,38 +370,94 @@ class RuntimeConfigPostProcessor
   #
   # Free when nothing opts in: one pass over the catalog finds no declaration
   # and returns before touching the config.
-  def inject_brokered_credentials!(servers)
+  #
+  # "Could not tell" is treated as brokered, never as not: a catalog that cannot
+  # be read, or a key that could be two entries, costs those servers the turn.
+  #
+  # @return [Boolean] whether any entry was rewritten or removed
+  def inject_brokered_credentials!(servers, mint: mint_brokered_tokens)
     @brokered_token_result = TokenBroker::MintResult.empty
-    brokered_names = TokenBroker.brokered_among(servers.keys)
-    return if brokered_names.empty?
+    @brokered_entry_names = []
+    return false unless TokenBroker.enabled?
 
-    brokered = servers.keys.select { |name| brokered_names.include?(name.to_s) && servers[name].is_a?(Hash) }
-    return if brokered.empty?
+    candidates = servers.reject { |name, _| injected_mcp_servers.include?(name) }
+    begin
+      match = TokenBroker.match_config(candidates, selected: selected_mcp_servers)
+    rescue AirCatalogService::CatalogError => e
+      unreadable = candidates.select { |_, entry| entry.is_a?(Hash) && entry["url"].present? }.keys
+      return refuse_entries!(servers, unreadable.to_h { |name| [ name, "the catalog could not be read (#{e.class}), so Zimmer cannot tell whether it is brokered" ] })
+    end
+    refuse_entries!(servers, match.refused)
+    return @brokered_entry_names.any? if match.servers.empty?
 
-    unless mint_brokered_tokens
-      brokered.each { |name| servers.delete(name) }
-      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{brokered.join(', ')} out of a config " \
+    remember_brokered_entries!(match.servers.keys)
+    unless mint
+      match.servers.each_key { |name| servers.delete(name) }
+      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{match.servers.keys.join(', ')} out of a config " \
         "written outside a turn start; the turn that runs them mints their token"
-      return
+      return true
     end
 
-    result = begin
-      TokenBroker.mint_for_session(session, brokered.map(&:to_s))
+    minted = begin
+      TokenBroker.mint_for_session(session, match.servers.values.map(&:name))
     rescue StandardError => e
       # A broker bug must cost the brokered entries, not the whole turn.
       failure = "the token broker raised #{e.class}"
-      TokenBroker::MintResult.new(tokens: {}, failures: brokered.to_h { |name| [ name.to_s, failure ] })
+      TokenBroker::MintResult.new(tokens: {}, failures: match.servers.values.to_h { |server| [ server.name, failure ] })
     end
-    @brokered_token_result = result
 
-    brokered.each do |name|
-      token = result.tokens[name.to_s]
-      if token
+    match.servers.each do |name, server|
+      token = minted.tokens[server.name]
+      if token && TokenBroker.same_resource?(server, servers[name]["url"])
         apply_brokered_bearer!(servers[name], token)
+        @brokered_token_result.tokens[server.name] = token
       else
         servers.delete(name)
+        @brokered_token_result.failures[server.name] = minted.failures[server.name] ||
+          (token ? "its URL in this session's config is not the resource its token is for" : "the token broker gave no reason")
       end
     end
+    true
+  end
+
+  # Remove entries the broker will not guess about, with the cause.
+  def refuse_entries!(servers, causes)
+    return false if causes.empty?
+
+    remember_brokered_entries!(causes.keys)
+    causes.each do |name, cause|
+      servers.delete(name)
+      @brokered_token_result.failures[name] = cause
+    end
+    true
+  end
+
+  def selected_mcp_servers
+    session.respond_to?(:user_selected_mcp_servers) ? Array(session.user_selected_mcp_servers) : []
+  end
+
+  # Recorded BEFORE the config is written: a prepare that dies in between must
+  # leave a record of what the broker may have done, not a file nobody knows about.
+  def remember_brokered_entries!(names)
+    @brokered_entry_names |= names.map(&:to_s)
+    return unless session.respond_to?(:merge_metadata!)
+
+    known = brokered_entries_on_record
+    return if (@brokered_entry_names - known).empty?
+
+    session.merge_metadata!({ BROKERED_ENTRIES_KEY => (known | @brokered_entry_names).sort })
+  end
+
+  # Once a config with nothing of the broker's in it is on disk, the record is done.
+  def forget_brokered_entries!
+    return if Array(@brokered_entry_names).any? || brokered_entries_on_record.empty?
+
+    session.merge_metadata!({}, [ BROKERED_ENTRIES_KEY ])
+  end
+
+  def brokered_entries_on_record
+    metadata = session.respond_to?(:metadata) ? session.metadata : nil
+    metadata.is_a?(Hash) ? Array(metadata[BROKERED_ENTRIES_KEY]).map(&:to_s) : []
   end
 
   def apply_brokered_bearer!(entry, token)

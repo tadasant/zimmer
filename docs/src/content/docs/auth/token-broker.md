@@ -46,36 +46,55 @@ On, an entry also needs Zimmer's
 broker** page (`/token-broker`).
 
 :::caution[A deploy that loses the variable turns the broker off]
-Declaring entries then go back to their static header, for as long as the catalog still carries one.
-Two surfaces say so: `/token-broker` shows the broker as off with the number of entries declared for
-it, and each such row on the Connectors page carries a note. Removing the static header from the
-catalog is what closes this for good. Until then the fallback is an operator's configuration change,
-never something a session, a grant or an authorization server can cause.
+Declaring entries are then authenticated as if they did not declare. While the catalog still carries
+their static header, sessions use it again. Once it does not, the entry has no credential at all: if
+its server advertises OAuth, Zimmer treats it as an ordinary OAuth server, and the gate stops a
+session that has it until a human authorizes it. Two surfaces say the broker is off: `/token-broker`,
+with the number of entries declared for it, and a note on each such row of the Connectors page. This
+is always an operator's configuration change. Nothing a session, a grant or an authorization server
+does can cause it.
 :::
+
+Turning the broker off leaves nothing of it behind. Zimmer records in a session's metadata
+(`brokered_config_entries`) which config entries the broker wrote or removed. The next prepare puts
+them back, also for Pi, whose file AIR does not rewrite, and on the reused-clone path, which
+otherwise runs no prepare. A server the broker had left out stops being recorded as degraded. A turn
+that is already running keeps what it started with.
 
 ## Cutover
 
-In this order. Each step is safe on its own, and nothing about a session changes before step 4.
+In this order. Followed in order, no declared entry is ever brokered without a grant, and the broker
+changes nothing about a session before step 4.
 
-1. **Configure the client identity**, and have the authorization server accept it.
-2. **Declare `brokered_auth` on one low-risk entry.** With the switch off this does nothing to
+1. **Configure the client identity**, and have the authorization server accept it. This is its own
+   change: an entry that already opts into it with `clientIdentity: "cimd"` starts using it here.
+2. **Declare `brokered_auth` on one low-risk entry, with the switch off.** It does nothing to
    sessions. It comes before connecting because Connect only accepts an authorization server that a
    catalog entry names.
 3. **Connect** that authorization server on `/token-broker`. This works while the broker is off: it
-   stores the grant and mints nothing.
-4. **Turn the switch on**, only once step 3 shows **Connected**. Web and worker must get it in the
-   same deploy, so it sits in the environment both roles share (`env.clear` in
-   `config/deploy.production.yml`), never on one role. A session that starts after this carries a
-   child token for that entry.
-5. **Check it**: the entry's row on Connectors is **Ready**, and a session's log says the broker
-   minted its token. Turning the switch off again is the way back, as long as the entry still has its
-   static header.
-6. **Declare the remaining entries**, a few at a time. With the switch on, an entry that gains a
-   declaration is brokered from its next turn, so check that its slug is within the grant first.
-7. **Remove the static headers** from the declared entries once they have run on the broker.
+   stores the grant and mints nothing. On strad's consent page, leave the grant wide enough for every
+   entry you mean to declare.
+4. **Turn the switch on**, straight after step 3 shows **Connected**. If time has passed, **Reconnect**
+   first: nothing refreshes a grant while the broker is off, so the badge says what was last known, and
+   a grant that lapsed upstream still reads Connected. Web and worker must get the switch in the same
+   deploy, so it sits in the environment both roles share (`env.clear` in
+   `config/deploy.production.yml`), never on one role. During a rolling deploy the old worker may
+   still start a turn with the static header, and a turn already running keeps it until it ends.
+5. **Check it.** This is the first time a token is minted, so a signer, exchange or scope problem
+   shows up here and not before: the entry's row on Connectors is **Ready**, and a session's log says
+   the broker minted its token. If not, turn the switch off again. The entry still has its static
+   header.
+6. **Declare more entries on the same authorization server**, a few at a time. With the switch on, an
+   entry is brokered from its next turn, so its slug has to be within the grant.
+   An entry on an authorization server that is **not** connected must not be declared while the
+   switch is on: it would be left out of sessions until someone connects it. Turn the switch off,
+   then go from step 2 for that server.
+7. **Remove the static headers** only once every deployment that shares the catalog has the broker
+   on. On a deployment where it is off, a declaring entry without its header has no credential.
 
-A deployment that shares a catalog which already declares entries does nothing in step 2. It must
-still finish step 3 before step 4, for every authorization server its catalog names.
+A deployment that shares a catalog which already declares entries has step 2 done for it. Before it
+turns the switch on, it must connect **every** authorization server its catalog names, with a grant
+that covers every declared slug.
 
 ## Opting an entry in
 
@@ -100,8 +119,14 @@ because AIR's Claude adapter copies `oauth` into the runtime's `.mcp.json`, whic
 Code an OAuth configuration for a server Zimmer authenticates itself. A malformed declaration is
 still an opt-in: with the switch on, the entry fails visibly instead of falling back.
 
-Only the `Authorization` header is replaced. A static credential in any other header stays on the
-entry, so a brokered entry should carry its credential in `Authorization` alone.
+Only the `Authorization` header of a remote entry is replaced. An entry that is not remote, or that
+carries a credential in any other header, has a malformed declaration: it would keep that credential
+beside the child token. A declaration written as `null` is malformed too.
+
+A config entry is matched to its catalog entry through what the session selected, because AIR keys a
+config by short id and two catalogs may contribute the same one. A key that could still be two
+entries, or a catalog that cannot be read, is treated as brokered and left out with the cause. A
+token is only ever written onto a URL that is the resource it was minted for.
 
 The entry may keep its static header while it is cut over. With the switch on, Zimmer never uses it
 for a brokered entry: the prepare step deletes it before secrets are resolved, the variable it names leaves the
@@ -214,6 +239,8 @@ The other servers, and the turn itself, run as normal.
 | Client identity not configured | "Zimmer's OAuth client identity is not configured on this deployment" |
 | Scope outside the grant (`invalid_scope`) | strad's own description, which names the slug |
 | Invalid declaration | "its catalog entry's brokered_auth declaration is invalid: …" |
+| Two catalog entries with the same short id | "more than one catalog entry is called …" |
+| Catalog unreadable | "the catalog could not be read …"; every remote entry is left out of that turn |
 
 ## Zimmer's own calls
 

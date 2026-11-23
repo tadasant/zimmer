@@ -32,6 +32,7 @@ class ServersConfig
       @headers = config["headers"] || {}
       @oauth = config["oauth"] || {}
       @brokered_auth = config[TokenBroker::Declaration::CATALOG_KEY]
+      @declares_brokered_auth = config.key?(TokenBroker::Declaration::CATALOG_KEY)
       @unavailable = config["unavailable"]
       @startup_timeout_sec = config[McpStartupTimeout::CATALOG_KEY]
     end
@@ -79,8 +80,9 @@ class ServersConfig
 
     def declared_unavailable? = !unavailable_reason.nil?
 
-    # The entry's raw `brokered_auth` declaration, or nil when it does not opt
-    # into the session token broker. Parsed and validated by
+    # The entry's raw `brokered_auth` declaration. nil when it does not opt into
+    # the session token broker, and also for a declaration written as `null`, which
+    # is malformed rather than absent (#declares_brokered_auth?). Parsed and validated by
     # TokenBroker::Declaration, which is what every caller should go through.
     attr_reader :brokered_auth
 
@@ -88,7 +90,7 @@ class ServersConfig
     # deployment: a catalog is shared, and a declaration is inert where the
     # broker is off. For the pages that show a declaration; anything that decides
     # how the entry is authenticated asks #brokered?.
-    def declares_brokered_auth? = !@brokered_auth.nil?
+    def declares_brokered_auth? = @declares_brokered_auth
 
     # Whether the token broker authenticates this entry HERE: it declares
     # `brokered_auth` and this deployment turned the broker on
@@ -109,6 +111,9 @@ class ServersConfig
     # @return [Array<String>]
     def session_variables
       return required_variables + optional_variables unless brokered?
+      # A malformed declaration leaves the entry out of every session, so nothing
+      # it names is the session's to hold, wherever in the entry it is named.
+      return [] unless TokenBroker::Declaration.for(self).valid?
 
       kept_headers = headers.reject { |key, _| key.to_s.casecmp?("Authorization") }
       (env.values + kept_headers.values + args + [ url ]).flat_map do |value|
@@ -332,6 +337,15 @@ class ServersConfig
 
     # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
     # id that exactly one catalog contributes. See ArtifactIdentity.find.
+    # #all, without its degrade-to-empty. For a caller to whom "the catalog could
+    # not be read" and "nothing is in it" must not look the same: the token broker
+    # reading an empty list would conclude that nothing is brokered.
+    #
+    # @raise [AirCatalogService::CatalogError]
+    def all!
+      AirCatalogService.entries_for(:mcp).map { |name, entry| Server.new(name, entry) }
+    end
+
     def find(name)
       ArtifactIdentity.find(all, name)
     end

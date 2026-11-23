@@ -134,10 +134,61 @@ module TokenBroker
   def brokered_among(server_names)
     return [] unless enabled?
 
-    declared = ServersConfig.all.select(&:brokered?)
-    return [] if declared.empty?
+    # Resolved against the whole catalog, not the declaring subset: a name two
+    # catalogs contest must not resolve to whichever of them happens to declare.
+    catalog = ServersConfig.all
+    return [] if catalog.none?(&:brokered?)
 
-    Array(server_names).map(&:to_s).select { |name| ArtifactIdentity.find(declared, name) }
+    Array(server_names).map(&:to_s).select { |name| ArtifactIdentity.find(catalog, name)&.brokered? }
+  end
+
+  # The entries of one runtime config that the broker authenticates, and the ones
+  # it has to refuse because it cannot tell which catalog entry they are.
+  #
+  # AIR keys a config by short id, and two composed catalogs may contribute the
+  # same one, so a key is resolved through what the SESSION selected. A key that
+  # still names more than one entry, any of them brokered, is refused: guessing
+  # could write one entry's token onto another's URL, or leave a brokered entry
+  # with its static key.
+  ConfigMatch = Struct.new(:servers, :refused, keyword_init: true) do
+    def self.empty = new(servers: {}, refused: {})
+  end
+
+  # @param config_entries [Hash{String => Object}] the config's server table
+  # @param selected [Array<String>] the session's selected servers (canonical tokens)
+  # @return [ConfigMatch] config key => Server, and config key => cause
+  # @raise [AirCatalogService::CatalogError] when the catalog cannot be read, so
+  #   that it is never mistaken for "nothing is brokered"
+  def match_config(config_entries, selected:)
+    return ConfigMatch.empty unless enabled?
+
+    catalog = ServersConfig.all!
+    return ConfigMatch.empty if catalog.none?(&:brokered?)
+
+    chosen = Array(selected).filter_map { |name| ArtifactIdentity.find(catalog, name.to_s) }.uniq
+    config_entries.each_with_object(ConfigMatch.empty) do |(key, entry), match|
+      next unless entry.is_a?(Hash)
+
+      candidates = chosen.select { |server| config_key?(server, key) }
+      candidates = catalog.select { |server| config_key?(server, key) } if candidates.empty?
+      next if candidates.none?(&:brokered?)
+
+      if candidates.one?
+        match.servers[key] = candidates.first
+      else
+        match.refused[key] = "more than one catalog entry is called #{key} (#{candidates.map(&:qualified_name).sort.to_sentence}), " \
+          "so the broker cannot tell which one this is"
+      end
+    end
+  end
+
+  def config_key?(server, key) = server.name == key.to_s || ArtifactIdentity.short_id(server.name) == key.to_s
+
+  # Whether a token minted for `server` may be written onto a config entry with
+  # this URL: they must be the same resource, or the token would be sent elsewhere.
+  def same_resource?(server, url)
+    resource = Declaration.for(server)&.resource
+    resource.present? && resource == normalize_resource(url)
   end
 
   # Every catalog entry that declares `brokered_auth`, by authorization server,

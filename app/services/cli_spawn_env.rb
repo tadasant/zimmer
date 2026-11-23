@@ -73,6 +73,9 @@ module CliSpawnEnv
       "store only; a Pi session gets one short-lived key minted from it, never the key itself.",
     "X_OAUTH_CLIENT_SECRET" =>
       "The X app's OAuth client secret. Sessions get minted X tokens, never the client.",
+    "ZIMMER_TOKEN_BROKER_ENABLED" =>
+      "Not a secret: the token broker's switch, which is this deployment's. A Zimmer booted from " \
+      "a session's clone would inherit it on, with no grant, and drop every declaring server.",
     "SLACK_BOT_TOKEN" =>
       "Zimmer's own Slack bot. SessionSecretScope writes it into the .env of a session " \
       "that was given a Slack server, and that .env value still wins here."
