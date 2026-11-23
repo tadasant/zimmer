@@ -38,14 +38,16 @@ module TokenBroker
     def self.for(server)
       return nil if server.nil? || !server.declares_brokered_auth?
 
-      new(server_name: server.name, url: server.url, raw: server.brokered_auth, remote: server.remote?, headers: server.headers.to_h)
+      new(server_name: server.name, url: server.url, raw: server.brokered_auth, remote: server.remote?,
+        headers: server.headers.to_h, extras: [ server.env, server.args ])
     end
 
-    def initialize(server_name:, url:, raw:, remote: true, headers: {})
+    def initialize(server_name:, url:, raw:, remote: true, headers: {}, extras: [])
       @server_name = server_name
       @url = url
       @remote = remote
       @headers = headers
+      @extras = extras
       @scopes = []
       @error = nil
       parse!(raw)
@@ -86,17 +88,22 @@ module TokenBroker
     end
 
     # Why a well-formed declaration still cannot be served. The broker replaces
-    # exactly one thing, a remote entry's `Authorization` header, so an entry that
-    # carries a credential anywhere else would keep it beside the child token.
+    # exactly one thing, a remote entry's `Authorization` header, so anything else
+    # that could carry a credential would sit beside the child token. Judged by what
+    # a value CONTAINS, not by what a header is called: a secret reaches an entry as
+    # a `${VAR}`, and it can be under any name. `X-Elicitation-Url` is exempt because
+    # Zimmer writes that header itself.
     def unservable_reason
       return "the entry is not a remote server, so there is no Authorization header to broker" unless @remote
       return "the entry's `url` cannot be used as a resource" if resource.nil?
+      return "the entry is remote but declares `env` or `args`" if @extras.any?(&:present?)
 
-      extra = @headers.keys.map(&:to_s).reject { |key| key.casecmp?("Authorization") }
-        .grep(McpOauthCredentialInjector::CREDENTIAL_HEADER_PATTERN)
+      extra = @headers.reject { |key, _| [ "authorization", RuntimeConfigPostProcessor::ELICITATION_URL_HEADER.downcase ].include?(key.to_s.downcase) }
+        .select { |key, value| value.to_s.include?("${") || key.to_s.match?(McpOauthCredentialInjector::CREDENTIAL_HEADER_PATTERN) }
       return if extra.empty?
 
-      "the entry carries a credential in #{extra.to_sentence}, which the broker does not replace; only `Authorization` may carry one"
+      "the entry carries a credential or a variable in #{extra.keys.map(&:to_s).to_sentence}, which the broker does not replace; " \
+        "only `Authorization` may carry one"
     end
   end
 end

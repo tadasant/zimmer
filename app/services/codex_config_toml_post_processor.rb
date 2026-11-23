@@ -83,14 +83,6 @@ class CodexConfigTomlPostProcessor < RuntimeConfigPostProcessor
     entry.delete("env_http_headers") if forwarded.empty?
   end
 
-  # AIR turns `Authorization: Bearer ${VAR}` into `bearer_token_env_var = "VAR"`,
-  # which Codex resolves from its own process environment. For a brokered entry
-  # that would be the static key, so the rule goes and the child token is
-  # written as a literal `http_headers` value instead.
-  def drop_bearer_token_env_var!(entry)
-    entry.delete("bearer_token_env_var")
-  end
-
   # A name Zimmer just wrote a literal value for under `env` must not also sit in
   # `env_vars`: Codex would then have two sources for one variable and Zimmer no
   # say in which wins. The literal is the one Zimmer computed (and the one a

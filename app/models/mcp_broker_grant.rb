@@ -67,11 +67,13 @@ class McpBrokerGrant < ApplicationRecord
   def self.store_consent!(pending_flow, tokens)
     discovered = pending_flow.mcp_server_config.is_a?(Hash) ? pending_flow.mcp_server_config : {}
     grant = find_or_initialize_by(authorization_server: pending_flow.broker_authorization_server)
+    resource = pending_flow.resource.presence || pending_flow.server_url
+    moved = grant.persisted? && (grant.resource != resource || grant.client_id != pending_flow.client_id)
     grant.update!(
       issuer: discovered["issuer"].presence || grant.issuer,
       token_endpoint: pending_flow.token_endpoint,
       revocation_endpoint: discovered["revocation_endpoint"].presence || grant.revocation_endpoint,
-      resource: pending_flow.resource.presence || pending_flow.server_url,
+      resource: resource,
       client_id: pending_flow.client_id,
       access_token: tokens["access_token"],
       refresh_token: tokens["refresh_token"],
@@ -82,6 +84,9 @@ class McpBrokerGrant < ApplicationRecord
       consented_at: Time.current,
       last_refreshed_at: Time.current
     )
+    # Zimmer's own children are reused by scope for up to an hour. One minted for
+    # the old resource must not be sent to the new one.
+    grant.brokered_tokens.for_backend.live.find_each(&:request_revoke!) if moved
     grant
   end
 

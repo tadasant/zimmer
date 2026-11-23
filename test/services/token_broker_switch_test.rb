@@ -23,6 +23,11 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     pi: [ PiMcpConfigPostProcessor, ".mcp.json" ]
   }.freeze
 
+  # Everything a brokered entry may hold once every other step has run.
+  BROKERED_ENTRY_KEYS = {
+    claude: %w[type url headers], codex: %w[url http_headers startup_timeout_sec], pi: %w[type url headers requestTimeoutMs]
+  }.freeze
+
   setup do
     @strad = FakeStrad.new
     client = @strad.client
@@ -188,7 +193,8 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
           assert_equal [ "image-diff" ], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
 
           turn_token_broker_off
-          assert_equal today, prepared(runtime, true, fs: fs)
+          # Content, not bytes: a rewritten entry can move within its table.
+          assert_equal parsed(runtime, today), parsed(runtime, prepared(runtime, true, fs: fs))
           refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY), "the record is cleared once nothing of the broker's is left"
         end
       end
@@ -349,8 +355,8 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
   test "on, strad is down: the entry is absent and nothing reaches the static key" do
     with_oauth_client_identity do
       @strad.create_grant!
-      TokenBroker::Client.any_instance.stubs(:exchange).raises(TokenBroker::Client::Error, "HTTP 503")
-      TokenBroker.stubs(:exchange!).raises(TokenBroker::MintError, "HTTP 503")
+      client = TokenBroker::Client.new
+      client.stubs(:exchange).raises(TokenBroker::Client::Error, "HTTP 503")
       assert_fails_closed(readiness: false)
     end
   end
@@ -377,13 +383,19 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
 
   # The catalog reader degrades to an empty list, which reads exactly like
   # "nothing is brokered".
-  test "on, the catalog cannot be read: a remote entry is dropped with a cause, not given its static key" do
+  test "on, the catalog cannot be read: every entry is dropped with a cause, none given its static key" do
     turn_token_broker_on
     with_catalog(declared: true) do
       ServersConfig.stubs(:all).returns([])
       ServersConfig.stubs(:all!).raises(AirCatalogService::CatalogError, "down")
       %i[claude codex].each do |runtime|
-        text = prepared(runtime, true)
+        text = prepared(runtime, true, entry: { "command" => "x", "env" => { "K" => "${STRAD_API_KEY}" } })
+        refute_includes text, "image-diff", "#{runtime}, a stdio entry"
+      end
+      RUNTIMES.each_key do |runtime|
+        fs = MockFileSystemAdapter.new
+        write_entries(runtime, fs, "image-diff" => { "url" => catalog_url, "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" } })
+        text = prepared(runtime, true, fs: fs, keep: true)
         refute_includes text, "image-diff", runtime
         refute_includes text, STATIC_KEY, runtime
         refute_includes text, "STRAD_API_KEY", runtime
@@ -432,6 +444,13 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  test "on with a grant, the baseline path mints nothing" do
+    with_grant do
+      RUNTIMES.each_key { |runtime| refute_includes prepared(runtime, true, baseline: true), "strad_oat_", runtime }
+    end
+    assert_equal 0, McpBrokeredToken.count
+  end
+
   test "off, the baseline path leaves the entry as it always did" do
     fs = MockFileSystemAdapter.new
     with_catalog(declared: true) do
@@ -446,13 +465,36 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
   LOCAL_X = "@local/image-diff"
   OTHER_X = "@b/c/image-diff"
 
-  test "on, two declaring entries contest the key and neither is selected by name: refused, never the static key" do
+  test "on, two declaring entries contest the key and the session selected neither: removed, never the static key" do
     turn_token_broker_on
     with_contested(local: true, other: true, selected: []) do
       text = prepared(:claude, true)
       refute_includes text, STATIC_KEY
       refute_includes text, "\"image-diff\""
-      assert_match(/more than one catalog entry is called image-diff/, @processor.brokered_token_result.failures["image-diff"])
+    end
+  end
+
+  test "on, a stored name that could be two entries, one of them brokered: refused with the cause" do
+    turn_token_broker_on
+    stub_mcp_catalog(ArtifactIdentity.canonicalize("@a/c/image-diff" => brokered_strad_entry("image-diff"), OTHER_X => static_strad_entry("image-diff")))
+    RUNTIMES.each_key do |runtime|
+      text = prepared(runtime, true)
+      refute_includes text, STATIC_KEY, runtime
+      refute_includes text, "STRAD_API_KEY", runtime
+      assert_match(/more than one catalog entry is called image-diff/, @processor.brokered_token_result.failures["image-diff"], runtime)
+    end
+  end
+
+  test "on, the session selected two entries that share a key, one brokered: refused, not the brokered one by default" do
+    turn_token_broker_on
+    with_oauth_client_identity do
+      @strad.create_grant!
+      with_contested(local: true, other: false, selected: [ "image-diff", OTHER_X ]) do
+        text = prepared(:claude, true)
+        refute_includes text, STATIC_KEY
+        refute_includes text, "strad_oat_"
+        assert_match(/more than one catalog entry/, @processor.brokered_token_result.failures["image-diff"])
+      end
     end
   end
 
@@ -464,24 +506,244 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
         text = prepared(:claude, true)
         assert_includes text, STATIC_KEY
         refute_includes text, "strad_oat_", "a token for the local entry must never reach the other entry's URL"
+        assert_empty TokenBroker.brokered_among([ OTHER_X ]), "a contested name must not resolve to whichever entry declares"
       end
       with_contested(local: false, other: true, selected: %w[image-diff]) do
         assert_includes prepared(:claude, true), STATIC_KEY
+        assert_empty TokenBroker.brokered_among(%w[image-diff])
       end
     end
   end
 
-  test "on, a token is never written onto a URL it is not for" do
-    turn_token_broker_on
-    with_oauth_client_identity do
-      @strad.create_grant!
-      with_catalog(declared: true) do
-        text = prepared(:claude, true, url: "https://elsewhere.example.com/mcp")
-        refute_includes text, "strad_oat_"
-        refute_includes text, STATIC_KEY
-        assert_match(/not the resource its token is for/, @processor.brokered_token_result.failures["image-diff"])
+  # --- nothing already on disk survives beside the token ----------------------
+
+  test "on, whatever URL the file names, the token goes to the catalog's URL" do
+    with_grant do
+      [ "https://elsewhere.example.com/mcp", "#{FakeStrad::ORIGIN}/other", "#{FakeStrad::ORIGIN}/mcp/../evil",
+        "https://user@strad.example.com/mcp?servers=image-diff", "HTTPS://strad.example.com:8443/mcp" ].each do |url|
+        text = prepared(:claude, true, url: url)
+        refute_includes text, url
+        entry = parsed(:claude, text).fetch("mcpServers").fetch("image-diff")
+        assert_equal catalog_url, entry["url"]
+        assert_match(/\ABearer strad_oat_/, entry.dig("headers", "Authorization"))
       end
     end
+  end
+
+  test "on, no other credential field on the file's entry survives, on any runtime" do
+    poison = {
+      claude: { "headersHelper" => "x", "headers" => { "X-Api-Key" => "${STRAD_API_KEY}", "authorization" => "Bearer ${STRAD_API_KEY}" }, "env" => { "K" => "${STRAD_API_KEY}" } },
+      pi: { "auth" => "bearer", "bearerTokenEnv" => "STRAD_API_KEY", "bearerToken" => "${STRAD_API_KEY}", "requestHeadersCommand" => "x",
+            "headers" => { "X-Api-Key" => "${STRAD_API_KEY}" } },
+      codex: { "bearer_token_env_var" => "STRAD_API_KEY", "env_http_headers" => { "X-Strad" => "STRAD_API_KEY", "Authorization" => "STRAD_API_KEY" },
+               "http_headers" => { "X-Api-Key" => "${STRAD_API_KEY}" } }
+    }
+    with_grant do
+      poison.each do |runtime, extra|
+        text = prepared(runtime, true, entry: { "url" => catalog_url }.merge(extra))
+        refute_includes text, STATIC_KEY, runtime
+        refute_includes text, "STRAD_API_KEY", runtime
+        assert_empty server_table(runtime, text).fetch("image-diff").keys - BROKERED_ENTRY_KEYS.fetch(runtime), runtime
+      end
+    end
+  end
+
+  test "on, an entry whose headers are not a table costs nothing" do
+    with_grant do
+      assert_includes prepared(:claude, true, entry: { "url" => catalog_url, "headers" => "nonsense" }), "strad_oat_"
+    end
+  end
+
+  # A child's scope is the session's servers, whatever else a file names.
+  test "on, a brokered entry the session did not select is removed, and nothing is minted for it" do
+    RUNTIMES.each_key do |runtime|
+      with_grant(extra: { "svg-tracer" => brokered_strad_entry("svg-tracer") }) do
+        McpBrokeredToken.delete_all
+        fs = MockFileSystemAdapter.new
+        write_entries(runtime, fs, "svg-tracer" => { "url" => "#{FakeStrad::ORIGIN}/mcp?servers=svg-tracer" })
+        table = server_table(runtime, prepared(runtime, true, fs: fs, keep: true))
+
+        refute table.key?("svg-tracer"), runtime
+        assert table.key?("image-diff"), runtime
+        assert_equal "slug:image-diff", McpBrokeredToken.order(:id).last.scope, runtime
+        refute @processor.brokered_token_result.failures.key?("svg-tracer"), "not selected, so not a degradation"
+      end
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "on, an entry keeps its catalog headers that hold no credential, its transport, and Zimmer's own approval header" do
+    with_grant(entry: brokered_strad_entry("image-diff").merge("type" => "sse",
+      "headers" => { "authorization" => "Bearer ${STRAD_API_KEY}", "X-Plain" => "1", "x-elicitation-url" => "${ELICITATION_REQUEST_URL}" })) do
+      entry = server_table(:claude, prepared(:claude, true)).fetch("image-diff")
+      assert_equal "sse", entry["type"]
+      assert_equal %w[Authorization X-Plain], entry["headers"].keys.sort
+    end
+  end
+
+  test "on, Zimmer's own injected entries are never touched by the broker step" do
+    turn_token_broker_on
+    stub_mcp_catalog("zimmer-self-session" => brokered_strad_entry("zimmer-self-session"), "image-diff" => static_strad_entry("image-diff"))
+    assert server_table(:claude, prepared(:claude, true)).key?("zimmer-self-session")
+  end
+
+  test "AIR is given no brokered entry while on, and every entry while off" do
+    @session.update_columns(mcp_servers: %w[image-diff granola])
+    stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff"), "granola" => static_strad_entry("granola"))
+    service = AirPrepareService.new(session: @session, working_directory: @dir)
+    service.stubs(:catch_up_catalog_cache!)
+    commands = []
+    service.stubs(:run_air_prepare_command!).with { |cmd, _| commands << cmd }
+
+    service.send(:run_air_prepare!)
+    turn_token_broker_on
+    service.send(:run_air_prepare!)
+
+    assert_equal %w[granola image-diff], commands.first.each_cons(2).filter_map { |flag, id| id if flag == "--mcp-server" }.sort
+    assert_equal %w[granola], commands.last.each_cons(2).filter_map { |flag, id| id if flag == "--mcp-server" }
+  end
+
+  test "on, a template session that was never saved can be prepared" do
+    template = Session.new(mcp_servers: %w[image-diff], agent_runtime: "claude_code", metadata: {})
+    with_grant do
+      fs = MockFileSystemAdapter.new
+      processor = ClaudeMcpConfigPostProcessor.new(session: template, working_directory: @dir, file_system: fs)
+      processor.post_process!
+      refute_includes fs.read(File.join(@dir, RUNTIMES[:claude].last)), STATIC_KEY
+    end
+  end
+
+  # --- one decision everywhere: the reused clone, the grant, the fork ---------
+
+  test "on, the reused-clone path re-prepares when the catalog cannot be read, rather than trusting the file" do
+    turn_token_broker_on
+    ServersConfig.stubs(:all!).raises(AirCatalogService::CatalogError, "down")
+    ServersConfig.stubs(:all).returns([])
+    expect_reprepare { remint }
+  end
+
+  test "on, the reused-clone path re-prepares when only an unselected or contested entry is brokered" do
+    turn_token_broker_on
+    stub_mcp_catalog("image-diff" => static_strad_entry("image-diff"), "svg-tracer" => brokered_strad_entry("svg-tracer"))
+    expect_reprepare { remint }
+  end
+
+  test "the reused-clone path mints for a turn, and not for a clone-only job" do
+    turn_token_broker_on
+    with_catalog(declared: true) do
+      expect_reprepare(mint: false) { remint(mint: false) }
+      expect_reprepare(mint: true) { remint(mint: true) }
+    end
+  end
+
+  test "reconnecting to a different resource ends the backend tokens minted for the old one" do
+    with_grant do |server|
+      old = TokenBroker.backend_token(server)
+      flow = McpOauthPendingFlow.new(broker_authorization_server: FakeStrad::ORIGIN, token_endpoint: FakeStrad::TOKEN_ENDPOINT,
+        resource: "#{FakeStrad::ORIGIN}/mcp2", client_id: OauthClientIdentity.client_id, server_url: "#{FakeStrad::ORIGIN}/mcp2", mcp_server_config: {})
+      tokens = { "access_token" => "strad_oat_parent2", "refresh_token" => "strad_ort_parent2", "expires_in" => 3600 }
+      McpBrokerGrant.store_consent!(flow, tokens)
+
+      stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff").merge("url" => "#{FakeStrad::ORIGIN}/mcp2"))
+      assert_not_equal old, TokenBroker.backend_token(ServersConfig.find("image-diff"))
+      assert_not_equal "live", McpBrokeredToken.order(:id).first.state
+    end
+  end
+
+  test "reconnecting to the same resource keeps them" do
+    with_grant do |server|
+      old = TokenBroker.backend_token(server)
+      grant = McpBrokerGrant.sole
+      flow = McpOauthPendingFlow.new(broker_authorization_server: FakeStrad::ORIGIN, token_endpoint: FakeStrad::TOKEN_ENDPOINT,
+        resource: grant.resource, client_id: grant.client_id, server_url: grant.resource, mcp_server_config: {})
+      McpBrokerGrant.store_consent!(flow, "access_token" => "strad_oat_p2", "refresh_token" => "strad_ort_p2", "expires_in" => 3600)
+      assert_equal old, TokenBroker.backend_token(server)
+    end
+  end
+
+  test "one entry's backend token is never reused for another's scope" do
+    with_grant(extra: { "svg-tracer" => brokered_strad_entry("svg-tracer") }) do |server|
+      assert_not_equal TokenBroker.backend_token(server), TokenBroker.backend_token(ServersConfig.find("svg-tracer"))
+    end
+  end
+
+  # --- on, then off: the leftovers the review found -----------------------------
+
+  test "on then off: an entry the broker wrote and the session has since dropped is removed" do
+    RUNTIMES.each_key do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant { prepared(runtime, true, fs: fs) }
+      turn_token_broker_off
+      @session.update_columns(mcp_servers: %w[other])
+      stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff"), "other" => static_strad_entry("other"))
+      refute_includes prepared(runtime, true, fs: fs, keep: true), "strad_oat_", runtime
+      refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY), runtime
+      @session.update_columns(mcp_servers: %w[image-diff])
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "on then off: the baseline path removes the revoked token and clears the record" do
+    RUNTIMES.each_key do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant { prepared(runtime, true, fs: fs) }
+      turn_token_broker_off
+      @session.update_columns(mcp_servers: [])
+      refute_includes prepared(runtime, true, fs: fs, baseline: true), "strad_oat_", runtime
+      refute @session.reload.metadata.key?(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY), runtime
+      @session.update_columns(mcp_servers: %w[image-diff])
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "on then off: a refused entry, not only a served one, is put back on Pi" do
+    fs = MockFileSystemAdapter.new
+    turn_token_broker_on
+    with_catalog(declared: true) { refute_includes prepared(:pi, true, fs: fs), "image-diff" }
+    assert_equal [ "image-diff" ], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
+    turn_token_broker_off
+    with_catalog(declared: true) { assert_includes prepared(:pi, true, fs: fs), STATIC_KEY }
+  end
+
+  test "on -> off -> on: the entry is brokered again with a new token, and only one is live" do
+    RUNTIMES.each_key do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant do
+        first = prepared(runtime, true, fs: fs)
+        turn_token_broker_off
+        assert_includes prepared(runtime, true, fs: fs), (runtime == :codex ? "STRAD_API_KEY" : STATIC_KEY)
+        turn_token_broker_on
+        third = prepared(runtime, true, fs: fs)
+        refute_includes third, STATIC_KEY, runtime
+        refute_includes third, "STRAD_API_KEY", runtime
+        assert_not_equal first, third
+        assert_equal 1, McpBrokeredToken.for_sessions.live.count, runtime
+      end
+      McpBrokeredToken.delete_all
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "pi: a recorded entry the catalog no longer has, or cannot express, is dropped rather than kept with its old token" do
+    [ {}, { "image-diff" => { "type" => "streamable-http", "brokered_auth" => { "scopes" => [ "slug:x" ] } } } ].each do |catalog|
+      fs = MockFileSystemAdapter.new
+      with_grant { prepared(:pi, true, fs: fs) }
+      turn_token_broker_off
+      stub_mcp_catalog(catalog)
+      refute_includes prepared(:pi, true, fs: fs), "strad_oat_"
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "a degradation that is still true is kept, and one whose cause ended is forgotten" do
+    broker = ->(name) { { "name" => name, "error" => "token_broker_unavailable", "reason" => "x", "degraded_at" => "2020-01-01" } }
+    @session.merge_metadata!("mcp_degraded_servers" => [ broker["image-diff"], broker["svg-tracer"] ])
+    result = TokenBroker::MintResult.new(tokens: {}, failures: { "image-diff" => "still no grant" })
+    job = AgentSessionJob.new
+
+    job.send(:forget_resolved_broker_degradations, @session, result)
+
+    assert_equal %w[image-diff], @session.reload.degraded_mcp_servers.map { |e| e["name"] }
   end
 
   # --- declarations the broker cannot serve ---------------------------------
@@ -489,9 +751,39 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
   test "on, a credential outside Authorization is a malformed declaration, and its variable never reaches the session" do
     turn_token_broker_on
     with_catalog(declared: true, headers: { "Authorization" => "Bearer ${STRAD_API_KEY}", "X-Api-Key" => "${STRAD_API_KEY}" }) do |server|
-      assert_match(/carries a credential in X-Api-Key/, TokenBroker::Declaration.for(server).error)
+      assert_match(/carries a credential or a variable in X-Api-Key/, TokenBroker::Declaration.for(server).error)
       assert_empty server.session_variables
       assert_raises(McpServerEndpoint::UnresolvableError) { McpServerEndpoint.new(server).headers }
+    end
+  end
+
+  test "on, any variable outside Authorization is malformed, whatever its header is called" do
+    turn_token_broker_on
+    %w[Cookie X-Strad-Key X-Access-Key X-Subscription-Key X-Org].each do |header|
+      with_catalog(declared: true, headers: { "Authorization" => "Bearer ${STRAD_API_KEY}", header => "k=${STRAD_API_KEY}" }) do |server|
+        assert_match(/#{header}/, TokenBroker::Declaration.for(server).error.to_s)
+        assert_empty server.session_variables
+        RUNTIMES.each_key { |runtime| refute_includes prepared(runtime, true), STATIC_KEY, "#{header} #{runtime}" }
+      end
+    end
+  end
+
+  test "on, a remote entry with env or args, or a url that is not a resource, is malformed" do
+    turn_token_broker_on
+    base = brokered_strad_entry("image-diff")
+    [ base.merge("env" => { "K" => "${STRAD_API_KEY}" }), base.merge("args" => [ "${STRAD_API_KEY}" ]), base.merge("url" => "https://${HOST}/mcp"),
+      base.merge("url" => "https://${HOST}/mcp", "brokered_auth" => { "scopes" => [ "slug:x" ], "authorization_server" => FakeStrad::ORIGIN }) ].each do |entry|
+      stub_mcp_catalog("image-diff" => entry)
+      server = ServersConfig.find("image-diff")
+      assert TokenBroker::Declaration.for(server).error.present?, entry.inspect
+      assert_empty server.session_variables
+    end
+  end
+
+  test "on, a lower-case authorization header is replaced like any other" do
+    with_grant(entry: static_strad_entry("image-diff").merge("headers" => { "authorization" => "Bearer ${STRAD_API_KEY}" }, "brokered_auth" => { "scopes" => [ "slug:image-diff" ] })) do |server|
+      assert_empty server.session_variables
+      assert_equal %w[Authorization], server_table(:claude, prepared(:claude, true)).dig("image-diff", "headers").keys
     end
   end
 
@@ -553,6 +845,37 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  def catalog_url = "#{FakeStrad::ORIGIN}/mcp?servers=image-diff"
+
+  # The broker on, the identity configured, a usable grant, and one declaring entry.
+  def with_grant(entry: brokered_strad_entry("image-diff"), extra: {})
+    turn_token_broker_on
+    with_oauth_client_identity do
+      @strad.create_grant! unless McpBrokerGrant.exists?
+      stub_mcp_catalog({ "image-diff" => entry }.merge(extra))
+      yield ServersConfig.find("image-diff")
+    end
+  end
+
+  def remint(mint: true)
+    AgentSessionJob.new.send(:remint_brokered_tokens_for_reused_clone, @session, @dir, LogBuffer.new(@session), mint: mint)
+  end
+
+  def expect_reprepare(mint: true)
+    prepare = stub(prepare!: true, injected_mcp_servers: [], brokered_token_result: TokenBroker::MintResult.empty)
+    AirPrepareService.expects(:new).with { |**kw| kw[:mint_brokered_tokens] == mint }.returns(prepare)
+    assert_equal :reprepared, yield
+  end
+
+  def parsed(runtime, text) = runtime == :codex ? TomlRB.parse(text) : JSON.parse(text)
+
+  def server_table(runtime, text) = parsed(runtime, text).fetch(runtime == :codex ? "mcp_servers" : "mcpServers")
+
+  def write_entries(runtime, fs, entries)
+    full = File.join(@dir, RUNTIMES.fetch(runtime).last)
+    fs.write(full, runtime == :codex ? TomlRB.dump("mcp_servers" => entries) : JSON.generate("mcpServers" => entries))
+  end
+
   # Two catalogs contributing `image-diff`, as AirCatalogService canonicalizes them.
   def with_contested(local:, other:, selected:, config_url: nil)
     mine = local ? brokered_strad_entry("image-diff") : static_strad_entry("image-diff")
@@ -590,18 +913,16 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
   #
   # Claude and Codex entries are rewritten every time, as `air prepare` does; Pi's
   # file is left as the previous call left it, because nothing rewrites that one.
-  def prepared(runtime, mint, fs: MockFileSystemAdapter.new, baseline: false, url: nil)
+  # `keep` leaves the others too, and `entry` is what to find in the file instead.
+  def prepared(runtime, mint, fs: MockFileSystemAdapter.new, baseline: false, url: nil, entry: nil, keep: false)
     klass, path = RUNTIMES.fetch(runtime)
     full = File.join(@dir, path)
-    url ||= @config_url || "#{FakeStrad::ORIGIN}/mcp?servers=image-diff"
-    runtime = nil if baseline
-    case runtime
-    when :codex
-      fs.write(full, TomlRB.dump("mcp_servers" => { "image-diff" => { "url" => url, "bearer_token_env_var" => "STRAD_API_KEY" } }))
-    when :claude
-      fs.write(full, JSON.pretty_generate("mcpServers" => { "image-diff" => {
-        "type" => "http", "url" => url, "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" }
-      } }))
+    url ||= @config_url || catalog_url
+    if entry
+      write_entries(runtime, fs, "image-diff" => entry)
+    elsif !baseline && !keep
+      write_entries(:claude, fs, "image-diff" => { "type" => "http", "url" => url, "headers" => { "Authorization" => "Bearer ${STRAD_API_KEY}" } }) if runtime == :claude
+      write_entries(:codex, fs, "image-diff" => { "url" => url, "bearer_token_env_var" => "STRAD_API_KEY" }) if runtime == :codex
     end
     @processor = klass.new(session: @session.reload, working_directory: @dir, file_system: fs)
     @processor.mint_brokered_tokens = mint

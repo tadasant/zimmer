@@ -691,6 +691,11 @@ class AirPrepareService
     # Plugin-contributed servers ride along exactly as Session#user_selected_mcp_servers
     # adds them; only the directly-selected column is reconciled here.
     effective_mcp_servers = (selection[:mcp_servers] + session.plugin_mcp_servers).uniq
+    # A brokered entry is written by the post-processor, with a token. AIR would
+    # write its static header, which would then sit on disk while a token is minted.
+    # A server a plugin bundles still reaches AIR through --plugin; the
+    # post-processor removes that entry before it writes its own.
+    effective_mcp_servers -= TokenBroker.brokered_among(effective_mcp_servers)
     if effective_mcp_servers.present?
       cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", air_reference(:mcp, id) ] }
     end

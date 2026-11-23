@@ -142,53 +142,77 @@ module TokenBroker
     Array(server_names).map(&:to_s).select { |name| ArtifactIdentity.find(catalog, name)&.brokered? }
   end
 
-  # The entries of one runtime config that the broker authenticates, and the ones
-  # it has to refuse because it cannot tell which catalog entry they are.
+  # What the broker does to one runtime config.
   #
-  # AIR keys a config by short id, and two composed catalogs may contribute the
-  # same one, so a key is resolved through what the SESSION selected. A key that
-  # still names more than one entry, any of them brokered, is refused: guessing
-  # could write one entry's token onto another's URL, or leave a brokered entry
-  # with its static key.
-  ConfigMatch = Struct.new(:servers, :refused, keyword_init: true) do
-    def self.empty = new(servers: {}, refused: {})
+  # `serve` is config key => Server for the brokered entries the SESSION SELECTED:
+  # the only ones a token is minted for, whatever else a file on the clone names.
+  # `remove` is every key on disk that is, or could be, a brokered entry. The served
+  # ones are removed too, because they are written afresh from the catalog rather
+  # than edited in place. `refused` is key => cause, for a selected entry the broker
+  # cannot identify.
+  ConfigPlan = Struct.new(:serve, :remove, :refused, keyword_init: true) do
+    def self.empty = new(serve: {}, remove: [], refused: {})
+    def empty? = serve.empty? && remove.empty? && refused.empty?
   end
 
-  # @param config_entries [Hash{String => Object}] the config's server table
+  # AIR keys a config by short id, and two composed catalogs may contribute the
+  # same one, so a key is resolved through what the session selected. A key that
+  # still names more than one entry, any of them brokered, is refused: guessing
+  # could leave a brokered entry with its static key.
+  #
+  # @param keys [Array<String>] the keys in the config's server table
   # @param selected [Array<String>] the session's selected servers (canonical tokens)
-  # @return [ConfigMatch] config key => Server, and config key => cause
+  # @yieldparam server [ServersConfig::Server]
+  # @yieldreturn [String] the key this runtime writes the entry under
+  # @return [ConfigPlan]
   # @raise [AirCatalogService::CatalogError] when the catalog cannot be read, so
   #   that it is never mistaken for "nothing is brokered"
-  def match_config(config_entries, selected:)
-    return ConfigMatch.empty unless enabled?
+  def plan_config(keys, selected:, &key_for)
+    return ConfigPlan.empty unless enabled?
 
     catalog = ServersConfig.all!
-    return ConfigMatch.empty if catalog.none?(&:brokered?)
+    return ConfigPlan.empty if catalog.none?(&:brokered?)
 
-    chosen = Array(selected).filter_map { |name| ArtifactIdentity.find(catalog, name.to_s) }.uniq
-    config_entries.each_with_object(ConfigMatch.empty) do |(key, entry), match|
-      next unless entry.is_a?(Hash)
+    plan = ConfigPlan.empty
+    selected = Array(selected).map(&:to_s)
+    chosen = selected.filter_map { |name| ArtifactIdentity.find(catalog, name) }.uniq
 
-      candidates = chosen.select { |server| config_key?(server, key) }
-      candidates = catalog.select { |server| config_key?(server, key) } if candidates.empty?
-      next if candidates.none?(&:brokered?)
+    chosen.group_by(&key_for).each do |key, servers|
+      next if servers.none?(&:brokered?)
 
-      if candidates.one?
-        match.servers[key] = candidates.first
-      else
-        match.refused[key] = "more than one catalog entry is called #{key} (#{candidates.map(&:qualified_name).sort.to_sentence}), " \
-          "so the broker cannot tell which one this is"
-      end
+      servers.one? ? plan.serve[key] = servers.first : plan.refused[key] = ambiguous(key, servers)
     end
+    # A selected name that resolves to nothing but could be a brokered entry.
+    (selected - chosen.map(&:name)).each do |name|
+      next if chosen.any? { |server| names?(server, name) }
+
+      servers = catalog.select { |server| names?(server, name) }
+      plan.refused[name] = ambiguous(name, servers) if servers.any?(&:brokered?)
+    end
+
+    keys.map(&:to_s).each do |key|
+      candidates = chosen.select { |server| names?(server, key) }
+      candidates = catalog.select { |server| names?(server, key) } if candidates.empty?
+      plan.remove << key if candidates.any?(&:brokered?)
+    end
+    plan
   end
 
-  def config_key?(server, key) = server.name == key.to_s || ArtifactIdentity.short_id(server.name) == key.to_s
+  # Could this config key, or stored name, be this entry?
+  def names?(server, key)
+    [ server.name, server.qualified_name, ArtifactIdentity.short_id(server.name) ].include?(key.to_s)
+  end
 
-  # Whether a token minted for `server` may be written onto a config entry with
-  # this URL: they must be the same resource, or the token would be sent elsewhere.
-  def same_resource?(server, url)
-    resource = Declaration.for(server)&.resource
-    resource.present? && resource == normalize_resource(url)
+  def ambiguous(key, servers)
+    "more than one catalog entry is called #{key} (#{servers.map(&:qualified_name).sort.to_sentence}), " \
+      "so the broker cannot tell which one this is"
+  end
+
+  # Whether any catalog entry is brokered here, with "cannot tell" counted as yes.
+  def any_brokered?
+    enabled? && ServersConfig.all!.any?(&:brokered?)
+  rescue AirCatalogService::CatalogError
+    true
   end
 
   # Every catalog entry that declares `brokered_auth`, by authorization server,

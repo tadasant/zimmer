@@ -181,12 +181,13 @@ class BrokeredRuntimeConfigTest < ActiveSupport::TestCase
 
   # --- what else stops reaching a session -------------------------------
 
-  test "a brokered entry's static header variable leaves the session's secret scope" do
-    stub_mcp_catalog("image-diff" => brokered_strad_entry("image-diff").merge("env" => { "X" => "${OTHER_VAR}" }))
-    assert_equal %w[OTHER_VAR], ServersConfig.find("image-diff").session_variables
+  test "a brokered entry names no variable the session holds" do
+    entry = brokered_strad_entry("image-diff")
+    stub_mcp_catalog("image-diff" => entry.merge("headers" => entry["headers"].merge("X-Other" => "${OTHER_VAR}")))
+    server = ServersConfig.find("image-diff")
 
-    stub_mcp_catalog("image-diff" => static_strad_entry("image-diff"))
-    assert_equal %w[STRAD_API_KEY], ServersConfig.find("image-diff").session_variables
+    assert_match(/X-Other/, TokenBroker::Declaration.for(server).error, "a variable outside Authorization makes the declaration malformed")
+    assert_empty server.session_variables
   end
 
   test "the OAuth credential injector never handles a brokered entry" do

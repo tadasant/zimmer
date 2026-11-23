@@ -55,11 +55,17 @@ is always an operator's configuration change. Nothing a session, a grant or an a
 does can cause it.
 :::
 
-Turning the broker off leaves nothing of it behind. Zimmer records in a session's metadata
-(`brokered_config_entries`) which config entries the broker wrote or removed. The next prepare puts
-them back, also for Pi, whose file AIR does not rewrite, and on the reused-clone path, which
-otherwise runs no prepare. A server the broker had left out stops being recorded as degraded. A turn
+Turning the broker off takes it out of a session's config at the session's next prepare. Zimmer records
+in the session's metadata (`brokered_config_entries`, which a fork inherits) which config keys the
+broker wrote or removed. A selected server goes back to what the catalog says, also on Pi, whose file
+AIR does not rewrite, and on the reused-clone path, which otherwise runs no prepare. A key the session
+does not select is removed. A server the broker had left out stops being recorded as degraded. A turn
 that is already running keeps what it started with.
+
+Two things are not restored. An entry the *repository* or the *agent* wrote under a brokered server's
+name is replaced by the catalog's while the broker is on, and is not brought back. With an unreadable
+catalog every server in the config, declared or not, is left out of that turn, because any of them
+could be brokered. Selected ones return with the catalog.
 
 ## Cutover
 
@@ -119,18 +125,28 @@ because AIR's Claude adapter copies `oauth` into the runtime's `.mcp.json`, whic
 Code an OAuth configuration for a server Zimmer authenticates itself. A malformed declaration is
 still an opt-in: with the switch on, the entry fails visibly instead of falling back.
 
-Only the `Authorization` header of a remote entry is replaced. An entry that is not remote, or that
-carries a credential in any other header, has a malformed declaration: it would keep that credential
-beside the child token. A declaration written as `null` is malformed too.
+A brokered entry has one credential slot, `Authorization`. These make a declaration malformed, and the
+entry is then left out with the cause:
 
-A config entry is matched to its catalog entry through what the session selected, because AIR keys a
-config by short id and two catalogs may contribute the same one. A key that could still be two
-entries, or a catalog that cannot be read, is treated as brokered and left out with the cause. A
-token is only ever written onto a URL that is the resource it was minted for.
+- the entry is not remote, or is remote and declares `env` or `args`;
+- any other header names a `${VAR}`, whatever the header is called, or has a credential's name. Put a
+  plain value there, or keep the entry off the broker. `X-Elicitation-Url` is exempt: Zimmer writes it;
+- the `url` is not a usable resource, which includes one containing a `${VAR}`;
+- the declaration is `null`.
+
+A credential written literally into the URL's query is not detected.
+
+A brokered entry is never edited in place. AIR is not given it (one a plugin bundles still reaches AIR,
+and is removed afterwards), every key on disk that is or could be one is removed, and what the session
+gets is written from the catalog: its `url`, which is the resource the token is for, the child token,
+and its plain headers. Nothing the repository, the agent or an earlier prepare left on that entry
+survives. Tokens are minted only for servers the session selected. A key is matched through that
+selection, because AIR keys a config by short id and two catalogs may contribute the same one. A name
+that could still be two entries is refused.
 
 The entry may keep its static header while it is cut over. With the switch on, Zimmer never uses it
-for a brokered entry: the prepare step deletes it before secrets are resolved, the variable it names leaves the
-session's [secret scope](/sessions/spawning/), and the OAuth injector skips the entry. Removing it
+for a brokered entry: the prepare step leaves it out, no variable the entry names is in the session's
+[secret scope](/sessions/spawning/), and the OAuth injector skips the entry. Removing it
 from the catalog is still the cleaner end state.
 
 ## The one-time consent
@@ -190,7 +206,7 @@ sequenceDiagram
   brokered entries there. Two entries on strad are one exchange and one token.
 - **Mint at turn start.** Only `AgentSessionJob` mints, on the fresh-clone and follow-up prepares,
   and on the reused-clone retry path, which otherwise runs no prepare. That last one re-prepares
-  only for a session that has a brokered entry. Unarchive, fork, the warm process pool and a
+  whenever any catalog entry is brokered, and mints only for a turn. Unarchive, fork, the warm process pool and a
   clone-only job write a config with the brokered entry absent, because no turn is starting. The
   previous turn's child is superseded and revoked.
 - **Revoke at rest.** `BrokeredTokenRevocation` enqueues `TokenBrokerRevokeJob` on every rest:
@@ -240,7 +256,7 @@ The other servers, and the turn itself, run as normal.
 | Scope outside the grant (`invalid_scope`) | strad's own description, which names the slug |
 | Invalid declaration | "its catalog entry's brokered_auth declaration is invalid: …" |
 | Two catalog entries with the same short id | "more than one catalog entry is called …" |
-| Catalog unreadable | "the catalog could not be read …"; every remote entry is left out of that turn |
+| Catalog unreadable | "the catalog could not be read …"; every server in the config is left out of that turn |
 
 ## Zimmer's own calls
 

@@ -111,14 +111,10 @@ class ServersConfig
     # @return [Array<String>]
     def session_variables
       return required_variables + optional_variables unless brokered?
-      # A malformed declaration leaves the entry out of every session, so nothing
-      # it names is the session's to hold, wherever in the entry it is named.
-      return [] unless TokenBroker::Declaration.for(self).valid?
 
-      kept_headers = headers.reject { |key, _| key.to_s.casecmp?("Authorization") }
-      (env.values + kept_headers.values + args + [ url ]).flat_map do |value|
-        extract_interpolations(value, with_defaults: false) + extract_interpolations(value, with_defaults: true)
-      end.uniq
+      # A valid declaration names no variable outside Authorization, which the
+      # broker replaces, and a malformed one leaves the entry out of every session.
+      []
     end
 
     # How long a runtime should wait for THIS server to start and answer

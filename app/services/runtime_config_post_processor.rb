@@ -103,9 +103,11 @@ class RuntimeConfigPostProcessor
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
+    # After the steps that rewrite URLs, so nothing moves an entry that carries a
+    # token. Before the elicitation header, which the rewritten entry needs too.
+    inject_brokered_credentials!(servers)
     inject_elicitation_env!(servers)
     inject_elicitation_header!(servers)
-    inject_brokered_credentials!(servers)
     resolve_secrets!(servers)
     pin_npx_caches_to_clone!(servers)
     apply_startup_timeouts!(servers)
@@ -145,7 +147,10 @@ class RuntimeConfigPostProcessor
     # post_process! branch) can be present for inject_subagent_server! to skip over.
     # A catalog entry that DID reach here would be left un-retargeted by this early
     # return — but by construction one cannot.
-    return if injected_mcp_servers.empty? && !removed
+    if injected_mcp_servers.empty? && !removed
+      forget_brokered_entries!
+      return
+    end
 
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
@@ -168,6 +173,7 @@ class RuntimeConfigPostProcessor
     apply_startup_timeouts!(servers)
 
     persist_config!(config)
+    forget_brokered_entries!
   end
 
   private
@@ -355,81 +361,98 @@ class RuntimeConfigPostProcessor
     end
   end
 
-  # Brokered auth (TokenBroker): for every entry whose catalog declaration opts
-  # in, replace whatever `Authorization` the entry carries with this turn's
-  # child token — or, when there is no token, remove the entry from the config.
+  # Brokered auth (TokenBroker): write every brokered entry the session selected
+  # with this turn's child token as its `Authorization`, and leave out every one
+  # that got no token.
   #
-  # Never a fallback. The catalog may still write `Bearer ${STRAD_API_KEY}` on
-  # an opted-in entry (and AIR may already have resolved it), but this runs
-  # before #resolve_secrets! and deletes that header under any casing, along
-  # with Codex's forwarding forms of it (`env_http_headers`,
-  # `bearer_token_env_var`). An entry that could not be given a child token is
-  # absent from the turn rather than present with the whole-gateway key; the
+  # Never a fallback, and never an edit in place. A brokered entry is not passed to
+  # AIR at all, every key on disk that is or could be one is removed, and what the
+  # session gets is built here from the catalog: the catalog's URL, which is the
+  # resource the token was minted for, the child token, and the catalog's other
+  # headers, which carry no credential (TokenBroker::Declaration). So nothing an
+  # earlier prepare, the repository or the agent left on that entry survives beside
+  # the token: no second header, no env forwarding, no other URL. A key the session
+  # did not select is removed and nothing is minted for it.
+  #
+  # "Could not tell" is treated as brokered, never as not: a catalog that cannot be
+  # read, or a name that could be two entries, costs those servers the turn. The
   # cause is in #brokered_token_result, which AgentSessionJob writes into the
   # session's log and metadata.
   #
-  # Free when nothing opts in: one pass over the catalog finds no declaration
-  # and returns before touching the config.
+  # Free while the broker is off, apart from taking out what it left behind
+  # (#discard_brokered_leftovers!).
   #
-  # "Could not tell" is treated as brokered, never as not: a catalog that cannot
-  # be read, or a key that could be two entries, costs those servers the turn.
-  #
-  # @return [Boolean] whether any entry was rewritten or removed
+  # @return [Boolean] whether any entry was written or removed
   def inject_brokered_credentials!(servers, mint: mint_brokered_tokens)
     @brokered_token_result = TokenBroker::MintResult.empty
     @brokered_entry_names = []
-    return false unless TokenBroker.enabled?
+    return discard_brokered_leftovers!(servers) unless TokenBroker.enabled?
 
-    candidates = servers.reject { |name, _| injected_mcp_servers.include?(name) }
-    begin
-      match = TokenBroker.match_config(candidates, selected: selected_mcp_servers)
+    owned = servers.keys.map(&:to_s) - injected_mcp_servers.map(&:to_s)
+    plan = begin
+      TokenBroker.plan_config(owned, selected: selected_mcp_servers) { |server| brokered_config_key(server) }
     rescue AirCatalogService::CatalogError => e
-      unreadable = candidates.select { |_, entry| entry.is_a?(Hash) && entry["url"].present? }.keys
-      return refuse_entries!(servers, unreadable.to_h { |name| [ name, "the catalog could not be read (#{e.class}), so Zimmer cannot tell whether it is brokered" ] })
+      cause = "the catalog could not be read (#{e.class}), so Zimmer cannot tell whether it is brokered"
+      TokenBroker::ConfigPlan.new(serve: {}, remove: owned, refused: (owned | selected_mcp_servers.map(&:to_s)).index_with { cause })
     end
-    refuse_entries!(servers, match.refused)
-    return @brokered_entry_names.any? if match.servers.empty?
+    return false if plan.empty?
 
-    remember_brokered_entries!(match.servers.keys)
+    remember_brokered_entries!(plan.remove | plan.serve.keys | plan.refused.keys)
+    plan.remove.each { |key| servers.delete(key) }
+    plan.refused.each { |name, cause| @brokered_token_result.failures[name] = cause }
+    unselected = plan.remove - plan.serve.keys - plan.refused.keys
+    if unselected.any?
+      Rails.logger.warn "[#{self.class.name}] Removed #{unselected.join(', ')} from the MCP config: the broker " \
+        "authenticates #{unselected.one? ? 'it' : 'them'}, and the session did not select #{unselected.one? ? 'it' : 'them'}"
+    end
+    return true if plan.serve.empty?
+
     unless mint
-      match.servers.each_key { |name| servers.delete(name) }
-      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{match.servers.keys.join(', ')} out of a config " \
+      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{plan.serve.keys.join(', ')} out of a config " \
         "written outside a turn start; the turn that runs them mints their token"
       return true
     end
 
+    names = plan.serve.values.map(&:name)
     minted = begin
-      TokenBroker.mint_for_session(session, match.servers.values.map(&:name))
+      TokenBroker.mint_for_session(session, names)
     rescue StandardError => e
       # A broker bug must cost the brokered entries, not the whole turn.
-      failure = "the token broker raised #{e.class}"
-      TokenBroker::MintResult.new(tokens: {}, failures: match.servers.values.to_h { |server| [ server.name, failure ] })
+      TokenBroker::MintResult.new(tokens: {}, failures: names.index_with { "the token broker raised #{e.class}" })
     end
 
-    match.servers.each do |name, server|
-      token = minted.tokens[server.name]
-      if token && TokenBroker.same_resource?(server, servers[name]["url"])
-        apply_brokered_bearer!(servers[name], token)
+    plan.serve.each do |key, server|
+      if (token = minted.tokens[server.name])
+        servers[key] = brokered_entry(server, token)
         @brokered_token_result.tokens[server.name] = token
       else
-        servers.delete(name)
-        @brokered_token_result.failures[server.name] = minted.failures[server.name] ||
-          (token ? "its URL in this session's config is not the resource its token is for" : "the token broker gave no reason")
+        @brokered_token_result.failures[server.name] = minted.failures[server.name] || "the token broker gave no reason"
       end
     end
     true
   end
 
-  # Remove entries the broker will not guess about, with the cause.
-  def refuse_entries!(servers, causes)
-    return false if causes.empty?
+  # The key this runtime's config uses for a catalog server. AIR writes the short id.
+  def brokered_config_key(server) = ArtifactIdentity.short_id(server.name)
 
-    remember_brokered_entries!(causes.keys)
-    causes.each do |name, cause|
-      servers.delete(name)
-      @brokered_token_result.failures[name] = cause
-    end
-    true
+  def brokered_entry(server, token)
+    replaced = [ "authorization", ELICITATION_URL_HEADER.downcase ]
+    headers = server.headers.to_h.reject { |header, _| replaced.include?(header.to_s.downcase) }
+    entry = build_http_entry(url: server.url, headers: headers.merge("Authorization" => "Bearer #{token}"))
+    # `sse` and streamable HTTP are different wire protocols. Codex writes no type.
+    entry["type"] = server.type if entry.key?("type") && server.type == "sse"
+    entry
+  end
+
+  # With the broker off, remove what it left under a key the session does not
+  # select: nothing else rewrites those, and they hold a revoked token. A selected
+  # entry is AIR's to write back, or Pi's seeding, which reads the same record.
+  def discard_brokered_leftovers!(servers)
+    record = brokered_entries_on_record
+    return false if record.empty?
+
+    selected = selected_mcp_servers.flat_map { |name| [ name.to_s, ArtifactIdentity.short_id(name.to_s) ] }
+    (record - selected).count { |key| servers.delete(key) }.positive?
   end
 
   def selected_mcp_servers
@@ -438,9 +461,10 @@ class RuntimeConfigPostProcessor
 
   # Recorded BEFORE the config is written: a prepare that dies in between must
   # leave a record of what the broker may have done, not a file nobody knows about.
+  # A warm pool's template session is never saved, and has no later prepare to tell.
   def remember_brokered_entries!(names)
     @brokered_entry_names |= names.map(&:to_s)
-    return unless session.respond_to?(:merge_metadata!)
+    return unless session.respond_to?(:merge_metadata!) && session.persisted?
 
     known = brokered_entries_on_record
     return if (@brokered_entry_names - known).empty?
@@ -450,7 +474,7 @@ class RuntimeConfigPostProcessor
 
   # Once a config with nothing of the broker's in it is on disk, the record is done.
   def forget_brokered_entries!
-    return if Array(@brokered_entry_names).any? || brokered_entries_on_record.empty?
+    return if Array(@brokered_entry_names).any? || brokered_entries_on_record.empty? || !session.persisted?
 
     session.merge_metadata!({}, [ BROKERED_ENTRIES_KEY ])
   end
@@ -459,19 +483,6 @@ class RuntimeConfigPostProcessor
     metadata = session.respond_to?(:metadata) ? session.metadata : nil
     metadata.is_a?(Hash) ? Array(metadata[BROKERED_ENTRIES_KEY]).map(&:to_s) : []
   end
-
-  def apply_brokered_bearer!(entry, token)
-    headers = (entry[http_headers_key] ||= {})
-    headers.delete_if { |header, _| header.to_s.casecmp?("Authorization") }
-    drop_forwarded_credential_header!(entry, "Authorization")
-    drop_bearer_token_env_var!(entry)
-    headers["Authorization"] = "Bearer #{token}"
-  end
-
-  # Hook: a runtime that can forward a bearer token from the process
-  # environment (Codex's `bearer_token_env_var`) drops that rule for a brokered
-  # entry. A no-op for the JSON runtimes, which have no such rule.
-  def drop_bearer_token_env_var!(_entry); end
 
   # Write the approval endpoint's address into every stdio server's own `env`
   # table: ELICITATION_REQUEST_URL (where an approval request goes) and

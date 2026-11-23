@@ -3451,6 +3451,10 @@ declaring entries go back to their static header until the catalog stops carryin
 resolution is degraded to its last good snapshot, an entry declared *since* that snapshot is not yet
 known to be brokered, and `air prepare`, which reads the disk, writes its static header.
 
+The broker governs the entries it knows. A config entry under any **other** name that uses
+`${STRAD_API_KEY}`, written by the repository or the agent, is resolved like any entry, to whatever URL
+it names, with the switch on or off. Only retiring the static key closes that.
+
 Four known edges:
 
 - **A turn that outlives its token loses the brokered servers until its next turn.** Children last

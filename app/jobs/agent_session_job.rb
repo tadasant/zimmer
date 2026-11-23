@@ -1229,6 +1229,7 @@ class AgentSessionJob < ApplicationJob
             level: "info"
           )
           air_service.ensure_baseline_mcp_config!
+          report_brokered_tokens(session, air_service, log_buffer)
         end
         store_injected_mcp_servers(session, air_service.injected_mcp_servers)
 
@@ -1295,7 +1296,7 @@ class AgentSessionJob < ApplicationJob
           # token, which was revoked when that attempt came to rest. A session
           # with a brokered entry re-prepares here to mint this turn's; every
           # other session takes this path exactly as before.
-          return if remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer) == :failed
+          return if remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer, mint: !clone_only) == :failed
 
           # Re-inject OAuth credentials before spawning into the reused clone.
           # The reused-clone path is taken after a job retry AND after the user
@@ -1520,6 +1521,7 @@ class AgentSessionJob < ApplicationJob
             report_brokered_tokens(session, air_service, log_buffer)
           else
             air_service.ensure_baseline_mcp_config!
+            report_brokered_tokens(session, air_service, log_buffer)
           end
           store_injected_mcp_servers(session, air_service.injected_mcp_servers)
 
@@ -6687,23 +6689,31 @@ class AgentSessionJob < ApplicationJob
   # just those sessions, minting this turn's. A session with no brokered entry
   # returns at once and takes the path exactly as it always has.
   #
+  # Decided by whether ANY catalog entry is brokered here, with an unreadable
+  # catalog counted as yes: the file on the clone may hold a brokered entry the
+  # session has since dropped, or one whose name no longer resolves.
+  #
   # "With a brokered entry" includes one whose config the broker shaped before it
   # was turned off: that file holds a revoked token, or is missing the entry, and
   # nothing but a prepare puts the entry's own credential back.
   #
   # @return [Symbol, nil] :failed when the prepare failed the session (the
   #   caller must return), :reprepared, or nil when there was nothing to do
-  def remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer)
+  def remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer, mint: true)
     broker_shaped = Array(session.metadata&.dig(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY)).any?
-    return nil if !broker_shaped && TokenBroker.brokered_among(session.user_selected_mcp_servers).empty?
+    return nil unless broker_shaped || TokenBroker.any_brokered?
 
     air_service = AirPrepareService.new(
       session: session,
       working_directory: working_directory,
       file_system: @file_system,
-      mint_brokered_tokens: true
+      mint_brokered_tokens: mint
     )
-    air_service.prepare!
+    if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
+      air_service.prepare!
+    else
+      air_service.ensure_baseline_mcp_config!
+    end
     store_injected_mcp_servers(session, air_service.injected_mcp_servers)
     report_brokered_tokens(session, air_service, log_buffer)
     :reprepared
