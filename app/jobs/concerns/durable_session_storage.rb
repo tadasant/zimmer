@@ -21,7 +21,15 @@ module DurableSessionStorage
 
   # Whether any durable side-state exists on disk for the session.
   def durable_session_storage_exists?(session_id)
-    scratch_dir_exists?(session_id) || claude_config_dir_exists?(session_id) || prompt_attachments_exist?(session_id)
+    scratch_dir_exists?(session_id) || claude_config_dir_exists?(session_id) ||
+      prompt_attachments_exist?(session_id) || session_home_exists?(session_id)
+  end
+
+  # Only a session that ran under its own uid (SessionUid) has one.
+  def session_home_exists?(session_id)
+    Dir.exist?(SessionHomeDirectory.path_for(session_id))
+  rescue ArgumentError
+    false
   end
 
   def scratch_dir_exists?(session_id)
@@ -72,6 +80,11 @@ module DurableSessionStorage
       FileStorageService.cleanup_for(session_id)
       ImageStorageService.cleanup_for(session_id)
       removed << "prompt attachments deleted" unless prompt_attachments_exist?(session_id)
+    end
+
+    if session_home_exists?(session_id)
+      SessionHomeDirectory.cleanup_for(session_id)
+      removed << "session home deleted" unless session_home_exists?(session_id)
     end
 
     removed

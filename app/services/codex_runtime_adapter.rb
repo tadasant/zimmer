@@ -404,10 +404,12 @@ class CodexRuntimeAdapter
     # sessions previously sent no session id at all, so every elicitation they
     # raised was dropped by the API as unattributable.
     env_vars = apply_elicitation_env(env_vars)
+    # Last, so the clone's env file cannot override it. A no-op until SessionUid covers Codex.
+    env_vars = apply_session_uid_env(env_vars, working_dir)
 
     pid = @process_manager.spawn(
       env_vars,
-      *apply_session_memory_cgroup(command),
+      *confine_session_command(command, working_dir),
       chdir: working_dir,
       pgroup: true,
       in: File::NULL,

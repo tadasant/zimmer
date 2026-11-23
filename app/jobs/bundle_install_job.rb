@@ -334,13 +334,7 @@ class BundleInstallJob < ApplicationJob
     vendor_path = File.join(File.expand_path(working_directory), "vendor", "bundle")
     env = bundler_env(vendor_path)
 
-    _stdout, stderr, status = Open3.capture3(
-      env,
-      "bundle", "install",
-      "--jobs", "4",
-      "--retry", "3",
-      chdir: working_directory
-    )
+    _stdout, stderr, status = capture_bundler(env, "install", "--jobs", "4", "--retry", "3")
 
     # The exit code is not the question — whether the clone can now resolve its gems is.
     # An install that reports success but leaves the bundle short (a killed child, a
@@ -399,8 +393,22 @@ class BundleInstallJob < ApplicationJob
 
   # Does the bundle named by +env+ satisfy this clone's Gemfile?
   def bundle_satisfied?(env)
-    _stdout, _stderr, status = Open3.capture3(env, "bundle", "check", chdir: working_directory)
+    _stdout, _stderr, status = capture_bundler(env, "check")
     SubprocessStatus.success?(status)
+  end
+
+  # Run bundler in the clone.
+  #
+  # `bundle install` evaluates the clone's Gemfile and builds native extensions: code the
+  # session wrote. In a clone an isolated session owns (SessionUid), it runs as that
+  # session, with only bundler's own variables — as uid 1000 it would be the session's
+  # code running with the app's privileges. Anywhere else this is the Open3 call it has
+  # always been.
+  def capture_bundler(env, *args)
+    owned = SessionUid.owner_uid_for(working_directory)
+    env = env.select { |key, _| key.start_with?("BUNDLE") } if owned
+    command, child_env, extra = SessionUid.as_owner_of(working_directory, [ "bundle", *args ], env)
+    Open3.capture3(child_env, *command, chdir: working_directory, **extra)
   end
 
   # Publish the pin. Called only after `bundle_satisfied?` has said yes for this path.
@@ -416,10 +424,22 @@ class BundleInstallJob < ApplicationJob
     File.unlink(bundle_config_path) if File.symlink?(bundle_config_path)
     # Serialized rather than interpolated: a clone path containing a quote or a backslash
     # would produce YAML bundler reads as something else entirely.
-    File.write(
-      bundle_config_path,
-      { "BUNDLE_PATH" => bundle_path.to_s, "BUNDLE_DEPLOYMENT" => "false" }.to_yaml
-    )
+    # Through the guard: in a clone an isolated session owns, `.bundle` itself may be a
+    # symlink the session planted, and mkdir_p/File.write would follow it.
+    SessionUid::PathGuard.open_for_write(bundle_config_path, File::WRONLY | File::CREAT | File::TRUNC, 0o666) do |file|
+      file.write({ "BUNDLE_PATH" => bundle_path.to_s, "BUNDLE_DEPLOYMENT" => "false" }.to_yaml)
+    end
+    hand_to_session(bundle_config_path)
+  end
+
+  # This job can finish while the session is mid-turn. In a clone an isolated session
+  # owns, the config it just wrote is the app's (umask 077) until the next spawn hands
+  # it over, and the session's `bundle exec` would fail on it until then.
+  def hand_to_session(path)
+    uid = SessionUid.owner_uid_for(working_directory)
+    return if uid.nil?
+
+    [ File.dirname(path), path ].each { |entry| File.lchown(uid, uid, entry) if File.lstat(entry).uid == SessionUid::APP_UID }
   end
 
   # Delete a `.bundle/config` that names a bundle the clone cannot actually use.

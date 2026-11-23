@@ -237,11 +237,11 @@ class ClaudeCliAdapter
     stderr_log_path = self.class.stderr_log_path(working_dir)
     stdin_reader, stdin_writer = IO.pipe
     stdout_file = File.open(stdout_path, "w")
-    stderr_file = File.open(stderr_log_path, "w")
+    stderr_file = open_stderr_log(stderr_log_path)
 
     pid = @process_manager.spawn(
       env_vars,
-      *apply_session_memory_cgroup(command),
+      *confine_session_command(command, working_dir),
       chdir: working_dir,
       pgroup: true,
       in: stdin_reader,
@@ -455,6 +455,14 @@ class ClaudeCliAdapter
     Base64.strict_encode64(content)
   end
 
+  # The runtime's stderr log, which lives in the working directory. Under per-session uids
+  # that directory belongs to the session, so it is opened without following a symlink the
+  # session may have left in its place (SessionUid::PathGuard.open_for_write). Otherwise
+  # this is File.open(path, "w").
+  def open_stderr_log(path)
+    SessionUid::PathGuard.open_for_write(path, File::WRONLY | File::CREAT | File::TRUNC, 0o666)
+  end
+
   # Guard the spawn entrypoints against nil/blank arguments that Process.spawn
   # would otherwise reject deep inside the C call with the cryptic
   # "no implicit conversion of nil into String" — a message that gives an
@@ -494,7 +502,7 @@ class ClaudeCliAdapter
       @file_system.write(stderr_log_path, "")
       File.open(File::NULL, "w")
     else
-      File.open(stderr_log_path, "w")
+      open_stderr_log(stderr_log_path)
     end
 
     # Deliver stdin through a pipe (NOT a regular file — see method comment).
@@ -506,7 +514,7 @@ class ClaudeCliAdapter
 
     pid = @process_manager.spawn(
       env_vars,
-      *apply_session_memory_cgroup(command),
+      *confine_session_command(command, working_dir),
       chdir: working_dir,
       pgroup: true,
       in: stdin_reader,
@@ -601,14 +609,14 @@ class ClaudeCliAdapter
       File.open(File::NULL, "w")
     else
       # For real execution, use actual file
-      File.open(stderr_log_path, "w")
+      open_stderr_log(stderr_log_path)
     end
 
     env_vars = build_claude_spawn_env(working_dir: working_dir, has_mcp: has_mcp, auto_compact_window: auto_compact_window)
 
     pid = @process_manager.spawn(
       env_vars,
-      *apply_session_memory_cgroup(command),
+      *confine_session_command(command, working_dir),
       chdir: working_dir,
       pgroup: true,
       in: File::NULL,

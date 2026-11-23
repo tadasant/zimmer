@@ -172,6 +172,11 @@ class EmptyTrashJob < ApplicationJob
     with_db_retry do
       session.remove_metadata!("artifacts_path") if session.metadata&.dig("artifacts_path").present?
       session.update_column(:trash_after, nil)
+      # Everything the session's uid owned on disk is gone, so the uid can be handed
+      # to another session (SessionUid). A no-op for a session that never had one.
+      unless durable_session_storage_exists?(session.id) || (clone_path && File.directory?(clone_path))
+        SessionUid.release!(session)
+      end
     end
 
     if cleaned_anything

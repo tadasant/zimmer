@@ -1259,6 +1259,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
 
   create_table "sessions", force: :cascade do |t|
     t.string "agent_runtime", default: "claude_code", null: false
+    t.integer "agent_uid"
     t.datetime "archived_at"
     t.integer "auto_compact_window", default: 1000000, null: false
     t.bigint "board_category_id"
@@ -1327,6 +1328,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
+    t.index ["agent_uid"], name: "index_sessions_on_agent_uid", unique: true, where: "(agent_uid IS NOT NULL)"
     t.index ["archived_at", "id"], name: "index_sessions_on_transcript_copy_candidates", where: "((archived_at IS NOT NULL) AND (transcript_byte_size > 0))"
     t.index ["board_category_id"], name: "index_sessions_on_board_category_id"
     t.index ["carplay_fit"], name: "index_sessions_on_carplay_fit", where: "(carplay_fit IS NOT NULL)"

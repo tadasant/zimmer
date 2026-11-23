@@ -1003,6 +1003,65 @@ with nothing on their pages to say why. **`memory.min`** protects memory from re
 anonymous memory on a swapless worker is not reclaimable anyway, so it has no say in which
 process the OOM killer picks.
 
+## A session can run as its own uid
+
+With `ZIMMER_SESSION_UID=1` (off by default; see
+[Deploying](/operate/deploying/#running-agent-sessions-as-their-own-uid)), a session in scope runs as
+a uid of its own instead of the app's uid 1000. In scope means a Claude Code session on a root listed
+in `ZIMMER_SESSION_UID_ROOTS`, or on any root when that is empty. `SessionUid`
+(`app/services/session_uid.rb`) holds the decisions.
+
+- **The uid.** Allocated on the first isolated spawn and kept in `sessions.agent_uid`, which has a
+  unique index, so two sessions can never share one. The search starts at `id mod range-size`, so a
+  freed uid is not handed straight back out. `EmptyTrashJob` frees it once the session's files are
+  gone.
+- **The handover.** Before every spawn, `SessionUid::Sandbox` runs `chown -R -P --from=1000` over the
+  session's clone, its Claude config directory, its scratch directory, its HOME and its attachment
+  directories, then sets each to 0700. `-P` and GNU chown's `O_NOFOLLOW` traversal mean a symlink the
+  session planted can't steer it. `--from=1000` means it only takes files the app wrote. It has to
+  run every time: the app keeps writing there between turns (AIR prepare, `.mcp.json`, the clone's
+  env file, credentials, uploads), and under the flag the app's umask is 077.
+- **HOME.** Each isolated session gets `~/.zimmer/session-homes/<id>`, with a copy of the app's git
+  identity and helper config and an empty `gh` directory. `GH_CONFIG_DIR` points there.
+  `SSH_PRIVATE_KEY_PATH` is unset, because the operator key is a file only uid 1000 can read.
+- **Transcripts and MCP logs.** The shared `~/.claude/projects` would be a directory every session
+  writes into. So for an isolated session `<config dir>/projects` is a real directory it owns, and
+  the shared tree gets a symlink to that session's transcript directory under the usual name. Every
+  reader still opens `~/.claude/projects/<sanitized working dir>/`. MCP logs land under the session's
+  HOME and get the same kind of link from `~/.cache/claude-cli-nodejs`.
+- **The argv.** `CliSpawnEnv#confine_session_command` wraps the runtime in
+  `setpriv --reuid=N --regid=N --clear-groups --inh-caps=-all --ambient-caps=-all --no-new-privs`,
+  with `umask 077` in front. That sits inside the memory-cgroup wrapper, so the process still joins
+  its cgroup as uid 1000, the only uid allowed to write `cgroup.procs`, and then drops. The pid is
+  unchanged throughout. A session out of scope keeps uid 1000, but goes through `setpriv` too, to
+  shed the app's ambient capabilities.
+- **The app's subprocesses in a clone.** `git` (through `BoundedSubprocess`) and `bundle` (in
+  `BundleInstallJob`) run *as the clone's owner*, with a rebuilt environment. Run as uid 1000, git
+  would refuse a repository another user owns. Told to ignore that, it would run the session's
+  `.git/config` and hooks with the app's privileges. `bundle install` evaluates the session's Gemfile.
+- **Reading what a session wrote.** The app holds `CAP_DAC_OVERRIDE`, so a session could point its
+  transcript at `~/.claude/.credentials.json` and wait for the poller to store it. Reads through
+  `RealFileSystemAdapter`, `ClaudeCredentialStore` and token ingestion go through
+  `SessionUid::PathGuard`. It checks the file actually opened: it must be owned by that session's uid,
+  or be an app file physically inside that session's own directory. A FIFO or anything else that is
+  not a regular file is refused too, so it can't hang the reader. Anything else is `EACCES`.
+- **Writing into what a session owns.** The writes the app makes there whose content the session
+  controls, or that could truncate an app file, go through `PathGuard.open_for_write`. That covers
+  the runtime's stderr log, the credential store and its lock, `.bundle/config` and the HOME's
+  `.gitconfig`. It opens every component below the session's root with `O_NOFOLLOW`, each relative to
+  the last through `/proc/self/fd`, so there is nothing to swap. Directories inside a tree the
+  session already owns are made by `mkdir -p` running as the session.
+- **Giving a uid back.** `EmptyTrashJob` frees a uid only after the session's directories are gone.
+  First it kills any process still running as that uid and deletes its files in `/tmp` and
+  `/dev/shm`, so a detached process can't wait for the next session handed that uid.
+- **The warm router process** stands down while router sessions are in scope, because a process that
+  boots before its session exists can't be started as that session's uid. Those sessions start cold.
+
+The guarantee is tested by `test/services/session_uid_boundary_test.rb`, which runs the scenario as
+root in a throwaway container. It uses the entrypoint's real capability set and the real `Sandbox`
+and `wrap` argv, and asserts that the session can't read the worker's environ, the app's
+credentials or another session's file.
+
 ## The spawn environment
 
 Shared scrubbing (`CliSpawnEnv`):

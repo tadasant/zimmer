@@ -47,6 +47,16 @@ module BoundedSubprocess
     spawn_opts = { pgroup: true }
     spawn_opts[:chdir] = cwd if cwd
 
+    # A git command aimed at a clone an isolated session owns runs as that session
+    # (SessionUid.as_owner_of): as uid 1000 it would either be refused by git's
+    # ownership check or, told to ignore it, run the session's hooks and config with
+    # the app's privileges. Only git: it is the tool whose repository config can name a
+    # command to run. Unchanged whenever ZIMMER_SESSION_UID is unset.
+    if command_array.first == "git" && SessionUid.enabled?
+      command_array, env, extra = SessionUid.as_owner_of(SessionUid.git_target_dir(command_array, cwd), command_array, env)
+      spawn_opts.merge!(extra)
+    end
+
     Open3.popen3(env, *command_array, spawn_opts) do |stdin, stdout, stderr, wait_thr|
       stdin.close
       out = +""

@@ -1534,8 +1534,8 @@ casual `curl` meets `/login`, but a session runs as the same user, in the same c
 Rails app: it can read `SECRET_KEY_BASE` and forge the encrypted sign-in cookie. `CliSpawnEnv` keeps
 it out of the session's own environment, but the app's `/proc/<pid>/environ` is readable by the same
 user. Web sign-in keeps out the tailnet and the open internet. Keeping out the
-host's own sessions needs process isolation, which Zimmer does not have (see
-[agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host)). The rest of this section is
+host's own sessions needs process isolation, which Zimmer has only behind a flag that is off by
+default ([per-session uids](#per-session-uids-are-opt-in-claude-code-only-and-unproven-in-production); see also [agents run unsandboxed](#agents-run-unsandboxed-on-the-app-host)). The rest of this section is
 what stays open either way.
 
 The HTTP Basic password that used to guard these three surfaces closed this door, because it was the
@@ -1545,8 +1545,9 @@ and on `POST /mcp` behind `API_KEYS` plus a `tool_groups` value the *caller* sup
 string. An agent session holds a valid `API_KEYS` entry two ways: `ZIMMER_PROD_API_KEY` is in its
 process environment, and its own `.mcp.json` carries the same key in an `X-API-Key` header for the
 self-session server. `API_KEYS` itself is cleared from the session's environment, and is still
-readable from the app's process by the same user. So tool-group gating keeps these actions out of the
-tools a session is handed, not out of its reach.
+readable from the app's process by the same user (unless the session runs under its own uid). Either
+way it holds the shared key, so tool-group gating keeps these actions out of the tools a session is
+handed, not out of its reach.
 
 Halting the demand-side queues stays loud and self-healing whoever fires it: entry, extension and
 exit each emit their own page, and the TTL auto-exits. The one thing to know is that halting
@@ -1970,11 +1971,12 @@ AIR Codex adapter turns a catalog `X-API-Key: ${ZIMMER_PROD_API_KEY}` header int
 `mcp_secrets`. Without the variable, such a server fails with `AuthRequired`. Per-session tokens are
 meant to replace it.
 
-What none of this closes: sessions run as the same Unix user as the Rails app. The worker's
-`/proc/<pid>/environ` (with every secret above in it) and every other session's clone, `.env` and
-MCP config included, are readable from any session. Clearing the spawn environment takes the secrets
-out of `env` and out of a transcript's easy reach. It is not isolation. Isolation needs a separate
-Unix user per session, which Zimmer does not have.
+What none of this closes, by default: sessions run as the same Unix user as the Rails app. The
+worker's `/proc/<pid>/environ` (with every secret above in it) and every other session's clone, `.env`
+and MCP config included, are readable from any session. Clearing the spawn environment takes the
+secrets out of `env` and out of a transcript's easy reach. It is not isolation. `ZIMMER_SESSION_UID=1`
+runs a session as a Unix user of its own, which is. It is off by default and has gaps; see
+[per-session uids](#per-session-uids-are-opt-in-claude-code-only-and-unproven-in-production).
 
 Zimmer used to *say* otherwise. `Session::EXECUTION_PROVIDERS` accepted `remote_sandbox`, the MCP
 `start_session` tool listed it in its enum and described it as "runs in isolated sandbox," and the
@@ -1997,6 +1999,88 @@ None of that adds a sandbox, and nothing in the product offers one. Building one
 a new runner, new images, credential brokering, cloud provisioning — and it is not in flight. If it
 is ever built, the seam it grows from is `RuntimeRegistry` and `ProcessLifecycleManager`, which is
 where sessions actually start, rather than an abstraction kept warm beside them.
+
+### Per-session uids are opt-in, Claude Code only, and unproven in production
+
+`ZIMMER_SESSION_UID=1` ([Spawning](/sessions/spawning/#a-session-can-run-as-its-own-uid),
+[Deploying](/operate/deploying/#running-agent-sessions-as-their-own-uid)) runs an in-scope session as a
+uid of its own. Such a session can't read the worker's `/proc/<pid>/environ`, the app's files
+(`~/.claude`, `~/.codex`, `~/.config/gh`, `~/.ssh`, `~/.local`, `/rails/log`), or another isolated
+session's clone, config, scratch or HOME. It also can't signal the worker or regain a capability.
+It is off by default. Here is what it does not do.
+
+- **It has never run on a real deployment.** The boundary test runs the real capability set and the
+  real handover and spawn argv as root in a Debian container. It does not run the Zimmer image, Claude
+  Code or Rails across the boundary. Staging deploys were broken when this shipped, so the first live
+  run is meant to be a production canary on one throwaway root (`ZIMMER_SESSION_UID_ROOTS`).
+- **Only Claude Code.** Codex keeps one `CODEX_HOME` for every session: `auth.json`, which the account
+  pool and the CLI both rotate, and every rollout. Pi keeps one `PI_CODING_AGENT_DIR`. Splitting those
+  per session is its own change. Until then Codex and Pi sessions run as uid 1000 even with the flag
+  on, minus the app's capabilities.
+- **The boundary holds only if every session on the worker is in scope.** A session still running as
+  uid 1000 (Codex, Pi, or a root outside `ZIMMER_SESSION_UID_ROOTS`) can read the worker's
+  environment and, with it, everything. That includes isolated sessions' files, which the app (and so
+  uid 1000, by path) can reach. A canary protects the canary from nothing on the same worker. It
+  proves the mechanism works.
+- **Nested Docker voids it.** The inner daemon bind-mounts any path in the container into a container
+  of the caller's choosing. So isolated sessions get no Docker socket unless
+  `ZIMMER_SESSION_UID_DOCKER=1`, and with it they can reach everything again. Real isolation with
+  Docker needs rootless Docker per session, or an authorization plugin that refuses bind mounts
+  outside the session's own directories. Neither exists here.
+- **No operator SSH key.** It is a file only uid 1000 can read, so `ssh-*` MCP servers can't
+  authenticate in an isolated session. That is the direction production invariant 2 wants, but it is
+  a capability gone, not replaced.
+- **GitHub comes only from the token map.** An isolated session gets an empty `gh` directory, and
+  `gh` and git authenticate only through the `GH_TOKEN` that GitHub token routing hands it. A
+  deployment that never seeded `GH_TOKEN` / `GH_TOKEN__<OWNER>` gives isolated sessions no GitHub
+  login at all. The token a session does get is still its owner's long-lived PAT.
+- **The session still holds a Zimmer API key.** `ZIMMER_PROD_API_KEY` in Codex's environment, and the
+  key in every session's `.mcp.json`, reach Zimmer's whole REST and MCP surface. A uid boundary does
+  nothing about a credential the session was handed on purpose. Per-session tokens are the fix for
+  that.
+- **Not every write the app makes into a session's directories is guarded.** The app holds
+  `CAP_DAC_OVERRIDE`. The writes whose content a session controls, or which could truncate an app
+  file, go through `SessionUid::PathGuard.open_for_write`: the runtime's stderr log, the credential
+  store and its lock, `.bundle/config`, and the HOME's `.gitconfig`. It opens every component with
+  `O_NOFOLLOW`. Directories inside a session's tree are made as the session's uid. The rest of the
+  app's writes into a clone are not guarded: AIR prepare's output, `.mcp.json` and the clone's env
+  file. A session that swaps one of those for a symlink can redirect the app's write, with the app's
+  content, onto an app-owned file. That can break the app; it does not hand the session the file.
+- **Not every read of a session's file is guarded.** `SessionUid::PathGuard` covers
+  `RealFileSystemAdapter`, `ClaudeCredentialStore` and token ingestion, which carry the transcript
+  poller, the MCP-log poller, the stderr readers and credential reconciliation. A direct `File.read`
+  of a session path elsewhere in the app is not covered. Neither is `air prepare`, which runs as the
+  app inside the clone on every turn: if it reads a file the session replaced with a symlink, and
+  writes what it read back into the clone, the session gets that content.
+- **Only `git` and `bundle` run as the clone's owner.** Any other app subprocess with an isolated
+  clone as its working directory runs as the app. It also gets no GitHub credentials: the rebuilt
+  environment carries no token routing. Nothing in the app fetches or pushes from an isolated clone
+  today; warm clones, which do, are the app's own.
+- **What a session's Claude config reaches in the shared `~/.claude` is unchecked.** The lockdown
+  closes `~/.claude`, `~/.npm` and the rest of the app's HOME. If anything in a session's
+  `CLAUDE_CONFIG_DIR` points back into them (a plugin or a shared setting), the isolated session
+  loses it. Only `projects/` is known to, and that one is relocated.
+- **A browser's own sandbox can't start.** Isolated sessions run under `no_new_privs`, so Chromium's
+  setuid sandbox helper can't take effect. A browser has to be launched without its sandbox, which
+  the container's lack of user namespaces already forces. This has not been checked against the
+  Playwright servers sessions use.
+- **Hard links.** The handover follows a hard link, so the guard against a session linking an app
+  file into its clone is the kernel's `fs.protected_hardlinks`. Ubuntu enables it by default, but it
+  can't be read from inside a sysbox container, so nothing checks it.
+- **`/rails/config/credentials/production.yml.enc` stays world-readable.** It is a read-only bind
+  mount, so its mode can't be changed. Without `RAILS_MASTER_KEY`, which an isolated session can no
+  longer read, it is ciphertext.
+- **A uid can be reused before every file it owned is gone.** `EmptyTrashJob` frees a uid only once
+  the session's directories are removed. A session row deleted outright frees its uid immediately,
+  while `StaleCloneCleanupJob` removes its orphaned directories up to an hour later. Allocation
+  starts at `id mod 30000`, so a freed uid normally waits tens of thousands of sessions before it is
+  handed out again. Nothing enforces that.
+- **The warm router process stands down** while router sessions are in scope, so they start cold.
+- **Each isolated session keeps its own caches** (npm, pip, Claude's) in its HOME on the durable
+  volume, which costs disk that a shared HOME did not.
+- **Both roles start as container-root** under the flag, including web under plain `runc`. The
+  entrypoint drops each role to uid 1000 straight away. Until it does, that container's root is host
+  root, as it already was for a nested-Docker worker's first second.
 
 ### Anyone in the workspace can trigger an agent via bot-mention, by default
 
@@ -6177,7 +6261,8 @@ git helper never delegates to `gh`, and a session's `gh` runs with a login-free 
 file itself stays in `~/.config/gh` on the `gh_config` volume, though. Its OAuth token reaches every
 organization the account belongs to, and any process on the worker can read it, including an agent
 session that goes looking. The same goes for the full token map: sessions run as the worker's user,
-so `/proc/<pid>/environ` of the worker or one of its children shows every `GH_TOKEN__*`. Narrowing a
+so `/proc/<pid>/environ` of the worker or one of its children shows every `GH_TOKEN__*` (unless the
+session runs under its own uid: [per-session uids](#per-session-uids-are-opt-in-claude-code-only-and-unproven-in-production)). Narrowing a
 session to its owner's token is defense in depth, not isolation. Retiring the stored login closes the
 first half. That belongs to the `tadasant-internal` root, which owns `.github/workflows/gh-auth-prod.yml`.
 
@@ -7985,6 +8070,9 @@ The entrypoint's reclaim sweep covers this on a nested-Docker worker, because th
 ---
 
 ## The reclaim sweep re-resolves paths it already looked at
+
+Under `ZIMMER_SESSION_UID=1` the sweep prunes every tree a session uid owns rather than descending
+into it, so it neither undoes the handover nor walks a directory a session controls.
 
 The sweep collects paths with `find` and then hands them to `chown` in a second step, so an intermediate directory component can be swapped between the two. `~/.zimmer/clones` is writable by uid 1000 by construction, so an agent could plant a path the sweep will match, then replace one of its parent directories with a symlink before `chown -h` resolves it — retargeting a file outside the volume to `rails:rails`. The repeat makes the race retryable rather than one-shot.
 

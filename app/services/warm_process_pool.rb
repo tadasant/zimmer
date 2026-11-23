@@ -114,13 +114,26 @@ module WarmProcessPool
     end
 
     def enabled?
-      size.positive? && AppSetting.current(context: "WarmProcessPool.enabled?").warm_router_process_enabled?
+      size.positive? && !isolates_router_sessions? &&
+        AppSetting.current(context: "WarmProcessPool.enabled?").warm_router_process_enabled?
+    end
+
+    # A warm process boots before its session exists, so it cannot be started as that
+    # session's uid (SessionUid). While router sessions run under their own uid the pool
+    # stands down and they start cold; it keeps serving when ZIMMER_SESSION_UID_ROOTS
+    # leaves the router root out.
+    def isolates_router_sessions?
+      return false unless SessionUid.enabled?
+
+      roots = SessionUid.scoped_roots
+      roots.empty? || roots.include?(AgentRootsConfig.router_root_name.to_s)
     end
 
     # Whether a session's fresh start should try the pool: it is a router
     # session and the pool is on. Rescued to false, so it never fails a start.
     def serves?(session)
-      enabled? && AgentRootsConfig::ROUTER_ROOT_NAMES.include?(session.metadata&.dig("agent_root_key"))
+      enabled? && AgentRootsConfig::ROUTER_ROOT_NAMES.include?(session.metadata&.dig("agent_root_key")) &&
+        !SessionUid.applies_to?(session)
     rescue StandardError => e
       logger.warn("Could not decide whether the warm process pool serves a session", session_id: session.id, error: e.message)
       false

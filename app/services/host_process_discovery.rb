@@ -109,8 +109,12 @@ class HostProcessDiscovery
 
   # The host call itself, on its own so a test of the parser above can stub this
   # one instance rather than `Open3` for the whole process.
+  #
+  # Under per-session uids (SessionUid) agents run as uids of their own, so the scan
+  # takes every uid: the worker's container runs nothing else named claude.
   def pgrep_output
-    output, _status = Open3.capture2("pgrep", "-fl", "-u", Process.uid.to_s, "claude")
+    owner = SessionUid.enabled? ? [] : [ "-u", Process.uid.to_s ]
+    output, _status = Open3.capture2("pgrep", "-fl", *owner, "claude")
     output
   end
 end

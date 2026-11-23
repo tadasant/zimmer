@@ -84,10 +84,16 @@ the production host, and the Rails app answers from inside a session's shell. No
 stops a session from reading the MCP and X tokens in `/supervisor`, minting or revoking an API key,
 or halting the job queues from `/health`. The same holds for every member of the tailnet. With it on,
 a session's `curl` meets `/login`, but the wall is not a boundary against a session. Zimmer does not
-hand a session `SECRET_KEY_BASE` or `API_KEYS` in its environment, but the session runs as the same
-user as the app, so it can read both from the app's own process (`/proc/<pid>/environ`) and forge a
-sign-in cookie. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
+hand a session `SECRET_KEY_BASE` or `API_KEYS` in its environment, but by default the session runs as
+the same user as the app, so it can read both from the app's own process (`/proc/<pid>/environ`) and
+forge a sign-in cookie. Web sign-in keeps out the tailnet and the open internet, not the host's own sessions. See
 [the limitation](/limitations/#the-web-ui-does-not-keep-agent-sessions-out).
+
+`ZIMMER_SESSION_UID=1` runs a Claude Code session as a Unix user of its own. That session can no longer
+read the app's process environment or its credential files: `~/.claude`, `~/.codex`, `~/.config/gh`,
+`~/.ssh`. It still holds the Zimmer API key in its `.mcp.json`, so the API remains open to it. The flag
+is off by default; see [Deploying](/operate/deploying/#running-agent-sessions-as-their-own-uid) and
+[the gaps](/limitations/#per-session-uids-are-opt-in-claude-code-only-and-unproven-in-production).
 :::
 
 CSRF protection applies to every write on these three surfaces, so a page on another origin, open
