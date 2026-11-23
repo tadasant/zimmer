@@ -787,8 +787,9 @@ class HealthMonitorService
   # `GET /api/v1/health` and `get_system_health` before the provider's disk alert.
   #
   # All catalog reads: `pg_database_size` and `pg_total_relation_size` stat files,
-  # they do not scan rows. The two transcript counts are index-only over partial
-  # indexes that hold only the rows being counted.
+  # they do not scan rows. The two transcript counts run over partial indexes that
+  # hold only the rows being counted (the awaiting count also reads those rows' heap
+  # tuples to filter on status), so they shrink as the backlog drains.
   #
   # Warns past DATABASE_SIZE_WARNING_GIB, and is deliberately not folded into
   # `overall_status`: the fix is retention plus a one-time repack, neither of which an

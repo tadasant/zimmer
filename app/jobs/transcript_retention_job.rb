@@ -77,13 +77,27 @@ class TranscriptRetentionJob < ApplicationJob
     [ configured || DEFAULT_RETENTION_DAYS, 1 ].max
   end
 
-  # Archived long enough ago and still holding chunks. Served by
-  # `index_sessions_on_transcript_offload_candidates`.
+  # Where a session whose chunks disagree with its own row records the digest it
+  # was skipped at, so the job stops re-reading it every tick. Keyed on the digest
+  # rather than a flag: a session that is later rewritten has a new digest and
+  # becomes a candidate again by itself.
+  SKIPPED_DIGEST_KEY = "transcript_offload_skipped_digest"
+
+  # Raised from inside the streamed write when the chunks do not add up to what the
+  # row says; it aborts the write, and the temp file goes with it.
+  class ChunkMismatch < StandardError; end
+
+  # Archived long enough ago, still holding chunks, and not already skipped at this
+  # digest. The partial index `index_sessions_on_transcript_offload_candidates`
+  # narrows it to archived rows still holding chunks; `status` and the skip marker
+  # are filtered from the heap rows that index finds.
   def self.candidates(now: Time.current)
     Session.archived
       .where(transcript_offloaded_at: nil)
       .where("sessions.transcript_byte_size > 0")
+      .where.not(transcript_digest: nil)
       .where(archived_at: ...(now - retention_days.days))
+      .where("(sessions.metadata ->> '#{SKIPPED_DIGEST_KEY}') IS DISTINCT FROM sessions.transcript_digest")
   end
 
   def perform(budget: SLICE_BUDGET, now: Time.current)
@@ -140,26 +154,17 @@ class TranscriptRetentionJob < ApplicationJob
     status, archived_at, offloaded_at, byte_size, digest = row
     return [ :skipped, 0 ] unless eligible?(status, archived_at, offloaded_at, byte_size, now)
 
-    if digest.blank?
-      Rails.logger.warn("[TranscriptRetentionJob] session #{session_id}: no transcript_digest; not offloading")
-      return [ :skipped, 0 ]
-    end
+    return [ :skipped, 0 ] if digest.blank?
 
-    content = with_db_retry do
-      SessionTranscriptChunk.uncached do
-        SessionTranscriptChunk.where(session_id: session_id).order(:seq).pluck(:content).join
-      end
-    end
-
-    unless content.bytesize == byte_size && Digest::SHA256.hexdigest(content) == digest
-      Rails.logger.warn(
-        "[TranscriptRetentionJob] session #{session_id}: chunks (#{content.bytesize} bytes) do not match the " \
-        "row (#{byte_size} bytes, digest #{digest}); not offloading"
+    begin
+      stream_chunks_to_store(session_id, byte_size, digest)
+    rescue ChunkMismatch => e
+      Rails.logger.warn("[TranscriptRetentionJob] session #{session_id}: #{e.message}; not offloading, and not retrying at this digest")
+      Session.where(id: session_id).update_all(
+        [ "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(?::text, ?::text)", SKIPPED_DIGEST_KEY, digest ]
       )
       return [ :skipped, 0 ]
     end
-
-    TranscriptOffloadStore.write(session_id, content, digest: digest)
 
     committed = with_db_retry do
       Session.transaction do
@@ -183,6 +188,32 @@ class TranscriptRetentionJob < ApplicationJob
   rescue TranscriptOffloadStore::Error, SystemCallError => e
     Rails.logger.error("[TranscriptRetentionJob] session #{session_id}: #{e.class}: #{e.message}")
     [ :failed, 0 ]
+  end
+
+  # Copies the chunks into the store one at a time, hashing as it goes, so one
+  # transcript costs about one chunk of memory rather than three copies of itself.
+  # The store then re-reads the file and checks the digest on what is on disk.
+  def stream_chunks_to_store(session_id, byte_size, digest)
+    seqs = with_db_retry { SessionTranscriptChunk.where(session_id: session_id).order(:seq).pluck(:seq) }
+
+    TranscriptOffloadStore.write_stream(session_id, digest: digest) do |out|
+      sha = Digest::SHA256.new
+      bytes = 0
+      seqs.each do |seq|
+        content = with_db_retry do
+          SessionTranscriptChunk.uncached { SessionTranscriptChunk.where(session_id: session_id, seq: seq).pick(:content) }
+        end
+        raise ChunkMismatch, "chunk #{seq} vanished while being read" if content.nil?
+
+        sha.update(content)
+        bytes += content.bytesize
+        out.write(content)
+      end
+
+      unless bytes == byte_size && sha.hexdigest == digest
+        raise ChunkMismatch, "chunks (#{bytes} bytes) do not match the row (#{byte_size} bytes, digest #{digest})"
+      end
+    end
   end
 
   def eligible?(status, archived_at, offloaded_at, byte_size, now)

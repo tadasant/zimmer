@@ -378,9 +378,12 @@ sidecar says it is missing, so it cannot be the only copy of anything.
 
 **The order of operations is the safety argument.**
 
-1. Reassemble the transcript from its chunks and check it against the row's
-   `transcript_byte_size` and `transcript_digest`. A mismatch is skipped and logged, never offloaded.
-2. Write the gzip through a temp file and a rename, then read it back, decompress it and check the
+1. Stream the chunks, one at a time, into a gzip temp file, hashing as it goes, and check the total
+   against the row's `transcript_byte_size` and `transcript_digest`. A mismatch aborts the write, is
+   logged, and is never offloaded. The digest it was skipped at is recorded in
+   `metadata.transcript_offload_skipped_digest`, so the job does not re-read that session every tick.
+   A later rewrite changes the digest and makes the session a candidate again.
+2. fsync the temp file and rename it into place, then decompress what is on disk and check the
    digest again.
 3. In one transaction with the session row locked, re-check eligibility and that the digest has not
    moved, then delete the chunks and set `sessions.transcript_offloaded_at`.

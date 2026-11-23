@@ -60,6 +60,14 @@ class TranscriptOffloadStore
     # decompressed and hashed, and must equal +digest+ (SHA-256 hex of +content+).
     # Raises Corrupt, leaving any previous file in place, when it does not.
     def write(session_id, content, digest:)
+      write_stream(session_id, digest: digest) { |out| out.write(content) }
+    end
+
+    # The streaming form of `write`: yields a writer to append the transcript to,
+    # piece by piece, so the caller never has to hold the whole transcript in memory.
+    # The digest is checked on the decompressed file, not on what was yielded, so it
+    # proves what is actually on disk. Returns the compressed size in bytes.
+    def write_stream(session_id, digest:)
       path = path_for(session_id)
       FileUtils.mkdir_p(File.dirname(path))
       temp = "#{path}.tmp-#{SecureRandom.hex(6)}"
@@ -67,12 +75,15 @@ class TranscriptOffloadStore
       begin
         File.open(temp, "wb") do |file|
           gz = Zlib::GzipWriter.new(file, Zlib::BEST_COMPRESSION)
-          gz.write(content)
+          yield gz
           gz.finish
           file.fsync
         end
 
-        verify!(session_id, decompress(temp), digest, temp)
+        unless digest.present? && streamed_digest(temp) == digest
+          raise Corrupt, "offloaded transcript #{temp} for session #{session_id} does not match its recorded digest"
+        end
+
         File.rename(temp, path)
         fsync_dir(File.dirname(path))
       ensure
@@ -93,6 +104,19 @@ class TranscriptOffloadStore
     end
 
     private
+
+    # SHA-256 of the decompressed file, read 1 MiB at a time.
+    def streamed_digest(path)
+      sha = Digest::SHA256.new
+      Zlib::GzipReader.open(path) do |gz|
+        while (piece = gz.read(1.megabyte))
+          sha.update(piece)
+        end
+      end
+      sha.hexdigest
+    rescue Zlib::Error => e
+      raise Corrupt, "offloaded transcript #{path} does not decompress: #{e.message}"
+    end
 
     def decompress(path)
       text = Zlib::GzipReader.open(path) { |gz| gz.read }

@@ -74,6 +74,30 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
 
     partial = Session.select(:id, :transcript, :transcript_byte_size, :transcript_digest).find(session.id)
     assert_equal content, partial.transcript
+
+    # PiTokenUsageIngestionService's shape: no digest either.
+    narrow = Session.select(:id, :transcript, :transcript_byte_size).find(session.id)
+    assert_equal content, narrow.transcript
+  end
+
+  test "a record loaded before the offload still reads its lines" do
+    content = jsonl(30)
+    session = archived_session(content: content)
+    stale = Session.find(session.id)
+    TranscriptRetentionJob.perform_now
+
+    assert_equal content.lines[25..29], stale.each_transcript_line(25, 30).map(&:last)
+  end
+
+  test "restore decides from the row, not from a record loaded before the offload" do
+    content = jsonl(40)
+    session = archived_session(content: content)
+    stale = Session.find(session.id) # what unarchive holds when the job commits under it
+    TranscriptRetentionJob.perform_now
+
+    assert stale.restore_offloaded_transcript!
+    assert_nil Session.find(session.id).transcript_offloaded_at
+    assert_equal content, SessionTranscriptChunk.where(session_id: session.id).order(:seq).pluck(:content).join
   end
 
   test "leaves recent archives, live sessions and already-offloaded sessions alone" do
@@ -108,7 +132,7 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
 
   test "never deletes chunks when the copy could not be written and verified" do
     session = archived_session
-    TranscriptOffloadStore.stubs(:write).raises(TranscriptOffloadStore::Corrupt, "disk said no")
+    TranscriptOffloadStore.stubs(:write_stream).raises(TranscriptOffloadStore::Corrupt, "disk said no")
 
     result = TranscriptRetentionJob.perform_now
 
@@ -126,6 +150,49 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     assert_equal 1, result[:skipped]
     assert_predicate chunk_count(session), :positive?
     assert_not TranscriptOffloadStore.exist?(session.id)
+    assert_empty Dir.glob(File.join(TranscriptOffloadStore.root, "**", "*.tmp-*")), "the aborted write leaves no temp"
+  end
+
+  test "a session skipped for a chunk mismatch is not re-read every tick, until its transcript changes" do
+    session = archived_session(content: jsonl(5))
+    SessionTranscriptChunk.where(session_id: session.id).order(:seq).last.update_columns(content: "tampered\n")
+
+    assert_equal 1, TranscriptRetentionJob.perform_now[:skipped]
+    assert_equal({ offloaded: 0, skipped: 0, failed: 0, bytes: 0 }, TranscriptRetentionJob.perform_now)
+    assert_equal 0, TranscriptRetentionJob.candidates.count
+
+    # A rewrite gives it a new digest, and it is a candidate again by itself.
+    rewritten = jsonl(6)
+    session.reload.update!(transcript: rewritten)
+    session.update_columns(status: Session.statuses.fetch("archived"), archived_at: 40.days.ago)
+
+    assert_equal 1, TranscriptRetentionJob.perform_now[:offloaded]
+    assert_equal rewritten, Session.find(session.id).transcript
+  end
+
+  # A writer that commits after the copy is written but before the job takes the
+  # row lock: the copy is now stale, and the locked re-check must notice.
+  class RacingRetentionJob < TranscriptRetentionJob
+    cattr_accessor :rewrite
+
+    private
+
+    def stream_chunks_to_store(session_id, byte_size, digest)
+      super
+      Session.find(session_id).update!(transcript: rewrite)
+    end
+  end
+
+  test "a writer that commits between the copy and the locked re-check keeps its chunks" do
+    session = archived_session(content: jsonl(5))
+    extended = jsonl(7)
+    RacingRetentionJob.rewrite = extended
+
+    result = RacingRetentionJob.new.perform
+
+    assert_equal 1, result[:skipped]
+    assert_nil session.reload.transcript_offloaded_at
+    assert_equal extended, SessionTranscriptChunk.where(session_id: session.id).order(:seq).pluck(:content).join
   end
 
   test "skips a session that is being unarchived right now" do

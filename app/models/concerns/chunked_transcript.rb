@@ -76,6 +76,10 @@ module ChunkedTranscript
 
   # The whole transcript, as the JSONL String every caller has always received.
   #
+  # nil when there is none, and also when the transcript was offloaded
+  # (TranscriptRetentionJob) and its file cannot be read: `transcript_present?`
+  # and the row's counters still describe it in that case.
+  #
   # Pre-backfill rows can still hand back the legacy `json` column's value, which for
   # the oldest sessions is an Array rather than a String — that is why the Array
   # branches in `parsed_transcript` and friends are still there. Nothing WRITES an
@@ -107,21 +111,27 @@ module ChunkedTranscript
   # appended to chunks in the ordinary way. Returns true when the transcript is in
   # the chunk table afterwards (including when it never left), false when the
   # store could not produce a verified copy.
+  #
+  # Decided from the ROW, not from this record's attributes: unarchive loads the
+  # session before it stamps itself in flight, and the retention job can commit an
+  # offload in between, which a decision taken from memory would miss.
   def restore_offloaded_transcript!
-    return true unless transcript_offloaded?
+    offloaded_at, byte_size, digest = self.class.where(id: id)
+      .pick(:transcript_offloaded_at, :transcript_byte_size, :transcript_digest)
 
-    text = read_offloaded_transcript
-    return false if text.nil?
+    if offloaded_at.present? && byte_size.to_i.positive?
+      text = read_offloaded_transcript(digest: digest)
+      return false if text.nil?
 
-    self.class.transaction do
-      row = self.class.lock.where(id: id)
-        .pick(:transcript_offloaded_at, :transcript_byte_size, :transcript_digest)
-      offloaded_at, byte_size, digest = row
-      if offloaded_at.present? && byte_size.to_i == text.bytesize && digest == read_attribute(:transcript_digest)
-        SessionTranscriptChunk.where(session_id: id).delete_all
-        rows = SessionTranscriptChunk.rows_for(session_id: id, content: text)
-        SessionTranscriptChunk.insert_all!(rows) if rows.any?
-        self.class.where(id: id).update_all(transcript_offloaded_at: nil)
+      self.class.transaction do
+        locked_at, locked_size, locked_digest = self.class.lock.where(id: id)
+          .pick(:transcript_offloaded_at, :transcript_byte_size, :transcript_digest)
+        if locked_at.present? && locked_size.to_i == text.bytesize && locked_digest == digest
+          SessionTranscriptChunk.where(session_id: id).delete_all
+          rows = SessionTranscriptChunk.rows_for(session_id: id, content: text)
+          SessionTranscriptChunk.insert_all!(rows) if rows.any?
+          self.class.where(id: id).update_all(transcript_offloaded_at: nil)
+        end
       end
     end
 
@@ -256,6 +266,14 @@ module ChunkedTranscript
       first += count
       span
     end
+    if spans.empty? && chunked_transcript?
+      # The row vouches for bytes but holds no chunks: offloaded after this record
+      # was loaded. Read the whole document rather than answer "no lines".
+      lines = transcript_document_lines
+      yield_line_range(lines, 0, from, [ to.to_i, lines.size ].min, reverse, &block)
+      return
+    end
+
     to = [ to.to_i, first ].min
     spans.select! { |_seq, lo, hi| hi > from && lo < to }
     spans.reverse! if reverse
@@ -363,8 +381,13 @@ module ChunkedTranscript
   # of the session page, `get_session` or a sweep that reads many of them, and the
   # row still says how big the missing transcript is. Not memoized, so a transient
   # failure is retried by the next read.
-  def read_offloaded_transcript
-    TranscriptOffloadStore.read(id, digest: read_attribute(:transcript_digest))
+  #
+  # A partial `select` may have left `transcript_digest` out; it is then read by
+  # primary key, since the file cannot be verified without it.
+  def read_offloaded_transcript(digest: nil)
+    digest ||= has_attribute?(:transcript_digest) ? read_attribute(:transcript_digest) : nil
+    digest ||= self.class.where(id: id).pick(:transcript_digest)
+    TranscriptOffloadStore.read(id, digest: digest)
   rescue TranscriptOffloadStore::Error, SystemCallError => e
     Rails.logger.error("[ChunkedTranscript] session #{id}: offloaded transcript unreadable: #{e.class}: #{e.message}")
     nil
