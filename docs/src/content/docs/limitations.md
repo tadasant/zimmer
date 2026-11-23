@@ -1568,6 +1568,14 @@ interface, so a tailnet peer that connects there directly, skipping Caddy, contr
 already names. Closing it means the deploy handing the collector a credential and the collector
 reading an API-key route.
 
+### A section that never returns hides every section but the queues
+
+🟡 `/health/export_diagnostics` runs [one section thread per web
+process](/operate/observability/#the-health-report-the-probes-read). Statements are cancelled after four
+seconds, but something outside the database that never returns would hold that thread until the process
+restarts, and every report until then would wait out its six seconds and carry `system_health` alone. The heartbeat and queue series
+keep working; the security counts stop, and each report logs a WARN naming what it left out.
+
 ### Security counts undercount rather than block
 
 🟡 The [security counts](/operate/observability/#security-counts-on-the-health-surface) live in
