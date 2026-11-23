@@ -37,10 +37,12 @@
 #     would get for that server.
 #     { "server" => "slack-zimmer", "event_name" => "slack-zimmer__message_posted",
 #       "arguments" => { "addressed_to_bot" => true },
-#       "payload_filters" => { "user_id" => ["U0123ABCD"] } }
+#       "payload_filters" => { "user_id" => ["U0123ABCD"] }, "coalesce_key" => "channel_id" }
 #     `arguments` go to the server with every poll (its event type's inputSchema says what it
 #     takes); `payload_filters` are checked by Zimmer on each event's top-level payload fields, so
-#     who may fire a trigger stays decided here even when the server also filters.
+#     who may fire a trigger stays decided here even when the server also filters. `coalesce_key`
+#     (optional) names a payload field: events with the same value for it, within the trigger's
+#     coalesce window, fire one session instead of one each.
 #
 # Both GitHub types are polled by GithubTriggerPollerJob, which owns the runtime keys
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
@@ -548,6 +550,29 @@ class TriggerCondition < ApplicationRecord
     filters.is_a?(Hash) ? filters.transform_values { |values| Array(values).map(&:to_s) } : {}
   end
 
+  # The payload field whose value groups a burst into one session, or nil when every event fires
+  # its own. Events of this condition carrying the same value for it, within the trigger's
+  # coalesce_window_seconds of the event that opened the group, fire ONE session: the first fires
+  # it and the rest are folded in (McpEvents::Firing). A WhatsApp `message_received` condition
+  # keyed on `chat_id` turns a five-message burst in one chat into one session.
+  def mcp_event_coalesce_key
+    configuration["coalesce_key"].to_s.strip.presence
+  end
+
+  # The value +data+ (an event's payload) carries for the coalesce key, as a string, or nil when
+  # there is no key, or the payload does not carry it as a string or number. An event with no value
+  # is never coalesced: nothing says it belongs with any other event, and the safe direction is a
+  # session too many.
+  def mcp_event_coalesce_value(data)
+    key = mcp_event_coalesce_key
+    return nil if key.nil? || !data.is_a?(Hash)
+
+    value = data[key]
+    return nil unless value.is_a?(String) || value.is_a?(Numeric)
+
+    value.to_s.strip.presence
+  end
+
   # The server's opaque cursor; nil until the condition is baselined.
   def mcp_event_cursor
     configuration["cursor"].presence
@@ -978,7 +1003,8 @@ class TriggerCondition < ApplicationRecord
       "Email: new mail matching #{email_query}#{automated}"
     when "mcp_event"
       filtered = mcp_event_payload_filters.any? ? ", filtered on #{mcp_event_payload_filters.keys.join(', ')}" : ""
-      "MCP Event: #{mcp_event_name || '(no event)'} from #{mcp_event_server || '(no server)'}#{filtered}"
+      coalesced = mcp_event_coalesce_key ? ", coalesced by #{mcp_event_coalesce_key}" : ""
+      "MCP Event: #{mcp_event_name || '(no event)'} from #{mcp_event_server || '(no server)'}#{filtered}#{coalesced}"
     when "schedule"
       schedule_description || "Schedule trigger"
     when "ao_event"
@@ -1319,6 +1345,12 @@ class TriggerCondition < ApplicationRecord
       end
     end
     %w[server event_name].each { |key| configuration[key] = configuration[key].to_s.strip if configuration.key?(key) }
+    # A blank coalesce key is no coalesce key: the form submits the empty field.
+    if configuration.key?("coalesce_key")
+      key = configuration["coalesce_key"]
+      key = key.strip if key.is_a?(String)
+      key.blank? ? configuration.delete("coalesce_key") : configuration["coalesce_key"] = key
+    end
   end
 
   # The MCP event poller's cursor survives a save that omits it, as the other pollers' state does.
@@ -1701,6 +1733,11 @@ class TriggerCondition < ApplicationRecord
       errors.add(:configuration, "payload_filters must list at least one allowed value for #{empty.join(', ')}") if empty.any?
       nested = filters.reject { |_field, values| Array(values).all? { |value| mcp_event_filter_scalar?(value) } }.keys
       errors.add(:configuration, "payload_filters values must be strings, numbers or booleans (#{nested.join(', ')})") if nested.any?
+    end
+
+    coalesce_key = configuration["coalesce_key"]
+    if !coalesce_key.nil? && !(coalesce_key.is_a?(String) && coalesce_key.match?(MCP_EVENT_FIELD_FORMAT))
+      errors.add(:configuration, "coalesce_key must be a payload field name, such as chat_id")
     end
   end
 

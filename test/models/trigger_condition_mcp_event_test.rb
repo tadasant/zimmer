@@ -119,4 +119,51 @@ class TriggerConditionMcpEventTest < ActiveSupport::TestCase
     condition = TriggerCondition.new(condition_type: "mcp_event", configuration: valid_config("payload_filters" => { "user_id" => [ "U1" ] }))
     assert_equal "MCP Event: slack-zimmer__message_posted from slack-zimmer, filtered on user_id", condition.description
   end
+
+  test "coalesce_key is a payload field name; blank means none, and the description names it" do
+    trigger = build_trigger(valid_config("coalesce_key" => " chat_id "))
+    assert trigger.valid?, trigger.errors.full_messages.inspect
+    condition = trigger.trigger_conditions.first
+    assert_equal "chat_id", condition.mcp_event_coalesce_key
+    assert_equal "MCP Event: slack-zimmer__message_posted from slack-zimmer, coalesced by chat_id", condition.description
+
+    trigger = build_trigger(valid_config("coalesce_key" => ""))
+    assert trigger.valid?
+    assert_not trigger.trigger_conditions.first.configuration.key?("coalesce_key"), "the form's empty field stores nothing"
+
+    [ "chat id", "data.chat_id", { "x" => 1 }, 7 ].each do |bad|
+      trigger = build_trigger(valid_config("coalesce_key" => bad))
+      assert_not trigger.valid?, "#{bad.inspect} is not a payload field name"
+      assert_match(/coalesce_key must be a payload field name/, trigger.trigger_conditions.first.errors.full_messages.join)
+    end
+  end
+
+  test "the coalesce value is the key's string or number, and nothing else" do
+    condition = TriggerCondition.new(condition_type: "mcp_event", configuration: valid_config("coalesce_key" => "chat_id"))
+    assert_equal "120363000000000001@g.us", condition.mcp_event_coalesce_value({ "chat_id" => "120363000000000001@g.us" })
+    assert_equal "42", condition.mcp_event_coalesce_value({ "chat_id" => 42 })
+    assert_nil condition.mcp_event_coalesce_value({ "chat_id" => "  " })
+    assert_nil condition.mcp_event_coalesce_value({ "chat_id" => { "id" => 1 } })
+    assert_nil condition.mcp_event_coalesce_value({})
+    assert_nil TriggerCondition.new(condition_type: "mcp_event", configuration: valid_config).mcp_event_coalesce_value({ "chat_id" => "x" })
+  end
+
+  test "editing the coalesce key keeps the cursor" do
+    trigger = build_trigger(valid_config)
+    trigger.save!
+    condition = trigger.trigger_conditions.first
+    condition.update_columns(configuration: condition.configuration.merge("cursor" => "seq:9"))
+    condition.reload.update!(configuration: valid_config("coalesce_key" => "chat_id"))
+    assert_equal "seq:9", condition.reload.mcp_event_cursor
+  end
+
+  test "a stored window is inert without a coalesce key and live with one" do
+    trigger = build_trigger(valid_config)
+    trigger.coalesce_window_seconds = 30
+    assert trigger.coalesce_window_inert?
+
+    trigger = build_trigger(valid_config("coalesce_key" => "chat_id"))
+    trigger.coalesce_window_seconds = 30
+    assert_not trigger.coalesce_window_inert?
+  end
 end

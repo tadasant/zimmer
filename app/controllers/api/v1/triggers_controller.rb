@@ -77,7 +77,8 @@ class Api::V1::TriggersController < Api::BaseController
   #     spawn ONE session; the rest are folded into that session's prompt, with their
   #     links, so nothing is dropped. Omit or send null to inherit the default
   #     (Trigger::DEFAULT_COALESCE_WINDOW_SECONDS); send 0 to turn coalescing off and
-  #     give every message its own session. Only Slack conditions coalesce.
+  #     give every message its own session. Slack conditions coalesce, and mcp_event conditions
+  #     that set coalesce_key.
   #   - max_sessions_per_minute: Integer burst cap — the most NEW sessions this trigger
   #     may spawn in one minute. Omit or send null for no limit (the default). When the
   #     cap is exceeded the trigger spawns one burst-notice session and then suppresses
@@ -130,6 +131,8 @@ class Api::V1::TriggersController < Api::BaseController
   #       - event_name: the event type, as the server's events/list names it (required)
   #       - arguments: object sent with every events/poll (optional; the type's inputSchema)
   #       - payload_filters: object of payload field => allowed values, checked by Zimmer (optional)
+  #       - coalesce_key: a payload field (optional). Events with the same value for it within the
+  #         trigger's coalesce_window_seconds fire ONE session, the rest folded into it.
   #       The template must write payload fields as {{event.<field>|untrusted}} or {{event.<field>|id}}.
   def create
     @trigger = Trigger.new(trigger_params)
@@ -348,7 +351,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, :require_reachable, :reachable_dwell_minutes, :reachable_tools_include, :reachable_tools_include_mode, :reachable_tools_exclude, require_reachable: [], reachable_tools_include: [], reachable_tools_exclude: [], allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, :coalesce_key, :require_reachable, :reachable_dwell_minutes, :reachable_tools_include, :reachable_tools_include_mode, :reachable_tools_exclude, require_reachable: [], reachable_tools_include: [], reachable_tools_exclude: [], allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
       ]
     )
     permitted[:mcp_servers] ||= []

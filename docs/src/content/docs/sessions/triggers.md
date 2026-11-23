@@ -28,7 +28,7 @@ flowchart LR
         GI["github_issue<br/>repos + exclude_labels"]
         WA["whatsapp<br/>chat_id + mode<br/>(listen | addressed)"]
         EM["email<br/>query + include_automated"]
-        ME["mcp_event<br/>server + event_name<br/>+ arguments + payload_filters"]
+        ME["mcp_event<br/>server + event_name<br/>+ arguments + payload_filters<br/>+ coalesce_key"]
     end
 
     SL -->|"SlackTriggerPollerJob<br/>(cron, every minute)"| T["Trigger"]
@@ -893,7 +893,7 @@ reports through the error reporter on every tick instead.
 
 ### `mcp_event`
 
-Fires once per event a catalog MCP server publishes through the **MCP Events extension**, the draft
+Fires once per event (or, with a `coalesce_key`, once per burst) a catalog MCP server publishes through the **MCP Events extension**,
 SEP-3415. Zimmer polls the server itself, from Rails, and also takes webhook deliveries when the event
 type offers them (see [Webhook delivery](#webhook-delivery)). No agent session is involved, and the
 credentials are the ones a session would get for that server. A strad slug is reached at its catalog
@@ -914,9 +914,12 @@ URL with `Bearer ${STRAD_API_KEY}`, resolved by `McpServerEndpoint` exactly as f
 | `event_name` | yes | The event type, exactly as the server's `events/list` names it. A gateway prefixes it with the slug, the way it prefixes tools |
 | `arguments` | no | An object sent with every `events/poll`. The event type's `inputSchema` says what it takes. At most 4 KB of JSON |
 | `payload_filters` | no | Payload field => the values allowed to fire. Zimmer checks it on every event's top-level `data`. A field the payload does not carry fails the filter |
+| `coalesce_key` | no | A top-level payload field. Events with the same value for it, within the trigger's [coalescing window](#coalescing-a-burst-of-mcp-events), fire one session. Without it, every event fires its own |
 
 The form takes `arguments` and `payload_filters` as JSON text; the API and `action_trigger` take
-objects.
+objects. `action_trigger` refuses an update whose `configuration` leaves out a `coalesce_key` the
+condition has, the way it refuses one that leaves out `payload_filters`; send `null` to drop it on
+purpose.
 
 #### Which servers publish events
 
@@ -940,9 +943,11 @@ reports.
    "from now": the server answers with no events and a cursor. Nothing fires, so turning a trigger on
    never replays history.
 2. **Then it polls from the stored cursor**, following `hasMore` for up to five pages.
-3. **One session per event.** Each event that passes `payload_filters` is claimed in
-   `trigger_event_claims` as `mcp:<server>:<eventId>`, and the trigger fires, in one transaction. A
-   claim the condition already holds fires nothing, so a page polled twice fires each event once.
+3. **One session per event**, or per burst with a `coalesce_key` (see
+   [Coalescing a burst of MCP events](#coalescing-a-burst-of-mcp-events)). Each event that passes
+   `payload_filters` is claimed in `trigger_event_claims` as `mcp:<server>:<eventId>`, and the
+   trigger fires, in one transaction. A claim the condition already holds fires nothing, so a page
+   polled twice fires each event once.
 4. **The cursor moves only when the whole page settled.** If an event's fire raised or was held, the
    rest of the page waits behind it, and the cursor stays put. The same happens past ten fires a tick,
    counted across pages. The next tick polls the same page and the claims skip what already fired. A
@@ -960,7 +965,8 @@ and the condition is baselined again. Editing the template, the filters or anyth
 trigger keeps the cursor. That makes it safe to turn a shadow trigger into the real one in place.
 
 A session an `mcp_event` trigger spawns has genesis `mcp_event`, **spot** by default. The metadata
-carries `mcp_event_server`, `mcp_event_name` and `mcp_event_id`. A trigger whose events have a
+carries `mcp_event_server`, `mcp_event_name` and `mcp_event_id`, and `mcp_event_folded_ids` when
+the fire coalesced a burst. A trigger whose events have a
 person waiting on them sets priority on its own row.
 
 #### Webhook delivery
@@ -3196,8 +3202,9 @@ kept fanning out until somebody edited a row by hand.
 
 The trigger page, the REST payload and `search_triggers` all report the window **and where the number
 came from**, because an inherited default and a value someone typed read identically otherwise. A
-value stored on a trigger with no Slack condition is reported as **inert**: only the Slack poller
-groups messages, since it is the only firing path that walks a list of events inside a single fire.
+value stored on a trigger with no Slack condition, and no `mcp_event` condition with a
+`coalesce_key`, is reported as **inert**: those are the only conditions that group events.
+See [Coalescing a burst of MCP events](#coalescing-a-burst-of-mcp-events).
 
 :::note[Grouping happens within one poll pass]
 The poller ticks once a minute and groups the messages that pass carried. A burst that straddles a
@@ -3205,6 +3212,70 @@ tick boundary — some messages fetched by one pass, the rest by the next — pr
 pass rather than one overall. Two sessions for a burst instead of seven is the intended improvement;
 one is not guaranteed across the boundary.
 :::
+
+## Coalescing a burst of MCP events
+
+An [`mcp_event`](#mcp_event) condition fires one session per event by default. That is wrong for an
+event source that publishes one event per chat message: strad's `whatsapp-zimmer__message_received`
+turns a five-message burst in a family group chat into five parallel sessions, each of which may
+reply, and WhatsApp bans numbers that behave like bots. Slack's Events relay has the same shape.
+
+Set `coalesce_key` on the condition to the payload field that says which conversation an event
+belongs to: `chat_id` for WhatsApp, `channel_id` for Slack. Events carrying the same value for it
+within the trigger's `coalesce_window_seconds` (the same setting, and the same 60-second default, as
+[Slack's](#coalescing-a-burst-of-slack-messages)) are **one event**:
+
+- **The first event fires the session.** The template renders from it, exactly as without coalescing.
+- **The rest of the burst is folded in.** Events the same poll page carried are listed in a note
+  appended to the first prompt. An event that arrives later, on the next poll or as its own webhook
+  delivery, is queued into the session as a follow-up message instead, as long as that session can
+  still take one (`waiting`, `running` or `needs_input`). If it cannot, the event opens a group of
+  its own.
+
+The note lists each folded event's time, its `eventId`, and the payload fields the template names
+(`{{event.<field>|...}}`), or the whole payload when the template names none. Every payload value is
+untrusted, so they all go in one `events` fence:
+
+```
+2 more events of whatsapp-zimmer__message_received with the same chat_id arrived within 60s of the
+one above, so Zimmer folded them into this session rather than starting one each. Treat them as one
+burst, in the order the server sent them:
+
+[begin untrusted events 3f9a2c7d1e8b4a60: supplied by the event that fired this trigger, ... It ends only at "[end untrusted events 3f9a2c7d1e8b4a60]".]
+- 18:02:11 UTC whatsapp:120363000000000000@g.us:3EB0AAAA: {"chat_id":"120363000000000000@g.us","text":"also bring the cake"}
+- 18:02:19 UTC whatsapp:120363000000000000@g.us:3EB0BBBB: {"chat_id":"120363000000000000@g.us","text":"never mind"}
+[end untrusted events 3f9a2c7d1e8b4a60]
+```
+
+The first 25 folded events are listed, at most 1,000 characters each; past that the note gives a
+count.
+
+The rules match Slack's, and so do the reasons for them:
+
+- **Nothing is dropped, and dedup still holds.** Every folded event is claimed under its own
+  `mcp:<server>:<eventId>`, pointed at the session it was folded into, so `compare_trigger_fires`
+  sees each one, and the cursor moves past all of them. A page polled again, or an event the
+  webhook and the poll both deliver, fires and folds nothing twice.
+- **A group is anchored on the event that fired its session**, measured by the events' own
+  `timestamp`s, and an event joins it from either side of that anchor, because a server's page or
+  parallel webhook deliveries can hand a burst over out of order. A group therefore spans at most
+  twice the window. An event with no `timestamp` is placed at the moment Zimmer settles it, which
+  for an event held and retried is later than it arrived.
+- **An event with no value for the key is never grouped.** The value must be a string or a number.
+- **Groups cross poll ticks and delivery paths.** The claim group (`trigger_event_claims.group_key`)
+  is what finds a burst's session, under the trigger's spawn lock, so the "one poll pass" limit of
+  Slack's poller does not apply here. A group held by skip-while-pending or burst control and
+  retried later still joins the session a later event of the same burst fired in the meantime.
+
+With the other two controls:
+
+- [Skip while pending](#skip-while-a-session-is-still-pending) applies to the fire that would open
+  a group, not to an event folded into a session already started. A folded event is not a fire.
+- [Burst control](#burst-control) counts one fire per group. A held group is deferred, as every
+  held `mcp_event` fire is: its claims are given back and the next poll retries it. Folding into a
+  session spawns nothing, so it never counts toward the cap. While a burst is open, nothing is polled
+  and webhook deliveries are left for the poll.
+- A `coalesce_key` with `coalesce_window_seconds` set to `0` coalesces nothing.
 
 ## Burst control
 

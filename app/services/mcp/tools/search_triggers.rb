@@ -432,7 +432,7 @@ module Mcp
         return "Off — every Slack message spawns its own session" unless trigger.coalesces_messages?
 
         source = trigger.coalesce_window_seconds.nil? ? "default" : "set on this trigger"
-        return "#{trigger.effective_coalesce_window_seconds}s (#{source}) — INERT: no Slack condition on this trigger reads it" if trigger.coalesce_window_inert?
+        return "#{trigger.effective_coalesce_window_seconds}s (#{source}) — INERT: no Slack condition, and no mcp_event condition with a coalesce_key, on this trigger reads it" if trigger.coalesce_window_inert?
 
         "#{trigger.effective_coalesce_window_seconds}s (#{source}) — Slack messages in one channel this close " \
           "together are one event: one session, the rest folded into its prompt"

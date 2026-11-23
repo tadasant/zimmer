@@ -1,10 +1,10 @@
 ---
 title: MCP Events spec pin
-description: Which revision of the draft MCP Events extension Zimmer's mcp_event triggers implement, what of it is built, and where it departs from the draft.
+description: Which revision of the MCP Events extension (SEP-3415) Zimmer's mcp_event triggers implement, what of it is built, and where it departs from the spec.
 ---
 
 [`mcp_event` triggers](/sessions/triggers/#mcp_event) implement part of the **MCP Events
-extension**, the draft SEP-3415. It is an unmerged proposal that changes week to week. This page is
+extension**, SEP-3415. It merged as Final on 2026-11-19, and the extension can still be revised. This page is
 the pin: the revision the code was written against, which parts of it are built, and where the code
 departs from it on purpose. `McpEvents::SPEC_REVISION` holds the same revision.
 
@@ -18,14 +18,14 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 
 | | |
 | --- | --- |
-| Proposal | SEP-3415, "Events Extension" (status Accepted, Extensions Track; the PR is still open and unmerged) |
-| Source | `seps/3415-events-extension.md` in the proposal, with a docs copy that has the same body at `docs/seps/3415-events-extension.mdx` |
-| Revision | `4165cc2` (head of the proposal on 2026-11-16) |
+| Proposal | SEP-3415, "Events Extension" (status Final, Extensions Track; merged 2026-11-19) |
+| Source | `seps/3415-events-extension.md` on `main` of `modelcontextprotocol/modelcontextprotocol`, with a docs copy that has the same body at `docs/seps/3415-events-extension.mdx`. Diff against the landed text from now on, not the closed PR |
+| Revision | `8a18b4b` (the SEP's merge commit, 2026-11-19) |
 | Extension id | `io.modelcontextprotocol/events` |
 
 ## What is implemented
 
-| Part of the draft | Zimmer |
+| Part of the SEP | Zimmer |
 | --- | --- |
 | Capability under `capabilities.extensions["io.modelcontextprotocol/events"]` | Read from the `initialize` result (see deviations) |
 | `events/list` with `nextCursor` paging | `McpEvents::Client#list_events`, up to 10 pages |
@@ -51,6 +51,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | `deliveryStatus` | `active: false` shows the condition as `suspended`; only the SEP's `lastError` categories are shown |
 | `v1a,` (ed25519 server identity), Server Card `signingKeys` / `egressIpRanges` | **Not verified** and the Server Card is not read; skipped, as the SEP allows |
 | `notifications/events/list_changed` | **Not implemented.** The six-hourly sweep re-reads `events/list` |
+| `x-mcp-header` on an event type's `inputSchema`, mirrored into `Mcp-Param-{Name}` headers on `events/poll`, `events/subscribe` and `events/unsubscribe`; excluding an event type whose annotations break the transport's rules; retry after `HeaderMismatch` (`-32020`) | **Not implemented** (see deviations) |
 
 ## Deliberate deviations
 
@@ -67,7 +68,12 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
   client initializes at 2025-06-18 and reads the extension off `initialize`, because that is where
   strad declares it. The per-request client capability goes in `_meta` on every `events/poll` all
   the same.
-- **`Mcp-Name` for a non-ASCII name.** The draft calls for a Base64 sentinel form. Zimmer instead
+- **`x-mcp-header` is not read.** The SEP requires a Streamable HTTP client to mirror annotated
+  subscription arguments into `Mcp-Param-*` headers. Zimmer sends none. A server that annotates an
+  argument would refuse Zimmer's poll with `HeaderMismatch`, and the poller reports it as a failing
+  poll. No server Zimmer polls annotates one today; adopt it before pointing a condition at one
+  that does.
+- **`Mcp-Name` for a non-ASCII name.** The SEP calls for a Base64 sentinel form. Zimmer instead
   refuses to poll a name outside printable ASCII (`McpEvents::NAME_FORMAT`).
 
 ## Changelog
@@ -87,3 +93,12 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
   `events/poll`, `events/subscribe`, `events/unsubscribe`, delivery and its signature, the capability
   shape, the extension id, cursor semantics, error codes and the `Mcp-Name` header are unchanged. No
   wire-breaking change, no code change beyond `McpEvents::SPEC_REVISION`.
+- **2026-11-23, `4165cc2` → `8a18b4b` (merged).** SEP-3415 merged on 2026-11-19 with status Final;
+  the pin now follows the landed text. Changes, classified: status Accepted → Final and the author's
+  handle (editorial); the TypeScript SDK reference implementation listed (non-normative); `x-mcp-header`
+  annotations on an event type's `inputSchema`, mirrored into `Mcp-Param-{Name}` headers on every
+  events request over Streamable HTTP, with `HeaderMismatch` (`-32020`) for a mismatch (additive: it
+  changes nothing on the wire until a server annotates an argument, which none Zimmer polls does;
+  recorded as a deviation, not built). `events/list`, `events/poll`, the webhook mode, the capability
+  shape, the extension id, cursor semantics and the other error codes are unchanged. Checked while
+  adding `coalesce_key` to `mcp_event` conditions, a Zimmer-side change with no wire effect.
