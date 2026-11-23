@@ -117,7 +117,7 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
   end
 
   # A row the human has already actioned is not an outstanding decision, and a
-  # reprioritizing session that could not tell would keep ranking it as one.
+  # reader that could not tell would keep presenting it as one.
   test "a row the human has already pressed Merge on says so" do
     session = make_session(status: :running, custom_metadata: {
       "github_pull_request_urls" => [ GREEN_PR ],

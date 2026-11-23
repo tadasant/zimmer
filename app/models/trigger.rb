@@ -812,6 +812,13 @@ class Trigger < ApplicationRecord
     TurnSource.for_genesis(condition_genesis)
   end
 
+  # #turn_source for the fire in hand: the caller's own answer when it established
+  # more than the condition type says — an MCP event Zimmer read back from Slack —
+  # passed as #create_session!'s turn_source.
+  def fire_turn_source
+    turn_source && (@fire_turn_source || turn_source)
+  end
+
   # The class this trigger's sessions would carry if it named none — the shipped
   # default for the genesis it derives. What the form shows next to "Use the
   # default", so the operator can see what they are choosing away from.
@@ -918,7 +925,9 @@ class Trigger < ApplicationRecord
   #   ExternalApp#session_metadata). `trigger_id` / `trigger_name` always win over
   #   it. A reuse follow-up and a burst-notice session do not carry it: the first
   #   is someone else's session, the second is not the work that was asked for.
-  def create_session!(prompt:, genesis: nil, workflow_run: nil, session_metadata: {})
+  # @param turn_source [TurnSource, nil] where the words this fire delivers came
+  #   from, when the caller established it; nil derives it (#turn_source).
+  def create_session!(prompt:, genesis: nil, workflow_run: nil, session_metadata: {}, turn_source: nil)
     @last_fire_burst_suppressed = false
     @last_fire_pending_session = nil
     # Reset with its siblings, and for the same reason: a caller reads it after
@@ -934,6 +943,7 @@ class Trigger < ApplicationRecord
     @genesis_override = genesis
     @fire_workflow_run = nil
     @fire_session_metadata = session_metadata.to_h.stringify_keys
+    @fire_turn_source = turn_source
 
     # After the resets, so a caller reading them after this raise does not read
     # an earlier fire's outcome.
@@ -2066,7 +2076,7 @@ class Trigger < ApplicationRecord
             content: prompt,
             position: Sessions::QueueTail.next_position!(session),
             status: "pending",
-            source_context: turn_source&.to_h
+            source_context: fire_turn_source&.to_h
           )
           @last_follow_up_status = :queued
         end
@@ -2080,7 +2090,7 @@ class Trigger < ApplicationRecord
         # See SessionStateMachine#hold_pending_one_time_wakes.
         session.waking_trigger = self if one_time_reuse_trigger?
         begin
-          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: turn_source)
+          session.deliver_follow_up!(prompt, clear_metadata_keys: Session::SIGTERM_RETRY_METADATA_KEYS, source: fire_turn_source)
         ensure
           session.waking_trigger = nil
         end
@@ -2726,7 +2736,7 @@ class Trigger < ApplicationRecord
       scheduling_class: session_scheduling_class,
       precedence: session_precedence,
       metadata: (@fire_session_metadata || {}).merge("trigger_id" => id, "trigger_name" => name),
-      source: turn_source
+      source: fire_turn_source
     ) do |created|
       @last_fire_created_session = created
       @fire_workflow_run&.update!(session: created)

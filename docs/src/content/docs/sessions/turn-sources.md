@@ -56,7 +56,7 @@ The credential, or the code path, decides the surface. A client header can only 
 | MCP on a connection stamped with its session | `agent` | `unknown` |
 | MCP over an OAuth connector, or an unstamped API key | `mcp` | `unknown` |
 | A Live Mode delegation (start_session, follow_up, quick_router, … through the tool bridge) | the client last driving the conversation: `web`, `ios`, `carplay` or `mcp` | `live_voice` or `live_text`, from the conversation's mode when the tool runs |
-| A trigger fire or a trigger's follow-up | `slack` for a Slack condition, else `trigger` | `text` for `slack` |
+| A trigger fire or a trigger's follow-up | `slack` for a Slack condition, or for an MCP event [read back from Slack](/sessions/triggers/#mcp_event); else `trigger` | `text` for `slack` |
 | A Slack message folded into a running session | `slack` | `text` |
 | `message_parent` (a child reporting to its parent) | `agent` | `unknown` |
 

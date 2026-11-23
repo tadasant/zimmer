@@ -118,9 +118,8 @@ module Mcp
 
         Settable genesis keys: `web_ui`, `api`, `unknown` — the origins nothing triggers.
 
-        **The other five kinds are not settable here.** `slack`, `github_issue`, `github_label`,
-        `schedule` and `ao_event` restate trigger condition types, and their class lives on the trigger
-        that fires them: set `scheduling_class` with `action_trigger` so one trigger moves without
+        **The other kinds are not settable here.** #{SessionGenesis::TRIGGER_BACKED_KEYS.map { |key| "`#{key}`" }.join(', ')}
+        restate trigger condition types (some retired), and their class lives on the trigger that fires them: set `scheduling_class` with `action_trigger` so one trigger moves without
         dragging every other session of the same kind with it. To change a single session rather than a
         whole feed, pass `scheduling_class` to `start_session` when spawning it, or set it afterwards
         with `action_session`.

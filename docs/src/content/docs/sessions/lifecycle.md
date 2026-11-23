@@ -1809,7 +1809,7 @@ the fire, the PR showed a clean label and no comment, and no alert fired anywher
 ([#632](https://github.com/tadasant/zimmer/issues/632)).
 
 `OrphanedTriggerFire` closes that. When a failing session's `genesis` is one whose fire is genuinely
-*consumed* — `github_label`, `github_issue`, `slack` or `ao_event` — and it carries a `trigger_id`,
+*consumed* — `github_label`, `github_issue`, `slack`, `mcp_event` or `ao_event` — and it carries a `trigger_id`,
 `fail` enqueues `OrphanedTriggerFireJob`, which:
 
 - writes an ERROR line on the session's own timeline saying the fire is spent and its subject has

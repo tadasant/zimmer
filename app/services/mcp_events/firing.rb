@@ -83,6 +83,8 @@ module McpEvents
       group_key = coalescing_group_key(condition, occurrences.first) if window.positive?
       won = []
       outcome = :rolled_back
+      # Before the transaction: it makes Slack API calls.
+      slack_messages = read_slack_messages(condition, keyed)
       ActiveRecord::Base.transaction do
         # Re-read the row under a lock: an edit that landed while the event was in hand must not be
         # written over, and one that changed the subscription makes the event moot.
@@ -111,7 +113,7 @@ module McpEvents
           # session's row lock, so a session archived a moment ago is not folded into.
           if target&.lock! && target.accepts_follow_up?
             # The fold spawns nothing, so it does not stamp last_triggered_at: that records fires.
-            fold_into_session!(condition, target, fresh, window: window)
+            fold_into_session!(condition, target, fresh, window: window, slack_messages: slack_messages)
             TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: won)
               .update_all(session_id: target.id, anchor_ts: group.anchor_ts)
             outcome = :folded
@@ -119,7 +121,7 @@ module McpEvents
           end
         end
 
-        outcome = fire!(condition, fresh.first, folded: fresh.drop(1))
+        outcome = fire!(condition, fresh.first, folded: fresh.drop(1), slack_messages: slack_messages)
         if outcome.is_a?(Session)
           TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: won)
             .update_all(session_id: outcome.id, anchor_ts: group_key ? anchor_ts(fresh.first) : nil)
@@ -144,7 +146,16 @@ module McpEvents
       :failed
     end
 
-    def fire!(condition, occurrence, folded: [])
+    # What Slack says of each event not already claimed, by event id (SlackMessage.read). Only a
+    # server the deployment named is asked about; for every other event this is nil.
+    def read_slack_messages(condition, keyed)
+      return {} unless SlackMessage.source?(condition.mcp_event_server, condition.mcp_event_name)
+
+      claimed = TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: keyed.keys).pluck(:event_key)
+      SlackMessage.read_all(condition, keyed.except(*claimed).values)
+    end
+
+    def fire!(condition, occurrence, folded: [], slack_messages: {})
       trigger = condition.trigger
       prompt = trigger.interpolate_prompt(event: "mcp_event", event_id: occurrence.event_id, event_data: occurrence.data)
       if folded.any?
@@ -157,16 +168,31 @@ module McpEvents
         "mcp_event_id" => occurrence.event_id
       }
       metadata["mcp_event_folded_ids"] = folded.map(&:event_id) if folded.any?
+      if (message = slack_messages[occurrence.event_id])
+        # What lets Zimmer itself answer on the message when the session cannot reach the model
+        # (SlackOutageMarker, SlackErrorReply), as a native Slack fire does.
+        metadata.merge!(SlackOutageMarker.source_metadata(
+          channel_id: message.channel_id, message_ts: message.ts, event_type: message.event_type, thread_ts: message.thread_ts
+        ))
+      end
 
       # Held already by #settle; taking it again is a no-op that keeps this safe to call alone.
       Trigger.lock_spawn_for_transaction!(trigger.id)
-      session = trigger.create_session!(prompt: prompt, session_metadata: metadata)
+      session = trigger.create_session!(
+        prompt: prompt, session_metadata: metadata, turn_source: (TurnSource.for_genesis(SessionGenesis::SLACK) if message)
+      )
 
       return :held if session.nil?
       return :held if %i[skipped_pending_exists dropped].include?(trigger.last_follow_up_status)
-      # The fire that opened a burst spawns the notice about it, not a session for this event.
-      return :held if session.metadata.to_h["burst_notice"]
+      # The fire that opened a burst spawns the notice about it, not a session for this event. The
+      # notice still quotes the event, so it is marked as one whose author was not established.
+      if session.metadata.to_h["burst_notice"]
+        HumanCapture.mark_incomplete!(session)
+        return :held
+      end
 
+      HumanCapture.record!(session, condition, [ occurrence, *folded ], slack_messages: slack_messages,
+        started: trigger.last_fire_created_session == session)
       session
     end
 
@@ -211,13 +237,16 @@ module McpEvents
     # it something new. Sessions::ArchiveGuard refuses to archive a session over a message still in
     # it, so the session cannot finish without reading this.
     # The caller holds +session+'s row lock.
-    def fold_into_session!(condition, session, occurrences, window:)
+    def fold_into_session!(condition, session, occurrences, window:, slack_messages: {})
+      from_slack = occurrences.all? { |occurrence| slack_messages[occurrence.event_id] }
+      source = from_slack ? TurnSource.for_genesis(SessionGenesis::SLACK) : condition.trigger.turn_source || TurnSource.for_genesis(nil)
       session.enqueued_messages.create!(
         content: folded_events_note(condition, occurrences, window: window, follow_up: true),
         position: Sessions::QueueTail.next_position!(session),
         status: "pending",
-        source_context: (condition.trigger.turn_source || TurnSource.for_genesis(nil)).to_h
+        source_context: source.to_h
       )
+      HumanCapture.record!(session, condition, occurrences, slack_messages: slack_messages, started: false)
     end
 
     # How many folded events the note lists one by one, and how much of each.

@@ -222,7 +222,7 @@ table):
 
 | Cue | Sound | Peak | Plays |
 | --- | --- | --- | --- |
-| pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
+| pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own player with no microphone |
 | connected | D5, G5, rising | −9.3 dBFS | Once, when the call is up |
 | heard | D5, short | −9.7 dBFS | 1.5 s (`LiveCue.settle`) after the driver stops talking and stays quiet, on a line that will be answered |
 | thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | −9.3 dBFS | From 2.5 s after the end of speech to the reply, no tool running; gives up after 45 s |
@@ -264,16 +264,16 @@ socket open and `session.created`, which is 2 to 3 seconds when it works, and no
 before them. Now the tap plays *pressed* before any of that (`LiveCall.pressed`), and a call nobody
 pressed for (the phone's button, a car retry) plays it as it starts, before its first request; a
 call that follows a press within the connect deadline does not play it twice. It plays alone, on
-a short-lived engine that never touches the input (`LiveAudioEngine.playAlone`, the one the
+a short-lived player that never touches the input (`LiveAudioEngine.playAlone`, the one the
 falling notes use when no call is up): no microphone opens and no permission prompt comes up,
 because CarPlay records only under the voice control template and the tiles are still up at the
 tap. The call's own engine still starts after the secret, as before. A source guard in
-`CarPlayTests` holds both: the cue before every network step, and no input on its engine.
+`CarPlayTests` holds both: the cue before every network step, and no input (and no engine) where it plays.
 `call.acknowledged` logs how long after the press (or the start) it began to play
 (`since_press_ms`); the route can take a moment more to make it audible. It carries the call's id
 only if the call began before it sounded, so at a car tap look beside `carplay.talk_tapped`. Not
 while a call is up (New over a running call hears *ended* instead), nor over a goodbye still
-sounding. Its engine gives the audio session up without telling the car's music to resume, so the
+sounding. It gives the audio session up without telling the car's music to resume, so the
 music pauses once for the call rather than twice; if the press leads nowhere the falling notes
 hand it back, and a press the driver ends at once leaves the music paused. *pressed* is about a
 fifth of a second and is the one cue that is not stopped by talking.
@@ -312,8 +312,9 @@ the tile says *Live Mode unavailable, retrying…* and the car tries again after
 up, so a driver knows without looking. Once the retries are spent, or 30 seconds have gone from the
 tap or the drop, it says *Live Mode unavailable. Tap to retry*; a tap is a fresh budget, a call that
 comes up earns it back, and ending the call stops the retries. A call that never came up has no
-engine to play the notes, so it gets a short-lived one for them, in the call's own audio category
-and for as long as they sound (`LiveAudioEngine.playAlone`).
+engine to play the notes, so a short-lived `AVAudioPlayer` plays them, in the call's own audio
+category and for as long as they sound (`LiveAudioEngine.playAlone`). Not an engine: one aborts the
+whole app when the audio server stalls while it starts, stops or goes away.
 
 **A refusal no retry can fix says why, and is not retried.** OpenAI out of credits sends an `error`
 event and then closes the socket; read only as the close, every retry looks like a dropped call and
@@ -476,6 +477,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | `@Published` publishes in `willSet`, so the screen read the state the call was leaving | Every sink on the call is received on the main queue's next turn | A source guard |
 | The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` decides everything on the main actor; its observers run on the main queue; an engine is reconfigured on one serial queue and belongs to it until it comes back; a media-services reset ends the call | A source guard for the blocking calls; review for the rest: no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
 | The audio engine's start blocked the main thread for 770 s with the call on Connecting…, so nothing could time it out or end it | Every call that can block runs on `LiveAudioEngine.queue`; `LiveCallHealth` gives up at 15 s | `CarPlayTests.testTheCallsThatCanBlockNeverRunOnTheMainActor`; `LiveCallHealthTests` |
+| A cue with no call up had an `AVAudioEngine` of its own, whose output unit aborts the process when the audio server does not answer in time (`_ReportRPCTimeout`), as it initialized, stopped or was disposed of | An `AVAudioPlayer` plays it (`LiveAudioEngine.playAlone`) | A source guard; the abort forced by stopping the audio server under the app, old code and new. A call's own engine still has the exposure: limitations.md |
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
 | The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | A source guard |
 | Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsAHomeOneCallScreenAndOnePanel` |
@@ -486,7 +488,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 ## The CarPlay drill
 
 `App/ZimmerUITests/CarPlayDrillUITests.swift`, run by `ios/bin/ui-test --carplay` in CI's
-`ios_carplay` job on every iOS pull request (and the `carplay` shard after merge). The script builds
+`ios_carplay` job on every iOS pull request (and the `carplay` job of `ios-ui-tests.yml` after merge). The script builds
 the app signed ad hoc with the CarPlay entitlement — the Simulator's CarPlay window lists no app
 without one — and opens that window from the Simulator's I/O menu through System Events. XCUITest
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
@@ -605,7 +607,8 @@ nothing before the tap and opens no microphone. The design and the numbers are i
   is reached by saying so on a call. `LiveAPI.switchLiveConversation(nil, from:)` is what a tile
   would call: `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's read
   is where a reopenable conversation would keep the Continue tile up.
-- **iOS 27 overlay.** The voice control template as an overlay. Needs Xcode 27 in CI.
+- **iOS 27 overlay.** The voice control template as an overlay. CI builds with Xcode 27, but the drill
+  compiles the app with Xcode 26, so it needs a compile-time SDK check (see Known limitations).
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
 - **A nudge on the Lock Screen.** A Live Activity for a call handed to a locked phone, with no sound.

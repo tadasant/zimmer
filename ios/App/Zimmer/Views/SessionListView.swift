@@ -334,7 +334,6 @@ struct SessionListView: View {
                         } label: {
                             Label("Reorder Spot Queue", systemImage: "arrow.up.arrow.down")
                         }
-                        .accessibilityIdentifier("ranked.reorder")
                     }
                     Button {
                         confirmingRefreshAll = true

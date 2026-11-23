@@ -162,6 +162,9 @@ ssh:
 env:
   clear:
     RAILS_ENV: production
+    # The managed Postgres cluster's disk, which Zimmer cannot read. /health warns on the
+    # shares of it in use and on disk; keep it in step with the cluster's storage.
+    DATABASE_CAPACITY_GIB: "<%= ENV.fetch("DATABASE_CAPACITY_GIB", "80") %>"
     # Armed only when the worker is running under sysbox (see the role's options
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.
@@ -300,6 +303,11 @@ env:
     # Inert until a token is seeded: with no token map the stored `gh auth login`
     # credential still authenticates everything. Not a secret.
     ZIMMER_GITHUB_DEFAULT_OWNER: tadasant
+    # The MCP servers whose `message_posted` events announce messages in the Slack
+    # workspace SLACK_BOT_TOKEN is for (McpEvents::SlackMessage). An event from one of
+    # them is read back from Slack, and a rostered author is recorded as a human
+    # message, so naming a server here is a trust decision. Not a secret: catalog names.
+    MCP_EVENT_SLACK_SERVERS: slack-zimmer
     # The other Zimmer deployments this one may send signed human merge approvals
     # to (MergeAttestations): `<catalog MCP server>=<that deployment's audience>`,
     # comma-separated. Not a secret: a server name and a URL. Inert until the

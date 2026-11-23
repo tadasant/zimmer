@@ -51,6 +51,7 @@ module Mcp
           *trigger_poller_lines(report),
           *cron_freshness_lines(report),
           *inbound_event_lines(report),
+          *database_size_lines(report),
           *root_data_lines(report),
           *operating_costs_lines(report),
           *warm_clone_pool_lines(report),
@@ -213,6 +214,24 @@ module Mcp
         [
           "- **Webhook ingest:** #{status.message}",
           *enabled.map { |s| inbound_source_line(s) }
+        ]
+      end
+
+      # Size on disk, space in use, and the largest tables, so "what is filling the
+      # database" is answerable without a shell.
+      def database_size_lines(report)
+        database = report[:database_size_health] || {}
+        status = database[:status]
+        return [] if status.nil?
+
+        human = ->(bytes) { ActiveSupport::NumberHelper.number_to_human_size(bytes) }
+        [
+          "- **Database size:** #{status.message}",
+          *Array(database[:largest_tables]).map do |table|
+            reusable = table[:reusable_bytes].to_i
+            "  - `#{table[:name]}`: #{human.call(table[:total_bytes])}" \
+              "#{", about #{human.call(reusable)} of it reusable" if reusable.positive?}"
+          end
         ]
       end
 

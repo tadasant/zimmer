@@ -14,7 +14,7 @@ import Foundation
 /// rules, and how to add or change a cue, are in `ios/LIVE_CUES.md`.
 ///
 /// - **pressed**: two quick, level notes (F5, F5), the moment Talk is pressed, before any
-///   request is made, on an engine with no microphone. Level, not rising: the call is not on
+///   request is made, on a player with no microphone. Level, not rising: the call is not on
 ///   yet;
 /// - **connected**: two rising notes (D5 then G5), once, when the call is up and listening;
 /// - **heard**: one short note (D5, the first note of *connected*), when the person stops

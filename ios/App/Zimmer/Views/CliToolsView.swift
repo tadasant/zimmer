@@ -39,13 +39,11 @@ struct CliToolsView: View {
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
-                    .accessibilityIdentifier("clis.refresh")
                     Button(role: .destructive) {
                         Task { await clearCache() }
                     } label: {
                         Label("Clear Cache", systemImage: "trash")
                     }
-                    .accessibilityIdentifier("clis.clearCache")
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }

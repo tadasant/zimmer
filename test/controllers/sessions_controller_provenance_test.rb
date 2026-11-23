@@ -90,6 +90,20 @@ class SessionsControllerProvenanceTest < ActionDispatch::IntegrationTest
     assert_no_match(/No message anywhere in this hierarchy was authored by a named human/, response.body)
   end
 
+  test "an MCP event session with nothing recorded is a gap on the panel, not an absence" do
+    users(:tadasant).update!(slack_user_ids: [ "U0HUMAN01" ])
+    session = spawn_session(title: "From an event")
+    session.update_column(:genesis, SessionGenesis::MCP_EVENT)
+
+    get provenance_panel_session_url(session)
+
+    assert_response :success
+    assert_select "[data-capture-gap=?]", HumanMessageCaptureCoverage::MCP_EVENT
+    assert_match "Capture is not configured for MCP events", response.body
+    assert_match "the check could not be established", response.body
+    assert_no_match(/No message anywhere in this hierarchy was authored by a named human/, response.body)
+  end
+
   test "a mapped Slack user ID restores the panel's affirmative empty state" do
     users(:tadasant).update!(slack_user_ids: [ "U123HUMAN" ])
     session = spawn_session(title: "From Slack")

@@ -374,6 +374,18 @@ In the iOS trigger form, a drag toward the top of the form can move the whole sh
 
 A refusal does not depend on it, because the form scrolls to the refusal itself. Somebody scrolling a long form by hand can still meet it, and so can the other upward `reveal`s in `TriggerEditorUITests`, which are short and have not failed this way. A failed save that is not a refusal, such as a network error, still shows its banner at the top of the form with no scroll, so it can appear off screen.
 
+### A menu item's identifier can be missing on iOS 27
+
+On iOS 27.0, built with Xcode 27.1, XCUITest does not see the accessibility identifier of an item in the session page's actions menu: its dump of the open menu has every item by label and none with an identifier. An item in the board's view options menu is not found by its identifier either, with the item on screen, and is found by its label. Both failed on both attempts of [run 45119344553](https://github.com/tadasant/zimmer/actions/runs/45119344553). The trigger page's menu kept its identifiers in that run's operations shard. The two that lost them use `Section`s and it does not, which fits but was not tested. The items work.
+
+So no menu item in the app sets an identifier, and a UI test finds one by its label. Nothing enforces that: a new identifier works on iOS 26 and may not on iOS 27. An item whose label is ambiguous on its screen needs a narrower query. VoiceOver reads the label, so nobody using the app is affected.
+
+### No UI test sees the Allow Paste prompt
+
+An iOS 27.0 simulator cannot show *Allow Paste*, the prompt iOS puts up when an app reads what another app copied. Its pasteboard daemon logs `Paste requires user authorization. Prompting...`, SpringBoard refuses the alert (`Entitlement "com.apple.springboard.CFUserNotification" is required to access this resource`), and the read comes back empty. *Paste Image* then says *Paste not allowed.*, as it does for a person who refuses. In [run 45136122476](https://github.com/tadasant/zimmer/actions/runs/45136122476) the paste test failed 2 of 2 without the permission, passed 3 of 3 with it, and failed 2 of 2 once it was taken away.
+
+So `ios/bin/ui-test` sets *Paste from Other Apps* to Allow for Zimmer, in the simulator's TCC database, before any test (not for the CarPlay drill, which pastes nothing). The test drives the paste itself, and no test drives the prompt, nor a refusal. Nothing here was measured on a real device: that an iOS 27 phone shows the prompt is inferred from the simulator trying to.
+
 ### A switch on iOS 26 can lose a very short touch
 
 iOS 26's `UISwitch` flips through a long-press recognizer that begins a moment after the touch lands. If touch-down and touch-up reach the app together, it usually never begins: the app gets the touch, the switch does not move, and nothing is logged. XCUITest's `tap()` holds for 67 ms, and on a loaded runner the first touch of a screen reached the app 46 to 97 ms late, measured with touch logging on. With nothing logging, 1 plain tap in 53 failed the way [run 41951747877](https://github.com/tadasant/zimmer/actions/runs/41951747877) did. That run had no touch logging, so its cause is inferred from the matching failure.
@@ -406,6 +418,8 @@ On GitHub's macOS runners, CarPlay's host process (`CarPlayTemplateUIHost`) some
 The host can also drop a tap without stalling. In [run 44225446120](https://github.com/tadasant/zimmer/actions/runs/44225446120) its window got the touch down and up on New, but the host never logged its `button selected`, so Zimmer's handler never ran and the drill failed on `New tries a call`. The drill counts a tap on Continue, New or Retry only once the tile has left the screen, and taps it again, up to three taps, if it is still up 15 seconds later. A tap the app takes redraws the tiles at once without that tile, and New does not come back for at least 20 seconds, while the retries run. A host stall longer than 15 seconds can make a tap the app took look lost. The drill then checks the tile is still there before tapping again, and that check waits out the stall with the rest of XCUITest's queries. The Voice settings tile gets no second tap, because its panel opens over the tiles and they stay in the tree.
 
 The car can also stay connected after the drill unplugs it. In [run 44560053511, attempt 1](https://github.com/tadasant/zimmer/actions/runs/44560053511/attempts/1) the External Displays menu was clicked to Disabled with the call up, but the app logged no `carplay scene disconnected` and the phone stayed on the session list, so `the phone goes to the call` failed. The host had logged nothing since 16 seconds before the click, and logged nothing again until after the test ended, so whether the Simulator ignored the click or the host stalled through it is not known. A phone not on the call 20 seconds after the unplug gets the menu clicked again. The host can also hold up a disconnect the click did make: in [run 44939231478](https://github.com/tadasant/zimmer/actions/runs/44939231478) the host logged nothing after the drill asked for the first unplug, the app logged `carplay scene disconnected` about 65 seconds after that click went in, and the phone landed on the call `LiveHandover.settle` (3 seconds) and one half-second look later, about a second after the drill had stopped waiting. So the drill gives the phone 90 seconds from asking for the first unplug to land, whichever click took. A stall longer than that still fails the drill.
+
+The fixture holds the drill's first call on Connecting… for 600 seconds, the drill's whole time allowance, and the gear is what ends it. With a hold of 120 seconds a slow unplug and replug outlasted it: in [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) the call failed at 03:31:49, some 10 seconds before the gear was due. The drill then failed on the gear's panel with an empty car, because Zimmer had aborted playing the cue for that failure ("A stalled audio server can end the app during a call", below). A failure message that shows the car says when Zimmer is not running.
 
 The other steps wait 20 seconds or less, apart from the retries' 30 and 90. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
@@ -1253,8 +1267,8 @@ job.
 
 ### A hosted macOS runner shortage reddens `main` for up to three hours
 
-The `ios` and `ios_carplay` jobs, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on
-GitHub-hosted `macos-latest`, and GitHub is sometimes short of macOS arm64 capacity. A job that
+The `ios` job, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on GitHub-hosted
+`xcode-27`, and the CarPlay drill on `macos-26` (both macOS arm64), and GitHub is sometimes short of macOS arm64 capacity. A job that
 waits about 15 minutes without a runner is given up by GitHub, and nothing in this repo can change
 that wait. The run concludes `failure` even though no code is wrong. The job itself shows as
 `cancelled`, like a superseded one; the annotation "The job was not acquired by Runner of type
@@ -1272,6 +1286,14 @@ that ([CI failure alerts](/operate/deploying/#ci-failure-alerts)). Until a re-ru
 shows red, and for TestFlight no build ships. On a pull request nothing re-runs automatically:
 `gh run rerun <id> --failed`. A flaky real failure that happens to sit beside a lost runner gets
 one free retry and may never page.
+
+### An `xcode-27` image can lose its simulator runtime
+
+Image `20261112.0361` unmounted the iOS simulator runtime while a simulator booted
+([runner-images#15334](https://github.com/actions/runner-images/issues/15334)); GitHub rolled it back
+on 2026-11-16. The same host OS is back in `20261119.0378`, which GitHub expects to be fixed. For an
+`ios` job or UI shard that dies at boot with a missing runtime, check the `Image:` version in its log
+first: `alert-ci-failure.yml` re-runs only jobs that never got a runner.
 
 ### The trigger-poll liveness alarm depends on Redis, and fails quiet
 
@@ -4127,9 +4149,12 @@ resolves to nothing.
 
 `AgentRootsConfig#find_for_session` prefers `metadata["agent_root_key"]`, but its fallback matches on
 `(url, subdirectory)` and returns the first hit — `zimmer`. Sessions created through
-`create_from_agent_root!` (which includes every quick-router session) always carry the key, so this is
-latent rather than live; but a key-less session, or `Trigger#heal_stale_agent_root!`, will resolve any
-of them to `zimmer`. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
+`create_from_agent_root!` (which includes every quick-router session) always carry the key, so for a
+root the catalog has this is latent rather than live; but a key-less session, a session whose root
+was since removed from the catalog (as `dashboard-reprioritizer` was), or
+`Trigger#heal_stale_agent_root!`, will resolve to `zimmer`. Only the display is ambiguous: resuming a
+session whose root is gone hands `air prepare` the stored key, and the session ends `failed` with an
+unresolvable-root error. Same root cause as [#67](https://github.com/tadasant/zimmer/issues/67).
 
 ---
 
@@ -9088,8 +9113,22 @@ Two cases therefore still render as an affirmative absence when they are not one
   (chiefly rows predating the genesis column), so it maps to no channel and reports no gap. A
   Slack-origin session sitting on `unknown` is invisible to the check.
 
-Both would need a per-actor signal that does not exist: a Slack message from an unmapped user leaves
+The two above would need a per-actor signal that does not exist: a Slack message from an unmapped user leaves
 no trace anywhere in Zimmer, which is exactly the property being worked around.
+
+An [`mcp_event`](/sessions/triggers/#mcp_event) session errs the other way. It is answered per session
+and reads as "could not be established" unless every event that started it was attributed, so an alert
+bot's event, a mail and a WhatsApp message all leave that gap though nobody on the roster spoke. A Slack
+message edited or deleted before Zimmer reads it back is recorded as edited, or not recorded. One fire
+reads back at most 25 messages, for at most about 30 seconds, and stops at Slack's first failure; the
+rest of a larger burst is not attributed. An event the other delivery path had claimed and then gave
+back is fired without a read-back, so it stays a gap. Sessions an event started before attribution
+shipped stay gaps; nothing is backfilled. A session something else started, into which a re-use trigger
+delivered an event before then, carries no marker and reports none.
+
+The check for software posting as a person is Slack's `bot_id` and `app_id`. A tool driving Slack with a
+person's browser session token may leave neither, and would read as the person, on this path and on the
+native one alike. The native Slack path does not check either field.
 
 ## "In flight" still counts two dormant populations it does not name
 
@@ -9211,6 +9250,14 @@ gear crashing the app: the cause is inferred from the call log, not seen on a he
 settles it: `carplay.off_main` says CarPlay called off the main thread, and `last_mark` on an
 `abandoned` call says how far a tap got. CarPlay's own Back on the
 panel is not driven either.
+
+The drill runs a build made with the iOS 26 SDK, on the iOS 26 Simulator (`macos-26`, Xcode 26), while
+TestFlight ships one made with the iOS 27 SDK. Xcode 27 has no Simulator app, and Device Hub, which
+replaced it, [does not support CarPlay with simulators](https://developer.apple.com/forums/thread/834440).
+So the CarPlay code is compiled against the iOS 27 SDK on every pull request and driven only under the
+iOS 26 one: a behaviour CarPlay changes for apps linked against iOS 27 is first seen in a car.
+The drill's build also means the app must still compile with the iOS 26 SDK: an iOS 27-only symbol,
+even behind `if #available`, fails `ios_carplay` unless a compile-time check keeps it out.
 
 The car's home reads what is open when it connects and when you end a call, not while it sits there. A
 conversation started on the phone meanwhile leaves the home showing New alone until the next read,
@@ -9558,6 +9605,29 @@ because no deployment had `LIVE_OPENAI_API_KEY` when they were built. So nothing
 accepts the session config Zimmer mints, or that the browser's WebRTC offer is answered. Those are
 what the first conversation after the key is set will prove. The model names were current in
 OpenAI's docs on 2026-10-15; `LIVE_MODE_MODEL` and `LIVE_VOICE_MODEL` change them without a deploy.
+
+## A stalled audio server can end the app during a call
+
+An `AVAudioEngine`'s output unit lives in the app. As it is initialized, stopped or disposed of it
+asks the audio server, and Apple's code aborts the process when the answer takes too long
+(`_ReportRPCTimeout`). An abort is not an error the app can catch. A player node started on a
+stalled engine can also raise an Objective-C exception, which Swift cannot catch either.
+
+A cue with no call up does not use an engine, for this reason: `LiveAudioEngine.playAlone` uses an
+`AVAudioPlayer`. With the Mac's `coreaudiod` stopped for 40 seconds while a cue sounded in the
+simulator, the app with an engine per cue aborted in 5 runs of 5, about 10 seconds in. With the
+player it aborted in none of 5, and the next cue played. In a small probe app stopped at each of
+six points of a cue's life, a throwaway engine died at three, an engine kept and reused died at the
+same three, and a player died at none. Those deaths were in the engine's stop and in starting its
+player node. The dealloc that ended
+[run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) was not reproduced;
+a lone cue has no engine left to dealloc.
+
+A call's own engine (`LiveAudioEngine.Graph`) keeps the exposure: voice processing, the
+microphone tap and the echo canceller need it. So an audio server that stalls while a call starts
+or ends can still end the app. Unforced, this has been seen only on GitHub's macOS
+runners, where the audio server is the Mac's. Nothing was measured on a real phone. The player has
+not been heard on one either, and neither has the car's music resuming after it.
 
 ## The phone's voice call has not run on a device
 

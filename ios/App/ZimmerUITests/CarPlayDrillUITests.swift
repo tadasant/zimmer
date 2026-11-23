@@ -93,7 +93,7 @@ final class CarPlayDrillUITests: XCTestCase {
         for gone in ["Needs you", "Running"] {
             XCTAssertFalse(car.buttons[gone].exists, "no \(gone) tab: the car is its two choices and the settings")
         }
-        XCTAssertEqual(car.cells.count, 3, "three tiles on the screen; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(car.cells.count, 3, "three tiles on the screen; \(whatTheCarShowed)")
         photograph("carplay-home")
         record("the home", car.debugDescription)
         assertAlive("on the home screen")
@@ -102,10 +102,10 @@ final class CarPlayDrillUITests: XCTestCase {
         // voice left behind, with Done as its way out because there is no call to go back to.
         // Only read here: the gear's visit below changes and resets them.
         tapTile(Self.settingsTitles[0], or: Self.settingsTitles[1])
-        XCTAssertTrue(row("Done").waitForExistence(timeout: Self.hostStall), "the tile opens the voice settings; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(row("Done").waitForExistence(timeout: Self.hostStall), "the tile opens the voice settings; \(whatTheCarShowed)")
         XCTAssertFalse(row("Back to the call").exists, "no call to go back to")
-        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; the car showed:\n\(car.debugDescription)")
-        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; \(whatTheCarShowed)")
+        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; \(whatTheCarShowed)")
         assertNoCallScreen("under the voice settings opened from the home", panelUp: true)
         photograph("carplay-voice-settings-from-home")
         record("the voice settings from the home", car.debugDescription)
@@ -114,8 +114,8 @@ final class CarPlayDrillUITests: XCTestCase {
         done.tap()
         // The tiles sit under the pushed panel the whole time, so the panel leaving is the proof.
         let panelGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row("Reply length cap"))
-        XCTAssertEqual(XCTWaiter().wait(for: [panelGone], timeout: Self.hostStall), .completed, "Done takes the panel down; the car showed:\n\(car.debugDescription)")
-        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "and the tiles are back; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(XCTWaiter().wait(for: [panelGone], timeout: Self.hostStall), .completed, "Done takes the panel down; \(whatTheCarShowed)")
+        XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "and the tiles are back; \(whatTheCarShowed)")
         assertNoCallScreen("after the voice settings from the home: closing them calls nobody")
         photograph("carplay-home-after-settings")
         assertAlive("after the voice settings from the home")
@@ -129,8 +129,8 @@ final class CarPlayDrillUITests: XCTestCase {
         let gearIsUp = car.buttons["gearshape.fill"].waitForExistence(timeout: timeout)
         photograph("carplay-call-screen-gear")
         record("the call screen", car.debugDescription)
-        XCTAssertTrue(gearIsUp, "no gear on the call screen; the car showed:\n\(car.debugDescription)")
-        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(gearIsUp, "no gear on the call screen; \(whatTheCarShowed)")
+        XCTAssertTrue(text("Connecting…").waitForExistence(timeout: timeout), "the call is held on Connecting…; \(whatTheCarShowed)")
 
         // The car goes away with the call up, by the Simulator's own menu: the scene really
         // disconnects, and the phone goes to the call. The click can be made and the car stay
@@ -160,7 +160,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // The car comes back: the call goes up on it again, and the phone stays as it is.
         plug("CarPlay")
         openInTheCar(callIsUp: true)
-        XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "the call goes back to the car; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(car.buttons["gearshape.fill"].waitForExistence(timeout: timeout), "the call goes back to the car; \(whatTheCarShowed)")
         // The fixture presses the gear on its own clock, counted from when the app hears this
         // call screen went up, about when the drill sees the gear; `hostStall` covers the
         // difference.
@@ -177,24 +177,24 @@ final class CarPlayDrillUITests: XCTestCase {
         record("the call screen with Send now", car.debugDescription)
         // What CarPlay calls the button, which is what VoiceOver reads: the symbol's own words.
         record("the call screen's button labels", car.buttons.allElementsBoundByIndex.map(\.label).joined(separator: "\n"))
-        XCTAssertTrue(hearing, "Send now's state goes up; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(hearing, "Send now's state goes up; \(whatTheCarShowed)")
         Thread.sleep(forTimeInterval: 7)
         assertAlive("after Send now's closure ran off the main thread")
-        XCTAssertTrue(text("Hearing you").exists, "a Send now with nothing to send leaves the screen as it is; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(text("Hearing you").exists, "a Send now with nothing to send leaves the screen as it is; \(whatTheCarShowed)")
 
         // XCUITest finds the gear and computes no hit point for it, as for Mute and End, and a
         // click from the Mac at its place does not reach it either. So the fixture runs the
         // gear's own closure, off the main thread, 25 seconds after the call screen goes up. The
         // wait runs to `hostStall` past that press.
         let panelWait = max(0, gearPressed.timeIntervalSinceNow) + Self.hostStall
-        XCTAssertTrue(row("Back to the call").waitForExistence(timeout: panelWait), "the gear opens the voice settings; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(waitWhileAlive(for: row("Back to the call"), timeout: panelWait, "while waiting for the gear to open the voice settings"), "the gear opens the voice settings; \(whatTheCarShowed)")
         assertNoCallScreen("under the voice settings: the microphone is closed with it", panelUp: true)
         assertAlive("with the voice settings up")
 
         // What voice left behind, the reply cap first. Under Semantic the threshold would go
         // nowhere, so there is no row for it.
-        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; the car showed:\n\(car.debugDescription)")
-        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; \(whatTheCarShowed)")
+        XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; \(whatTheCarShowed)")
         XCTAssertFalse(row("Speech threshold").exists, "no control that does nothing under Semantic")
         photograph("carplay-voice-settings")
 
@@ -202,7 +202,7 @@ final class CarPlayDrillUITests: XCTestCase {
         press("Turn detection", until: row("Back to settings"))
         photograph("carplay-voice-settings-choices")
         press("Silence", until: row("Speech threshold"))
-        XCTAssertTrue(anything(containing: "0.92").exists, "the value voice left; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(anything(containing: "0.92").exists, "the value voice left; \(whatTheCarShowed)")
         photograph("carplay-voice-settings-silence")
 
         // Reset to defaults: no cap, back on Semantic, and the threshold's row gone with it.
@@ -222,7 +222,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and once the retries are spent, that Live Mode is unavailable")
         assertNoCallScreen("once the car has given up")
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "New stays beside Retry: the way out of a conversation that will not connect")
-        XCTAssertEqual(car.cells.count, 3, "Retry, New and Voice settings; the car showed:\n\(car.debugDescription)")
+        XCTAssertEqual(car.cells.count, 3, "Retry, New and Voice settings; \(whatTheCarShowed)")
         photograph("carplay-unavailable")
         assertAlive("after three retries")
 
@@ -242,7 +242,7 @@ final class CarPlayDrillUITests: XCTestCase {
         tapTile(Self.retryTitles[1], or: Self.retryTitles[0], untilGone: true)
         waitForTwoTiles()
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "with nothing open, New is what is left")
-        XCTAssertFalse(Self.continueTitles.contains { text($0).exists }, "nothing to continue; the car showed:\n\(car.debugDescription)")
+        XCTAssertFalse(Self.continueTitles.contains { text($0).exists }, "nothing to continue; \(whatTheCarShowed)")
         assertNoCallScreen("with nothing to continue")
         photograph("carplay-home-nothing-to-continue")
         assertAlive("with nothing to continue")
@@ -273,7 +273,7 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertTrue(icon.waitForExistence(timeout: timeout), "Zimmer is on the CarPlay home screen; it showed:\n\(dashboard.debugDescription)")
         icon.tap()
         guard !callIsUp else { return }
-        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "Zimmer's CarPlay scene connected; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "Zimmer's CarPlay scene connected; \(whatTheCarShowed)")
     }
 
     /// Clicks an item of the Simulator's External Displays menu, through `ios/bin/ui-test`: only
@@ -335,9 +335,9 @@ final class CarPlayDrillUITests: XCTestCase {
     /// Tap a list row, and wait for `shown`.
     private func press(_ words: String, until shown: XCUIElement) {
         let target = row(words)
-        XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; \(whatTheCarShowed)")
         target.tap()
-        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; the car showed:\n\(car.debugDescription)")
+        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; \(whatTheCarShowed)")
     }
 
     private func anything(containing words: String) -> XCUIElement {
@@ -367,7 +367,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // A grid tile is a button named for its symbol with the tile's words as a text inside.
         let tile = car.buttons.containing(NSPredicate(format: "label IN %@", [label, other])).firstMatch
         guard tile.waitForExistence(timeout: timeout) else {
-            XCTFail("no \(label) tile; the car showed:\n\(car.debugDescription)")
+            XCTFail("no \(label) tile; \(whatTheCarShowed)")
             return
         }
         tile.tap()
@@ -384,7 +384,7 @@ final class CarPlayDrillUITests: XCTestCase {
             let left = XCTNSPredicateExpectation(predicate: gone, object: tile)
             if XCTWaiter().wait(for: [left], timeout: Self.lostTap) == .completed { return }
         }
-        XCTFail("CarPlay took none of three taps on \(label); the car showed:\n\(car.debugDescription)")
+        XCTFail("CarPlay took none of three taps on \(label); \(whatTheCarShowed)")
     }
 
     /// The home comes down to New and Voice settings, checking Zimmer is alive each second.
@@ -394,7 +394,7 @@ final class CarPlayDrillUITests: XCTestCase {
             assertAlive("while waiting for two tiles")
             Thread.sleep(forTimeInterval: 1)
         }
-        XCTFail("still \(car.cells.count) tiles; the car showed:\n\(car.debugDescription)")
+        XCTFail("still \(car.cells.count) tiles; \(whatTheCarShowed)")
     }
 
     /// Polls rather than one `waitForExistence`, checking Zimmer is alive each second, so a
@@ -406,6 +406,16 @@ final class CarPlayDrillUITests: XCTestCase {
             Thread.sleep(forTimeInterval: 1)
         }
         return labels.contains(where: { text($0).exists })
+    }
+
+    /// One long wait that a crash ends when it happens, rather than when the wait runs out.
+    private func waitWhileAlive(for element: XCUIElement, timeout: TimeInterval, _ when: String) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.waitForExistence(timeout: 2) { return true }
+            assertAlive(when)
+        }
+        return false
     }
 
     /// The call screen's title is one of its five states. With no call it must be gone: a call
@@ -421,7 +431,7 @@ final class CarPlayDrillUITests: XCTestCase {
         let gone = NSPredicate(format: "exists == false")
         let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
         XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,
-                       "the call screen is still up \(when); the car showed:\n\(car.debugDescription)")
+                       "the call screen is still up \(when); \(whatTheCarShowed)")
     }
 
     /// No system alert over the phone. XCUITest answers one Don't Allow when a tap finds it up,
@@ -431,9 +441,22 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertFalse(alert.exists, "a system alert is up \(when); it showed:\n\(alert.debugDescription)")
     }
 
+    private var isAlive: Bool { zimmer.state == .runningForeground || zimmer.state == .runningBackground }
+
     private func assertAlive(_ when: String) {
-        XCTAssertTrue(zimmer.state == .runningForeground || zimmer.state == .runningBackground,
+        XCTAssertTrue(isAlive,
                       "Zimmer is not running \(when): it crashed (state \(zimmer.state.rawValue))")
+    }
+
+    /// For a failure message: the car's tree, after whether Zimmer is there to draw it. With
+    /// Zimmer dead the tree is empty, and on its own reads as a car that drew nothing
+    /// ([run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432)).
+    private var whatTheCarShowed: String {
+        guard isAlive else {
+            let why = zimmer.state == .notRunning ? "it died, and any crash report is printed after the tests" : "not a state it can draw the car from"
+            return "Zimmer is NOT RUNNING (state \(zimmer.state.rawValue)): \(why). The car, with no app behind it, showed:\n\(car.debugDescription)"
+        }
+        return "the car showed:\n\(car.debugDescription)"
     }
 
     /// The phone's own screen, kept with the run.

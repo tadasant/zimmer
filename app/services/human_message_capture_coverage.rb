@@ -31,11 +31,12 @@
 # Every `reason` string below says "no row maps ANY Slack user ID" rather than
 # claiming the actor was checked. See docs/src/content/docs/limitations.md.
 #
-# == Why genesis, and why only two of the kinds
+# == Why genesis, and why only some of the kinds
 #
-# `CHANNEL_BY_GENESIS` maps each of the two channels in `HumanMessage::CHANNELS`
-# to the genesis whose sessions arrive over it. The other genesis kinds split two
-# ways. A GitHub issue or label, a schedule, a session-state or system event, an
+# `CHANNEL_BY_GENESIS` maps two of the channels in `HumanMessage::CHANNELS`
+# to the genesis whose sessions arrive over them. `mcp_event` is the one kind
+# answered per session instead — see "MCP events" below. The other genesis kinds
+# split two ways. A GitHub issue or label, a schedule, a session-state or system event, an
 # API spawn: no human actor at the boundary by construction, so an empty record
 # there is the correct, intended answer rather than a gap. `unknown` is the
 # exception and is a blind spot rather than a construction — it means the origin
@@ -54,7 +55,27 @@
 # answering an authenticated person, records what it sends, and a relay-only
 # grant records nothing by design — the human chose that. Both channels still
 # have their own arms below, so a gap is never reported for them by the generic fallback.
+#
+# == MCP events
+#
+# An `mcp_event` trigger relays whatever a catalog MCP server publishes: a Slack
+# message, a mail, a CI run. Some of those a person wrote, and only a Slack message
+# Zimmer read back from Slack can be attributed to them (McpEvents::HumanCapture).
+# So there is no deployment-wide answer. The question is asked of each session, and
+# the default is that the author was NOT established: an event-started session is a
+# gap unless McpEvents::HumanCapture marked every event that started it as attributed.
+# A session with genesis `mcp_event` and no event of its own inherited the genesis,
+# and is answered by the ancestor that has one, or is itself a gap when this
+# hierarchy shows none.
+#
+# The marker is session metadata, which an agent with the API can write. Forging it
+# turns "could not be established" into "nobody spoke", which authorizes less; the
+# records themselves stay unforgeable.
 class HumanMessageCaptureCoverage
+  # The gap channel for events from an MCP server. Not a HumanMessage channel: a
+  # message captured off one is a `slack` record.
+  MCP_EVENT = SessionGenesis::MCP_EVENT
+
   # Session genesis => the HumanMessage channel its input boundary writes.
   CHANNEL_BY_GENESIS = {
     SessionGenesis::WEB_UI => HumanMessage::WEB_UI,
@@ -76,6 +97,7 @@ class HumanMessageCaptureCoverage
       when HumanMessage::ASSISTANT then "an assistant acting on a human's behalf"
       when HumanMessage::LIVE_MODE then "Live Mode"
       when HumanMessage::ATTESTED then "a signed approval from another Zimmer"
+      when MCP_EVENT then "MCP events"
       else channel
       end
     end
@@ -118,6 +140,11 @@ class HumanMessageCaptureCoverage
       when HumanMessage::ATTESTED
         "This deployment trusts no other Zimmer's signing key (#{MergeAttestations::TRUSTED_ISSUERS_ENV} is unset), " \
         "so no approval signed elsewhere was accepted or recorded."
+      when MCP_EVENT
+        "An event from an MCP server reached this hierarchy and Zimmer did not establish who wrote what it carried. " \
+        "Zimmer never takes an author from an event's payload. It records one only for a Slack message from a server " \
+        "named in #{McpEvents::SlackMessage::SERVERS_ENV}, once Slack itself has answered that a person on the " \
+        "roster wrote it. Mail, WhatsApp and every other event are never attributed."
       else
         "Zimmer has no configuration check for this channel, so it cannot say whether a message on it would have " \
         "been recorded."
@@ -138,6 +165,9 @@ class HumanMessageCaptureCoverage
       when HumanMessage::ATTESTED
         "Pin the issuing Zimmer's public key in #{MergeAttestations::TRUSTED_ISSUERS_ENV} (see Merge approvals " \
         "across deployments in the docs)."
+      when MCP_EVENT
+        "Nothing can attribute an event after the fact. For Slack events to come, name the server in " \
+        "#{McpEvents::SlackMessage::SERVERS_ENV} and fill in the human's Slack user ID at /supervisor/users."
       else
         "Give this channel a check in HumanMessageCaptureCoverage.configured?."
       end
@@ -159,22 +189,60 @@ class HumanMessageCaptureCoverage
   # Every input channel this hierarchy used that capture cannot write for,
   # ordered by channel so two renderings of the same record agree.
   def gaps
-    @gaps ||= sessions_by_channel.filter_map do |channel, session_ids|
-      next if self.class.configured?(channel)
-
-      Gap.new(
-        channel: channel,
-        genesis: CHANNEL_BY_GENESIS.key(channel),
-        session_ids: session_ids,
-        reason: self.class.reason(channel),
-        remedy: self.class.remedy(channel)
-      )
+    @gaps ||= begin
+      uncaptured = sessions_by_channel.reject { |channel, _ids| self.class.configured?(channel) }
+      uncaptured[MCP_EVENT] = unattributed_event_session_ids
+      uncaptured.reject { |_channel, ids| ids.empty? }.sort.map { |channel, ids| gap(channel, ids) }
     end
   end
 
   def any? = gaps.any?
 
   private
+
+  def gap(channel, session_ids)
+    Gap.new(
+      channel: channel,
+      genesis: CHANNEL_BY_GENESIS.key(channel) || channel,
+      session_ids: session_ids,
+      reason: self.class.reason(channel),
+      remedy: self.class.remedy(channel)
+    )
+  end
+
+  # The hierarchy's sessions an MCP event reached whose author Zimmer did not
+  # establish. See "MCP events" above.
+  def unattributed_event_session_ids
+    captures = event_captures
+    nodes = hierarchy.nodes.index_by(&:id)
+
+    nodes.values.filter_map do |node|
+      unattributed = if captures.key?(node.id)
+        captures[node.id] != McpEvents::HumanCapture::COMPLETE
+      else
+        node.genesis == SessionGenesis::MCP_EVENT && !descends_from_an_event?(node, nodes, captures)
+      end
+      node.id if unattributed
+    end.sort
+  end
+
+  # Session id => McpEvents::HumanCapture's marker, or nil when it carries none, for
+  # the sessions an MCP event started or reached. Read from the rows because a
+  # hierarchy node carries no metadata.
+  def event_captures
+    Session.where(id: hierarchy.nodes.map(&:id))
+      .where("metadata ?| array[:keys]", keys: [ "mcp_event_server", McpEvents::HumanCapture::METADATA_KEY ])
+      .pluck(:id, Arel.sql("metadata->>'#{McpEvents::HumanCapture::METADATA_KEY}'"))
+      .to_h
+  end
+
+  def descends_from_an_event?(node, nodes, captures)
+    seen = Set.new
+    while (node = nodes[node.parent_id]) && seen.add?(node.id)
+      return true if captures.key?(node.id)
+    end
+    false
+  end
 
   # Channel => the hierarchy's session ids that arrive over it. A node with no
   # genesis, or one whose genesis has no human boundary, contributes nothing.

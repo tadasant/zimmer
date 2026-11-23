@@ -147,8 +147,9 @@ your usual level:
 
 Only the samples and the thinking loop's period (1.0 s to 1.2 s; the gate reads it from
 `LiveCue.period`) changed. The gate, the director and the audio engine paths did not. In particular the change does not touch `LiveAudioEngine.playAlone`, where #1485's
-CarPlay drill once saw a CoreAudio RPC timeout on its first audio setup; the buffers it schedules
-are only slightly longer (pressed 185 ms against #1485's 160 ms). Regressions therefore come from how the
+CarPlay drill once saw a CoreAudio RPC timeout on its first audio setup (why it has no engine: limitations.md, "A stalled
+audio server can end the app during a call"); the sound it plays
+is only slightly longer (pressed 185 ms against #1485's 160 ms). Regressions therefore come from how the
 cues sound, not from crashes. In the call log (VictoriaLogs, `scope.name:="ios.live"`) watch:
 
 - **A cue taken for speech.** After a `cue.played`, a `call.state` move into listening or speaking
