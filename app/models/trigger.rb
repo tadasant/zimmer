@@ -1775,9 +1775,20 @@ class Trigger < ApplicationRecord
     # lock a `pause!` committing between the read and the mark leaves the mark on
     # a session already at rest. NO KEY UPDATE, so the log rows the running job
     # inserts (a KEY SHARE through their foreign key) are not held up behind it.
-    session = Session.lock("FOR NO KEY UPDATE").find_by(id: last_session_id)
-    return unless session
+    # Savepointed: a lock timeout or a deadlock swallowed below would otherwise
+    # leave the transaction creating this trigger aborted, and lose the wake too.
+    self.class.transaction(requires_new: true) do
+      session = Session.lock("FOR NO KEY UPDATE").find_by(id: last_session_id)
+      arrange_sleep_for(session) if session
+    end
+  rescue => e
+    Rails.logger.error(
+      "[Trigger#sleep_target_session_if_applicable] Failed to auto-sleep session #{last_session_id} " \
+      "for trigger #{id}: #{e.class}: #{e.message}"
+    )
+  end
 
+  def arrange_sleep_for(session)
     if session.needs_input?
       session.sleep!
       session.logs.create!(
@@ -1813,7 +1824,7 @@ class Trigger < ApplicationRecord
       # above off the box, and this is the line a reader needs when asking why a
       # session holding a wake did not sleep.
       session.logs.create!(
-        content: "[Trigger##{id}] No auto-sleep to arrange — the session is #{session.status} with no turn in progress",
+        content: "[Trigger##{id}] No auto-sleep to arrange — the session is #{session.status} with no turn on a worker",
         level: "info"
       )
     end
@@ -1835,11 +1846,6 @@ class Trigger < ApplicationRecord
     # Arming a wake is the session deciding to wait again, so an earlier
     # hand-back to a human no longer describes it (Session::HANDED_BACK_TO_HUMAN).
     session.remove_metadata!(Session::HANDED_BACK_TO_HUMAN) if session.handed_back_to_human?
-  rescue => e
-    Rails.logger.error(
-      "[Trigger#sleep_target_session_if_applicable] Failed to auto-sleep session #{last_session_id} " \
-      "for trigger #{id}: #{e.class}: #{e.message}"
-    )
   end
 
   # When a trigger has session-scoped ao_event conditions whose watched

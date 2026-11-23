@@ -1636,8 +1636,8 @@ module SessionStateMachine
   #
   # Only a still-fireable one-time schedule counts, as on every other re-sleep
   # path (#648), and never one held from the wait that just ended. A pause that is
-  # somebody else's decision is left where it is: any `paused_by`, a turn that never
-  # ran, and a hand-back to a human.
+  # somebody else's decision is left where it is: any `paused_by`, a turn
+  # parked before it ran (#turn_stood_down_before_it_ran?), and a hand-back to a human.
   def arrange_sleep_on_armed_schedule
     self.class.transaction(requires_new: true) do
       next if metadata&.dig("pending_sleep") == true || handed_back_to_human?
@@ -1648,15 +1648,17 @@ module SessionStateMachine
         .find { |condition| self.class.one_time_wake_pending?(condition) }
       next unless wake
 
-      merge_metadata!(
-        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE).merge(
-          PENDING_SLEEP_REQUIRES_WAKE => true
-        )
-      )
+      # The log first: a failed one rolls the row back but not this instance, and
+      # #execute_pending_sleep reads the instance.
       logs.create!(
         content: "[Trigger##{wake.trigger_id}] This turn ended with no sleep arranged and this wake-up still " \
           "armed — going back to sleep on it",
         level: "info"
+      )
+      merge_metadata!(
+        Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE).merge(
+          PENDING_SLEEP_REQUIRES_WAKE => true
+        )
       )
     end
   rescue => e

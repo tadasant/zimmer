@@ -25,11 +25,11 @@ class Sessions::WakeArmedBeforeStartTest < ActionDispatch::IntegrationTest
   teardown { GoodJob::Process.delete_all }
 
   # A turn a live GoodJob capsule is executing.
-  def on_a_worker!(session = @session)
+  def on_a_worker!(session = @session, arguments: [ session.id ])
     process = GoodJob::Process.create!(state: { "hostname" => "worker-1" })
     GoodJob::Job.create!(
       active_job_id: SecureRandom.uuid, queue_name: "agents", job_class: "AgentSessionJob",
-      serialized_params: { "arguments" => [ session.id ] }, scheduled_at: 1.minute.ago,
+      serialized_params: { "arguments" => arguments }, scheduled_at: 1.minute.ago,
       performed_at: 1.minute.ago, locked_at: 1.minute.ago, locked_by_id: process.id
     )
   end
@@ -99,7 +99,7 @@ class Sessions::WakeArmedBeforeStartTest < ActionDispatch::IntegrationTest
     trigger = schedule_wake
 
     assert_nil @session.reload.metadata["pending_sleep"]
-    assert_includes log_lines, "[Trigger##{trigger.id}] No auto-sleep to arrange — the session is waiting with no turn in progress"
+    assert_includes log_lines, "[Trigger##{trigger.id}] No auto-sleep to arrange — the session is waiting with no turn on a worker"
   end
 
   # === The turn-end derivation: no mark at all ===
@@ -210,6 +210,94 @@ class Sessions::WakeArmedBeforeStartTest < ActionDispatch::IntegrationTest
     Session.find(@session.id).merge_metadata!(Sessions::StopRecord.pending_sleep(Sessions::StopRecord::SCHEDULED_WAKE))
     @session.pause!
 
+    assert @session.reload.waiting?
+  end
+
+  test "a turn stood down by an auth outage with a schedule armed is not slept on it" do
+    schedule_wake
+    @session.reload.start!
+    @session.merge_metadata!("auth_outage_reason" => "pool_empty")
+    @session.pause!
+
+    assert @session.reload.needs_input?
+  end
+
+  test "a held wake the retire could not remove is still not slept on" do
+    schedule_wake.update_columns(wake_held_at: Time.current)
+    Session.any_instance.stubs(:retire_held_wake_triggers)
+
+    assert finish_turn!.needs_input?
+  end
+
+  test "a database failure while deriving does not abort the pause or leave a mark" do
+    schedule_wake
+    @session.reload.start!
+    Sessions::StopRecord.stubs(:pending_sleep).with { Session.connection.execute("SELECT no_such_column") }
+    @session.pause!
+
+    assert @session.reload.needs_input?
+    assert_nil @session.metadata["pending_sleep"]
+  end
+
+  test "a failure while arming keeps the trigger" do
+    on_a_worker!
+    Sessions::StopRecord.stubs(:pending_sleep).with { Session.connection.execute("SELECT no_such_column") }
+
+    assert Trigger.exists?(schedule_wake.id)
+  end
+
+  # === What is not a turn in progress ===
+
+  # The job outlives its turn's pause: a final transcript poll, then its ensure.
+  test "a session that already slept is not in a turn while its job finishes up" do
+    on_a_worker!
+    @session.merge_metadata!("job_started_at" => 1.minute.ago.utc.iso8601)
+    trigger = schedule_wake
+    assert finish_turn!.waiting?
+
+    assert_not Sessions::LiveTurn.in_progress?(@session)
+    assert_raises(Mcp::ToolError) do
+      self_tool.call("action" => "rest_in_needs_input", "session_id" => @session.id, "cancel_wakes" => true)
+    end
+    assert Trigger.exists?(trigger.id), "a sleeping session keeps the wake it is asleep on"
+  end
+
+  test "a turn that started after an earlier stop is in progress" do
+    on_a_worker!
+    @session.merge_metadata!(
+      Sessions::StopRecord::AT => 5.minutes.ago.utc.iso8601, "job_started_at" => 1.minute.ago.utc.iso8601
+    )
+
+    assert Sessions::LiveTurn.in_progress?(@session)
+  end
+
+  test "a clone-only job is not a turn" do
+    on_a_worker!(arguments: [ @session.id, nil, { "clone_only" => true } ])
+
+    assert_not Sessions::LiveTurn.in_progress?(@session)
+  end
+
+  # === A turn that dies in setup with a wake armed during it ===
+
+  def park_undelivered!
+    Sessions::ParkUndeliveredTurn.call(
+      @session, error: RuntimeError.new("air prepare failed"), prompt: "Please continue", spawned: false
+    )
+  end
+
+  test "a wake armed during setup does not hide a turn that is then parked undelivered" do
+    on_a_worker!
+    schedule_wake
+
+    assert park_undelivered!, "a refused park fails the session"
+    assert @session.reload.needs_input?
+  end
+
+  test "a spot-queue park made during setup stands, and the undelivered turn still counts as parked" do
+    on_a_worker!
+    Sessions::PauseIntoSpotQueue.call(session: @session)
+
+    assert park_undelivered!
     assert @session.reload.waiting?
   end
 

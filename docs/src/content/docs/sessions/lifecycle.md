@@ -1589,22 +1589,26 @@ Two things keep that from deciding where a session rests:
 
 - **`waiting` with a turn in flight is treated as `running`.** `Trigger#sleep_target_session_if_applicable`,
   `rest_in_needs_input`, a spot-queue park and `POST /api/v1/sessions/:id/sleep` all ask
-  `Sessions::LiveTurn.in_progress?` before reading `waiting` as "not executing". The arming reads the
+  `Sessions::LiveTurn.in_progress?` before reading `waiting` as "not executing". A clone-only job, and a
+  job still finishing up after its turn's `pause` slept the session, are not a turn in progress. The
+  arming reads the
   status under a row lock, so a `pause` cannot land between the read and the mark. An arming that
   arranges no sleep writes a session log line saying so.
 - **`pause` derives the sleep from the trigger rows.** `arrange_sleep_on_armed_schedule` writes the
   `scheduled_wake` intent itself when nothing has marked the turn and a one-time schedule aimed at the
   session can still fire, with a session log line naming the trigger. It does nothing after a hand-back, on
-  any `paused_by` pause, on a turn that never ran, for a status-summary fork, or for a wake held from
+  any `paused_by` pause, on a turn parked before it ran (undelivered, or stood down by an auth
+  outage), for a status-summary fork, or for a wake held from
   the wait that just ended; and a watcher alone does not qualify, for the reason
   [#648](https://github.com/tadasant/zimmer/issues/648) gives. `pause` decides all of this from the
   row's metadata, re-read at that point, because the agent's calls are written by another process than
   the job that pauses it.
 
 There is no sweep for the same contradiction at rest. `pause` is the transition that ends a turn, so
-it is where the armed wakes are read; a session that reaches `needs_input` by another route (a
-recovery that gave up, a restore from the trash) is there for a human, and a sweep that slept it would
-hide it.
+it is where the armed wakes are read; a session that reaches or stays in `needs_input` by another route
+(a recovery sweep that stopped retrying it, a restore from the trash) is there for a human, and a sweep
+that slept it would hide it. A pause that is itself a give-up, such as `unstarted_turn_not_recoverable`,
+does sleep on an armed schedule, as it does when the schedule was marked.
 
 A park that passes `"halt": true` does not wait for that next `pause` — it stops the turn itself
 (`Sessions::HaltRunningTurn` terminates the process and pauses the session), so the session is
