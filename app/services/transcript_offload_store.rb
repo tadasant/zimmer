@@ -253,15 +253,15 @@ class TranscriptOffloadStore
       id
     end
 
-    # Both rows in one statement. Two processes may race; the first insert wins.
+    # Both rows in one statement, ON CONFLICT DO NOTHING. Two processes may race; the first
+    # insert wins and both read that one.
     def create_store_id
-      connection = ActiveRecord::Base.connection
-      rows = { STORE_ID_KEY => SecureRandom.uuid, STORE_ENVIRONMENT_KEY => Rails.env.to_s }
-        .map { |key, value| "(#{connection.quote(key)}, #{connection.quote(value)}, NOW(), NOW())" }.join(", ")
-      connection.execute(<<~SQL.squish)
-        INSERT INTO #{connection.quote_table_name(metadata.table_name)} (key, value, created_at, updated_at)
-        VALUES #{rows} ON CONFLICT (key) DO NOTHING
-      SQL
+      table = metadata.table_name
+      rows = Class.new(ActiveRecord::Base) { self.table_name = table }
+      rows.insert_all(
+        { STORE_ID_KEY => SecureRandom.uuid, STORE_ENVIRONMENT_KEY => Rails.env.to_s }
+          .map { |key, value| { key: key, value: value, created_at: Time.current, updated_at: Time.current } }
+      )
       raise Refused, "could not record a transcript store id" if store_id.nil?
     end
 
