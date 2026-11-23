@@ -180,6 +180,21 @@ class BoardV2Test < ApplicationSystemTestCase
     assert_selector "[data-board-v2-tucked-category='#{parked.id}']", text: "2 sessions"
   end
 
+  test "a card dropped on an empty backlogged category leaves Uncategorized, and the category counts it" do
+    later = BoardCategory.create!(name: "#{TAG} Later", visibility: "backlogged")
+    visit_board
+    assert_selector "[data-board-v2-drop-zone][data-category-id='#{later.id}']", text: "Backlogged", visible: :all
+    assert_selector "[data-board-v2-tucked-category='#{later.id}']", text: "0 sessions"
+    assert_selector "[data-board-v2-target='total']", text: "3"
+
+    drag_to_bar("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", later)
+
+    assert_no_selector "#board_v2_row_#{@loose.id}"
+    assert_selector "[data-board-v2-tucked-category='#{later.id}']", text: "1 session"
+    assert_selector "[data-board-v2-target='total']", text: "2"
+    assert wait_for { @loose.reload.board_category_id == later.id }, "the drop on the backlogged category was not saved"
+  end
+
   # On the way down to the bar the card passes over other categories' lists.
   # Letting go on the bar but off every target must not file it in whichever
   # of those it last crossed; nor does dropping it on its own category.

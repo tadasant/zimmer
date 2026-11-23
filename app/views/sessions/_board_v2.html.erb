@@ -27,10 +27,10 @@
       <p class="mt-0.5 text-sm text-gray-500">
         The same sessions as Your board, in categories you make. To move a session, drag its card by
         the grey grip on its left edge. While you drag, every category shows up in a bar at the bottom
-        of the screen, snoozed and backlogged ones included; drop the card on one. Inside each category the session you touched most
-        recently is on top. Drag a
-        category's header to reorder categories. Snoozing a category takes it and everything in it
-        off this board until then; it never changes when a session runs.
+        of the screen, snoozed and backlogged ones included; drop the card on one. Inside each
+        category the session you touched most recently is on top. Drag a category's header to
+        reorder categories. Snoozing a category takes it and everything in it off this board until
+        then; it never changes when a session runs.
       </p>
     </div>
     <%= form_with url: board_categories_path, method: :post, class: "flex w-full min-w-0 items-center gap-2 sm:w-auto" do |form| %>
@@ -90,9 +90,10 @@
               data-board-v2-target="dropZone"
               data-board-v2-drop-zone
               data-board-v2-tucked-zone
+              data-snoozed-until="<%= tucked.category.snoozed_until&.iso8601 unless tucked.category.backlogged? %>"
               data-category-id="<%= tucked.category.id %>">
             <span class="truncate"><%= tucked.category.name %></span>
-            <span class="truncate text-[11px] font-normal text-gray-500"><%= tucked.category.backlogged? ? "Backlogged" : "Snoozed" %></span>
+            <span class="truncate text-[11px] font-normal text-gray-500"><%= tucked.category.backlogged? ? "Backlogged" : "Snoozed until #{tucked.category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}" %></span>
           </div>
         <% end %>
       </div>

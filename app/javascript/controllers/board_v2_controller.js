@@ -217,7 +217,7 @@ export default class extends Controller {
     // row goes back where it came from and nothing is saved — not into
     // whichever list it last passed on the way down.
     if (drop.zone && !drop.cancelled && drop.zone.hasAttribute("data-board-v2-tucked-zone")) {
-      this.persistTuckedMove(row, drop.zone.dataset.categoryId)
+      this.persistTuckedMove(row, drop.zone)
       return
     }
     const zoneList = drop.zone && this.listFor(drop.zone.dataset.categoryId)
@@ -247,8 +247,13 @@ export default class extends Controller {
 
   // Dropped on a snoozed or backlogged category: the category is off the board,
   // so the card leaves it too, and the category's count in the strip at the
-  // foot of the board goes up by one.
-  persistTuckedMove(row, categoryId) {
+  // foot of the board goes up by one. The bar was drawn when the page loaded; a
+  // snooze that has run out since puts the category back on the board, so that
+  // drop is saved and then the board is reloaded to show where the card went.
+  persistTuckedMove(row, zone) {
+    const categoryId = zone.dataset.categoryId
+    const until = zone.dataset.snoozedUntil
+    const woken = !!until && Date.parse(until) <= Date.now()
     row.remove()
     this.refreshCounts()
     this.clearError()
@@ -261,6 +266,7 @@ export default class extends Controller {
 
     const url = this.assignUrlTemplateValue.replace("__ID__", row.dataset.sessionId)
     this.request("PATCH", url, { board_category_id: categoryId })
+      .then(() => { if (woken) window.location.reload() })
       .catch((error) => this.rollback(error))
   }
 
