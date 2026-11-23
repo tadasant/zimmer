@@ -394,18 +394,7 @@ class BoardV2LiveTest < ApplicationSystemTestCase
     held = make("In my hand", touched: 1.minute.ago)
     leaving = make("Leaves meanwhile", touched: 1.hour.ago)
     visit_board
-    handle = "#{row(held)} [data-board-v2-target='handle']"
-    page.execute_script("document.querySelector(#{row(held).to_json}).scrollIntoView({ block: 'center' })")
-    x, y = page.evaluate_script(<<~JS)
-      (() => {
-        const r = document.querySelector(#{handle.to_json}).getBoundingClientRect()
-        return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)]
-      })()
-    JS
-    driver = page.driver.browser
-    driver.action.move_to_location(x, y).click_and_hold
-      .move_to_location(x + 6, y + 6).move_to_location(x + 12, y + 12).move_to_location(x + 18, y + 18).perform
-    assert_selector "[data-board-v2-target='tray']", visible: true
+    driver = press_and_lift(row(held))
 
     leaving.update!(status: :running)
     held.update!(status: :running)
@@ -417,6 +406,38 @@ class BoardV2LiveTest < ApplicationSystemTestCase
     assert_no_selector row(leaving), wait: 5
     assert_no_selector row(held), wait: 5
     assert_total 0
+    assert_never_navigated
+  end
+
+  test "a category made while a card is in hand appears after the drop" do
+    session = make("In my hand")
+    visit_board
+    driver = press_and_lift(row(session))
+
+    fresh = BoardCategory.create!(name: "Made mid-drag")
+    settle
+    assert_no_selector list(fresh), visible: :all
+
+    driver.action.release.perform
+    assert_selector list(fresh), wait: 8, visible: :all
+    assert_never_navigated
+  end
+
+  # A delivery that only says a session was looked at is quick to render, so it can
+  # overtake the one carrying the session's new card.
+  test "a card that arrives after newer facts is still drawn, and an older one is not" do
+    session = make("Out of order", status: :running, category: @infra)
+    visit_board
+    now = Time.current
+    deliver(session, status: "needs_input", read_at: now, card: nil)
+    assert_no_selector row(session)
+
+    deliver(session, status: "running", read_at: now - 1.second, card: "The newest card")
+    assert_selector "#{list(@infra)} > #{row(session)}", text: "The newest card"
+
+    deliver(session, status: "running", read_at: now - 2.seconds, card: "An older card")
+    settle 0.5
+    assert_selector row(session), text: "The newest card"
     assert_never_navigated
   end
 
@@ -489,6 +510,31 @@ class BoardV2LiveTest < ApplicationSystemTestCase
     assert_never_navigated
   end
 
+  test "a catch-up that fails is tried again, without a visit" do
+    leaving, arriving, moved = missed_update_sessions
+    visit_board
+    page.execute_script(<<~JS)
+      document.querySelector("[data-controller~='stream-visibility-recovery']")
+        .setAttribute("data-stream-visibility-recovery-resubscribe-retry-value", "200")
+      const real = window.fetch
+      window.__failedOnce = false
+      window.fetch = (url, options) => {
+        if (!window.__failedOnce && String(url) === window.location.href) {
+          window.__failedOnce = true
+          return Promise.reject(new TypeError("offline"))
+        }
+        return real(url, options)
+      }
+    JS
+    kill_cable_socket(reconnect: false)
+    apply_missed_updates(leaving, arriving, moved)
+    page.execute_script('document.querySelector("turbo-cable-stream-source").subscription.consumer.connection.open()')
+
+    assert_caught_up(leaving, arriving, moved)
+    assert page.evaluate_script("window.__failedOnce")
+    assert_never_navigated
+  end
+
   test "at 375px a card leaves and one arrives live, and the board still fits the screen" do
     page.driver.browser.manage.window.resize_to(375, 812)
     leaving = make("Leaves on the phone")
@@ -508,6 +554,36 @@ class BoardV2LiveTest < ApplicationSystemTestCase
   end
 
   private
+
+  # Press a card's grip and lift it far enough for the drag to start.
+  def press_and_lift(css)
+    page.execute_script("document.querySelector(#{css.to_json}).scrollIntoView({ block: 'center' })")
+    x, y = page.evaluate_script(<<~JS)
+      (() => {
+        const r = document.querySelector(#{"#{css} [data-board-v2-target='handle']".to_json}).getBoundingClientRect()
+        return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)]
+      })()
+    JS
+    driver = page.driver.browser
+    driver.action.move_to_location(x, y).click_and_hold
+      .move_to_location(x + 6, y + 6).move_to_location(x + 12, y + 12).move_to_location(x + 18, y + 18).perform
+    assert_selector "[data-board-v2-target='tray']", visible: true
+    driver
+  end
+
+  # A delivery put on the page by hand, for an order the server cannot be made to
+  # send them in.
+  def deliver(session, status:, read_at:, card:)
+    html = ApplicationController.render(inline: <<~ERB, locals: { session: session, status: status, read_at: read_at, card: card })
+      <div data-board-v2-target="delivery" hidden data-session-id="<%= session.id %>" data-status="<%= status %>"
+           data-scheduling-class="priority" data-on-board="true" data-backlogged="false" data-carplay-fit="untagged"
+           data-genesis="<%= session.genesis %>" data-agent-root="" data-board-category-id="<%= session.board_category_id %>"
+           data-last-touched="<%= session.last_user_activity_at.to_f %>" data-read-at="<%= read_at.to_f * 1000 %>">
+        <% if card %><template><turbo-frame id="session_<%= session.id %>" data-session-id="<%= session.id %>"><%= card %></turbo-frame></template><% end %>
+      </div>
+    ERB
+    page.execute_script("document.getElementById('sessions_grid_deliveries').insertAdjacentHTML('beforeend', #{html.to_json})")
+  end
 
   def missed_update_sessions
     [ make("Leaves while away"), make("Arrives while away", status: :running, category: @infra),

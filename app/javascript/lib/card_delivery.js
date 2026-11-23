@@ -107,14 +107,24 @@ function carplayFitAdmits(filter, bucket) {
 export class Departures {
   constructor() {
     this.times = new Map()
+    this.elements = new Map()
   }
 
-  note(id) {
+  // `element` is what left, where the caller needs to tell it from a copy of it.
+  note(id, element = null) {
     this.times.set(String(id), Date.now())
+    this.elements.set(String(id), element)
   }
 
   forget(id) {
     this.times.delete(String(id))
+    this.elements.delete(String(id))
+  }
+
+  // Whether `element` is another copy of something that has only just left.
+  isCopy(id, element) {
+    if (!this.has(id) || this.elements.get(String(id)) === element) return false
+    return Date.now() - this.times.get(String(id)) < DEPARTURE_GRACE_MS
   }
 
   has(id) {

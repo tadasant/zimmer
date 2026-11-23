@@ -9,6 +9,8 @@ import { isPendingRemoval } from "lib/optimistic_actions"
 // category changes costs one fetch.
 const REFRESH_DELAY_MS = 250
 const REFRESH_TIMEOUT_MS = 10000
+const REFRESH_RETRY_MS = 3000
+const REFRESH_ATTEMPTS = 3
 // How long to leave a card that is being worked in before looking again.
 const CARD_IN_USE_RETRY_MS = 1000
 
@@ -81,12 +83,19 @@ export default class extends Controller {
     // Why deliveries are waiting ("drag", "fetch"), and the deliveries.
     this.holds = new Set()
     this.heldDeliveries = []
-    // When the newest delivery applied for each session read its row.
-    this.lastRead = new Map()
+    // The newest facts delivered for each session, and when the card on screen was
+    // read: the two can arrive out of order.
+    this.facts = new Map()
+    this.cardReadAt = new Map()
     // Drops this page has sent and not had answered: session id -> category id.
     this.pendingMoves = new Map()
-    // Newer cards for sessions whose card on screen is being worked in.
-    this.waitingCards = new Map()
+    // Deliveries for sessions whose card on screen is being worked in.
+    this.waiting = new Map()
+    // Writes of the board's own layout not yet answered (a drop, a category order),
+    // and a count of everything done to it by hand: a copy of the board fetched
+    // across one of these may not have it.
+    this.saves = 0
+    this.handChanges = 0
   }
 
   connect() {
@@ -112,8 +121,8 @@ export default class extends Controller {
     if (this.categorySortable) this.categorySortable.destroy()
     this.showTray(false)
     clearTimeout(this.refreshTimer)
-    clearTimeout(this.waitingCardsTimer)
-    this.waitingCards.clear()
+    clearTimeout(this.waitingTimer)
+    this.waiting.clear()
     this.heldDeliveries = []
     this.holds.clear()
     this.element.removeAttribute("data-live-hold")
@@ -310,7 +319,7 @@ export default class extends Controller {
   saveMove(sessionId, categoryId) {
     this.pendingMoves.set(sessionId, categoryId)
     const url = this.assignUrlTemplateValue.replace("__ID__", sessionId)
-    return this.request("PATCH", url, { board_category_id: categoryId || null })
+    return this.saving(this.request("PATCH", url, { board_category_id: categoryId || null }))
       .finally(() => {
         // Not if the card has been dropped somewhere else since.
         if (this.pendingMoves.get(sessionId) === categoryId) this.pendingMoves.delete(sessionId)
@@ -347,13 +356,37 @@ export default class extends Controller {
     else this.applyDelivery(delivery)
   }
 
+  // Deliveries come from several processes and can overtake each other. One that
+  // read its session earlier than the facts this page already has is out of date,
+  // except that its card may still be the newest one seen: a delivery with no card
+  // is quick to render and can arrive ahead of one that has it. The Undo reply is
+  // an instruction as well as news, so it is always acted on, with the newer facts.
   applyDelivery(delivery) {
     const { id } = delivery
-    // Deliveries come from several processes and can overtake each other.
-    if (delivery.readAt < (this.lastRead.get(id) || 0)) return
-    this.lastRead.set(id, delivery.readAt)
+    const facts = this.facts.get(id)
+    if (!facts || delivery.readAt >= facts.readAt) {
+      this.facts.set(id, { ...delivery, card: null, restore: false })
+      return this.settle({ ...delivery, cardReadAt: delivery.readAt })
+    }
+    if (!delivery.card || (!delivery.restore && delivery.readAt < (this.cardReadAt.get(id) || 0))) return
+
+    this.settle({ ...facts, card: delivery.card, restore: delivery.restore, cardReadAt: delivery.readAt })
+  }
+
+  // Put one session where its facts say it belongs.
+  settle(delivery) {
+    const { id } = delivery
+    const waited = this.waiting.get(id)
+    this.waiting.delete(id)
+    if (waited?.card && !delivery.card) {
+      delivery = { ...delivery, card: waited.card, cardReadAt: waited.cardReadAt }
+    }
 
     const row = this.rowFor(id)
+    // A title being typed, or an open menu, is not taken away from the person
+    // using it: redrawn, moved or removed when they are done.
+    if (row && this.cardInUse(row)) return this.wait(delivery)
+
     // A session this page is showing, is counting, or has just taken away already
     // matched the filters only the server can evaluate.
     const known = row || this.tuckedTargets.some((target) => this.tuckedIds(target).includes(id)) ||
@@ -384,35 +417,26 @@ export default class extends Controller {
   }
 
   redraw(row, list, delivery) {
-    if (delivery.card) this.redrawCard(row, delivery.card)
+    if (delivery.card) {
+      row.querySelector(":scope > [data-board-v2-card-slot] > turbo-frame")?.replaceWith(delivery.card)
+      this.cardReadAt.set(delivery.id, delivery.cardReadAt)
+    }
     row.dataset.lastTouched = String(delivery.lastTouched)
-    if (!this.cardInUse(row)) return this.place(row, list)
-    // Moving the row would take the focus out of it just as surely.
-    if (row.parentElement !== list) this.place(row, list)
+    this.place(row, list)
   }
 
-  // A title being typed, or an open menu, is not replaced under the person using
-  // it: the newest card waits until they are done.
-  redrawCard(row, card) {
-    const id = row.dataset.sessionId
-    if (this.cardInUse(row)) {
-      this.waitingCards.set(id, card)
-      clearTimeout(this.waitingCardsTimer)
-      this.waitingCardsTimer = setTimeout(() => this.redrawWaitingCards(), CARD_IN_USE_RETRY_MS)
+  wait(delivery) {
+    this.waiting.set(delivery.id, delivery)
+    clearTimeout(this.waitingTimer)
+    this.waitingTimer = setTimeout(() => this.settleWaiting(), CARD_IN_USE_RETRY_MS)
+  }
+
+  settleWaiting() {
+    if (this.holds.size > 0) {
+      this.waitingTimer = setTimeout(() => this.settleWaiting(), CARD_IN_USE_RETRY_MS)
       return
     }
-    this.waitingCards.delete(id)
-    row.querySelector(":scope > [data-board-v2-card-slot] > turbo-frame")?.replaceWith(card)
-  }
-
-  redrawWaitingCards() {
-    Array.from(this.waitingCards).forEach(([ id, card ]) => {
-      const row = this.rowFor(id)
-      this.waitingCards.delete(id)
-      if (!row) return
-      this.redrawCard(row, card)
-      if (!this.waitingCards.has(id) && row.parentElement) this.place(row, row.parentElement)
-    })
+    Array.from(this.waiting.values()).forEach((delivery) => this.settle(delivery))
   }
 
   cardInUse(row) {
@@ -435,6 +459,7 @@ export default class extends Controller {
     if (!this.makeRoomFor(row)) return
 
     row.querySelector("[data-board-v2-card-slot]").appendChild(delivery.card)
+    this.cardReadAt.set(delivery.id, delivery.cardReadAt)
     this.departures.forget(delivery.id)
     this.place(row, list)
   }
@@ -472,10 +497,15 @@ export default class extends Controller {
     records.forEach((record) => {
       record.removedNodes.forEach((node) => {
         const id = node.dataset?.sessionId
-        if (id && !node.isConnected && isPendingRemoval("session", id)) this.departures.note(id)
+        if (id && !node.isConnected && isPendingRemoval("session", id)) this.departures.note(id, node)
       })
       record.addedNodes.forEach((node) => {
-        if (node.dataset?.sessionId) this.departures.forget(node.dataset.sessionId)
+        const id = node.dataset?.sessionId
+        if (!id || !node.isConnected) return
+        // The same row: a refused Trash put back. Any other is from a copy of the
+        // board fetched before the server had heard, unless the departure is old.
+        if (this.departures.isCopy(id, node)) node.remove()
+        else this.departures.forget(id)
       })
     })
   }
@@ -523,19 +553,34 @@ export default class extends Controller {
 
   pickUp() {
     this.hold("drag")
-    this.element.setAttribute("data-live-hold", "")
+    this.handChanged()
+  }
+
+  // Until the server has a drop, its copy of the board does not.
+  saving(request) {
+    this.saves += 1
+    this.handChanged()
+    return request.finally(() => {
+      this.saves -= 1
+      this.handChanged()
+    })
+  }
+
+  handChanged() {
+    this.handChanges += 1
+    this.element.toggleAttribute("data-live-hold", this.holds.has("drag") || this.saves > 0)
+    if (this.refreshAfterHand && !this.element.hasAttribute("data-live-hold")) {
+      this.refreshAfterHand = false
+      this.refreshSoon()
+    }
   }
 
   // SortableJS reports the drop (`onEnd`) right after this, and the drop decides
   // where the card is; what waited is applied on top of that.
   putDown() {
     queueMicrotask(() => {
-      this.element.removeAttribute("data-live-hold")
       this.release("drag")
-      if (this.refreshAfterDrag) {
-        this.refreshAfterDrag = false
-        this.refreshSoon()
-      }
+      this.handChanged()
     })
   }
 
@@ -546,9 +591,21 @@ export default class extends Controller {
     this.refreshSoon()
   }
 
-  refreshSoon() {
+  refreshSoon(delay = REFRESH_DELAY_MS) {
     clearTimeout(this.refreshTimer)
-    this.refreshTimer = setTimeout(() => this.refresh(), REFRESH_DELAY_MS)
+    this.refreshTimer = setTimeout(() => this.refresh(), delay)
+  }
+
+  // Whether a copy of the board asked for then could be missing something done
+  // here: since, or still being done.
+  changedByHandSince(count) {
+    return count !== this.handChanges || this.element.hasAttribute("data-live-hold")
+  }
+
+  // Once nothing is in hand or on its way to the server.
+  refreshAfterChanges() {
+    if (this.element.hasAttribute("data-live-hold")) this.refreshAfterHand = true
+    else this.refreshSoon()
   }
 
   // The regions are reconciled without redrawing the cards: this page's socket is
@@ -563,6 +620,7 @@ export default class extends Controller {
 
     this.refreshing = true
     this.hold("fetch")
+    const handChanges = this.handChanges
     try {
       const response = await fetch(frame.src, {
         headers: { Accept: "text/html" },
@@ -572,11 +630,15 @@ export default class extends Controller {
       })
       if (!response.ok || response.redirected) throw new Error(`Request failed (${response.status})`)
       const fresh = new DOMParser().parseFromString(await response.text(), "text/html")
-      if (this.holds.has("drag")) this.refreshAfterDrag = true
+      if (this.changedByHandSince(handChanges)) this.refreshAfterChanges()
       else backfillLiveRegions(fresh, { within: this.element, redraw: false })
+      this.failedRefreshes = 0
     } catch (error) {
-      // The next signal, or a reload, brings it up to date.
       console.warn("Your board could not be refreshed:", error)
+      this.failedRefreshes = (this.failedRefreshes || 0) + 1
+      // After that, the next signal or a reload brings it up to date.
+      if (this.failedRefreshes < REFRESH_ATTEMPTS) this.refreshSoon(REFRESH_RETRY_MS * this.failedRefreshes)
+      else this.failedRefreshes = 0
     } finally {
       this.refreshing = false
       this.release("fetch")
@@ -592,10 +654,11 @@ export default class extends Controller {
   // Deliveries that arrive in between are newer than its copy.
   backfilling() {
     this.hold("backfill")
+    this.handChangesAtBackfill = this.handChanges
   }
 
   backfilled() {
-    if (this.holds.has("drag")) this.refreshAfterDrag = true
+    if (this.changedByHandSince(this.handChangesAtBackfill)) this.refreshAfterChanges()
     this.release("backfill")
     this.refreshCounts()
   }
@@ -607,7 +670,7 @@ export default class extends Controller {
 
     const ids = this.categoryTargets.map((category) => category.dataset.categoryId)
     this.clearError()
-    this.request("PATCH", this.reorderUrlValue, { category_ids: ids })
+    this.saving(this.request("PATCH", this.reorderUrlValue, { category_ids: ids }))
       .catch((error) => this.rollback(error))
   }
 
@@ -641,8 +704,8 @@ export default class extends Controller {
   // LAST_TOUCHED_ORDER, id desc.
   sortList(list) {
     this.reconciling = true
-    // Only the rows out of place are moved: moving one that is not would
-    // disconnect and reconnect everything in its card.
+    // A list already in order is not touched: moving a row disconnects and
+    // reconnects everything in its card.
     let slot = list.firstElementChild
     for (const row of Array.from(list.children).sort((a, b) => this.compareRows(a, b))) {
       if (row === slot) slot = slot.nextElementSibling

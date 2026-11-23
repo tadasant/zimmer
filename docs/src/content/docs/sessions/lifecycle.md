@@ -3117,7 +3117,9 @@ updates without rendering anything, then **backfill** the gap. A page that lost 
 other way (a deploy, a laptop asleep with the tab in front, a network blip) is put back on its feet by
 ActionCable itself, so nothing looks wrong. The controller watches for a stream source losing its
 `connected` attribute and getting it back, and backfills then. That one never falls back to a visit,
-since nobody asked for it: a failed fetch is tried again, five times in all with the wait doubling.
+since nobody asked for it: a failed fetch is tried again, five times in all with the wait doubling. Its
+request carries `X-Zimmer-Reconnect`, so a session page left open does not count as viewed, or have
+its notifications marked read, because the network blinked.
 
 ### The drawer loads its own URL
 

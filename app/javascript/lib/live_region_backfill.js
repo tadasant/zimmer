@@ -57,6 +57,16 @@ function isDirty(field) {
   return !isEmptyValue(field.value) && field.value !== field.defaultValue
 }
 
+// Text being entered, or a value the server did not render. Narrower than `inUse`:
+// a button someone clicked last keeps the focus, and is no reason to keep a whole
+// category on the board after it has left.
+function beingEdited(element) {
+  const active = document.activeElement
+  if (element.contains(active) && active.matches("input, textarea, select")) return true
+
+  return Array.from(element.querySelectorAll("input, textarea")).some(isDirty)
+}
+
 // Hidden fields that carry a JSON collection start life empty and are reset to
 // an empty collection rather than to "" — image-attachment writes `[]` back
 // after the last attachment is removed. Treating that as an edit in progress
@@ -167,7 +177,7 @@ function syncChildren(live, source, { redraw }) {
   const sourceIds = new Set(sourceChildren.map((child) => child.id))
 
   for (const child of Array.from(live.children)) {
-    if (!child.id || sourceIds.has(child.id) || inUse(child)) continue
+    if (!child.id || sourceIds.has(child.id) || (redraw ? inUse(child) : beingEdited(child))) continue
     child.remove()
     changed += 1
   }

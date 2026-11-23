@@ -136,7 +136,9 @@ export default class extends Controller {
     if (!this.streamSources.some((source) => source.hasAttribute("connected"))) return
 
     this.isRecovering = true
-    this.dropped = false
+    // A source still down has a longer gap than this backfill covers; its coming
+    // back is a reason for another.
+    this.dropped = !this.subscribed
     try {
       if (await this.backfill({ fallback: false })) {
         this.failedAttempts = 0
@@ -186,7 +188,7 @@ export default class extends Controller {
 
       // Subscribed again already: this backfill covers the gap, so the one that
       // follows a reconnect is not owed as well.
-      if (this.streamSources.every((source) => source.hasAttribute("connected"))) this.dropped = false
+      if (this.subscribed) this.dropped = false
       await this.backfill()
     } finally {
       // Hold the guard past the backfill rather than releasing it here. A reopen
@@ -200,6 +202,10 @@ export default class extends Controller {
 
   get streamSources() {
     return Array.from(document.querySelectorAll("turbo-cable-stream-source"))
+  }
+
+  get subscribed() {
+    return this.streamSources.every((source) => source.hasAttribute("connected"))
   }
 
   settle(delay) {
@@ -220,7 +226,10 @@ export default class extends Controller {
     this.dispatch("backfilling")
     try {
       const response = await fetch(window.location.href, {
-        headers: { Accept: "text/html" },
+        // A reopen is a person coming back; a reconnect happens to a page nobody may
+        // be looking at, and must not read as one (SessionsController#
+        // human_initiated_view?).
+        headers: fallback ? { Accept: "text/html" } : { Accept: "text/html", "X-Zimmer-Reconnect": "1" },
         credentials: "same-origin",
         cache: "no-store",
         signal: AbortSignal.timeout(this.fetchTimeoutValue)

@@ -3472,12 +3472,13 @@ class Session < ApplicationRecord
       stream: SESSIONS_INDEX_STREAM,
       target: CARD_DELIVERIES_TARGET
     ) do
-      # Taken before the read, so a page comparing two deliveries for one session
-      # never prefers the one that read the row earlier.
+      # Taken before the read, so nothing committed by then is missing from it. A
+      # page that drops the older of two deliveries cannot lose a write: each write
+      # is followed by a delivery of its own.
       read_at = Time.current
       current = self.class.select(self.class.column_names - [ "transcript" ]).find_by(id: id)
       # Destroyed since: there is nothing to offer.
-      next "" unless current
+      next unless current
 
       # Through SessionsController: the card is full of route helpers and this
       # runs from background jobs.

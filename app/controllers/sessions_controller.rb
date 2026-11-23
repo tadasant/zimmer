@@ -3041,9 +3041,12 @@ class SessionsController < ApplicationController
   # True when the current request is a deliberate human page/drawer load, as
   # opposed to passive machinery. We require an HTML request and exclude the
   # browser's speculative hover-prefetch (SpeculativeRequest), which would
-  # otherwise count "hovering a link" as a view.
+  # otherwise count "hovering a link" as a view, and the backfill a page makes by
+  # itself when its dropped subscription comes back
+  # (stream_visibility_recovery_controller), which nobody may be in front of.
   def human_initiated_view?
     return false unless request.format.html?
+    return false if request.headers["X-Zimmer-Reconnect"].present?
 
     !prefetch_request?
   end

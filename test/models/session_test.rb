@@ -815,7 +815,7 @@ class SessionTest < ActiveSupport::TestCase
     session = sessions(:needs_input)
     Session.where(id: session.id).delete_all
 
-    assert_equal "", card_delivery_html(session).to_s
+    assert_empty capture_turbo_broadcasts { session.send(:broadcast_update_to_sessions_index) }
   end
 
   test "broadcast_update delivers the card to the grid's deliveries on the individual channel" do

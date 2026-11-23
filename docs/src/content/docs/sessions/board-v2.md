@@ -189,7 +189,7 @@ up to date.
 
 ## The board follows its sessions live
 
-Your board keeps up with its sessions while it is open. Nothing on it needs a reload:
+Your board keeps up with its sessions while it is open. Nothing that happens elsewhere needs a reload:
 
 | What happens | What the board does |
 | --- | --- |
@@ -208,13 +208,13 @@ It works on the same deliveries the card views use (next section), judged by the
 carries the session's category, its last-touched time and when its row was read. A session's card is
 rendered from the database at that moment rather than from the copy the broadcasting process holds,
 because an agent job can hold one from hours earlier that does not know the session has been filed
-since. Deliveries for one session can overtake each other, so the board ignores one that read the row
-before the last it applied. Opening a session sends an envelope with no card in it, since all that
+since. Deliveries for one session can overtake each other, so the board keeps the newest facts and the
+newest card it has seen for each, whichever order they came in. Opening a session sends an envelope with no card in it, since all that
 changed is where it sorts. The wrapper with the grip is not in the envelope: the page builds one from a
 `<template>` of `_board_v2_row_shell`, the partial the server draws rows with.
 
 While a card or a category is in hand nothing on the board moves; what arrived is applied on the drop.
-A card whose title is being typed, or whose menu is open, is redrawn when you are done. A card you
+A card whose title is being typed, or whose menu is open, is left alone until you are done. A card you
 drop stays where you dropped it while the save is in flight. One you trash or snooze does not come back
 from an update that was already on its way.
 
