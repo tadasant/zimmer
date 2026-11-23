@@ -153,7 +153,11 @@ module Mcp
           "payload_filters": {"user_id": ["U0123ABCD"]}}` — `server` and `event_name` required, exactly as
           list_mcp_event_sources names them; `arguments` go to the server with every poll (the event type's
           inputSchema); `payload_filters` are field => allowed values Zimmer checks on every event. One
-          session per event; the first poll baselines, so nothing older fires; changing server, event or
+          session per event, unless `"coalesce_key": "<payload field>"` is set: then events carrying the
+          same value for that field within the trigger's coalesce_window_seconds of the first fire ONE
+          session, the rest listed in its prompt (or queued into it as a follow-up if it already started) —
+          `"coalesce_key": "chat_id"` makes one burst in one WhatsApp chat one session, `"channel_id"` one
+          burst in one Slack channel. The first poll baselines, so nothing older fires; changing server, event or
           arguments re-baselines. Payload fields are untrusted: name them `{{event.<field>|untrusted}}`, or
           `{{event.<field>|id}}` for an identifier (rendered only in an id's shape) — a bare
           `{{event.<field>}}` is refused. `{{event_id}}` may be bare.
@@ -172,13 +176,13 @@ module Mcp
           than more of it. This bounds the BACKLOG; max_sessions_per_minute bounds the RATE, and
           neither substitutes for the other.
 
-        **Burst coalescing (Slack):**
+        **Burst coalescing (Slack, and mcp_event with coalesce_key):**
         - **coalesce_window_seconds**: Slack messages that land in the same channel, thread or DM
           within this many seconds of each other are ONE event and spawn ONE session; the messages
           folded away are listed, with their links, in that session's prompt, so nothing is dropped.
           Omit (or send null) to inherit the default of #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}
-          seconds; send 0 to turn it off and give every message its own session. Only Slack
-          conditions coalesce. This is what stops one alert storm becoming one router session per
+          seconds; send 0 to turn it off and give every message its own session. Slack
+          conditions coalesce, and mcp_event conditions that set `coalesce_key`. This is what stops one alert storm becoming one router session per
           alert; it neither drops events (unlike max_sessions_per_minute past its cap) nor waits on
           a predecessor (unlike skip_if_pending_session).
 
@@ -328,7 +332,7 @@ module Mcp
             description: "Seconds within which Slack messages in one channel, thread or DM count as one " \
                          "event and spawn one session, the rest folded into its prompt. Null (default) " \
                          "inherits #{Trigger::DEFAULT_COALESCE_WINDOW_SECONDS}s; 0 turns coalescing off. " \
-                         "Only Slack conditions read it."
+                         "Slack conditions, and mcp_event conditions with a coalesce_key, read it."
           },
           max_sessions_per_minute: {
             type: [ "number", "null" ],
@@ -537,7 +541,7 @@ module Mcp
         return "off (every message spawns its own session)" unless trigger.coalesces_messages?
 
         source = trigger.coalesce_window_seconds.nil? ? " (default)" : ""
-        inert = trigger.coalesce_window_inert? ? " — inert: no Slack condition on this trigger reads it" : ""
+        inert = trigger.coalesce_window_inert? ? " — inert: no Slack condition, and no mcp_event condition with a coalesce_key, on this trigger reads it" : ""
 
         "#{trigger.effective_coalesce_window_seconds}s#{source}#{inert}"
       end
@@ -942,6 +946,8 @@ module Mcp
 
       # `payload_filters` is who may fire an `mcp_event` trigger. A configuration that leaves it out
       # replaces the condition's keys without it, so every event the server sends would fire.
+      # `coalesce_key` is what turns a burst into one session; leaving it out silently turns a burst
+      # back into one session per event, each of which may reply.
       def reject_widening_mcp_event_configuration!(target, incoming, field)
         if target.mcp_event_arguments.any? && !incoming.key?("arguments")
           raise ToolError, "#{field} omits \"arguments\" from the configuration of condition #{target.id}, " \
@@ -949,6 +955,13 @@ module Mcp
                            "sends. configuration replaces the condition's user-facing keys, so this would subscribe " \
                            "to every event of that type. Send arguments to keep them (or an empty object to drop " \
                            "them on purpose), or omit configuration to leave the condition as it is."
+        end
+        if target.mcp_event_coalesce_key && !incoming.key?("coalesce_key")
+          raise ToolError, "#{field} omits \"coalesce_key\" from the configuration of condition #{target.id}, " \
+                           "which coalesces bursts by #{target.mcp_event_coalesce_key}. configuration replaces the " \
+                           "condition's user-facing keys, so this would fire one session per event again. Send " \
+                           "coalesce_key to keep it (or null to drop it on purpose), or omit configuration to " \
+                           "leave the condition as it is."
         end
         return if target.mcp_event_payload_filters.empty?
         return if incoming.key?("payload_filters")

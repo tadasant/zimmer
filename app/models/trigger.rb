@@ -121,7 +121,9 @@ class Trigger < ApplicationRecord
   # land before they are one EVENT rather than two. Messages in the same channel
   # within the window of each other spawn ONE session, and every message in the
   # group is carried in that session's prompt (see
-  # SlackTriggerPollerJob#coalesced_groups).
+  # SlackTriggerPollerJob#coalesced_groups). An `mcp_event` condition with a
+  # `coalesce_key` reads the same window for events sharing that payload field's
+  # value (McpEvents::Firing.coalesced_groups).
   #
   # This is a third question again, and the other two do not answer it:
   #
@@ -1221,10 +1223,14 @@ class Trigger < ApplicationRecord
   # sense as #skip_if_pending_session_inert? — a value is stored, and no firing
   # path on this trigger reads it.
   #
-  # Only the Slack poller coalesces: it is the one path that walks a LIST of
-  # items inside a single fire, which is what a window is measured across. A
+  # Two kinds of condition coalesce. A Slack condition always does, grouping by
+  # conversation and author (SlackTriggerFiring#coalesced_groups). An `mcp_event`
+  # condition does when it names a `coalesce_key`, grouping by that payload field's
+  # value (McpEvents::Firing.coalesced_groups) — one burst in one WhatsApp chat
+  # fires one session. Both measure the window across a burst of events; a
   # schedule or ao_event fire carries exactly one event and has nothing to group
-  # it with; the GitHub pollers walk a list but dedupe by item identity instead
+  # it with, and an `mcp_event` condition without a key fires one session per
+  # event. The GitHub pollers walk a list but dedupe by item identity instead
   # (GithubTriggerPollerJob#fire), and extending this there is
   # https://github.com/tadasant/zimmer/issues/606's business, not this setting's.
   #
@@ -1232,7 +1238,16 @@ class Trigger < ApplicationRecord
   # is not a choice anyone made, so saying so on every non-Slack trigger would be
   # a warning about nothing. Only a stored positive value earns the label.
   def coalesce_window_inert?
-    coalesce_window_seconds.to_i.positive? && condition_types.exclude?("slack")
+    coalesce_window_seconds.to_i.positive? && !coalescing_condition?
+  end
+
+  # Whether any condition on this trigger reads the coalescing window (see #coalesce_window_inert?).
+  def coalescing_condition?
+    trigger_conditions.any? do |condition|
+      next false if condition.marked_for_destruction?
+
+      condition.condition_type == "slack" || (condition.condition_type == "mcp_event" && condition.mcp_event_coalesce_key.present?)
+    end
   end
 
   # The session the most recent #create_session! call on this in-memory instance

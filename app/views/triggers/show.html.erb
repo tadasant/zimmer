@@ -330,11 +330,11 @@
               <% end %>
               <% if @trigger.coalesce_window_inert? %>
                 <span class="inline-flex flex-wrap items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                  Inert — only Slack conditions coalesce, and this trigger has none.
+                  Inert — only Slack conditions and MCP event conditions with a coalesce key coalesce, and this trigger has neither.
                 </span>
               <% elsif @trigger.coalesces_messages? %>
                 <span class="text-xs text-gray-500">
-                  Slack messages in one channel within this window are one event and spawn one session; the rest are folded into its prompt.
+                  Slack messages in one channel (or MCP events sharing a coalesce key value) within this window are one event and spawn one session; the rest are folded into it.
                 </span>
               <% else %>
                 <span class="text-xs text-gray-500">every message spawns its own session</span>

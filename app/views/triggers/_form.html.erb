@@ -320,11 +320,12 @@
         other are treated as one event and spawn one session. Nothing is lost: the messages folded
         away are listed, with their links, in that session's prompt. Leave blank for the default
         (<%= Trigger::DEFAULT_COALESCE_WINDOW_SECONDS %>s); set 0 to give every message its own session.
-        Only Slack conditions coalesce.
+        Slack conditions coalesce by conversation and author; an MCP event condition coalesces only
+        when it names a coalesce key, by that payload field's value.
       </p>
       <% if trigger.persisted? && trigger.coalesce_window_inert? %>
         <p class="mt-1 text-sm text-amber-700">
-          This trigger has no Slack condition, so the window is not read on any of its fires.
+          This trigger has no Slack condition and no MCP event condition with a coalesce key, so the window is not read on any of its fires.
         </p>
       <% end %>
     </div>

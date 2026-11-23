@@ -14,11 +14,14 @@
 #   2. otherwise `events/poll` from the stored cursor, following `hasMore` for up to MAX_PAGES;
 #   3. each event whose payload passes the condition's `payload_filters` is claimed in
 #      TriggerEventClaim under `mcp:<server>:<eventId>` and fires the trigger, in one transaction —
-#      ONE SESSION PER EVENT (McpEvents::Firing, shared with the webhook receiver). A claim the
+#      ONE SESSION PER EVENT (McpEvents::Firing, shared with the webhook receiver). A condition with
+#      a `coalesce_key` fires one session per GROUP instead: the page's events carrying the same
+#      value for that payload field within the trigger's coalesce window, or later ones folded into
+#      the session their group already started (McpEvents::Firing.coalesced_groups). A claim the
 #      condition already holds fires nothing, so a page polled twice fires each event once, and an
 #      event the server also POSTed to Zimmer's webhook receiver fires once;
 #   4. the cursor moves to the page's cursor only when every event on the page was settled. An event
-#      whose fire raised, was held (`skip_if_pending_session`, a reused session that would not take
+#      (or group) whose fire raised, was held (`skip_if_pending_session`, a reused session that would not take
 #      it, burst control) or fell past MAX_FIRES_PER_TICK keeps the cursor where it was; the next
 #      tick polls the same page again and the claims skip what already fired. Unlike Slack, burst
 #      control DEFERS an event rather than dropping it: the server holds it, so nothing is lost by
@@ -138,13 +141,13 @@ class McpEventTriggerPollerJob < ApplicationJob
       note_truncation(condition, subscription, cursor) if result.truncated
 
       settled = true
-      result.events.each do |occurrence|
+      McpEvents::Firing.coalesced_groups(condition, result.events).each do |group|
         if fires >= MAX_FIRES_PER_TICK
           settled = false
           break
         end
 
-        outcome = McpEvents::Firing.settle(condition, subscription, occurrence,
+        outcome = McpEvents::Firing.settle(condition, subscription, group,
           via: "mcp_event", cursor: cursor, log_tag: "McpEventTriggerPollerJob")
         fires += 1 if outcome.is_a?(Session)
         next unless %i[held rolled_back failed].include?(outcome)
