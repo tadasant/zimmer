@@ -347,12 +347,12 @@ So tier 1 skips values on an explicit allowlist:
 - **By literal value.** `TRANSCRIPT_REDACTION_ALLOWLIST_VALUES`, comma-separated, for a public value
   that sits under a variable you would rather not exempt by name.
 - **By shape: configuration settings.** A value that is only lowercase letters joined by `_`, `-` or
-  `.` — no digit, no capital, like `webhook_shadow` — under a name that says configuration (`*_MODE`,
+  `.` — no digit, no capital, like `webhook_with_poll_fallback` — under a name that says configuration (`*_MODE`,
   `*_ENV`, `*_LEVEL`, `*_STRATEGY`, `*_REGION` and a few more; `CONFIG_VARIABLE_NAME`) is a mode or
   an enum, and is skipped. Such words are also inside identifiers everywhere in a transcript. Both
-  halves are required: a 16-letter app password or a diceware passphrase has the value shape too. `GITHUB_TRIGGER_INGEST_MODE=webhook_shadow` sat in the
-  secret bundle, and matching it rewrote the MCP tool name `mcp__zimmer__compare_github_webhook_shadow`
-  into `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`. Every fork that
+  halves are required: a 16-letter app password or a diceware passphrase has the value shape too. A mode word under
+  `GITHUB_TRIGGER_INGEST_MODE` sat in the secret bundle, and matching it rewrote an MCP tool name that
+  spelled the same word into `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`. Every fork that
   replayed that name got a 400 from the API
   ([#1603](https://github.com/tadasant/zimmer/issues/1603)). A credential-named variable is redacted
   whatever its suffix or value.

@@ -376,23 +376,6 @@ class GithubTriggerPollerJob < ApplicationJob
     PollerHeartbeat.stamp(:github)
   end
 
-  # In `webhook_shadow`, record the fire the poller just made, for Webhooks::GithubShadowComparison
-  # to pair with the webhook's would-fire. On any other mode this writes nothing. A failure here
-  # costs one comparison row and must never cost the tick, so it is logged and swallowed.
-  def observe_shadow_poll(condition, item, label = nil)
-    return unless shadow_mode?
-
-    TriggerShadowObservation.record!(condition, github_claim_key(condition, item, label), path: "poll")
-  rescue => e
-    Rails.logger.warn "[GithubTriggerPollerJob] Could not record the shadow comparison for condition " \
-                      "#{condition.id} (#{item_key(item)}): #{e.class}: #{e.message}"
-  end
-
-  def shadow_mode?
-    @shadow_mode = Webhooks::Source.github.shadow? if @shadow_mode.nil?
-    @shadow_mode
-  end
-
   # Read once per sweep, so every window in one sweep agrees on the interval.
   def cadence
     @cadence ||= GithubTriggerPollCadence.current
@@ -608,7 +591,6 @@ class GithubTriggerPollerJob < ApplicationJob
       item, label = candidates[key]
       next unless fire(condition, item, event: "label added: #{label}", label: label)
 
-      observe_shadow_poll(condition, item, label)
       fired << key
       # Record the key the instant its session exists, rather than only in the
       # end-of-tick write below. Everything between here and there can fail —
@@ -830,8 +812,6 @@ class GithubTriggerPollerJob < ApplicationJob
 
     fresh.each do |item|
       break unless fire(condition, item, event: "issue opened")
-
-      observe_shadow_poll(condition, item)
 
       fired_keys << item_key(item)
       newest_at = item["created_at"] if item["created_at"].to_s > newest_at.to_s

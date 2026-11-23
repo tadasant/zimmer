@@ -51,7 +51,8 @@ class Webhooks::GithubPrIngestTest < ActionDispatch::IntegrationTest
     assert GithubPrSignal.exists?(subject: REPO, kind: "delivery")
   end
 
-  test "a comment on a pull request is signalled for the comment poller" do
+  test "a comment on a pull request is signalled for the comment poller, even under the removed shadow mode" do
+    Rails.logger.stubs(:warn)
     configure(trigger_mode: nil, pr_mode: "webhook_shadow")
 
     deliver(comment_payload(12), event: "issue_comment")

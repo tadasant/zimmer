@@ -12,7 +12,7 @@ module Webhooks
   # the conditions the poller would. Everything else — `ping` when the hook is saved, a closed
   # issue, a review requested — is acknowledged so GitHub records a success, and fires nothing.
   #
-  # Separately, while GITHUB_PR_INGEST_MODE is listening, every delivery is handed to
+  # Separately, while GITHUB_PR_INGEST_MODE is `webhook_with_poll_fallback`, every delivery is handed to
   # Github::PrWebhookIngest, which records which tracked pull requests it may have changed so the
   # per-session PR pollers read them now instead of on their next tick.
   #
@@ -85,7 +85,7 @@ module Webhooks
         )
         # The trigger side reads its own mode again when the job runs; checking it here as
         # well keeps a PR-only deployment from enqueueing a job per delivery that does nothing.
-        if recorded && fires && source.receiving?
+        if recorded && fires && source.webhook_enabled?
           GithubEventJob.perform_later(
             delivery_id, event_type,
             GithubEventJob.item_arguments(object, repository: payload["repository"], pull_request: item_key == "pull_request"),
@@ -110,7 +110,7 @@ module Webhooks
     # transaction, so a failure here cannot cost a trigger its delivery; and a lost signal costs
     # only latency, because the fallback poll still reads the PR.
     def record_pr_signals(delivery_id, event, payload)
-      return unless Github::PrWebhookIngest.receiving?
+      return unless Github::PrWebhookIngest.driving?
 
       Github::PrWebhookIngest.record_delivery!(event, payload)
     rescue => e

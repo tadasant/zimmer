@@ -83,7 +83,7 @@ class Mcp::RegistryTest < ActiveSupport::TestCase
   test "a readonly group drops write tools" do
     names = Mcp::Registry.tools_for([ "triggers_readonly" ]).map(&:tool_name)
 
-    assert_equal %w[search_triggers list_mcp_event_sources compare_trigger_fires compare_github_webhook_shadow compare_github_pr_webhook_shadow], names
+    assert_equal %w[search_triggers list_mcp_event_sources compare_trigger_fires], names
   end
 
   test "groups compose" do

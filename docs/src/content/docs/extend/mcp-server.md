@@ -226,7 +226,7 @@ production.
 | --- | --- |
 | `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `manage_board_categories`, `respond_to_elicitation`, `get_outcome_analysis`, `get_cycle_time`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
-| `triggers` | `search_triggers`, `action_trigger`, `list_mcp_event_sources`, `compare_trigger_fires`, `compare_github_webhook_shadow`, `compare_github_pr_webhook_shadow`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
+| `triggers` | `search_triggers`, `action_trigger`, `list_mcp_event_sources`, `compare_trigger_fires`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_testflight_crashes`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
 | `gate_decisions` (opt-in) | `search_gate_decisions`, `get_gate_decision_feedback`, `record_gate_decision` |
 | `work_backlog` (opt-in) | `get_work_backlog`, `append_work_backlog_item`, `pull_work_backlog_items`, `hold_work_backlog_item_for_decision` |

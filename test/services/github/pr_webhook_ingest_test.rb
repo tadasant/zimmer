@@ -99,13 +99,12 @@ class Github::PrWebhookIngestTest < ActiveSupport::TestCase
     assert_not Github::PrWebhookIngest::Reading.for([ ref, ref("https://github.com/pulsemcp/air/pull/1") ]).covered?
   end
 
-  test "shadow reads signals but does not drive" do
+  test "a deployment still carrying the removed shadow mode is driven, as webhook_with_poll_fallback is" do
     ENV["GITHUB_PR_INGEST_MODE"] = "webhook_shadow"
+    Rails.logger.stubs(:warn)
     GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
 
-    reading = Github::PrWebhookIngest::Reading.for([ ref ])
-    assert reading.covered?
-    assert_not reading.driving?
+    assert Github::PrWebhookIngest::Reading.for([ ref ]).driving?
   end
 
   test "a signal is pending only when it is newer than the stamp it concerns" do
@@ -131,7 +130,7 @@ class Github::PrWebhookIngestTest < ActiveSupport::TestCase
     assert Github::PrWebhookIngest::Reading.for([ ref ], ci_statuses: { PR => "pending" }).status_pending?(2.minutes.ago)
   end
 
-  test "a comment signal waits out CommentEvaluator's attribution grace, except when observing" do
+  test "a comment signal waits out CommentEvaluator's attribution grace unless asked for unsettled ones" do
     GithubPrSignal.signal!([ [ PR, "comments" ] ], at: 10.seconds.ago)
     reading = Github::PrWebhookIngest::Reading.for([ ref ])
 
@@ -146,119 +145,5 @@ class Github::PrWebhookIngestTest < ActiveSupport::TestCase
     travel Github::PrWebhookIngest::MERGE_CONFLICT_SETTLE do
       assert Github::PrWebhookIngest::Reading.for([ ref ]).merge_conflict_pending?(1.hour.ago)
     end
-  end
-
-  # ---- the shadow comparison ----
-
-  # A session's custom_metadata as the pass sees it, for one PR that has been read before.
-  def metadata(status: "open", ci: "pending", comments: 0, conflict: nil)
-    {
-      "github_pull_request_statuses" => { PR => status },
-      "github_pull_request_ci_statuses" => { PR => ci },
-      "github_comments" => { PR => { "pr_comments" => Array.new(comments) { |i| { "id" => i } }, "review_comments" => [] } },
-      Github::MergeConflictEvaluator::SUSPECTED_METADATA_KEY => conflict ? { PR => conflict } : {}
-    }
-  end
-
-  def observe(before, after, stamps: { status: 5.minutes.ago, comments: 5.minutes.ago, merge_conflict: 5.minutes.ago })
-    session = sessions(:running)
-    reading = Github::PrWebhookIngest::Reading.for([ ref ], ci_statuses: before["github_pull_request_ci_statuses"])
-    Github::PrWebhookIngest.observe(session, reading, [ ref ], before: before, after: after, stamps: stamps)
-  end
-
-  test "observe records a hit per kind the webhook announced, with the signal's lead" do
-    ENV["GITHUB_PR_INGEST_MODE"] = "webhook_shadow"
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    freeze_time do
-      GithubPrSignal.signal!([ [ PR, "status" ], [ PR, "comments" ], [ PR, "merge_conflict" ] ], at: 2.minutes.ago)
-      observe(metadata, metadata(ci: "pass", comments: 1, conflict: Time.current.iso8601))
-      observe(metadata, metadata(status: "merged"))
-    end
-
-    rows = GithubPrShadowObservation.order(:kind).pluck(:kind, :hit, :mode)
-    assert_equal [ [ "ci", true, "webhook_shadow" ], [ "comments", true, "webhook_shadow" ],
-                   [ "merge_conflict", true, "webhook_shadow" ], [ "status", true, "webhook_shadow" ] ], rows
-    row = GithubPrShadowObservation.find_by(kind: "comments")
-    assert_equal 120, (row.created_at - row.signaled_at).round
-    assert_equal sessions(:running).id, row.session_id
-  end
-
-  test "observe records a miss when no signal newer than the evaluator's stamp announced the change" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    GithubPrSignal.signal!([ [ PR, "comments" ] ], at: 10.minutes.ago)
-
-    observe(metadata, metadata(comments: 2))
-
-    assert_equal [ [ "comments", false, nil ] ], GithubPrShadowObservation.pluck(:kind, :hit, :signaled_at)
-    assert_equal "webhook_with_poll_fallback", GithubPrShadowObservation.last.mode
-  end
-
-  test "observe credits a CI change to a repository-wide commit status, and a conflict to a base push" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    GithubPrSignal.signal!([ %w[tadasant/zimmer ci], %w[tadasant/zimmer base_push] ], at: 1.minute.ago)
-
-    observe(metadata, metadata(ci: "fail", conflict: Time.current.iso8601))
-
-    assert_equal [ [ "ci", true ], [ "merge_conflict", true ] ], GithubPrShadowObservation.order(:kind).pluck(:kind, :hit)
-  end
-
-  test "observe records nothing for a first reading, an unchanged PR, an uncovered repository or poll" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    observe({}, metadata(status: "merged"))
-    observe(metadata, metadata)
-
-    GithubPrSignal.delete_all
-    observe(metadata, metadata(status: "merged"))
-
-    ENV["GITHUB_PR_INGEST_MODE"] = "poll"
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    observe(metadata, metadata(status: "merged"))
-
-    assert_equal 0, GithubPrShadowObservation.count
-  end
-
-  test "a PR that leaves open is one status change, not also a CI or conflict change" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    before = metadata.merge(Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR => "abc123" })
-    after = { "github_pull_request_statuses" => { PR => "closed" }, "github_pull_request_ci_statuses" => {},
-              "github_comments" => before["github_comments"] }
-
-    observe(before, after)
-
-    assert_equal [ [ "status", false ] ], GithubPrShadowObservation.pluck(:kind, :hit)
-  end
-
-  test "a suspicion that clears unconfirmed is a stale reading, not a change; a confirmed one clearing is" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    observe(metadata(conflict: 1.minute.ago.iso8601), metadata)
-    assert_equal 0, GithubPrShadowObservation.count
-
-    observe(metadata.merge(Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR => "abc123" }), metadata)
-    assert_equal [ [ "merge_conflict", false ] ], GithubPrShadowObservation.pluck(:kind, :hit)
-  end
-
-  test "the lead is measured from the time the caller passes, the pass's start" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    GithubPrSignal.signal!([ [ PR, "status" ] ], at: 3.minutes.ago)
-    session = sessions(:running)
-    started_at = 1.minute.ago
-    reading = Github::PrWebhookIngest::Reading.for([ ref ], now: started_at)
-
-    Github::PrWebhookIngest.observe(session, reading, [ ref ], before: metadata, after: metadata(status: "merged"),
-                                    stamps: { status: 5.minutes.ago }, now: started_at)
-
-    row = GithubPrShadowObservation.sole
-    assert_equal started_at.to_i, row.created_at.to_i
-    assert_equal 120, (row.created_at - row.signaled_at).round
-  end
-
-  test "a suspected conflict being confirmed is the same conflict, not a new change" do
-    GithubPrSignal.signal!([ %w[tadasant/zimmer delivery] ])
-    before = metadata(conflict: 3.minutes.ago.iso8601)
-    after = metadata.merge(Github::MergeConflictEvaluator::CONFIRMED_METADATA_KEY => { PR => "abc123" })
-
-    observe(before, after)
-
-    assert_equal 0, GithubPrShadowObservation.count
   end
 end

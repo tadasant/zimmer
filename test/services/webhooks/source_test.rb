@@ -78,24 +78,41 @@ class Webhooks::SourceTest < ActiveSupport::TestCase
     saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 
-  test "webhook_shadow is not a Slack mode, so a Slack source given it polls" do
+  test "the removed shadow mode is not read as a Slack mode, so a Slack source given it polls" do
     ENV["SLACK_TRIGGER_INGEST_MODE"] = "webhook_shadow"
     ENV["SLACK_SIGNING_SECRET"] = "s3cret"
+    logged = []
+    Rails.logger.stubs(:warn).with { |line| logged << line }
 
     assert_equal "poll", @source.mode
-    refute_predicate @source, :shadow?
     refute_predicate @source, :accepting?
+    assert_match(/is not a mode Zimmer accepts; treating slack as `poll`/, logged.join)
   end
 
-  test "a source that supports it accepts webhook_shadow: receiving, accepting, and not firing" do
+  test "a GitHub source still carrying the removed shadow mode ingests as webhook_with_poll_fallback and WARNs once" do
     ENV["SLACK_TRIGGER_INGEST_MODE"] = "webhook_shadow"
     ENV["SLACK_SIGNING_SECRET"] = "s3cret"
-    source = Webhooks::Source.new(name: "github", mode_key: KEYS[0], secret_key: KEYS[1], shadow_supported: true)
+    source = Webhooks::Source.new(name: "github", mode_key: KEYS[0], secret_key: KEYS[1], degrades_removed_shadow: true)
+    logged = []
+    Rails.logger.stubs(:warn).with { |line| logged << line }
 
-    assert_equal "webhook_shadow", source.mode
-    assert_predicate source, :shadow?
-    assert_predicate source, :receiving?
+    3.times { assert_equal "webhook_with_poll_fallback", source.mode }
+    assert_predicate source, :webhook_enabled?
     assert_predicate source, :accepting?
-    refute_predicate source, :webhook_enabled?
+    assert_equal 1, logged.size
+    assert_match(/=\"webhook_shadow\" is a removed mode; treating github as `webhook_with_poll_fallback`/, logged.first)
+  end
+
+  test "both GitHub sources degrade the removed shadow mode" do
+    keys = %w[GITHUB_TRIGGER_INGEST_MODE GITHUB_PR_INGEST_MODE]
+    saved = keys.to_h { |key| [ key, ENV[key] ] }
+    keys.each { |key| ENV[key] = "webhook_shadow" }
+    Rails.logger.stubs(:warn)
+
+    assert_equal "webhook_with_poll_fallback", Webhooks::Source.github.mode
+    assert_equal "webhook_with_poll_fallback", Webhooks::Source.github_prs.mode
+    assert_predicate Github::PrWebhookIngest, :driving?
+  ensure
+    saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
   end
 end

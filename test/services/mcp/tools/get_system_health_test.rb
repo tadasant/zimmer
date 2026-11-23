@@ -297,22 +297,6 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
                             "40 deliveries, 2 trigger events claimed via webhook, 1 via poll"
   end
 
-  test "a GitHub webhook in shadow gives the comparison's counts instead of claim counts" do
-    status = HealthMonitorService::HealthStatus.new(status: :healthy, message: "github: shadow — agreed")
-    HealthMonitorService.any_instance.stubs(:full_health_report).returns(
-      { overall_status: "healthy", inbound_event_health: { status: status, sources: [
-        { name: "github", mode: "webhook_shadow", webhook_enabled: false, accepting: true,
-          last_delivery_at: Time.utc(2026, 11, 16, 8, 30), deliveries_in_window: 12,
-          webhook_claims_in_window: 0, poll_claims_in_window: 0,
-          shadow: { totals: { matched: 9, webhook_only: 1, poll_only: 0, pending: 2 }, latency: { median_seconds: 41 } } }
-      ] } }
-    )
-
-    assert_includes @tool.call({}), "  - `github` (webhook_shadow): last delivery 2026-11-16 08:30 UTC; last 24h: 12 deliveries, " \
-                                    "shadow comparison 9 matched, 1 webhook-only, 0 poll-only, 2 pending; median webhook lead 41s " \
-                                    "(detail: `compare_github_webhook_shadow`)"
-  end
-
   # A key that stopped overnight and recovered reads `fresh`, so the line above would
   # not carry it — and its own summary line is INFO, which the OTel appender does not
   # ship. This bullet is the only place an agent can read it (tadasant/zimmer#584).
