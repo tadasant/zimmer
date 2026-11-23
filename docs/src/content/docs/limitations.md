@@ -6537,9 +6537,10 @@ Also:
 
 - **[Your board v2](/sessions/board-v2/) does not follow sessions live.** A session that comes to
   rest, or one you put in a category from another tab or over MCP, shows up on v2 at the next reload
-  (or when a phone wakes the page). Trash, Snooze and Undo on a row update it in place. Its category
+  (or when a phone wakes the page). Trash, Snooze and Undo on a card update it in place. Its category
   Snooze, Rename, Create and Delete reload the board. **Uncategorized** cannot be collapsed or
-  reordered: it is always the first group.
+  reordered: it is always the first group. It is not paginated: it draws up to 500 Last Touched cards in one
+  page, where Last Touched itself pages at 50, so a very large board is a heavy page.
 
 - The [iOS app](/extend/ios-app/) sends every photo from the library as a JPEG, so an animated
   GIF arrives as its first frame and a lossless screenshot as a lossy one. Attach the file from

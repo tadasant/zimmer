@@ -57,13 +57,40 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     get_board
     assert_response :success
 
-    assert_select "#board_v2 h3", text: "Uncategorized"
+    assert_select "#board_v2 [data-board-v2-group-name]", text: "Uncategorized"
     assert_select "#board_v2_list_uncategorized li", text: /loose/
     assert_select "#board_v2_list_#{infra.id} li", text: /in infra/
     assert_select "[data-category-id='#{ui.id}'] [data-board-v2-body].hidden"
-    assert_select "[data-board-v2-target='category'] h3", text: /Infra|UI/, count: 2
+    assert_select "[data-board-v2-target='category'] [data-board-v2-group-name]", text: /Infra|UI/, count: 2
     assert_select "[data-board-v2-tucked-category='#{parked.id}']", text: /Parked.*1 session.*Backlogged/m
     assert_no_match(/parked one/, response.body)
+  end
+
+  test "each session is the Last Touched card, with a drag handle beside it" do
+    infra = BoardCategory.create!(name: "Infra")
+    session = make_session("carded", category: infra)
+    session.update_columns(precedence: 4242)
+
+    get_board
+    assert_response :success
+
+    assert_select "#board_v2_list_#{infra.id} > li#board_v2_row_#{session.id}[data-board-v2-target='row'][data-session-id='#{session.id}'][data-last-touched]" do
+      assert_select "[data-board-v2-target='handle']", 1
+      # The card itself: the same frame and card Last Touched renders.
+      assert_select "turbo-frame#session_#{session.id} [data-visibility-unit]", text: /carded/
+      assert_select "a[aria-label='View session #{session.id}']", 1
+    end
+    # None of Your board's row furniture.
+    assert_select "#board_v2 [id^='user_view_row_']", 0
+    assert_select "#board_v2 [data-user-view-precedence]", 0
+    assert_select "#board_v2 [data-summary-freshness]", 0
+    assert_no_match(/#4242/, response.body)
+  end
+
+  test "Trash takes the whole v2 row, handle and all" do
+    session = make_session("trashed")
+    post archive_session_url(session), as: :turbo_stream
+    assert_match(/action="remove" target="board_v2_row_#{session.id}"/, response.body)
   end
 
   test "follows the board's filters" do
@@ -136,6 +163,7 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_match(/target="board_v2_list_#{category.id}"/, response.body)
+    assert_match(/id="board_v2_row_#{session.id}"/, response.body)
     assert_match(/target="user_view_list"/, response.body)
   end
 

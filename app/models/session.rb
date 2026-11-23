@@ -3453,6 +3453,9 @@ class Session < ApplicationRecord
   # session that does not exist, so this one is a plain removal.
   def broadcast_remove_from_sessions_index
     broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: dom_id(self))
+    # Your board v2 holds the card in a wrapper with its drag handle; the handle
+    # goes too. A no-op on every other page.
+    broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: "board_v2_row_#{id}")
   end
 
   def broadcast_card_delivery

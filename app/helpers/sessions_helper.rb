@@ -108,6 +108,21 @@ module SessionsHelper
     "board_v2_list_#{category_id || "uncategorized"}"
   end
 
+  # The id of one session's item on Your board v2: the drag handle and the Last
+  # Touched card it carries. Trash removes it by this id (#archive's stream and
+  # lib/optimistic_actions.js), so the handle leaves with the card.
+  def board_v2_row_dom_id(session)
+    "board_v2_row_#{session.id}"
+  end
+
+  # One Your board v2 group's card list: the Last Touched grid, with each column
+  # widened by the handle beside the card and packed from the left so a short
+  # category does not float in the middle of its box. Nearly edge to edge on a
+  # phone, where the card needs every pixel Last Touched gives it.
+  def board_v2_list_classes
+    "grid min-h-[2.75rem] gap-4 rounded-b-md bg-gray-50 px-1 py-3 sm:p-3 grid-cols-[repeat(auto-fill,minmax(min(344px,100%),428px))]"
+  end
+
   # Where a status summary stands against its session, for the freshness chip on
   # a User view row: :regenerating while a generation is in flight, :stale once
   # the session has written anything since the summary was, :current otherwise.

@@ -928,6 +928,7 @@ class SessionsController < ApplicationController
     [
       turbo_stream.remove(dom_id(session)),
       turbo_stream.remove(helpers.user_view_row_dom_id(session)),
+      turbo_stream.remove(helpers.board_v2_row_dom_id(session)),
       flash_stream(notice: notice)
     ] + session_chrome_streams(session)
   end
@@ -1067,13 +1068,13 @@ class SessionsController < ApplicationController
   private :restored_row_stream
 
   # The same restore for Your board v2: into the session's own category list,
-  # whose controller re-sorts by last touched when a row arrives. A no-op on any
+  # whose controller re-sorts by last touched when a card arrives. A no-op on any
   # other page, and when that category is snoozed or backlogged (no list in the DOM).
   def restored_board_v2_row_stream(session)
     turbo_stream.prepend(
       helpers.board_v2_list_dom_id(session.board_category_id),
-      partial: "sessions/user_view_row",
-      locals: { agent_session: session, board_v2: true }
+      partial: "sessions/board_v2_row",
+      locals: { agent_session: session }
     )
   end
   private :restored_board_v2_row_stream

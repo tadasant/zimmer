@@ -13,11 +13,7 @@
     title, which is the one thing allowed to take the remaining width.
 
     Locals:
-      agent_session - the session
-      board_v2      - (optional) render for Your board v2: the row belongs to the
-                      board-v2 controller, its handle drags it into a category
-                      rather than writing precedence, and it carries the
-                      last-touched time that board sorts by %>
+      agent_session - the session %>
 <%
   pr = Sessions::PrSummary.for(agent_session)
   priority_class = agent_session.priority_class(cached_genesis_overrides)
@@ -25,8 +21,6 @@
   summary = agent_session.status_summary
   line_count = agent_session.transcript_line_count
   behind = summary&.messages_since(line_count).to_i
-  board_v2 = local_assigns.fetch(:board_v2, false)
-  list_controller = board_v2 ? "board-v2" : "user-view"
 %>
 <%# `data-visibility-unit` is what lets the shared visibility controller take this
     row off the board when Snooze or Hide succeeds, with no reload. `data-precedence`
@@ -35,9 +29,8 @@
 <li id="<%= user_view_row_dom_id(agent_session) %>"
     class="flex items-start gap-2 px-3 py-3 sm:gap-3"
     data-visibility-unit
-    data-<%= list_controller %>-target="row"
+    data-user-view-target="row"
     data-session-id="<%= agent_session.id %>"
-    <% if board_v2 %>data-last-touched="<%= agent_session.last_user_activity_at.to_f %>"<% end %>
     data-precedence="<%= agent_session.precedence %>"
     data-priority-class="<%= priority_class %>">
 
@@ -45,7 +38,7 @@
       only starts a drag from inside this box, and a 16px one on a phone is a box
       you miss. %>
   <span class="shrink-0 cursor-grab px-1 py-1 text-gray-300 hover:text-gray-500"
-        data-<%= list_controller %>-target="handle" aria-hidden="true" title="<%= board_v2 ? "Drag into a category" : "Drag to reorder" %>">
+        data-user-view-target="handle" aria-hidden="true" title="Drag to reorder">
     <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
   </span>
 
@@ -145,11 +138,9 @@
 
       <%# The live precedence readout. The user-view controller rewrites it in place
           after a drag, so the number never disagrees with where the row is sitting. %>
-      <% unless board_v2 %>
-        <span class="shrink-0 tabular-nums text-[11px] text-gray-400"
-              data-user-view-precedence
-              title="Precedence — higher is worked sooner">#<%= agent_session.precedence %></span>
-      <% end %>
+      <span class="shrink-0 tabular-nums text-[11px] text-gray-400"
+            data-user-view-precedence
+            title="Precedence — higher is worked sooner">#<%= agent_session.precedence %></span>
 
       <%# The PR button, with its green / merged affordance: the glyph's shape and
           colour carry the lifecycle state and the dot beside it carries CI. %>

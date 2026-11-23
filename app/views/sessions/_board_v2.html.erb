@@ -1,4 +1,4 @@
-<%# Your board v2 — the User view's rows, grouped into categories the operator
+<%# Your board v2 — the Last Touched cards, grouped into categories the operator
     makes and drags sessions into by hand. Offered beside "Your board", which is
     unchanged.
 
@@ -13,6 +13,8 @@
     Locals:
       board             - a Sessions::BoardV2::Result
       limit             - the row cap %>
+<%# One grouped query for every card's cost badge, as Last Touched does. %>
+<% preload_session_costs(board.uncategorized + board.sections.flat_map(&:sessions)) %>
 <section class="mb-8"
          id="board_v2"
          data-controller="board-v2"
@@ -23,7 +25,7 @@
     <div class="min-w-0 flex-1 basis-64">
       <h2 class="text-lg font-semibold text-gray-800">Your board v2</h2>
       <p class="mt-0.5 text-sm text-gray-500">
-        The same sessions as Your board, in categories you make. Drag a row by its handle into a
+        The same sessions as Your board, in categories you make. Drag a card by its handle into a
         category. Inside each one the session you touched most recently is on top. Drag a
         category's header to reorder categories. Snoozing a category takes it and everything in it
         off this board until then; it never changes when a session runs.
