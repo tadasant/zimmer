@@ -114,5 +114,7 @@ class Webhooks::SourceTest < ActiveSupport::TestCase
     assert_predicate Github::PrWebhookIngest, :driving?
   ensure
     saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    # The singletons remember what they warned about; leave them as fresh as this test found them.
+    [ Webhooks::Source.github, Webhooks::Source.github_prs ].each { |source| source.instance_variable_get(:@warned).delete("webhook_shadow") }
   end
 end

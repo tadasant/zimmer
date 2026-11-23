@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 58 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 60 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -81,7 +81,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 27 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 32 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -220,7 +220,7 @@ production.
 
 ## The tool surface
 
-62 tools, thirteen domains — 34 of them on the unscoped surface.
+60 tools, thirteen domains — 32 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |

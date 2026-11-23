@@ -12,9 +12,9 @@ module Webhooks
   # the conditions the poller would. Everything else — `ping` when the hook is saved, a closed
   # issue, a review requested — is acknowledged so GitHub records a success, and fires nothing.
   #
-  # Separately, while GITHUB_PR_INGEST_MODE is `webhook_with_poll_fallback`, every delivery is handed to
-  # Github::PrWebhookIngest, which records which tracked pull requests it may have changed so the
-  # per-session PR pollers read them now instead of on their next tick.
+  # Separately, while GITHUB_PR_INGEST_MODE is `webhook_with_poll_fallback`, every delivery is
+  # handed to Github::PrWebhookIngest, which records which tracked pull requests it may have changed
+  # so the per-session PR pollers read them now instead of on their next tick.
   #
   # The body must be `application/json`. A hook configured for `application/x-www-form-urlencoded`
   # sends a body that is not JSON and gets a 400.

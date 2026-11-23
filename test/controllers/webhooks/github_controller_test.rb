@@ -76,6 +76,20 @@ class Webhooks::GithubControllerTest < ActionDispatch::IntegrationTest
     assert_equal @cursor, @condition.reload.github_last_issue_at
   end
 
+  test "a deployment still carrying the removed shadow mode fires and claims, as webhook_with_poll_fallback does" do
+    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_shadow"
+    Rails.logger.stubs(:warn)
+
+    assert_difference -> { Session.for_trigger(@trigger.id).count }, 1 do
+      deliver(opened(4243))
+    end
+
+    assert_response :ok
+    claim = TriggerEventClaim.sole
+    assert_equal [ @condition.id, "github:tadasant/zimmer#4243:opened", "webhook" ],
+      [ claim.trigger_condition_id, claim.event_key, claim.claimed_via ]
+  end
+
   test "an issue no condition watches is acknowledged, recorded, and fires nothing" do
     assert_no_difference -> { Session.count } do
       deliver(opened(1, repo: "someone/else"))
