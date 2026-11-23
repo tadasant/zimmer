@@ -1,6 +1,6 @@
 require "administrate/base_dashboard"
 
-# Your board v2's categories. Presentation state only (name, order, collapse,
+# Your board's categories. Presentation state only (name, order, collapse,
 # category-level visibility); nothing here is read by scheduling.
 class BoardCategoryDashboard < Administrate::BaseDashboard
   ATTRIBUTE_TYPES = {

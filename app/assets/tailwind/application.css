@@ -430,7 +430,7 @@ turbo-frame#session_detail[busy]:not(:has(> [data-drawer-skeleton])):not(:has(fo
   }
 }
 
-/* Your board v2: the card in hand. SortableJS draws it as a copy of the whole
+/* Your board: the card in hand. SortableJS draws it as a copy of the whole
    card, sized inline, which on a phone is most of the screen and hides the drop
    bar it is meant to land on. Drawn as a small tab instead: the top of the card
    (status and title), enough to say which session is moving. `!important` is

@@ -55,7 +55,7 @@ sequenceDiagram
    `submit_merge_attestation` from Rails. The live model sees neither the token nor the call.
 3. **Receive.** The remote verifies the token, checks the PR's head on GitHub again, claims the
    `jti`, and records the approval. It then sends the holding session the same
-   `[HUMAN-AUTHORIZED MERGE]` message the Merge button sends, with the steps pinned to the commit:
+   `[HUMAN-AUTHORIZED MERGE]` message a Merge sends, with the steps pinned to the commit:
    merge with `gh pr merge --match-head-commit <sha>`, and if anything needs a new commit, stop and
    come back to `needs_input`.
 

@@ -12,9 +12,9 @@ public protocol SessionActionsAPI: Sendable {
     /// `SessionFilter.maxPages` pages, with `complete` false when there were more.
     func sessions(_ filters: BoardFilters, board: BoardFilter) async throws -> SessionSearchResult
     /// The list in a board view's order, as the server orders it (`view=`): Last Touched and
-    /// Created page through the newest-touched or newest-created first; Your board and Ranked
-    /// are the User view's top 500 in one page, and Your board v2 is its own top 500, grouped,
-    /// with the categories in `categories`. `complete` is false when more matched.
+    /// Created page through the newest-touched or newest-created first; Ranked is the User
+    /// view's top 500 in one page, and Your board is its own top 500, grouped, with the
+    /// categories in `categories`. `complete` is false when more matched.
     func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult
     /// The Ranked view's *Start now*: take a waiting session's next turn now. Refused when it
     /// has no turn queued (restart it instead) or is asleep on a wake.
@@ -27,13 +27,13 @@ public protocol SessionActionsAPI: Sendable {
     /// The Ranked view's drag-and-drop: put a spot session between `above` and `below` (either
     /// nil at an end); the server works out the precedence.
     func reorder(_ id: Int, above: Int?, below: Int?) async throws -> SessionSummary
-    /// Your board v2: put a session in one of the person's categories, or back in Uncategorized
+    /// Your board: put a session in one of the person's categories, or back in Uncategorized
     /// (nil), as the web board's drag does. Does not count as touching the session.
     func assignBoardCategory(_ id: Int, categoryID: Int?) async throws -> SessionSummary
-    /// Your board v2: collapse a category to its header, or expand it. Stored on the category,
+    /// Your board: collapse a category to its header, or expand it. Stored on the category,
     /// so the web UI shows it the same way.
     func setBoardCategoryCollapsed(_ id: Int, collapsed: Bool) async throws -> BoardCategory
-    /// Your board v2: put a snoozed or backlogged category back on the board, as the web
+    /// Your board: put a snoozed or backlogged category back on the board, as the web
     /// board's tray's *Wake* does.
     func wakeBoardCategory(_ id: Int) async throws -> BoardCategory
     /// Sessions matching `query` (the web UI's search box) within the same filters; with
@@ -218,11 +218,11 @@ extension ZimmerHTTPClient {
         switch view {
         case .lastTouched, .created:
             return try await pagedSessions(filters, board: board, extra: ["view": view.rawValue])
-        case .yourBoard, .ranked:
+        case .ranked:
             var query = filters.query.merging(board.query) { a, _ in a }
             query["view"] = view.rawValue
             query["per_page"] = nil
-            // The dashboard's User-view rows carry the agent root and the status summary.
+            // The Ranked rows carry the agent root.
             query["include"] = "board_row"
             let response: SessionListResponse = try await get("/api/v1/sessions", query: query)
             return SessionSearchResult(sessions: response.rows, complete: !(response.truncated ?? false))
@@ -283,7 +283,7 @@ extension ZimmerHTTPClient {
         var params = filters.query.merging(board.query) { a, _ in a }
         params["q"] = query
         if contents { params["search_contents"] = "true" }
-        // Searching from Your board keeps its rows' summaries.
+        // Search results carry the agent root, as Ranked's rows do.
         params["include"] = "board_row"
         let response: SearchResponse = try await get("/api/v1/sessions/search", query: params)
         // A title search pages like the list; one page of 100 is all the phone reads, so more
@@ -462,7 +462,7 @@ extension ZimmerHTTPClient {
 public struct SessionSearchResult: Hashable, Sendable {
     public var sessions: [SessionSummary]
     public var complete: Bool
-    /// Your board v2's categories, in board order, when the read was of that view; nil for
+    /// Your board's categories, in board order, when the read was of that view; nil for
     /// any other read, which says nothing about them.
     public var categories: [BoardCategory]?
 

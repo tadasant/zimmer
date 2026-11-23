@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module BoardCategories
-  # Put a session in a Your board v2 category, or take it out (nil).
+  # Put a session in a Your board category, or take it out (nil).
   #
   # The only writer of `sessions.board_category_id`, so the web UI's drag and the
   # MCP tool agree. A person's decision, never inferred: nothing in Zimmer calls

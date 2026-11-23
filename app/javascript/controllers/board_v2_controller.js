@@ -4,7 +4,7 @@ import { csrfHeaders } from "lib/csrf"
 
 // Connects to data-controller="board-v2"
 //
-// Your board v2: sessions grouped into categories the operator makes by hand.
+// Your board: sessions grouped into categories the operator makes by hand.
 // This controller owns three drags and one toggle:
 //
 //   * a row dragged into another group — writes the session's category

@@ -81,6 +81,7 @@ final class Workspaces: ObservableObject {
         do {
             #if DEBUG
             if environment.fixtureCancelsSignIn { throw ASWebAuthenticationSessionError(.canceledLogin) }
+            if environment.fixtureEdgeNeedsAppHost, !origins.isSplit { throw ZimmerError.edgeRefusal(for: origins) }
             #endif
             if !environment.isFixture {
                 if let edge = connection.edge, await edge.needsLogin() {

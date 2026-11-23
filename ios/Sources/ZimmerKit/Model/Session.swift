@@ -96,7 +96,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// That choice with an expired snooze already resolved back to visible — what a board draws.
     public var effectiveVisibility: SessionVisibility?
     public var snoozedUntil: Date?
-    /// The Your board v2 category a person put the session in (`BoardCategory.id`), or nil for
+    /// The Your board category a person put the session in (`BoardCategory.id`), or nil for
     /// Uncategorized. Presentation only, like visibility.
     public var boardCategoryID: Int?
     /// The stored CarPlay-fit mark, `carplay_ok` or `laptop_only` (see `CarplayFit`), current
@@ -145,7 +145,7 @@ public struct SessionSummary: Hashable, Sendable, Codable, Identifiable {
     /// The injected subset alone (the self-session server, say): drawn dashed on the web.
     public var injectedMcpServers: [String]?
     /// What the dashboard's row shows that the session object does not carry, when the list
-    /// was read with `include=board_row`; Your board draws it. Nil when it was not read, which
+    /// was read with `include=board_row`; Ranked and search read the agent root from it. Nil when it was not read, which
     /// is not the same as a session with no summary. Not part of `session`.
     public var boardRow: BoardRow? = nil
 

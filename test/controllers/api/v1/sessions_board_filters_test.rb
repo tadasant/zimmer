@@ -95,11 +95,11 @@ class Api::V1::SessionsBoardFiltersTest < ActionDispatch::IntegrationTest
     assert_equal %w[binned], titles("/api/v1/sessions", status: "archived", show_archived: "true")
   end
 
-  test "combined filters apply to the User view too" do
+  test "combined filters apply to the Ranked view too" do
     make("asked priority", status: :needs_input, scheduling_class: "priority", root: @root.name)
     make("asked spot", status: :needs_input, scheduling_class: "spot", root: @root.name)
 
-    assert_equal [ "asked priority" ], titles("/api/v1/sessions", view: "user", status: "needs_input", priority_class: "priority")
+    assert_equal [ "asked priority" ], titles("/api/v1/sessions", view: "ranked", status: "needs_input", priority_class: "priority")
   end
 
   test "search refuses an unknown status, and a status that is not a list, with a 422" do

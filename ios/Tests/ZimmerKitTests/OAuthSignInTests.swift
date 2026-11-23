@@ -188,7 +188,7 @@ final class OAuthSignInTests: XCTestCase {
 
     func testAnEdgeRefusalOfTheTokenCallIsItsOwnErrorAndKeepsTheSignIn() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
-        let store = Fixtures.signedIn(expiresAt: Date())
+        let store = Fixtures.signedIn(expiresAt: Date(), origins: Fixtures.split)
         let auth = AuthSession(store: store, transport: transport)
 
         do {
@@ -198,6 +198,51 @@ final class OAuthSignInTests: XCTestCase {
             XCTAssertEqual(error as? ZimmerError, .edgeRefused)
         }
         XCTAssertNotNil(store.load(), "an edge refusal says nothing about Zimmer's grant")
+    }
+
+    func testAnEdgeRefusalOfTheTokenCallWithNoAppHostAsksForTheAppHostAndKeepsTheSignIn() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
+        let store = Fixtures.signedIn(expiresAt: Date())
+        let auth = AuthSession(store: store, transport: transport)
+
+        do {
+            _ = try await auth.accessToken()
+            XCTFail("expected edgeNeedsAppHost")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .edgeNeedsAppHost)
+        }
+        XCTAssertNotNil(store.load(), "an edge refusal says nothing about Zimmer's grant")
+    }
+
+    /// A deployment behind Cloudflare Access, added with the App host row left empty: the code
+    /// exchange goes to the web origin, which answers 401 with `cf-access-aud`.
+    func testSigningInWithNoAppHostToAWebOriginBehindTheEdgeAsksForTheAppHost() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
+        let store = InMemoryTokenStore()
+        let auth = AuthSession(store: store, transport: transport)
+        let sameOrigin = flow(ServerOrigins(web: Fixtures.base))
+
+        do {
+            try await auth.complete(sameOrigin, callback: URL(string: "com.tadasant.zimmer:/oauth/callback?code=c1&state=st&iss=https://zimmer.example.test")!)
+            XCTFail("expected edgeNeedsAppHost")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .edgeNeedsAppHost)
+        }
+        XCTAssertEqual(transport.sent.first?.url.host, "zimmer.example.test", "the token call went to the web origin")
+        XCTAssertNil(store.load())
+    }
+
+    func testSigningInWithAnAppHostWhoseEdgeStillRefusesIsEdgeRefused() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
+        let auth = AuthSession(store: InMemoryTokenStore(), transport: transport)
+
+        do {
+            try await auth.complete(flow(Fixtures.split), callback: URL(string: "com.tadasant.zimmer:/oauth/callback?code=c1&state=st&iss=https://zimmer.example.test")!)
+            XCTFail("expected edgeRefused")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .edgeRefused)
+        }
+        XCTAssertEqual(transport.sent.first?.url.host, "zimmer-app.example.test")
     }
 
     func testSignOutRevokesTheRefreshTokenAndForgets() async throws {

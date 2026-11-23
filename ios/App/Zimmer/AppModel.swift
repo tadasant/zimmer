@@ -22,9 +22,9 @@ final class AppModel: ObservableObject {
     }
     /// The catalog's agent roots and geneses, for the filter sheet's pickers; read once.
     @Published private(set) var filterOptions: AppConfigs?
-    /// The board view: Your board v2, Your board, Last Touched, Created or Ranked. Remembered,
-    /// as the web UI remembers it in a cookie; Your board v2 (`BoardView.defaultView`) until
-    /// the person chooses another.
+    /// The board view: Your board, Last Touched, Created or Ranked. Remembered, as the web UI
+    /// remembers it in a cookie; Your board (`BoardView.defaultView`) until the person chooses
+    /// another. `BoardView.remembered` reads the stored choice.
     @Published var view: BoardView = BoardView.defaultView {
         didSet { UserDefaults.standard.set(view.rawValue, forKey: key("boardView")) }
     }
@@ -53,7 +53,7 @@ final class AppModel: ObservableObject {
     /// discard, before it goes.
     @Published var queuedTrash: SessionSummary?
     @Published private(set) var sessions: [SessionSummary] = []
-    /// Your board v2's categories in board order, as the last read of that view listed them.
+    /// Your board's categories in board order, as the last read of that view listed them.
     @Published private(set) var boardCategories: [BoardCategory] = []
     /// The row actions out to the server, laid over every read of the list until each is
     /// answered, so a read from before the action cannot put a trashed row back.
@@ -243,7 +243,7 @@ final class AppModel: ObservableObject {
         deployment = environment.connection.deployment
         drafts = DraftStore(prefix: (deployment?.defaultsPrefix ?? "") + "draft.")
         filters = stored("boardFilters") ?? .default
-        view = BoardView(rawValue: UserDefaults.standard.string(forKey: key("boardView")) ?? "") ?? BoardView.defaultView
+        view = BoardView.remembered(UserDefaults.standard.string(forKey: key("boardView")))
         board = BoardFilter(rawValue: UserDefaults.standard.string(forKey: key("boardVisibility")) ?? "") ?? .onBoard
     }
 
@@ -345,7 +345,7 @@ final class AppModel: ObservableObject {
         }
         // Every fixture launch starts from the same view, whatever an earlier run chose: Last
         // Touched, the one view every UI test's row positions were written against, rather than
-        // the app's default (Your board v2), whose categories would fold rows away under them.
+        // the app's default (Your board), whose categories would fold rows away under them.
         view = value("-ZimmerFixtureView").flatMap(BoardView.init(rawValue:)) ?? .lastTouched
         // And from the default filters, whatever an earlier run remembered.
         let listFilter = value("-ZimmerFixtureFilter").flatMap(SessionFilter.init(rawValue:))
@@ -696,6 +696,8 @@ final class AppModel: ObservableObject {
     /// `other` puts the call on a new conversation, which ends the one before it. `other@0` is done
     /// before `thread` opens, so the thread reads as ended from its first read; any later and it
     /// ends with the thread on screen, with no call at all until then. Moves are in time order.
+    /// Each waits for its own time on one clock, so a main thread that is late to one move does not
+    /// make every move after it later; moves that are due together run back to back.
     private func runFixtureCarScript(_ script: String, thread: Int?) {
         let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
             let parts = move.split(separator: "@")
@@ -707,6 +709,7 @@ final class AppModel: ObservableObject {
         let running = UIApplication.shared.beginBackgroundTask(withName: "fixture-car-script")
         Task {
             defer { UIApplication.shared.endBackgroundTask(running) }
+            let launched = ContinuousClock.now
             let call = LiveCall.shared
             let other = moves.first { $0.name == "other" }
             if let other, other.at == 0 {
@@ -715,10 +718,8 @@ final class AppModel: ObservableObject {
                 Task { await call.start(21, from: .carplay) }
             }
             if let thread { openFixtureLiveThread(thread) }
-            var elapsed = 0.0
             for move in moves {
-                try? await Task.sleep(for: .seconds(move.at - elapsed))
-                elapsed = move.at
+                try? await Task.sleep(until: launched + .seconds(move.at), clock: .continuous)
                 switch move.name {
                 case "left": call.carLeft()
                 case "back":
@@ -894,7 +895,7 @@ final class AppModel: ObservableObject {
     /// The rows in the current view's order and sections — a drag's order first, until the
     /// server's read replaces it.
     var sections: [BoardSection] {
-        // A search on Your board v2 is drawn flat, most recently touched first: the search
+        // A search on Your board is drawn flat, most recently touched first: the search
         // reaches sessions in tucked-away and collapsed categories, and grouping would hide them.
         if view == .boardV2, !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return BoardView.lastTouched.sections(sessions)
@@ -902,10 +903,10 @@ final class AppModel: ObservableObject {
         return view.sections(sessions, order: localOrder, categories: boardCategories)
     }
 
-    /// Your board v2's categories that are snoozed or backlogged, for the tray at the board's foot.
+    /// Your board's categories that are snoozed or backlogged, for the tray at the board's foot.
     var tuckedCategories: [BoardCategory] { boardCategories.filter { !$0.onBoard } }
 
-    /// Your board v2's *Move to category*: the row moves at the tap, as the web board's drag
+    /// Your board's *Move to category*: the row moves at the tap, as the web board's drag
     /// moves it, and back if the server refuses. Nil is Uncategorized.
     func move(_ session: SessionSummary, to category: BoardCategory?) async {
         await perform("Moved to \(category?.name ?? BoardView.uncategorized)", on: session.id,
@@ -914,7 +915,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Collapse a Your board v2 category to its header, or expand it, at the tap; the server
+    /// Collapse a Your board category to its header, or expand it, at the tap; the server
     /// stores it on the category, so the web UI shows it the same way. A refusal puts it back.
     func setCollapsed(_ category: BoardCategory, _ collapsed: Bool) async {
         func apply(_ value: Bool) {
@@ -1089,24 +1090,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The User view's Merge: the sign-off that lets a session merge its open, green PR.
+    /// A row's Merge: the sign-off that lets a session merge its open, green PR.
     func authorizeMerge(_ id: Int) async {
         do {
             notice = try await connection.api.authorizeMerge(id).message
             Haptics.success()
             await refresh(silently: true)
-        } catch {
-            handle(error)
-            Haptics.failure()
-        }
-    }
-
-    /// The User view's Reprioritize: the board goes to the reprioritizing session, which
-    /// writes the new order back; the list shows it on the next refresh.
-    func reprioritize() async {
-        do {
-            notice = try await connection.api.reprioritize().message
-            Haptics.success()
         } catch {
             handle(error)
             Haptics.failure()
@@ -1153,7 +1142,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Your board's and Ranked's drag-and-drop: the rows stay where the drag left them
+    /// Ranked's drag-and-drop: the rows stay where the drag left them
     /// (`moved`, which `sections` shows) while the server is told what the dropped row landed
     /// between and works out its precedence; the list is then read as the server orders it. A
     /// refused drop snaps the rows back, with the refusal over the list.
@@ -1161,7 +1150,7 @@ final class AppModel: ObservableObject {
         localOrder = moved.map(\.id)
         reordersInFlight += 1
         freshness.noteLocalChange()
-        notice = view == .ranked ? "Moved in the spot queue" : "Moved on your board"
+        notice = "Moved in the spot queue"
         error = nil
         Haptics.success()
         do {

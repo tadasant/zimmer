@@ -1,6 +1,6 @@
 ---
 title: Zimmer's MCP server
-description: The native MCP server Zimmer serves at POST /mcp — its 60 tools, the scoped variants, API-key auth, and how to point a client at it.
+description: The native MCP server Zimmer serves at POST /mcp — its 59 tools, the scoped variants, API-key auth, and how to point a client at it.
 sidebar:
   order: 2
 ---
@@ -81,7 +81,7 @@ session gets exactly the surface it should have and no more.
 
 | URL | Tools |
 | --- | --- |
-| `/mcp` | The default surface — 32 tools; the opt-in groups are not among them |
+| `/mcp` | The default surface — 31 tools; the opt-in groups are not among them |
 | `/mcp?tool_groups=sessions` | Session orchestration: spawn, search, inspect, act on other sessions |
 | `/mcp?tool_groups=self_session` | Self-management: the 8 tools a session needs to run itself |
 | `/mcp?tool_groups=gate_decisions` | The [gate decision ledger](/operate/gate-decisions/): search past ratings, read the human corrections, record one |
@@ -220,11 +220,11 @@ production.
 
 ## The tool surface
 
-60 tools, thirteen domains — 32 of them on the unscoped surface.
+59 tools, thirteen domains — 31 of them on the unscoped surface.
 
 | Group | Tools |
 | --- | --- |
-| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `reorder_user_view`, `manage_board_categories`, `respond_to_elicitation`, `get_outcome_analysis`, `get_cycle_time`, `save_outcome_analysis` |
+| `sessions` | `quick_search_sessions`, `get_session`, `get_session_provenance`, `get_configs`, `get_transcript_archive`, `get_user_view`, `quick_router`, `start_session`, `action_session`, `manage_enqueued_messages`, `manage_models`, `manage_board_categories`, `respond_to_elicitation`, `get_outcome_analysis`, `get_cycle_time`, `save_outcome_analysis` |
 | `notifications` | `get_notifications`, `send_push_notification`, `action_notification` |
 | `triggers` | `search_triggers`, `action_trigger`, `list_mcp_event_sources`, `compare_trigger_fires`, `wake_me_up_later`, `wake_me_up_when_session_changes_state` |
 | `health` | `get_system_health`, `action_health`, `get_testflight_crashes`, `get_spot_policy`, `action_spot_policy`, `get_costs` (self-scoped variant on `self_session`) |
@@ -263,21 +263,21 @@ name. The usual caveat holds: this decides what a connection is offered, not wha
 API key could compose. The REST routes that start and steer a conversation do not take an API key at
 all; see [the REST API](/extend/rest-api/#live-conversations).
 
-`get_user_view` and `reorder_user_view` are the read and write halves of the dashboard's
-[User view](/sessions/user-view/) — the human's decision board. The read returns the board in the
-order it is drawn, with the three facts a decision on it turns on that a session listing does not
-carry: the agent root, the cached status-summary blurb, and the session's most recent PR with its
-lifecycle state and CI verdict. Every row also says when a person last touched it. `order:
-"last_touched"` returns the same filtered rows as the dashboard's **Sort By Last Touched** view
-instead (`Session::LAST_TOUCHED_ORDER`, the same SQL as `GET /api/v1/sessions?view=last_touched`).
-That list is not the board's order, so it is not what `reorder_user_view` takes. The write takes a
-whole ordering as one argument and applies it in one transaction.
+`get_user_view` reads the dashboard's [Your board](/sessions/board-v2/), the human's decision
+board, in the order it is drawn: Uncategorized first, then each category on the board in the
+person's order, most recently touched first inside each. Every row has a `**Category:**` line and
+the three facts a decision turns on that a session listing does not carry: the agent root, the
+cached status-summary blurb, and the session's most recent PR with its lifecycle state and CI
+verdict. Every row also says when a person last touched it. Rows filed in a snoozed or backlogged
+category are off the board, so they are not listed. One line says how many there are, per category.
+`order: "last_touched"` returns the same filtered rows as the dashboard's **Sort By Last Touched**
+view instead (`Session::LAST_TOUCHED_ORDER`, the same SQL as
+`GET /api/v1/sessions?view=last_touched`), as one flat list.
 
-They are a pair, and neither is a convenience over `quick_search_sessions` + `action_session`.
-Assembling the board out of those means a `get_session` per row, and reordering it with
-`change_precedence` means a call per row *and* an absolute rank computed against a board that has
-moved since it was read. `reorder_user_view` is what the dashboard's **Reprioritize** button's
-session uses.
+It is a read only. Filing a row in a category is `manage_board_categories` → `assign`, which the
+tool's description points to. Ranking a session in the spot queue is `action_session` →
+`change_precedence`. Assembling the board out of `quick_search_sessions` and `get_session` instead
+means a call per row, and the category grouping is not on those rows at all.
 
 `quick_search_sessions` narrows by the dashboard's filters, combined: `status` (one or an array),
 `agent_runtime`, `agent_root` (a catalog name, matched as the dashboard's Advanced filter matches
@@ -305,7 +305,7 @@ archived sessions and matches every word, and has no transcript scan
 ([Finding an earlier session](/sessions/live/#finding-an-earlier-session)); every other caller gets
 the defaults above. An empty result that says "scan incomplete" means
 "not found yet", not "not there". `get_transcript_archive` is a bulk export, not the search — it is
-hundreds of megabytes and up to ten minutes stale.
+many gigabytes on a busy deployment and up to about forty minutes stale.
 
 The JSON columns are matched in Postgres's canonical spelling, so `"key":"value"` and `"key": "value"`
 find the same sessions and neither depends on which of Zimmer's two metadata writers last touched the

@@ -24,7 +24,7 @@ final class RankedTests: XCTestCase {
         XCTAssertEqual(query(transport.sent[0])["view"], "last_touched")
         XCTAssertEqual(query(transport.sent[0])["page"], "1", "a flat view pages as before")
         XCTAssertEqual(query(transport.sent[1])["view"], "ranked")
-        XCTAssertNil(query(transport.sent[1])["page"], "the User view is one page")
+        XCTAssertNil(query(transport.sent[1])["page"], "Ranked is one page")
         XCTAssertNil(query(transport.sent[1])["per_page"])
         XCTAssertTrue(touched.complete)
         XCTAssertFalse(ranked.complete, "`truncated` means the list says it was cut")

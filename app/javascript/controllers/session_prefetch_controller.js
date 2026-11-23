@@ -30,7 +30,7 @@ import { Controller } from "@hotwired/stimulus"
 // Every prefetch is a full detail render on a web server with three threads,
 // which also serve the agents' MCP calls. So the load is kept small on purpose:
 //   - only rows on screen or within a screen of it are fetched, not the whole
-//     list (a User view can hold hundreds);
+//     list (a board can hold hundreds);
 //   - one request at a time, top row first, and nothing until the page has
 //     loaded and the browser is idle;
 //   - opening the drawer aborts the request in flight and holds the queue, so

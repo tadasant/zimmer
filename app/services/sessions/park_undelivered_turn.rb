@@ -155,11 +155,19 @@ module Sessions
       # minutes of setup that just failed. It skips validations too, which matters
       # for the same reason the loud path uses update_columns — the exception being
       # handled may itself be a validation failure.
+      #
+      # A wake-backed sleep intent goes with the turn it was for: the undelivered
+      # prompt has to be seen, and a pause that slept would both hide it and read
+      # below as a park that did not land. A sleep somebody asked for stands.
+      wake_backed_sleep = session.pending_sleep_requires_wake? ? SessionStateMachine::PENDING_SLEEP_KEYS : []
       session.merge_metadata!(
-        "failure_reason" => FAILURE_REASON,
-        "exception_class" => @error.class.name,
-        "exception_message" => @error.message.to_s.truncate(AgentSessionJob::EXCEPTION_MESSAGE_MAX_CHARS),
-        PROMPT_KEY => @prompt
+        {
+          "failure_reason" => FAILURE_REASON,
+          "exception_class" => @error.class.name,
+          "exception_message" => @error.message.to_s.truncate(AgentSessionJob::EXCEPTION_MESSAGE_MAX_CHARS),
+          PROMPT_KEY => @prompt
+        },
+        wake_backed_sleep
       )
 
       add_log(
@@ -183,15 +191,19 @@ module Sessions
       session.start! if session.waiting? && session.may_start?
 
       # `pause` clears `running_job_id` itself, in cleanup_running_job.
-      session.pause! if session.may_pause?
+      came_to_rest = session.may_pause? && session.pause!
 
       # The answer is the row, not the intent. A row that moved between the reload
       # above and here leaves `pause!` unrun, and answering true then would skip the
       # caller's `fail!` and strand the session `running` with nobody driving it.
-      parked = session.reload.needs_input?
+      #
+      # `waiting` counts only after a pause: a sleep the platform or the caller asked
+      # for, executed at this rest.
+      session.reload
+      parked = session.needs_input? || (came_to_rest && session.waiting?)
       if parked
         Rails.logger.warn(
-          "[Sessions::ParkUndeliveredTurn] Session #{session.id} parked in needs_input: its turn raised " \
+          "[Sessions::ParkUndeliveredTurn] Session #{session.id} parked in #{session.status}: its turn raised " \
           "#{@error.class.name} before the agent started, and the prompt was never delivered"
         )
       end

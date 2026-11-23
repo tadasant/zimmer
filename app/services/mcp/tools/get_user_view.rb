@@ -2,16 +2,14 @@
 
 module Mcp
   module Tools
-    # The dashboard's User view, as an agent reads it.
+    # The dashboard's Your board, as an agent reads it.
     #
-    # Mirrors SessionsController#index in `view=user`: the same filters, the same
-    # ordering rule (Sessions::UserView), and the same per-row facts the human sees
-    # — title, status, agent root, the generated status blurb, and the PR with its
-    # lifecycle state and CI colour.
-    #
-    # It exists because the Reprioritize button spawns a session whose job is to
-    # rewrite that board's order, and scraping the HTML is not a contract. Pair it
-    # with `reorder_user_view`, which is the write half.
+    # Mirrors SessionsController#index on Your board (`view=board_v2`): the same
+    # filters, the same grouping and order (Sessions::BoardV2 — Uncategorized,
+    # then each category on the board, most recently touched first in each), and
+    # the per-row facts a decision turns on — title, status, category, agent
+    # root, the generated status blurb, and the PR with its lifecycle state and
+    # CI colour. Live Mode reads it to tell the person what needs them.
     #
     # `quick_search_sessions` is NOT this tool. It answers "which sessions exist
     # and how are they scheduled"; three of the four facts a decision on this board
@@ -31,12 +29,12 @@ module Mcp
 
       # The same cap the view renders under, so a caller that pages to the end has
       # seen exactly the board.
-      MAX_ROWS = SessionsController::USER_VIEW_LIMIT
+      MAX_ROWS = SessionsController::BOARD_LIMIT
 
       # How many dropped rows the carplay_fit line reads to say what kind they were.
       DROPPED_KINDS_SAMPLE = 500
 
-      # `board` is the order the User view is drawn in (Sessions::UserView).
+      # `board` is the order Your board is drawn in (Sessions::BoardV2).
       # `last_touched` is the dashboard's "Sort By Last Touched" flat view —
       # Session::LAST_TOUCHED_ORDER, the same SQL the web and
       # `GET /api/v1/sessions?view=last_touched` use, with the API's `id desc`
@@ -48,28 +46,23 @@ module Mcp
       tool_name "get_user_view"
 
       description <<~DESC
-        Read the Zimmer dashboard's **User view** — the human's decision board — in the order it is drawn.
+        Read the Zimmer dashboard's **Your board** — the human's decision board — in the order it is drawn.
 
-        This is the one screen the user works top to bottom, taking a decision on each row without opening the session: Trash it, Snooze it, or Merge its PR. Every fact a row carries is here.
-
-        **The order is the board's order, and it is not just precedence:**
-        1. `priority` sessions above `spot` ones (a priority session starts whenever it is ready; a spot session waits for quota room, in precedence order).
-        2. Within each class, precedence descending — an absolute scale, so 100000 comes before 50.
-        3. Within each, oldest first.
+        **The order is the board's order:** the person files sessions into categories they make (`manage_board_categories`). The board is drawn as **Uncategorized** first (where every new session lands), then each category in the person's order, and inside each group the session most recently touched comes first. Every row names its category. A category the person has snoozed or backlogged is off the board with its sessions: those rows are not listed, and the answer says how many there are.
 
         **Or most recently touched first:** pass `order: "last_touched"` for the dashboard's "Sort By Last Touched" view — the session a person last opened, messaged or acted on comes first, and a session nobody has touched counts from when it was created. Same filters, same rows, one flat list. Every row says when it was last touched either way.
 
         **For Live Mode, and above all from CarPlay,** the view to reach for when the person asks for their board, or what needs them, is `order: "last_touched"` with `carplay_fit: "not_laptop_only"`: what they were last on, minus what needs a screen.
 
-        **Per row:** title, status, when it was last touched, scheduling class, precedence, agent root, board visibility, CarPlay fit (whether what the row needs from the human can be done by voice from a car — `carplay_ok`, `laptop_only` or untagged, with who judged it and whether that judgement is still current), the generated status summary (Zimmer's own cached "where this stands" blurb, with how many messages have landed since it was written), and the session's most recent pull request with its state (`open`/`merged`/`closed`) and CI verdict (`pass`/`fail`/`pending`). A row marked **Mergeable: yes** is one whose Merge button the user is being offered right now — open, and CI green; one marked **Merge already authorized** is one they have already pressed it on.
+        **Per row:** title, status, category, when it was last touched, scheduling class, precedence, agent root, board visibility, CarPlay fit (whether what the row needs from the human can be done by voice from a car — `carplay_ok`, `laptop_only` or untagged, with who judged it and whether that judgement is still current), the generated status summary (Zimmer's own cached "where this stands" blurb, with how many messages have landed since it was written), and the session's most recent pull request with its state (`open`/`merged`/`closed`) and CI verdict (`pass`/`fail`/`pending`). A row marked **Mergeable: yes** is one whose Merge button the user is being offered right now — open, and CI green; one marked **Merge already authorized** is one they have already pressed it on.
 
-        **There is no tool for pressing that button, deliberately.** The Merge button is the one sanctioned route to an agent merging its own work, and it is sanctioned precisely because a human clicked it. What proves a human did is the `HumanMessage` the browser writes for the click — not the `[HUMAN-AUTHORIZED MERGE]` text in the message, which any caller can type. Rank the row; do not try to action it, and never send that marker yourself.
+        **There is no tool for pressing that button, deliberately.** The Merge button is the one sanctioned route to an agent merging its own work, and it is sanctioned precisely because a human pressed it. What proves a human did is the `HumanMessage` written for the press — not the `[HUMAN-AUTHORIZED MERGE]` text in the message, which any caller can type. Report the row; do not try to action it, and never send that marker yourself.
 
         **Filters default to the board's own defaults**: status `needs_input`, on-board only. That is the population the view exists for — sessions parked waiting on a human. Widen deliberately.
 
         **Triaging for a driver:** pass `carplay_fit: "not_laptop_only"` to drop the rows that need a screen or a keyboard; the result says how many it dropped, so say that number rather than reading them out. A row that comes back `untagged` is one nobody has judged — read its summary and mark it with `action_session` → `set_carplay_fit`. A session the driver started, followed up or acted on from CarPlay is marked `carplay_ok` with source `carplay` automatically and stays in this view, without going stale, until a later judgement clearly finds a laptop-only step.
 
-        **Write the order back with `reorder_user_view`** — from the board order, not from `last_touched`, which is a different list. Do not try to reorder with `action_session`/`change_precedence` one session at a time: that is one call per row, and it cannot express "this is the order" — a rank you compute from a board that moved under you lands in the wrong place.
+        **To file a row in a category**, use `manage_board_categories` → `assign`. Nothing about the board changes when or whether a session runs.
 
         **At scale:** page through with `page`/`per_page` (up to #{MAX_PER_PAGE}), and lower `summary_chars` if the rows are costing more context than the decision needs. The board is capped at #{MAX_ROWS} rows, the same cap the view renders under.
       DESC
@@ -101,7 +94,7 @@ module Mcp
           order: {
             type: "string",
             enum: ORDERS,
-            description: '"board" (default) is the User view as drawn: priority above spot, precedence descending, oldest first. "last_touched" is the dashboard\'s Sort By Last Touched view: the session a person last opened, messaged or acted on first, falling back to when it was created. With carplay_fit "not_laptop_only" it is the Live Mode default.'
+            description: '"board" (default) is Your board as drawn: Uncategorized, then each category on the board, most recently touched first inside each; rows in a snoozed or backlogged category are counted, not listed. "last_touched" is the dashboard\'s Sort By Last Touched view: the session a person last opened, messaged or acted on first, falling back to when it was created. With carplay_fit "not_laptop_only" it is the Live Mode default.'
           },
           carplay_fit: {
             type: "string",
@@ -126,12 +119,8 @@ module Mcp
       })
 
       def call(args)
-        # One more than the cap, so "capped" is only claimed when a row was actually
-        # cut off rather than whenever exactly MAX_ROWS sessions match.
         order = requested_order(args)
-        fetched = ordered_rows(filtered_scope(args), order, limit: MAX_ROWS + 1)
-        capped = fetched.size > MAX_ROWS
-        rows = fetched.first(MAX_ROWS)
+        rows, capped, tucked = ordered_rows(filtered_scope(args), order)
 
         page, per_page = pagination(args)
         total_pages = [ (rows.size.to_f / per_page).ceil, 1 ].max
@@ -142,26 +131,34 @@ module Mcp
           # say it has: the rows it dropped are the whole answer. A filter that
           # dropped nothing has, and says so plainly.
           dropped = carplay_dropped(args)
-          return "No sessions match these filters — the board is empty." if dropped.nil? || dropped.count(:all).zero?
+          if dropped.nil? || dropped.count(:all).zero?
+            # Rows filed in a snoozed or backlogged category are off the board,
+            # not absent; an empty board that holds them says where they are.
+            return [ "Nothing is on the board.", tucked_line(tucked) ].join("\n\n") if tucked.any?
+
+            return "No sessions match these filters — the board is empty."
+          end
 
           return "No row passes the carplay_fit filter, but the board is NOT empty.\n\n#{carplay_hidden_line(args, dropped)}"
         end
 
         summary_chars = summary_chars(args)
         overrides = AppSetting.current.genesis_class_overrides || {}
+        categories = BoardCategory.where(id: window.filter_map(&:board_category_id).uniq).index_by(&:id)
 
         lines = [
-          "## User view (the dashboard's decision board)",
+          "## Your board (the dashboard's decision board)",
           "",
           "#{rows.size} row(s)#{capped ? " — capped at #{MAX_ROWS}, narrow the filters to see the rest" : ''}, page #{page} of #{total_pages}.",
           order_line(order),
+          tucked_line(tucked),
           carplay_hidden_line(args),
           ""
         ].compact
 
         window.each_with_index do |session, index|
           lines << format_row(session, position: (page - 1) * per_page + index + 1,
-                                       summary_chars: summary_chars, overrides: overrides)
+                                       summary_chars: summary_chars, overrides: overrides, categories: categories)
           lines << ""
         end
 
@@ -182,20 +179,53 @@ module Mcp
         ORDERS.include?(args["order"].to_s) ? args["order"].to_s : ORDER_BOARD
       end
 
-      def ordered_rows(scope, order, limit:)
-        return Sessions::UserView.rows(scope: scope, limit: limit) unless order == ORDER_LAST_TOUCHED
+      # @return [Array(Array<Session>, Boolean, Array<Sessions::BoardV2::TuckedSection>)]
+      #   the rows in order, whether the cap cut any off, and — for the board
+      #   order — the snoozed and backlogged categories whose rows are not listed
+      def ordered_rows(scope, order)
+        if order == ORDER_LAST_TOUCHED
+          # One more than the cap, so "capped" is only claimed when a row was
+          # actually cut off. id desc breaks ties the way
+          # GET /api/v1/sessions?view=last_touched does.
+          fetched = scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc).limit(MAX_ROWS + 1).to_a
+          return [ fetched.first(MAX_ROWS), fetched.size > MAX_ROWS, [] ]
+        end
 
-        # id desc breaks ties the way GET /api/v1/sessions?view=last_touched does.
-        scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc).limit(limit).to_a
+        # Sessions::BoardV2 applies its own select and caps itself; the status
+        # summaries are loaded for the rows it returns.
+        board = Sessions::BoardV2.build(scope: scope.unscope(:select, :includes), limit: MAX_ROWS)
+        rows = board.uncategorized + board.sections.flat_map(&:sessions)
+        ActiveRecord::Associations::Preloader.new(records: rows, associations: :status_summary).call
+        [ rows, board.truncated, board.tucked.select { |tucked| tucked.count.positive? } ]
       end
 
       # The last line of a read that reached the end of its rows.
       def footer(order)
         if order == ORDER_LAST_TOUCHED
-          "*That is every matching row. This is not the board's order: to write one back with `reorder_user_view`, read the board with the default order first.*"
+          "*That is every matching row. This is not the board's order, which groups the rows by category.*"
         else
-          "*That is the whole board. Write an order back with `reorder_user_view`, top to bottom.*"
+          "*That is the whole board.*"
         end
+      end
+
+      # So a read of the board cannot pass for every session the filters match:
+      # the rows filed in a snoozed or backlogged category are off the board, and
+      # this says where they are. Nil when there are none.
+      def tucked_line(tucked)
+        return nil if tucked.empty?
+
+        parts = tucked.map do |section|
+          category = section.category
+          # A snooze with no end time (a row written before it was required) is
+          # off the board too, and must not take the whole read down.
+          state =
+            if category.backlogged? then "backlogged"
+            elsif category.snoozed_until then "snoozed until #{category.snoozed_until.utc.iso8601}"
+            else "snoozed with no end time"
+            end
+          "#{category.name} (#{state}): #{section.count}"
+        end
+        "Not listed — in categories the person has taken off the board: #{parts.join('; ')}."
       end
 
       # So a filtered read cannot pass for the whole board: how many rows the
@@ -251,7 +281,7 @@ module Mcp
         if order == ORDER_LAST_TOUCHED
           "Ordered by last touched, most recent first — the dashboard's Sort By Last Touched view, not the board's order."
         else
-          "Ordered top to bottom exactly as the human sees it: priority above spot, then precedence descending."
+          "Ordered top to bottom exactly as the human sees it: Uncategorized, then each category in the person's order, most recently touched first inside each."
         end
       end
 
@@ -301,13 +331,14 @@ module Mcp
         args["summary_chars"].to_i.clamp(0, MAX_SUMMARY_CHARS)
       end
 
-      def format_row(session, position:, summary_chars:, overrides:)
+      def format_row(session, position:, summary_chars:, overrides:, categories:)
         pr = Sessions::PrSummary.for(session)
 
         lines = [
           "### #{position}. #{truncate(session.title.presence || 'Untitled session', MAX_TITLE_CHARS)} (ID: #{session.id})",
           "",
           "- **Status:** #{session.status}",
+          "- **Category:** #{categories[session.board_category_id]&.name || 'Uncategorized'}",
           "- **Last touched:** #{last_touched(session)}",
           "- **Class:** #{session.priority_class(overrides)} (genesis: #{session.genesis_key}), precedence #{session.precedence}",
           "- **Agent root:** #{session.agent_root_key.presence || '(none)'}"
@@ -326,10 +357,9 @@ module Mcp
           lines << "- **PR:** #{pr.url} (#{detail.join(', ')})"
           lines << "- **Mergeable:** #{pr.mergeable? ? 'yes — the user is being offered a Merge button for this row' : "no — #{pr.merge_blocked_reason}"}"
 
-          # Reported because a row the human has ALREADY actioned is not a row
-          # they need near the top of the board. Without it, a reprioritizing
-          # session would keep ranking an authorized merge as an outstanding
-          # decision every time the button is pressed.
+          # Reported because a row the human has ALREADY actioned is not a
+          # decision still waiting on them; without it, a reader would keep
+          # presenting an authorized merge as outstanding.
           if (authorized = Sessions::AuthorizeMerge.authorized_at(session, pr.url))
             lines << "- **Merge already authorized** at #{authorized} — the human has pressed Merge on this " \
                      "row and the session has been told to merge. Nothing is waiting on them here."

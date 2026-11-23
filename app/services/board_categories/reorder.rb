@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module BoardCategories
-  # Rewrite the order of Your board v2's categories in one transaction.
+  # Rewrite the order of Your board's categories in one transaction.
   #
   # Takes the order the operator dropped them in, top first, and numbers them
   # 0..n-1. Categories left out of the list keep their relative order and go

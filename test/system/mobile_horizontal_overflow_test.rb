@@ -133,7 +133,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
 
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
 
-    # A flat sort view, explicitly: the dashboard's default is the User view, which
+    # A flat sort view, explicitly: the dashboard's default is Your board, which
     # renders ROWS rather than cards and so has no grid track to measure. The card
     # grid this test is about lives in the two flat sort views now.
     visit root_path(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
@@ -195,12 +195,10 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     JS
   end
 
-  # The User view is the dashboard's default and the densest row in the app: a
-  # wrapping identity line, a clamped summary paragraph, and an action line holding
-  # the agent root, the precedence, the PR button, Merge, Snooze and Trash. Every one
-  # of those is a control, and the reported failure mode is the LAST control in a row
-  # landing past the right edge — so this is exactly the shape that regresses.
-  test "the User view's board does not overflow horizontally on a phone" do
+  # Your board is the desktop default and puts a PR-carrying card in each
+  # category's grid beside its drag handle; the reported failure mode is the LAST
+  # control on a card landing past the right edge.
+  test "Your board does not overflow horizontally on a phone" do
     url = "https://github.com/o/r/pull/9"
     create_session(status: :needs_input, scheduling_class: SessionGenesis::PRIORITY, precedence: 900,
       custom_metadata: {
@@ -211,24 +209,20 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     create_session(title: "Short one", status: :needs_input,
       scheduling_class: SessionGenesis::SPOT, precedence: 10)
 
-    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_USER))
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_BOARD_V2))
     assert_text LONG_TOKEN_TITLE
     assert_text "Short one"
-    # The row with every control on it, so the assertion is about a full row rather
-    # than a bare one.
-    assert_selector "#user_view_list button", text: "Merge"
 
-    assert_no_horizontal_overflow("the User view")
-    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-user-view-375.png").to_s)
+    assert_no_horizontal_overflow("Your board")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-your-board-375.png").to_s)
 
-    # And at the narrowest phone still in use, where the action line has to wrap
-    # onto more lines rather than widen.
+    # And at the narrowest phone still in use.
     page.driver.browser.manage.window.resize_to(NARROW_WIDTH, MOBILE_HEIGHT)
-    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_USER))
-    assert_selector "#user_view_list button", text: "Merge"
+    visit root_path(every_status_params(view: SessionsController::VIEW_MODE_BOARD_V2))
+    assert_text "Short one"
 
-    assert_no_horizontal_overflow("the User view at #{NARROW_WIDTH}px")
-    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-user-view-320.png").to_s)
+    assert_no_horizontal_overflow("Your board at #{NARROW_WIDTH}px")
+    page.save_screenshot(Rails.root.join("tmp/screenshots/proof-your-board-320.png").to_s)
   end
 
   # The transcript-scan notice is new markup on the busiest page, and it is the one
@@ -2032,7 +2026,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "github_pull_request_ci_statuses" => { url => "pass" }
     })
 
-    # The card footer lives in the flat sort views; the default User view renders rows.
+    # The card footer lives in the flat sort views; the default board renders it in its categories.
     visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
     assert_selector "a[href='#{url}']"
 
@@ -2091,7 +2085,7 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
       "github_pull_request_ci_statuses" => { urls[1] => "pass" }
     })
 
-    # The card footer lives in the flat sort views; the default User view renders rows.
+    # The card footer lives in the flat sort views; the default board renders it in its categories.
     visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
     assert_selector "[data-controller='dropdown'] button[title^='View all PRs']"
 

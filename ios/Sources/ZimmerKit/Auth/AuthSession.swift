@@ -73,7 +73,7 @@ public actor AuthSession {
     /// Finish a sign-in the sheet returned from.
     public func complete(_ flow: OAuthSignIn, callback: URL) async throws {
         let code = try flow.code(fromCallback: callback)
-        let tokens = try await exchange(flow.tokenRequest(code: code))
+        let tokens = try await exchange(flow.tokenRequest(code: code), origins: flow.origins)
         generation += 1
         refreshing = nil
         current = StoredSignIn(origins: flow.origins, tokens: tokens)
@@ -98,7 +98,7 @@ public actor AuthSession {
             signOutLocally()
             throw ZimmerError.unauthorized
         }
-        let task = Task { try await self.exchange(OAuthSignIn.refreshRequest(baseURL: signIn.origins.api, refreshToken: refreshToken)) }
+        let task = Task { try await self.exchange(OAuthSignIn.refreshRequest(baseURL: signIn.origins.api, refreshToken: refreshToken), origins: signIn.origins) }
         let started = generation
         refreshing = task
         defer { if generation == started { refreshing = nil } }
@@ -135,7 +135,8 @@ public actor AuthSession {
         store.save(nil)
     }
 
-    private func exchange(_ request: HTTPRequest) async throws -> OAuthTokens {
+    /// `origins` are the deployment's, so an edge refusal can say whether an app host was set.
+    private func exchange(_ request: HTTPRequest, origins: ServerOrigins) async throws -> OAuthTokens {
         var attempt = 0
         while true {
             var decorated = request
@@ -148,7 +149,7 @@ public actor AuthSession {
             }
             if EdgeRefusal.isEdgeRefusal(response) {
                 if attempt == 0, await edge.reauthenticate() { attempt += 1; continue }
-                throw ZimmerError.edgeRefused
+                throw ZimmerError.edgeRefusal(for: origins)
             }
             if EdgeRefusal.isEdgeNotRouted(response) { throw ZimmerError.edgeNotRouted(request.url.path) }
             switch response.statusCode {

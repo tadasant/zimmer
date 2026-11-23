@@ -31,21 +31,20 @@ dark mode, so the app's dark mode is built on the PWA's navy (the manifest's `#0
 the sign-in screen, empty states, the status summary's edge. Every token is in one file,
 `ios/App/Zimmer/Support/Theme.swift`. It is laid out the way the Motet app's design layer is.
 
-- **Lists sessions** in one of the web UI's five board views, from the view menu: *Your board v2*
-  (the default — see below), *Your board* (priority above spot, then precedence, then oldest
-  first — `Sessions::UserView`), *Last Touched*, *Created*, and *Ranked* (the same order as
-  *Priority* and *Spot queue* sections). The view you pick is remembered; until you pick one, the
-  app opens on Your board v2. The server orders each view
-  (`GET /api/v1/sessions?view=`), so the app shows the same sessions the web board does: the first
-  500 by Last Touched or Created, or the top 500 of Your board, Your board v2 and Ranked; when more
-  match, the list says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag handles on the spot queue; on
-  Your board, *Reorder Board* puts them on its spot rows. A drop tells the server the nearest spot
-  rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
+- **Lists sessions** in one of the web UI's four board views, from the view menu: *Your board*
+  (the default — see below), *Last Touched*, *Created*, and *Ranked* (priority above spot, then
+  precedence, then oldest first, as *Priority* and *Spot queue* sections). The view you pick is
+  remembered; until you pick one, the app opens on Your board, and so does a choice an older build
+  remembered as `user`, the board the dashboard drew before Your board was your categories. The
+  server orders each view (`GET /api/v1/sessions?view=`), so the app shows the same sessions the
+  web board does: the first 500 by Last Touched or Created, or the top 500 of Your board and
+  Ranked; when more match, the list says so. In Ranked, *Reorder Spot Queue* (view menu) puts drag
+  handles on the spot queue. A drop tells the server the nearest spot rows it landed between, as the web UI's drag-and-drop does, and the list is read again: a row
   dropped among the priority rows settles back into the spot block, since precedence cannot lift
   it out. Priority rows do not drag: the server places a drop by its spot neighbours only, so a
   priority row would lose its precedence. *Start Now*
   (press and hold a waiting session, or its session menu) takes its next turn now.
-- **[Your board v2](/sessions/board-v2/)** draws Last Touched's compact rows under your own
+- **[Your board](/sessions/board-v2/)** (`?view=board_v2`) draws Last Touched's compact rows under your own
   categories: *Uncategorized* first, then each category in your order, most recently touched first
   inside each. Tap a category's header to collapse or expand it (stored on the category, so the web
   tab agrees). Press and hold a row for **Move to Category** — the same write as the web tab's drag
@@ -66,22 +65,20 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
   together, worked out each time as the web does, so leaving Ranked is back to *Needs input*. With no status ticked the list is every status but Archived, where the web reads ticking
   nothing as everything. Board visibility is *On board* by default, like the web UI's board, with
   *Snoozed & hidden*, *Backlogged* and *All* in the view menu and the form; a row's menu and the session menu offer *Move to backlog* beside *Hide*. Pull to refresh. Rows sit on one surface with hairlines between them,
-  as the web board's Your board and Ranked rows do: the title on up to two lines, then one line
+  as the web board's Ranked rows do: the title on up to two lines, then one line
   with the status pill, a *Priority* tag, `#id`, a compact age ("41m", "3h"), the latest PR with
   its CI dot and a notes marker; then the web rows' facts on one quiet line — the agent root
-  (the card's, `_user_view_row`'s and `_ranked_row`'s), the genesis (the card's `genesis · class`
-  pill; the class is the *Priority* tag above), the precedence as "rank 50" (`_user_view_row`'s
-  `#N` and Ranked's rank; "rank", since `#` is the id) and a heart when the heartbeat is on (the
+  (the card's and `_ranked_row`'s), the genesis (the card's `genesis · class` pill; the class is
+  the *Priority* tag above), the precedence as "rank 50" (Ranked's rank; "rank", since `#` is the
+  id) and a heart when the heartbeat is on (the
   card's top-right heart), all off `session_json`; and a snoozed or hidden
   one adds when the snooze ends. A trashed session reads in the quieter ink and says when its restore window
   closes ("Expires Oct 16", from `trash_after`; "Deletion pending" once that date has passed), as
   the web page's "Expires 3 days from now" does, as a date. What is deleted then is what was held
-  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session. On *Your board*, as on the web
-  board's, each row also carries the session's "where things stand" as inline markdown on up to
-  three lines, then how current it is (*Up to date*, *Stale* with the messages since, or
-  *Regenerating*), when it was written, and the agent root, or the genesis where it has none
-  (`GET /api/v1/sessions?view=user&include=board_row`, and the same on search). A row an action
-  just answered keeps its summary until the next read; a server that sends no rows draws none.
+  for a restore — the preserved clone, the scratch directory, prompt attachments — not the session. Ranked and search read the
+  agent root from `include=board_row` where the session's own metadata has none. The board's rows
+  do not carry the status summary: as on the web board, "where things stand" is on the session's
+  page.
   Press and hold a row for the card's actions; *View PR* lists every PR the session opened, as
   the session menu does, where the row's line has room for the newest alone. On Ranked the long
   press also has the web row's ⋮ items *Promote to Priority* (which starts a waiting session; a
@@ -344,14 +341,11 @@ the sign-in screen, empty states, the status summary's edge. Every token is in o
 - **Forks at a message.** Touch and hold a message for *Fork from Here* (and *Copy*). After a
   confirmation, the fork's page opens on top at once, on the message it forks from; the fork, a
   new session holding the conversation up to that message, fills it in once the server has made it.
-- **Merges.** On a session whose newest PR is open with CI green, the web UI's row *Merge* button is
-  a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
+- **Merges.** On a session whose newest PR is open with CI green, *Merge* is a swipe right, a long-press item, and the first item in the session menu (*Merge #1261*). After a
   confirmation, the session is told it may merge (`POST /api/v1/sessions/:id/authorize_merge`). The
   tap is the sign-off, and it is recorded as your message. Only a sign-in that acts on your behalf
-  may give it; a relay-only one shows the server's refusal. The app does not show the web row's
-  *Merge sent* state: a second tap is answered "already authorized" and sends nothing.
-- **Reprioritizes** the board from the view menu in *Your board* and *Ranked*, after a confirmation:
-  the deployment's reprioritizing session re-ranks it and writes the order back.
+  may give it; a relay-only one shows the server's refusal. The app does not show a *Merge sent*
+  state: a second tap is answered "already authorized" and sends nothing.
 - **Trashes** a session as the web UI's Trash does: no question first, and an *Undo* on the board,
   shown for 30 seconds as the web UI shows it (`UNDO_ARCHIVE_WINDOW`), which restores the session
   — the row back as it read before the trash, at once. From the session's own page, the page
@@ -701,6 +695,15 @@ A deployment can serve the app from two origins:
   admits only the deployment's Google policy. There is no service token and no bypass.
 
 A deployment without an app host uses one origin for both, and there is no edge sign-in.
+
+The App host field sits under a collapsed row on the first sign-in and Add a deployment screens, so
+it is easy to leave empty on a deployment that needs one. The token call then goes to the web origin,
+where Access refuses it, for example with a 401 carrying `cf-access-aud`. With no app host there is
+no edge sign-in to redo, so a refused token or API call says the deployment likely needs an app host.
+After a first sign-in or add refused this way, the App host row opens, unfocused so the keyboard does
+not cover the message. The "sign in to the edge again" message is for a deployment that has an app host whose
+edge credential was refused. A deployment already on the phone can't take an app host in place; see
+[Limitations](/limitations/#an-ios-deployments-app-host-cant-be-added-after-the-fact).
 
 ## Signing in
 

@@ -21,10 +21,10 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     AppSetting.delete_all
   end
 
-  # The dashboard's default view is the User view, whose rows are not cards and
-  # carry their own id — see SessionsHelper#user_view_row_dom_id.
+  # The dashboard's default view is Your board, whose rows wrap a card and carry
+  # their own id — see SessionsHelper#board_v2_row_dom_id.
   def board_row(session)
-    "#user_view_row_#{session.id}"
+    "#board_v2_row_#{session.id}"
   end
 
   def make_session(title: "A session", **attrs)
@@ -353,12 +353,11 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
     end
   end
 
-  # The User view puts it on the row itself rather than behind a ⋮, because that
-  # view is the board somebody is actually tidying.
-  test "the User view row carries the control as a button of its own" do
+  # Your board's card carries the control, as every card does.
+  test "Your board's card carries the control" do
     session = make_session(title: "A session")
 
-    get dashboard_board_path, params: { view: SessionsController::VIEW_MODE_USER }
+    get dashboard_board_path, params: { view: SessionsController::VIEW_MODE_BOARD_V2 }
 
     assert_response :success
     assert_select "#{board_row(session)} [data-controller='visibility']", 1

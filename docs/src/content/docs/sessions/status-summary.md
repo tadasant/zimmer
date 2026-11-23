@@ -37,8 +37,8 @@ and specific. *"Merge PR #2825 or drop the `roles.zimmer` grant."* *"Resume it t
 When nothing is needed from them, it says so plainly — *"Nothing needed from you yet."* — rather than
 inventing a chore. The status description follows in one or two sentences.
 
-The order is for skimming. On [Your board](/sessions/user-view/) the blurb is clamped to three lines,
-so the sentence that decides whether a row needs you is the one that is always visible.
+The order is for skimming. A reader that cuts the blurb short, such as `get_user_view` with a low
+`summary_chars`, still keeps the sentence that decides whether a session needs you.
 
 The recommendation is the blurb's "does this need you" sentence, put first, so the budget counts it:
 at most three sentences in all, not four. Both prompts carry it as one shared constant,
@@ -84,18 +84,13 @@ Three kinds of link do most of the work:
 - **Another Zimmer session**, by its `/sessions/:id` URL.
 
 The blurb is markdown, and it is rendered as markdown wherever it is shown. The session page's
-Status panel renders it in full through the shared renderer. A row on
-[Your board](/sessions/user-view/) renders it inline through `ApplicationHelper#inline_markdown`, which is
-the same renderer narrowed to links, code, bold, italics and strikethrough. A paragraph
-break, heading, list or table is unwrapped to its text, and a code block keeps only its `<code>`, so
-none of them can break the row's layout. Both paths keep the
-renderer's [unsafe-link filtering](/sessions/transcripts/#how-a-messages-markdown-renders) and its `target="_blank"`, and the inline one runs a
-second sanitizer pass on top. No raw HTML or `javascript:` link survives either path. The board
-row uses the stored text, not `summary_markdown`, so a transcript-message link stays a full
-`/sessions/:id#message-N` URL. Its `#message-N` shorthand only works on the session's own page.
+Status panel renders it in full through the shared renderer, which keeps the renderer's
+[unsafe-link filtering](/sessions/transcripts/#how-a-messages-markdown-renders) and its
+`target="_blank"`. No raw HTML or `javascript:` link survives. The dashboard's board does not show
+the blurb (see [Limitations](/limitations/#the-web-board-has-no-merge-button-and-no-status-summary)).
 
 The [iOS app](/extend/ios-app/) reads the stored text too. Its session page draws it with the
-transcript's markdown renderer, a board row draws it as inline markdown, and CarPlay, which shows
+transcript's markdown renderer, and CarPlay, which shows
 and speaks it, reads only its words: a link is its text, without the URL.
 
 ## A description of state, never a plan
@@ -568,11 +563,8 @@ viewed.
 That count only advances on a *successful* generation. A generation that was merely requested, or one
 that failed, leaves it alone, so a failed attempt cannot make a stale summary look current.
 
-The same subtraction drives the freshness chip under each row on [Your board](/sessions/user-view/)
-(`SessionsHelper#status_summary_freshness`): **Regenerating** while a generation is `pending?`,
-otherwise **Stale** when any message has landed since and **Up to date** when none has. The age
-since `generated_at` is shown beside it for context; age never decides staleness. The chip is as
-of page load, because a finished generation re-renders the Status panel but not the board row.
+The same subtraction is the "messages since it was written" count `get_user_view` reports beside
+each row's summary. Age never decides staleness.
 
 ### `get_session` renders the duration next to the count, not just the count
 

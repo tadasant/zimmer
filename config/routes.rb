@@ -1,7 +1,7 @@
 Rails.application.routes.draw do
   namespace :supervisor do
     resources :account_rotation_events
-    # Your board v2's categories.
+    # Your board's categories.
     resources :board_categories
     # Read-only: both tables are measurements of API calls that already happened,
     # written from transcripts by the ingestion services. There is nothing to
@@ -364,7 +364,7 @@ Rails.application.routes.draw do
         post :failure, on: :collection
       end
 
-      # Your board v2's writes from the iOS app; see Api::V1::BoardCategoriesController.
+      # Your board's writes from the iOS app; see Api::V1::BoardCategoriesController.
       resources :board_categories, only: [ :update ] do
         member { patch :visibility }
       end
@@ -375,8 +375,6 @@ Rails.application.routes.draw do
           get :search
           post :refresh_all
           post :bulk_archive
-          # A person's call, from the iOS app only: see the action.
-          post :reprioritize
         end
 
         member do
@@ -845,7 +843,7 @@ Rails.application.routes.draw do
     query.present? ? "/?#{query}" : "/"
   }
 
-  # Your board v2's manually-managed categories. Presentation only: nothing here
+  # Your board's manually-managed categories. Presentation only: nothing here
   # touches scheduling. See BoardCategory.
   resources :board_categories, only: [ :create, :update, :destroy ] do
     collection { patch :reorder }
@@ -870,10 +868,6 @@ Rails.application.routes.draw do
       # WHEN a turn is asked for, this takes a worker thread off the turn that
       # most recently got one. See Sessions::ForceTurnStart.
       post :force_start
-      # The User view's Merge button. A human's click is the sign-off that lets
-      # the session holding the PR merge its own work — see
-      # Sessions::AuthorizeMerge.
-      post :authorize_merge
       post :touch_activity
       patch :update_title
       patch :update_notes
@@ -926,9 +920,6 @@ Rails.application.routes.draw do
       # matched before `sessions/:id` could take "starting" as a slug.
       get :starting
       post :bulk_archive
-      # The User view's Reprioritize button: hand the board to the deployment's
-      # durable reprioritizing session.
-      post :reprioritize
       post :refresh_all
       post :quick_prompt
       post :chat_bubble

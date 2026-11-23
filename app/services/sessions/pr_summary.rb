@@ -5,10 +5,10 @@ module Sessions
   #
   # Three parallel hashes on `custom_metadata` describe a session's PRs — the
   # urls, their lifecycle state, and the CI verdict on the open ones — and they
-  # are written by Github::PrStatusEvaluator. Four surfaces now ask the same
-  # question of them (the User view's row, the Merge button's guard, the merge
-  # authorization itself, and the `get_user_view` MCP tool), so the digging lives
-  # here rather than four times over.
+  # are written by Github::PrStatusEvaluator. Three surfaces ask the same
+  # question of them (the Merge button's guard, the merge authorization itself,
+  # and the `get_user_view` MCP tool), so the digging lives here rather than
+  # three times over.
   #
   # "The PR" is the LAST url in the list, which is the same PR
   # `_github_pr_link` calls primary and shows first: a session that opened a

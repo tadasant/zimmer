@@ -2,7 +2,7 @@
 
 module Mcp
   module Tools
-    # Your board v2's categories over MCP: everything the v2 tab lets a person do
+    # Your board's categories over MCP: everything the board lets a person do
     # to a category, and the drag that puts a session in one.
     #
     # Manual by construction. This tool moves a session into a category only
@@ -16,7 +16,7 @@ module Mcp
       ACTIONS = %w[list create rename delete reorder set_collapsed set_visibility assign].freeze
 
       description <<~DESC
-        Manage the categories on the Zimmer dashboard's **Your board v2** tab (`/?view=board_v2`) — flat groups the human makes and drags sessions into by hand. Inside each category the board shows the most recently touched session first.
+        Manage the categories on the Zimmer dashboard's **Your board** (`/?view=board_v2`) — flat groups the human makes and drags sessions into by hand. Inside each category the board shows the most recently touched session first.
 
         **Actions** (`action`):
         - `list` — every category in board order, with its id, collapsed state, visibility and how many unarchived sessions it holds.
@@ -25,7 +25,7 @@ module Mcp
         - `delete` — `category_id`. Its sessions move to Uncategorized; no session is touched otherwise.
         - `reorder` — `category_ids`, top first. Categories you leave out keep their order, below the listed ones.
         - `set_collapsed` — `category_id`, `collapsed` (boolean). Collapsed shows the header only.
-        - `set_visibility` — `category_id`, `visibility`: `snoozed` (with `snoozed_until` as a naive local datetime like "2026-09-05T09:00:00" plus an IANA `timezone`), `backlogged`, or `visible` to put it back. The category and every session in it leave Your board v2 until then. **Presentation only:** no session's own visibility, status or scheduling changes, and the original Your board is unaffected.
+        - `set_visibility` — `category_id`, `visibility`: `snoozed` (with `snoozed_until` as a naive local datetime like "2026-09-05T09:00:00" plus an IANA `timezone`), `backlogged`, or `visible` to put it back. The category and every session in it leave Your board until then. **Presentation only:** no session's own visibility, status or scheduling changes, and the original Your board is unaffected.
         - `assign` — `session_id` and `category_id` (omit or null for Uncategorized). Only when a human asked for it: categories are deliberately manual, so never sort sessions into categories on your own initiative.
       DESC
 
@@ -66,7 +66,7 @@ module Mcp
         # and status-summary forks are never on a board.
         counts = Session.excluding_status_summary_forks.where.not(status: :archived)
           .where(board_category_id: categories.map(&:id)).group(:board_category_id).count
-        lines = [ "## Your board v2 categories (top first)", "" ]
+        lines = [ "## Your board categories (top first)", "" ]
         categories.each_with_index do |category, index|
           state = [ ("collapsed" if category.collapsed), category.visibility_summary ].compact
           lines << "#{index + 1}. **#{category.name}** (id #{category.id}) — #{counts.fetch(category.id, 0)} unarchived session(s)" \
@@ -77,7 +77,7 @@ module Mcp
 
       def do_create(args)
         category = BoardCategory.create!(name: require_arg(args, "name"))
-        "Created category **#{category.name}** (id #{category.id}), at the bottom of Your board v2."
+        "Created category **#{category.name}** (id #{category.id}), at the bottom of Your board."
       end
 
       def do_rename(args)
@@ -117,7 +117,7 @@ module Mcp
           snoozed_until: args["snoozed_until"],
           timezone: args["timezone"].presence || "UTC"
         )
-        summary = category.visibility_summary || "Back on Your board v2"
+        summary = category.visibility_summary || "Back on Your board"
         "**#{category.name}**: #{summary}. Nothing about when its sessions run has changed."
       end
 

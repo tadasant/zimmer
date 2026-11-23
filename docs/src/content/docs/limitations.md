@@ -286,6 +286,15 @@ stop until it is opened again.
 A push also reaches the phone only from a deployment whose APNs key belongs to the team that signs
 the app. Every deployment the app adds must be configured with such a key, or it sends nothing.
 
+### An iOS deployment's app host can't be added after the fact
+
+The iOS app matches a deployment by its server address alone. Adding a server that is already on the
+phone switches to it, keeping the addresses it was added with. So a deployment added without an app
+host, whose web origin later goes behind Cloudflare Access, keeps showing "It likely needs an app
+host". The only way to give it one is to remove it and add it again with the App host filled in,
+which drops its drafts and settings on the phone. A first add that is refused this way is never put
+on the list, so trying again with the App host works.
+
 ### An iOS build older than the backlog reads a backlogged session as on the board
 
 The iOS app decodes a board-visibility value it does not know as `visible`. A build installed before
@@ -320,11 +329,11 @@ if the action ran and the page still did not open, a second tap changes nothing 
 Most other taps in the suite have one try, so the same loss there still fails its test, and a page
 that never appeared behind a tap that succeeded means a re-run first.
 
-### Merge's and Reprioritize's confirmations in the iOS UI tests are tapped again if they stay up
+### Merge's confirmation in the iOS UI tests is tapped again if it stays up
 
 A tap on a confirmation dialog's button can be lost too. On
 [run 44930302886](https://github.com/tadasant/zimmer/actions/runs/44930302886) (photos shard),
-XCUITest found the board's "Authorize the merge?" dialog, synthesised the tap on Merge #1261, and the
+XCUITest found the app's "Authorize the merge?" dialog, synthesised the tap on Merge #1261, and the
 dialog was still on screen 20 seconds later with nothing in the toast log, so the button's action
 never ran. Why the tap was lost is not known. `confirmInDialog` in
 `ios/App/ZimmerUITests/ConfirmationDialog.swift` taps again after 5 seconds, three taps at most,
@@ -345,6 +354,19 @@ was loaded. Why the press was lost is not known. `pressForMenuInPlace` in
 the link-menu tests in `TranscriptParityUITests` and `InAppLinksUITests` use it. Other long presses that open a menu in
 place still have one try, so the same loss there still fails its test, and a menu that never came
 behind a press that succeeded means a re-run first.
+
+### A wait in the iOS UI tests slows the app it waits on
+
+`waitForExistence` queries the app's accessibility tree again and again until it finds its element,
+and the app's own timers run late while a query is answered. On a loaded runner one query can take
+seconds. On [run 45092022457](https://github.com/tadasant/zimmer/actions/runs/45092022457) (board
+shard), queries in `test_a_flap_lands_once_for_the_last_disconnect` averaged 2.3 seconds, against
+0.7 to 1.3 on most runs, and the phone landed on the call about two seconds after the 20-second wait
+ran out. So in `LiveHandoverUITests`, the tests that wait out a car script with the app in front and
+nothing to do in it leave it alone until the landing is due (`letTheScriptPlay`), and only then look. The script also times every move from
+launch, so one late move does not push back the rest. Other tests that wait on an app timer still
+query throughout, so a timeout there with slow queries in the log can mean the app was late only
+because it was being asked.
 
 ### Dragging the iOS trigger form back up can stall
 
@@ -426,7 +448,7 @@ only by that agent's judgement. Two things are closed on the way: `action_live_s
 `direct_servers_enabled`, and both `quick_router` and `follow_up` refuse the
 `[HUMAN-AUTHORIZED MERGE]` marker. A merge described in words rather than marked is not caught
 there. What counts as a human's merge approval is still the HumanMessage only `authorize_merge`
-and the Merge button write. `PATCH /api/v1/live/settings` takes the fleet's shared API key, so the
+and the iOS app's Merge write. `PATCH /api/v1/live/settings` takes the fleet's shared API key, so the
 setting is a person's by convention there, not by enforcement.
 
 `LiveModeActionSession` acts on any session id it is given. "Sessions the assistant already knows
@@ -5307,6 +5329,16 @@ next call does.
 
 ---
 
+### A watcher armed on a session whose turn is still queued does not sleep it
+
+A wake armed while a worker holds the session's turn is marked, and a turn that ends unmarked sleeps on
+any one-time schedule still armed. Between the two is a turn handed over but not yet on a worker: a
+`wake_me_up_when_session_changes_state` watcher armed on that session by somebody else, with no
+`wake_me_up_later` beside it, marks nothing, and the turn that follows ends in `needs_input` with the
+watcher armed. The watcher still resumes it. Pairing a watcher with a deadline avoids it.
+
+---
+
 ### A hand-back is answered by a human message, not by the turn that delivers it
 
 A `rest_in_needs_input` hand-back is released when a `HumanMessage` with an `occurred_at` after
@@ -6530,16 +6562,16 @@ Open issues:
 
 Also:
 
-- **[Your board v2](/sessions/board-v2/) does not follow sessions live.** A session that comes to
-  rest, or one you put in a category from another tab or over MCP, shows up on v2 at the next reload
+- **[Your board](/sessions/board-v2/) does not follow sessions live.** A session that comes to
+  rest, or one you put in a category from another tab or over MCP, shows up on the board at the next reload
   (or when a phone wakes the page). Trash, Snooze and Undo on a card update it in place. Its category
   Snooze, Rename, Create and Delete reload the board. **Uncategorized** cannot be collapsed or
   reordered: it is always the first group. It is not paginated: it draws up to 500 Last Touched cards in one
   page, where Last Touched itself pages at 50, so a very large board is a heavy page.
 
-- **On the [iOS app](/extend/ios-app/), [Your board v2](/sessions/board-v2/) manages only placement.**
+- **On the [iOS app](/extend/ios-app/), [Your board](/sessions/board-v2/) manages only placement.**
   A phone moves sessions between categories, collapses and wakes them; creating, renaming,
-  deleting, reordering, snoozing and backlogging categories are on the web tab and MCP. A collapse
+  deleting, reordering, snoozing and backlogging categories are on the web board and MCP. A collapse
   tapped while a board read is already out can show the old state until the next read, about 15
   seconds later.
 
@@ -6559,11 +6591,6 @@ Also:
   one is narrower than it looks, too: **Start now** resumes a spot-queue park but *refuses* a session
   asleep on a wall-clock wake (`Sessions::StartNow` treats an armed wake as outranking the queue),
   and **Restart** is offered only for a `failed` or `needs_input` session, which a sleeping (`waiting`) one is not. The route that works is cancelling the wake at **/triggers**; a **follow-up** sent from the session page is delivered but leaves the wake armed, so it adds to the wait rather than ending it.
-- **A board row's status summary and its freshness chip are as of page load.** When a summary
-  finishes generating, `SessionStatusSummary` re-renders the session's Status panel and nothing
-  else, so on [Your board](/sessions/user-view/) a row keeps its old text and its **Regenerating**
-  or **Stale** chip until you reload. A failed regeneration is not shown on the row at all; the
-  Status panel is where it says so.
 - **Live card updates ignore the status filter.** The dashboard broadcasts on one global stream and
   the server cannot know which statuses a given browser has ticked, so it only special-cases
   `archived`. With the default `needs_input`-only view, a session that transitions out of
@@ -9085,26 +9112,23 @@ small and short-lived where the held pile was neither — but the general form o
 [#1103](https://github.com/tadasant/zimmer/issues/1103), "a session that has never taken a turn
 should perhaps not hold a WIP slot at all, whatever the reason", is not closed.
 
-## The User view's board does not update itself
+## The web board has no Merge button and no status summary
 
-The [User view](/sessions/user-view/) is server-rendered on load and stays that way. A row's status
-pill does not follow the session live, and a session that becomes eligible for the board while you
-are looking at it does not appear until you reload. The [Ranked view](/sessions/spot-and-priority/#the-ranked-view)
-does both, over `Session::RANKED_STREAM`, and the User view deliberately did not take that on in its
-first pass — live membership on a filtered board is a whole mechanism (the envelope, the held
-deliveries, the reconnect backfill), and the actions this view exists for do not need it.
+The web UI has no **Merge** button. A person authorizes a merge from the [iOS app](/extend/ios-app/)
+(`POST /api/v1/sessions/:id/authorize_merge`) or by voice in [Live Mode](/sessions/live/), and
+nowhere else (see [Authorizing a merge](/sessions/hierarchy-and-human-messages/#authorizing-a-merge)).
+From a browser alone, you cannot sign off a merge.
 
-What *is* immediate is everything the operator does themselves: Trash removes the row over the
-turbo stream `#archive` already answers with, Snooze removes it through the shared visibility
-controller, Merge re-renders its own button, and a drag re-sorts and persists without a reload. So
-the board thins out as you work it, and goes stale only about things you did not do.
-
-The one place that shows is the **Reprioritize** button: the reordering session writes the new order
-and you have to reload to see it. The button says so.
+[Your board](/sessions/board-v2/) draws every session as a Last Touched card, so it does not show a
+session's [status summary](/sessions/status-summary/), the summary's freshness, the CarPlay-fit chip
+or the precedence. To read where a session stands you open it: the summary is in the session page's
+Status panel, and the CarPlay-fit control is in its header. `get_user_view` still returns the
+summary, the CarPlay fit and the PR's mergeability on every row, so an agent reading the board sees
+more than the board shows.
 
 ## Turning CarPlay-ok off does not stick
 
-The car icon on the [User view](/sessions/user-view/) row and the session page clears the mark when
+The car icon on the session page clears the mark when
 you turn it off, rather than writing laptop-only. A cleared mark is untagged, so the next time the
 session comes to rest Zimmer derives a fresh `auto` mark, and if that says CarPlay-ok the icon is on
 again. The only lasting "no" is *Laptop only* behind the chevron. See [CarPlay fit](/sessions/carplay-fit/).
@@ -9112,15 +9136,9 @@ again. The only lasting "no" is *Laptop only* behind the chevron. See [CarPlay f
 ## The board arrives in one piece, after the shell
 
 The dashboard's shell paints first and the board follows in its own request
-([how the page loads](/sessions/user-view/#how-the-page-loads)), but the board itself is still one
-response. Every row arrives at once, not the cheap parts first. At a few hundred User-view rows that
-response is roughly half a second of server rendering and a few megabytes of uncompressed HTML,
-nearly all of it markup that repeats on every row (the Snooze popover alone is about 5KB a row). A
-board near the 500-row cap pays that in full.
-
-Streaming the rows in batches was left out on purpose. The User view's drag-to-reorder needs every
-row inside one list before a drag means anything, and a partly loaded list would let you drop a row
-above one that has not arrived yet.
+([how the page loads](/sessions/board-v2/#how-the-page-loads)), but the board itself is still one
+response. Every card arrives at once, not the cheap parts first, and most of the HTML is markup that
+repeats on every card. A board near the 500-card cap pays for all of it before anything shows.
 
 Opening the dashboard again from another page shows Turbo's cached copy of the old board for a
 moment, then the placeholder rows, then the fresh board.
@@ -9366,13 +9384,24 @@ The [Costs](/operate/operating-costs/) page is honest about what it knows and no
 `TranscriptArchiveJob` stops between sessions once its ten-minute `RUN_DEADLINE` has passed
 ([#1264](https://github.com/tadasant/zimmer/issues/1264)). The check runs only between sessions, so
 it bounds a run that is slow, not one that is stuck. Three things are outside it: the session in
-flight, the final write of the archive (one sequential copy of `latest.zip`, which grows with the
+flight, the merge (one sequential copy of `latest.zip`, which grows with the
 corpus), and any call that blocks forever, such as a wedged disk read or a lock that never comes
 back. If a run does hang there, it still holds the `SingletonSweep` slot until the worker container
 is replaced. Every deploy replaces it, but nothing in the app can. CronFreshness still pages when
 that happens, which is the intended signal. Killing a thread from inside the job is not a safe
 alternative, because an interrupted write is exactly what the temp sweep and the atomic rename are
 there to survive, not something to cause on purpose.
+
+A merge of an archive over 1 GiB runs every 30 minutes, so `latest.zip` can be up to about 40
+minutes behind what the job has already staged. Nothing shows the staged count on its own:
+`deferred_count` is as of the last merge. A staged file that will not parse is discarded and its
+session read again. An unparseable `latest.zip` is kept as `latest.unreadable.zip`, which nothing
+deletes; a second one, while the first is still there, stops the job.
+
+The per-environment directory protects the archive from a development server running current code. A
+clone made before that change, a server started with `RAILS_ENV=production`, or one that inherits
+`AGENT_TRANSCRIPT_ARCHIVE_DIR` still resolves production's directory. The archive is rebuilt from the
+database if that happens, over about a day.
 
 ## Root data isolation is a scoping boundary, not an authorization one
 
@@ -9763,7 +9792,7 @@ run on a device or in the Simulator.
 ## The card grid's live filtering is approximate at the edges
 
 The dashboard's card views drop and add cards live as sessions move across the page's filters
-(see [The card views follow their filters live](/sessions/user-view/#the-card-views-follow-their-filters-live)).
+(see [The card views follow their filters live](/sessions/board-v2/#the-card-views-follow-their-filters-live)).
 A reload is always exact. The live page can be off in these places:
 
 - **Only the first page inserts, and a text search inserts nothing.** A session that starts

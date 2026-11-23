@@ -69,7 +69,7 @@ final class ZimmerHTTPClientTests: XCTestCase {
 
     func testAnEdgeRefusalIsNotMistakenForASignOut() async throws {
         let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
-        let store = Fixtures.signedIn()
+        let store = Fixtures.signedIn(origins: Fixtures.split)
         let auth = AuthSession(store: store, transport: transport)
         let client = ZimmerHTTPClient(auth: auth, transport: transport)
 
@@ -81,6 +81,49 @@ final class ZimmerHTTPClientTests: XCTestCase {
         }
         XCTAssertEqual(transport.sent.count, 1, "no token refresh for a refusal Zimmer never saw")
         XCTAssertNotNil(store.load())
+    }
+
+    func testAnEdgeRefusalOfTheWebOriginWithNoAppHostAsksForTheAppHost() async throws {
+        let transport = ScriptedTransport([{ _ in Fixtures.accessRefusal }])
+        let store = Fixtures.signedIn()
+        let auth = AuthSession(store: store, transport: transport)
+        let client = ZimmerHTTPClient(auth: auth, transport: transport)
+
+        do {
+            _ = try await client.sessions(.active)
+            XCTFail("expected edgeNeedsAppHost")
+        } catch {
+            XCTAssertEqual(error as? ZimmerError, .edgeNeedsAppHost)
+        }
+        XCTAssertEqual(transport.sent.count, 1, "no token refresh for a refusal Zimmer never saw")
+        XCTAssertNotNil(store.load())
+    }
+
+    func testARedirectOrA403FromTheEdgeWithNoAppHostAsksForTheAppHost() async throws {
+        let page403 = HTTPResponse(statusCode: 403, headers: ["cf-access-aud": "x", "content-type": "text/html"])
+        for refusal in [Fixtures.accessRedirect, page403] {
+            let transport = ScriptedTransport([{ _ in refusal }])
+            let client = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
+            do {
+                _ = try await client.sessions(.active)
+                XCTFail("expected edgeNeedsAppHost for \(refusal.statusCode)")
+            } catch {
+                XCTAssertEqual(error as? ZimmerError, .edgeNeedsAppHost)
+            }
+        }
+    }
+
+    func testTheEdgeRefusalClassification() {
+        XCTAssertEqual(ZimmerError.edgeRefusal(for: ServerOrigins(web: Fixtures.base)), .edgeNeedsAppHost)
+        XCTAssertEqual(ZimmerError.edgeRefusal(for: Fixtures.split), .edgeRefused)
+        XCTAssertEqual(ZimmerError.edgeRefusal(for: nil), .edgeRefused, "with no addresses to go on, the edge's own advice")
+        let sameAddressTwice = try? ServerOrigins.parse(web: "https://zimmer.example.test", api: "https://zimmer.example.test/").get()
+        XCTAssertEqual(ZimmerError.edgeRefusal(for: sameAddressTwice), .edgeNeedsAppHost, "an app host equal to the server is no app host")
+        XCTAssertTrue(ZimmerError.edgeRefused.isEdgeRefusal)
+        XCTAssertTrue(ZimmerError.edgeNeedsAppHost.isEdgeRefusal)
+        XCTAssertFalse(ZimmerError.unauthorized.isEdgeRefusal)
+        XCTAssertTrue(ZimmerError.edgeNeedsAppHost.userMessage.contains("App host"))
+        XCTAssertFalse(ZimmerError.edgeRefused.userMessage.contains("App host"), "the real edge refusal keeps its own advice")
     }
 
     func testTheEdgeCredentialDecoratesEveryRequestAndGetsOneChanceToRenew() async throws {

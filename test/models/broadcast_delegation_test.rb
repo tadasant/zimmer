@@ -151,7 +151,7 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     )
   end
 
-  test "broadcast_remove_from_sessions_index removes the card, and Your board v2's wrapper, from the index stream" do
+  test "broadcast_remove_from_sessions_index removes the card, and Your board's wrapper, from the index stream" do
     captured = capture_turbo_broadcasts { @session.send(:broadcast_remove_from_sessions_index) }
 
     assert_equal [

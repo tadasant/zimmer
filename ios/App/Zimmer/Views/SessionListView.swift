@@ -1,7 +1,7 @@
 import SwiftUI
 import ZimmerKit
 
-/// Sessions, in one of the web UI's board views (Your board v2 by default), filtered by status and by board
+/// Sessions, in one of the web UI's board views (Your board by default), filtered by status and by board
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
 /// trash or snooze; press and hold for everything else the web UI's card and its row menu
@@ -13,7 +13,6 @@ struct SessionListView: View {
     @State private var snoozing: SessionSummary?
     /// A row whose PR is about to be authorized to merge, waiting on the confirmation.
     @State private var merging: SessionSummary?
-    @State private var confirmingReprioritize = false
     /// A row's *Custom…* snooze, open in its sheet.
     @State private var customSnoozing: SessionSummary?
     @State private var renaming: SessionSummary?
@@ -213,15 +212,14 @@ struct SessionListView: View {
     /// Select or Reorder, as the board's poller has to know: `.active` only.
     private var isSelectingOrReordering: Bool { editMode == .active }
 
-    /// Drag handles while reordering: on Your board, its spot rows; on Ranked, the spot queue.
+    /// Drag handles while reordering: on Ranked, the spot queue.
     private func moveHandler(for section: BoardSection) -> ((IndexSet, Int) -> Void)? {
-        guard reordering, model.view == .yourBoard || section.title == "Spot queue" else { return nil }
+        guard reordering, section.title == "Spot queue" else { return nil }
         return { source, destination in drop(section.sessions, from: source, to: destination) }
     }
 
     /// A drop: the rows stay where it left them while the server is told the rows of the same
-    /// class it landed between and works out the precedence, as the web UI's Your board and
-    /// Ranked views do.
+    /// class it landed between and works out the precedence, as the web UI's Ranked view does.
     private func drop(_ rows: [SessionSummary], from source: IndexSet, to destination: Int) {
         var moved = rows
         moved.move(fromOffsets: source, toOffset: destination)
@@ -329,19 +327,12 @@ struct SessionListView: View {
                     } label: {
                         Label("Select Sessions", systemImage: "checkmark.circle")
                     }
-                    if model.view == .yourBoard || model.view == .ranked {
-                        Button {
-                            confirmingReprioritize = true
-                        } label: {
-                            Label("Reprioritize", systemImage: "list.number")
-                        }
-                    }
                     if model.view.isReorderable {
                         Button {
                             reordering = true
                             editMode = .active
                         } label: {
-                            Label(model.view == .ranked ? "Reorder Spot Queue" : "Reorder Board", systemImage: "arrow.up.arrow.down")
+                            Label("Reorder Spot Queue", systemImage: "arrow.up.arrow.down")
                         }
                         .accessibilityIdentifier("ranked.reorder")
                     }
@@ -371,8 +362,8 @@ struct SessionListView: View {
         Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } })
     }
 
-    /// The prompting list with Merge's and Reprioritize's confirmations: a separate expression,
-    /// because one modifier chain holding every dialog is more than the type checker will take.
+    /// The prompting list with Merge's confirmation: a separate expression, because one
+    /// modifier chain holding every dialog is more than the type checker will take.
     private var listWithDecisions: some View {
         promptingList
             .confirmationDialog(
@@ -384,11 +375,6 @@ struct SessionListView: View {
                 }
             } message: { session in
                 Text("Session #\(session.id) is told to check for conflicts, merge \(session.mergeablePullRequest?.label ?? "its PR"), and archive itself. Your tap is the sign-off.")
-            }
-            .confirmationDialog("Reprioritize the board?", isPresented: $confirmingReprioritize, titleVisibility: .visible) {
-                Button("Reprioritize") { Task { await model.reprioritize() } }
-            } message: {
-                Text("Zimmer's reprioritizing session re-ranks this board and writes the order back. You can still drag anything afterwards.")
             }
     }
 
@@ -448,10 +434,10 @@ private struct SwipeableSessionRow: View {
 
     var body: some View {
         NavigationLink(value: session.id) {
-            SessionRow(session: session, showsSummary: model.view == .yourBoard && session.boardRow != nil)
+            SessionRow(session: session)
         }
-        // Rows share one surface with hairlines between them, as the web UI's Your board and
-        // Ranked views draw theirs: a card per row spent a third of the screen on margins.
+        // Rows share one surface with hairlines between them, as the web UI's Ranked view
+        // draws its: a card per row spent a third of the screen on margins.
         .themeRows()
         // 20 leading, where the section headers' text sits, so titles line up under them.
         .listRowInsets(EdgeInsets(top: 9, leading: 20, bottom: 9, trailing: 10))
@@ -501,7 +487,7 @@ private struct SwipeableSessionRow: View {
     }
 }
 
-/// A Your board v2 category's header: its name and how many sessions it holds, and a tap
+/// A Your board category's header: its name and how many sessions it holds, and a tap
 /// that collapses it to the header or opens it again, as the web board's chevron does.
 private struct CategoryHeader: View {
     @EnvironmentObject private var model: AppModel
@@ -532,7 +518,7 @@ private struct CategoryHeader: View {
     }
 }
 
-/// A snoozed or backlogged Your board v2 category in the tray at the board's foot: why it is
+/// A snoozed or backlogged Your board category in the tray at the board's foot: why it is
 /// away, how many sessions went with it, and *Wake*, as the web board's tray offers.
 private struct TuckedCategoryRow: View {
     @EnvironmentObject private var model: AppModel
@@ -634,7 +620,7 @@ private struct SessionContextMenu: View {
                 Label("View PR (\(session.pullRequests.count))", systemImage: "arrow.triangle.pull")
             }
         }
-        // Your board v2's drag into a category, as a menu: every category on the board, and
+        // Your board's drag into a category, as a menu: every category on the board, and
         // Uncategorized, with the one the session is in ticked.
         if model.view == .boardV2, session.status != .archived {
             Menu {
@@ -794,8 +780,6 @@ private struct FilterSummary: View {
 /// without a heavier face.
 struct SessionRow: View {
     let session: SessionSummary
-    /// Your board's rows carry the session's "where things stand", as the web UI's do.
-    var showsSummary = false
 
     var body: some View {
         let quiet = session.status == .archived
@@ -853,18 +837,14 @@ struct SessionRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.inkMute)
             }
-            if showsSummary {
-                RowSummary(session: session)
-            }
         }
         .accessibilityElement(children: .combine)
     }
 }
 
-/// The web rows' facts, on one quiet line: the agent root (`_session_card`, `_user_view_row`,
-/// `_ranked_row`), the genesis (the card's `genesis · class` pill; the class is the Priority
-/// tag above), the precedence (`_user_view_row`'s `#N`, Ranked's rank) and the heart when the
-/// heartbeat is on (the card's top-right heart). Nothing when there is nothing to say.
+/// The web rows' facts, on one quiet line: the agent root (`_session_card`, `_ranked_row`),
+/// the genesis (the card's `genesis · class` pill; the class is the Priority tag above), the
+/// precedence (Ranked's rank) and the heart when the heartbeat is on (the card's top-right heart). Nothing when there is nothing to say.
 private struct RowFacts: View {
     let session: SessionSummary
 
@@ -900,60 +880,6 @@ private struct RowFacts: View {
             }
             .font(.caption2.weight(.medium).monospacedDigit())
             .foregroundStyle(Theme.inkMute)
-        }
-    }
-}
-
-/// Your board's summary under a row, as the web UI draws it: the cached "where things stand"
-/// as inline markdown on three lines at most, then how current it is. The agent root is on
-/// the row's facts line, as on every view.
-private struct RowSummary: View {
-    let session: SessionSummary
-
-    var body: some View {
-        let summary = session.boardRow?.statusSummary
-        VStack(alignment: .leading, spacing: 3) {
-            if let summary, let text = summary.summary, !text.isEmpty {
-                // Links read as text: the row is one tap target, and opens the session, whose
-                // copy of the summary has working links.
-                Text(MarkdownInline.attributed(text))
-                    .font(.caption)
-                    .foregroundStyle(Theme.inkSoft)
-                    .tint(Theme.inkSoft)
-                    .lineLimit(3)
-            } else {
-                Text("No status summary yet.")
-                    .font(.caption.italic())
-                    .foregroundStyle(Theme.inkMute)
-            }
-            if let summary, summary.summary?.isEmpty == false {
-                let freshness = SummaryFreshness(summary)
-                HStack(spacing: 5) {
-                    HStack(spacing: 3) {
-                        Circle().fill(Self.color(freshness)).frame(width: 5, height: 5)
-                        Text(freshness.label).foregroundStyle(Self.color(freshness))
-                    }
-                    if let behind = summary.messagesSinceGenerated, behind > 0 {
-                        Text(behind == 1 ? "1 message since" : "\(behind) messages since")
-                    }
-                    if let written = summary.generatedAt {
-                        let age = Format.age(written)
-                        Text(verbatim: age == "now" ? "written just now" : "written \(age) ago")
-                    }
-                }
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(Theme.inkMute)
-                .lineLimit(1)
-            }
-        }
-        .padding(.top, 1)
-    }
-
-    static func color(_ freshness: SummaryFreshness) -> Color {
-        switch freshness {
-        case .regenerating: return Theme.accent
-        case .stale: return Theme.warning
-        case .current: return Theme.success
         }
     }
 }

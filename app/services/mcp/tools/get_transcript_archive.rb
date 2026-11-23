@@ -27,7 +27,7 @@ module Mcp
 
         **Not the way to read one session's transcript.** This returns no transcript content, only a URL to a zip of every transcript, which a caller without shell access cannot use. To read one session, call `get_session` with a `transcript_*` slice parameter — for example `transcript_conversation_only: true, transcript_tail: 20` — which returns a bounded, pageable slice.
 
-        **Not the way to find a session by something said in it.** The archive is hundreds of megabytes and up to ten minutes stale. Use `quick_search_sessions` with `search_contents: true`, which searches transcript text server-side.
+        **Not the way to find a session by something said in it.** The archive is many gigabytes on a busy deployment and up to about forty minutes stale. Use `quick_search_sessions` with `search_contents: true`, which searches transcript text server-side.
       DESC
 
       input_schema({

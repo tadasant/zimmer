@@ -2,7 +2,7 @@
 
 # What a `visibility` + `snoozed_until` pair MEANS right now, for any record that
 # carries the two columns: a Session (through SessionVisibility, which adds the
-# SQL scopes and the validation) and a BoardCategory (Your board v2, where a
+# SQL scopes and the validation) and a BoardCategory (Your board, where a
 # whole category is snoozed or backlogged as a unit).
 #
 # Pure reads over the two attributes. Like the rest of board visibility, nothing

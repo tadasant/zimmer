@@ -59,9 +59,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Create enough sessions to require pagination
     55.times { |i| Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Test session #{i}") }
 
-    # The paginated card grid lives in the two flat sort views now; the User view
-    # is deliberately unpaginated (a drag between two rows means nothing if one of
-    # them is on another page).
+    # The paginated card grid lives in the two flat sort views; Your board is
+    # deliberately unpaginated (a category is only worth reading whole).
     get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 
@@ -123,7 +122,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Should find sessions with "Alpha" in title
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 2
   end
 
   test "should search sessions by metadata" do
@@ -142,7 +141,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
 
     # Should find session with matching metadata
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
   end
 
   test "should search transcript content when search_contents is enabled" do
@@ -160,12 +159,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Without search_contents, should not find by transcript
     get dashboard_board_url(every_status_params(q: "unique content", search_contents: "0"))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 0
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 0
 
     # With search_contents, should find by transcript
     get dashboard_board_url(every_status_params(q: "unique content", search_contents: "1"))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
     # A bounded scan owes the reader the difference between "no matches" and
     # "I stopped looking" — see SessionContentSearch.
     assert_match(/Transcript scan complete/, response.body)
@@ -173,7 +172,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # The REST API's spelling works here too, so a URL copied either way behaves the same.
     get dashboard_board_url(every_status_params(q: "unique content", search_contents: "true"))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
   end
 
   test "the content scan runs after the agent-root and genesis filters, not before" do
@@ -194,7 +193,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get dashboard_board_url(every_status_params(q: "unique content", search_contents: "1", genesis: "web_ui"))
     assert_response :success
 
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
     assert_match(/the one session\s+matching these filters was searched/, response.body)
   end
 
@@ -225,17 +224,17 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # Ticking nothing means every status, so a search spans both.
     get dashboard_board_url(every_status_params(q: "Test"))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 2
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 2
 
     # Naming one status narrows the same search to it.
     get dashboard_board_url(every_status_params(q: "Test", status: [ "waiting" ]))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
 
     # And naming archived is how the trash is searched.
     get dashboard_board_url(every_status_params(q: "Test", status: [ "archived" ]))
     assert_response :success
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 1
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 1
   end
 
   test "should display search query in form" do
@@ -247,11 +246,11 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
   test "should show empty state when no search results" do
     get dashboard_board_url(q: "nonexistent12345")
     assert_response :success
-    # The User view keeps its list in the DOM whether or not it has rows — that is
-    # where an undone Trash puts a row back — so its own placeholder is the empty
+    # The board keeps its lists in the DOM whether or not they have rows — that
+    # is where an undone Trash puts a row back — so its own line is the empty
     # state, not the page-level one.
-    assert_select "#user_view_list li[id^='user_view_row_']", count: 0
-    assert_select "[data-user-view-target='empty']", text: /No sessions match these filters/
+    assert_select "#board_v2 [id^='board_v2_row_']", count: 0
+    assert_select "[data-board-v2-no-match]", text: /No sessions match these filters/
   end
 
   # Test new action
@@ -1777,9 +1776,12 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     # "text|action|id" is how the archive notice attaches its Undo button. A
     # message whose own prose contains a pipe must not be parsed as one — the
     # third field has to look like an id, and "Research" does not.
-    Sessions::DashboardReprioritizer.stubs(:call).raises(RuntimeError, "Design|Research|blew up")
+    session = sessions(:running)
+    session.update_columns(metadata: (session.metadata || {}).merge("process_pid" => 999_999))
+    SessionsController.any_instance.stubs(:wait_for_pending_message_delivery)
+    ProcessLifecycleManager.stubs(:new).raises(RuntimeError, "Design|Research|blew up")
 
-    post reprioritize_sessions_url, as: :turbo_stream
+    post pause_session_url(session), as: :turbo_stream
 
     assert_response :success
     assert_match(/Design\|Research\|blew up/, response.body)
@@ -7431,8 +7433,8 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get dashboard_board_url
     assert_response :success
 
-    assert_select "#user_view_row_#{active.id}"
-    assert_select "#user_view_row_#{archived.id}", count: 0
+    assert_select "#board_v2_row_#{active.id}"
+    assert_select "#board_v2_row_#{archived.id}", count: 0
   end
 
   test "index shows archived sessions when the status filter selects them" do
@@ -7441,7 +7443,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     get dashboard_board_url(every_status_params(status: [ "archived" ]))
     assert_response :success
 
-    assert_select "#user_view_row_#{archived.id}"
+    assert_select "#board_v2_row_#{archived.id}"
   end
 
   # The dashboard "View" link is a real <a> to the full session page (so
@@ -7798,7 +7800,7 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     running = Session.create!(git_root: "https://github.com/test/repo.git", prompt: "Running card", status: :running)
 
     # The per-card refresh button is on the card, which the two flat sort views
-    # render; the User view's rows carry Merge / Snooze / Trash instead.
+    # render; Your board's cards carry Snooze / Trash instead.
     get dashboard_board_url(every_status_params(view: SessionsController::VIEW_MODE_CREATED_DESC))
     assert_response :success
 

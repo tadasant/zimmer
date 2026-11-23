@@ -12,7 +12,7 @@ class TurboStreamsTest < ApplicationSystemTestCase
   end
 
   test "session cards are wrapped in turbo frames" do
-    # Cards live in the flat sort views; the default User view renders rows.
+    # Cards live in the flat sort views; the default board renders them in categories.
     visit root_path(view: SessionsController::VIEW_MODE_CREATED_DESC)
 
     # Verify all session cards are wrapped in turbo frames

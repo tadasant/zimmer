@@ -227,30 +227,10 @@ final class BoardViewUITests: XCTestCase {
         XCTAssertTrue(banner.exists, "the board's own read leaves the refusal up")
     }
 
-    /// Your board's rows carry "where things stand" and how current it is, as the web UI's do.
-    func test_your_board_rows_carry_the_status_summary() throws {
-        let app = launch(["-ZimmerFixtureView", "user"])
-        let summarised = row(app, 1038)
-        XCTAssertTrue(summarised.waitForExistence(timeout: timeout))
-        XCTAssertTrue(summarised.label.contains("needs your go-ahead to merge"), summarised.label)
-        XCTAssertTrue(summarised.label.contains("Up to date"), summarised.label)
-
-        // Your board is ordered by dragging, as the web UI's is.
-        app.buttons["board.menu"].tap()
-        let reorder = app.buttons["ranked.reorder"]
-        XCTAssertTrue(reorder.waitForExistence(timeout: timeout))
-        XCTAssertEqual(reorder.label, "Reorder Board")
-        reorder.tap()
-        XCTAssertTrue(app.buttons["select.done"].waitForExistence(timeout: timeout))
-        let handles = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label != 'Reorder Board'"))
-        XCTAssertTrue(handles.firstMatch.waitForExistence(timeout: timeout), "spot rows have drag handles")
-        app.buttons["select.done"].tap()
-    }
-
-    /// Your board v2: Last Touched's rows under the person's categories, Uncategorized first; a
+    /// Your board: Last Touched's rows under the person's categories, Uncategorized first; a
     /// collapsed category opens with a tap; a row moves into a category from its long press;
     /// a backlogged category waits in the tray at the foot.
-    func test_your_board_v2_groups_rows_under_categories_and_moves_one() throws {
+    func test_your_board_groups_rows_under_categories_and_moves_one() throws {
         let app = launch(["-ZimmerFixtureView", "board_v2", "-ZimmerFixtureFilter", "active"])
         let uncategorized = app.descendants(matching: .any)["section.Uncategorized"]
         let ios = app.descendants(matching: .any)["section.iOS app"]

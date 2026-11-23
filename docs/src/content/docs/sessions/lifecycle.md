@@ -445,8 +445,10 @@ transition, and it does nine things beyond changing status:
    count: it took its snapshot when it started, and the fresh enqueue is answered cheaply by its
    claim. The checks exist because a session sleeping and waking on a short self-wake pauses once
    per wake, and without them each pause stacks one more of each job behind the ones already waiting.
-8. `execute_pending_sleep` — if a wake-up was scheduled while the session was *running*, the
-   sleep was deferred to here; now it fires.
+8. `arrange_sleep_on_armed_schedule`, then `execute_pending_sleep` — if a wake-up was scheduled
+   while the session was *running*, the sleep was deferred to here; now it fires. The first of the
+   two covers a turn that reached its end with a wake armed and no sleep marked — see
+   [A wake armed before `start!` is recorded](#a-wake-armed-before-start-is-recorded).
 9. `drain_enqueued_messages_after_pause` — if the session is coming to rest with a message still
    queued for it, schedule the delivery. See [below](#a-session-does-not-idle-on-its-own-queue).
    Runs last, and after `execute_pending_sleep`, so it reads the state the sleep left behind. It
@@ -904,7 +906,9 @@ self-session surface only, because it is a statement about the turn the caller i
   - **Arming a new wake** (`Trigger#sleep_target_session_if_applicable`), which is the session
     deciding to wait again — and is also why a wake armed after the call in the same turn puts it
     back to sleep, so the tool tells the caller to call it last.
-- It is refused on a `waiting` session, which is not in a turn and has nothing to come to rest.
+- It is refused on a `waiting` session that is not in a turn and so has nothing to come to rest. A
+  `waiting` session whose turn a worker already holds is accepted: `start!` is recorded after the
+  process spawns, so the agent can make this call first.
 
 The workaround it replaces is a short dummy wake armed so that its firing destroys the real
 backstop (sibling-destroy). Session 20141 did that on 2026-10-08 after a recovery re-sleep would
@@ -1592,6 +1596,40 @@ silently end up in `needs_input` with none.
 The "wake me up later" path. The session goes dormant and a one-time schedule trigger will
 resume it. If the wake-up is scheduled while the session is *running*,
 `metadata["pending_sleep"] = true` is set and the actual transition happens on the next `pause`.
+
+#### A wake armed before `start!` is recorded
+
+`AgentSessionJob` records `start!` after it has spawned the runtime process and stored its pid, so a
+live agent acts against a `waiting` row until that write lands. On a loaded worker that took over ten
+seconds for session 30564, whose whole turn fitted inside it: it armed a watcher and a deadline, ended
+its turn, and only then did the row become `running`. The arming read `waiting` as "already dormant"
+and left no mark, so the next `pause` rested the session in `needs_input`, on the human's action
+queue, with both wakes armed.
+
+Two things keep that from deciding where a session rests:
+
+- **`waiting` with a turn in flight is treated as `running`.** `Trigger#sleep_target_session_if_applicable`,
+  `rest_in_needs_input`, a spot-queue park and `POST /api/v1/sessions/:id/sleep` all ask
+  `Sessions::LiveTurn.in_progress?` before reading `waiting` as "not executing". A clone-only job, and a
+  job still finishing up after its turn's `pause` slept the session, are not a turn in progress. The
+  arming reads the
+  status under a row lock, so a `pause` cannot land between the read and the mark. An arming that
+  arranges no sleep writes a session log line saying so.
+- **`pause` derives the sleep from the trigger rows.** `arrange_sleep_on_armed_schedule` writes the
+  `scheduled_wake` intent itself when nothing has marked the turn and a one-time schedule aimed at the
+  session can still fire, with a session log line naming the trigger. It does nothing after a hand-back, on
+  any `paused_by` pause, on a turn parked before it ran (undelivered, or stood down by an auth
+  outage), for a status-summary fork, or for a wake held from
+  the wait that just ended; and a watcher alone does not qualify, for the reason
+  [#648](https://github.com/tadasant/zimmer/issues/648) gives. `pause` decides all of this from the
+  row's metadata, re-read at that point, because the agent's calls are written by another process than
+  the job that pauses it.
+
+There is no sweep for the same contradiction at rest. `pause` is the transition that ends a turn, so
+it is where the armed wakes are read; a session that reaches or stays in `needs_input` by another route
+(a recovery sweep that stopped retrying it, a restore from the trash) is there for a human, and a sweep
+that slept it would hide it. A pause that is itself a give-up, such as `unstarted_turn_not_recoverable`,
+does sleep on an armed schedule, as it does when the schedule was marked.
 
 A park that passes `"halt": true` does not wait for that next `pause` — it stops the turn itself
 (`Sessions::HaltRunningTurn` terminates the process and pauses the session), so the session is
@@ -2898,7 +2936,7 @@ Two behaviours are worth knowing:
 
 The **scheduling class** is a filter rather than a search: it narrows whichever view you are in and
 leaves that view's presentation alone. So does a free-text query, an agent root and a genesis — in
-the [User view](/sessions/user-view/) and the Ranked view a search narrows the list you are already
+[Your board](/sessions/board-v2/) and the Ranked view a search narrows the list you are already
 reading rather than replacing it with a separate results presentation. The two flat sort views still
 render their results as a paginated card grid, because that is what they are.
 
@@ -2935,7 +2973,7 @@ Two actions stream a card as well, because a broadcast cannot reach one:
 
 - **Trash** removes what the page is showing the session as, and streams the "Session moved to
   trash." toast carrying the **Undo** button. It sends *two* removals — the card
-  (`#session_<id>`) and the [User view](/sessions/user-view/) row (`#user_view_row_<id>`) — because
+  (`#session_<id>`) and the [Your board](/sessions/board-v2/) card (`#board_v2_row_<id>`) — because
   the reply goes to whichever page made the request and the server does not know which of the two it
   is looking at; a `remove` for an id that is not in the DOM is a silent no-op. The page does not
   wait for them: `app/javascript/lib/optimistic_actions.js` takes the card, the row and the ranked
@@ -2944,10 +2982,11 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   speed bump as a **422**, and the page reads any non-2xx answer as "put it back", so the card
   returns with the refusal over it and nobody is left believing a session was trashed that was not.
 - **Undo** puts it back, on both surfaces for the same reason: it prepends the card into
-  `#sessions_grid` and a row into `#user_view_list`. Its own restore broadcast is a `replace`, and
-  there is nothing left in the DOM to replace. The restored row lands at the top of the list and the
-  User view's own controller re-sorts it into place, so it goes where the order says rather than
-  where the stream put it.
+  `#sessions_grid` and into the session's own category list on Your board. Its own restore broadcast
+  is a `replace`, and there is nothing left in the DOM to replace. On Your board the restored card
+  lands at the top of its category and the board's controller re-sorts it by last touched, so it
+  goes where the order says rather than where the stream put it. In a snoozed or backlogged
+  category there is no list to prepend into, so it stays off the board with its category.
 
 `#archive`, `#unarchive` and `#pause` stream one more thing: the session page's own status badge
 and header actions. `Session#broadcast_status_change` already pushes both over the cable, but a
@@ -2979,7 +3018,7 @@ The dashboard and the session page show a mutation's outcome the moment it is cl
 the server after; the server's own answer replaces the guess, and a refusal puts the guess back
 with the refusal as a toast in `#flash` (`app/javascript/lib/toast.js` draws the same card
 `shared/_flash` does). `app/javascript/lib/optimistic_actions.js` does this for every Turbo
-submission it recognises by path: a Trash takes the session's card, User-view row and ranked row
+submission it recognises by path: a Trash takes the session's card, Your board card and ranked row
 away; a queued message's Delete and Send Now take its frame out of the queue; a notification's
 Dismiss takes its row, and Mark read dims it; Pause and Restart say *Pausing…* / *Restarting…*; a
 trigger's switch says *Turning on…* / *Turning off…*. The server's refusal, when it streams one
@@ -3184,8 +3223,8 @@ answers with a bare frame and no chrome — it is the drawer's own address.
 
 ### The dashboard prefetches what View opens
 
-Every session row on the dashboard — the card grid's **View**, a Ranked row's title, a User view
-row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
+Every session row on the dashboard — a card's **View**, on Your board or in the card grid, and a
+Ranked row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
 browser is idle, it fetches the detail of the rows on screen (and a screen's worth either side) in
 the background, so a click paints from the browser's HTTP cache instead of waiting on the server.
 
@@ -3224,7 +3263,7 @@ hold still waits for `pending` to clear first.
 Every prefetch is a full detail render on a web server with three threads, which also serve the
 agents' MCP calls, so the load is kept small on purpose:
 
-- Only rows on or near the screen, never the whole list — a User view can hold hundreds.
+- Only rows on or near the screen, never the whole list — Your board can hold hundreds.
 - One request at a time, top row first, starting once the page has loaded and the browser is idle.
 - Opening the drawer aborts the request in flight and holds the queue, so the session being read
   has the server to itself.

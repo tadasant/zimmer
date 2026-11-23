@@ -552,20 +552,6 @@ class SessionsHelperTest < ActionView::TestCase
     end
   end
 
-  test "status_summary_freshness reads current, stale and regenerating off the summary" do
-    summary = SessionStatusSummary.new(state: "ready", summary: "Holding.", transcript_line_count: 5)
-
-    assert_equal :current, status_summary_freshness(summary, 5)
-    assert_equal :stale, status_summary_freshness(summary, 7)
-
-    summary.assign_attributes(state: "pending", requested_at: 1.minute.ago)
-    assert_equal :regenerating, status_summary_freshness(summary, 7)
-
-    # A generation that outlived PENDING_TIMEOUT is debris, not a regeneration.
-    summary.requested_at = (SessionStatusSummary::PENDING_TIMEOUT + 1.minute).ago
-    assert_equal :stale, status_summary_freshness(summary, 7)
-  end
-
   test "session_agent_root_key matches Session#agent_root_key and builds the catalog once" do
     roots = AgentRootsConfig.all
     root = roots.first

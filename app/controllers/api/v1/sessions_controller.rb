@@ -41,6 +41,10 @@ class Api::V1::SessionsController < Api::BaseController
   # code Sessions::UpdateCatalogSelection returns. The titles are this surface's
   # vocabulary; the detail sentence under them is the service's, so it now reads
   # the same as the web UI's and the MCP tool's.
+  # The `view` an app build from before Your board was the only board asks for.
+  # It answers what `board_v2` does; see #index.
+  LEGACY_BOARD_VIEW = "user"
+
   CATALOG_SELECTION_ERROR_TITLES = {
     too_many: "Too many entries",
     invalid_entries: "Invalid entries",
@@ -106,14 +110,16 @@ class Api::V1::SessionsController < Api::BaseController
   #     DEFAULT for the same reason; a stale mark counts as untagged.
   #   - view: the dashboard's board view, so a client orders the same rows the web UI
   #     does. "created_desc" (the default) and "last_touched" (Session::LAST_TOUCHED_ORDER)
-  #     page as usual. "user" and "ranked" are Sessions::UserView — priority above spot,
-  #     then precedence, then oldest — which is not one ORDER BY, so they answer the top
-  #     SessionsController::USER_VIEW_LIMIT rows in a single page, with `truncated` when
-  #     more matched, as the dashboard's board caps itself. "board_v2" is Your board
-  #     v2 (Sessions::BoardV2): the same single capped page, the rows Uncategorized
-  #     first and then category by category, each most recently touched first, with
-  #     a `board_categories` sibling listing every category in board order (see
-  #     #render_board_v2). Any other value is a 422.
+  #     page as usual. "ranked" is Sessions::RankedOrder — priority above spot,
+  #     then precedence, then oldest — which is not one ORDER BY, so it answers the top
+  #     SessionsController::BOARD_LIMIT rows in a single page, with `truncated` when
+  #     more matched. "board_v2" is Your board (Sessions::BoardV2): the same single
+  #     capped page, the rows Uncategorized first and then category by category, each
+  #     most recently touched first, with a `board_categories` sibling listing every
+  #     category in board order (see #render_board_v2). "user" names the board an
+  #     older release drew and answers exactly what "board_v2" does, so an app build
+  #     that still asks for it gets today's board (LEGACY_BOARD_VIEW). Any other
+  #     value is a 422.
   #   - page: Page number (default: 1)
   #   - per_page: Results per page (default: 25, max: 100)
   def index
@@ -129,17 +135,16 @@ class Api::V1::SessionsController < Api::BaseController
       # The default order.
     when SessionsController::VIEW_MODE_LAST_TOUCHED
       scope = scope.reorder(Session::LAST_TOUCHED_ORDER).order(id: :desc)
-    when SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED
-      render_user_view(scope)
+    when SessionsController::VIEW_MODE_RANKED
+      render_ranked(scope)
       return
-    when SessionsController::VIEW_MODE_BOARD_V2
+    when SessionsController::VIEW_MODE_BOARD_V2, LEGACY_BOARD_VIEW
       render_board_v2(scope)
       return
     else
       api_views = [
         SessionsController::VIEW_MODE_CREATED_DESC, SessionsController::VIEW_MODE_LAST_TOUCHED,
-        SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_RANKED,
-        SessionsController::VIEW_MODE_BOARD_V2
+        SessionsController::VIEW_MODE_RANKED, SessionsController::VIEW_MODE_BOARD_V2
       ]
       render_api_error("Invalid parameter", "view must be one of: #{api_views.join(', ')}", status: :unprocessable_entity)
       return
@@ -762,11 +767,16 @@ class Api::V1::SessionsController < Api::BaseController
   # Used by the "wake me up later" workflow — the session becomes dormant
   # and a one-time schedule trigger will resume it at the specified time.
   #
-  # Accepts both needs_input (immediate sleep) and running (deferred sleep).
-  # When called from running state, sets a pending_sleep flag in metadata.
+  # Accepts needs_input (immediate sleep) and a session with a turn in progress
+  # (deferred sleep): running, or waiting while a worker holds its turn.
+  # A deferred sleep sets a pending_sleep flag in metadata.
   # The pause callback executes the sleep after the agent's turn completes.
   def sleep_session
-    unless @session.needs_input? || @session.running?
+    # `start!` is recorded after the process spawns, so a live agent can call this
+    # while its row still reads `waiting`.
+    turn_in_progress = Sessions::LiveTurn.in_progress?(@session)
+
+    unless @session.needs_input? || turn_in_progress
       render_api_error("Cannot sleep", "Session must be in needs_input or running state to sleep (current: #{@session.status})", status: :unprocessable_entity)
       return
     end
@@ -860,7 +870,7 @@ class Api::V1::SessionsController < Api::BaseController
 
   # POST /api/v1/sessions/:id/authorize_merge
   #
-  # The User view's Merge button, from the iOS app: a person has decided this
+  # The Merge button, from the iOS app: a person has decided this
   # session's PR should land, and the tap is the sign-off (Sessions::AuthorizeMerge
   # says why that is the one sanctioned route to an agent merging its own work).
   # Only a person may give it, so only the app's token on a grant that acts as
@@ -884,30 +894,6 @@ class Api::V1::SessionsController < Api::BaseController
     else
       render_api_error("Cannot merge", result.message, status: :unprocessable_entity, outcome: result.outcome, pr_url: result.pr_url)
     end
-  end
-
-  # POST /api/v1/sessions/reprioritize
-  #
-  # The User view's Reprioritize button: hand the board to the deployment's
-  # durable reprioritizing session (Sessions::DashboardReprioritizer). Open to an
-  # API key like the rest of this controller, because it is no more than an
-  # invoke of that session's trigger, which `/api/v1/triggers/:id/invoke` and MCP
-  # `action_trigger` already reach.
-  #
-  # 200 with `{outcome, message, session}` when the job was handed over
-  # (`fired`); 422 with the reason for any other outcome (a burst suppressed, a
-  # session still pending), and with no session, since none was given the job.
-  def reprioritize
-    result = Sessions::DashboardReprioritizer.call(genesis: SessionGenesis::API)
-
-    if result.fired?
-      render json: { outcome: result.outcome, message: result.message, session: session_json(result.session) }
-    else
-      render_api_error("Not reprioritized", result.message, status: :unprocessable_entity, outcome: result.outcome)
-    end
-  rescue => e
-    Rails.logger.error "[Api::V1::SessionsController#reprioritize] #{e.class}: #{e.message}"
-    render_api_error("Could not start the reprioritizer", e.message, status: :internal_server_error)
   end
 
   # POST /api/v1/sessions/:id/start_now
@@ -1534,18 +1520,18 @@ class Api::V1::SessionsController < Api::BaseController
 
   private
 
-  # `view=user` / `view=ranked`: Sessions::UserView's rows, in one page. One more
-  # than the cap is fetched, so `truncated` says a row was actually cut rather than
-  # that some matching row belongs to neither class. Without the transcript column,
-  # as the dashboard reads it: the rows are listed, not opened.
-  def render_user_view(scope)
+  # `view=ranked`: Sessions::RankedOrder's rows, in one page. One more than the
+  # cap is fetched, so `truncated` says a row was actually cut rather than that
+  # some matching row belongs to neither class. Without the transcript column, as
+  # the dashboard reads it: the rows are listed, not opened.
+  def render_ranked(scope)
     if pagination_params[:page] > 1
       render_api_error("Invalid parameter", "view=#{params[:view]} answers a single page; it has no page #{pagination_params[:page]}", status: :unprocessable_entity)
       return
     end
 
-    limit = user_view_limit
-    fetched = Sessions::UserView.rows(scope: scope.reorder(nil).select(Session.column_names - [ "transcript" ]), limit: limit + 1)
+    limit = board_limit
+    fetched = Sessions::RankedOrder.rows(scope: scope.reorder(nil).select(Session.column_names - [ "transcript" ]), limit: limit + 1)
     rows = fetched.first(limit)
     delegates = goal_check_delegates_for(rows)
 
@@ -1557,19 +1543,20 @@ class Api::V1::SessionsController < Api::BaseController
     }
   end
 
-  # Your board v2 for a client that draws it itself (the iOS app): the rows
+  # Your board for a client that draws it itself (the iOS app): the rows
   # Sessions::BoardV2 shows, in its order — Uncategorized, then each category on
   # the board — each carrying its `board_category_id`, plus every category in
   # board order. A category that is snoozed or backlogged comes last with
   # `on_board: false` and a count, and none of its rows, as the web board's tray
-  # draws it. Capped and single-page like the User view.
+  # draws it. Capped and single-page like `view=ranked`. Also what `view=user`
+  # answers (see #index).
   def render_board_v2(scope)
     if pagination_params[:page] > 1
       render_api_error("Invalid parameter", "view=#{params[:view]} answers a single page; it has no page #{pagination_params[:page]}", status: :unprocessable_entity)
       return
     end
 
-    limit = user_view_limit
+    limit = board_limit
     board = Sessions::BoardV2.build(scope: scope.reorder(nil), limit: limit)
     rows = board.uncategorized + board.sections.flat_map(&:sessions)
     delegates = goal_check_delegates_for(rows)
@@ -1605,9 +1592,9 @@ class Api::V1::SessionsController < Api::BaseController
     { board_rows: rows }
   end
 
-  # The dashboard's User-view cap, which MCP `get_user_view` reads too.
-  def user_view_limit
-    SessionsController::USER_VIEW_LIMIT
+  # The dashboard board's cap, which MCP `get_user_view` reads too.
+  def board_limit
+    SessionsController::BOARD_LIMIT
   end
 
   def touch_user_activity(session)
