@@ -9789,6 +9789,29 @@ The pin to the approved commit is in the message the merging session gets (`gh p
 --match-head-commit`). Zimmer checks the head before it sends that message; after that, an agent that
 pushes and merges anyway is stopped only by the repository's branch protection.
 
+## Offloaded transcripts are not searched, and live on one volume
+
+Once `TranscriptRetentionJob` moves a transcript out of Postgres
+([Transcript retention](/operate/background-jobs/#transcript-retention)), session search no longer
+matches its text: content search is an `EXISTS` over `session_transcript_chunks`, and the chunks are
+gone. Titles, prompts and everything else on the row still match. Unarchiving the session brings it
+back into search.
+
+Destroying a session removes its files at the database's current location only: after the database
+moves to another host, files written before the move stay on disk. A copy of the database answering
+at the same host, port and name, on a machine that shares the volume, shares the directory; it can
+add versions, and destroying a session there removes that session's files. If the store's directory
+is lost, offloading stops until a deploy changes that.
+
+A release that predates offloading reads an offloaded transcript as empty, because it looks only in
+the chunk table. After a rollback those transcripts look blank until the newer release is back; the
+files are untouched. Unarchive an important session before rolling back.
+
+The offloaded files are on the droplet's `zimmer_data` volume, not in the managed database, so the
+provider's database backups no longer cover them. Losing that volume loses those transcripts. The
+transcript archive zip is on the same volume, so it is not a second copy. Subagent transcripts
+(`subagent_transcripts`) stay in Postgres with no retention.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:

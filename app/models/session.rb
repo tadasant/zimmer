@@ -3196,6 +3196,15 @@ class Session < ApplicationRecord
     ImageStorageService.cleanup_for(id)
   rescue => e
     Rails.logger.warn "[Session] Failed to reclaim directories for deleted session #{id}: #{e.class} - #{e.message}"
+  ensure
+    delete_offloaded_transcript
+  end
+
+  # Its own rescue: a failure above must not leave a deleted conversation on disk.
+  def delete_offloaded_transcript
+    TranscriptOffloadStore.delete(id)
+  rescue => e
+    Rails.logger.warn "[Session] Failed to delete the offloaded transcript of session #{id}: #{e.class} - #{e.message}"
   end
 
   # See the validation declaration for why a slug of all digits is refused.

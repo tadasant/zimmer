@@ -85,6 +85,9 @@ class SessionDashboard < Administrate::BaseDashboard
     # to "how big is this session" that the transcript itself is not.
     transcript_byte_size: Field::Number,
     transcript_line_count: Field::Number,
+    # Set when TranscriptRetentionJob moved the transcript out of the chunk table
+    # into TranscriptOffloadStore; nil while the chunks are the authority.
+    transcript_offloaded_at: Field::DateTime,
     created_at: Field::DateTime,
     updated_at: Field::DateTime
   }.freeze

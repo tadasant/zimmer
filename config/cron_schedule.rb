@@ -347,6 +347,18 @@ module CronSchedule
       description: "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity",
       environments: %i[production staging development]
     },
+    # Everywhere, for the same reason as log_retention: it is the only thing that
+    # bounds `session_transcript_chunks`, which held every transcript ever recorded
+    # until it existed. Every 10 minutes for the same reason too: the first run meets
+    # months of archived sessions and drains them a 3-minute slice at a time. In
+    # steady state a tick finds the few sessions that crossed the retention window
+    # since the last one, or none, which is one index probe.
+    transcript_retention: {
+      cron: "5-59/10 * * * *",
+      class: "TranscriptRetentionJob",
+      description: "Move transcripts of sessions archived past the retention window out of Postgres into the transcript offload store",
+      environments: %i[production staging development]
+    },
     # Everywhere, for the same reason as log_retention: it is the only thing
     # that enforces a root data collection's `retention_days`. Hourly, so a
     # record outlives its window by at most an hour; a tick with nothing due is

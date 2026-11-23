@@ -288,14 +288,29 @@ class TranscriptArchiveJob < ApplicationJob
     # Ordered so a capped run is a prefix and the next run resumes after it, rather
     # than re-picking an arbitrary subset of the same backlog.
     changed_ids = session_ids_to_archive.to_a.sort
+    # An offloaded transcript whose file is gone cannot be archived. Set aside before the
+    # cap, so a block of them neither starves newer sessions nor forces a rewrite a tick.
+    missing_ids = changed_ids.each_slice(BIND_SLICE_SIZE).flat_map do |slice|
+      with_db_retry { Session.where(id: slice).where.not(transcript_offloaded_at: nil).pluck(:id, :transcript_digest) }
+    end.filter_map do |id, digest|
+      id unless TranscriptOffloadStore.exist?(id, digest: digest) || SessionTranscriptChunk.where(session_id: id).exists?
+    end
+    if missing_ids.any?
+      Rails.logger.error "[TranscriptArchiveJob] #{missing_ids.size} offloaded transcript file(s) missing; keeping their existing entries"
+      changed_ids -= missing_ids
+    end
     # Floored at 1 at the point of use, not at the reader: a cap of zero would archive
     # nothing on every run while still reporting success — a silent, permanent no-op.
     cap = [ max_sessions_per_run.to_i, 1 ].max
-    deferred_count = [ changed_ids.size - cap, 0 ].max
+    deferred_count = [ changed_ids.size - cap, 0 ].max + missing_ids.size
     changed_ids = changed_ids.first(cap)
 
     if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path) && !staging.any?
       Rails.logger.info "[TranscriptArchiveJob] No changes detected, skipping rebuild"
+      # Nothing to rewrite, but a missing file still makes the archive incomplete.
+      if previous_metadata["deferred_count"].to_i != deferred_count
+        write_sidecar(previous_metadata.merge("deferred_count" => deferred_count, "complete" => deferred_count.zero?))
+      end
       return
     end
 
@@ -469,7 +484,7 @@ class TranscriptArchiveJob < ApplicationJob
     begin
       attempted = archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima: subagent_maxima)
       cut_short = changed_ids.size - attempted
-      deferred_count += cut_short
+      deferred_count += cut_short + unreadable_ids.size
 
       if cut_short.positive?
         # WARN for the same reason as the cap's deferral line: production ships only WARN
@@ -478,7 +493,10 @@ class TranscriptArchiveJob < ApplicationJob
                           "at the #{@run_budget.inspect} run deadline; #{cut_short} deferred to the next tick"
       end
 
-      vanished_ids = changed_ids.first(attempted).map(&:to_s).reject { |id| all_sessions_metadata.key?(id) }
+      # An unreadable session with no stamp is still there; pruning it would drop the
+      # entry the skip just preserved.
+      vanished_ids = changed_ids.first(attempted).map(&:to_s)
+        .reject { |id| all_sessions_metadata.key?(id) || unreadable_ids.include?(id) }
       prune_session_entries(zip, removed_session_ids.to_set | vanished_ids)
       merge(zip, all_sessions_metadata, deferred_count: deferred_count) if merge_due?
     ensure
@@ -638,6 +656,15 @@ class TranscriptArchiveJob < ApplicationJob
 
   def archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima:)
     each_changed_session(changed_ids, all_sessions_metadata) do |session|
+      # An offloaded transcript whose file cannot be read comes back nil. Archiving it
+      # would replace a good entry with null, and that entry may be the last copy.
+      # Left unstamped, so it is tried again once the file is readable.
+      if session.transcript_present? && session.transcript.nil?
+        Rails.logger.error "[TranscriptArchiveJob] session #{session.id}: transcript unreadable; keeping its existing entry"
+        unreadable_ids << session.id.to_s
+        next
+      end
+
       add_session_to_zip(zip, session)
       all_sessions_metadata[session.id.to_s] =
         zip.commit(session.id, archive_stamp(session.updated_at, subagent_maxima[session.id]))
@@ -654,6 +681,8 @@ class TranscriptArchiveJob < ApplicationJob
   def prune_session_entries(zip, session_ids)
     zip.prune(session_ids)
   end
+
+  def unreadable_ids = (@unreadable_ids ||= Set.new)
 
   def add_session_to_zip(zip, session)
     session_data = {
@@ -742,7 +771,10 @@ class TranscriptArchiveJob < ApplicationJob
       "file_size_bytes" => File.exist?(archive_path) ? File.size(archive_path) : 0,
       "sessions" => all_sessions_metadata
     }
+    write_sidecar(metadata)
+  end
 
+  def write_sidecar(metadata)
     # Renamed into place: a kill part-way through a plain write leaves a sidecar that does
     # not parse, which reads as "nothing is archived" and re-archives the whole corpus.
     temp_path = archive_dir.join(METADATA_TEMP_NAME)

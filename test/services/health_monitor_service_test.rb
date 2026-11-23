@@ -256,6 +256,32 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     assert_empty pool[:entries]
   end
 
+  test "database_size_health reports the total, the largest tables and transcript retention" do
+    database = @service.full_health_report[:database_size_health]
+
+    assert_operator database[:total_bytes], :>, 0
+    assert_equal HealthMonitorService::DATABASE_SIZE_WARNING_GIB_DEFAULT.gigabytes, database[:warning_bytes]
+    assert_operator database[:largest_tables].size, :<=, HealthMonitorService::DATABASE_LARGEST_TABLES
+    assert database[:largest_tables].all? { |t| t[:name].present? && t[:total_bytes].is_a?(Integer) }
+    sizes = database[:largest_tables].map { |t| t[:total_bytes] }
+    assert_equal sizes.sort.reverse, sizes, "largest first"
+    assert_equal TranscriptRetentionJob.retention_days, database[:transcript_retention][:retention_days]
+    assert database[:transcript_retention].key?(:offloaded_sessions)
+    assert database[:transcript_retention].key?(:awaiting_offload)
+    assert database[:status].healthy?
+  end
+
+  test "database_size_health warns past DATABASE_SIZE_WARNING_GIB" do
+    ENV[HealthMonitorService::DATABASE_SIZE_WARNING_ENV] = "0.000001"
+
+    database = @service.full_health_report[:database_size_health]
+
+    assert database[:status].warning?
+    assert_includes database[:status].message, "warning threshold"
+  ensure
+    ENV.delete(HealthMonitorService::DATABASE_SIZE_WARNING_ENV)
+  end
+
   test "log_retention_health reports the size of the logs table and the policy in force" do
     retention = @service.full_health_report[:log_retention_health]
 

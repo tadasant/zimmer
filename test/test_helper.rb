@@ -101,6 +101,9 @@ AppSettingIsolationGuard.capture!
 # `||=`, so a run that sets it deliberately keeps its own.
 ENV["CLAUDE_SESSION_CONFIG_DIR"] ||= Dir.mktmpdir("zimmer-test-claude-config")
 
+# Same reason: no test may resolve the real offload directory.
+ENV["AGENT_TRANSCRIPT_OFFLOAD_DIR"] ||= Dir.mktmpdir("zimmer-test-transcript-offload")
+
 # Pre-install the AIR CLI and pre-warm the AirCatalogService cache once at test
 # boot, before parallelize() forks workers. Two reasons:
 #   1. 32 parallel workers would otherwise race to install on the same

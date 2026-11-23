@@ -29,6 +29,7 @@ class MovePendingMaintenanceJobsToLane < ActiveRecord::Migration[8.1]
     StaleCloneCleanupJob
     TokenUsageBackfillJob
     TranscriptArchiveJob
+    TranscriptRetentionJob
     TriggerPromotionReleaseJob
     WarmClonePoolReplenishJob
     WarmProcessPoolReplenishJob
