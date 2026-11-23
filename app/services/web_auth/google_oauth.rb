@@ -33,6 +33,13 @@ module WebAuth
     # Google, or the network to it, failed. Not the person's fault.
     class ExchangeFailed < StandardError; end
 
+    # Google refused this deployment's own client id or secret, so nobody can
+    # sign in until the stored value is fixed.
+    class ClientRejected < ExchangeFailed; end
+
+    # RFC 6749 §5.2 errors that are about the client, not the code it presented.
+    CLIENT_ERRORS = %w[invalid_client unauthorized_client].freeze
+
     Identity = Data.define(:sub, :email, :hosted_domain, :name)
 
     def initialize(configuration)
@@ -119,12 +126,19 @@ module WebAuth
       unless response.is_a?(Net::HTTPSuccess)
         # Google's error body names the problem (invalid_grant, redirect_uri_mismatch, …)
         # and carries no secret.
-        raise ExchangeFailed, "Google's token endpoint answered #{response.code}: #{response.body.to_s.truncate(300)}"
+        raise exchange_error_class(response), "Google's token endpoint answered #{response.code}: #{response.body.to_s.truncate(300)}"
       end
 
       JSON.parse(response.body).fetch("id_token") { raise ExchangeFailed, "Google returned no id_token" }
     rescue JSON::ParserError, SocketError, SystemCallError, Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError, IOError => e
       raise ExchangeFailed, "could not reach Google's token endpoint: #{e.class}: #{e.message}"
+    end
+
+    def exchange_error_class(response)
+      body = JSON.parse(response.body.to_s)
+      body.is_a?(Hash) && CLIENT_ERRORS.include?(body["error"]) ? ClientRejected : ExchangeFailed
+    rescue JSON::ParserError
+      ExchangeFailed
     end
 
     def decode_id_token(id_token)

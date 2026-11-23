@@ -336,6 +336,46 @@ red. `test/initializers/` covers each override's contract and additionally asser
 `ActionCable::VERSION::STRING`, so a Rails upgrade fails that guard and lands the prompt to
 re-read the upstream source on the upgrade PR itself.
 
+### A refused WebSocket is logged by what an operator has to do about it
+
+With [web sign-in](/auth/web-sign-in/) on, `ApplicationCable::Connection` refuses a browser that is
+not signed in. Upstream's `reject_unauthorized_connection` logs one ERROR with no reason, so a stale
+tab and a sign-in outage paged with the same line
+([#1653](https://github.com/tadasant/zimmer/issues/1653)). Zimmer raises the same
+`UnauthorizedError`, so the socket closes the same way, and writes its own line first:
+
+```
+[web_auth] An unauthorized connection attempt was rejected: reason="no_cookie" ip="…" user_agent="…" origin="…"
+```
+
+| Reason | Level | Meaning |
+| --- | --- | --- |
+| `no_cookie` | WARN | no sign-in cookie, which is any signed-out browser |
+| `expired` | WARN | the cookie's lifetime has passed |
+| `signed_out_everywhere` | WARN | issued before the person signed out on every device |
+| `second_factor_missing` | WARN | issued without the second factor the deployment requires |
+| `unreadable_cookie` | ERROR | the cookie does not decrypt or is not a sign-in, as after a changed `SECRET_KEY_BASE` |
+| `identity_missing` | ERROR | the cookie names a `web_identities` row that does not exist |
+| `domain_not_allowed` | ERROR | the person's domain is not in `ZIMMER_WEB_AUTH_ALLOWED_DOMAINS` |
+| `misconfigured` | ERROR | the gate is on and cannot sign anyone in; `problems=` says why, `cookie=` carries the reason it would otherwise have had |
+| `configuration_unavailable` | ERROR | the sign-in configuration could not be read at all |
+
+A reason that is not in `ORDINARY_REFUSALS` logs at ERROR, so a new one pages until someone decides
+it should not. WARN rather than INFO because the line's client fields are what identify the browser,
+and INFO never leaves the container. The cookie's value is never logged. Every refusal, at either
+level, is also counted under `web_cable` in the
+[security counts](#security-counts-on-the-health-surface).
+
+Removing a domain or deleting an identity to end someone's access is deliberate, and an open tab of
+theirs then logs one ERROR when it reconnects. The same line is how a bad allowed-domains value or a
+database missing its identities shows up, so it stays an ERROR.
+
+**A wrong Google client id or secret shows up at sign-in instead.** The configuration has no
+`problems` then, because only Google can tell the value is wrong, and a browser that cannot sign in
+has no cookie to refuse. So when Google's token endpoint answers `invalid_client` or
+`unauthorized_client`, `[web_auth] Google sign-in failed` is logged at ERROR. Any other failed
+exchange (a reused code, Google or the network down) stays a WARN.
+
 ### A lifecycle state the session has not reached yet is logged at INFO, not ERROR
 
 The fourth variant of the same rule, and the one that catches application code rather than a
@@ -845,6 +885,7 @@ The kinds and their reasons:
 | --- | --- | --- |
 | `web_sign_in` | `provider_error`, `flow_mismatch`, `rejected` | the Google callback |
 | `web_second_factor` | `wrong_code`, `locked`, `enrollment_wrong_code` | the TOTP step |
+| `web_cable` | `no_cookie`, `expired`, `signed_out_everywhere`, `second_factor_missing`, `unreadable_cookie`, `identity_missing`, `domain_not_allowed`, `misconfigured`, `configuration_unavailable` | the WebSocket (`/cable`), when the sign-in wall refuses it |
 | `api_key` | `missing`, `unknown`, `revoked`, `retired`, `wrong_grant` | `/api`, `/mcp` |
 | `oauth_access_token` | `missing`, `unknown`, `revoked`, `expired`, `wrong_audience`, `server_not_configured`, `not_the_native_app` | `/mcp`, the iOS app on `/api` |
 | `oauth_token` | `invalid_grant`, `invalid_client`, `invalid_request`, `unsupported_grant_type`, `invalid_target` | `POST /oauth/token` |
@@ -873,6 +914,10 @@ failing. A Google token exchange that fails is Google or the network. An `oauth_
 
 `api_key` `missing` includes an MCP client's first request with no credential, which
 is how OAuth discovery starts, so a rule on API-key guessing should read `unknown`.
+
+`web_cable` counts every refusal, not only failed credentials. `no_cookie` is any signed-out browser,
+so `auth_failures_by_kind` for `web_cable` is not a rate of guesses. A rule on it should read reasons.
+See [the reasons](#a-refused-websocket-is-logged-by-what-an-operator-has-to-do-about-it).
 
 Recording never raises, never waits on Redis, and never changes an auth decision. A flush that
 fails is logged and its counts are lost. The section carries no status and is not part of `overall_status`, because a

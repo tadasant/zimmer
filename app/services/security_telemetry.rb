@@ -71,6 +71,13 @@ module SecurityTelemetry
     "web_sign_in" => %w[provider_error flow_mismatch rejected],
     # The TOTP step after Google. A wrong code is the brute-forceable credential.
     "web_second_factor" => %w[wrong_code locked enrollment_wrong_code],
+    # A WebSocket refused by the web login wall, for any reason. Not a guess
+    # count: `no_cookie` is any signed-out browser. The last five are the
+    # deployment's to fix (see ApplicationCable::Connection).
+    "web_cable" => %w[
+      no_cookie expired signed_out_everywhere second_factor_missing
+      unreadable_cookie identity_missing domain_not_allowed misconfigured configuration_unavailable
+    ],
     # Zimmer API keys, on /api and /mcp. `missing` includes an MCP client's
     # first, credential-less request, which is how OAuth discovery starts.
     "api_key" => %w[missing unknown revoked retired wrong_grant],

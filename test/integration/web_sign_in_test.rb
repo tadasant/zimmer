@@ -532,6 +532,19 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_equal "no-store", response.headers["Cache-Control"]
   end
 
+  test "Google refusing the deployment's client logs at ERROR; any other failed exchange does not" do
+    enable_web_auth
+    { WebAuth::GoogleOauth::ClientRejected => "ERROR", WebAuth::GoogleOauth::ExchangeFailed => "WARN" }.each do |failure, level|
+      post google_sign_in_path
+      state = Rack::Utils.parse_query(URI(response.location).query).fetch("state")
+      WebAuth::GoogleOauth.any_instance.stubs(:fetch_id_token).raises(failure, "Google's token endpoint answered")
+
+      entries = capture_log_entries { get google_sign_in_callback_path, params: { code: "c", state: state } }
+      assert_response :bad_gateway
+      assert_equal [ level ], entries.select { |_, message| message.include?("Google sign-in failed") }.map(&:first)
+    end
+  end
+
   # --- security telemetry ----------------------------------------------------
 
   test "refused sign-ins and keys are counted for the monitoring plane, without labels from the request" do
