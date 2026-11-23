@@ -23,11 +23,6 @@
 # claim this fire took, and records the item then — so the poller's state stays the poller's
 # statement of what it has seen, and an event the webhook never received is still there when the
 # poller looks.
-#
-# In `webhook_shadow` it does everything up to the fire and stops there: every served condition is
-# matched exactly as above, and a match is recorded as a TriggerShadowObservation — "this delivery
-# would have fired this condition for this event" — instead of being fired or claimed. The poller
-# stays the only path that fires, and Webhooks::GithubShadowComparison lines the two up.
 class GithubEventJob < ApplicationJob
   include GithubTriggerFiring
 
@@ -101,12 +96,8 @@ class GithubEventJob < ApplicationJob
   # job was carrying, so a dropped delivery costs latency and nothing else.
   def perform(delivery_id, event, item = nil, label = nil)
     # Switched back to `poll` between accepting this and running it: the poller owns every event
-    # again and claims none of them, so firing here could double-fire. Read once, so a mode flip
-    # mid-job cannot fire half a delivery's conditions and shadow the rest.
-    source = Webhooks::Source.github
-    return unless source.receiving?
-
-    @shadow = source.shadow?
+    # again and claims none of them, so firing here could double-fire.
+    return unless Webhooks::Source.github.webhook_enabled?
 
     unless event.is_a?(String) && item.is_a?(Hash)
       Rails.logger.warn "[GithubEventJob] GitHub delivery #{delivery_id} arrived with arguments this release " \
@@ -126,7 +117,7 @@ class GithubEventJob < ApplicationJob
     each_condition(delivery_id, "github_issue", item) do |condition|
       next unless issue_match?(condition, item)
 
-      fire_or_observe(delivery_id, condition, item, event: ISSUE_EVENT)
+      fire(condition, item, event: ISSUE_EVENT, via: "webhook")
     end
   end
 
@@ -141,20 +132,9 @@ class GithubEventJob < ApplicationJob
       label_matches(condition, item, names).each do |configured|
         # The same event string the poller writes for the same key, so a session a delivery fired
         # reads identically to one a poll fired.
-        fire_or_observe(delivery_id, condition, item, event: "label added: #{configured}", label: configured)
+        fire(condition, item, event: "label added: #{configured}", via: "webhook", label: configured)
       end
     end
-  end
-
-  # Fire the match, or in `webhook_shadow` record that it would have fired. The key is the claim key
-  # the fire would have taken, so the comparison can find the poller's fire of the same event.
-  def fire_or_observe(delivery_id, condition, item, event:, label: nil)
-    return fire(condition, item, event: event, via: "webhook", label: label) unless @shadow
-
-    TriggerShadowObservation.record!(condition, github_claim_key(condition, item, label),
-                                     path: "webhook", delivery_id: delivery_id)
-    Rails.logger.info "[GithubEventJob] Shadow: GitHub delivery #{delivery_id} would fire condition #{condition.id} " \
-                      "for #{item_key(item)} (#{event}); firing nothing, the poller owns it"
   end
 
   def each_condition(delivery_id, condition_type, item)

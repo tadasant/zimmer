@@ -743,7 +743,7 @@ export default class extends Controller {
         </div>
 
         <div data-trigger-form-target="mcpEventConfig" class="hidden space-y-3">
-          <p class="text-xs text-gray-500">Fires one session per event a catalog MCP server publishes through the MCP Events extension, polled about once a minute with the credentials a session would get for that server. Payload fields are untrusted: write them <code class="bg-gray-100 px-1 rounded break-all">{{event.text|untrusted}}</code>, or <code class="bg-gray-100 px-1 rounded break-all">{{event.channel_id|id}}</code> for an identifier. <code class="bg-gray-100 px-1 rounded">{{event_id}}</code> is safe to write bare.</p>
+          <p class="text-xs text-gray-500">Fires one session per event (or per burst, with a coalesce key) a catalog MCP server publishes through the MCP Events extension, polled about once a minute with the credentials a session would get for that server. Payload fields are untrusted: write them <code class="bg-gray-100 px-1 rounded break-all">{{event.text|untrusted}}</code>, or <code class="bg-gray-100 px-1 rounded break-all">{{event.channel_id|id}}</code> for an identifier. <code class="bg-gray-100 px-1 rounded">{{event_id}}</code> is safe to write bare.</p>
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">Server <span class="text-red-500">*</span></label>
             <input type="text" name="${name}[configuration][server]" list="mcp_event_${index}_servers" placeholder="slack-zimmer" autocomplete="off" disabled
@@ -769,6 +769,12 @@ export default class extends Controller {
             <textarea name="${name}[configuration][payload_filters]" rows="2" placeholder='{"user_id": ["U0123ABCD"]}' disabled
                       class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono"></textarea>
             <p class="mt-1 text-xs text-gray-500">Payload field =&gt; the values allowed to fire, checked by Zimmer on every event. Use it for who may trigger a session, even when the server filters too.</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">Coalesce key <span class="text-gray-400 font-normal">(optional, payload field)</span></label>
+            <input type="text" name="${name}[configuration][coalesce_key]" placeholder="chat_id" autocomplete="off" disabled
+                   class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md px-3 py-2 font-mono">
+            <p class="mt-1 text-xs text-gray-500">Events with the same value for this payload field, within the trigger&#39;s coalesce window, start one session; the rest are folded into it. <code>chat_id</code> makes one burst in one WhatsApp chat one session. Leave blank for one session per event.</p>
           </div>
         </div>
 

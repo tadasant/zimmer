@@ -141,6 +141,8 @@ class TurnSourceTest < ActiveSupport::TestCase
   # has to be added here on purpose — and nothing that gates a permission, a merge,
   # a scope or a spend may be one. Sessions::RecordCarplayEngagement reads the
   # surface to write a CarPlay-fit mark, which is presentation and triage only.
+  # McpEvents::Firing writes the trigger's source onto an event it folds into a session,
+  # as SlackEventJob does for a folded Slack message.
   READERS = %w[
     app/controllers/api/base_controller.rb
     app/controllers/api/v1/enqueued_messages_controller.rb
@@ -171,6 +173,7 @@ class TurnSourceTest < ActiveSupport::TestCase
     app/services/live_conversations/tool_bridge.rb
     app/services/mcp/context.rb
     app/services/mcp/enqueued_message_sections.rb
+    app/services/mcp_events/firing.rb
     app/services/mcp/tools/action_live_conversation.rb
     app/services/mcp/tools/action_session.rb
     app/services/mcp/tools/get_session.rb

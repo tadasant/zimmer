@@ -347,12 +347,12 @@ So tier 1 skips values on an explicit allowlist:
 - **By literal value.** `TRANSCRIPT_REDACTION_ALLOWLIST_VALUES`, comma-separated, for a public value
   that sits under a variable you would rather not exempt by name.
 - **By shape: configuration settings.** A value that is only lowercase letters joined by `_`, `-` or
-  `.` — no digit, no capital, like `webhook_shadow` — under a name that says configuration (`*_MODE`,
+  `.` — no digit, no capital, like `webhook_with_poll_fallback` — under a name that says configuration (`*_MODE`,
   `*_ENV`, `*_LEVEL`, `*_STRATEGY`, `*_REGION` and a few more; `CONFIG_VARIABLE_NAME`) is a mode or
   an enum, and is skipped. Such words are also inside identifiers everywhere in a transcript. Both
-  halves are required: a 16-letter app password or a diceware passphrase has the value shape too. `GITHUB_TRIGGER_INGEST_MODE=webhook_shadow` sat in the
-  secret bundle, and matching it rewrote the MCP tool name `mcp__zimmer__compare_github_webhook_shadow`
-  into `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`. Every fork that
+  halves are required: a 16-letter app password or a diceware passphrase has the value shape too. A mode word under
+  `GITHUB_TRIGGER_INGEST_MODE` sat in the secret bundle, and matching it rewrote an MCP tool name that
+  spelled the same word into `mcp__zimmer__compare_github_[REDACTED:ENV:GITHUB_TRIGGER_INGEST_MODE:14ch]`. Every fork that
   replayed that name got a 400 from the API
   ([#1603](https://github.com/tadasant/zimmer/issues/1603)). A credential-named variable is redacted
   whatever its suffix or value.
@@ -383,11 +383,23 @@ That cost a human a runnable command: an orchestrator session handed over
 `gcloud secrets list` prints to anyone with read access; the credential is the version's payload,
 which was never in the message.
 
-After those two nouns only, the rule now declines a value that is shaped like a public identifier:
+After those two nouns only, the rule declines a value that is shaped like a public identifier:
 lowercase and digits, in at least three separator-joined segments, no segment longer than 12
 characters, and more than half the segments carrying a letter outside the hex alphabet. That last
 condition is what keeps a UUID (`550e8400-e29b-41d4-a716-446655440000`) and a hyphen-grouped hex key
-redacted — both are real session-token formats and neither has a letter in `[g-z]`. Compound names
+redacted — both are real session-token formats and neither has a letter in `[g-z]`.
+
+The identifier may also end in one UPPER_SNAKE run, because secrets are commonly named after the
+environment variable they feed. `--secret=strad-staging-ADMIN_BOOTSTRAP_TOKEN` came back as
+`--secret=[REDACTED:MATCH:ENV_SECRET:35ch]` in a walkthrough a human had to follow
+([session 29971](https://zimmer.tadasant.com/sessions/29971)). The run is held to env-var spelling:
+its segments are joined by `_` only, it comes last, each segment is all capitals or all digits, and
+a capitals segment of four or more letters has a vowel (`Y` counts). A bare
+`STRAD_ADMIN_BOOTSTRAP_TOKEN` and `prod/DATABASE_URL` pass. These still redact:
+`ABCD-EFGH-IJKL-MNOP` (groups joined by hyphens), `prod-KEYS-store-name` (an upper run in the
+middle), `ADMIN_Bootstrap_TOKEN` (mixed case in a segment), `JBSE_Y3DP_EHPK_3PXP` (a base32 secret
+grouped with `_`), `QWRT_BAKE_LOVE_MANE` (a group with no vowel) and `DEAD_BEEF_CAFE_FACE`
+(upper-case hex). Compound names
 (`client_secret`, `api_key`, `password`, `passphrase`) are untouched by any of this, so
 `password=correct-horse-battery-staple` still redacts.
 

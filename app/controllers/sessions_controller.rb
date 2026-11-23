@@ -928,6 +928,7 @@ class SessionsController < ApplicationController
     [
       turbo_stream.remove(dom_id(session)),
       turbo_stream.remove(helpers.user_view_row_dom_id(session)),
+      turbo_stream.remove(helpers.board_v2_row_dom_id(session)),
       flash_stream(notice: notice)
     ] + session_chrome_streams(session)
   end
@@ -961,8 +962,15 @@ class SessionsController < ApplicationController
       # trash view lists archived and live sessions together), and unarchiving
       # fires broadcast_update_to_sessions_index, which replaces it in place.
       # The session page's own chrome rides along in this response rather than
-      # waiting on the broadcast — see #session_chrome_streams.
-      respond_with_flash(notice: notice, location: @session, streams: session_chrome_streams(@session))
+      # waiting on the broadcast — see #session_chrome_streams. So does the
+      # composer: the trash is the one status with no composer at all, and the
+      # restored session is ready for a follow-up, so the reply puts it back
+      # into the placeholder _follow_up_form leaves behind while archived.
+      respond_with_flash(
+        notice: notice,
+        location: @session,
+        streams: session_chrome_streams(@session) + [ restored_follow_up_form_stream(@session) ]
+      )
     else
       respond_with_flash(alert: "Failed to restore session: #{result.error}", location: @session)
     end
@@ -1067,16 +1075,29 @@ class SessionsController < ApplicationController
   private :restored_row_stream
 
   # The same restore for Your board v2: into the session's own category list,
-  # whose controller re-sorts by last touched when a row arrives. A no-op on any
+  # whose controller re-sorts by last touched when a card arrives. A no-op on any
   # other page, and when that category is snoozed or backlogged (no list in the DOM).
   def restored_board_v2_row_stream(session)
     turbo_stream.prepend(
       helpers.board_v2_list_dom_id(session.board_category_id),
-      partial: "sessions/user_view_row",
-      locals: { agent_session: session, board_v2: true }
+      partial: "sessions/board_v2_row",
+      locals: { agent_session: session }
     )
   end
   private :restored_board_v2_row_stream
+
+  # The composer for a session just restored from the trash. A no-op when the
+  # click came from a dashboard card, where the target is absent — the render and
+  # skills lookup are still paid there, since the server cannot tell which page
+  # sent the click.
+  def restored_follow_up_form_stream(session)
+    turbo_stream.replace(
+      "session_#{session.id}_follow_up_form",
+      partial: "sessions/follow_up_form",
+      locals: { agent_session: session, session_skills: ClaudeSkillsCacheService.get_for_session(session) }
+    )
+  end
+  private :restored_follow_up_form_stream
 
   # The two bits of session-page chrome that encode a session's status: the badge
   # and the header's action buttons (Restore vs Pause/Trash). Session#broadcast_

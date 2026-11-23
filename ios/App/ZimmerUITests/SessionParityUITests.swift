@@ -247,6 +247,56 @@ final class BoardViewUITests: XCTestCase {
         app.buttons["select.done"].tap()
     }
 
+    /// Your board v2: Last Touched's rows under the person's categories, Uncategorized first; a
+    /// collapsed category opens with a tap; a row moves into a category from its long press;
+    /// a backlogged category waits in the tray at the foot.
+    func test_your_board_v2_groups_rows_under_categories_and_moves_one() throws {
+        let app = launch(["-ZimmerFixtureView", "board_v2", "-ZimmerFixtureFilter", "active"])
+        let uncategorized = app.descendants(matching: .any)["section.Uncategorized"]
+        let ios = app.descendants(matching: .any)["section.iOS app"]
+        let ops = app.descendants(matching: .any)["section.Ops"]
+        XCTAssertTrue(uncategorized.waitForExistence(timeout: timeout))
+        XCTAssertTrue(ios.waitForExistence(timeout: timeout))
+        XCTAssertTrue(ops.exists)
+
+        // Uncategorized first, most recently touched first: Postgres (3m) above the merge (30m).
+        let postgres = row(app, 1035), merge = row(app, 1038), carplay = row(app, 1042)
+        XCTAssertTrue(postgres.waitForExistence(timeout: timeout))
+        XCTAssertLessThan(uncategorized.frame.minY, postgres.frame.minY)
+        XCTAssertLessThan(postgres.frame.minY, merge.frame.minY)
+        XCTAssertLessThan(merge.frame.minY, ios.frame.minY)
+        XCTAssertLessThan(ios.frame.minY, carplay.frame.minY, "the CarPlay scene is in iOS app")
+        // Ops is collapsed: its header, not its rows. The backlogged Someday is in the tray.
+        XCTAssertFalse(row(app, 1027).exists, "a collapsed category draws no rows")
+        XCTAssertTrue(app.descendants(matching: .any)["section.tucked"].waitForExistence(timeout: timeout))
+        XCTAssertFalse(app.descendants(matching: .any)["section.Someday"].exists, "a backlogged category is not a section")
+        photograph(app, named: "board-v2")
+
+        // Move the Postgres question into iOS app from its long press.
+        let move = pressForMenu(app, postgres, offering: "Move to Category")
+        XCTAssertTrue(move.exists, "the row's menu offers Move to Category")
+        move.tap()
+        let target = app.buttons["iOS app"].firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: timeout))
+        target.tap()
+        // The row slides there, so its place is read until it settles.
+        var placed = false
+        for _ in 0..<Int(timeout * 2) {
+            if ios.frame.minY < postgres.frame.minY && postgres.frame.minY < carplay.frame.minY { placed = true; break }
+            _ = XCTWaiter().wait(for: [XCTestExpectation(description: "the row moving")], timeout: 0.5)
+        }
+        XCTAssertTrue(placed, "the row sits under iOS app, touched more recently than the CarPlay scene")
+        XCTAssertLessThan(merge.frame.minY, ios.frame.minY, "Uncategorized keeps the merge")
+
+        // Tap Ops open: its rows appear.
+        ops.tap()
+        let deployKey = row(app, 1027)
+        // Near the foot of the list, so it may need bringing on screen before its cell exists.
+        for _ in 0..<3 where !deployKey.waitForExistence(timeout: 5) { app.swipeUp() }
+        XCTAssertTrue(deployKey.exists, "an expanded category draws its rows")
+        photograph(app, named: "board-v2-moved")
+    }
+
     func test_refresh_all_reports_what_it_did() throws {
         let app = launch(["-ZimmerFixtureFilter", "active"])
         app.buttons["board.menu"].tap()
@@ -283,6 +333,19 @@ final class BoardViewUITests: XCTestCase {
     private func waitForDisappearance(_ element: XCUIElement) -> Bool {
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// A screenshot kept with the result, and beside the result bundle as `test-<name>.png`,
+    /// where a pull request can take it from the artifact.
+    private func photograph(_ app: XCUIApplication, named name: String) {
+        let shot = app.screenshot()
+        let attachment = XCTAttachment(screenshot: shot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        if let directory = ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"], !directory.isEmpty {
+            try? shot.pngRepresentation.write(to: URL(fileURLWithPath: directory).appendingPathComponent("test-\(name).png"))
+        }
     }
 }
 

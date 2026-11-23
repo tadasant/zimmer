@@ -37,6 +37,12 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     # The global fixtures carry credentials for servers this stubbed catalog does
     # not contain, which would show up as "unclaimed" in every assertion below.
     McpOauthCredential.delete_all
+    # These tests are about the page, not the sign-in wall. The wall reads its
+    # settings through the same SecretProviders.chain the secret-store tests
+    # stub to fail, and a cold read through a failing store answers 503 before
+    # the controller runs. Pin the gate off so the store's health reaches only
+    # the page under test.
+    WebAuth::Configuration.stubs(:current).returns(WebAuth::Configuration.new({}))
   end
 
   test "index lists every catalog server" do

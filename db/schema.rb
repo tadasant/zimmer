@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_020100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -395,19 +395,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
     t.index ["payload"], name: "index_gate_decisions_on_payload", using: :gin
     t.index ["source_key"], name: "index_gate_decisions_on_source_key", unique: true
     t.index ["writing_session_id"], name: "index_gate_decisions_on_writing_session_id"
-  end
-
-  create_table "github_pr_shadow_observations", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.boolean "hit", null: false
-    t.string "kind", null: false
-    t.string "mode", null: false
-    t.string "pr_url", null: false
-    t.bigint "session_id", null: false
-    t.datetime "signaled_at"
-    t.index ["created_at"], name: "index_github_pr_shadow_observations_on_created_at"
-    t.index ["kind", "created_at"], name: "index_github_pr_shadow_observations_on_kind_and_created_at"
-    t.index ["session_id"], name: "index_github_pr_shadow_observations_on_session_id"
   end
 
   create_table "github_pr_signals", force: :cascade do |t|
@@ -1527,17 +1514,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
     t.index ["trigger_condition_id", "group_key", "anchor_ts"], name: "idx_on_trigger_condition_id_group_key_anchor_ts_6f0c3fb4e9"
   end
 
-  create_table "trigger_shadow_observations", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.string "delivery_id"
-    t.string "event_key", null: false
-    t.string "path", null: false
-    t.bigint "trigger_condition_id", null: false
-    t.index ["created_at"], name: "index_trigger_shadow_observations_on_created_at"
-    t.index ["trigger_condition_id", "created_at"], name: "idx_on_trigger_condition_id_created_at_c47c1d0772"
-    t.index ["trigger_condition_id", "event_key", "delivery_id"], name: "index_trigger_shadow_observations_on_delivery", unique: true, where: "(delivery_id IS NOT NULL)"
-  end
-
   create_table "triggers", force: :cascade do |t|
     t.string "agent_root_name", null: false
     t.datetime "burst_active_until"
@@ -1791,7 +1767,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_22_213100) do
   add_foreign_key "trigger_conditions", "triggers"
   add_foreign_key "trigger_event_claims", "sessions", on_delete: :nullify
   add_foreign_key "trigger_event_claims", "trigger_conditions", on_delete: :cascade
-  add_foreign_key "trigger_shadow_observations", "trigger_conditions", on_delete: :cascade
   add_foreign_key "work_backlog_items", "sessions", column: "held_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "work_backlog_items", "sessions", column: "started_session_id", on_delete: :nullify

@@ -7,20 +7,18 @@ module Webhooks
   # Both settings resolve from encrypted credentials first and process ENV second. Unlike the
   # Slack bot token (SlackService.setting), they are not read from the Parameter Store.
   #
-  # The mode is per source so one provider can move without the other. Three values are accepted:
+  # The mode is per source so one provider can move without the other. Two values are accepted:
   #
   #   poll                        the default, and what an unset or unrecognised value means.
   #                               The webhook endpoint is inert.
-  #   webhook_shadow              GitHub only. The endpoint accepts and records signed deliveries,
-  #                               and GithubEventJob evaluates every condition against them, but it
-  #                               fires nothing and claims nothing: it records what it WOULD have
-  #                               fired (TriggerShadowObservation). The poller fires exactly as on
-  #                               `poll` and records what it fired, and
-  #                               Webhooks::GithubShadowComparison lines the two up. It is the
-  #                               rehearsal before `webhook_with_poll_fallback`.
   #   webhook_with_poll_fallback  the endpoint accepts signed deliveries and fires triggers
   #                               from them; the poller keeps running as the backstop, and
   #                               TriggerEventClaim keeps the two from firing one event twice.
+  #
+  # The GitHub sources once had a third, `webhook_shadow`, a rehearsal that recorded what the
+  # webhook would have done without letting it act. It is gone. A deployment that still carries
+  # it is read as `webhook_with_poll_fallback`, the mode every shadow rehearsal was leading to,
+  # with a WARN — never as `poll`, which would stop the webhook ingesting without a word.
   #
   # `webhook` alone — the endpoint with no poller behind it — is not a mode. For Slack the
   # decision on #141 is that the Events API replaces SlackTriggerPollerJob and the poller and its
@@ -28,9 +26,12 @@ module Webhooks
   # the poller, not by a switch that parks it.
   class Source
     POLL = "poll"
-    WEBHOOK_SHADOW = "webhook_shadow"
     WEBHOOK_WITH_POLL_FALLBACK = "webhook_with_poll_fallback"
-    MODES = [ POLL, WEBHOOK_SHADOW, WEBHOOK_WITH_POLL_FALLBACK ].freeze
+    MODES = [ POLL, WEBHOOK_WITH_POLL_FALLBACK ].freeze
+
+    # The removed GitHub rehearsal mode. Read, where a source degrades it, as
+    # WEBHOOK_WITH_POLL_FALLBACK; see the class comment.
+    REMOVED_SHADOW_MODE = "webhook_shadow"
 
     attr_reader :name, :mode_key, :secret_key
 
@@ -55,7 +56,7 @@ module Webhooks
         name: "github", mode_key: "GITHUB_TRIGGER_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
         served_conditions: -> { TriggerCondition.github },
         expects_daily_deliveries: false,
-        shadow_supported: true
+        degrades_removed_shadow: true
       )
     end
 
@@ -69,7 +70,7 @@ module Webhooks
       @github_prs ||= new(
         name: "github_prs", mode_key: "GITHUB_PR_INGEST_MODE", secret_key: "GITHUB_WEBHOOK_SECRET",
         expects_daily_deliveries: false,
-        shadow_supported: true
+        degrades_removed_shadow: true
       )
     end
 
@@ -81,9 +82,9 @@ module Webhooks
     attr_reader :expects_daily_deliveries
 
     def initialize(name:, mode_key:, secret_key:, served_conditions: -> { TriggerCondition.none }, expects_daily_deliveries: true,
-                   shadow_supported: false)
+                   degrades_removed_shadow: false)
       @name = name
-      @shadow_supported = shadow_supported
+      @degrades_removed_shadow = degrades_removed_shadow
       @mode_key = mode_key
       @secret_key = secret_key
       @served_conditions = served_conditions
@@ -101,32 +102,21 @@ module Webhooks
     def mode
       raw = setting(mode_key).to_s.strip
       return POLL if raw.empty?
-      return raw if modes.include?(raw)
+      return raw if MODES.include?(raw)
+
+      if raw == REMOVED_SHADOW_MODE && @degrades_removed_shadow
+        warn_removed_shadow
+        return WEBHOOK_WITH_POLL_FALLBACK
+      end
 
       warn_unrecognised(raw)
       POLL
     end
 
-    # The modes this source accepts. `webhook_shadow` only where the webhook job knows how to
-    # evaluate without firing.
-    def modes
-      @shadow_supported ? MODES : MODES - [ WEBHOOK_SHADOW ]
-    end
-
-    # Whether this source's webhook FIRES triggers. Says nothing about whether it can verify a
-    # delivery — see #accepting?. False in `webhook_shadow`, where the poller alone fires.
+    # Whether this source's webhook fires. Says nothing about whether it can verify a
+    # delivery — see #accepting?.
     def webhook_enabled?
       mode == WEBHOOK_WITH_POLL_FALLBACK
-    end
-
-    # Whether the webhook only records what it would fire. See `webhook_shadow` above.
-    def shadow?
-      mode == WEBHOOK_SHADOW
-    end
-
-    # Whether the endpoint takes deliveries at all: firing them, or shadowing them.
-    def receiving?
-      webhook_enabled? || shadow?
     end
 
     def signing_secret
@@ -137,7 +127,7 @@ module Webhooks
     # switched-on source with no secret could verify nothing, so it stays as inert as a
     # switched-off one.
     def accepting?
-      receiving? && signing_secret.present?
+      webhook_enabled? && signing_secret.present?
     end
 
     private
@@ -156,12 +146,20 @@ module Webhooks
       why = if raw == "webhook"
         "`webhook` without a poller is not a mode: a poller is replaced by deleting it " \
         "(tadasant/zimmer#141), not by switching it off. Use `#{WEBHOOK_WITH_POLL_FALLBACK}`."
-      elsif raw == WEBHOOK_SHADOW
-        "`#{WEBHOOK_SHADOW}` is a GitHub-only mode."
       else
-        "Expected one of #{modes.join(', ')}."
+        "Expected one of #{MODES.join(', ')}."
       end
       Rails.logger.warn("[Webhooks::Source] #{mode_key}=#{raw.inspect} is not a mode Zimmer accepts; treating #{name} as `#{POLL}`. #{why}")
+    end
+
+    # Once per process, like #warn_unrecognised; config/initializers/webhook_ingest_modes.rb reads
+    # every mode at boot so the line lands in the boot log rather than on the first delivery.
+    def warn_removed_shadow
+      return if @warned.include?(REMOVED_SHADOW_MODE)
+
+      @warned << REMOVED_SHADOW_MODE
+      Rails.logger.warn("[Webhooks::Source] #{mode_key}=#{REMOVED_SHADOW_MODE.inspect} is a removed mode; treating #{name} as " \
+                        "`#{WEBHOOK_WITH_POLL_FALLBACK}`. Set #{mode_key}=#{WEBHOOK_WITH_POLL_FALLBACK} to silence this.")
     end
   end
 end

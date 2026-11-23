@@ -151,13 +151,13 @@ class BroadcastDelegationTest < ActiveSupport::TestCase
     )
   end
 
-  test "broadcast_remove_from_sessions_index removes the card from the index stream" do
-    assert_broadcast_arguments(
-      -> { @session.send(:broadcast_remove_from_sessions_index) },
-      action: :remove,
-      stream: "sessions_index_individual",
-      target: ActionView::RecordIdentifier.dom_id(@session)
-    )
+  test "broadcast_remove_from_sessions_index removes the card, and Your board v2's wrapper, from the index stream" do
+    captured = capture_turbo_broadcasts { @session.send(:broadcast_remove_from_sessions_index) }
+
+    assert_equal [
+      [ :remove, "sessions_index_individual", ActionView::RecordIdentifier.dom_id(@session) ],
+      [ :remove, "sessions_index_individual", "board_v2_row_#{@session.id}" ]
+    ], captured.map { |b| [ b.action, b.stream, b.target ] }
   end
 
   test "an archived session is delivered like any other, for the page's filter to judge" do

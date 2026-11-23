@@ -94,12 +94,9 @@ Rails.application.routes.draw do
     # is hand-authored, and an edited or deleted claim would re-fire a message the other path
     # already answered.
     resources :trigger_event_claims, only: [ :index, :show ]
-    resources :trigger_shadow_observations, only: [ :index, :show ]
     resources :webhook_deliveries, only: [ :index, :show ]
     # Read-only: Github::PrWebhookIngest writes every row from a verified delivery.
     resources :github_pr_signals, only: [ :index, :show ]
-    # Read-only: Github::PrWebhookIngest.observe writes every row; compare_github_pr_webhook_shadow reads them.
-    resources :github_pr_shadow_observations, only: [ :index, :show ]
     # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
     resources :mcp_event_webhook_subscriptions, only: [ :index, :show ]
     # Read-only: PiSessionKeys owns every row (see PiProviderKeyDashboard).
@@ -366,6 +363,12 @@ Rails.application.routes.draw do
         # What stopped the phone short of a registration, logged at WARN.
         post :failure, on: :collection
       end
+
+      # Your board v2's writes from the iOS app; see Api::V1::BoardCategoriesController.
+      resources :board_categories, only: [ :update ] do
+        member { patch :visibility }
+      end
+      patch "sessions/:id/board_category", to: "board_categories#assign", as: :assign_board_category_session
 
       resources :sessions do
         collection do

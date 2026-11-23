@@ -1,0 +1,40 @@
+<%# One session on Your board v2: the Last Touched card, with a drag handle beside
+    it. The card is `sessions/session_card_frame` itself, not a copy, so the two
+    views show a session the same way and stay that way.
+
+    The handle and the data board-v2 sorts and counts by live on this wrapper,
+    outside the card's <turbo-frame>. Anything that replaces the frame (Restart's
+    reply, for one) redraws the card and leaves the handle and the category
+    placement alone.
+
+    `data-visibility-wrapper` tells the visibility controller to take this
+    wrapper with the card when Snooze or Hide takes the card off the board, so no
+    empty handle is left behind. Trash takes it by id (`board_v2_row_dom_id`).
+
+    Locals:
+      agent_session - the session %>
+<li id="<%= board_v2_row_dom_id(agent_session) %>"
+    class="relative flex min-w-0 items-stretch sm:gap-1.5"
+    data-visibility-wrapper
+    data-board-v2-target="row"
+    data-session-id="<%= agent_session.id %>"
+    data-last-touched="<%= agent_session.last_user_activity_at.to_f %>">
+  <%# The grip. SortableJS only starts a drag from inside it, so it has to read
+      as something to grab: a grey tab the card's full height, with the dots in
+      the middle. On a wide screen it is a column beside the card. On a phone a
+      column would cost the card the width its header needs, so the tab is laid
+      over the card's own 16px left padding instead.
+
+      `touch-none` hands a touch that starts here to the drag rather than to
+      the page's scroll, which iOS would otherwise claim before SortableJS's
+      hold delay runs out. %>
+  <span class="absolute inset-y-0 left-0 z-10 flex w-4 shrink-0 cursor-grab touch-none select-none items-center justify-center rounded-l-lg bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700 active:cursor-grabbing sm:static sm:w-6 sm:rounded-lg"
+        data-board-v2-target="handle"
+        aria-hidden="true"
+        title="Drag to move this session to another category">
+    <svg class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M7 4a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zM7 9a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2zm-6 5a1 1 0 100 2 1 1 0 000-2zm6 0a1 1 0 100 2 1 1 0 000-2z"/></svg>
+  </span>
+  <div class="min-w-0 flex-1">
+    <%= render "sessions/session_card_frame", agent_session: agent_session %>
+  </div>
+</li>

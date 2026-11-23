@@ -18,15 +18,15 @@
 # the sender: the receiver's path gets a service-token policy the delivering server presents, and the
 # per-subscription HMAC is checked behind it (see limitations.md and triggers.md).
 #
-# The extension is an unmerged draft. SPEC_REVISION is the head commit this implementation was
-# written against; docs/src/content/docs/sessions/mcp-events-spec-pin.md records what it covers and
+# SEP-3415 merged as Final on 2026-11-19. SPEC_REVISION is the commit this implementation was
+# checked against, the SEP's merge commit; docs/src/content/docs/sessions/mcp-events-spec-pin.md records what it covers and
 # where it deliberately deviates. Bring both up to date whenever the SEP moves.
 module McpEvents
   # The extension's identifier, under `capabilities.extensions` in what a server declares.
   EXTENSION_ID = "io.modelcontextprotocol/events"
 
-  # The SEP-3415 head commit this implementation follows.
-  SPEC_REVISION = "4165cc2e580afa795842002f631edbbe17c63757"
+  # The SEP-3415 revision this implementation follows: its merge commit.
+  SPEC_REVISION = "8a18b4b3292b9f9b3aee73f6325f9f62f19a89f9"
 
   # The extension's error codes, by name. The SEP calls the numbers provisional, so nothing else
   # names them.

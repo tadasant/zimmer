@@ -27,6 +27,7 @@ class TriggersMcpEventControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-trigger-form-target=mcpEventConfig]:not(.hidden)"
     assert_select "input[name=?]:not([disabled])", "trigger[trigger_conditions_attributes][0][configuration][server]"
     assert_select "textarea[name=?]:not([disabled])", "trigger[trigger_conditions_attributes][0][configuration][arguments]"
+    assert_select "input[name=?]:not([disabled])", "trigger[trigger_conditions_attributes][0][configuration][coalesce_key]"
   end
 
   test "another condition type renders the MCP event fields hidden and disabled" do
@@ -45,7 +46,7 @@ class TriggersMcpEventControllerTest < ActionDispatch::IntegrationTest
       trigger_conditions_attributes: {
         "0" => { condition_type: "mcp_event", configuration: {
           server: "slack-zimmer", event_name: FakeEventsMcpServer::EVENT_NAME,
-          arguments: '{"addressed_to_bot": true}', payload_filters: '{"user_id": ["U1"]}'
+          arguments: '{"addressed_to_bot": true}', payload_filters: '{"user_id": ["U1"]}', coalesce_key: "channel_id"
         } }
       }
     } }
@@ -55,9 +56,11 @@ class TriggersMcpEventControllerTest < ActionDispatch::IntegrationTest
     condition = trigger.trigger_conditions.sole
     assert_equal({ "addressed_to_bot" => true }, condition.mcp_event_arguments)
     assert_equal({ "user_id" => [ "U1" ] }, condition.mcp_event_payload_filters)
+    assert_equal "channel_id", condition.mcp_event_coalesce_key
 
     get edit_trigger_path(trigger)
     assert_response :success
+    assert_select "input[name=?][value=channel_id]", "trigger[trigger_conditions_attributes][0][configuration][coalesce_key]"
     assert_includes response.body, "{&quot;addressed_to_bot&quot;:true}"
   end
 
@@ -80,13 +83,33 @@ class TriggersMcpEventControllerTest < ActionDispatch::IntegrationTest
       prompt_template: "{{event_id}}",
       trigger_conditions_attributes: [ { condition_type: "mcp_event", configuration: {
         server: "slack-zimmer", event_name: FakeEventsMcpServer::EVENT_NAME,
-        arguments: { addressed_to_bot: true, channel_ids: [ "C1", "C2" ] }, payload_filters: { user_id: [ "U1" ] }
+        arguments: { addressed_to_bot: true, channel_ids: [ "C1", "C2" ] }, payload_filters: { user_id: [ "U1" ] },
+        coalesce_key: "channel_id"
       } } ]
     }, as: :json
 
     assert_response :created
     condition = Trigger.find_by!(name: "Slack via events (API)").trigger_conditions.sole
     assert_equal({ "addressed_to_bot" => true, "channel_ids" => [ "C1", "C2" ] }, condition.mcp_event_arguments)
+    assert_equal "channel_id", condition.mcp_event_coalesce_key
+    assert_equal "channel_id", response.parsed_body.dig("trigger", "conditions", 0, "configuration", "coalesce_key")
+  end
+
+  test "action_trigger sets coalesce_key, and refuses an update that would silently drop it" do
+    tool = Mcp::Tools::ActionTrigger.new(context: Mcp::Context.new(tool_groups: "triggers"))
+    config = { "server" => "slack-zimmer", "event_name" => FakeEventsMcpServer::EVENT_NAME, "coalesce_key" => "channel_id" }
+    tool.call("action" => "create", "name" => "Coalesced via MCP", "trigger_type" => "mcp_event", "agent_root_name" => "zimmer",
+              "prompt_template" => "{{event_id}}", "configuration" => config)
+    trigger = Trigger.find_by!(name: "Coalesced via MCP")
+    assert_equal "channel_id", trigger.trigger_conditions.sole.mcp_event_coalesce_key
+
+    error = assert_raises(Mcp::ToolError) do
+      tool.call("action" => "update", "id" => trigger.id, "configuration" => config.except("coalesce_key"))
+    end
+    assert_includes error.message, "omits \"coalesce_key\""
+
+    tool.call("action" => "update", "id" => trigger.id, "configuration" => config.merge("coalesce_key" => nil))
+    assert_nil trigger.reload.trigger_conditions.sole.mcp_event_coalesce_key
   end
 
   test "both surfaces answer which servers publish events" do

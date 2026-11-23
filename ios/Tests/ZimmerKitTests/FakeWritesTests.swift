@@ -46,6 +46,7 @@ final class FakeWritesTests: XCTestCase {
             "queue": { try await $0.deleteQueued(1042, message: 1) },
             "model": { _ = try await $0.updateModel(1038, model: "claude-opus-5-5") },
             "catalog": { _ = try await $0.updateSelection(1038, .skills, to: []) },
+            "board_category": { _ = try await $0.assignBoardCategory(1038, categoryID: 1) },
         ]
         XCTAssertEqual(Set(writes.keys), FakeZimmerAPI.refusableWrites, "every refusable write has a call here, and nothing else is listed")
         for (name, write) in writes {

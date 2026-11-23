@@ -1,7 +1,7 @@
 import SwiftUI
 import ZimmerKit
 
-/// Sessions, in one of the web UI's four board views, filtered by status and by board
+/// Sessions, in one of the web UI's board views (Your board v2 by default), filtered by status and by board
 /// visibility as the web UI's board is. "Needs input" is the default filter and the first
 /// chip: the phone is for the sessions waiting on a person. Swipe right to star, left to
 /// trash or snooze; press and hold for everything else the web UI's card and its row menu
@@ -165,7 +165,7 @@ struct SessionListView: View {
                             .moveDisabled(session.isPriority)
                     }
                     .onMove(perform: moveHandler(for: section))
-                    if section.sessions.isEmpty {
+                    if section.sessions.isEmpty && !section.isCollapsed {
                         Text("None.")
                             .font(.subheadline)
                             .foregroundStyle(Theme.inkMute)
@@ -173,11 +173,24 @@ struct SessionListView: View {
                             .listRowSeparator(.hidden)
                     }
                 } header: {
-                    if let title = section.title {
+                    if let category = section.category {
+                        CategoryHeader(category: category, count: section.count)
+                    } else if let title = section.title {
                         Text(title)
                             .themeLabel()
                             .accessibilityIdentifier("section.\(title)")
                     }
+                }
+            }
+            if model.view == .boardV2, model.searchText.isEmpty, !model.tuckedCategories.isEmpty {
+                Section {
+                    ForEach(model.tuckedCategories) { category in
+                        TuckedCategoryRow(category: category)
+                    }
+                } header: {
+                    Text("Snoozed & backlogged categories")
+                        .themeLabel()
+                        .accessibilityIdentifier("section.tucked")
                 }
             }
             if model.listIncomplete {
@@ -488,6 +501,64 @@ private struct SwipeableSessionRow: View {
     }
 }
 
+/// A Your board v2 category's header: its name and how many sessions it holds, and a tap
+/// that collapses it to the header or opens it again, as the web board's chevron does.
+private struct CategoryHeader: View {
+    @EnvironmentObject private var model: AppModel
+    let category: BoardCategory
+    let count: Int
+
+    var body: some View {
+        Button {
+            Task { await model.setCollapsed(category, !category.collapsed) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: category.collapsed ? "chevron.right" : "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                Text(category.name)
+                Text("\(count)")
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.inkMute)
+                Spacer(minLength: 0)
+            }
+            .themeLabel()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(category.name), \(count) \(count == 1 ? "session" : "sessions")")
+        .accessibilityValue(category.collapsed ? "Collapsed" : "Expanded")
+        .accessibilityHint(category.collapsed ? "Shows its sessions" : "Hides its sessions")
+        .accessibilityIdentifier("section.\(category.name)")
+    }
+}
+
+/// A snoozed or backlogged Your board v2 category in the tray at the board's foot: why it is
+/// away, how many sessions went with it, and *Wake*, as the web board's tray offers.
+private struct TuckedCategoryRow: View {
+    @EnvironmentObject private var model: AppModel
+    let category: BoardCategory
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(category.name)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Text("\(category.tuckedLabel) · \(category.sessionCount ?? 0) \((category.sessionCount ?? 0) == 1 ? "session" : "sessions")")
+                    .font(.caption)
+                    .foregroundStyle(Theme.inkSoft)
+            }
+            Spacer(minLength: 0)
+            Button("Wake") { Task { await model.wake(category) } }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("category.wake.\(category.id)")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("category.tucked.\(category.id)")
+    }
+}
+
 private struct SearchKey: Hashable {
     let text: String
     let scope: SearchScope
@@ -561,6 +632,26 @@ private struct SessionContextMenu: View {
                 }
             } label: {
                 Label("View PR (\(session.pullRequests.count))", systemImage: "arrow.triangle.pull")
+            }
+        }
+        // Your board v2's drag into a category, as a menu: every category on the board, and
+        // Uncategorized, with the one the session is in ticked.
+        if model.view == .boardV2, session.status != .archived {
+            Menu {
+                Button {
+                    Task { await model.move(session, to: nil) }
+                } label: {
+                    if session.boardCategoryID == nil { Label(BoardView.uncategorized, systemImage: "checkmark") } else { Text(BoardView.uncategorized) }
+                }
+                ForEach(model.boardCategories.filter(\.onBoard)) { category in
+                    Button {
+                        Task { await model.move(session, to: category) }
+                    } label: {
+                        if session.boardCategoryID == category.id { Label(category.name, systemImage: "checkmark") } else { Text(category.name) }
+                    }
+                }
+            } label: {
+                Label("Move to Category", systemImage: "folder")
             }
         }
         // The web card's heart, on the views that draw cards.

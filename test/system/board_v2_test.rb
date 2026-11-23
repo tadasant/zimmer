@@ -87,6 +87,36 @@ class BoardV2Test < ApplicationSystemTestCase
     end
   end
 
+  # Press a card's grip, lift it far enough for SortableJS to start the drag
+  # (which is when the drop bar appears), then carry it to the bar's target for
+  # `category` (nil for Uncategorized) and release. The target's position is
+  # read only once the bar is on screen.
+  def drag_to_bar(handle_css, category)
+    drag_to_bar_point(handle_css, "[data-board-v2-drop-zone][data-category-id='#{category&.id}']")
+  end
+
+  # The same carry, released on whatever `onto_css` names inside the bar.
+  def drag_to_bar_point(handle_css, onto_css)
+    page.execute_script("document.querySelector(#{handle_css.to_json}).scrollIntoView({ block: 'center' })")
+    from = viewport_centre(handle_css)
+    driver = page.driver.browser
+    driver.action.move_to_location(from[0], from[1]).click_and_hold
+      .move_to_location(from[0] + 6, from[1] + 6)
+      .move_to_location(from[0] + 12, from[1] + 12)
+      .move_to_location(from[0] + 18, from[1] + 18)
+      .perform
+    assert_selector onto_css
+    to = viewport_centre(onto_css)
+    action = driver.action
+    steps = 10
+    (1..steps).each do |i|
+      fraction = i.to_f / steps
+      action = action.move_to_location((from[0] + 18 + ((to[0] - from[0] - 18) * fraction)).to_i,
+        (from[1] + 18 + ((to[1] - from[1] - 18) * fraction)).to_i)
+    end
+    action.pause(duration: 0.3).release.perform
+  end
+
   def viewport_centre(css)
     find(css)
     page.evaluate_script(<<~JS)
@@ -105,22 +135,127 @@ class BoardV2Test < ApplicationSystemTestCase
 
   test "dragging a row into another category saves it" do
     visit_board
-    drag("#user_view_row_#{@loose.id} [data-board-v2-target='handle']", "#user_view_row_#{@research_row.id}")
+    drag("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", "#board_v2_row_#{@research_row.id}")
 
-    assert_selector "#board_v2_list_#{@research.id} #user_view_row_#{@loose.id}"
+    assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
     assert wait_for { @loose.reload.board_category_id == @research.id }, "the drop was not saved"
+  end
+
+  # The drop bar is what makes a far-away category reachable: with a board of
+  # tall cards most categories are screens below the card in hand.
+  test "a card dropped on the drop bar moves to that category, and back out, and both survive a reload" do
+    visit_board
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+
+    drag_to_bar("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", @research)
+    assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+    assert wait_for { @loose.reload.board_category_id == @research.id }, "the drop on the bar was not saved"
+    visit_board
+    assert_selector "#board_v2_list_#{@research.id} #board_v2_row_#{@loose.id}"
+
+    drag_to_bar("#board_v2_row_#{@infra_row.id} [data-board-v2-target='handle']", nil)
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@infra_row.id}"
+    assert wait_for { @infra_row.reload.board_category_id.nil? }, "the move back to Uncategorized was not saved"
+    visit_board
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@infra_row.id}"
+  end
+
+  # On the way down to the bar the card passes over other categories' lists.
+  # Letting go on the bar but off every target must not file it in whichever
+  # of those it last crossed; nor does dropping it on its own category.
+  test "a card released on the drop bar off every target, or on its own category, stays where it was" do
+    visit_board
+
+    drag_to_bar_point("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']",
+      "[data-board-v2-target='tray'] p")
+    assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@loose.id}"
+    assert_no_selector "[data-board-v2-target='tray']", visible: true
+
+    drag_to_bar("#board_v2_row_#{@infra_row.id} [data-board-v2-target='handle']", @infra)
+    assert_selector "#board_v2_list_#{@infra.id} #board_v2_row_#{@infra_row.id}"
+    assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-count]", text: "1"
+
+    sleep 0.5
+    assert_nil @loose.reload.board_category_id, "a release off every target was saved as a move"
+    assert_equal @infra.id, @infra_row.reload.board_category_id
   end
 
   test "dragging a category header reorders categories and survives a reload" do
     visit_board
     drag("[data-board-v2-target='category'][data-category-id='#{@research.id}'] [data-board-v2-category-handle]",
-      "[data-board-v2-target='category'][data-category-id='#{@infra.id}'] h3", dy: -6)
+      "[data-board-v2-target='category'][data-category-id='#{@infra.id}'] [data-board-v2-group-name]", dy: -6)
 
     assert wait_for { BoardCategory.ordered.where(id: [ @infra.id, @research.id ]).pluck(:id) == [ @research.id, @infra.id ] },
       "the category order was not saved"
     visit_board
     order = all("[data-board-v2-target='category']").map { |el| el["data-category-id"].to_i }
     assert_equal [ @research.id, @infra.id ], order & [ @research.id, @infra.id ]
+  end
+
+  # Each session is a Last Touched card in a wrapper that carries its handle; the
+  # card's own Backlog must take the wrapper too, not leave an empty handle.
+  test "backlogging a card from its menu takes its whole row off the board" do
+    visit_board
+    find("#board_v2_row_#{@research_row.id} button[aria-label='More actions for session #{@research_row.id}']").click
+    within("#board_v2_row_#{@research_row.id}") do
+      click_on "Snooze until…"
+      click_on "Move to backlog"
+    end
+
+    assert_no_selector "#board_v2_row_#{@research_row.id}"
+    assert_selector "[data-category-id='#{@research.id}'] [data-board-v2-count]", text: "0"
+    assert wait_for { @research_row.reload.backlogged? }, "the backlog was not saved"
+  end
+
+  test "trashing a card takes its whole row off the board" do
+    visit_board
+    within("#board_v2_row_#{@infra_row.id}") { click_on "Trash" }
+
+    assert_no_selector "#board_v2_row_#{@infra_row.id}"
+    assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-count]", text: "0"
+    assert wait_for { @infra_row.reload.archived? }, "the trash was not saved"
+  end
+
+  # At a phone width the card keeps nearly all of Last Touched's width: the handle
+  # is a strip over the card's own padding, not a column beside it.
+  test "at 375px the cards fit the screen and the handle stays reachable" do
+    page.driver.browser.manage.window.resize_to(375, 812)
+    visit_board
+
+    assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"),
+      "Your board v2 is wider than a 375px screen"
+    sticking_out = page.evaluate_script(<<~JS)
+      (function () {
+        const limit = document.documentElement.clientWidth;
+        return Array.from(document.querySelectorAll("#board_v2 *"))
+          .filter((el) => el.getBoundingClientRect().right > limit + 1)
+          .slice(0, 20)
+          .map((el) => `${el.tagName.toLowerCase()}.${el.classList.value} @ ${Math.round(el.getBoundingClientRect().right)}px`);
+      })()
+    JS
+    assert_empty sticking_out
+
+    handle = page.evaluate_script(<<~JS)
+      (function () {
+        const r = document.querySelector("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']").getBoundingClientRect();
+        return [r.width, r.height];
+      })()
+    JS
+    assert_operator handle[1], :>=, 100, "the phone handle should run the card's height"
+  end
+
+  # Trash detaches the card's frame and then the wrapper around it; a refusal
+  # (here, queued messages) has to put both back, card inside wrapper.
+  test "a refused trash puts the whole card back in its category" do
+    @infra_row.enqueued_messages.create!(content: "still queued", position: 1, status: "pending")
+    visit_board
+    within("#board_v2_row_#{@infra_row.id}") { click_on "Trash" }
+
+    assert_selector "#flash", text: "Archive anyway"
+    assert_selector "#board_v2_list_#{@infra.id} #board_v2_row_#{@infra_row.id} turbo-frame#session_#{@infra_row.id}", text: "infra one"
+    assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-count]", text: "1"
+    assert_not @infra_row.reload.archived?
   end
 
   test "collapsing a category survives a reload" do
@@ -130,6 +265,6 @@ class BoardV2Test < ApplicationSystemTestCase
     assert wait_for { @infra.reload.collapsed }, "the collapse was not saved"
     visit_board
     assert_selector "[data-category-id='#{@infra.id}'] [data-board-v2-body].hidden", visible: :all
-    assert_no_selector "#user_view_row_#{@infra_row.id}"
+    assert_no_selector "#board_v2_row_#{@infra_row.id}"
   end
 end

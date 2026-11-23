@@ -18,14 +18,8 @@ module Github
   # ---------------------------------------------------------------------
   #   poll                        the default. No signal is written and the pass polls exactly as
   #                               it always has.
-  #   webhook_shadow              signals are written and the pass still polls on its old cadence.
-  #                               Whenever a poll finds a change on a covered repository, it records
-  #                               whether a signal arrived for it first (GithubPrShadowObservation,
-  #                               read by `compare_github_pr_webhook_shadow`). It is the rehearsal
-  #                               before the next mode.
   #   webhook_with_poll_fallback  signals drive the evaluators. Polling continues as the backstop,
-  #                               at FALLBACK_POLL_INTERVAL. A fallback poll that finds a change no
-  #                               signal announced is recorded as a miss.
+  #                               at FALLBACK_POLL_INTERVAL.
   #
   # COVERAGE
   # --------
@@ -90,12 +84,7 @@ module Github
       Webhooks::Source.github_prs
     end
 
-    # Whether deliveries should be turned into signals at all.
-    def receiving?
-      source.receiving?
-    end
-
-    # Whether signals drive the pass, rather than only being observed.
+    # Whether deliveries are turned into signals and signals drive the pass.
     def driving?
       source.webhook_enabled?
     end
@@ -165,21 +154,20 @@ module Github
       #   a commit status on some other branch says nothing about a PR whose checks finished.
       # @return [Reading, nil] nil in `poll`, where nothing reads signals
       def self.for(refs, now: Time.current, ci_statuses: {})
-        return nil unless PrWebhookIngest.receiving?
+        return nil unless PrWebhookIngest.driving?
         return nil if refs.empty?
 
         pr_subjects = refs.map { |ref| GithubPrSignal.pr_subject(ref.owner, ref.repo, ref.number) }
         repo_subjects = refs.map { |ref| GithubPrSignal.repo_subject(ref.owner, ref.repo) }.uniq
-        new(refs, GithubPrSignal.latest_for(pr_subjects + repo_subjects), now: now, driving: PrWebhookIngest.driving?,
+        new(refs, GithubPrSignal.latest_for(pr_subjects + repo_subjects), now: now,
             ci_statuses: ci_statuses.is_a?(Hash) ? ci_statuses : {})
       end
 
-      def initialize(refs, signals, now:, driving:, ci_statuses: {})
+      def initialize(refs, signals, now:, ci_statuses: {})
         @ci_statuses = ci_statuses
         @refs = refs
         @signals = signals
         @now = now
-        @driving = driving
       end
 
       # Whether every repository this session tracks a PR in has delivered within COVERAGE_WINDOW.
@@ -190,10 +178,10 @@ module Github
         end
       end
 
-      # Whether signals decide this session's cadence: the mode says so and every repository
-      # is covered.
+      # Whether signals decide this session's cadence: every repository is covered. (A Reading
+      # exists only in `webhook_with_poll_fallback`.)
       def driving?
-        @driving && covered?
+        covered?
       end
 
       # A status or CI signal for any of +refs+ (default: all) newer than +since+.
@@ -224,25 +212,6 @@ module Github
         end
       end
 
-      # The newest signal that announced a change of +kind+ on +ref+ after +since+, or nil when
-      # none did. The same signals the pending? readers above act on, without the settle delays:
-      # the question is whether the webhook said it, not whether the pass would have waited.
-      #
-      # @param kind [String] one of GithubPrShadowObservation::KINDS
-      # @return [Time, nil]
-      def announced_at(ref, kind, since)
-        candidates =
-          case kind
-          when "status" then [ signal(ref, GithubPrSignal::STATUS) ]
-          when "ci"
-            [ signal(ref, GithubPrSignal::STATUS), (repo_signal(ref, GithubPrSignal::CI) if ci_unsettled?(ref)) ]
-          when "comments" then [ signal(ref, GithubPrSignal::COMMENTS) ]
-          when "merge_conflict" then [ signal(ref, GithubPrSignal::MERGE_CONFLICT), repo_signal(ref, GithubPrSignal::BASE_PUSH) ]
-          else []
-          end
-        candidates.select { |at| newer?(at, since) }.max
-      end
-
       private
 
       def ci_unsettled?(ref)
@@ -260,93 +229,6 @@ module Github
       def newer?(at, since)
         at.present? && (since.nil? || at > since)
       end
-    end
-
-    # Record, for each change a poll found on a covered session, whether the webhook announced it
-    # first: a GithubPrShadowObservation per change, read by `compare_github_pr_webhook_shadow`,
-    # and an INFO log line. In `webhook_shadow` this is the comparison that says the webhook is
-    # ready to drive; in `webhook_with_poll_fallback` every miss is a change the fallback caught
-    # that the webhook did not, which is the number to watch before lengthening the fallback.
-    #
-    # Four changes are compared, one per GithubPrShadowObservation kind: a recorded PR status that
-    # moved, a recorded CI status that moved, a comment the evaluator had not stored before, and a
-    # merge conflict that appeared or was resolved. A PR's first reading is a baseline, not a
-    # change, so a PR with no status recorded before the pass is skipped. A PR that left `open`
-    # is one change, `status`: the CI status and conflict markers the evaluators drop with it
-    # are its consequences, not changes of their own.
-    #
-    # +now+ is the poll's time, for the lead: the moment the pass started, which is also when its
-    # Reading was taken, so a signal that landed while the pass read GitHub is neither a hit nor
-    # a lead.
-    #
-    # @param before [Hash] the session's custom_metadata before the pass's evaluators ran
-    # @param after [Hash] the same, after
-    # @param stamps [Hash{Symbol => Time, nil}] the evaluators' previous stamps: :status,
-    #   :comments and :merge_conflict
-    def observe(session, reading, refs, before:, after:, stamps:, now: Time.current)
-      return if reading.nil? || !reading.covered?
-
-      mode = source.mode
-      refs.each do |ref|
-        next if before&.dig("github_pull_request_statuses", ref.url).nil?
-
-        changed_kinds(ref.url, before, after).each do |kind|
-          stamp = kind == "ci" ? stamps[:status] : stamps[kind.to_sym]
-          signaled_at = reading.announced_at(ref, kind, stamp)
-          GithubPrShadowObservation.record!(
-            session_id: session.id, pr_url: ref.url, kind: kind, mode: mode, signaled_at: signaled_at, now: now
-          )
-          log_observation(session, ref, kind, mode, signaled_at, now)
-        end
-      end
-    end
-
-    # The GithubPrShadowObservation kinds that changed for +url+ between +before+ and +after+.
-    def changed_kinds(url, before, after)
-      status_after = after&.dig("github_pull_request_statuses", url)
-      return [ "status" ] if status_after != "open" && before&.dig("github_pull_request_statuses", url) != status_after
-
-      kinds = []
-      kinds << "status" if before&.dig("github_pull_request_statuses", url) != status_after
-      kinds << "ci" if before&.dig("github_pull_request_ci_statuses", url) != after&.dig("github_pull_request_ci_statuses", url)
-      if before&.dig("github_comments", url).is_a?(Hash) && comment_count(after, url) > comment_count(before, url)
-        kinds << "comments"
-      end
-      kinds << "merge_conflict" if conflict_changed?(before, after, url)
-      kinds
-    end
-
-    # A conflict appeared (the first conflicting reading, which records a suspicion) or a
-    # CONFIRMED one cleared. A suspicion that clears unconfirmed is GitHub's stale reading after a
-    # push, the flap the debounce exists for, and suspected becoming confirmed is the same
-    # conflict read twice; neither is a change the webhook could have announced.
-    def conflict_changed?(before, after, url)
-      appeared = !conflict_marker?(before, url, :any) && conflict_marker?(after, url, :any)
-      resolved = conflict_marker?(before, url, :confirmed) && !conflict_marker?(after, url, :any)
-      appeared || resolved
-    end
-
-    def conflict_marker?(metadata, url, which)
-      keys = [ MergeConflictEvaluator::CONFIRMED_METADATA_KEY ]
-      keys << MergeConflictEvaluator::SUSPECTED_METADATA_KEY if which == :any
-      keys.any? do |key|
-        markers = metadata&.dig(key)
-        markers.is_a?(Hash) && markers.key?(url)
-      end
-    end
-
-    def comment_count(metadata, url)
-      thread = metadata&.dig("github_comments", url)
-      return 0 unless thread.is_a?(Hash)
-
-      Array(thread["pr_comments"]).size + Array(thread["review_comments"]).size
-    end
-
-    def log_observation(session, ref, kind, mode, signaled_at, now)
-      hit = signaled_at.present?
-      lead = hit ? " (#{(now - signaled_at).round}s ahead)" : ""
-      Rails.logger.info "[Github::PrWebhookIngest] #{mode} #{hit ? 'hit' : 'miss'}: #{kind} change on #{ref} " \
-                        "for session #{session.id} #{hit ? 'was' : 'was NOT'} signalled by the webhook first#{lead}"
     end
   end
 end

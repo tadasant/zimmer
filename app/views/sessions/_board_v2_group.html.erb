@@ -28,7 +28,7 @@
         <svg class="h-4 w-4 transition-transform <%= "-rotate-90" if collapsed %>" data-board-v2-chevron viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
       </button>
     <% end %>
-    <h3 class="min-w-[8rem] flex-1 truncate text-sm font-semibold <%= category ? "text-gray-800" : "text-gray-500" %>">
+    <h3 data-board-v2-group-name class="min-w-[8rem] flex-1 truncate text-sm font-semibold <%= category ? "text-gray-800" : "text-gray-500" %>">
       <%= category ? category.name : "Uncategorized" %>
     </h3>
     <span class="shrink-0 inline-flex items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-medium text-gray-600 ring-1 ring-gray-200"
@@ -60,10 +60,10 @@
 
   <div id="<%= body_id %>" class="relative <%= "hidden" if collapsed %>" data-board-v2-body>
     <ul id="<%= board_v2_list_dom_id(category&.id) %>"
-        class="min-h-[2.75rem] divide-y divide-gray-100"
+        class="<%= board_v2_list_classes %>"
         data-board-v2-target="list"
-        data-category-id="<%= category&.id %>"><% sessions.each do |session| %><%= render "sessions/user_view_row", agent_session: session, board_v2: true %><% end %></ul>
-    <p class="pointer-events-none absolute inset-x-0 top-0 px-3 py-3 text-xs text-gray-400 <%= "hidden" if sessions.any? %>" data-board-v2-empty>
+        data-category-id="<%= category&.id %>"><% sessions.each do |session| %><%= render "sessions/board_v2_row", agent_session: session %><% end %></ul>
+    <p class="pointer-events-none absolute inset-x-0 top-0 px-4 py-4 text-xs text-gray-400 <%= "hidden" if sessions.any? %>" data-board-v2-empty>
       <%= category ? "Drag sessions here." : "Nothing uncategorized." %>
     </p>
   </div>

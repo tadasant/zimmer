@@ -55,10 +55,9 @@ module Sessions
       end
 
       # `transcript` is dropped for the reason SessionsController gives for the
-      # User view: a legacy column nothing on a row reads.
+      # User view: a legacy column nothing on a card reads.
       fetched = shown_scope
         .select(Session.column_names - [ "transcript" ])
-        .includes(:status_summary)
         .reorder(Session::LAST_TOUCHED_ORDER, id: :desc)
         .limit(limit + 1)
         .to_a

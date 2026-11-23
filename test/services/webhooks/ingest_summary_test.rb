@@ -41,7 +41,7 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
     assert_equal %w[slack github], report[:sources].map { |s| s[:name] }
 
     assert_equal 24.hours.to_i, report[:window_seconds]
-    assert_equal({ name: "slack", mode: "poll", webhook_enabled: false, shadow: nil, receiving: false, accepting: false, last_delivery_at: nil,
+    assert_equal({ name: "slack", mode: "poll", webhook_enabled: false, accepting: false, last_delivery_at: nil,
                    deliveries_in_window: 0, webhook_claims_in_window: 0, poll_claims_in_window: 0 }, slack(report))
     assert_predicate report[:status], :healthy?
     assert_equal "Every source polls; no webhook is switched on", report[:status].message
@@ -196,51 +196,5 @@ class Webhooks::IngestSummaryTest < ActiveSupport::TestCase
     assert_equal 0, slack(report)[:poll_claims_in_window]
     assert_predicate report[:status], :warning?
     assert_match "github: the poller claimed 1 of 2 trigger event(s)", report[:status].message
-  end
-
-  # --- webhook_shadow -----------------------------------------------------------------
-
-  def shadow_observe(key, path, ago)
-    TriggerShadowObservation.record!(trigger_conditions(:github_issue_condition), key, path: path,
-                                     delivery_id: (path == "webhook" ? SecureRandom.uuid : nil), now: @now - ago)
-  end
-
-  test "a GitHub webhook in shadow carries the comparison and is healthy while both paths agree" do
-    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_shadow"
-    ENV["GITHUB_WEBHOOK_SECRET"] = "s3cret"
-    shadow_observe("github:tadasant/zimmer#1:opened", "webhook", 2.hours)
-    shadow_observe("github:tadasant/zimmer#1:opened", "poll", 2.hours - 40.seconds)
-
-    report = Webhooks::IngestSummary.report(now: @now)
-    github = report[:sources].find { |s| s[:name] == "github" }
-
-    assert_equal [ "webhook_shadow", false, true, true ], github.values_at(:mode, :webhook_enabled, :receiving, :accepting)
-    assert_equal({ matched: 1, webhook_only: 0, poll_only: 0, pending: 0 }, github[:shadow][:totals])
-    assert_nil slack(report)[:shadow]
-    assert_predicate report[:status], :healthy?
-    assert_equal "github: no delivery in the last 7 days; shadow — the webhook and the poller agreed on all 1 event(s) " \
-                 "in the last 24h, the webhook ahead by a median 40s", report[:status].message
-  end
-
-  test "a GitHub webhook in shadow warns when the two paths disagree" do
-    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_shadow"
-    ENV["GITHUB_WEBHOOK_SECRET"] = "s3cret"
-    shadow_observe("github:tadasant/zimmer#1:opened", "poll", 2.hours)
-    shadow_observe("github:tadasant/zimmer#2:opened", "webhook", 2.hours)
-
-    report = Webhooks::IngestSummary.report(now: @now)
-
-    assert_predicate report[:status], :warning?
-    assert_equal "github: shadow — in the last 24h the webhook would have fired 1 event(s) the poller did not, " \
-                 "and missed 1 the poller fired (0 matched)", report[:status].message
-  end
-
-  test "shadow with no signing secret warns that the endpoint is inert" do
-    ENV["GITHUB_TRIGGER_INGEST_MODE"] = "webhook_shadow"
-
-    report = Webhooks::IngestSummary.report(now: @now)
-
-    assert_predicate report[:status], :warning?
-    assert_match "github: webhook is switched on but has no signing secret", report[:status].message
   end
 end
