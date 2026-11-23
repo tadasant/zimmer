@@ -78,6 +78,44 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
     assert_equal join.ts, @condition.reload.last_message_ts
   end
 
+  test "a busy channel does not hide the thread reply that invited the bot" do
+    reply = slack_message(24.seconds, text: "<@#{BOT}> help", thread_ts: ts(2.days))
+    parent = slack_message(2.days, text: "an old thread", reply_count: 1, latest_reply: reply.ts)
+    chat = Array.new(12) { |i| slack_message(5.minutes + i.seconds, text: "chat") }
+    channel_history(parent, *chat, join_notice(20.seconds), replies: [ reply ])
+
+    assert_difference("Session.count", 1) { poll }
+  end
+
+  test "a thread Slack refuses to read leaves the channel for the next poll, and fires nothing twice" do
+    reply = slack_message(24.seconds, text: "<@#{BOT}> help", thread_ts: ts(2.days))
+    parent = slack_message(2.days, text: "an old thread", reply_count: 1, latest_reply: reply.ts)
+    channel_history(parent, mention(5.minutes), join_notice(20.seconds), replies: [ reply ])
+    @slack.replies_failure = SlackService::RateLimitedError.new("rate limited")
+
+    assert_difference("Session.count", 1, "the top-level mention fires") { poll }
+    assert_nil @condition.reload.channel_timestamps[CHANNEL]
+
+    @slack.replies_failure = nil
+    assert_difference("Session.count", 1, "only the reply is left to fire") { poll }
+    assert_no_difference("Session.count") { poll }
+  end
+
+  test "a scoped condition also waits for a thread Slack refuses to read" do
+    @condition = trigger_conditions(:bot_mention_slack_condition)
+    prepare(@condition, "channel_id" => CHANNEL)
+    reply = slack_message(24.seconds, text: "<@#{BOT}> help", thread_ts: ts(2.days))
+    parent = slack_message(2.days, text: "an old thread", reply_count: 1, latest_reply: reply.ts)
+    channel_history(parent, join_notice(20.seconds), replies: [ reply ])
+    @slack.replies_failure = SlackService::RateLimitedError.new("rate limited")
+
+    assert_no_difference("Session.count") { poll }
+    assert_nil @condition.reload.last_message_ts
+
+    @slack.replies_failure = nil
+    assert_difference("Session.count", 1) { poll }
+  end
+
   # --- what stays history ---------------------------------------------------
 
   test "a mention older than the lookback before the join does not fire" do
@@ -136,6 +174,13 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
     assert_no_difference("Session.count") { poll }
   end
 
+  test "a lookback never reaches past the edit that rebaselined the condition" do
+    @condition.update_column(:last_message_ts, ts(1.minute))
+    channel_history(mention(2.minutes), join_notice(20.seconds))
+
+    assert_no_difference("Session.count") { poll }
+  end
+
   test "a lost cursor does not fire the same mention twice" do
     channel_history(mention(24.seconds), join_notice(20.seconds))
     assert_difference("Session.count", 1) { poll }
@@ -159,7 +204,6 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
   end
 
   test "a mention Slack's Events API already fired does not fire again" do
-    Webhooks::Source.slack.stubs(:webhook_enabled?).returns(true)
     invite = mention(24.seconds)
     TriggerEventClaim.claim!(@condition, [ TriggerEventClaim.slack_event_key(CHANNEL, invite.ts) ], via: "webhook")
     channel_history(invite, join_notice(20.seconds))
@@ -184,6 +228,18 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
 
     assert_no_difference("Session.count") { poll }
     assert_nil @condition.reload.channel_timestamps[CHANNEL]
+
+    TriggerCondition.any_instance.unstub(:user_allowed?)
+    assert_difference("Session.count", 1) { poll }
+  end
+
+  test "an allow-list that cannot be resolved does not lose a thread reply either" do
+    reply = slack_message(24.seconds, text: "<@#{BOT}> help", thread_ts: ts(2.days))
+    parent = slack_message(2.days, text: "an old thread", reply_count: 1, latest_reply: reply.ts)
+    channel_history(parent, join_notice(20.seconds), replies: [ reply ])
+    TriggerCondition.any_instance.stubs(:user_allowed?).raises(ParameterStore::StoreError, "store unreachable")
+
+    assert_no_difference("Session.count") { poll }
 
     TriggerCondition.any_instance.unstub(:user_allowed?)
     assert_difference("Session.count", 1) { poll }
@@ -239,7 +295,7 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
   # `oldest` exclusive, and every reply of a thread for a replies call. One channel, one thread.
   class FakeSlackClient
     attr_reader :history_calls
-    attr_accessor :failure
+    attr_accessor :failure, :replies_failure
 
     def initialize(messages, replies)
       @messages = messages.sort_by(&:ts).reverse
@@ -256,6 +312,8 @@ class SlackTriggerPollerJustJoinedTest < ActiveJob::TestCase
     end
 
     def conversations_replies(**_params)
+      raise replies_failure if replies_failure
+
       OpenStruct.new(messages: @replies.dup)
     end
   end

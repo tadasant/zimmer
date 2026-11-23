@@ -37,8 +37,10 @@ class SlackEventJob < ApplicationJob
 
   # `message` only. Slack also sends `app_mention` for an @mention, but it carries no
   # channel_type, so a mention in a group DM — which the poller never reads — would look like one
-  # in a channel. Every mention also arrives as a `message` event, which does carry it, so an
-  # app_mention delivery is acknowledged and ignored.
+  # in a channel. Every mention in a channel the bot is in also arrives as a `message` event, which
+  # does carry it, so an app_mention delivery is acknowledged and ignored. The one mention that comes
+  # as an app_mention alone is the one that got the bot invited to the channel, posted before it was a
+  # member; the poller fires that one (SlackTriggerPollerJob#join_catch_up).
   EVENT_TYPES = %w[message].freeze
 
   SERVED_EVENT_TYPES = %w[new_message bot_mention dm_message].freeze

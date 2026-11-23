@@ -637,24 +637,26 @@ class SlackTriggerPollerJob < ApplicationJob
 
     # Deciding which threads to visit reads the channel's recent history, and that
     # read can fail — so it happens before anything fires. See #discover_thread_parents.
-    thread_parents = discover_thread_parents(condition, channel_id, all_messages, baseline_ts)
+    thread_parents = discover_thread_parents(condition, channel_id, all_messages, baseline_ts, wide: catch_up.present?)
 
     if all_messages.any?
       # Filter to messages that mention the bot AND are from allowed users
       mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
       process_messages(condition, mentions, channel_id: channel_id, prior_ts: catch_up&.since_ts, unfired_only: catch_up.present?)
-
-      # Always advance last_message_ts to avoid reprocessing, even if no mentions matched
-      newest_ts = all_messages.map { |m| m.ts }.max
-      condition.update!(last_message_ts: newest_ts)
     end
 
     # Check thread replies for @mentions (even when no new top-level messages,
     # since replies to old threads won't appear in conversations.history)
-    check_thread_replies_for_mentions(condition, channel_id, thread_parents,
-                                      bot_id: bot_id, channel_baseline_ts: baseline_ts,
-                                      unfired_only: catch_up.present?)
+    threads_read = check_thread_replies_for_mentions(condition, channel_id, thread_parents,
+                                                     bot_id: bot_id, channel_baseline_ts: baseline_ts,
+                                                     unfired_only: catch_up.present?)
+
+    # Always advance last_message_ts to avoid reprocessing, even if no mentions matched —
+    # except past a catch-up that could not read a thread: see #join_catch_up.
+    if all_messages.any? && (threads_read || catch_up.nil?)
+      condition.update!(last_message_ts: all_messages.map { |m| m.ts }.max)
+    end
   rescue => e
     note_unit_failure(e, "polling channel #{condition.channel_id} for mentions",
                       condition: condition, channel_id: condition.channel_id)
@@ -679,7 +681,7 @@ class SlackTriggerPollerJob < ApplicationJob
       # cursor is collected — and deciding which threads to visit reads the channel's
       # recent history, which can fail. See #discover_thread_parents.
       baseline_ts = catch_up&.since_ts || channel_baseline_ts_for(condition, channel.id)
-      thread_parents = discover_thread_parents(condition, channel.id, all_messages, baseline_ts)
+      thread_parents = discover_thread_parents(condition, channel.id, all_messages, baseline_ts, wide: catch_up.present?)
 
       if all_messages.any?
         # Filter to messages that mention the bot AND are from allowed users
@@ -694,9 +696,12 @@ class SlackTriggerPollerJob < ApplicationJob
 
       # Check thread replies for @mentions (even when no new top-level messages,
       # since replies to old threads won't appear in conversations.history)
-      check_thread_replies_for_mentions(condition, channel.id, thread_parents,
-                                        bot_id: bot_id, channel_baseline_ts: baseline_ts,
-                                        unfired_only: catch_up.present?)
+      threads_read = check_thread_replies_for_mentions(condition, channel.id, thread_parents,
+                                                       bot_id: bot_id, channel_baseline_ts: baseline_ts,
+                                                       unfired_only: catch_up.present?)
+
+      # A catch-up that could not read a thread is repeated: see #join_catch_up.
+      updated_timestamps.delete(channel.id) if catch_up && !threads_read
     rescue => e
       note_unit_failure(e, "polling channel #{channel.id} for mentions", condition: condition, channel_id: channel.id)
     end
@@ -723,15 +728,21 @@ class SlackTriggerPollerJob < ApplicationJob
   #   channel the bot has been in longer — a lost cursor, a long gap in polling — has
   #   none and baselines. So does a channel with no join notice to read, in a workspace
   #   that hides them.
-  # - The window starts JOIN_LOOKBACK before that join and never before this condition
-  #   existed or, on a condition rebaselined by an edit, before that edit. A condition
-  #   newer than the join, or one that has never polled, baselines: turning a condition
-  #   on replays nothing.
+  # - The window starts JOIN_LOOKBACK before that join, and never before this condition
+  #   existed or before its last_message_ts (the moment of the edit, on one
+  #   #rebaseline_on_thread_change moved). A condition newer than the join, or one that
+  #   has never polled, baselines.
   # - The callers fire only what this condition has no claim on yet (`unfired_only`),
   #   so a cursor lost inside JOIN_FRESHNESS does not fire the same mention twice.
   #
-  # Costs one extra read, once per channel, and only when the baseline message is
-  # itself inside JOIN_FRESHNESS — nothing older can have a fresh join behind it.
+  # The callers also leave the channel's cursor unset when a thread could not be read,
+  # so the next poll catches up again. Ordinarily a thread that fails keeps its place,
+  # but a thread met here has no cursor of its own: it would fall back to the channel's,
+  # which the join notice has just moved past the reply.
+  #
+  # Reads nothing extra unless the baseline message is itself inside JOIN_FRESHNESS —
+  # nothing older can have a fresh join behind it. The thread reads a catch-up makes are
+  # the ones the next poll would otherwise make.
   def join_catch_up(condition, channel_id, baseline, bot_id:)
     return nil if condition.last_polled_at.blank?
 
@@ -769,8 +780,9 @@ class SlackTriggerPollerJob < ApplicationJob
   # deferred poll re-reads the whole channel.
   #
   # Returns [] for a channel with no baseline, so a first poll only establishes the
-  # cursor — and costs no thread call at all.
-  def discover_thread_parents(condition, channel_id, recent_messages, channel_baseline_ts)
+  # cursor — and costs no thread call at all. `wide` reads the recent history whatever
+  # the two conditions below say.
+  def discover_thread_parents(condition, channel_id, recent_messages, channel_baseline_ts, wide: false)
     return [] if channel_baseline_ts.blank?
 
     # Find thread parents from the messages we already have
@@ -781,7 +793,7 @@ class SlackTriggerPollerJob < ApplicationJob
     # won't appear in fetch_new_messages since it predates last_message_ts).
     # Only fetch wider window when we have tracked threads or recent_messages is
     # empty/small (avoids redundant API calls when we already have recent data).
-    if recent_messages.length < 10 || condition.thread_timestamps.keys.any? { |k| k.start_with?("#{channel_id}:") }
+    if wide || recent_messages.length < 10 || condition.thread_timestamps.keys.any? { |k| k.start_with?("#{channel_id}:") }
       wider_messages = fetch_recent_thread_parents(channel_id)
       existing_ts = thread_parents.map(&:ts).to_set
       wider_messages.each do |msg|
@@ -815,12 +827,14 @@ class SlackTriggerPollerJob < ApplicationJob
   # @param channel_baseline_ts [String, nil] the channel cursor as it stood before this
   #   poll, which is what a thread with no cursor of its own falls back to
   # @param unfired_only [Boolean] see #process_messages
+  # @return [Boolean] whether every thread was checked
   def check_thread_replies_for_mentions(condition, channel_id, thread_parents, bot_id:, channel_baseline_ts:,
                                         unfired_only: false)
     # Skip thread checking on first poll for a channel (no baseline established yet).
-    return if channel_baseline_ts.blank?
+    return true if channel_baseline_ts.blank?
 
     thread_ts_updates = {}
+    all_checked = true
 
     thread_parents.each do |parent|
       thread_key = "#{channel_id}:#{parent.ts}"
@@ -856,6 +870,7 @@ class SlackTriggerPollerJob < ApplicationJob
       newest_reply_ts = replies.map { |r| r.ts }.max
       thread_ts_updates[thread_key] = newest_reply_ts
     rescue => e
+      all_checked = false
       note_unit_failure(e, "checking thread #{parent.ts} in #{channel_id}", condition: condition, channel_id: channel_id)
     end
 
@@ -865,6 +880,8 @@ class SlackTriggerPollerJob < ApplicationJob
       new_config = condition.configuration.merge("thread_timestamps" => new_thread_ts)
       condition.update!(configuration: new_config)
     end
+
+    all_checked
   end
 
   # ── Passive listening ───────────────────────────────────────────────────────

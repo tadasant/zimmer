@@ -148,15 +148,17 @@ before any poll can see it, so on that first poll the condition looks back for i
 
 The look back opens only on the bot's own join notice (`channel_join`, or the older `group_join`), and
 only if the notice is at most 30 minutes old (`JOIN_FRESHNESS`). It reaches from 10 minutes before the
-join (`JOIN_LOOKBACK`) up to now, over top-level messages and thread replies. The filters are the usual ones: an
-@mention, from a user the allow-list admits. An allow-list that cannot be resolved fires nothing and
-leaves the channel for the next poll.
+join (`JOIN_LOOKBACK`) up to now, over top-level messages and the replies in recent threads. The
+filters are the usual ones: an @mention, from a user the allow-list admits. If the allow-list cannot be
+resolved, or Slack refuses a read, the channel is left for the next poll.
 
 Everything else still baselines:
 
 - a channel the bot joined more than 30 minutes ago, including one whose cursor was lost;
 - a condition's own first poll, and a condition created after the join. The look back never reaches
-  past the condition's creation;
+  past the condition's creation. It can reach past an edit or a re-enable: a condition switched to
+  `bot_mention` from another event type, or a trigger turned back on, fires on mentions in the window
+  like any other;
 - a message the condition already holds a claim on in `trigger_event_claims`, whichever path fired it.
 
 It applies to an unscoped `bot_mention`, with or without a `channel_id`. A thread-scoped one,
@@ -613,7 +615,7 @@ a `url_verification` request when it is saved and a switched-off endpoint answer
 to the bot events `message.channels`, `message.groups` and `message.im`. The `*:history` scopes they
 need are the ones the poller already uses. `app_mention` deliveries are acknowledged and ignored:
 they carry no channel type, so a mention in a group DM would be indistinguishable from one in a
-channel, and every mention also arrives as a `message` event.
+channel, and every mention in a channel the bot is already in also arrives as a `message` event.
 
 `InboundEventRetentionJob` deletes `webhook_deliveries` rows after 7 days and `trigger_event_claims`
 rows after 30 — far past the few minutes it takes the poller to see a message the webhook already
