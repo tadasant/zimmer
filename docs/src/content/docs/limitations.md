@@ -1564,6 +1564,15 @@ whatever it had not flushed, which on a deploy is at most ten seconds of counts.
 zeros for what it lost, and an alert on a rise in failures stays quiet for that stretch. That is
 the trade for never putting Redis in front of a request.
 
+`web_sign_ins_by_stage` is a pair of totals, not a record of each sign-in. `completed` counts the
+sign-in cookies Zimmer sent, and nothing records whether the browser kept one, so one person signing in
+on several browsers reads the same as one browser that keeps losing its cookie. `started` is not proof
+of a person: it takes no credential, so a script that submits the login form raises it, and a
+double-click counts twice. A sign-in that straddles the window's edge, or a deploy, can show one side
+without the other. One that succeeded keeps `completed` above zero for up to an hour, so an outage that
+begins right after it is seen that much later, and an outage nobody tries to sign in during moves
+neither count.
+
 They also see only what reaches a controller. A request refused by middleware first (host
 authorization, a request Rack cannot parse) is not in `responses_by_surface_and_status_class`, and
 neither is anything Caddy, kamal-proxy or the edge refuses before Rails. An Action Cable connection

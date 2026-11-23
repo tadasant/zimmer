@@ -31,6 +31,7 @@ class WebSignInsController < ApplicationController
 
     redirect_to WebAuth::GoogleOauth.new(web_auth_configuration).authorization_url(state: state, code_verifier: verifier),
       allow_other_host: true
+    SecurityTelemetry.record_web_sign_in(:started)
   end
 
   # GET /auth/google/callback

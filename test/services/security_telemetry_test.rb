@@ -45,6 +45,26 @@ class SecurityTelemetryTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { SecurityTelemetry.record_auth_failure(:password_spray, :x) }
   end
 
+  test "web sign-ins are counted by stage, every stage present" do
+    report = with_security_telemetry do
+      3.times { SecurityTelemetry.record_web_sign_in(:started) }
+      SecurityTelemetry.record_web_sign_in("completed")
+    end
+    assert_equal({ "started" => 3, "completed" => 1 }, report[:web_sign_ins_by_stage])
+    assert_equal 0, report[:auth_failures_by_kind].values.sum, "a sign-in is not a failure"
+
+    assert_equal({ "started" => 0, "completed" => 0 }, with_security_telemetry { }[:web_sign_ins_by_stage])
+  end
+
+  test "an unknown web sign-in stage raises where tests run, and in production is dropped and logged" do
+    assert_raises(ArgumentError) { SecurityTelemetry.record_web_sign_in(:refreshed) }
+
+    Rails.env.stub(:local?, false) do
+      report = with_security_telemetry { assert_nil SecurityTelemetry.record_web_sign_in("203.0.113.9") }
+      assert_equal({ "started" => 0, "completed" => 0 }, report[:web_sign_ins_by_stage])
+    end
+  end
+
   test "responses are counted by surface, status class and 4xx code" do
     report = with_security_telemetry do
       SecurityTelemetry.record_response("/api/v1/sessions", 200)
@@ -102,6 +122,7 @@ class SecurityTelemetryTest < ActiveSupport::TestCase
     def broken.read_multi(*, **) = raise(StandardError, "down")
     Rails.stub(:cache, broken) do
       assert_nil SecurityTelemetry.record_auth_failure(:api_key, :unknown)
+      assert_nil SecurityTelemetry.record_web_sign_in(:started)
       assert_nil SecurityTelemetry.record_response("/api/v1/sessions", 401)
       assert_nil SecurityTelemetry.flush!
     end

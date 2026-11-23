@@ -63,7 +63,7 @@ class WebSecondFactorsController < ApplicationController
     end
 
     Rails.logger.info("[web_auth] #{@identity.email} set up an authenticator (web_identity_id=#{@identity.id})")
-    @return_to = finish_sign_in(@identity, factor: "totp", trust_device: true)
+    @return_to = finish_sign_in(@identity, factor: "totp", trust_device: true, new_sign_in: @passed_google)
     render :recovery_codes
   end
 
@@ -99,7 +99,11 @@ class WebSecondFactorsController < ApplicationController
   def load_enrolling_identity
     signed_in = WebAuth::Cookies.signed_in_identity(cookies, web_auth_configuration)
     @replacing = signed_in.present?
-    @identity = signed_in || pending_identity
+    pending = pending_identity
+    @identity = signed_in || pending
+    # A signed-in browser can owe a second factor too: after a deployment-wide
+    # reset, say, it passes Google again and is sent here.
+    @passed_google = pending.present? && pending == @identity
     return redirect_to(login_path, alert: "Sign in with Google first.") unless @identity
     # A browser that has only passed Google may set up a factor only when there
     # is none standing. Otherwise anyone holding the Google account could
