@@ -27,7 +27,7 @@
       <p class="mt-0.5 text-sm text-gray-500">
         The same sessions as Your board, in categories you make. To move a session, drag its card by
         the grey grip on its left edge. While you drag, every category shows up in a bar at the bottom
-        of the screen; drop the card on one. Inside each category the session you touched most
+        of the screen, snoozed and backlogged ones included; drop the card on one. Inside each category the session you touched most
         recently is on top. Drag a
         category's header to reorder categories. Snoozing a category takes it and everything in it
         off this board until then; it never changes when a session runs.
@@ -83,6 +83,18 @@
             <span class="truncate"><%= category ? category.name : "Uncategorized" %></span>
           </div>
         <% end %>
+        <%# A snoozed or backlogged category takes a card too. The card then
+            leaves the board with its category, and comes back when it does. %>
+        <% board.tucked.each do |tucked| %>
+          <div class="relative flex min-h-[2.75rem] min-w-[7rem] max-w-full flex-col justify-center rounded-md border-2 border-dashed border-gray-300 bg-gray-50 px-3 py-1 text-sm font-medium text-gray-700"
+              data-board-v2-target="dropZone"
+              data-board-v2-drop-zone
+              data-board-v2-tucked-zone
+              data-category-id="<%= tucked.category.id %>">
+            <span class="truncate"><%= tucked.category.name %></span>
+            <span class="truncate text-[11px] font-normal text-gray-500"><%= tucked.category.backlogged? ? "Backlogged" : "Snoozed" %></span>
+          </div>
+        <% end %>
       </div>
     </div>
   </div>
@@ -94,7 +106,7 @@
         <% board.tucked.each do |tucked| %>
           <li class="relative flex flex-wrap items-center gap-2 px-3 py-2.5" data-board-v2-tucked-category="<%= tucked.category.id %>">
             <span class="min-w-[8rem] flex-1 truncate text-sm font-medium text-gray-700"><%= tucked.category.name %></span>
-            <span class="shrink-0 text-xs text-gray-500"><%= pluralize(tucked.count, "session") %></span>
+            <span class="shrink-0 text-xs text-gray-500" data-board-v2-tucked-count="<%= tucked.count %>"><%= pluralize(tucked.count, "session") %></span>
             <span class="inline-flex min-w-0 max-w-full items-center truncate rounded-full px-2 py-0.5 text-[11px] font-medium <%= tucked.category.backlogged? ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700" %>"
                   title="<%= tucked.category.visibility_summary %>">
               <%= tucked.category.backlogged? ? "Backlogged" : "Snoozed · #{tucked.category.snoozed_until.utc.strftime("%b %-d, %-I:%M %p UTC")}" %>

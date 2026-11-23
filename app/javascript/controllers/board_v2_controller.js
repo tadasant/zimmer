@@ -12,7 +12,9 @@ import { csrfHeaders } from "lib/csrf"
 //     the order there is most recently touched first, and the row settles back.
 //     While a row is in hand the drop bar (`tray`) is shown, pinned to the
 //     bottom of the screen with one target (`dropZone`) per group, so a
-//     category three screens away is still one short drag away. The targets
+//     category three screens away is still one short drag away. Snoozed and
+//     backlogged categories get a target too: a card dropped there leaves the
+//     board with its category. The targets
 //     are plain elements, not SortableJS lists: this controller follows the
 //     pointer while a row is in hand, lights up the target under it, and on
 //     release moves the row into that group's real list. (SortableJS's own
@@ -214,6 +216,10 @@ export default class extends Controller {
     // no target, or a drag the system cancelled: nobody chose a group, so the
     // row goes back where it came from and nothing is saved — not into
     // whichever list it last passed on the way down.
+    if (drop.zone && !drop.cancelled && drop.zone.hasAttribute("data-board-v2-tucked-zone")) {
+      this.persistTuckedMove(row, drop.zone.dataset.categoryId)
+      return
+    }
     const zoneList = drop.zone && this.listFor(drop.zone.dataset.categoryId)
     if (zoneList && !drop.cancelled) {
       zoneList.appendChild(row)
@@ -236,6 +242,25 @@ export default class extends Controller {
 
     const url = this.assignUrlTemplateValue.replace("__ID__", row.dataset.sessionId)
     this.request("PATCH", url, { board_category_id: to.dataset.categoryId || null })
+      .catch((error) => this.rollback(error))
+  }
+
+  // Dropped on a snoozed or backlogged category: the category is off the board,
+  // so the card leaves it too, and the category's count in the strip at the
+  // foot of the board goes up by one.
+  persistTuckedMove(row, categoryId) {
+    row.remove()
+    this.refreshCounts()
+    this.clearError()
+    const count = this.element.querySelector(`[data-board-v2-tucked-category="${categoryId}"] [data-board-v2-tucked-count]`)
+    if (count) {
+      const next = Number(count.dataset.boardV2TuckedCount || "0") + 1
+      count.dataset.boardV2TuckedCount = String(next)
+      count.textContent = `${next} ${next === 1 ? "session" : "sessions"}`
+    }
+
+    const url = this.assignUrlTemplateValue.replace("__ID__", row.dataset.sessionId)
+    this.request("PATCH", url, { board_category_id: categoryId })
       .catch((error) => this.rollback(error))
   }
 
