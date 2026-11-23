@@ -1230,6 +1230,15 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("new trigger form")
     page.execute_script("document.querySelector('[data-trigger-form-target=\"promptHelp\"]').scrollIntoView({ block: 'end' })")
     page.save_screenshot("tmp/screenshots/proof-trigger-form-prompt-help-375.png")
+
+    # The type list, opened out: no native email or WhatsApp condition, in the card the server
+    # renders or the one "Add Condition" builds in the browser.
+    click_on "Add Condition"
+    assert_selector "[data-trigger-form-target=conditionTypeSelect] option[value=mcp_event]", minimum: 1, visible: :all
+    assert_no_selector "[data-trigger-form-target=conditionTypeSelect] option[value=email]", visible: :all
+    assert_no_selector "[data-trigger-form-target=conditionTypeSelect] option[value=whatsapp]", visible: :all
+    page.execute_script("const s = [...document.querySelectorAll('[data-trigger-form-target=\"conditionTypeSelect\"]')].at(-1); s.size = 8; s.scrollIntoView({ block: 'center' })")
+    page.save_screenshot("tmp/screenshots/proof-trigger-form-condition-types-375.png")
   end
 
   # An mcp_event condition carries a slug-prefixed event name and JSON with no break opportunity in

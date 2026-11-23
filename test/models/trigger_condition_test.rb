@@ -57,6 +57,14 @@ class TriggerConditionTest < ActiveSupport::TestCase
     end
   end
 
+  test "the native email and whatsapp types are refused" do
+    { "email" => { "query" => "in:inbox" }, "whatsapp" => { "chat_id" => "*", "mode" => "listen" } }.each do |type, configuration|
+      condition = TriggerCondition.new(trigger: @slack_condition.trigger, condition_type: type, configuration: configuration)
+      assert_not condition.valid?
+      assert condition.errors.added?(:condition_type, :inclusion, value: type)
+    end
+  end
+
   test "requires trigger" do
     @slack_condition.trigger = nil
     assert_not @slack_condition.valid?
