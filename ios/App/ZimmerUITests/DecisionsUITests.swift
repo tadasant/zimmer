@@ -1,6 +1,6 @@
 import XCTest
 
-/// Merge and Reprioritize against the `-ZimmerFixture` in-memory Zimmer, where session 1038
+/// Merge against the `-ZimmerFixture` in-memory Zimmer, where session 1038
 /// holds PR #1261, open with CI green.
 @MainActor
 final class DecisionsUITests: XCTestCase {
@@ -33,18 +33,6 @@ final class DecisionsUITests: XCTestCase {
         item.tap()
         confirmInDialog(app, "Merge #1261")
         XCTAssertTrue(waitForToast(app, saying: "Merge authorized", on: "followup.notice"))
-    }
-
-    func test_reprioritize_from_the_view_menu_names_the_session_that_took_it() throws {
-        let app = launch(["-ZimmerFixtureView", "user"])
-        let menu = app.buttons["board.menu"]
-        XCTAssertTrue(menu.waitForExistence(timeout: timeout))
-        menu.tap()
-        let item = app.buttons["Reprioritize"].firstMatch
-        XCTAssertTrue(item.waitForExistence(timeout: timeout))
-        item.tap()
-        confirmInDialog(app, "Reprioritize")
-        XCTAssertTrue(waitForToast(app, saying: "is re-ranking the board"))
     }
 
     // MARK: - Helpers

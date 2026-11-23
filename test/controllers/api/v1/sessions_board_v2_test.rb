@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# Your board v2 on the REST surface, which the iOS app draws: `view=board_v2` on
+# Your board on the REST surface, which the iOS app draws: `view=board_v2` on
 # the index (the rows Sessions::BoardV2 shows, in its order, plus the categories),
 # and Api::V1::BoardCategoriesController's writes — assign, collapse, visibility.
 class Api::V1::SessionsBoardV2Test < ActionDispatch::IntegrationTest

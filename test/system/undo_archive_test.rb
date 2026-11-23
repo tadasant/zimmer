@@ -21,16 +21,16 @@ class UndoArchiveTest < ApplicationSystemTestCase
     ActionController::Base.allow_forgery_protection = @original_forgery_protection
   end
 
-  test "Undo on the User view puts a slug-addressed row back, still needing input" do
-    visit root_path(view: SessionsController::VIEW_MODE_USER)
-    row = "#user_view_row_#{@session.id}"
+  test "Undo on Your board puts a slug-addressed row back, still needing input" do
+    visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2)
+    row = "#board_v2_row_#{@session.id}"
     assert_selector row
 
-    within(row) { find("form[action='/sessions/#{@session.slug}/archive'] button").click }
+    within(row) { click_on "Trash" }
 
     assert_selector "#flash", text: "Session moved to trash."
     assert_no_selector row
-    capture("user-view-trashed")
+    capture("your-board-trashed")
 
     within("#flash") { click_on "Undo" }
 
@@ -38,7 +38,7 @@ class UndoArchiveTest < ApplicationSystemTestCase
     assert_selector row
     assert_equal "needs_input", @session.reload.status
     assert_nil @session.archived_at
-    capture("user-view-undone")
+    capture("your-board-undone")
   end
 
   test "Undo on the card board puts the card back, still needing input" do
@@ -69,9 +69,9 @@ class UndoArchiveTest < ApplicationSystemTestCase
     FileUtils.mkdir_p(SCREENSHOT_DIR)
     page.execute_script(<<~JS, @session.id)
       const id = arguments[0]
-      const target = document.getElementById(`session_${id}`) || document.getElementById(`user_view_row_${id}`)
+      const target = document.getElementById(`session_${id}`) || document.getElementById(`board_v2_row_${id}`)
       if (target) target.scrollIntoView({ block: "center" })
-      else document.querySelector("#sessions_grid, #user_view_list")?.scrollIntoView({ block: "center" })
+      else document.querySelector("#sessions_grid, #board_v2")?.scrollIntoView({ block: "center" })
     JS
     page.save_screenshot(SCREENSHOT_DIR.join("proof-undo-#{name}.png"))
   end

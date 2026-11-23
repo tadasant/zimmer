@@ -34,7 +34,7 @@ class SessionDashboard < Administrate::BaseDashboard
     status: Field::Select.with_options(searchable: false, collection: ->(field) { field.resource.class.send(field.attribute.to_s.pluralize).keys }),
     visibility: Field::String,
     snoozed_until: Field::DateTime,
-    # Your board v2's category, set by a person's drag. Presentation only.
+    # Your board's category, set by a person's drag. Presentation only.
     board_category_id: Field::Number,
     # CarPlay fit — the driver's triage axis, with its provenance. Presentation
     # only; nothing scheduling reads it (SessionCarplayFit).

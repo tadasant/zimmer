@@ -2,8 +2,8 @@
 
 module LiveConversations
   # The Merge button, by voice: the Live Mode assistant's `authorize_merge`
-  # function, which ends in the same Sessions::AuthorizeMerge the dashboard's and
-  # the iOS app's Merge buttons call.
+  # function, which ends in the same Sessions::AuthorizeMerge the iOS app's Merge
+  # button calls.
   #
   # == Why a spoken Merge needs one confirmation
   #

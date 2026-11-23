@@ -426,7 +426,6 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A quick router session he starts himself | ✅ `web_ui.quick_prompt` | same |
 | A chat-bubble prompt | ✅ `web_ui.chat_bubble` | his words only — the page-context wrapper is machine-written |
 | A follow-up typed in the browser | ✅ `web_ui.follow_up` | same |
-| The User view's [Merge](/sessions/user-view/#the-merge-button) clicked in the browser | ✅ `web_ui.authorize_merge` | the click is the sign-off; recorded as `Merge <pr url>` |
 | A message enqueued in the browser | ✅ `web_ui.enqueued_message` | recorded when typed, not when delivered |
 | A Slack message from a mapped human | ✅ `slack.channel_message` / `slack.dm` | resolved from the Slack user ID |
 | A Slack message from a human whose ID is **not** mapped | ❌ | nobody to attribute it to — and when *no* row maps any Slack ID the record says so rather than reading as an absence (see [Absence is only an answer when capture could have fired](#absence-is-only-an-answer-when-capture-could-have-fired)) |
@@ -615,9 +614,9 @@ A PR held by a session on another Zimmer goes through the same two calls with `p
 a signed approval rather than a local message: see
 [Merge approvals across deployments](/auth/merge-attestations/).
 
-The live model has an `authorize_merge` function: the [Merge button](/sessions/user-view/), by
+The live model has an `authorize_merge` function: [Merge](#authorizing-a-merge), by
 voice. It is the only Live Mode route to a merge, and it ends in the same
-`Sessions::AuthorizeMerge` the dashboard and the iOS app call, so the session holding the PR gets
+`Sessions::AuthorizeMerge` the iOS app calls, so the session holding the PR gets
 the same `[HUMAN-AUTHORIZED MERGE]` message and the sign-off is recorded `here`, in that session.
 
 A tap carries its referent, and a spoken "yes" does not, so the voice version has two calls, Zimmer
@@ -677,6 +676,51 @@ The record's content is the person's words ("Yes."), and its provenance adds `co
   Merge https://github.com/tadasant/zimmer/pull/1490
   ```
 ```
+
+### Authorizing a merge
+
+Merge is the one sanctioned path for an agent to merge its own work. Zimmer's standing convention is
+that it never does: the pull request is the human review gate, and a session that opened one holds
+it until a person decides. A person pressing Merge *is* that decision, so the press is the sign-off.
+
+There are two places to press it: the [iOS app](/extend/ios-app/), through
+`POST /api/v1/sessions/:id/authorize_merge`, and [Live Mode](/sessions/live/), by voice (see
+[Merging by voice](#merging-by-voice-live_modeauthorize_merge)). The web UI has no Merge button
+(see [Limitations](/limitations/#the-web-board-has-no-merge-button-and-no-status-summary)). Both end
+in `Sessions::AuthorizeMerge`.
+
+It is offered only when the session's newest PR is **open and CI is green**. Nothing else counts as
+green: `pending` is a run in progress, and an absent CI key means the PR has no checks at all. The
+press sends the session a message (`AutomatedPrompts.merge_authorization_message`) that tells it to
+confirm the PR is still open, **resolve any merge conflict with the base branch first**, merge, and
+then archive itself.
+
+Three records are written, and they are not equal:
+
+- a `HumanMessage` row. **This is the provenance record.** The iOS app writes it on the
+  [`assistant` channel](#the-assistant-channel) (`ios_app.authorize_merge`), and the endpoint
+  answers only the app's sign-in when it acts as you. Live Mode records your yes as
+  `live_mode.authorize_merge`. An API key and MCP cannot write one. Like every capture it is
+  best-effort: a person with no roster row gets the merge without the record.
+- the message itself, marked `[HUMAN-AUTHORIZED MERGE]` and naming the surface. That marker is what
+  the merging session reads, but it is not proof on its own. `action_session`'s `follow_up` can
+  deliver any text, marker included, so an audit keys on the `HumanMessage`, not the marker.
+- `merge_authorized_prs` on the session's `custom_metadata`, keyed by PR url. `get_user_view` reads
+  it to mark a row **Merge already authorized**.
+
+The claim is taken under the session's row lock with a fresh read, so two requests landing together
+(a double tap, a retried POST) send one message, not two.
+
+An authorization stops counting once the session has **come back to rest without merging**: it is
+in `needs_input` again, has taken a turn since the press, and holds no undelivered copy of the
+message. That is the path the message itself prescribes when a merge cannot happen (a conflict it
+cannot resolve, CI gone red), and it lets you press Merge again after fixing whatever stopped it.
+
+**The message is queued, never an interrupt.** A session parked in `needs_input` takes it
+immediately as its next turn. A session mid-turn gets it at the next turn boundary rather than
+having work it was not asked to abort torn down. A session asleep in `waiting` on its own self-wake
+is woken by it: `EnqueuedMessage`'s `after_create_commit` schedules a drain for any session already
+at rest, both resting states included.
 
 ### The GitHub attribution trap
 

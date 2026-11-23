@@ -228,7 +228,7 @@ narrowed variants of the full tool, with the same name and the same action bodie
 | Tool | On `live_mode` |
 | --- | --- |
 | `quick_router` | `LiveModeQuickRouter`. Takes `prompt` and nothing else: no scheduling class, context, sync wait or idempotency key. It is the only way to start work, since there is no `start_session`. |
-| `get_user_view` | `LiveModeGetUserView`. `order` defaults to `last_touched`. It takes `status`, `carplay_fit`, `order`, `page` and `per_page`, and does not mention `reorder_user_view`. |
+| `get_user_view` | `LiveModeGetUserView`. `order` defaults to `last_touched`. It takes `status`, `carplay_fit`, `order`, `page` and `per_page`. `order: "board"` reads [Your board](/sessions/board-v2/)'s order, as the full tool's default does. |
 | `quick_search_sessions` | `LiveModeSearchSessions`. Searches titles and metadata only, always includes archived sessions, always `match: "all_words"`, and returns short rows. There is no `search_contents`. |
 | `get_session` | As it is. |
 | `action_session` | `LiveModeActionSession`. `follow_up` (with `force_immediate`, and no goal or sync), `archive` (never forced), `unarchive` and `set_carplay_fit`. |
@@ -285,7 +285,7 @@ A delivery more than five minutes after your last line records nothing either. A
 had a typed line before this was recorded stays barred, so start a new one; old spoken lines do not
 bar it. When a delivery is not recorded as yours, the live model is told why and says so.
 
-To merge, the live model uses `authorize_merge`, the Merge button by voice: the model asks you once,
+To merge, the live model uses `authorize_merge`, the iOS app's Merge by voice: the model asks you once,
 naming the PR by its number, and only your yes to that question sends the merge. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 When the PR is held by a session on another Zimmer that a session here drives, the model passes the

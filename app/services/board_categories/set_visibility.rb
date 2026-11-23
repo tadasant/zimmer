@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module BoardCategories
-  # Snooze or backlog a whole Your board v2 category — or put it back.
+  # Snooze or backlog a whole Your board category — or put it back.
   #
   # Sessions::SetVisibility's own write and snooze-time rules (a naive wall-clock
   # time plus an IANA zone, never in the past), applied to the category row. The

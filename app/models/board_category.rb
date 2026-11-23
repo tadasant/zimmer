@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# A top-level group on Your board v2 (`/?view=board_v2`).
+# A top-level group on Your board (`/?view=board_v2`).
 #
 # Flat and entirely manual: a person creates a category, names it, and drags
 # sessions into it. Nothing assigns a session to a category on its own — there

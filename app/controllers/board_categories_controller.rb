@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Your board v2's categories, from the web UI.
+# Your board's categories, from the web UI.
 #
 # Every action answers JSON for the board_v2 Stimulus controller, which drives
 # them with fetch, and HTML (a redirect back to the board) for the forms that

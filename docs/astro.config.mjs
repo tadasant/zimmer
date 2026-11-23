@@ -9,6 +9,10 @@ const site = process.env.SITE_URL || "https://docs.zimmer.tadasant.com";
 
 export default defineConfig({
   site,
+  // Pages that were removed or merged into another, so old links still land.
+  redirects: {
+    "/sessions/user-view/": "/sessions/board-v2/",
+  },
   markdown: {
     // Runs before Expressive Code, so ```mermaid fences are swapped for a raw
     // HTML node and never reach the syntax highlighter.
@@ -76,8 +80,7 @@ export default defineConfig({
         {
           label: "Sessions",
           items: [
-            { label: "The User view", slug: "sessions/user-view" },
-            { label: "Your board v2", slug: "sessions/board-v2" },
+            { label: "Your board", slug: "sessions/board-v2" },
             { label: "The session lifecycle", slug: "sessions/lifecycle" },
             { label: "Spawning and monitoring", slug: "sessions/spawning" },
             { label: "Runtimes", slug: "sessions/runtimes" },

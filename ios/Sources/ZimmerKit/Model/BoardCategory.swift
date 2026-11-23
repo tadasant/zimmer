@@ -1,6 +1,6 @@
 import Foundation
 
-/// One of the person's own Your board v2 categories (`BoardCategory` on the server), as
+/// One of the person's own Your board categories (`BoardCategory` on the server), as
 /// `GET /api/v1/sessions?view=board_v2` lists them in `board_categories`, in board order.
 ///
 /// Entirely manual: a person creates a category and puts sessions in it, and nothing sorts a

@@ -3,7 +3,7 @@
 require "test_helper"
 require "mocha/minitest"
 
-# Your board v2 (`/?view=board_v2`) and the category endpoints it drives.
+# Your board (`/?view=board_v2`) and the category endpoints it drives.
 class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
   DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36".freeze
 
@@ -31,18 +31,28 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
 
   # ---- The board -------------------------------------------------------------
 
-  test "the v2 tab sits beside Your board, which is unchanged" do
+  test "the board is the switcher's only Your board, and the old Your board's links land on it" do
     get root_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
-    assert_select "a[aria-pressed='true']", text: "Your board v2"
-    assert_select "a", text: "Your board"
+    assert_select "a[aria-pressed='true']", text: "Your board"
+    assert_select "[aria-label='Dashboard view mode'] a", text: /Your board/, count: 1
+    assert_select "a", text: "Your board v2", count: 0
 
     infra = BoardCategory.create!(name: "Infra")
-    make_session("in infra", category: infra)
+    session = make_session("in infra", category: infra)
     get dashboard_board_path(view: "user"), headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
-    assert_select "#user_view_list li", 1
-    assert_select "#board_v2", 0
+    assert_select "#board_v2_list_#{infra.id} #board_v2_row_#{session.id}"
+  end
+
+  test "a snoozed category with no end time still renders, in the strip and the drop bar" do
+    parked = BoardCategory.create!(name: "Parked", visibility: "snoozed", snoozed_until: 1.day.from_now)
+    parked.update_columns(snoozed_until: nil)
+
+    get dashboard_board_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
+    assert_response :success
+    assert_select "[data-board-v2-tucked-category='#{parked.id}']", text: /Snoozed/
+    assert_select "[data-board-v2-tucked-zone][data-category-id='#{parked.id}']", text: /Snoozed/
   end
 
   test "renders Uncategorized, each category in order, and tucked-away categories as headers only" do
@@ -80,8 +90,7 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
       assert_select "turbo-frame#session_#{session.id} [data-visibility-unit]", text: /carded/
       assert_select "a[aria-label='View session #{session.id}']", 1
     end
-    # None of Your board's row furniture.
-    assert_select "#board_v2 [id^='user_view_row_']", 0
+    # The card, not a heavier row: no precedence readout, no summary chip.
     assert_select "#board_v2 [data-user-view-precedence]", 0
     assert_select "#board_v2 [data-summary-freshness]", 0
     assert_no_match(/#4242/, response.body)
@@ -164,7 +173,6 @@ class BoardCategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_match(/target="board_v2_list_#{category.id}"/, response.body)
     assert_match(/id="board_v2_row_#{session.id}"/, response.body)
-    assert_match(/target="user_view_list"/, response.body)
   end
 
   test "reorder persists" do

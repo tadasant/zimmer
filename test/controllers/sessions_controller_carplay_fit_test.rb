@@ -1,8 +1,8 @@
 require "test_helper"
 require "mocha/minitest"
 
-# The dashboard half of CarPlay fit: the PATCH the control drives, the chip on
-# the User view row, and the Filters section's radios. A person's write from
+# The web half of CarPlay fit: the PATCH the control drives, the control on
+# the session page, and the Filters section's radios. A person's write from
 # here is a `human` mark, the one that outranks every other writer.
 class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
   def setup
@@ -91,7 +91,7 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     assert_nil session.reload.carplay_fit
   end
 
-  test "the session page offers the control and the User view row shows the chip" do
+  test "the session page offers the control" do
     session = make_session(carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto",
                            carplay_fit_line_count: 3, carplay_fit_set_at: Time.current)
 
@@ -103,17 +103,13 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
       assert_select "button[name='carplay_fit'][value='laptop_only']"
       assert_select "button[name='carplay_fit'][value='clear']"
     end
-
-    get dashboard_board_path, params: { view: "user" }
-    assert_response :success
-    assert_select "[data-carplay-fit='laptop_only']", text: /Laptop only · a credential/
   end
 
   test "the car icon toggles CarPlay-ok: off marks it as a human, on clears it" do
     session = make_session
 
-    get dashboard_board_path, params: { view: "user" }
-    assert_select "#user_view_row_#{session.id} [data-carplay-fit-toggle='off'] a[aria-pressed='false'][data-turbo-method='patch']" do |links|
+    get session_path(session)
+    assert_select "#session_#{session.id}_header_actions [data-carplay-fit-toggle='off'] a[aria-pressed='false'][data-turbo-method='patch']" do |links|
       assert_equal update_carplay_fit_session_path(session, carplay_fit: "carplay_ok"), links.first["href"]
     end
 
@@ -140,16 +136,18 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     laptop = make_session(title: "laptop", carplay_fit: "laptop_only", carplay_fit_source: "auto", carplay_fit_line_count: 3)
     stale = make_session(title: "stale", carplay_fit: "carplay_ok", carplay_fit_source: "human", carplay_fit_line_count: 1)
 
-    get dashboard_board_path, params: { view: "user" }
-    assert_select "#user_view_row_#{auto_ok.id} [data-carplay-fit-toggle='on'] a.border-dashed[aria-pressed='true']" do |links|
+    get session_path(auto_ok)
+    assert_select "#session_#{auto_ok.id}_header_actions [data-carplay-fit-toggle='on'] a.border-dashed[aria-pressed='true']" do |links|
       assert_match(/set by Zimmer/, links.first["title"])
     end
-    assert_select "#user_view_row_#{laptop.id} [data-carplay-fit-toggle='laptop_only'] a[aria-pressed='false']" do |links|
+    get session_path(laptop)
+    assert_select "#session_#{laptop.id}_header_actions [data-carplay-fit-toggle='laptop_only'] a[aria-pressed='false']" do |links|
       assert_equal update_carplay_fit_session_path(laptop, carplay_fit: "carplay_ok"), links.first["href"]
     end
-    assert_select "#user_view_row_#{stale.id} [data-carplay-fit-toggle='off']"
-    # The full menu is still one click away on every row.
-    assert_select "#user_view_row_#{laptop.id} [data-carplay-fit-menu] button[name='carplay_fit'][value='laptop_only']"
+    # The full menu is still one click away.
+    assert_select "#session_#{laptop.id}_header_actions [data-carplay-fit-menu] button[name='carplay_fit'][value='laptop_only']"
+    get session_path(stale)
+    assert_select "#session_#{stale.id}_header_actions [data-carplay-fit-toggle='off']"
   end
 
   test "the Filters form narrows the board on CarPlay fit and remembers the choice" do
@@ -157,21 +155,21 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     ok = make_session(title: "say yes", carplay_fit: "carplay_ok", carplay_fit_source: "auto", carplay_fit_line_count: 3)
     untagged = make_session(title: "nobody judged")
 
-    get dashboard_board_path, params: { view: "user", filters: "1", status: [ "needs_input" ], carplay_fit: "not_laptop_only" }
+    get dashboard_board_path, params: { view: "board_v2", filters: "1", status: [ "needs_input" ], carplay_fit: "not_laptop_only" }
     assert_response :success
-    assert_select "#user_view_row_#{ok.id}"
-    assert_select "#user_view_row_#{untagged.id}"
-    assert_select "#user_view_row_#{laptop.id}", count: 0
+    assert_select "#board_v2_row_#{ok.id}"
+    assert_select "#board_v2_row_#{untagged.id}"
+    assert_select "#board_v2_row_#{laptop.id}", count: 0
     get root_path
     assert_select "input#carplay-fit-filter-not-laptop-only[checked]"
 
     # Remembered in the cookie, like the other filters.
-    get dashboard_board_path, params: { view: "user" }
-    assert_select "#user_view_row_#{laptop.id}", count: 0
+    get dashboard_board_path, params: { view: "board_v2" }
+    assert_select "#board_v2_row_#{laptop.id}", count: 0
 
     # And the default is every row.
-    get dashboard_board_path, params: { view: "user", filters: "1", status: [ "needs_input" ], carplay_fit: "" }
-    assert_select "#user_view_row_#{laptop.id}"
+    get dashboard_board_path, params: { view: "board_v2", filters: "1", status: [ "needs_input" ], carplay_fit: "" }
+    assert_select "#board_v2_row_#{laptop.id}"
     get root_path
     assert_select "input#carplay-fit-filter-all[checked]"
   end

@@ -81,7 +81,7 @@ function liveChildById(parent, id) {
 // Whether `id` names a session element this page has taken away ahead of the
 // server's answer (see lib/optimistic_actions.js).
 function pendingRemoval(id) {
-  const match = /^(?:session|user_view_row|ranked_row)_(\d+)$/.exec(id || "")
+  const match = /^(?:session|board_v2_row|ranked_row)_(\d+)$/.exec(id || "")
   return match ? isPendingRemoval("session", match[1]) : false
 }
 

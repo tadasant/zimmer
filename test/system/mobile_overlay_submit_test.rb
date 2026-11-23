@@ -234,10 +234,10 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow("deferred panel content")
   end
 
-  # The CarPlay-fit chip and its control are on the User view row and on the
-  # phone's bottom sheet; the popover is sized for a laptop column, which is
-  # exactly the kind of width that reaches past a phone's right edge.
-  test "the CarPlay fit chip and control fit a phone, on the board and the session page" do
+  # The CarPlay-fit control is on the phone's bottom sheet; the popover is sized
+  # for a laptop column, which is exactly the kind of width that reaches past a
+  # phone's right edge.
+  test "the CarPlay fit control fits a phone on the session page" do
     session = Session.create!(
       prompt: "Initial prompt",
       title: "Paste the Grafana and 1Password secrets into the strad console",
@@ -251,24 +251,6 @@ class MobileOverlaySubmitTest < ApplicationSystemTestCase
       carplay_fit_line_count: 0,
       carplay_fit_set_at: Time.current
     )
-
-    visit root_path(view: SessionsController::VIEW_MODE_USER)
-    assert_selector "#user_view_row_#{session.id} [data-carplay-fit='laptop_only']", text: "Laptop only"
-    assert_no_horizontal_overflow("User view row with the CarPlay fit chip")
-
-    find("#user_view_row_#{session.id} details[data-carplay-fit-menu] summary").click
-    assert_selector "#user_view_row_#{session.id} button[name='carplay_fit'][value='carplay_ok']", visible: true
-    assert_no_horizontal_overflow("User view row with the CarPlay fit popover open")
-    # The popover hangs off a control on the LEFT of the row, so the edge it can
-    # fall off at 375px is the left one, which the overflow probes never measure.
-    popover_left = page.evaluate_script(
-      "document.querySelector('#user_view_row_#{session.id} details[data-carplay-fit-menu] form').getBoundingClientRect().left"
-    )
-    assert_operator popover_left, :>=, 0, "the CarPlay fit popover hangs off the left edge at #{MOBILE_WIDTH}px"
-    page.execute_script(
-      "document.querySelector('#user_view_row_#{session.id} details[data-carplay-fit-menu]').scrollIntoView({ block: 'start' })"
-    )
-    page.save_screenshot("tmp/screenshots/carplay-fit-board-375.png")
 
     visit session_path(session)
     # The header's control is `hidden md:block`; the phone reaches it from the

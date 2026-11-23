@@ -1,13 +1,9 @@
 # frozen_string_literal: true
 
 module Sessions
-  # The dashboard's User view, as an ordering rule two surfaces share.
-  #
-  # The web view (SessionsController#index) and the `get_user_view` MCP tool must
-  # agree about what "the board, top to bottom" means, because the reprioritizing
-  # session reads the board over MCP and writes an order the human then reads in
-  # the browser. If the two disagreed, the agent would be reordering a list nobody
-  # is looking at.
+  # The order the spot queue is worked in, with the priority sessions that
+  # outrank all of it stacked above: `GET /api/v1/sessions?view=ranked`, which
+  # is how the iOS app draws its Ranked view.
   #
   # == The order
   #
@@ -21,11 +17,7 @@ module Sessions
   # genesis, resolved live against AppSetting — which is what `priority_classified`
   # spells out in SQL. So the two halves are queried separately and concatenated,
   # which also gives the limit somewhere sensible to apply.
-  #
-  # The list is deliberately NOT rendered as two sections. Splitting it is what the
-  # Ranked view does, and the User view is the screen you work top to bottom: one
-  # list, with a per-row badge saying which class each session is.
-  class UserView
+  class RankedOrder
     # The ordered rows, capped.
     #
     # @param scope [ActiveRecord::Relation] sessions already narrowed by whatever

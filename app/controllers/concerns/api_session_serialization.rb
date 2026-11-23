@@ -120,7 +120,7 @@ module ApiSessionSerialization
     json[:visibility] = session.visibility
     json[:effective_visibility] = session.effective_visibility
     json[:snoozed_until] = session.snoozed_until&.iso8601
-    # The Your board v2 category a person put this session in, or null for
+    # The Your board category a person put this session in, or null for
     # Uncategorized. Presentation only, like visibility.
     json[:board_category_id] = session.board_category_id
     # CarPlay fit — the driver's triage axis, with its provenance. `carplay_fit`
@@ -254,7 +254,7 @@ module ApiSessionSerialization
     end
   end
 
-  # One Your board v2 category, as the REST surface reports it. `on_board` is
+  # One Your board category, as the REST surface reports it. `on_board` is
   # whether the board draws its rows (a snoozed or backlogged category is tucked
   # away as a unit); `session_count` is how many of the listed rows it holds, or,
   # for a tucked category, how many sessions are tucked away in it.

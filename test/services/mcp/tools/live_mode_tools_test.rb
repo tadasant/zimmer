@@ -216,14 +216,13 @@ class Mcp::Tools::LiveModeToolsTest < ActiveSupport::TestCase
 
   # ---- get_user_view -------------------------------------------------------------
 
-  test "get_user_view defaults to last touched and does not point at the reorder tool" do
+  test "get_user_view defaults to last touched and drops the arguments it does not take" do
     Session.create!(title: "Waiting on you", prompt: "p", status: :needs_input, git_root: "https://github.com/test/repo.git")
 
     output = Mcp::Tools::LiveModeGetUserView.new(context: context).call({ "summary_chars" => 0, "agent_root" => "nope" })
 
     assert_includes output, "Ordered by last touched"
     assert_includes output, "Waiting on you", "the agent_root argument was dropped"
-    assert_not_includes output, "reorder_user_view"
     assert_includes output, "That is every matching row."
   end
 

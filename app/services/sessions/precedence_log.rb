@@ -9,8 +9,8 @@ module Sessions
   # undoes the write it describes. `previous` is the stored value, which the caller
   # read before saving, and a rank that did not move writes no row.
   #
-  # Sessions::ReorderPrecedence and Sessions::ApplyUserViewOrder write their own
-  # rows, because theirs carry a reason after the "(was …)".
+  # Sessions::ReorderPrecedence writes its own rows, because they carry a reason
+  # after the "(was …)".
   module PrecedenceLog
     module_function
 

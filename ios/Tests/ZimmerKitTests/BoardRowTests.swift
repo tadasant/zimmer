@@ -1,14 +1,14 @@
 import XCTest
 @testable import ZimmerKit
 
-/// Your board's rows: each session's agent root and "where things stand", from `include=board_row`.
+/// Ranked's and search's rows: each session's agent root and "where things stand", from `include=board_row`.
 final class BoardRowTests: XCTestCase {
     private func client(_ handlers: [ScriptedTransport.Handler]) -> (ZimmerHTTPClient, ScriptedTransport) {
         let transport = ScriptedTransport(handlers)
         return (ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport), transport)
     }
 
-    func testYourBoardAsksForTheRowsAndAttachesThem() async throws {
+    func testRankedAsksForTheRowsAndAttachesThem() async throws {
         let (api, transport) = client([{ _ in
             Fixtures.json(200, [
                 "sessions": [["id": 7, "status": "needs_input"], ["id": 8, "status": "needs_input"]],
@@ -19,7 +19,7 @@ final class BoardRowTests: XCTestCase {
                 ],
             ])
         }])
-        let result = try await api.sessions(.default, board: .onBoard, view: .yourBoard)
+        let result = try await api.sessions(.default, board: .onBoard, view: .ranked)
         let query = URLComponents(url: try XCTUnwrap(transport.sent.first?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
         XCTAssertEqual(query.first { $0.name == "include" }?.value, "board_row")
 
@@ -36,7 +36,7 @@ final class BoardRowTests: XCTestCase {
         let (api, _) = client([{ _ in
             Fixtures.json(200, ["sessions": [["id": 7, "status": "needs_input"]], "pagination": ["total_pages": 1]])
         }])
-        let result = try await api.sessions(.default, board: .onBoard, view: .yourBoard)
+        let result = try await api.sessions(.default, board: .onBoard, view: .ranked)
         XCTAssertEqual(result.sessions.map(\.id), [7])
         XCTAssertNil(result.sessions.first?.boardRow)
     }
@@ -88,7 +88,7 @@ final class BoardRowTests: XCTestCase {
         XCTAssertEqual(neighbours.below, 4)
     }
 
-    func testOnlyYourBoardAndRankedAreReordered() {
-        XCTAssertEqual(BoardView.allCases.filter(\.isReorderable), [.yourBoard, .ranked])
+    func testOnlyRankedIsReordered() {
+        XCTAssertEqual(BoardView.allCases.filter(\.isReorderable), [.ranked])
     }
 }

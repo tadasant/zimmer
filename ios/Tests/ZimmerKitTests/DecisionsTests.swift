@@ -1,7 +1,7 @@
 import XCTest
 @testable import ZimmerKit
 
-/// Merge and Reprioritize: the two buttons that stand for a person's decision.
+/// Merge: the button that stands for a person's sign-off on a session's PR.
 final class DecisionsTests: XCTestCase {
     private func client(_ handlers: [ScriptedTransport.Handler]) -> (ZimmerHTTPClient, ScriptedTransport) {
         let transport = ScriptedTransport(handlers)
@@ -49,25 +49,11 @@ final class DecisionsTests: XCTestCase {
         }
     }
 
-    func testReprioritizeNamesTheSessionThatTookTheJob() async throws {
-        let (api, transport) = client([{ _ in Fixtures.json(200, ["outcome": "fired", "message": "Reprioritizing in session #88",
-                                                                   "session": ["id": 88, "status": "running"]]) }])
-
-        let result = try await api.reprioritize()
-
-        XCTAssertEqual("\(transport.sent[0].method) \(transport.sent[0].url.path)", "POST /api/v1/sessions/reprioritize")
-        XCTAssertEqual(result.sessionID, 88)
-    }
-
-    func testTheFakeMergesOnceAndReusesItsReprioritizer() async throws {
+    func testTheFakeMergesOnce() async throws {
         let api = FakeZimmerAPI()
         let first = try await api.authorizeMerge(1038)
         let second = try await api.authorizeMerge(1038)
         XCTAssertFalse(first.alreadySent)
         XCTAssertTrue(second.alreadySent)
-
-        let ranker = try await api.reprioritize()
-        let again = try await api.reprioritize()
-        XCTAssertEqual(ranker.sessionID, again.sessionID)
     }
 }

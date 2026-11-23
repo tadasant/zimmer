@@ -2,7 +2,7 @@
 
 require "test_helper"
 
-# What "the PR" and "green" mean on the User view's row, and on the Merge button
+# What "the PR" and "green" mean to `get_user_view`, and to the Merge button
 # that reads the same answer.
 class Sessions::PrSummaryTest < ActiveSupport::TestCase
   def session_with(urls: [], statuses: {}, ci: {})

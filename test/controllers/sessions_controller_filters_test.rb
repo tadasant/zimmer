@@ -5,7 +5,7 @@ require "test_helper"
 #
 # Statuses are asserted through the rendered rows rather than an assigns() peek,
 # because what the filter is for is which sessions a person sees. The default view
-# is the User view, so a "card" here is one of its rows.
+# is Your board, so a "card" here is one of its rows.
 class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   setup do
     McpOauthPendingFlow.delete_all
@@ -139,12 +139,12 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
     # operator chose for a different presentation on every later visit.
     get dashboard_board_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
     assert_response :success
-    assert_select "#user_view_list", count: 1
+    assert_select "#board_v2", count: 1
     assert_select "#flat_sessions", count: 0
 
     get dashboard_board_url
     assert_response :success
-    assert_select "#user_view_list", count: 1
+    assert_select "#board_v2", count: 1
     assert_select "#flat_sessions", count: 0
   end
 
@@ -164,7 +164,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   def assert_cards(expected)
     all = [ @waiting, @running, @needs_input, @failed, @archived ]
     all.each do |session|
-      row = "#user_view_list li#user_view_row_#{session.id}"
+      row = "#board_v2 #board_v2_row_#{session.id}"
       if expected.include?(session)
         assert_select row, { count: 1 }, "expected a row for the #{session.status} session"
       else
