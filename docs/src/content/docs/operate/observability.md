@@ -824,6 +824,39 @@ turns that silence into an answer:
 
 It prints the marker it emitted and the exact LogsQL query that confirms the record landed.
 
+## The health report the probes read
+
+`GET /health/export_diagnostics` is read every thirty seconds by the fleet-telemetry collector, and by
+the production deploy's worker soak. Both give up after fifteen seconds and both act on
+`health_report.system_health`: the GoodJob heartbeat and the queues. `HealthDiagnostics` keeps those
+facts from waiting on the rest of the report:
+
+- **`system_health` is read first**, on the request itself, every time. It is never skipped and never
+  served from an earlier reading. If it cannot be read, the response is a **503** naming the error
+  class, not a report without it. No statement may run longer than four seconds.
+- **Every other section is read after it, for six seconds at most**, on a thread of its own. One that is
+  not back by then, or that raises, carries `unread: true`, an `error` saying why, and an `unknown`
+  status. `overall_status` says how many of its checks could not be evaluated rather than counting them
+  as passed.
+- **One section thread at a time per web process.** A section that outlives its budget keeps its database
+  connection until it ends, so while one is running a report carries `system_health` alone.
+
+`unread_sections` lists what is missing and `section_timings_ms` says how long each section took, so a
+report that has slowed down names the section. A report with anything missing also logs one WARN line,
+`[HealthDiagnostics] answered without …`, with the same timings.
+
+What a reader can conclude:
+
+| Response | Means |
+| --- | --- |
+| `200`, `unread_sections` empty | the whole report |
+| `200`, some sections unread | `system_health` is current; the rest of the app is slow or a section is broken |
+| `503` | the queue and heartbeat facts could not be read |
+| no answer | the web process, or the path to it, is down or saturated; it says nothing about the worker |
+
+`/health`, `GET /api/v1/health` and `get_system_health` read the same sections without the deadline, and
+wait for all of them.
+
 ## Retry budgets on the health surface
 
 `HealthMonitorService#retry_budget_health` reports every bounded auto-recovery loop
@@ -851,7 +884,11 @@ brought the last two onto the surface in #727. See
 
 The SIGTERM and API-error panels remain alongside it: they carry rate-limit pressure and
 account-quota detail the generic section has no equivalent of. They read their numbers
-from the same per-budget query rather than from a second copy of it.
+from the same `RetryBudget::Usage` rather than from a second copy of it.
+
+The counters live in `sessions.metadata`, which has no index for them, so `RetryBudget::Usage` reads
+every budget in **one** scan of `sessions`. A scan per budget per count was 38 of them, and it is what
+made the report slower than its probes.
 
 ## Security counts on the health surface
 

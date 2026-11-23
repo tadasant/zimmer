@@ -347,6 +347,23 @@ class HealthMonitorService
     end
   end
 
+  # What a report holds, in the order it lists them.
+  SECTIONS = %i[
+    process_health session_health system_health egress_health auth_health
+    retry_budget_health sigterm_retry_health api_error_retry_health
+    post_deploy_task_health cron_health log_retention_health transcript_storage_health
+    database_size_health inbound_event_health root_data_health operating_costs_health
+    warm_clone_pool_health warm_process_pool_health trigger_poller_health security_health
+  ].freeze
+
+  # The sections `overall_status` summarizes. The others are absent on purpose, each for
+  # the reason its own method gives: see #log_retention_health for why a draining backlog
+  # must not turn the whole report yellow.
+  OVERALL_STATUS_SECTIONS = %i[
+    process_health session_health system_health egress_health auth_health
+    post_deploy_task_health cron_health
+  ].freeze
+
   # @param process_discovery [#claude_processes, nil] where `active_processes` come
   #   from. Nil means "whatever `config.x.host_process_discovery` says" — the real
   #   `pgrep` scanner everywhere but the test environment, which configures `:none`
@@ -361,7 +378,7 @@ class HealthMonitorService
 
   # Generate a complete health report
   #
-  # The six sections `overall_status` summarizes are computed ONCE and handed to it,
+  # Every section is computed ONCE, and the summarized ones handed to `overall_status`
   # rather than recomputed inside it. Two reasons, and the second is the one that
   # matters. Cost: each is several queries against `sessions` and `good_jobs`, and
   # /health auto-refreshes every thirty seconds. Consistency: recomputing means the
@@ -370,53 +387,20 @@ class HealthMonitorService
   # a health surface disagreeing with itself is the class of defect this whole file
   # is being corrected for.
   #
+  # HealthDiagnostics reads the same sections for the probes, under a deadline.
+  #
   # @return [Hash] Full health report with all sections
   def full_health_report
-    process = process_health
-    session = session_health
-    system = system_health
-    egress = egress_health
-    auth = auth_health
-    post_deploy = post_deploy_task_health
-    cron = cron_health
+    assemble_report(SECTIONS.index_with { |section| public_send(section) })
+  end
 
-    {
-      process_health: process,
-      session_health: session,
-      system_health: system,
-      egress_health: egress,
-      auth_health: auth,
-      retry_budget_health: retry_budget_health,
-      sigterm_retry_health: sigterm_retry_health,
-      api_error_retry_health: api_error_retry_health,
-      post_deploy_task_health: post_deploy,
-      cron_health: cron,
-      # Absent from the status list below on purpose — see #log_retention_health
-      # for why a draining backlog must not turn the whole report yellow.
-      log_retention_health: log_retention_health,
-      # Also absent — see #transcript_storage_health.
-      transcript_storage_health: transcript_storage_health,
-      # Also absent — see #database_size_health.
-      database_size_health: database_size_health,
-      # Also absent from the status list — see #inbound_event_health.
-      inbound_event_health: inbound_event_health,
-      # Also absent — see #root_data_health.
-      root_data_health: root_data_health,
-      # Also absent — see #operating_costs_health.
-      operating_costs_health: operating_costs_health,
-      # Also absent — see #warm_clone_pool_health.
-      warm_clone_pool_health: warm_clone_pool_health,
-      # Also absent — see #warm_process_pool_health.
-      warm_process_pool_health: warm_process_pool_health,
-      # Also absent — see #trigger_poller_health.
-      trigger_poller_health: trigger_poller_health,
-      # Also absent — see #security_health.
-      security_health: security_health,
-      overall_status: calculate_overall_status(
-        [ process, session, system, egress, auth, post_deploy, cron ].map { |section| section[:status] }
-      ),
+  # A report from sections already read.
+  # @param sections [Hash{Symbol=>Hash}] keyed by SECTIONS
+  def assemble_report(sections)
+    sections.merge(
+      overall_status: calculate_overall_status(OVERALL_STATUS_SECTIONS.map { |section| sections.fetch(section)[:status] }),
       generated_at: Time.current
-    }
+    )
   end
 
   # Get process health information
@@ -1124,26 +1108,15 @@ class HealthMonitorService
   def api_error_retry_health
     rate_limit_tracker = GlobalRateLimitTracker.new
     stats = retry_budget_stats(RetryBudget::API_ERROR)
-    threshold = 24.hours.ago
-
-    # Count sessions that hit account quota limits (daily/weekly limits, not transient 429s)
-    quota_limit_sessions_count = Session
-      .where("metadata->>'last_quota_limit_at' IS NOT NULL")
-      .count
-
-    recent_quota_limit_count = Session
-      .where("metadata->>'last_quota_limit_at' IS NOT NULL")
-      .where("(metadata->>'last_quota_limit_at')::timestamp > ?", threshold)
-      .count
-
     {
       total_api_error_sessions: stats[:total_sessions],
       total_retries_attempted: stats[:total_retries_attempted],
       successful_recovery_count: stats[:successful_recovery_count],
       exhausted_retry_count: stats[:exhausted_retry_count],
       recent_api_error_count: stats[:recent_count],
-      quota_limit_sessions_count: quota_limit_sessions_count,
-      recent_quota_limit_count: recent_quota_limit_count,
+      # Sessions that hit account quota limits (daily/weekly limits, not transient 429s).
+      quota_limit_sessions_count: retry_budget_usage.quota_limited_count,
+      recent_quota_limit_count: retry_budget_usage.quota_limited_count_since(24.hours.ago),
       rate_limit_pressure: rate_limit_tracker.under_pressure?,
       rate_limit_events_5min: rate_limit_tracker.recent_event_count,
       current_delay_mode: rate_limit_tracker.under_pressure? ? "escalated" : "normal",
@@ -1933,6 +1906,9 @@ class HealthMonitorService
         created_at: log.created_at
       }
     end
+  rescue StandardError => e
+    @logger.warn("Failed to read recent session errors", error: e.message)
+    []
   end
 
   # Errors raised by background jobs, whether the job then retried or was discarded.
@@ -2066,41 +2042,16 @@ class HealthMonitorService
 
   # One budget's numbers, from the budget's own declared metadata keys.
   #
-  # The counts are SQL aggregates so no session is loaded to be counted; the recency
-  # split is done in Ruby because metadata is not schema-checked and one corrupt
-  # timestamp must not take the health page down with it.
+  # Every budget's numbers come from one pass over `sessions` (RetryBudget::Usage), and
+  # only the few sessions displayed are loaded.
   #
   # @param budget [RetryBudget]
   # @param threshold [Time] how far back "recent" reaches
   # @return [Hash]
   def retry_budget_stats(budget, threshold: 24.hours.ago)
-    # Memoised per service instance because `full_health_report` asks for the same
-    # budget more than once: the generic section walks every declared budget, and the
-    # SIGTERM and API-error panels each read their own again. Unmemoised that is one
-    # pass per declared budget plus two — four queries and an unbounded load apiece —
-    # on a page that refreshes every 30s. A HealthMonitorService is built per request,
-    # so the cache cannot go stale.
-    @retry_budget_stats ||= {}
-    return @retry_budget_stats[budget] if @retry_budget_stats.key?(budget)
-
-    @retry_budget_stats[budget] = compute_retry_budget_stats(budget, threshold: threshold)
-  end
-
-  def compute_retry_budget_stats(budget, threshold:)
-    total_sessions, total_retries_attempted = budget.sessions
-      .pluck(
-        Arel.sql("COUNT(*)"),
-        Arel.sql("COALESCE(SUM((metadata->>#{Session.connection.quote(budget.key)})::int), 0)")
-      ).first
-
-    # Sessions that spent the budget and did NOT come to rest in its terminal status —
-    # the recovery worked. Asked of the budget, because the terminal status differs:
-    # the empty-turn restart parks rather than fails, and a `:failed` filter would count
-    # every abandoned session here as a recovery.
-    successful_recovery_count = budget.recovered_sessions.count
-
-    stamped = budget.stamped_sessions.to_a
-    recent = stamped.select { |session| within?(budget.last_attempt_at(session), threshold) }
+    usage = retry_budget_usage.for(budget, since: threshold)
+    shown = usage[:recent].first(RECENT_EVENTS_DISPLAY_LIMIT)
+    sessions = shown.empty? ? {} : Session.where(id: shown).index_by(&:id)
 
     {
       name: budget.name,
@@ -2108,22 +2059,24 @@ class HealthMonitorService
       count_key: budget.key,
       stamp_key: budget.stamp,
       max_retries: budget.max,
-      total_sessions: total_sessions.to_i,
-      total_retries_attempted: total_retries_attempted.to_i,
-      successful_recovery_count: successful_recovery_count,
-      exhausted_retry_count: budget.exhausted_sessions.count,
-      recent_count: recent.size,
-      recent_sessions: recent
-        .sort_by { |session| budget.last_attempt_at(session) || Time.at(0) }
-        .reverse
-        .first(RECENT_EVENTS_DISPLAY_LIMIT)
-        .map { |session| retry_budget_session_summary(session, budget) }
+      total_sessions: usage[:total_sessions],
+      total_retries_attempted: usage[:total_retries_attempted],
+      # Sessions that spent the budget and did NOT come to rest in its terminal status —
+      # the recovery worked. Asked of the budget, because the terminal status differs:
+      # the empty-turn restart parks rather than fails, and a `:failed` filter would count
+      # every abandoned session here as a recovery.
+      successful_recovery_count: usage[:recovered],
+      exhausted_retry_count: usage[:exhausted],
+      recent_count: usage[:recent].size,
+      recent_sessions: sessions.values_at(*shown).compact.map { |session| retry_budget_session_summary(session, budget) }
     }
   end
 
-  # @return [Boolean] true when `time` is present and newer than `threshold`
-  def within?(time, threshold)
-    time.present? && time > threshold
+  # Memoised per service instance because `full_health_report` asks for it three times:
+  # the generic section, the SIGTERM panel and the API-error panel. A HealthMonitorService
+  # is built per request, so it cannot go stale.
+  def retry_budget_usage
+    @retry_budget_usage ||= RetryBudget::Usage.new
   end
 
   # Create a summary of a session for retry-budget display

@@ -683,6 +683,34 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert report.key?("overall_status")
   end
 
+  test "export_diagnostics answers with the heartbeat while another section hangs" do
+    hang = Queue.new
+    HealthMonitorService.any_instance.stubs(:retry_budget_health).with { hang.pop || true }
+    diagnostics = HealthDiagnostics.new(budget: 0.5.seconds)
+    HealthDiagnostics.stubs(:new).returns(diagnostics)
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    get export_diagnostics_health_url(format: :json)
+
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 5
+    assert_response :success
+    report = JSON.parse(response.body)["health_report"]
+    assert report["system_health"]["worker_stats"].key?("worker_details")
+    assert report["system_health"]["queue_stats"].key?("ready_count")
+    assert_includes report["unread_sections"], "retry_budget_health"
+  ensure
+    hang << true
+  end
+
+  test "export_diagnostics is a 503 when the queue facts cannot be read" do
+    HealthMonitorService.any_instance.stubs(:system_health).raises(ActiveRecord::QueryCanceled)
+
+    get export_diagnostics_health_url(format: :json)
+
+    assert_response :service_unavailable
+    assert_match(/system_health could not be read/, JSON.parse(response.body)["error"])
+  end
+
   # === Route Tests ===
 
   test "should route to dashboard" do
