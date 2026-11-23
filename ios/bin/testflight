@@ -124,7 +124,7 @@ if [ "$mode" = upload ]; then
   python3 tools/app_store_connect.py preflight --bundle-id "$BUNDLE_ID"
 fi
 
-printf '    using %s\n' "$(xcodebuild -version | head -1)"
+printf '    using %s\n' "$(xcodebuild -version | sed -n 1p)"
 printf '==> archiving build %s (signing: %s)\n' "$build_number" "$([ "$mode" = check ] && echo 'ad hoc' || echo "$signing")"
 
 archive="$work/Zimmer.xcarchive"
@@ -251,10 +251,11 @@ if grep -aq '\$(' "$plist"; then fail "Info.plist carries a malformed \$(...) bu
 # the label. Raise the floor when App Store Connect announces the next one.
 readonly MIN_IOS_SDK=27
 sdk_name="$(value DTSDKName)"
+xcode_build="$(value DTXcodeBuild)"
 [[ "$sdk_name" =~ ^iphoneos([0-9]+)(\.[0-9]+)*$ ]] || fail "Info.plist DTSDKName '$sdk_name' is not an iOS device SDK"
 [ "${BASH_REMATCH[1]}" -ge "$MIN_IOS_SDK" ] ||
   fail "the archive was built with $sdk_name — App Store Connect wants the iOS $MIN_IOS_SDK SDK or later (ITMS-90725); select a newer Xcode"
-printf '    ok  %-44s %s (Xcode build %s)\n' DTSDKName "$sdk_name" "$(value DTXcodeBuild)"
+printf '    ok  %-44s %s (Xcode build %s)\n' DTSDKName "$sdk_name" "$xcode_build"
 
 # ITMS-90683: App Store Connect scans every binary in the bundle, the embedded frameworks'
 # included, and flags a build that references a protected API without its purpose string —

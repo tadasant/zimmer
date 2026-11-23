@@ -3,7 +3,7 @@
 require "test_helper"
 require "yaml"
 
-# The `ui-test` job in ios-ui-tests.yml runs the XCUITest suite as shards, each a `--only`
+# The jobs in ios-ui-tests.yml run the XCUITest suite as shards and a CarPlay drill, each a `--only`
 # list of test classes handed to `ios/bin/ui-test`. A class is only run if a shard names it,
 # so a class added under ios/App/ZimmerUITests and left out of the matrix passes on the
 # laptop that wrote it and then never runs again — green forever, exercised never. And a
@@ -37,6 +37,16 @@ class IosUiTestShardsTest < ActiveSupport::TestCase
 
   def classes_by_shard
     shards.to_h { |shard| [ shard.fetch("name"), shard.fetch("classes").split(",").map(&:strip) ] }
+      .merge(classes_by_other_job)
+  end
+
+  # The jobs beside the matrix (the CarPlay drill) name their classes in an `--only` of their own.
+  def classes_by_other_job
+    jobs = YAML.load_file(WORKFLOW, aliases: true).fetch("jobs").except("ui-test")
+    jobs.transform_values do |other|
+      other.fetch("steps").flat_map { |step| step["run"].to_s.scan(/--only[ =]([\w,]+)/).flatten }
+        .flat_map { |list| list.split(",") }
+    end
   end
 
   test "the sources define UI test classes and the matrix has shards, so this is checking something" do

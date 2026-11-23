@@ -71,7 +71,7 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 0
 fi
 
-printf '    using %s\n' "$(xcodebuild -version | head -1)"
+printf '    using %s\n' "$(xcodebuild -version | sed -n 1p)"
 printf '    configuration %s, default server %s\n' \
   "$configuration" "${base_url:-none}"
 

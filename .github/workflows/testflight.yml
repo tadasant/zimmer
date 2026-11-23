@@ -74,8 +74,8 @@ concurrency:
 jobs:
   upload:
     if: ${{ github.ref == 'refs/heads/main' && github.repository == 'tadasant/zimmer' }}
-    # The image whose Xcode has the iOS 27 SDK; every macOS job here uses it, so what a pull
-    # request tests is what this uploads. `ios/bin/testflight` fails an older SDK (ITMS-90725).
+    # The image whose Xcode has the iOS 27 SDK; the `ios` job and the UI
+    # tests use it too, so they test the SDK this uploads. `ios/bin/testflight` fails an older SDK (ITMS-90725).
     runs-on: xcode-27
     environment: testflight
     # The archive, up to three export attempts with their backoff (ios/tools/app_store_connect.py

@@ -486,7 +486,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 ## The CarPlay drill
 
 `App/ZimmerUITests/CarPlayDrillUITests.swift`, run by `ios/bin/ui-test --carplay` in CI's
-`ios_carplay` job on every iOS pull request (and the `carplay` shard after merge). The script builds
+`ios_carplay` job on every iOS pull request (and the `carplay` job of `ios-ui-tests.yml` after merge). The script builds
 the app signed ad hoc with the CarPlay entitlement — the Simulator's CarPlay window lists no app
 without one — and opens that window from the Simulator's I/O menu through System Events. XCUITest
 then drives the real templates, which the system's `CarPlayTemplateUIHost` draws:
@@ -605,7 +605,7 @@ nothing before the tap and opens no microphone. The design and the numbers are i
   is reached by saying so on a call. `LiveAPI.switchLiveConversation(nil, from:)` is what a tile
   would call: `LiveAPI.conversation(for:)` is where Continue would reach for it, and the home's read
   is where a reopenable conversation would keep the Continue tile up.
-- **iOS 27 overlay.** The voice control template as an overlay. Needs Xcode 27 in CI.
+- **iOS 27 overlay.** The voice control template as an overlay. CI builds with Xcode 27; the drill cannot run there (see Known limitations).
 - **Siri App Intents.** "Tell Zimmer to …" without opening the app; works in CarPlay without the
   entitlement. A phone-app change.
 - **A nudge on the Lock Screen.** A Live Activity for a call handed to a locked phone, with no sound.

@@ -147,13 +147,13 @@ anything under `ios/**` or the three iOS workflows moved, and fails open to "bui
 `--also` for each UI test file the change touches, and keeps the `ios-ui-test` artifact (video,
 result bundle, and the app's crash reports in `crashes/`, whose crashed thread is also printed in
 the job's log). It does not run `build-app`: `ui-test` builds the same app for the simulator it runs on.
-`ios_carplay` (`xcode-27`, in parallel with `ios`) runs `ui-test --carplay --only
+`ios_carplay` (`macos-26`, since Xcode 27 has no Simulator app to show CarPlay, in parallel with `ios`) runs `ui-test --carplay --only
 CarPlayDrillUITests`: Zimmer in the Simulator's CarPlay window, through a Live call that cannot
 connect, its retries and giving up, and a tap that tries again, failing on any crash. It keeps the
-`ios-carplay-drill` artifact. `ios_swift_linux` (self-hosted) runs `ci-swift` on Linux. All four
+`ios-carplay-drill` artifact. `ios_swift_linux` (`ubuntu-24.04`) runs `ci-swift` on Linux. All four
 carry the fork-PR guard and are in `all-checks-pass`. `ios-ui-tests.yml` is the full run, every UI test and every screenshot, as
-five shards on five simulators (`--only` a share of the classes each, the `photos` shard taking
-the screenshots, the `carplay` shard running the drill with `--carplay`; `test/config/ios_ui_test_shards_test.rb` holds every class to one shard), on
+four shards and the CarPlay drill on five simulators (`--only` a share of the classes each, the `photos` shard taking
+the screenshots, the `carplay` job running the drill with `--carplay`; `test/config/ios_ui_test_shards_test.rb` holds every class to one of them), on
 each push to `main` that touches `ios/**`, and on demand: against a branch
 (`gh workflow run ios-ui-tests.yml --ref <branch>`) or against a server named by the *name* of a
 repository variable.

@@ -33,7 +33,7 @@
 # and photographs every key screen in both appearances: some 110 tests driven one at a time
 # and some 90 screenshots with a settle wait each, which outgrew a single hosted runner's
 # job. So `ios-ui-tests.yml`, on every merge to `main` that touches `ios/**` and on demand,
-# runs it as five shards on five simulators at once: each `--only` a comma-separated list
+# runs it as four shards and the CarPlay drill, on five simulators at once: each `--only` a comma-separated list
 # of `ZimmerUITests` classes, and all but one `--no-photos`, so the `simctl` photograph pass
 # that follows the tests runs once. test/config/ios_ui_test_shards_test.rb holds every class
 # to exactly one shard, and every class named is checked against the sources before the
@@ -178,7 +178,7 @@ mkdir -p "$artifacts"
 printf '%s\n' "classes=$covered" "photos=$photos" >"$artifacts/shard.txt"
 derived="$artifacts/DerivedData"
 
-printf '    using %s\n' "$(xcodebuild -version | head -1)"
+printf '    using %s\n' "$(xcodebuild -version | sed -n 1p)"
 printf '    configuration %s, default server %s\n' "$configuration" "${base_url:-none}"
 
 # ---------------------------------------------------------------------------------------
@@ -191,7 +191,7 @@ printf '    configuration %s, default server %s\n' "$configuration" "${base_url:
 # image changes under us.
 #
 # Two limits on which one. No runtime newer than the SDK the app is built with: an image can
-# carry a beta Xcode beside the selected one, and its runtime is not what ships. And not an
+# carry a newer Xcode beside the selected one, and its runtime is not what ships. And not an
 # iPhone Duo: it folds, so its layout is not the one these tests drive, and Xcode 27.1's own
 # runtime (iOS 27.1) has no other device.
 # ---------------------------------------------------------------------------------------
@@ -320,7 +320,8 @@ export TEST_RUNNER_ZIMMER_UI_TEST_ARTIFACTS="$artifacts"
 #
 # The Simulator draws a CarPlay head unit as a second display, and the only way to switch it
 # on is the Simulator app's own menu (I/O → External Displays → CarPlay): `simctl` has no
-# verb for it. So the app is opened on this device and the menu item clicked through System
+# verb for it. Xcode 27 dropped that app (Device Hub shows no CarPlay for a simulator), so this
+# needs Xcode 26. So the app is opened on this device and the menu item clicked through System
 # Events. GitHub's hosted macOS runners allow that without an Accessibility prompt; a
 # machine that does not refuses the click, and that is a failure rather than a skip, because
 # a drill that never saw the car proves nothing.
