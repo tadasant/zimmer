@@ -20,6 +20,28 @@ class TriggersControllerTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Triggers"
   end
 
+  # A row that outlived its condition type (post-deploy task
+  # DisableTriggersWithRetiredEmailAndWhatsappConditions disables it) must not break a page.
+  test "a trigger still holding a native email or whatsapp condition lists, shows, edits and toggles" do
+    { "email" => { "query" => "in:inbox" }, "whatsapp" => { "chat_id" => "*", "mode" => "listen" } }.each do |type, configuration|
+      trigger = Trigger.create!(
+        name: "Left over #{type}", status: "enabled", agent_root_name: "zimmer", prompt_template: "{{message_id}} {{text}}",
+        trigger_conditions_attributes: [ { condition_type: "schedule", configuration: { "unit" => "hours", "interval" => 1 } } ]
+      )
+      trigger.trigger_conditions.first.update_columns(condition_type: type, configuration: configuration)
+
+      [ triggers_path, trigger_path(trigger), edit_trigger_path(trigger) ].each do |path|
+        get path
+        assert_response :success, "#{path} with a leftover #{type} condition"
+      end
+      assert_select "option[value=#{type}]", false, "the edit form does not offer #{type}"
+
+      post toggle_trigger_path(trigger)
+      assert_equal "disabled", trigger.reload.status
+      assert_match "Left over #{type}", Mcp::Tools::SearchTriggers.new(context: Mcp::Context.new).call({ "id" => trigger.id }).to_s
+    end
+  end
+
   # --- agent_root_name against the catalog (zimmer#448) ---------------------
 
   def trigger_named_for_a_root_that_does_not_exist

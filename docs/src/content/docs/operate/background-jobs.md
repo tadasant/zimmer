@@ -53,8 +53,6 @@ From `config.good_job.cron`:
 | 30s | `GithubPrPollPassJob` | One pass over every session tracking a PR. Enumerates once, gates on `PollBackoff` once, parses each PR url once, and takes ONE `gh pr view` reading of each PR — then hands it to four evaluators: `Github::PrStatusEvaluator` (PR state + CI status, and the merged-PR message), `Github::GoalFactsEvaluator` (the description's Verification section and checkboxes, and the labels, for [the goal check](/sessions/goals/#how-a-goal-is-checked); no GitHub call of its own, and only for a session whose goal checks them), `Github::MergeConflictEvaluator` (on its own 2-minute floor inside the pass, because its debounce is tuned to that gap; it reads each open PR's mergeability from the REST pulls endpoint, which the GraphQL reading the other evaluators share is not reliable enough for) and `Github::CommentEvaluator` (its two comment endpoints are separate resources, so they stay their own fetch). With `GITHUB_PR_INGEST_MODE=webhook_with_poll_fallback` the GitHub webhook decides which evaluators are due, and the clock only backs it up every 10 minutes; see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock). It replaced three cron entries that each swept the same sessions and re-derived the same facts ([#711](https://github.com/tadasant/zimmer/issues/711)) |
 | 2m | `GithubOrphanedPrConflictSweepJob` | Conflict watching for the open PRs the pass cannot see: those whose producing session archived or failed in the last 7 days, and not before 2026-10-16 (`WATCHED_SINCE`, so the first deploy revives nothing that ended while nothing could). Each such session is read about every 15 minutes, or every 2 while a conflict is suspected. It goes through the same REST mergeability read and the same two-reading debounce as `Github::MergeConflictEvaluator`. A confirmed conflict brings the producer back (unarchived, or a failed one resumed) with the conflict message and a paragraph on why it is running again. The PR is marked notified before the session is live, so the pass cannot tell it twice. Limits: at most once per conflict episode (a clean reading or a new head starts the next), 3 times per PR, and 2 revivals per run. Never a replaced session, one with no runtime session id, or one a newer session tracking the same PR supersedes. A merged or closed reading is recorded so the PR leaves the population. See `Github::OrphanedPrConflictSweep` |
 | 1m | `SlackTriggerPollerJob` | Poll Slack channels for trigger conditions |
-| 1m | `WhatsappTriggerPollerJob` | Poll the WhatsApp bridge for new messages in watched chats ([`whatsapp` triggers](/sessions/triggers/#whatsapp)) |
-| 1m | `EmailTriggerPollerJob` | Poll the mailbox for new mail, one session per thread ([`email` triggers](/sessions/triggers/#email)) |
 | 1m | `McpEventTriggerPollerJob` | `events/poll` each `mcp_event` condition's server for new events, one session per event, with the credentials a session would get for that server ([`mcp_event` triggers](/sessions/triggers/#mcp_event)). A server's `nextPollMs` can stretch one condition's interval to 15 minutes, and a condition whose webhook subscription is `verified` is polled only every 15 minutes, as catch-up. Stamps `PollerHeartbeat(:mcp_event)`, which `TriggerPollerLivenessCheckJob` pages on after 30 minutes |
 | 1m | `McpEventSubscriptionsJob` | Hold the MCP Events webhook subscriptions behind `mcp_event` conditions whose event type offers `webhook`: `events/subscribe` a new one, refresh it hourly and always before the server's `refreshBefore` (Zimmer asks for six hours), and `events/unsubscribe` one whose condition was edited, disabled or deleted. Does nothing without a public `https` base URL. A failure backs off from a minute to six hours, and the condition keeps polling meanwhile. See [Webhook delivery](/sessions/triggers/#webhook-delivery) |
 | 1m | `ScheduleReachabilityProbeJob` | `tools/list` each MCP server a reachability-gated schedule names, and record on each condition whether it is reachable and since when. `ScheduleTriggerJob` reads that record and never probes, so a slow host cannot delay a wake ([holding a schedule until a server is reachable](/sessions/triggers/#holding-a-schedule-until-a-server-is-reachable)) |
@@ -1517,7 +1515,7 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   (101 ready, head of line 75m, both threads held by `SessionProvenanceBroadcastJob` for 43m). The
   four threads are the four `agents` gave up, so the scheduler total is still 25 and the connection
   budget is unchanged.
-- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob`, `WhatsappTriggerPollerJob`, `EmailTriggerPollerJob`, `McpEventTriggerPollerJob` and `ScheduleReachabilityProbeJob`, and
+- **`:pollers`** with `total_limit: 1` — `SlackTriggerPollerJob`, `GithubTriggerPollerJob`, `McpEventTriggerPollerJob` and `ScheduleReachabilityProbeJob`, and
   since then the rest of the periodic work that must not queue behind session jobs:
   `GithubPrPollPassJob`, `GithubOrphanedPrConflictSweepJob`, `GithubRateLimitSnapshotJob`,
   `CatalogRefreshJob`, `CliStatusRefreshJob`, `WarmSkillsCacheJob`, `EgressHealthCheckJob`,
@@ -1980,18 +1978,6 @@ condition whose state stopped landing was masked by its siblings keeping the hea
 total Slack-poller stall was invisible until a feed drifted three hours behind (and the check that
 would notice ran on the same worker). The liveness plumbing now has one implementation
 (`PollerHeartbeat`, one check job) and the freshness checks are the same shape on both sides.
-
-`WhatsappTriggerPollerJob` has the liveness half and not the freshness half. A family group can go
-a week without a message, so "no new message" says nothing about the feed. What does go wrong is the
-bridge losing its link to WhatsApp — the phone offline for 14 days, the linked device removed, the
-number banned — and the poller treats that as a sweep that polled nothing: it asks the bridge's
-`whatsapp_status` first and stamps the heartbeat only when the bridge is logged in and at least one
-watched chat was read. So a lost link reaches `#alerts` as "WhatsApp trigger polling stalled" 30 minutes later.
-
-`EmailTriggerPollerJob` is the same: liveness, no freshness, because a quiet inbox is not a stalled
-one. Its failure is the mailbox server refusing Zimmer, usually a Google token that was never
-consented or was revoked. A refused search stops the sweep without a stamp, so that reaches
-`#alerts` as "Email trigger polling stalled" 30 minutes later.
 
 ### Liveness: the heartbeat
 

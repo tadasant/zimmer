@@ -7,8 +7,8 @@
 class Api::V1::TriggersController < Api::BaseController
   # Zimmer's iOS app: everything the triggers pages offer a signed-in person — list,
   # read, create, edit, delete, turn on or off, flip the trigger page's two re-use
-  # switches, invoke, and the Slack channel and WhatsApp chat pickers the form fetches.
-  accepts_native_app_tokens only: %i[index show create update destroy toggle toggle_enqueue_messages toggle_resuscitate_archived invoke channels whatsapp_chats mcp_event_sources]
+  # switches, invoke, and the Slack channel and MCP event source pickers the form fetches.
+  accepts_native_app_tokens only: %i[index show create update destroy toggle toggle_enqueue_messages toggle_resuscitate_archived invoke channels mcp_event_sources]
 
   before_action :set_trigger, only: [ :show, :update, :destroy, :toggle, :toggle_enqueue_messages,
                                       :toggle_resuscitate_archived, :invoke ]
@@ -112,19 +112,6 @@ class Api::V1::TriggersController < Api::BaseController
   #         autonomous session transitioning into that state (broadcast).
   #         Combine with reuse_session: true and last_session_id to build a
   #         per-session "wake me up when session X reaches state Y" trigger.
-  #       For whatsapp:
-  #       - chat_id: the chat's WhatsApp id, e.g. "120363012345678901@g.us" (required;
-  #         GET /api/v1/triggers/whatsapp_chats lists them)
-  #       - chat_name: display name (optional)
-  #       - mode: "listen" (every message) or "addressed" (only a batch that @mentions
-  #         the linked account, replies to it, or contains a keyword) (required)
-  #       - keywords: array of words for "addressed" (default ["zimmer"])
-  #       - include_from_me: fire on the linked account's own phone messages (default false)
-  #       For email (the mailbox EMAIL_MCP_URL reads; one session per thread with new mail):
-  #       - query: a Gmail search narrowing what counts (optional, default "in:inbox")
-  #       - include_automated: also fire on Auto-Submitted/List-Id mail, promotions/social/forums,
-  #         bounces, no-reply senders and auto-replies (default false)
-  #       The template must write {{text}}, {{author}} and {{title}} as {{name|untrusted}}.
   #       For mcp_event (one session per event a catalog MCP server publishes; polled each minute
   #       with the credentials a session would get for that server):
   #       - server: catalog MCP server name (required; GET /api/v1/triggers/mcp_event_sources)
@@ -295,30 +282,6 @@ class Api::V1::TriggersController < Api::BaseController
     render_api_error(e.message, e.message, status: :service_unavailable)
   end
 
-  # GET /api/v1/triggers/whatsapp_chats
-  # List the WhatsApp chats the bridge's account is in, for a `whatsapp` condition's chat_id.
-  def whatsapp_chats
-    unless WhatsappService.configured?
-      render_api_error("WhatsApp is not configured", "WhatsApp is not configured. Set WHATSAPP_MCP_URL.", status: :service_unavailable)
-      return
-    end
-
-    chats = WhatsappService.new.list_chats(limit: 100)
-    render json: {
-      chats: chats.map do |chat|
-        {
-          id: chat["id"].to_s,
-          name: chat["name"].presence || chat["id"].to_s,
-          is_group: chat["is_group"] == true,
-          last_message_at: chat["last_message_at"],
-          participant_count: chat["participant_count"]
-        }
-      end
-    }
-  rescue WhatsappService::Error => e
-    render_api_error(e.message, e.message, status: :service_unavailable)
-  end
-
   private
 
   def render_reuse_session_flag_toggle(toggled)
@@ -351,7 +314,7 @@ class Api::V1::TriggersController < Api::BaseController
       catalog_skills: [], catalog_hooks: [], catalog_plugins: [],
       trigger_conditions_attributes: [
         :id, :condition_type, :_destroy,
-        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :chat_id, :chat_name, :mode, :keywords, :include_from_me, :query, :include_automated, :server, :arguments, :payload_filters, :coalesce_key, :require_reachable, :reachable_dwell_minutes, :reachable_tools_include, :reachable_tools_include_mode, :reachable_tools_exclude, require_reachable: [], reachable_tools_include: [], reachable_tools_exclude: [], allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], keywords: [], arguments: {}, payload_filters: {} ]
+        configuration: [ :channel_id, :channel_name, :event_type, :thread_ts, :interval, :unit, :time, :day_of_week, :timezone, :event_name, :scheduled_at, :watched_session_id, :target, :server, :arguments, :payload_filters, :coalesce_key, :require_reachable, :reachable_dwell_minutes, :reachable_tools_include, :reachable_tools_include_mode, :reachable_tools_exclude, require_reachable: [], reachable_tools_include: [], reachable_tools_exclude: [], allowed_user_ids: [], repos: [], labels: [], exclude_labels: [], arguments: {}, payload_filters: {} ]
       ]
     )
     permitted[:mcp_servers] ||= []
