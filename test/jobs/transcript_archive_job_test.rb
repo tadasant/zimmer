@@ -51,6 +51,34 @@ class TranscriptArchiveJobTest < ActiveJob::TestCase
     ENV.delete("AGENT_TRANSCRIPT_ARCHIVE_DIR")
   end
 
+  # With an unreadable offload file the zip entry may be the last copy, so a rebuild must
+  # keep it, even when the sidecar that stamped it is gone.
+  test "an unreadable offloaded transcript keeps its existing zip entry" do
+    root = Dir.mktmpdir("archive_offload_test")
+    previous = ENV[TranscriptOffloadStore::DIR_ENV]
+    ENV[TranscriptOffloadStore::DIR_ENV] = root
+    content = "{\"type\":\"user\"}\n"
+    session = create_session(prompt: "archive then offload")
+    session.update!(transcript: content)
+    session.update_columns(status: Session.statuses.fetch("archived"), archived_at: 60.days.ago)
+    TranscriptArchiveJob.perform_now
+    assert_operator TranscriptRetentionJob.perform_now[:offloaded], :>=, 1
+    entry = -> { Zip::File.open(@archive_path) { |zip| JSON.parse(zip.read("sessions/#{session.id}.json"))["transcript"] } }
+
+    # Readable: a rebuild reads it back through the store.
+    Session.find(session.id).touch
+    TranscriptArchiveJob.perform_now
+    assert_equal content, entry.call
+
+    File.delete(TranscriptOffloadStore.path_for(session.id))
+    File.delete(@metadata_path)
+    TranscriptArchiveJob.perform_now
+    assert_equal content, entry.call
+  ensure
+    ENV[TranscriptOffloadStore::DIR_ENV] = previous
+    FileUtils.rm_rf(root) if root
+  end
+
   test "creates archive directory if it does not exist" do
     FileUtils.rm_rf(@test_dir)
 

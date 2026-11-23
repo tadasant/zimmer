@@ -466,7 +466,10 @@ class TranscriptArchiveJob < ApplicationJob
                           "at the #{run_deadline.inspect} run deadline; #{cut_short} deferred to the next tick"
       end
 
-      vanished_ids = changed_ids.first(attempted).map(&:to_s).reject { |id| all_sessions_metadata.key?(id) }
+      # An unreadable session with no stamp is still there; pruning it would drop the
+      # entry the skip just preserved.
+      vanished_ids = changed_ids.first(attempted).map(&:to_s)
+        .reject { |id| all_sessions_metadata.key?(id) || unreadable_ids.include?(id) }
       prune_session_entries(zip, removed_session_ids.to_set | vanished_ids)
       write_manifest(zip, all_sessions_metadata)
 
@@ -543,6 +546,15 @@ class TranscriptArchiveJob < ApplicationJob
 
   def archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima:)
     each_changed_session(changed_ids, all_sessions_metadata) do |session|
+      # An offloaded transcript whose file cannot be read comes back nil. Archiving it
+      # would replace a good entry with null, and that entry may be the last copy.
+      # Left unstamped, so it is tried again once the file is readable.
+      if session.transcript_present? && session.transcript.nil?
+        Rails.logger.error "[TranscriptArchiveJob] session #{session.id}: transcript unreadable; keeping its existing entry"
+        unreadable_ids << session.id.to_s
+        next
+      end
+
       add_session_to_zip(zip, session)
       all_sessions_metadata[session.id.to_s] = archive_stamp(session.updated_at, subagent_maxima[session.id])
     end
@@ -562,6 +574,8 @@ class TranscriptArchiveJob < ApplicationJob
     doomed = zip.entries.select { |entry| session_ids.include?(extract_session_id_from_path(entry.name)) }
     doomed.each { |entry| zip.remove(entry) }
   end
+
+  def unreadable_ids = (@unreadable_ids ||= Set.new)
 
   def add_session_to_zip(zip, session)
     session_data = {

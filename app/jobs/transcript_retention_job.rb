@@ -69,6 +69,11 @@ class TranscriptRetentionJob < ApplicationJob
   # How long one tick may work, checked between sessions.
   SLICE_BUDGET = 3.minutes
 
+  # The job stops while the volume holding the store has less than this free. Moving
+  # data off the database's disk must not be what fills the host's: that volume also
+  # holds every clone. Override with TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES.
+  MINIMUM_FREE_BYTES = Integer(ENV.fetch("TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES", 20.gigabytes.to_s))
+
   # Candidate ids fetched per query.
   BATCH_SIZE = 100
 
@@ -105,6 +110,10 @@ class TranscriptRetentionJob < ApplicationJob
     result = { offloaded: 0, skipped: 0, failed: 0, bytes: 0 }
     after = [ Time.at(0), 0 ]
 
+    swept = TranscriptOffloadStore.sweep_orphaned_temps
+    Rails.logger.warn("[TranscriptRetentionJob] swept #{swept} orphaned temp file(s)") if swept.positive?
+    return finish(result) unless room_to_offload?
+
     loop do
       batch = with_db_retry do
         self.class.candidates(now: now)
@@ -129,6 +138,17 @@ class TranscriptRetentionJob < ApplicationJob
   end
 
   private
+
+  # Unknown free space is not a reason to stop: `df` failing says nothing about the
+  # disk, and a write that hits ENOSPC fails before any chunk is deleted.
+  def room_to_offload?
+    FileUtils.mkdir_p(TranscriptOffloadStore.root)
+    free = CloneDiskGuard.available_bytes(TranscriptOffloadStore.root)
+    return true if free.nil? || free >= MINIMUM_FREE_BYTES
+
+    Rails.logger.warn("[TranscriptRetentionJob] not offloading: #{free} bytes free, under the #{MINIMUM_FREE_BYTES} byte floor")
+    false
+  end
 
   def finish(result)
     # WARN, because production ships only WARN and above to the log store, and this

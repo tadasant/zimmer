@@ -252,4 +252,38 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
     assert reloaded.transcript_present?, "the row still says a transcript existed"
     assert_equal false, reloaded.restore_offloaded_transcript!
   end
+
+  test "does not offload while the store's volume is under the free-space floor" do
+    session = archived_session(content: jsonl(5))
+    CloneDiskGuard.stubs(:available_bytes).returns(TranscriptRetentionJob::MINIMUM_FREE_BYTES - 1)
+
+    assert_equal 0, TranscriptRetentionJob.perform_now[:offloaded]
+    assert_predicate chunk_count(session), :positive?
+  end
+
+  test "sweeps temps a killed run left, and spares fresh ones and finished files" do
+    session = archived_session(content: jsonl(5))
+    TranscriptRetentionJob.perform_now
+    finished = TranscriptOffloadStore.path_for(session.id)
+    old = "#{finished}.tmp-abc123"
+    fresh = "#{finished}.tmp-def456"
+    [ old, fresh ].each { |path| File.write(path, "x") }
+    [ old, finished ].each { |path| File.utime(2.hours.ago.to_time, 2.hours.ago.to_time, path) }
+
+    TranscriptRetentionJob.perform_now
+
+    assert_not File.exist?(old)
+    assert File.exist?(fresh)
+    assert File.exist?(finished)
+  end
+
+  test "destroying a session removes its offloaded transcript" do
+    session = archived_session(content: jsonl(5))
+    TranscriptRetentionJob.perform_now
+    assert TranscriptOffloadStore.exist?(session.id)
+
+    Session.find(session.id).destroy!
+
+    assert_not TranscriptOffloadStore.exist?(session.id)
+  end
 end

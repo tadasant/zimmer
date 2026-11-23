@@ -402,8 +402,14 @@ than raising out of the session page or a sweep.
 **Coming back.** `UnarchiveSessionService` calls `Session#restore_offloaded_transcript!` before it
 resumes anything, which writes the chunks back and clears the marker. An unarchive whose file cannot
 be read fails instead of resuming a session with no conversation. Any write of a whole transcript to
-an offloaded session also makes the chunk table the authority again. Offload files are never deleted.
-A re-offload replaces a file only with a verified copy of the same session's transcript.
+an offloaded session also makes the chunk table the authority again. A file is deleted only when its
+session is destroyed (`Session#reclaim_session_directories`). A re-offload replaces a file only with
+a verified copy of the same session's transcript. `TranscriptArchiveJob` keeps a session's existing
+zip entry when its offload file cannot be read, rather than replacing it with `null`.
+
+**The host's disk.** The job does nothing while the store's volume has less than
+`TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES` free (default 20 GiB), because that volume also holds every
+clone. Each tick first removes temp files more than an hour old, which a killed run leaves behind.
 
 **Disk.** As with `logs`, deleting rows does not shrink Postgres's files. The space is reused by new
 transcripts, so the table stops growing. Giving it back to the filesystem is the same one-time

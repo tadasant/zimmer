@@ -38,6 +38,11 @@ class TranscriptOffloadStore
   DIR_ENV = "AGENT_TRANSCRIPT_OFFLOAD_DIR"
   SHARDS = 1000
 
+  # A temp file this old belongs to a writer that was killed before its `ensure` ran.
+  # A live write touches its temp continuously and takes seconds.
+  TEMP_FILE_MIN_AGE = 1.hour
+  TEMP_FILE_PATTERN = /\A\d+\.jsonl\.gz\.tmp-\h+\z/
+
   class << self
     # Resolved at call time, never memoized, so the env override and tests that stub
     # HOME are honoured without a restart. Namespaced per process under test, for the
@@ -91,6 +96,37 @@ class TranscriptOffloadStore
       end
 
       File.size(path)
+    end
+
+    # Removes a destroyed session's file. Called from Session#reclaim_session_directories
+    # and nowhere else: while the session row exists its file may be the only copy.
+    def delete(session_id)
+      File.delete(path_for(session_id))
+    rescue Errno::ENOENT
+      nil
+    end
+
+    # Reclaims temps a SIGKILL left behind; `ensure` does not survive one. The pattern
+    # cannot match a finished `<id>.jsonl.gz`. Returns how many it removed.
+    def sweep_orphaned_temps(now: Time.current)
+      return 0 unless File.directory?(root)
+
+      Dir.children(root).sum do |shard|
+        dir = File.join(root, shard)
+        next 0 unless File.directory?(dir)
+
+        Dir.children(dir).count do |entry|
+          next false unless entry.match?(TEMP_FILE_PATTERN)
+
+          path = File.join(dir, entry)
+          next false if File.mtime(path) > now - TEMP_FILE_MIN_AGE
+
+          File.delete(path)
+          true
+        rescue SystemCallError
+          false
+        end
+      end
     end
 
     # The transcript text for +session_id+, verified against +digest+.
