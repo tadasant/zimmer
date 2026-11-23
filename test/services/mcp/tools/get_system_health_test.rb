@@ -58,6 +58,22 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_match(/`logs`: 14 GB$/, result)
   end
 
+  test "names transcript storage once it is configured, and is silent while it is off" do
+    report = ->(configured, status, message) {
+      HealthMonitorService.any_instance.stubs(:full_health_report).returns(
+        { overall_status: "healthy", transcript_storage_health: {
+          configured: configured, copied_sessions: 12, set_aside: 2,
+          status: HealthMonitorService::HealthStatus.new(status: status, message: message)
+        } }
+      )
+      @tool.call({})
+    }
+
+    assert_not_includes report.(false, :healthy, "Off"), "**Transcript storage:**"
+    assert_includes report.(false, :warning, "Not copying: no key"), "- **Transcript storage:** Not copying: no key"
+    assert_includes report.(true, :healthy, "3 waiting"), "3 waiting (12 session(s) copied, 2 set aside because"
+  end
+
   test "names each pooled warm clone key and the claim counts" do
     HealthMonitorService.any_instance.stubs(:full_health_report).returns(
       { overall_status: "healthy",

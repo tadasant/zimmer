@@ -55,7 +55,7 @@ namespace :open_transcripts do
 
       changed_subagents += 1
       puts "  subagent transcript ##{subagent.id}: #{added_markers.call(subagent.transcript, redacted)} redaction(s)"
-      subagent.update_columns(transcript: redacted) unless dry_run
+      subagent.update_columns(transcript: redacted, updated_at: Time.current) unless dry_run
     end
 
     puts

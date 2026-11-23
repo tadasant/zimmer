@@ -337,6 +337,70 @@ class HealthMonitorServiceTest < ActiveSupport::TestCase
     end
   end
 
+  def transcript_storage(**values)
+    TranscriptStorage.stubs(:configuration).returns(TranscriptStorage::Configuration.new(**values))
+    @service.full_health_report[:transcript_storage_health]
+  end
+
+  test "transcript_storage_health is off and healthy with no bucket" do
+    storage = transcript_storage
+
+    assert storage[:status].healthy?
+    assert_includes storage[:status].message, "Off"
+    assert_equal 0, storage[:awaiting_copy]
+  end
+
+  test "transcript_storage_health warns on half a configuration, and not in overall_status" do
+    baseline = @service.full_health_report[:overall_status].status
+    storage = transcript_storage(bucket: "b", problem: "KEY is not set")
+
+    assert storage[:status].warning?
+    assert_includes storage[:status].message, "KEY is not set"
+    assert_equal baseline, @service.full_health_report[:overall_status].status
+  end
+
+  test "transcript_storage_health warns when a backlog has had no copy for an hour" do
+    session = create_session(prompt: "waiting")
+    session.update!(transcript: "{}\n")
+    session.update_columns(status: Session.statuses.fetch("archived"), archived_at: 9.days.ago)
+    waiting = transcript_storage(bucket: "b", client: Object.new)
+    assert_equal 1, waiting[:awaiting_copy]
+    assert waiting[:status].warning?
+
+    Rails.cache.clear
+    copy = TranscriptCopy.create!(session_id: 1, bucket: "b", manifest_object: "m", manifest_generation: 1, transcript_object: "t",
+      transcript_generation: 1, transcript_digest: "d", transcript_byte_size: 1_000, transcript_line_count: 1,
+      transcript_compressed_bytes: 200, conversation_byte_size: 40, subagents_fingerprint: "", verified_at: 10.minutes.ago)
+    moving = transcript_storage(bucket: "b", client: Object.new)
+    assert moving[:status].healthy?
+    assert_equal [ 1, 1_000, 200, 40 ], moving.values_at(:copied_sessions, :copied_bytes, :compressed_bytes, :conversation_bytes)
+
+    copy.update!(verified_at: 2.hours.ago)
+    assert transcript_storage(bucket: "b", client: Object.new)[:status].warning?
+
+    # Crossed the week a minute ago: the next tick has not come yet.
+    session.update_columns(archived_at: TranscriptCopyJob.copy_after_days.days.ago - 1.minute)
+    assert transcript_storage(bucket: "b", client: Object.new)[:status].healthy?
+
+    session.update_columns(metadata: { TranscriptCopyJob::RETRY_AT_KEY => 1.day.from_now.utc.iso8601 })
+    failing = transcript_storage(bucket: "b", client: Object.new)
+    assert failing[:status].warning?
+    assert_equal [ 0, 1 ], failing.values_at(:awaiting_copy, :failing)
+  end
+
+  test "transcript_storage_health counts nothing while it is off" do
+    TranscriptCopyJob.expects(:candidates).never
+    TranscriptCopyJob.expects(:skipped).never
+
+    assert_equal 0, transcript_storage[:awaiting_copy]
+  end
+
+  test "transcript_storage_health reports a failed read instead of raising" do
+    TranscriptCopy.stubs(:where).raises(ActiveRecord::StatementInvalid, "nope")
+
+    assert transcript_storage(bucket: "unread", client: Object.new)[:status].warning?
+  end
+
   test "log_retention_health reports the size of the logs table and the policy in force" do
     retention = @service.full_health_report[:log_retention_health]
 

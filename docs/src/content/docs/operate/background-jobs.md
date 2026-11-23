@@ -86,6 +86,7 @@ From `config.good_job.cron`:
 | 15m | `PiProviderKeySweepJob` | Delete the [short-lived OpenRouter keys](/operate/secrets-parameter-store/#short-lived-keys-for-pi) minted for Pi spawns that should no longer exist: expired, session gone, or session no longer live (past a 10-minute grace), plus keys under this deployment's name prefix at OpenRouter that have no row. It is the retry for `PiProviderKeyRevokeJob`, which the session's leave-`running` hook enqueues. With the feature off and nothing minted it is one `EXISTS` query and no OpenRouter call. Runs on `default`, with `SingletonSweep`. |
 | 5m | `TokenUsageBackfillJob` | Sweep the WHOLE transcript corpus into the ledger, once, in two-minute slices against a `token_usage_backfills` run that records the cursor. Starts itself on the first tick after a deploy when no sweep has ever finished, and costs one indexed lookup per tick forever after. Runs on `maintenance`, not `pollers` or `default`: it holds its thread for minutes and must not delay latency-sensitive pollers or control work. See [Token spend](/operate/costs/). |
 | 10m | `LogRetentionJob` | Delete `logs` rows past their retention window — the only thing that bounds a table written on the hot path of every session. Runs on `maintenance`, not `default` or `pollers`: it may hold its thread for a 90-second slice while a backlog drains, and must not delay latency-sensitive polling. See [Log retention](#log-retention) below. |
+| 10m | `TranscriptCopyJob` | Copy the transcripts of sessions archived more than `TRANSCRIPT_COPY_AFTER_DAYS` (default 7) days ago, and their subagents', to object storage, read every object back, and record it in `transcript_copies`. Deletes nothing. Off until a bucket is configured. Runs on `maintenance` with a 3-minute slice. See [Transcript storage](#transcript-storage) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
 | daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` rows older than 30 — the dedup stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
@@ -354,6 +355,63 @@ deployment working through its first backlog genuinely is. That status is delibe
 the report's `overall_status`, because `overall_status` is what `SystemHealthMonitorJob` and the
 alerting read, and turning the whole report yellow for a day while a backlog drains exactly on
 schedule is how people learn to ignore it.
+
+## Transcript storage
+
+Transcripts are the largest thing in Zimmer's database and nothing bounds them. `TranscriptCopyJob`
+makes a durable copy outside it. **It deletes nothing**, in Postgres or in the bucket.
+
+**What is copied, and when.** Sessions with status `archived` (trash included) whose `archived_at` is
+more than `TRANSCRIPT_COPY_AFTER_DAYS` days ago, oldest first. A session is copied again only when
+its transcript's digest has changed, its subagents are not the ones that were copied, or the bucket
+has changed. A session with no transcript of its own is not copied, even if it has subagents.
+
+**Layout.** Every name carries the SHA-256 of what it holds, and `yyyy/mm` is when the session was
+created:
+
+```text
+gs://<bucket>/<environment>/sessions/<yyyy>/<mm>/<session id>/
+  manifest-<sha256>.json
+  transcript-<sha256>.jsonl.gz
+  subagents/<agent id>-<sha256>.jsonl.gz
+```
+
+The `.jsonl.gz` files are what the runtime wrote, gzipped, and need no Zimmer to read. The manifest
+says what the session was and lists each object with its generation, digest and size.
+
+**The order is the guarantee.** The job streams the transcript out of Postgres one chunk at a time,
+checks it against the row's digest, uploads it with a precondition that the name is new, then reads
+that exact generation back, gunzips it and hashes it, and the object must be that one gzip stream
+and nothing more. The subagents and the manifest get the same.
+Only then is the `transcript_copies` row written, with the bucket, object names and generations. A
+failure before that leaves objects without a row, and the next run verifies and adopts them.
+
+A session whose chunks disagree with its own row is set aside at that digest and counted on
+`/health`, until it is rewritten. A session that fails for a reason of its own waits a day, so it does
+not hold up the ones behind it, and is counted too. Three failures of the store in a row end a tick.
+
+**Turning it on** needs a private bucket and a service account that may create and read objects
+(`roles/storage.objectCreator` and `roles/storage.objectViewer` on the bucket, and nothing that can
+overwrite or delete). Use one bucket per environment: names are separated by environment, but access
+is not, and a key for a shared bucket reads everything in it. Copies are exactly what Zimmer stored,
+so anything the redactor missed is copied as it is, into a store Zimmer cannot delete from. Two values, set in the [Parameter Store](/operate/secrets-parameter-store/):
+
+| Name | What it is |
+| --- | --- |
+| `TRANSCRIPT_STORAGE_BUCKET` | The bucket's name. Not a secret |
+| `TRANSCRIPT_STORAGE_SERVICE_ACCOUNT_KEY_JSON` | The service account's key JSON, or base64 of it |
+
+With neither set the job does nothing and `/health` says *Off*. One without the other warns. Agent
+sessions never receive the key.
+
+**Is it running?** `HealthMonitorService#transcript_storage_health`: sessions copied, waiting and set
+aside, compressed size, when a copy was last verified, and how much of the transcripts is
+conversation text alone. It warns when a session has waited over an hour with nothing verified in
+that time, and when one keeps failing. The counts are up to three minutes old.
+It is on `/health` (*Transcript Storage*), in `GET /api/v1/health`, in `get_system_health`, and every
+row is at `/supervisor/transcript_copies`.
+
+**Deleting a session keeps its copy.** The row has no foreign key and outlives the session.
 
 ## A deleted session takes its directories with it
 

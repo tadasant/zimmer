@@ -23,6 +23,21 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     Rails.cache = @original_cache
   end
 
+  test "the Transcript Storage panel renders off, and with copies" do
+    get "/health"
+    assert_includes response.body, "Off: no transcript storage bucket is configured"
+
+    TranscriptStorage.stubs(:configuration).returns(TranscriptStorage::Configuration.new(bucket: "zimmer-transcripts", client: Object.new))
+    TranscriptCopy.create!(session_id: 1, bucket: "zimmer-transcripts", manifest_object: "m", manifest_generation: 1, transcript_object: "t",
+      transcript_generation: 1, transcript_digest: "d", transcript_byte_size: 1_000, transcript_line_count: 1,
+      transcript_compressed_bytes: 200, conversation_byte_size: 40, subagents_fingerprint: "", verified_at: 10.minutes.ago)
+    get "/health"
+
+    assert_response :success
+    assert_includes response.body, "4.0%"
+    assert_includes response.body, "waiting to be copied to zimmer-transcripts"
+  end
+
   # === Deep health check (GET /up/deep) ===
 
   # Whether a Redis happens to be reachable from the test runner must not decide
