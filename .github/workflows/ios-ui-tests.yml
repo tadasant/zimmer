@@ -108,7 +108,7 @@ jobs:
   ui-test:
     name: ui-test (${{ matrix.shard.name }})
     if: ${{ github.repository == 'tadasant/zimmer' }}
-    runs-on: macos-latest
+    runs-on: xcode-27
     # THE BALANCE is by the per-class seconds of green runs (the last green single run,
     # actions/runs/39113483415, and the full-suite dispatches on the parity branches that
     # added the newer classes: 38970424260, 38908829804, 38974169702, 38991532403):

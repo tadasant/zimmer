@@ -1245,7 +1245,7 @@ job.
 ### A hosted macOS runner shortage reddens `main` for up to three hours
 
 The `ios` and `ios_carplay` jobs, the `ios-ui-tests.yml` shards and TestFlight's `upload` run on
-GitHub-hosted `macos-latest`, and GitHub is sometimes short of macOS arm64 capacity. A job that
+GitHub-hosted `xcode-27` (macOS arm64), and GitHub is sometimes short of macOS arm64 capacity. A job that
 waits about 15 minutes without a runner is given up by GitHub, and nothing in this repo can change
 that wait. The run concludes `failure` even though no code is wrong. The job itself shows as
 `cancelled`, like a superseded one; the annotation "The job was not acquired by Runner of type

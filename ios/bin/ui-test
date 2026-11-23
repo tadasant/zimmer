@@ -189,31 +189,41 @@ printf '    configuration %s, default server %s\n' "$configuration" "${base_url:
 # device matching the provided destination specifier" several minutes into a build. Asking
 # `simctl` which devices exist and taking one is the version that keeps working when the
 # image changes under us.
+#
+# Two limits on which one. No runtime newer than the SDK the app is built with: an image can
+# carry a beta Xcode beside the selected one, and its runtime is not what ships. And not an
+# iPhone Duo: it folds, so its layout is not the one these tests drive, and Xcode 27.1's own
+# runtime (iOS 27.1) has no other device.
 # ---------------------------------------------------------------------------------------
-udid="$(xcrun simctl list devices available --json | python3 -c '
-import json, sys
+sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)" || fail "no iOS simulator SDK in the selected Xcode"
+picked="$(xcrun simctl list devices available --json | python3 -c '
+import json, re, sys
 
-runtimes = json.load(sys.stdin)["devices"]
+def numbers(version):
+    return tuple(int(n) for n in re.findall(r"[0-9]+", version))
+
+newest = numbers(sys.argv[1])[:2]
 best = None
-for runtime, devices in runtimes.items():
-    if "iOS" not in runtime:
+for runtime, devices in json.load(sys.stdin)["devices"].items():
+    match = re.search(r"\.iOS-([0-9-]+)$", runtime)
+    if not match or numbers(match.group(1))[:2] > newest:
         continue
     for device in devices:
-        if not device.get("isAvailable"):
+        name = device.get("name", "")
+        if not device.get("isAvailable") or not name.startswith("iPhone") or "Duo" in name:
             continue
-        if "iPhone" not in device.get("name", ""):
-            continue
-        # A lexicographic max over (runtime, name). Deliberately NOT a "newest device"
-        # claim — `iOS-17-5` sorts above `iOS-17-10` and `iPhone SE (3rd generation)`
-        # above `iPhone 16 Pro Max`. What it guarantees is a *stable, available* pick with
-        # no model hard-coded, so a runner image bump changes nothing here.
-        key = (runtime, device["name"])
+        # The newest runtime, then a lexicographic max over the name: not a "newest device"
+        # claim, but a stable, available pick with no model hard-coded.
+        key = (numbers(match.group(1)), name)
         if best is None or key > best[0]:
             best = (key, device["udid"])
-print(best[1] if best else "")
-')"
-[ -n "$udid" ] || fail "no available iPhone simulator; \`xcrun simctl list devices available\` shows none"
-printf '    simulator %s\n' "$udid"
+if best:
+    (version, name), udid = best
+    print(udid, name, "on iOS", ".".join(str(n) for n in version))
+' "$sdk")"
+udid="${picked%% *}"
+[ -n "$udid" ] || fail "no available iPhone simulator at or below iOS $sdk; see \`xcrun simctl list devices available\`"
+printf '    simulator %s (iOS Simulator SDK %s)\n' "$picked" "$sdk"
 
 # Booted in the background, and waited for only after the build: a boot is about two and a
 # half minutes on a hosted runner that would otherwise sit in front of a build that does not

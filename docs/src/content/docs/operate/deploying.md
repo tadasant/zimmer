@@ -1476,8 +1476,8 @@ wedging the worker.
 ## The workflows
 
 Every job runs on a **GitHub-hosted runner**: `ubuntu-24.04` for almost every Linux job,
-`ubuntu-latest` for the three that install no toolchain, and `macos-latest` for the iOS
-jobs. Hosted runners are free and unmetered on a public repository, and nobody has to
+`ubuntu-latest` for the three that install no toolchain, and `xcode-27` for the iOS
+jobs (macOS with the Xcode that has the iOS 27 SDK; `macos-latest` has no Xcode 27). Hosted runners are free and unmetered on a public repository, and nobody has to
 keep a runner box alive for CI to run. See [Where CI runs](#where-ci-runs) for what that
 means for a job.
 

@@ -4,7 +4,8 @@ name: CI
 # is free and unmetered on a public repository. The Ruby jobs pin `ubuntu-24.04` rather
 # than `ubuntu-latest`: ruby/setup-ruby builds only the then-newest patch of each Ruby
 # series for a newly added image, so older patches never exist on ubuntu-26.04 and a pin
-# it lacks fails in setup. The macOS jobs use `macos-latest`. `runs-on` is hard-coded, never switched by a variable: a fork PR must
+# it lacks fails in setup. The macOS jobs use `xcode-27`, the standard hosted image that carries
+# Xcode 27 (`macos-latest` has none). `runs-on` is hard-coded, never switched by a variable: a fork PR must
 # never be able to reach a self-hosted runner. Postgres + Redis come up as service
 # containers on dynamic host ports, and ruby/setup-ruby installs Ruby and caches the bundle
 # (`bundler-cache: true`) — no job relies on anything left on a runner by an earlier run.
@@ -631,7 +632,7 @@ jobs:
   ios:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
-    runs-on: macos-latest
+    runs-on: xcode-27
     # About 25 minutes: an archive, the ZimmerKit tests, one simulator build and the smoke
     # run, most of them before the first UI test on a hosted runner. The headroom is for a pull
     # request that touches several UI test files, whose classes the smoke run adds whole: six of
@@ -737,7 +738,7 @@ jobs:
   ios_carplay:
     if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && needs.ios-changes.outputs.ios == 'true' }}
     needs: ios-changes
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 45
 
     steps:

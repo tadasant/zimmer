@@ -13,7 +13,7 @@ require "yaml"
 # See docs/operate/deploying.md, "Where CI runs".
 class GithubHostedRunnersTest < ActiveSupport::TestCase
   WORKFLOW_DIR = Rails.root.join(".github/workflows")
-  HOSTED_LABELS = %w[ubuntu-24.04 ubuntu-latest macos-latest].freeze
+  HOSTED_LABELS = %w[ubuntu-24.04 ubuntu-latest xcode-27].freeze
 
   def self.jobs
     Dir[WORKFLOW_DIR.join("*.{yml,yaml}")].sort.flat_map do |path|
