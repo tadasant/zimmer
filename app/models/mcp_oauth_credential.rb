@@ -72,14 +72,17 @@ class McpOauthCredential < ApplicationRecord
   # (#mirror_plaintext_secrets! already rewrites a twin that differs) and switch
   # reads to the twin while still writing both; then stop writing plaintext and
   # NULL it out. Each of those reverts onto the one before with every row
-  # readable.
+  # readable, PROVIDED the first of them also removes #mirror_plaintext_secrets!
+  # and whatever calls it: to the mirror a NULL plaintext means a cleared secret,
+  # so once plaintext is being NULLed it would erase the only copy.
   #
   # The keys come from config/initializers/active_record_encryption.rb.
   SECRET_COLUMNS = %w[access_token refresh_token client_secret].freeze
 
   # A twin that cannot be decrypted reads as nil (UnreadableTwinAsNil), so to tell
   # "unreadable" from "missing" look at the raw column.
-  encrypts :access_token_ciphertext, :refresh_token_ciphertext, :client_secret_ciphertext, encryptor: UnreadableTwinAsNil.new
+  encrypts :access_token_ciphertext, :refresh_token_ciphertext, :client_secret_ciphertext,
+    encryptor: UnreadableTwinAsNil.new, key_provider: UnreadableTwinAsNil::DefaultKeys
 
   SECRET_COLUMNS.each do |column|
     twin = "#{column}_ciphertext"
@@ -93,8 +96,9 @@ class McpOauthCredential < ApplicationRecord
   # Any save fills a twin that is still missing, so a row written without one
   # (by an old container during the deploy cutover, after the post-deploy task
   # had already run) heals on its next refresh instead of waiting for the
-  # contract phase to find it. And a secret that is NULL keeps no twin: one left by
-  # a version that cleared only the plaintext must not bring the secret back.
+  # contract phase to find it. And a secret cleared in this save loses its twin,
+  # readable or not. A twin whose plaintext was already NULL is left to the mirror,
+  # so a save can never erase the only copy while plaintext is being NULLed out.
   before_save :bring_secret_twins_into_line
 
   # Copies each plaintext secret into its encrypted twin where the twin is
@@ -104,8 +108,14 @@ class McpOauthCredential < ApplicationRecord
   # @return [Boolean] whether anything was written
   def mirror_plaintext_secrets!
     SECRET_COLUMNS.each do |column|
+      next unless has_attribute?(column) # not loaded is not NULL
+
       plaintext = read_attribute(column)
-      plaintext.nil? ? clear_twin(column) : write_attribute("#{column}_ciphertext", plaintext)
+      if !plaintext.nil?
+        write_attribute("#{column}_ciphertext", plaintext)
+      elsif !read_attribute_before_type_cast("#{column}_ciphertext").nil?
+        clear_twin(column)
+      end
     end
     # Asked of Rails rather than remembered here, so a second call after the first
     # one's transaction was rolled back writes again.
@@ -359,7 +369,7 @@ class McpOauthCredential < ApplicationRecord
     SECRET_COLUMNS.each do |column|
       plaintext = read_attribute(column)
       if plaintext.nil?
-        clear_twin(column)
+        clear_twin(column) if will_save_change_to_attribute?(column)
       elsif read_attribute_before_type_cast("#{column}_ciphertext").nil?
         write_attribute("#{column}_ciphertext", plaintext)
       end
@@ -367,13 +377,9 @@ class McpOauthCredential < ApplicationRecord
   end
 
   # NULL a twin, whether or not it can be read: an unreadable one already reads as
-  # nil, so assigning nil to it is not a change Rails would write. Asked of the raw
-  # value, and of the plaintext's own pending change, because the writer has already
-  # put nil over the raw value by then.
+  # nil, so assigning nil to it is not a change Rails would write.
   def clear_twin(column)
     twin = "#{column}_ciphertext"
-    return if read_attribute_before_type_cast(twin).nil? && !will_save_change_to_attribute?(column)
-
     write_attribute(twin, nil)
     attribute_will_change!(twin)
   end

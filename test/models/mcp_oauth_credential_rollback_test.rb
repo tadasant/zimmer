@@ -271,11 +271,54 @@ class McpOauthCredentialRollbackTest < ActiveSupport::TestCase
     assert_nothing_raised { Marshal.load(Marshal.dump(McpOauthCredential.find(@credential.id))) }
   end
 
-  test "a secret the rolled-back version cleared leaves no twin behind after the next save, readable or not" do
+  # What the contract phase's own rows look like: the twin is the only copy. A save by
+  # a container, or a revert, still running this code must not erase it.
+  test "a save never erases a twin whose plaintext was already NULL" do
+    rotate_on_the_rolled_back_version(refresh_token: nil, client_secret: nil)
+    before = [ raw("refresh_token_ciphertext"), raw("client_secret_ciphertext") ]
+    assert before.all?(&:present?)
+    @credential.update!(scopes: "x", access_token: "at-new")
+    assert_equal before, [ raw("refresh_token_ciphertext"), raw("client_secret_ciphertext") ]
+  end
+
+  test "the mirror leaves alone the twin of a secret that was not loaded" do
+    partial = McpOauthCredential.select(:id, :refresh_token_ciphertext).find(@credential.id)
+    refute partial.mirror_plaintext_secrets!
+    assert_equal "rt-before", McpOauthCredential.find(@credential.id).refresh_token_ciphertext
+  end
+
+  test "the mirror writes nothing, an unrelated pending edit included, when every twin is in step" do
+    @credential.scopes = "pending"
+    refute @credential.mirror_plaintext_secrets!
+    assert_not_equal "pending", raw("scopes")
+  end
+
+  test "the mirror clears an unreadable twin of a cleared secret" do
+    change_the_key_under_the_twins
     rotate_on_the_rolled_back_version(refresh_token: nil)
-    assert raw("refresh_token_ciphertext").present?
-    @credential.update!(scopes: "x")
-    assert_nil raw("refresh_token_ciphertext"), "or the contract phase would bring a cleared token back"
+    assert @credential.mirror_plaintext_secrets!
+    assert_nil raw("refresh_token_ciphertext")
+    refute McpOauthCredential.find(@credential.id).mirror_plaintext_secrets!
+  end
+
+  # `encryptor:` makes Rails run each operation in a throwaway context, which would
+  # derive the key (about 60 ms) every time.
+  test "the key is derived once, however many twins are read and written" do
+    keys = ActiveRecord::Encryption.default_context.key_provider
+    ActiveRecord::Encryption.default_context.key_provider = nil # as in a fresh process
+    ActiveRecord::Encryption::DerivedSecretKeyProvider.expects(:new).once.returns(keys)
+    McpOauthCredential.find(@credential.id).update!(access_token: "a", refresh_token: "r", client_secret: "s")
+    assert_equal "a", McpOauthCredential.find(@credential.id).access_token_ciphertext
+    refute McpOauthCredential.find(@credential.id).mirror_plaintext_secrets!
+  ensure
+    ActiveRecord::Encryption.default_context.key_provider = keys
+  end
+
+  test "a missing key raises where it is used, and no token is written" do
+    ActiveRecord::Encryption.default_context.stubs(:key_provider).raises(ActiveRecord::Encryption::Errors::Configuration, "no key")
+    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { McpOauthCredential.find(@credential.id).update!(access_token: "x") }
+    assert_raises(ActiveRecord::Encryption::Errors::Configuration) { McpOauthCredential.find(@credential.id).access_token_ciphertext }
+    assert_equal "at-before", raw("access_token")
   end
 
   test "the mirror clears the twin of a cleared secret" do

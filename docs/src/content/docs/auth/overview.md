@@ -314,7 +314,9 @@ The **contract** half is two later deploys. The first re-mirrors every row and s
 the twin while still writing both. Re-mirroring is needed because the expand task only fills
 *missing* twins, and an old container or a reverted deploy can leave a twin stale. The second stops
 writing plaintext and `NULL`s it out. The columns are dropped after that. A revert at any step lands
-on code that reads every row correctly.
+on code that reads every row correctly, provided the first of the two also removes
+`mirror_plaintext_secrets!`: to it a `NULL` plaintext means a cleared secret, so it would erase the
+twin.
 
 The keys come from `config/initializers/active_record_encryption.rb`: an `active_record_encryption`
 block in Rails credentials if there is one, otherwise three keys derived from `secret_key_base`.
